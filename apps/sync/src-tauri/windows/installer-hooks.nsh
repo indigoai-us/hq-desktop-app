@@ -15,7 +15,11 @@
 
 !macro HQ_STOP_INSTALL_DIR_PROCESSES
   DetailPrint "Stopping running HQ processes"
-  nsExec::ExecToLog 'taskkill /F /T /IM "hq-sync-menubar.exe"'
+  ; No /T on the app kill: when the in-app updater launches this installer,
+  ; the installer IS a descendant of hq-sync-menubar.exe — a tree kill would
+  ; terminate the running installer itself. Children that matter are caught
+  ; by the $INSTDIR-scoped sweep below.
+  nsExec::ExecToLog 'taskkill /F /IM "hq-sync-menubar.exe"'
   Pop $0
   nsExec::ExecToLog 'taskkill /F /T /IM "recall-desktop-sdk.exe"'
   Pop $0

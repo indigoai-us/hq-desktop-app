@@ -68,6 +68,16 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain(
       'match (automatic_updates && silent_install_supported, sync_in_progress)',
     );
+    // The hard version gate is a second background install path and must
+    // respect the same platform gate: on Windows the blocking modal stays up
+    // and the user installs through the guarded manual flow.
+    const versionGate = read('src-tauri/src/commands/version_gate.rs');
+    expect(versionGate).toContain(
+      'if !crate::updater::silent_install_supported() {',
+    );
+    expect(versionGate).toContain(
+      'blocking modal stays up for manual install',
+    );
   });
 
   it('App keeps the shared preference hydrated for Core updates', () => {

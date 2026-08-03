@@ -159,7 +159,10 @@ fn background_update_action(
 /// hq-sync-menubar.exe). Until the update path quiesces every HQ process
 /// first, Windows background discovery announces the update instead and the
 /// user installs through the guarded in-app path.
-fn silent_install_supported() -> bool {
+///
+/// Shared with `commands::version_gate` — the hard-gate force-install is the
+/// same silent NSIS hazard and must respect the same platform gate.
+pub(crate) fn silent_install_supported() -> bool {
     !cfg!(target_os = "windows")
 }
 

@@ -63,7 +63,11 @@ describe('Windows production installer E2E', () => {
     expect(installerHooks).toContain('NSIS_HOOK_PREINSTALL');
     expect(installerHooks).toContain('NSIS_HOOK_PREUNINSTALL');
     expect(installerHooks).toContain('HQ_STOP_INSTALL_DIR_PROCESSES');
-    expect(installerHooks).toContain('taskkill /F /T /IM "hq-sync-menubar.exe"');
+    // No tree kill (/T) on the app: when the in-app updater launches the
+    // installer, the installer is a descendant of hq-sync-menubar.exe and a
+    // tree kill would terminate the installer itself mid-update.
+    expect(installerHooks).toContain('taskkill /F /IM "hq-sync-menubar.exe"');
+    expect(installerHooks).not.toContain('/T /IM "hq-sync-menubar.exe"');
     expect(installerHooks).toContain('taskkill /F /T /IM "recall-desktop-sdk.exe"');
     // The generic sweep is path-scoped to the install directory. A blanket
     // image-name kill of node.exe would murder unrelated user processes.
