@@ -12,10 +12,13 @@
   } from '../../lib/notificationFeedData';
   import {
     getV4SidebarModel,
+    V4_COMPANY_PRIMARY_ITEMS,
     type V4CompanyPrimaryId,
     type V4NavId,
     type V4Route,
   } from './model';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import { HQ_CONSOLE_BASE } from '../lib/hq-console';
   import SidebarSyncMode from './SidebarSyncMode.svelte';
   import './tokens.css';
 
@@ -65,8 +68,84 @@
   const model = $derived(
     getV4SidebarModel(route, companies ?? fetched),
   );
-  const personalRows = $derived(model.companies.filter((row) => row.isPersonal));
-  const companyRows = $derived(model.companies.filter((row) => !row.isPersonal));
+  // Slack-style workspace switcher: one current workspace at the top of the
+  // sidebar; every workspace (personal and companies alike) lives in the
+  // switcher menu. The company on the active route is current; on global
+  // destinations the last explicit selection persists, else first workspace.
+  let lastSelectedSlug = $state<string | null>(null);
+  const routeRow = $derived(model.companies.find((row) => row.expanded || row.active) ?? null);
+  $effect(() => {
+    if (routeRow) lastSelectedSlug = routeRow.slug;
+  });
+  const currentRow = $derived(
+    routeRow ??
+      model.companies.find((row) => row.slug === lastSelectedSlug) ??
+      model.companies.find((row) => !row.isPersonal) ??
+      model.companies[0] ??
+      null,
+  );
+  // The route model only carries children for the expanded company; the
+  // sidebar shows the current workspace's sections on global routes too.
+  const currentSections = $derived(
+    currentRow == null
+      ? []
+      : currentRow.children.length > 0
+        ? currentRow.children
+        : V4_COMPANY_PRIMARY_ITEMS.map((item) => ({ ...item, active: false })),
+  );
+
+  let switcherOpen = $state(false);
+  let switcherButton = $state<HTMLButtonElement | null>(null);
+  let menuPos = $state({ top: 0, left: 0 });
+
+  function toggleSwitcher() {
+    if (!switcherOpen && switcherButton) {
+      const rect = switcherButton.getBoundingClientRect();
+      menuPos = { top: rect.bottom + 6, left: rect.left };
+    }
+    switcherOpen = !switcherOpen;
+  }
+
+  function selectWorkspace(slug: string) {
+    lastSelectedSlug = slug;
+    switcherOpen = false;
+    goCompany(slug);
+  }
+
+  function addWorkspace() {
+    switcherOpen = false;
+    void openExternal(HQ_CONSOLE_BASE);
+  }
+
+  /** Mount the switcher menu on document.body so the sidebar's overflow and
+   *  glass filter can't clip it. */
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
+  }
+
+  const TILE_GRADIENTS = [
+    ['#6366f1', '#8b5cf6'],
+    ['#0ea5e9', '#6366f1'],
+    ['#f59e0b', '#ef4444'],
+    ['#10b981', '#0ea5e9'],
+    ['#ec4899', '#8b5cf6'],
+    ['#475569', '#1e293b'],
+  ] as const;
+
+  function tileGradient(slug: string): string {
+    let hash = 0;
+    for (const ch of slug) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+    const [from, to] = TILE_GRADIENTS[Math.abs(hash) % TILE_GRADIENTS.length];
+    return `linear-gradient(135deg, ${from}, ${to})`;
+  }
+
+  function workspaceInitials(label: string): string {
+    const words = label.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return '?';
+    if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
 
   onMount(() => {
     if (companies != null) return;
@@ -146,33 +225,35 @@
     onnavigate?.({ kind: 'company', slug, tab: section });
   }
 
-  const REVEAL_INTENT_MS = 140;
-  let revealedSlugs = $state(new Set<string>());
-  let revealTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function reveal(slug: string) {
-    cancelPendingReveal();
-    if (revealedSlugs.has(slug)) return;
-    revealedSlugs = new Set(revealedSlugs).add(slug);
-  }
-
-  function queueReveal(slug: string) {
-    cancelPendingReveal();
-    if (revealedSlugs.has(slug)) return;
-    revealTimer = setTimeout(() => reveal(slug), REVEAL_INTENT_MS);
-  }
-
-  function cancelPendingReveal() {
-    if (revealTimer !== null) {
-      clearTimeout(revealTimer);
-      revealTimer = null;
-    }
-  }
-
-  $effect(() => () => cancelPendingReveal());
 </script>
 
+<svelte:window
+  onkeydown={(event) => {
+    if (switcherOpen && event.key === 'Escape') switcherOpen = false;
+  }}
+/>
+
 <aside class="v4-sidebar" aria-label="Primary navigation">
+  {#if currentRow}
+    <button
+      type="button"
+      class="ws-current"
+      bind:this={switcherButton}
+      aria-haspopup="menu"
+      aria-expanded={switcherOpen}
+      data-testid="workspace-switcher"
+      onclick={toggleSwitcher}
+    >
+      <span class="ws-tile" style={`background:${tileGradient(currentRow.slug)}`} aria-hidden="true">
+        {workspaceInitials(currentRow.label)}
+      </span>
+      <span class="ws-current-name">{currentRow.label}</span>
+      <svg class="ws-chevron" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
+        <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+  {/if}
+
   <nav class="v4-nav" aria-label="Primary">
     {#each model.nav as row (row.id)}
       <button
@@ -192,117 +273,29 @@
     {/each}
   </nav>
 
-  <div class="v4-companies-area">
-    <div class="v4-section-label" id="v4-workspaces-label">Workspaces</div>
-
-    {#if personalRows.length > 0}
-      <nav class="v4-nav" aria-labelledby="v4-workspaces-label">
-        {#each personalRows as row (row.slug)}
-          <div class="v4-company-item personal" role="group">
-            <button
-              type="button"
-              class="v4-row v4-company-row"
-              class:active={row.active}
-              aria-current={row.active && row.children.every((child) => !child.active) ? 'page' : undefined}
-              aria-expanded={row.expanded}
-              onclick={() => goCompany(row.slug)}
-            >
-              <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
-              <span class="v4-company-copy">
-                <span class="v4-company-name">{row.label}</span>
-                {#if row.ownerLabel}
-                  <span class="v4-company-meta">{row.ownerLabel}</span>
-                {/if}
-              </span>
-            </button>
-            <span class="v4-syncmode-slot always-visible">
-              <SidebarSyncMode
-                slug={row.slug}
-                label={row.label}
-                isPersonal={true}
-                syncEnabled={row.syncEnabled}
-                cloudReachable={effectiveCloudReachable}
-                onenabledchange={(enabled) => onworkspaceenabledchange?.(row.slug, enabled)}
-              />
-            </span>
-          </div>
-        {/each}
-      </nav>
-    {/if}
-
-    {#if companyRows.length > 0}
-      <div class="v4-section-label subheading" id="v4-companies-label">Companies</div>
-      <nav class="v4-nav v4-company-nav" aria-labelledby="v4-companies-label">
-        {#each companyRows as row (row.slug)}
-          <div
-            class="v4-company-item"
-            class:has-syncmode={row.cloudActivated && !row.expanded}
-            class:expanded={row.expanded}
-            role="group"
-            onpointerenter={() => row.cloudActivated && !row.expanded && queueReveal(row.slug)}
-            onpointerleave={cancelPendingReveal}
-            onfocusin={() => row.cloudActivated && !row.expanded && reveal(row.slug)}
-          >
-            <button
-              type="button"
-              class="v4-row v4-company-row"
-              class:active={row.active}
-              aria-current={row.active && row.children.every((child) => !child.active) ? 'page' : undefined}
-              aria-expanded={row.expanded}
-              onclick={() => goCompany(row.slug)}
-            >
-              <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
-              <span class="v4-company-copy">
-                <span class="v4-company-name">{row.label}</span>
-                {#if row.ownerLabel}
-                  <span class="v4-company-meta">{row.ownerLabel}</span>
-                {/if}
-              </span>
-              {#if row.pendingInvite}
-                <span class="v4-invite-badge" data-testid={`company-invite-badge-${row.slug}`}>Invite</span>
-              {:else if row.expanded}
-                <span class="v4-disclosure" aria-hidden="true">⌄</span>
-              {/if}
-            </button>
-            {#if row.cloudActivated && !row.expanded && revealedSlugs.has(row.slug)}
-              <span class="v4-syncmode-slot">
-                <SidebarSyncMode
-                  slug={row.slug}
-                  label={row.label}
-                  syncEnabled={row.syncEnabled}
-                  cloudReachable={effectiveCloudReachable}
-                  onenabledchange={(enabled) => onworkspaceenabledchange?.(row.slug, enabled)}
-                />
-              </span>
-            {/if}
-          </div>
-          {#if row.expanded && row.children.length > 0}
-            <div
-              class="v4-company-children"
-              data-testid={`company-children-${row.slug}`}
-              aria-label={`${row.label} sections`}
-            >
-              {#each row.children as child (child.id)}
-                <button
-                  type="button"
-                  class="v4-row v4-company-child"
-                  class:active={child.active}
-                  aria-current={child.active ? 'page' : undefined}
-                  data-testid={`company-child-${row.slug}-${child.id}`}
-                  onclick={() => goCompanySection(row.slug, child.id)}
-                >
-                  <span class="v4-row-label">{child.label}</span>
-                  {#if child.id === 'more'}
-                    <span class="v4-child-meta" aria-hidden="true">•••</span>
-                  {/if}
-                </button>
-              {/each}
-            </div>
+  {#if currentRow}
+    <nav
+      class="ws-sections"
+      data-testid={`company-children-${currentRow.slug}`}
+      aria-label={`${currentRow.label} sections`}
+    >
+      {#each currentSections as child (child.id)}
+        <button
+          type="button"
+          class="v4-row"
+          class:active={child.active}
+          aria-current={child.active ? 'page' : undefined}
+          data-testid={`company-child-${currentRow.slug}-${child.id}`}
+          onclick={() => goCompanySection(currentRow.slug, child.id)}
+        >
+          <span class="v4-row-label">{child.label}</span>
+          {#if child.id === 'more'}
+            <span class="v4-child-meta" aria-hidden="true">•••</span>
           {/if}
-        {/each}
-      </nav>
-    {/if}
-  </div>
+        </button>
+      {/each}
+    </nav>
+  {/if}
 
   <div class="v4-spacer"></div>
 
@@ -319,6 +312,70 @@
     {/if}
   </button>
 </aside>
+
+{#if switcherOpen}
+  <div class="ws-layer" use:portal>
+    <div
+      class="ws-backdrop"
+      aria-hidden="true"
+      onclick={() => (switcherOpen = false)}
+    ></div>
+    <div
+      class="ws-menu"
+      role="menu"
+      aria-label="Switch workspace"
+      style={`top:${menuPos.top}px;left:${menuPos.left}px`}
+    >
+      {#each model.companies as row (row.slug)}
+        <div class="ws-menu-item" role="none">
+          <button
+            type="button"
+            class="ws-menu-row"
+            role="menuitem"
+            data-testid={`workspace-option-${row.slug}`}
+            onclick={() => selectWorkspace(row.slug)}
+          >
+            <span class="ws-tile menu" style={`background:${tileGradient(row.slug)}`} aria-hidden="true">
+              {workspaceInitials(row.label)}
+            </span>
+            <span class="ws-menu-copy">
+              <span class="ws-menu-name">{row.label}</span>
+              {#if row.isPersonal}
+                <span class="ws-menu-meta">Personal workspace</span>
+              {:else if row.ownerLabel}
+                <span class="ws-menu-meta">{row.ownerLabel}</span>
+              {/if}
+            </span>
+            {#if row.pendingInvite}
+              <span class="v4-invite-badge" data-testid={`company-invite-badge-${row.slug}`}>Invite</span>
+            {:else if currentRow && row.slug === currentRow.slug}
+              <svg class="ws-check" width="12" height="10" viewBox="0 0 12 10" aria-hidden="true">
+                <path d="M1 5.4L4.4 8.8L11 1.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            {/if}
+          </button>
+          {#if row.isPersonal || row.cloudActivated}
+            <span class="ws-menu-syncslot">
+              <SidebarSyncMode
+                slug={row.slug}
+                label={row.label}
+                isPersonal={row.isPersonal}
+                syncEnabled={row.syncEnabled}
+                cloudReachable={effectiveCloudReachable}
+                onenabledchange={(enabled) => onworkspaceenabledchange?.(row.slug, enabled)}
+              />
+            </span>
+          {/if}
+        </div>
+      {/each}
+      <div class="ws-menu-divider" role="none"></div>
+      <button type="button" class="ws-menu-row ws-add" role="menuitem" onclick={addWorkspace}>
+        <span class="ws-tile menu add" aria-hidden="true">+</span>
+        <span class="ws-menu-name">Add a workspace</span>
+      </button>
+    </div>
+  </div>
+{/if}
 
 <style>
   .v4-sidebar {
@@ -426,138 +483,214 @@
     letter-spacing: 0.02em;
     text-transform: uppercase;
   }
-  .v4-companies-area {
+  /* ---- Workspace switcher (Slack-style, onboarding-flavored) ---- */
+
+  .ws-current {
     display: flex;
-    flex: 1 1 auto;
-    flex-direction: column;
-    min-height: 0;
-    margin-top: 16px;
+    align-items: center;
     gap: 10px;
+    width: 100%;
+    margin: 0 0 14px;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
   }
 
-  .v4-section-label {
+  .ws-current:hover {
+    background: var(--v4-control-faint);
+  }
+
+  .ws-current:focus-visible {
+    outline: 1.5px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 2px;
+  }
+
+  .ws-tile {
     flex: 0 0 auto;
-    margin: 0 0 6px;
-    padding: 0 8px;
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-xs));
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    user-select: none;
+  }
+
+  .ws-tile.menu {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    font-size: 14px;
+  }
+
+  .ws-tile.add {
+    background: var(--v4-control-faint);
+    box-shadow: inset 0 0 0 0.5px var(--v4-hairline);
+    color: var(--v4-text-2);
+    font-size: 18px;
     font-weight: 400;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
   }
 
-  .v4-section-label.subheading {
-    padding-top: 8px;
+  .ws-current-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: var(--type-body, var(--text-base));
+    font-weight: 600;
   }
 
-  .v4-company-nav {
+  .ws-chevron {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+  }
+
+  .ws-sections {
+    display: flex;
+    flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    gap: var(--v4-row-gap);
+    margin-top: 16px;
     padding-bottom: 12px;
     scrollbar-color: var(--v4-hairline) transparent;
     scrollbar-width: thin;
   }
 
-  .v4-company-nav::-webkit-scrollbar {
+  .ws-sections::-webkit-scrollbar {
     width: 6px;
   }
 
-  .v4-company-nav::-webkit-scrollbar-thumb {
+  .ws-sections::-webkit-scrollbar-thumb {
     border-radius: var(--v4-radius-pill);
     background: var(--v4-hairline);
   }
 
-  .v4-company-item {
+  .ws-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+  }
+
+  .ws-backdrop {
+    position: absolute;
+    inset: 0;
+  }
+
+  .ws-menu {
+    position: absolute;
+    width: 292px;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 6px;
+    border: 1px solid var(--border-strong, var(--pop-border, rgba(120, 120, 120, 0.3)));
+    border-radius: var(--v4-radius-popover, 12px);
+    background: var(
+      --v4-popover-strong,
+      var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.82)))
+    );
+    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
+    box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
+    font-family: var(--font-sans);
+  }
+
+  .ws-menu-item {
     position: relative;
   }
 
-  .v4-company-item.personal {
+  .ws-menu-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    width: 100%;
+    padding: 8px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
   }
 
-  .v4-company-item.personal .v4-company-row {
-    flex: 1 1 auto;
+  .ws-menu-row:hover {
+    background: var(--v4-control-faint);
   }
 
-  .v4-company-row {
-    padding-right: 34px;
+  .ws-menu-row:focus-visible {
+    outline: 1.5px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: -1.5px;
   }
 
-  .v4-company-copy {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 6px;
+  .ws-menu-copy {
+    display: grid;
+    gap: 2px;
     min-width: 0;
     flex: 1 1 auto;
   }
 
-  .v4-company-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
-    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
-  }
-
-  .v4-company-item.has-syncmode:hover .v4-company-name,
-  .v4-company-item.has-syncmode:focus-within .v4-company-name {
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 78px));
-    mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 78px));
-  }
-
-  .v4-company-meta {
-    color: var(--v4-text-3);
-    font-size: var(--text-sm);
+  .ws-menu-name {
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 18px;
   }
 
-  .v4-syncmode-slot {
+  .ws-add .ws-menu-name {
+    font-weight: 500;
+  }
+
+  .ws-menu-meta {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 13px);
+    line-height: 16px;
+  }
+
+  .ws-check {
+    flex: 0 0 auto;
+    margin-right: 2px;
+    color: var(--v4-text-1);
+  }
+
+  .ws-menu-syncslot {
     position: absolute;
     top: 50%;
-    right: 6px;
+    right: 34px;
     transform: translateY(-50%);
     opacity: 0;
     pointer-events: none;
   }
 
-  .v4-company-item:hover .v4-syncmode-slot,
-  .v4-company-item:focus-within .v4-syncmode-slot {
+  .ws-menu-item:hover .ws-menu-syncslot,
+  .ws-menu-item:focus-within .ws-menu-syncslot {
     opacity: 1;
     pointer-events: auto;
   }
 
-  .v4-syncmode-slot.always-visible {
-    position: static;
-    transform: none;
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  .v4-dot {
-    flex: 0 0 6px;
-    align-self: center;
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: var(--v4-idle);
-  }
-
-  .v4-dot.ok {
-    background: var(--v4-ok);
-  }
-
-  .v4-dot.warn {
-    background: var(--v4-warn);
-  }
-
-  .v4-dot.error {
-    background: var(--v4-error);
+  .ws-menu-divider {
+    height: 1px;
+    margin: 6px 4px;
+    background: var(--v4-hairline);
   }
 
   .v4-invite-badge {
@@ -569,23 +702,6 @@
     font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: 0.04em;
-  }
-
-  .v4-disclosure {
-    flex: 0 0 auto;
-    color: var(--v4-text-3);
-  }
-
-  .v4-company-children {
-    display: flex;
-    flex-direction: column;
-    gap: var(--v4-row-gap);
-    margin-left: 18px;
-    padding-top: 4px;
-  }
-
-  .v4-company-child {
-    padding-left: 18px;
   }
 
   .v4-child-meta {
