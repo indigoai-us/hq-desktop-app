@@ -24,6 +24,11 @@ export default defineConfig({
       '@sentry/svelte': mock('sentry.ts'),
     },
   },
+  optimizeDeps: {
+    // phosphor-svelte ships .svelte sources; prebundling compiles them against
+    // a mismatched runtime shape. Compile them as project source instead.
+    exclude: ['phosphor-svelte'],
+  },
   server: {
     port: 1422,
     strictPort: true,

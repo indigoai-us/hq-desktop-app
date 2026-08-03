@@ -19,6 +19,22 @@
   } from './model';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { HQ_CONSOLE_BASE } from '../lib/hq-console';
+  import {
+    BookOpen,
+    Books,
+    CaretDown,
+    ChatCircle,
+    Folder,
+    House,
+    Kanban,
+    Lightning,
+    Robot,
+    SidebarSimple,
+    Target,
+    Tray,
+    Users,
+    VideoCamera,
+  } from 'phosphor-svelte';
   import './tokens.css';
 
   /**
@@ -46,6 +62,8 @@
     /** Monogram for the profile footer avatar circle. */
     accountInitials?: string | null;
     onnavigate?: (route: V4Route) => void;
+    /** Collapse the sidepane (the in-pane SidebarSimple control). */
+    ontogglesidebar?: () => void;
   }
 
   let {
@@ -55,7 +73,30 @@
     accountEmail,
     accountInitials,
     onnavigate,
+    ontogglesidebar,
   }: Props = $props();
+
+  /** Decorative window lights only render outside Tauri — the native window
+   *  draws the real controls over the same inset in the shipped app. */
+  const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  /* Phosphor icon per sidebar destination (Figma: 16px glyph before label). */
+  const SECTION_ICONS: Record<string, typeof House> = {
+    overview: House,
+    goals: Target,
+    projects: Kanban,
+    skills: Lightning,
+    workers: Robot,
+    knowledge: BookOpen,
+    team: Users,
+  };
+  const NAV_ICONS: Record<string, typeof House> = {
+    inbox: Tray,
+    messages: ChatCircle,
+    meetings: VideoCamera,
+    library: Books,
+    files: Folder,
+  };
 
   let fetched = $state<Workspace[]>([]);
   // An explicitly supplied empty list is authoritative: it represents the
@@ -86,18 +127,25 @@
   const menuCompanies = $derived(model.companies.filter((row) => !row.isPersonal));
   const menuPersonal = $derived(model.companies.filter((row) => row.isPersonal));
 
-  // Sidebar clusters: communication rides at the top (highest frequency),
-  // catalog resources sit below the workspace group.
-  const COMMS_IDS: ReadonlyArray<V4NavId> = ['inbox', 'messages', 'meetings'];
-  const commsNav = $derived(model.nav.filter((row) => COMMS_IDS.includes(row.id)));
-  const resourceNav = $derived(model.nav.filter((row) => !COMMS_IDS.includes(row.id)));
+  // General cluster below the workspace group (Figma order). Marketplace and
+  // company Operations have no sidebar rows in this design — both remain
+  // reachable through the ⌘K palette.
+  const GENERAL_IDS: ReadonlyArray<V4NavId> = ['inbox', 'messages', 'meetings', 'library', 'files'];
+  const generalNav = $derived(
+    GENERAL_IDS.map((id) => model.nav.find((row) => row.id === id)).filter(
+      (row): row is NonNullable<typeof row> => row != null,
+    ),
+  );
 
+  // Figma sidebar: Overview…Team rows only — Operations ('more') has no
+  // sidebar row and stays reachable from the ⌘K palette.
   const currentSections = $derived(
-    currentRow == null
+    (currentRow == null
       ? []
       : currentRow.children.length > 0
         ? currentRow.children
-        : V4_COMPANY_PRIMARY_ITEMS.map((item) => ({ ...item, active: false })),
+        : V4_COMPANY_PRIMARY_ITEMS.map((item) => ({ ...item, active: false }))
+    ).filter((item) => item.id !== 'more'),
   );
 
   let switcherOpen = $state(false);
@@ -239,57 +287,56 @@
 />
 
 <aside class="v4-sidebar" aria-label="Primary navigation">
-  {#if currentRow}
+  <!-- Figma 2578:934 — window-controls row inside the floating sidepane.
+       The decorative lights render only outside Tauri (the native window
+       draws real ones in this exact spot); the pane toggle reveals on hover. -->
+  <div class="ws-topbar">
+    {#if !inTauri}
+      <div class="ws-lights" aria-hidden="true">
+        <span class="ws-light close"></span>
+        <span class="ws-light min"></span>
+        <span class="ws-light zoom"></span>
+      </div>
+    {:else}
+      <div class="ws-lights-spacer" aria-hidden="true"></div>
+    {/if}
     <button
       type="button"
-      class="ws-current"
-      bind:this={switcherButton}
-      aria-haspopup="menu"
-      aria-expanded={switcherOpen}
-      data-testid="workspace-switcher"
-      onclick={toggleSwitcher}
+      class="ws-toggle"
+      aria-label="Hide sidebar"
+      title="Hide sidebar"
+      onclick={() => ontogglesidebar?.()}
     >
-      <span class="ws-tile" style={`background:${tileGradient(currentRow.slug)}`} aria-hidden="true">
-        {workspaceInitials(currentRow.label)}
-      </span>
-      <span class="ws-current-name">{currentRow.label}</span>
-      <svg class="ws-chevron" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
-        <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <SidebarSimple size={16} />
     </button>
-  {/if}
+  </div>
 
-  <!-- Linear/Slack-style structure: communication first (highest frequency),
-       then the current workspace's own sections under a named group, then
-       catalog resources. The scrollable middle keeps the footer pinned. -->
   <div class="ws-scroll">
-    <nav class="v4-nav" aria-label="Communication">
-      {#each commsNav as row (row.id)}
-        <button
-          type="button"
-          class="v4-row"
-          class:active={row.active}
-          aria-current={row.active ? 'page' : undefined}
-          onclick={() => go(row.id)}
-        >
-          <span class="v4-row-label">{row.label}</span>
-          {#if row.id === 'inbox' && notifUnread > 0}
-            <span class="v4-unread-badge" aria-label={`${notifUnread} unread`}>
-              {notifUnread > 99 ? '99+' : notifUnread}
-            </span>
-          {/if}
-        </button>
-      {/each}
-    </nav>
-
+    <div class="ws-eyebrow" aria-hidden="true">Workspaces</div>
     {#if currentRow}
-      <div class="ws-eyebrow" aria-hidden="true">{currentRow.label}</div>
+      <button
+        type="button"
+        class="ws-current"
+        bind:this={switcherButton}
+        aria-haspopup="menu"
+        aria-expanded={switcherOpen}
+        data-testid="workspace-switcher"
+        onclick={toggleSwitcher}
+      >
+        <span class="ws-tile" style={`background:${tileGradient(currentRow.slug)}`} aria-hidden="true">
+          {workspaceInitials(currentRow.label)}
+        </span>
+        <span class="ws-current-name">{currentRow.label}</span>
+        <span class="ws-chevron" aria-hidden="true"><CaretDown size={16} /></span>
+      </button>
+
       <nav
-        class="v4-nav"
+        class="v4-nav ws-group"
         data-testid={`company-children-${currentRow.slug}`}
         aria-label={`${currentRow.label} sections`}
       >
         {#each currentSections as child (child.id)}
+          {@const Icon = SECTION_ICONS[child.id]}
           <button
             type="button"
             class="v4-row"
@@ -298,15 +345,19 @@
             data-testid={`company-child-${currentRow.slug}-${child.id}`}
             onclick={() => goCompanySection(currentRow.slug, child.id)}
           >
-            <span class="v4-row-label">{child.id === 'more' ? 'Operations' : child.label}</span>
+            <span class="v4-row-icon" aria-hidden="true"><Icon size={16} /></span>
+            <span class="v4-row-label">{child.label}</span>
           </button>
         {/each}
       </nav>
     {/if}
 
-    <div class="ws-eyebrow" aria-hidden="true">Resources</div>
-    <nav class="v4-nav" aria-label="Resources">
-      {#each resourceNav as row (row.id)}
+    <div class="ws-divider" aria-hidden="true"></div>
+
+    <div class="ws-eyebrow" aria-hidden="true">General</div>
+    <nav class="v4-nav ws-group" aria-label="General">
+      {#each generalNav as row (row.id)}
+        {@const Icon = NAV_ICONS[row.id]}
         <button
           type="button"
           class="v4-row"
@@ -314,7 +365,13 @@
           aria-current={row.active ? 'page' : undefined}
           onclick={() => go(row.id)}
         >
+          <span class="v4-row-icon" aria-hidden="true"><Icon size={16} /></span>
           <span class="v4-row-label">{row.label}</span>
+          {#if row.id === 'inbox' && notifUnread > 0}
+            <span class="v4-unread-badge" aria-label={`${notifUnread} unread`}>
+              {notifUnread > 99 ? '99+' : notifUnread}
+            </span>
+          {/if}
         </button>
       {/each}
     </nav>
@@ -415,20 +472,20 @@
 {/if}
 
 <style>
+  /* Figma 2578:4003 — the sidebar is a floating inset pane: 280px wide,
+     8px window inset, 20px radius, translucent fill over the window glass. */
   .v4-sidebar {
     display: flex;
     flex-direction: column;
-    flex: 0 0 220px;
-    width: 220px;
+    flex: 0 0 280px;
+    width: 280px;
     min-height: 0;
-    height: 100%;
+    height: calc(100% - 16px);
+    margin: 8px;
     overflow: hidden;
-    padding: 14px 10px 0;
-    border-right: 1px solid var(--v4-hairline);
+    padding: 16px;
+    border-radius: 20px;
     background: var(--v4-sidebar, var(--v4-chrome));
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
-    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
   }
 
@@ -518,13 +575,73 @@
   }
   /* ---- Workspace switcher (Slack-style, onboarding-flavored) ---- */
 
+  /* Window-controls row (Figma: lights inside the pane, toggle right). */
+  .ws-topbar {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    height: 16px;
+    margin-bottom: 24px;
+    padding: 0 8px;
+  }
+
+  .ws-lights {
+    display: flex;
+    gap: 9px;
+    padding: 1px;
+  }
+
+  .ws-lights-spacer {
+    width: 62px;
+    height: 14px;
+  }
+
+  .ws-light {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  }
+
+  .ws-light.close {
+    background: #ff736a;
+  }
+
+  .ws-light.min {
+    background: #febc2e;
+  }
+
+  .ws-light.zoom {
+    background: #19c332;
+  }
+
+  .ws-toggle {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--v4-text-3);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .v4-sidebar:hover .ws-toggle,
+  .ws-toggle:focus-visible {
+    opacity: 1;
+  }
+
   .ws-current {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     width: 100%;
-    margin: 0 0 14px;
-    padding: 6px 8px;
+    margin: 0 0 20px;
+    padding: 0 8px;
     border: none;
     border-radius: var(--v4-radius-button);
     background: transparent;
@@ -532,11 +649,11 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: opacity 0.15s;
   }
 
   .ws-current:hover {
-    background: var(--v4-control-faint);
+    opacity: 0.8;
   }
 
   .ws-current:focus-visible {
@@ -544,16 +661,17 @@
     outline-offset: 2px;
   }
 
+  /* Figma: 40px workspace tile, 8px radius. */
   .ws-tile {
     flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 40px;
+    height: 40px;
     border-radius: var(--v4-radius-button);
     box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
     color: #fff;
-    font-size: 12px;
+    font-size: 15px;
     font-weight: 600;
     letter-spacing: 0.01em;
     user-select: none;
@@ -574,18 +692,23 @@
     font-weight: 400;
   }
 
+  /* Figma heading/h3: 16px semibold, −0.16px tracking. */
   .ws-current-name {
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 16px;
     font-weight: 600;
+    letter-spacing: -0.16px;
+    line-height: 20px;
   }
 
   .ws-chevron {
     flex: 0 0 auto;
+    display: grid;
+    place-items: center;
     color: var(--v4-text-3);
   }
 
@@ -599,6 +722,31 @@
     scrollbar-width: thin;
   }
 
+  .ws-group {
+    flex: 0 0 auto;
+  }
+
+  .ws-divider {
+    flex: 0 0 auto;
+    height: 1px;
+    margin: 24px 0;
+    background: var(--v4-hairline);
+  }
+
+  .v4-row-icon {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    color: var(--v4-text-2);
+  }
+
+  .v4-row.active .v4-row-icon,
+  .v4-row:hover .v4-row-icon {
+    color: var(--v4-text-1);
+  }
+
   .ws-scroll::-webkit-scrollbar {
     width: 6px;
   }
@@ -608,16 +756,17 @@
     background: var(--v4-hairline);
   }
 
-  /* Native macOS sidebar group header (Finder/Mail idiom). */
+  /* Figma label/SMALL: 10px, 1.6px tracking, uppercase, 40% ink. */
   .ws-eyebrow {
     flex: 0 0 auto;
     overflow: hidden;
-    margin: 16px 0 4px;
+    margin: 0 0 16px;
     padding: 0 8px;
     color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 1.6px;
+    line-height: 12px;
     text-transform: uppercase;
     white-space: nowrap;
     text-overflow: ellipsis;

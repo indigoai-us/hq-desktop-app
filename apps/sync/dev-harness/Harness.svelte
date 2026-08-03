@@ -380,11 +380,6 @@
     style={`background-image: url(${theme === 'dark' ? wallpaperDark : wallpaperLight})`}
   >
     <div class="mac-window">
-      <div class="traffic-lights" aria-hidden="true">
-        <span class="tl tl-close"></span>
-        <span class="tl tl-min"></span>
-        <span class="tl tl-max"></span>
-      </div>
       <DesktopApp />
     </div>
     <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
@@ -508,62 +503,29 @@
     background-position: center;
   }
 
-  /* Native macOS window framing: opaque surface, 12px corners, standard
-     window shadow — no transparency or backdrop blur (native-opaque redesign). */
+  /* Figma 2578:934 window material: 26px corners, white/80 over 50px
+     backdrop blur, 1px ring + soft drop shadow. */
   .mac-window {
     position: relative;
     width: min(1180px, 100%);
-    height: min(760px, 100%);
-    border-radius: 12px;
+    height: min(800px, 100%);
+    border-radius: 26px;
     overflow: hidden;
-    background: #f5f5f5;
+    background: rgba(255, 255, 255, 0.8);
+    -webkit-backdrop-filter: blur(50px);
+    backdrop-filter: blur(50px);
     box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.22),
-      0 22px 68px rgba(0, 0, 0, 0.33),
-      0 2px 10px rgba(0, 0, 0, 0.18);
+      0 0 0 1px rgba(0, 0, 0, 0.23),
+      0 16px 48px rgba(0, 0, 0, 0.35);
   }
 
   :global(html[data-force-theme='dark']) .mac-window {
-    background: #1e1e1e;
+    background: rgba(28, 28, 30, 0.8);
     box-shadow:
-      0 0 0 0.5px rgba(255, 255, 255, 0.16),
-      0 22px 68px rgba(0, 0, 0, 0.55),
-      0 2px 10px rgba(0, 0, 0, 0.4);
+      0 0 0 1px rgba(255, 255, 255, 0.14),
+      0 16px 48px rgba(0, 0, 0, 0.55);
   }
 
-  /* Decorative macOS traffic lights — the native window draws these over the
-     webview, so the titlebar already reserves the top-left inset for them. */
-  .traffic-lights {
-    position: absolute;
-    top: 14px;
-    /* Left-aligned with the sidebar content below (10px sidebar inset +
-       8px row padding). */
-    left: 18px;
-    display: flex;
-    gap: 8px;
-    /* Above the app's opaque titlebar chrome. */
-    z-index: 99999;
-    pointer-events: none;
-  }
-
-  .tl {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.2);
-  }
-
-  .tl-close {
-    background: #ff5f57;
-  }
-
-  .tl-min {
-    background: #febc2e;
-  }
-
-  .tl-max {
-    background: #28c840;
-  }
 
   .stage-theme-toggle {
     position: fixed;

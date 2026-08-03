@@ -9,6 +9,11 @@ import { fileURLToPath } from "node:url";
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  optimizeDeps: {
+    // phosphor-svelte ships .svelte sources; prebundling compiles them against
+    // a mismatched runtime shape. Compile them as project source instead.
+    exclude: ['phosphor-svelte'],
+  },
   plugins: [
     svelte(),
     sentryVitePlugin({

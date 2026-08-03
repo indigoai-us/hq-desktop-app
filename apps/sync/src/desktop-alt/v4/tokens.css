@@ -61,12 +61,12 @@
 :root[data-force-theme='light'] {
   /* Native-opaque light surfaces (macOS system neutrals): white content,
      titlebar/sidebar in the standard window-chrome grays. */
-  --v4-ground: #f5f5f5;
+  --v4-ground: transparent;
   --v4-raised: #ffffff;
   --v4-inset: rgba(0, 0, 0, 0.045);
-  --v4-chrome: #f6f6f6;
-  --v4-sidebar: #f0f0f0;
-  --v4-secondary-sidebar: #f7f7f7;
+  --v4-chrome: transparent;
+  --v4-sidebar: rgba(255, 255, 255, 0.3);
+  --v4-secondary-sidebar: rgba(255, 255, 255, 0.22);
   --v4-popover: rgb(250 250 250 / clamp(0.5, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.492), 1));
   --v4-popover-strong: rgb(250 250 250 / clamp(0.7, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.308), 1));
   --v4-hairline: rgba(0, 0, 0, 0.1);
@@ -97,12 +97,12 @@
 @media (prefers-color-scheme: dark) {
   :root {
     /* Native-opaque dark surfaces (macOS dark neutrals). */
-    --v4-ground: #1e1e1e;
+    --v4-ground: transparent;
     --v4-raised: #2c2c2e;
     --v4-inset: rgba(0, 0, 0, 0.32);
-    --v4-chrome: #282828;
-    --v4-sidebar: #232323;
-    --v4-secondary-sidebar: #262626;
+    --v4-chrome: transparent;
+    --v4-sidebar: rgba(255, 255, 255, 0.06);
+    --v4-secondary-sidebar: rgba(255, 255, 255, 0.04);
     --v4-popover: rgb(42 42 42 / clamp(0.58, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.431), 1));
     --v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));
     --v4-hairline: rgba(255, 255, 255, 0.12);
@@ -132,12 +132,12 @@
 
 .dark,
 :root[data-force-theme='dark'] {
-  --v4-ground: #1e1e1e;
+  --v4-ground: transparent;
   --v4-raised: #2c2c2e;
   --v4-inset: rgba(0, 0, 0, 0.32);
-  --v4-chrome: #282828;
-  --v4-sidebar: #232323;
-  --v4-secondary-sidebar: #262626;
+  --v4-chrome: transparent;
+  --v4-sidebar: rgba(255, 255, 255, 0.06);
+  --v4-secondary-sidebar: rgba(255, 255, 255, 0.04);
   --v4-popover: rgb(42 42 42 / clamp(0.58, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.431), 1));
   --v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));
   --v4-hairline: rgba(255, 255, 255, 0.12);

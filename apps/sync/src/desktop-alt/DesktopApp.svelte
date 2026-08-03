@@ -1640,57 +1640,61 @@
   data-workspace-count={renderWorkspaceCount}
   style={`--desktop-titlebar-height: ${V4_CHROME_LAYOUT.titleBarHeightPx}px;`}
 >
-  <V4TitleBar
-    version={__APP_VERSION__}
-    {syncState}
-    watchedCount={watchedWorkspaceCount}
-    {lastSyncLabel}
-    syncingCompany={syncProgress?.company ?? null}
-    fanoutDone={syncFanoutDoneCount}
-    fanoutTotal={syncFanoutTotal}
-    errorSummary={titleBarErrorSummary}
-    hydrationIssue={titleBarHydrationIssue}
-    hydrationRefreshing={refreshingRealState}
-    errorMessage={syncErrorMessage}
-    errorCompany={syncErrorCompany}
-    conflictCount={syncConflictCount}
-    conflictCompany={syncConflictCompany}
-    {hqFolderPath}
-    {sidebarCollapsed}
-    onsync={handleSyncAll}
-    oncancel={handleCancelSync}
-    onretry={syncState === 'auth-error' ? handleSignInAgain : handleSyncAll}
-    onretryhydration={handleRetryHydration}
-    onresolveconflicts={handleResolveAggregateConflicts}
-    ontogglesidebar={handleToggleSidebar}
-    oncommand={handleOpenCommandPalette}
-    onOpenSettings={handleOpenSettings}
-  />
-
-  <div class="desktop-body">
-    {#if !sidebarCollapsed}
-      {#if route.kind === 'files'}
-        <FilesModeSidebar
-          companies={filesCompanies}
-          activeSlug={filesActiveSlug}
-          selectedPath={filesSelectedPath}
-          accessReady={filesAccessHydrated}
-          onselectcompany={navigateFilesCompany}
-          onselectfile={navigateFilesPath}
-          onexit={exitFilesMode}
-        />
-      {:else}
-        <V4Sidebar
-          {route}
-          companies={renderCompanies}
-          accountLabel={accountIdentity.label}
-          accountEmail={accountEmail}
-          accountInitials={accountIdentity.initials}
-          onnavigate={(next) => navigate(fromV4Route(next))}
-        />
-      {/if}
+  <!-- Figma window layout: the sidepane floats full-height on the left; the
+       titlebar spans only the content column to its right. -->
+  {#if !sidebarCollapsed}
+    {#if route.kind === 'files'}
+      <FilesModeSidebar
+        companies={filesCompanies}
+        activeSlug={filesActiveSlug}
+        selectedPath={filesSelectedPath}
+        accessReady={filesAccessHydrated}
+        onselectcompany={navigateFilesCompany}
+        onselectfile={navigateFilesPath}
+        onexit={exitFilesMode}
+      />
+    {:else}
+      <V4Sidebar
+        {route}
+        companies={renderCompanies}
+        accountLabel={accountIdentity.label}
+        accountEmail={accountEmail}
+        accountInitials={accountIdentity.initials}
+        onnavigate={(next) => navigate(fromV4Route(next))}
+        ontogglesidebar={handleToggleSidebar}
+      />
     {/if}
+  {/if}
 
+  <div class="desktop-column">
+    <V4TitleBar
+      version={__APP_VERSION__}
+      {syncState}
+      watchedCount={watchedWorkspaceCount}
+      {lastSyncLabel}
+      syncingCompany={syncProgress?.company ?? null}
+      fanoutDone={syncFanoutDoneCount}
+      fanoutTotal={syncFanoutTotal}
+      errorSummary={titleBarErrorSummary}
+      hydrationIssue={titleBarHydrationIssue}
+      hydrationRefreshing={refreshingRealState}
+      errorMessage={syncErrorMessage}
+      errorCompany={syncErrorCompany}
+      conflictCount={syncConflictCount}
+      conflictCompany={syncConflictCompany}
+      {hqFolderPath}
+      {sidebarCollapsed}
+      onsync={handleSyncAll}
+      oncancel={handleCancelSync}
+      onretry={syncState === 'auth-error' ? handleSignInAgain : handleSyncAll}
+      onretryhydration={handleRetryHydration}
+      onresolveconflicts={handleResolveAggregateConflicts}
+      ontogglesidebar={handleToggleSidebar}
+      oncommand={handleOpenCommandPalette}
+      onOpenSettings={handleOpenSettings}
+    />
+
+    <div class="desktop-body">
     {#if secondarySidebar}
       <V4SecondarySidebar
         header={secondarySidebar.header}
@@ -1854,6 +1858,7 @@
         {/key}
         </div>
       </main>
+    </div>
     </div>
   </div>
 
