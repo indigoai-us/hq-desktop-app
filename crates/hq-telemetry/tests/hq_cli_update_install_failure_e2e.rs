@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_non_convergent_install, report_npm_cache_setup_failure,
+    NonConvergenceKind,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -259,6 +260,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             None,
             "/opt/homebrew/bin/npm",
             true,
+            NonConvergenceKind::ForeignManaged,
         )
     });
     assert_eq!(events.len(), 1);
@@ -279,6 +281,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
         ("npm_bin_source", npm_source),
         ("hq_bin_changed", "true"),
         ("prefix_known", "false"),
+        ("non_convergence_kind", "foreign-managed"),
     ] {
         assert_eq!(event.tags.get(tag).map(String::as_str), Some(expected));
     }

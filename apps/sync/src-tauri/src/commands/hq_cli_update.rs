@@ -67,16 +67,18 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
-    convergence_verdict, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
+    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
     hq_version_string, install_argv, install_converged, install_failure_detail,
     install_failure_report, is_cli_update_dismissed, is_prefix_permission_failure,
     is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
     npm_prefix_from_hq_bin, read_installed_version, redact_home, redact_home_in,
-    report_install_failure, report_non_convergent_install, report_npm_cache_setup_failure,
+    report_install_failure, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
     report_unreadable_version, resolved_hq_version, should_auto_install,
     should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
-    version_if_hq_cli, ConvergenceVerdict, HqCliUpdateInfo, InstallFailureKind,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest, VersionProbeOutcome,
+    version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NonConvergentReport,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest, PostInstallOutcome,
+    VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
@@ -475,6 +477,60 @@ async fn run_npm_install_with_retries(
     Ok(output)
 }
 
+/// The side effects selected by the pure core post-install decision. Keeping
+/// these injectable gives tests an exact ordering and call-count seam, and
+/// keeps capture behind a successful durable marker write for foreign-managed
+/// CLI layouts.
+struct PostInstallEffects<'a> {
+    record: &'a dyn Fn(&str) -> Result<(), String>,
+    clear: &'a dyn Fn(),
+    capture: &'a dyn Fn(&NonConvergentReport),
+    record_failure: &'a dyn Fn(),
+    emit_cleared: &'a dyn Fn(&HqCliUpdateInfo),
+}
+
+fn apply_post_install(
+    outcome: &PostInstallOutcome,
+    effects: &PostInstallEffects<'_>,
+) -> Result<HqCliUpdateInfo, String> {
+    let marker_persisted = match outcome.record_non_convergent.as_deref() {
+        Some(version) => match (effects.record)(version) {
+            Ok(()) => true,
+            Err(error) => {
+                log(
+                    "hq-cli-update",
+                    &format!("could not record non-convergent version {version}: {error}"),
+                );
+                (effects.record_failure)();
+                false
+            }
+        },
+        None => true,
+    };
+
+    if outcome.clear_non_convergent {
+        (effects.clear)();
+    }
+
+    if let Some(report) = outcome.capture.as_ref() {
+        if !outcome.capture_requires_durable_record || marker_persisted {
+            (effects.capture)(report);
+        }
+    }
+
+    match &outcome.result {
+        Ok(success) => {
+            let info = HqCliUpdateInfo {
+                local: Some(success.local.clone()),
+                latest: success.latest.clone(),
+            };
+            (effects.emit_cleared)(&info);
+            Ok(info)
+        }
+        Err(detail) => Err(detail.clone()),
+    }
+}
+
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
@@ -482,6 +538,10 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     let hq = paths::resolve_bin("hq");
     let prefix = npm_prefix_from_hq_bin(&hq);
     let base_args = install_argv(prefix.as_deref());
+    // This must be sampled before the install. An unwritable marker reads as
+    // absent; the post-install gate then refuses to capture unless this run
+    // successfully persists the first-episode marker.
+    let already_blocked = non_convergent_cli_version().is_some();
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
         report_npm_cache_setup_failure(category);
         error
@@ -502,6 +562,16 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
             prefix.as_deref().unwrap_or("npm default prefix")
         ),
     );
+
+    // Capture the pre-install execution-bound version for the decision seam.
+    // It is diagnostic only; the post-install probe remains authoritative.
+    let before_version = {
+        let hq = hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
 
     let output =
         run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
@@ -556,93 +626,65 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
             .ok()
             .flatten()
     };
-    let local = match convergence_verdict(None, resolved.as_deref(), &hq, &post_install_hq, &latest)
-    {
-        ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged => {
-            resolved.expect("convergent verdict requires a resolved CLI version")
-        }
-        ConvergenceVerdict::NonConvergent => {
-            // Re-running cannot change this, so record the version and let the
-            // background loop stop retrying it. `non_convergent_detail` carries
-            // the marker + remedy the UI shows in place of the generic
-            // copy-the-command text, which here would just repeat the failure.
-            let hq_display = if post_install_hq == "hq" {
-                "PATH"
-            } else {
-                post_install_hq.as_str()
-            };
-            let reason = match resolved.as_deref() {
-                Some(local) => format!(
-                    "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
-                     The update was not applied to the CLI on PATH."
-                ),
-                None => format!(
-                    "npm completed, but the active HQ CLI version could not be verified \
-                     (expected v{latest})."
-                ),
-            };
-            log(
-                "hq-cli-update",
-                &format!(
-                    "{reason} — hq={hq_display} prefix={} — recording as non-convergent",
-                    prefix.as_deref().unwrap_or("npm default prefix"),
-                ),
-            );
-            record_non_convergent_version(&latest);
-            report_non_convergent_install(
-                &latest,
-                resolved.as_deref(),
-                hq_display,
-                prefix.as_deref(),
-                &npm,
-                hq != post_install_hq,
-            );
-            return Err(non_convergent_detail(
-                hq_display,
-                resolved.as_deref(),
-                &latest,
-            ));
-        }
-    };
-
-    // A convergent install clears any earlier block so a future version is
-    // never gated by a condition the user has since fixed.
-    clear_non_convergent_version();
-    log(
-        "hq-cli-update",
-        &format!("install succeeded: local={} latest={}", local, latest),
+    let outcome = decide_post_install(
+        &hq,
+        &post_install_hq,
+        before_version.as_deref(),
+        resolved.as_deref(),
+        &latest,
+        prefix.as_deref(),
+        &npm,
+        already_blocked,
     );
-    let info = HqCliUpdateInfo {
-        local: Some(local),
-        latest: latest.clone(),
+    log("hq-cli-update", &outcome.log_line);
+
+    let record = |version: &str| record_non_convergent_version(version);
+    let clear = || clear_non_convergent_version();
+    let capture = |report: &NonConvergentReport| {
+        report_non_convergent_install(
+            &report.latest,
+            report.local.as_deref(),
+            &report.hq_bin,
+            report.npm_prefix.as_deref(),
+            &report.npm_bin,
+            report.hq_bin_changed,
+            report.kind,
+        );
     };
-    // Frontend uses this to drop the banner immediately on success.
-    let _ = app.emit("hq-cli-update:cleared", &info);
-    Ok(info)
+    let record_failure = || report_non_convergent_marker_unpersisted();
+    let emit_cleared = |info: &HqCliUpdateInfo| {
+        // Frontend uses this to drop the banner immediately on success.
+        let _ = app.emit("hq-cli-update:cleared", info);
+    };
+    let effects = PostInstallEffects {
+        record: &record,
+        clear: &clear,
+        capture: &capture,
+        record_failure: &record_failure,
+        emit_cleared: &emit_cleared,
+    };
+    apply_post_install(&outcome, &effects)
 }
 
 /// Persist the `latest` that installed cleanly but did not move the detected
 /// version, so `setup_hq_cli_update_checker` stops auto-retrying it. Written
 /// through the untyped-merge path for the same reason as the dismissal flag:
 /// `save_settings` only writes typed `MenubarPrefs` fields and would drop it.
-/// Failures are logged, not propagated — losing the marker only costs us a
-/// redundant retry, and must never mask the real error being returned.
-fn record_non_convergent_version(latest: &str) {
-    let write = paths::menubar_json_path().and_then(|path| {
-        hq_desktop_core::first_run::merge_menubar_flags(
-            &path,
-            &[(
-                NON_CONVERGENT_VERSION_KEY,
-                Value::String(latest.to_string()),
-            )],
-        )
-    });
-    if let Err(e) = write {
-        log(
-            "hq-cli-update",
-            &format!("could not record non-convergent version {latest}: {e}"),
-        );
-    }
+/// The caller must observe the failure before emitting a foreign-managed
+/// capture. Otherwise an unwritable config directory converts every scheduled
+/// retry into another apparent first episode.
+fn record_non_convergent_version(latest: &str) -> Result<(), String> {
+    paths::menubar_json_path()
+        .and_then(|path| {
+            hq_desktop_core::first_run::merge_menubar_flags(
+                &path,
+                &[ (
+                    NON_CONVERGENT_VERSION_KEY,
+                    Value::String(latest.to_string()),
+                )],
+            )
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// Clear the non-convergent marker after an install that actually converged.

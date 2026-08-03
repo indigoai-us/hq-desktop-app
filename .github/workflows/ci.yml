@@ -125,6 +125,11 @@ jobs:
       - name: App crate tests (hq-sync-menubar)
         working-directory: apps/sync/src-tauri
         run: cargo test
+      - name: Root workspace lockfile check
+        run: cargo check --workspace --locked
+      - name: App workspace lockfile check
+        working-directory: apps/sync/src-tauri
+        run: cargo check --locked
       # ── Non-blocking style gates (flip to required after the cleanup pass) ──
       - name: cargo fmt --check (non-blocking)
         continue-on-error: true

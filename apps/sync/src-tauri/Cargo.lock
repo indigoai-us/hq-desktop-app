@@ -2694,6 +2694,7 @@ dependencies = [
  "dirs",
  "fs2",
  "ignore",
+ "libc",
  "reqwest 0.12.28",
  "rustix",
  "semver",

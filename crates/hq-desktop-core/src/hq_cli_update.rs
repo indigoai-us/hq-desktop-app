@@ -1,6 +1,7 @@
 //! Pure and synchronous support for the HQ CLI update command layer.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -565,6 +566,75 @@ pub enum ConvergenceVerdict {
     NonConvergent,
 }
 
+/// Whether npm was aimed at the executable the desktop app resolves after the
+/// install. This is deliberately derived from values the updater already has;
+/// probing `npm root -g` here would create another process boundary and could
+/// only make the convergence verdict less trustworthy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonConvergenceKind {
+    NpmTargeted,
+    ForeignManaged,
+}
+
+impl NonConvergenceKind {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NpmTargeted => "npm-targeted",
+            Self::ForeignManaged => "foreign-managed",
+        }
+    }
+}
+
+/// Classify a failed convergence without guessing a prefix. A flat pnpm/asdf
+/// directory is intentionally foreign managed: npm has no safe prefix to pass
+/// and may write a valid package somewhere the app will never execute.
+pub fn non_convergence_kind(
+    npm_prefix_passed: Option<&str>,
+    post_install_hq_bin: &str,
+) -> NonConvergenceKind {
+    match (npm_prefix_passed, npm_prefix_from_hq_bin(post_install_hq_bin)) {
+        (Some(passed), Some(active_prefix)) if passed == active_prefix => {
+            NonConvergenceKind::NpmTargeted
+        }
+        _ => NonConvergenceKind::ForeignManaged,
+    }
+}
+
+/// Data needed to make the post-install effects observable at the app seam.
+/// None of these fields are sent to telemetry directly; the reporting helper
+/// below remains responsible for closed, redacted payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonConvergentReport {
+    pub kind: NonConvergenceKind,
+    pub latest: String,
+    pub local: Option<String>,
+    pub hq_bin: String,
+    pub npm_prefix: Option<String>,
+    pub npm_bin: String,
+    pub hq_bin_changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostInstallSuccess {
+    pub local: String,
+    pub latest: String,
+}
+
+/// Complete post-install decision. Keeping every user-visible consequence as
+/// data prevents an edit to the Tauri command from accidentally moving the
+/// capture ahead of the durable marker write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostInstallOutcome {
+    pub verdict: ConvergenceVerdict,
+    pub non_convergence_kind: Option<NonConvergenceKind>,
+    pub record_non_convergent: Option<String>,
+    pub clear_non_convergent: bool,
+    pub capture: Option<NonConvergentReport>,
+    pub capture_requires_durable_record: bool,
+    pub log_line: String,
+    pub result: Result<PostInstallSuccess, String>,
+}
+
 /// Decide whether an npm install reached the CLI the desktop app resolves
 /// afterwards. `before` is diagnostic context only: it distinguishes the
 /// expected shim-to-npm relocation from an ordinary in-place update, while the
@@ -584,6 +654,90 @@ pub fn convergence_verdict(
         ConvergenceVerdict::RelocatedAndConverged
     } else {
         ConvergenceVerdict::Converged
+    }
+}
+
+/// Decide the observable outcome of an npm install after re-resolving `hq`.
+/// The caller performs the returned effects in order. In particular, a
+/// foreign-managed non-convergence may be captured only after `record` reports
+/// a durable marker write; an unreadable or unwritable marker must fail closed
+/// instead of turning every six-hour retry into a new first episode.
+#[allow(clippy::too_many_arguments)]
+pub fn decide_post_install(
+    before_bin: &str,
+    after_bin: &str,
+    before_version: Option<&str>,
+    after_version: Option<&str>,
+    latest: &str,
+    npm_prefix_passed: Option<&str>,
+    npm_bin: &str,
+    already_blocked: bool,
+) -> PostInstallOutcome {
+    let verdict = convergence_verdict(
+        before_version,
+        after_version,
+        before_bin,
+        after_bin,
+        latest,
+    );
+    if matches!(
+        verdict,
+        ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
+    ) {
+        // `convergence_verdict` can return a successful verdict only with a
+        // version that passed `install_converged`; keep this total anyway so a
+        // future edit cannot turn a user command into an `expect` panic.
+        if let Some(local) = after_version {
+            return PostInstallOutcome {
+                verdict,
+                non_convergence_kind: None,
+                record_non_convergent: None,
+                clear_non_convergent: true,
+                capture: None,
+                capture_requires_durable_record: false,
+                log_line: format!("install succeeded: local={local} latest={latest}"),
+                result: Ok(PostInstallSuccess {
+                    local: local.to_string(),
+                    latest: latest.to_string(),
+                }),
+            };
+        }
+    }
+
+    let kind = non_convergence_kind(npm_prefix_passed, after_bin);
+    let hq_display = if after_bin == "hq" { "PATH" } else { after_bin };
+    let detail = non_convergent_detail(hq_display, after_version, latest);
+    let capture_requires_durable_record = kind == NonConvergenceKind::ForeignManaged;
+    // A NpmTargeted install remains a real updater defect and must remain loud
+    // even when an earlier marker exists. Foreign-managed layouts get one
+    // capture only on a newly durable episode.
+    let should_capture = kind == NonConvergenceKind::NpmTargeted || !already_blocked;
+    let report = should_capture.then(|| NonConvergentReport {
+        kind,
+        latest: latest.to_string(),
+        local: after_version.map(str::to_owned),
+        hq_bin: hq_display.to_string(),
+        npm_prefix: npm_prefix_passed.map(str::to_owned),
+        npm_bin: npm_bin.to_string(),
+        hq_bin_changed: before_bin != after_bin,
+    });
+    let record_non_convergent = (!already_blocked || kind == NonConvergenceKind::NpmTargeted)
+        .then(|| latest.to_string());
+
+    PostInstallOutcome {
+        verdict: ConvergenceVerdict::NonConvergent,
+        non_convergence_kind: Some(kind),
+        record_non_convergent,
+        clear_non_convergent: false,
+        capture: report,
+        capture_requires_durable_record,
+        log_line: format!(
+            "npm completed, but the active HQ CLI is still {} (expected v{latest}); hq={hq_display}",
+            after_version
+                .map(|version| format!("v{version}"))
+                .unwrap_or_else(|| "unreadable".to_string())
+        ),
+        result: Err(detail),
     }
 }
 
@@ -635,10 +789,12 @@ pub fn report_non_convergent_install(
     prefix: Option<&str>,
     npm_bin: &str,
     hq_bin_changed: bool,
+    kind: NonConvergenceKind,
 ) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-non-convergent");
+            scope.set_tag("non_convergence_kind", kind.telemetry_value());
             scope.set_tag("latest", latest);
             scope.set_tag("local", local.unwrap_or("unreadable"));
             scope.set_tag("hq_bin_source", bin_resolution_source(hq_bin));
@@ -670,6 +826,44 @@ pub fn report_non_convergent_install(
             );
         },
     );
+}
+
+// A persistence failure may recur at the background check cadence. Keep the
+// compensating diagnostic bounded by process lifetime so it cannot recreate the
+// quota problem the durable-marker gate removes.
+static MARKER_UNPERSISTED_CAPTURED: AtomicBool = AtomicBool::new(false);
+
+/// Report that the sticky non-convergence marker could not be written. The
+/// payload intentionally carries only closed categories, never a filesystem
+/// path or raw I/O error, and is emitted at most once per app process.
+pub fn report_non_convergent_marker_unpersisted() {
+    if MARKER_UNPERSISTED_CAPTURED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "non-convergent-marker-unpersisted");
+            scope.set_tag("marker_store", "menubar-json");
+            scope.set_tag("marker_error_class", "persistence");
+            scope.set_fingerprint(Some(&["hq-cli-update", "non-convergent-marker-unpersisted"]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] could not persist non-convergent update marker",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
+/// Test support for the process-lifetime capture bound. This is deliberately
+/// hidden rather than public API for callers.
+#[doc(hidden)]
+pub fn reset_non_convergent_marker_unpersisted_capture_for_tests() {
+    MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
 }
 
 /// Reduce a resolved executable to a closed, path-free source category for
@@ -1062,32 +1256,6 @@ fn has_npm_lifecycle_failure_marker(detail: &str) -> bool {
         || detail.contains("npm error command sh -c")
 }
 
-/// Treat an errno-backed network failure as transient only if npm did not also
-/// report lifecycle failure evidence or a disagreeing named npm error. A
-/// lifecycle script can independently exit 202, so that collision must remain
-/// loud rather than being mistaken for Darwin ECONNRESET.
-fn is_expected_transient_errno_failure(exit_code: Option<i32>, detail: &str) -> bool {
-    let errno = npm_errno_from_exit_status(exit_code);
-    if !matches!(
-        errno,
-        "ECONNRESET"
-            | "ETIMEDOUT"
-            | "ECONNREFUSED"
-            | "ENETRESET"
-            | "ENETDOWN"
-            | "EHOSTUNREACH"
-            | "EPIPE"
-    ) || has_npm_lifecycle_failure_marker(detail)
-    {
-        return false;
-    }
-
-    match npm_error_code_token(detail) {
-        Some(reported) => reported.eq_ignore_ascii_case(errno),
-        None => true,
-    }
-}
-
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
 /// Rust exposes the DWORD as a signed `i32`, hence these otherwise-surprising
 /// negative values. They are both normal user-machine interruptions for an
@@ -1159,8 +1327,7 @@ pub fn classify_install_failure(
     } else if is_windows_locked_binary_failure(exit_code, detail) {
         InstallFailureKind::ExpectedWindowsLockedBinary
     } else if !has_npm_lifecycle_failure_marker(detail)
-        && (is_expected_transient_registry_failure(detail)
-            || is_expected_transient_errno_failure(exit_code, detail))
+        && is_expected_transient_registry_failure(detail)
     {
         InstallFailureKind::ExpectedTransientRegistry
     } else {
@@ -2159,7 +2326,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_errno_exit_without_stderr_is_expected() {
+    fn transient_errno_exit_without_stderr_stays_unexpected() {
         #[cfg(target_os = "macos")]
         let econnreset_exit = 202;
         #[cfg(target_os = "linux")]
@@ -2167,17 +2334,11 @@ mod tests {
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let econnreset_exit = 202;
 
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            assert_eq!(
-                classify_install_failure(Some(econnreset_exit), "", None),
-                InstallFailureKind::ExpectedTransientRegistry
-            );
-            assert_eq!(
-                install_failure_report(Some(econnreset_exit), "", None),
-                None
-            );
-        }
+        assert_eq!(
+            classify_install_failure(Some(econnreset_exit), "", None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(econnreset_exit), "", None).is_some());
     }
 
     #[test]
@@ -2798,6 +2959,69 @@ mod tests {
         assert_eq!(
             hq_version_string_probe(&empty, "").1,
             VersionProbeOutcome::EmptyOutput
+        );
+    }
+
+    #[test]
+    fn post_install_foreign_managed_repeat_is_suppressed_but_remains_actionable() {
+        let outcome = decide_post_install(
+            "/Users/t/Library/pnpm/hq",
+            "/Users/t/Library/pnpm/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            "5.84.0",
+            None,
+            "/opt/homebrew/bin/npm",
+            true,
+        );
+        assert_eq!(outcome.verdict, ConvergenceVerdict::NonConvergent);
+        assert_eq!(outcome.non_convergence_kind, Some(NonConvergenceKind::ForeignManaged));
+        assert!(outcome.record_non_convergent.is_none());
+        assert!(outcome.capture.is_none());
+        assert!(outcome.capture_requires_durable_record);
+        assert!(matches!(outcome.result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)));
+    }
+
+    #[test]
+    fn post_install_first_foreign_managed_episode_requires_a_durable_record() {
+        let outcome = decide_post_install(
+            "/Users/t/.asdf/shims/hq",
+            "/Users/t/.asdf/shims/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            "5.84.0",
+            None,
+            "/opt/homebrew/bin/npm",
+            false,
+        );
+        assert_eq!(outcome.non_convergence_kind, Some(NonConvergenceKind::ForeignManaged));
+        assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.84.0"));
+        assert!(outcome.capture.is_some());
+        assert!(outcome.capture_requires_durable_record);
+    }
+
+    #[test]
+    fn post_install_npm_targeted_non_convergence_stays_loud() {
+        let outcome = decide_post_install(
+            "/Users/t/.npm-global/bin/hq",
+            "/Users/t/.npm-global/bin/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            "5.84.0",
+            Some("/Users/t/.npm-global"),
+            "/opt/homebrew/bin/npm",
+            true,
+        );
+        assert_eq!(outcome.non_convergence_kind, Some(NonConvergenceKind::NpmTargeted));
+        assert!(outcome.capture.is_some());
+        assert!(!outcome.capture_requires_durable_record);
+    }
+
+    #[test]
+    fn post_install_exit_202_stays_unexpected_without_corrobating_stderr() {
+        assert_eq!(
+            classify_install_failure(Some(202), "", None),
+            InstallFailureKind::Unexpected
         );
     }
 
