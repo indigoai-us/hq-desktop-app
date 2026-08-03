@@ -29,6 +29,8 @@
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
+  import wallpaperLight from './assets/wallpaper-light.jpg';
+  import wallpaperDark from './assets/wallpaper-dark.jpg';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
   // and the copy-prompt button (the last inbound message carries an agent
@@ -227,7 +229,10 @@
   // viewport works; it renders centered on a desktop-ish backdrop.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'settings';
-  const theme = params.get('theme') ?? 'dark';
+  // Theme is reactive for the desktop stage's Light/Dark toggle. The desktop
+  // view previews light-first (the redesign target); everything else keeps the
+  // historical dark default so existing ?view= links render unchanged.
+  let theme = $state(params.get('theme') ?? (params.get('view') === 'desktop' ? 'light' : 'dark'));
   const bannerKind = params.get('kind') ?? 'share';
   const scenario = params.get('scenario');
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
@@ -285,7 +290,9 @@
             ? 'messages'
             : 'main'
   );
-  document.documentElement.dataset.forceTheme = theme;
+  $effect(() => {
+    document.documentElement.dataset.forceTheme = theme;
+  });
 
   if (view === 'banner') {
     const payload = bannerFixtures[bannerKind] ?? bannerFixtures.share;
@@ -365,9 +372,29 @@
        Svelte error boundary without breaking any other harness route. -->
   <GlobalErrorBoundary component={GlobalErrorPreview} windowLabel="preview" />
 {:else if view === 'desktop'}
-  <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
-       live strip). Resize the preview viewport to ~1180x720. -->
-  <DesktopApp />
+  <!-- Real-life stage: the full desktop-alt window floating over a macOS
+       wallpaper, with emulated window glass (the browser has no native
+       NSGlassEffectView backing) and a Light/Dark toggle for design review. -->
+  <div
+    class="mac-stage"
+    style={`background-image: url(${theme === 'dark' ? wallpaperDark : wallpaperLight})`}
+  >
+    <div class="mac-window">
+      <DesktopApp />
+    </div>
+    <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
+      <button
+        type="button"
+        class:active={theme === 'light'}
+        onclick={() => (theme = 'light')}
+      >Light</button>
+      <button
+        type="button"
+        class:active={theme === 'dark'}
+        onclick={() => (theme = 'dark')}
+      >Dark</button>
+    </div>
+  </div>
 {:else if view === 'banner'}
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->
@@ -461,6 +488,72 @@
     height: 100vh;
     min-height: 0;
     overflow: hidden;
+  }
+
+  /* ---- Real-life desktop stage (?view=desktop) ---- */
+
+  .mac-stage {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 44px 44px 92px;
+    box-sizing: border-box;
+    background-size: cover;
+    background-position: center;
+  }
+
+  /* Emulates the native macOS window: rounded corners, drop shadow, and the
+     NSGlassEffectView backing the transparent shell expects — translucent
+     tint + backdrop blur over the wallpaper. */
+  .mac-window {
+    width: min(1180px, 100%);
+    height: min(760px, 100%);
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(246, 246, 248, 0.62);
+    -webkit-backdrop-filter: blur(80px) saturate(1.6);
+    backdrop-filter: blur(80px) saturate(1.6);
+    box-shadow:
+      0 0 0 0.5px rgba(0, 0, 0, 0.28),
+      0 30px 90px rgba(0, 0, 0, 0.42),
+      inset 0 0 0 0.5px rgba(255, 255, 255, 0.28);
+  }
+
+  :global(html[data-force-theme='dark']) .mac-window {
+    background: rgba(22, 22, 24, 0.55);
+  }
+
+  .stage-theme-toggle {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: rgba(20, 20, 22, 0.35);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    backdrop-filter: blur(20px) saturate(1.4);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+  }
+
+  .stage-theme-toggle button {
+    appearance: none;
+    border: 0;
+    margin: 0;
+    padding: 7px 18px;
+    border-radius: 999px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.72);
+    font: 500 13px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    cursor: pointer;
+  }
+
+  .stage-theme-toggle button.active {
+    background: #ffffff;
+    color: #111113;
   }
 
   .stage {
