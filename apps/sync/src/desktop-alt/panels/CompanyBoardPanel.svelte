@@ -48,7 +48,6 @@
   import GoalCard from '../v4/GoalCard.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
   import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte';
-  import ProvenanceLine from '../components/ProvenanceLine.svelte';
   import type { HomeCardModel } from '../v4/home-model';
   import '../v4/tokens.css';
 
@@ -552,10 +551,6 @@
     return cards.length > 0 ? 'just now' : null;
   }
 
-  function projectMeta(project: Project, detail: InFlightDetail | undefined): string {
-    return detail?.storyTitle || `${project.storiesComplete}/${project.storiesTotal} stories`;
-  }
-
   // ---- overview actions (preserve real navigation; never invent targets) ---
 
   function handleNeedsYouAction(cardId: string, actionId: string): void {
@@ -778,7 +773,7 @@
             data-testid="overview-in-flight"
           >
             <header class="section-header">
-              <h2 id="board-inflight-title">In flight</h2>
+              <h2 id="board-inflight-title">Projects</h2>
               <div class="section-actions">
                 {#if inFlightRemaining > 0}
                   <span data-testid="overview-projects-remaining">
@@ -810,38 +805,39 @@
                   {@const detail = inFlightStory[projectIdentity(project)]}
                   {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
                   {@const status = rowStatus(project, detail)}
+                  <!-- Two calm lines per project: what it is, then who is on
+                       what right now. Deep provenance lives in the detail
+                       view, not the overview. -->
                   <div class="work-row" data-testid="inflight-row">
                     <button
                       type="button"
                       class="work-button"
                       onclick={() => openProject(project)}
                     >
-                      <span class="work-title">{projectDisplayName(project)}</span>
-                      <span class="work-meta">{projectMeta(project, detail)}</span>
-                      <div class="work-provenance" data-testid="inflight-provenance">
-                        <span class="provenance-kind">Project</span>
-                        <ProvenanceLine
-                          provenance={project.provenance}
-                          kind="project"
-                          compact
-                          unavailable={provenanceUnavailable}
-                        />
-                      </div>
+                      <span class="work-title-line">
+                        <span class="work-title">{projectDisplayName(project)}</span>
+                        {#if objectiveForProject(project)}
+                          <span class="goal-chip" data-testid="inflight-goal-chip">{goalChip(project)}</span>
+                        {/if}
+                      </span>
                       {#if detail?.storyTitle}
-                        <div
-                          class="work-story-provenance"
-                          data-testid="inflight-story-provenance"
-                        >
-                          <span class="provenance-kind">Task</span>
-                          <ProvenanceLine
-                            provenance={detail.provenance}
-                            kind="story"
-                            compact
-                          />
-                        </div>
+                        <span class="work-now" data-testid="inflight-now">
+                          <span class="work-now-label">Now</span>
+                          <span class="work-now-title">{detail.storyTitle}</span>
+                          {#if detail.provenance?.assignee}
+                            <span class="work-now-person">· {detail.provenance.assignee}</span>
+                          {/if}
+                        </span>
+                      {:else if project.provenance?.owner}
+                        <span class="work-now muted" data-testid="inflight-now">
+                          {project.storiesComplete}/{project.storiesTotal} stories · {project.provenance.owner}
+                        </span>
+                      {:else}
+                        <span class="work-now muted" data-testid="inflight-now">
+                          {project.storiesComplete}/{project.storiesTotal} stories
+                        </span>
                       {/if}
                     </button>
-                    <span class="goal-chip" data-testid="inflight-goal-chip">{goalChip(project)}</span>
                     <span class="status-pill" class:review={status.tone === 'warn'}>
                       <span class={`status-dot ${status.tone}`} aria-hidden="true"></span>
                       <span>{status.label}</span>
@@ -860,7 +856,12 @@
         </div>
 
         <div class="overview-col overview-col-side">
-          <!-- 4. Goals -->
+          <!-- 4. Team activity — who did what, first thing in the rail. -->
+          <section class="overview-section" data-testid="overview-activity-section">
+            <OverviewActivityDigest {slug} {cloudBacked} {syncEnabled} {onopeninbox} />
+          </section>
+
+          <!-- 5. Goals -->
           <section
             class="overview-section"
             aria-labelledby="board-goals-title"
@@ -902,10 +903,6 @@
             {/if}
           </section>
 
-          <!-- 5. Recent activity -->
-          <section class="overview-section" data-testid="overview-activity-section">
-            <OverviewActivityDigest {slug} {cloudBacked} {syncEnabled} {onopeninbox} />
-          </section>
         </div>
       </div>
     </div>
@@ -1135,11 +1132,11 @@
 
   .work-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(72px, 100px) auto minmax(72px, 96px);
+    grid-template-columns: minmax(0, 1fr) auto minmax(72px, 96px);
     align-items: center;
     gap: 12px;
-    min-height: 56px;
-    padding: 8px 0;
+    min-height: 52px;
+    padding: 10px 0;
     border-bottom: 1px solid var(--v4-rowline);
   }
 
@@ -1169,47 +1166,57 @@
     outline-offset: 3px;
   }
 
-  .work-title,
-  .work-meta {
+  .work-title {
     overflow: hidden;
-    max-width: 100%;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .work-provenance,
-  .work-story-provenance {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .work-provenance :global(.provenance-line),
-  .work-story-provenance :global(.provenance-line) {
-    flex: 1 1 auto;
-  }
-
-  .provenance-kind {
-    flex: 0 0 auto;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    line-height: 1.2;
-  }
-
-  .work-title {
     color: var(--v4-text-1);
     font-size: var(--type-body, var(--text-base));
     font-weight: 500;
     line-height: 1.25;
   }
 
-  .work-meta {
-    color: var(--v4-text-3);
+  .work-title-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .work-now {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    color: var(--v4-text-2);
     font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 400;
-    line-height: 1.2;
+    line-height: 1.3;
+  }
+
+  .work-now.muted {
+    color: var(--v4-text-3);
+  }
+
+  .work-now-label {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+
+  .work-now-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .work-now-person {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
   }
 
   .goal-chip {

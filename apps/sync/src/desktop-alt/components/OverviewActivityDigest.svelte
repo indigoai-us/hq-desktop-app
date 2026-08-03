@@ -100,6 +100,15 @@
     };
   });
 
+  /** "corey@getindigo.ai" → "Corey" — friendly person label; keeps the raw
+   *  identity in the row's meta line. */
+  function personLabel(who: string): string {
+    const local = who.includes('@') ? who.split('@')[0] : who;
+    const words = local.split(/[._-]+/).filter(Boolean);
+    if (words.length === 0) return who;
+    return words.map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
+  }
+
   const hasActivity = $derived(
     activity.top.length > 0 || activity.sparkline.some((v) => v > 0) || activity.stats.edits7 > 0,
   );
@@ -122,7 +131,7 @@
   data-testid="overview-recent-activity"
 >
   <header class="digest-header">
-    <h2 id="overview-activity-title">Recent activity</h2>
+    <h2 id="overview-activity-title">Team activity</h2>
     <button
       type="button"
       class="digest-link"
@@ -162,11 +171,11 @@
       <ul class="digest-list">
         {#each activity.top.slice(0, 5) as c, index (`${c.who}:${index}`)}
           <li class="digest-row">
-            <span class="digest-mark" aria-hidden="true">{c.who.slice(0, 1).toUpperCase()}</span>
+            <span class="digest-mark" aria-hidden="true">{personLabel(c.who).slice(0, 1)}</span>
             <div class="digest-copy">
-              <span class="digest-title">{c.who}</span>
+              <span class="digest-title">{personLabel(c.who)}</span>
               <span class="digest-meta">
-                {c.edits} {c.edits === 1 ? 'edit' : 'edits'} · recent window
+                updated {c.edits} {c.edits === 1 ? 'file' : 'files'} · {c.who}
               </span>
             </div>
             <strong class="digest-count">{c.edits}</strong>
