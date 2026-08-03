@@ -508,26 +508,27 @@
     background-position: center;
   }
 
-  /* Emulates the native macOS window: rounded corners, drop shadow, and the
-     NSGlassEffectView backing the transparent shell expects — translucent
-     tint + backdrop blur over the wallpaper. */
+  /* Native macOS window framing: opaque surface, 12px corners, standard
+     window shadow — no transparency or backdrop blur (native-opaque redesign). */
   .mac-window {
     position: relative;
     width: min(1180px, 100%);
     height: min(760px, 100%);
     border-radius: 12px;
     overflow: hidden;
-    background: rgba(246, 246, 248, 0.62);
-    -webkit-backdrop-filter: blur(80px) saturate(1.6);
-    backdrop-filter: blur(80px) saturate(1.6);
+    background: #f5f5f5;
     box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.28),
-      0 30px 90px rgba(0, 0, 0, 0.42),
-      inset 0 0 0 0.5px rgba(255, 255, 255, 0.28);
+      0 0 0 0.5px rgba(0, 0, 0, 0.22),
+      0 22px 68px rgba(0, 0, 0, 0.33),
+      0 2px 10px rgba(0, 0, 0, 0.18);
   }
 
   :global(html[data-force-theme='dark']) .mac-window {
-    background: rgba(22, 22, 24, 0.55);
+    background: #1e1e1e;
+    box-shadow:
+      0 0 0 0.5px rgba(255, 255, 255, 0.16),
+      0 22px 68px rgba(0, 0, 0, 0.55),
+      0 2px 10px rgba(0, 0, 0, 0.4);
   }
 
   /* Decorative macOS traffic lights — the native window draws these over the

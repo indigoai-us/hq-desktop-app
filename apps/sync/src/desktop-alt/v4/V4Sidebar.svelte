@@ -254,6 +254,31 @@
     </button>
   {/if}
 
+  {#if currentRow}
+    <!-- The selected workspace's sections live directly under its switcher —
+         they belong to the workspace, app-wide destinations follow below. -->
+    <nav
+      class="ws-sections"
+      data-testid={`company-children-${currentRow.slug}`}
+      aria-label={`${currentRow.label} sections`}
+    >
+      {#each currentSections as child (child.id)}
+        <button
+          type="button"
+          class="v4-row"
+          class:active={child.active}
+          aria-current={child.active ? 'page' : undefined}
+          data-testid={`company-child-${currentRow.slug}-${child.id}`}
+          onclick={() => goCompanySection(currentRow.slug, child.id)}
+        >
+          <span class="v4-row-label">{child.id === 'more' ? 'Operations' : child.label}</span>
+        </button>
+      {/each}
+    </nav>
+  {/if}
+
+  <div class="ws-divider" aria-hidden="true"></div>
+
   <nav class="v4-nav" aria-label="Primary">
     {#each model.nav as row (row.id)}
       <button
@@ -273,29 +298,6 @@
     {/each}
   </nav>
 
-  {#if currentRow}
-    <nav
-      class="ws-sections"
-      data-testid={`company-children-${currentRow.slug}`}
-      aria-label={`${currentRow.label} sections`}
-    >
-      {#each currentSections as child (child.id)}
-        <button
-          type="button"
-          class="v4-row"
-          class:active={child.active}
-          aria-current={child.active ? 'page' : undefined}
-          data-testid={`company-child-${currentRow.slug}-${child.id}`}
-          onclick={() => goCompanySection(currentRow.slug, child.id)}
-        >
-          <span class="v4-row-label">{child.label}</span>
-          {#if child.id === 'more'}
-            <span class="v4-child-meta" aria-hidden="true">•••</span>
-          {/if}
-        </button>
-      {/each}
-    </nav>
-  {/if}
 
   <div class="v4-spacer"></div>
 
@@ -342,8 +344,14 @@
               <span class="ws-menu-name">{row.label}</span>
               {#if row.isPersonal}
                 <span class="ws-menu-meta">Personal workspace</span>
-              {:else if row.ownerLabel}
-                <span class="ws-menu-meta">{row.ownerLabel}</span>
+              {:else}
+                <span class="ws-menu-meta">
+                  <span
+                    class={`ws-status-dot ${row.cloudActivated ? 'ok' : 'idle'}`}
+                    aria-hidden="true"
+                  ></span>
+                  {row.cloudActivated ? 'Connected' : 'Local'}
+                </span>
               {/if}
             </span>
             {#if row.pendingInvite}
@@ -414,7 +422,8 @@
     flex: 0 0 auto;
     padding: 0 8px;
     border: none;
-    border-radius: 0;
+    /* Native macOS sidebar row: rounded rect selection, not underlines. */
+    border-radius: 6px;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
@@ -438,8 +447,7 @@
   }
 
   .v4-row.active {
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--v4-hairline);
+    background: var(--v4-active-row);
     color: var(--v4-text-1);
     font-weight: 500;
   }
@@ -452,21 +460,17 @@
     text-overflow: ellipsis;
   }
 
+  /* Native macOS sidebar count (Mail-style): a plain muted number, no pill. */
   .v4-unread-badge {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 5px;
-    box-sizing: border-box;
-    border-radius: 999px;
-    background: var(--v4-unread);
-    color: var(--v4-primary-fg);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 700;
+    background: transparent;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 13px);
+    font-weight: 600;
     line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
 
   .v4-invite-badge {
@@ -559,12 +563,10 @@
   .ws-sections {
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
     gap: var(--v4-row-gap);
-    margin-top: 16px;
-    padding-bottom: 12px;
     scrollbar-color: var(--v4-hairline) transparent;
     scrollbar-width: thin;
   }
@@ -575,6 +577,13 @@
 
   .ws-sections::-webkit-scrollbar-thumb {
     border-radius: var(--v4-radius-pill);
+    background: var(--v4-hairline);
+  }
+
+  .ws-divider {
+    flex: 0 0 auto;
+    height: 1px;
+    margin: 12px 8px;
     background: var(--v4-hairline);
   }
 
@@ -658,12 +667,27 @@
   }
 
   .ws-menu-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
     color: var(--v4-text-3);
     font-size: var(--type-metadata, 13px);
     line-height: 16px;
+  }
+
+  .ws-status-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--v4-idle);
+  }
+
+  .ws-status-dot.ok {
+    background: var(--v4-ok);
   }
 
   .ws-check {
@@ -707,20 +731,6 @@
   .v4-child-meta {
     color: var(--v4-text-3);
     flex: 0 0 auto;
-  }
-
-  .v4-unread-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 6px;
-    border-radius: 999px;
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
-    font-size: var(--text-sm);
-    font-weight: 600;
   }
 
   .v4-spacer {

@@ -79,8 +79,11 @@ html[data-window='messages'] {
   --text-lg: var(--type-detail, 24px);
   --text-kpi: var(--type-detail, 24px);
 
+  /* Native macOS: the desktop window speaks the system font (SF Pro). */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI',
+    Roboto, sans-serif;
   --font-display: var(--font-sans);
-  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
+  --font-mono: ui-monospace, SFMono-Regular, 'Geist Mono Variable', Menlo,
     Monaco, monospace;
 
   color-scheme: light dark;
@@ -102,22 +105,16 @@ html[data-window='messages'] body {
   background: var(--bg-body);
 }
 
-/* The Tauri desktop window remains transparent so native vibrancy can show at
-   the edge; the web surfaces themselves resolve from the shared light/dark
-   tokens instead of local dark-first glass values. */
-html[data-window='desktop-alt'] {
-  background: transparent;
-}
-
+/* Native-opaque redesign: the desktop window is a standard opaque macOS
+   window — the document paints solid surfaces and no vibrancy shows through. */
+html[data-window='desktop-alt'],
 html[data-window='desktop-alt'] body {
-  background: transparent;
+  background: var(--bg);
 }
 
-/* Standalone Messages owns one material layer in `.messages-window`; keeping
-   both document roots clear prevents three alpha surfaces from compounding. */
 html[data-window='messages'],
 html[data-window='messages'] body {
-  background: transparent;
+  background: var(--bg);
 }
 
 /* Reduced transparency promotes alpha surfaces to solid hierarchy values while
@@ -153,11 +150,12 @@ html[data-window='messages'] * {
   box-sizing: border-box;
 }
 
-/* Subtle dark scrollbars, scoped to the desktop + messages windows. */
+/* Native macOS overlay-style scrollbars: a rounded thumb floating in a
+   transparent gutter (the 3px transparent border creates the inset). */
 html[data-window='desktop-alt'] ::-webkit-scrollbar,
 html[data-window='messages'] ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 11px;
+  height: 11px;
 }
 
 html[data-window='desktop-alt'] ::-webkit-scrollbar-track,
@@ -168,12 +166,20 @@ html[data-window='messages'] ::-webkit-scrollbar-track {
 html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb,
 html[data-window='messages'] ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
-  border-radius: 3px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
 }
 
 html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover,
 html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-corner,
+html[data-window='messages'] ::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .desktop-shell {

@@ -7,32 +7,33 @@
  * restrained amount of live backdrop color keeps the material visibly vibrant.
  */
 :root {
-  /* Readable desktop ramp with visible hierarchy. Metadata stays compact but
-     never drops below 13px; page/detail headings have real display scale. */
-  --type-metadata: 13px;
-  --type-secondary: 14px;
-  --type-body: 15px;
-  --type-section: 17px;
-  --type-detail: 24px;
+  /* Native macOS type ramp (SF sizes): caption 12, footnote/body 13,
+     title3 15, title1 22. Hierarchy comes from weight, not many sizes. */
+  --type-metadata: 12px;
+  --type-secondary: 13px;
+  --type-body: 13px;
+  --type-section: 15px;
+  --type-detail: 22px;
 
   /* Primary row title + secondary metadata stack */
   --v4-row-stack-gap: 3px;
 
-  /* Neutral glass primitives. Large native-backed regions need less blur than
-     detached sheets; small controls use the softest material. */
-  --v4-canvas-filter: blur(18px) saturate(112%) contrast(101%);
-  --v4-glass-filter: blur(28px) saturate(122%) contrast(102%);
-  --v4-glass-filter-soft: blur(14px) saturate(110%) contrast(101%);
+  /* Native-opaque redesign: the main window carries no transparency or
+     backdrop blur. Only detached popovers/menus keep the vibrancy material,
+     matching native NSMenu behavior. */
+  --v4-canvas-filter: none;
+  --v4-glass-filter: none;
+  --v4-glass-filter-soft: none;
   --v4-glass-filter-popover: blur(40px) saturate(124%) contrast(104%);
   --v4-glass-highlight: rgba(255, 255, 255, 0.58);
   --v4-glass-border: var(--v4-hairline);
 
-  /* shared shape + elevation */
+  /* shared shape + elevation — native macOS control metrics */
   --v4-radius-structure: var(--radius-structure, 0);
   --v4-radius-button: var(--radius-button, 6px);
   --v4-radius-field: var(--radius-field, 6px);
-  --v4-radius-card: var(--radius-card, 6px);
-  --v4-radius-popover: var(--radius-popover, 8px);
+  --v4-radius-card: var(--radius-card, 8px);
+  --v4-radius-popover: var(--radius-popover, 10px);
   --v4-radius-pill: var(--radius-pill, 980px);
   --v4-shadow-card-light: var(--c-choose-shadow, 0 1px 1.5px rgba(0, 0, 0, 0.1));
   --v4-shadow-card-dark: 0 12px 32px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -55,15 +56,17 @@
    QA remains deterministic even when the host OS is dark. */
 :root,
 :root[data-force-theme='light'] {
-  --v4-ground: rgb(242 242 242 / clamp(0.15, calc(1 - var(--hq-window-transparency-factor, 0.65) * 1.015), 1));
-  --v4-raised: rgb(255 255 255 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.769), 1));
+  /* Native-opaque light surfaces (macOS system neutrals): white content,
+     titlebar/sidebar in the standard window-chrome grays. */
+  --v4-ground: #f5f5f5;
+  --v4-raised: #ffffff;
   --v4-inset: rgba(0, 0, 0, 0.045);
-  --v4-chrome: rgb(232 232 232 / clamp(0.11, calc(1 - var(--hq-window-transparency-factor, 0.65) * 1.046), 1));
-  --v4-sidebar: rgb(224 224 224 / clamp(0.12, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.985), 1));
-  --v4-secondary-sidebar: rgb(238 238 238 / clamp(0.06, calc(1 - var(--hq-window-transparency-factor, 0.65) * 1.138), 1));
+  --v4-chrome: #f6f6f6;
+  --v4-sidebar: #f0f0f0;
+  --v4-secondary-sidebar: #f7f7f7;
   --v4-popover: rgb(250 250 250 / clamp(0.5, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.492), 1));
   --v4-popover-strong: rgb(250 250 250 / clamp(0.7, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.308), 1));
-  --v4-hairline: rgba(0, 0, 0, 0.12);
+  --v4-hairline: rgba(0, 0, 0, 0.1);
   --v4-rowline: rgba(0, 0, 0, 0.08);
 
   --v4-text-1: #111111;
@@ -90,12 +93,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --v4-ground: rgb(17 17 17 / clamp(0.22, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.8), 1));
-    --v4-raised: rgb(48 48 48 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.646), 1));
+    /* Native-opaque dark surfaces (macOS dark neutrals). */
+    --v4-ground: #1e1e1e;
+    --v4-raised: #2c2c2e;
     --v4-inset: rgba(0, 0, 0, 0.32);
-    --v4-chrome: rgb(30 30 30 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.831), 1));
-    --v4-sidebar: rgb(24 24 24 / clamp(0.24, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.769), 1));
-    --v4-secondary-sidebar: rgb(26 26 26 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.892), 1));
+    --v4-chrome: #282828;
+    --v4-sidebar: #232323;
+    --v4-secondary-sidebar: #262626;
     --v4-popover: rgb(42 42 42 / clamp(0.58, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.431), 1));
     --v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));
     --v4-hairline: rgba(255, 255, 255, 0.12);
@@ -125,12 +129,12 @@
 
 .dark,
 :root[data-force-theme='dark'] {
-  --v4-ground: rgb(17 17 17 / clamp(0.22, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.8), 1));
-  --v4-raised: rgb(48 48 48 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.646), 1));
+  --v4-ground: #1e1e1e;
+  --v4-raised: #2c2c2e;
   --v4-inset: rgba(0, 0, 0, 0.32);
-  --v4-chrome: rgb(30 30 30 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.831), 1));
-  --v4-sidebar: rgb(24 24 24 / clamp(0.24, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.769), 1));
-  --v4-secondary-sidebar: rgb(26 26 26 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.892), 1));
+  --v4-chrome: #282828;
+  --v4-sidebar: #232323;
+  --v4-secondary-sidebar: #262626;
   --v4-popover: rgb(42 42 42 / clamp(0.58, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.431), 1));
   --v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));
   --v4-hairline: rgba(255, 255, 255, 0.12);
