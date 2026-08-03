@@ -99,11 +99,12 @@ fn assert_unexpected_install_event(
         event.tags.get("npm_stderr_len").map(String::as_str),
         Some(expected_stderr_len)
     );
+    assert_eq!(event.tags.get("npm_errno").map(String::as_str), Some("unknown"));
     assert_eq!(
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(
             format!(
-                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 stderr_len={expected_stderr_len}"
+                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len}"
             )
             .into()
         ))
