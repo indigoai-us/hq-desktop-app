@@ -142,11 +142,12 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         event.tags.get("npm_stderr_len").map(String::as_str),
         Some(unexpected_eacces_len.as_str())
     );
+    assert_eq!(event.tags.get("npm_errno").map(String::as_str), Some("unknown"));
     assert_eq!(
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(
             format!(
-                "error_code=EACCES syscall=mkdir path_shape=other prefix_known=false eacces=true exit_code=1 stderr_len={unexpected_eacces_len}"
+                "error_code=EACCES syscall=mkdir path_shape=other prefix_known=false eacces=true exit_code=1 errno=unknown stderr_len={unexpected_eacces_len}"
             )
             .into()
         ))
