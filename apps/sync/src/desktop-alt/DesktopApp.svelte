@@ -281,6 +281,19 @@
   );
   const watchedWorkspaceCount = $derived(watchedCompanies.length);
   const accountIdentity = $derived(accountIdentityFromWorkspaces(shellCompanies));
+
+  // Signed-in email for the sidebar profile footer (best-effort; the footer
+  // hides its email line when unavailable).
+  let accountEmail = $state<string | null>(null);
+  $effect(() => {
+    void invoke<string | null>('get_account_email')
+      .then((email) => {
+        accountEmail = email?.trim() ? email.trim() : null;
+      })
+      .catch(() => {
+        accountEmail = null;
+      });
+  });
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
   const activeCompanySyncEnabled = $derived(isWorkspaceSyncEnabled(activeCompany));
@@ -413,7 +426,6 @@
       id: 'command-go-inbox',
       label: 'Go to Inbox',
       detail: 'Notifications, mentions, shares, and activity',
-      shortcut: '⌘1',
       action: () => navigate({ kind: 'inbox' }),
     },
     {
@@ -426,21 +438,18 @@
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘2',
       action: () => navigate({ kind: 'meetings' }),
     },
     {
       id: 'command-go-marketplace',
       label: 'Go to Marketplace',
       detail: 'Discover and install skills and workers',
-      shortcut: '⌘3',
       action: () => navigate({ kind: 'marketplace' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
       detail: 'Skills, workers, and installed packs',
-      shortcut: '⌘4',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -483,15 +492,26 @@
           },
         ]
       : []),
-    // Companies start at ⌘5 (after the four primary destinations), in sidebar
-    // (connected-first) order.
-    ...orderedCompanies.map((row, index) => ({
-      id: `command-go-company-${row.slug}`,
-      label: `Go to ${row.label}`,
-      detail: 'Show company overview',
-      shortcut: companyHotkey(index),
-      action: () => navigate({ kind: 'company', slug: row.slug }),
-    })),
+    // Companies own ⌘1–⌘9 (Slack-style) in sidebar (connected-first) order;
+    // Personal has the dedicated ⌘0.
+    ...orderedCompanies
+      .filter((row) => !row.isPersonal)
+      .map((row, index) => ({
+        id: `command-go-company-${row.slug}`,
+        label: `Go to ${row.label}`,
+        detail: 'Show company overview',
+        shortcut: companyHotkey(index),
+        action: () => navigate({ kind: 'company', slug: row.slug }),
+      })),
+    ...orderedCompanies
+      .filter((row) => row.isPersonal)
+      .map((row) => ({
+        id: `command-go-company-${row.slug}`,
+        label: `Go to ${row.label}`,
+        detail: 'Show your personal workspace',
+        shortcut: '⌘0',
+        action: () => navigate({ kind: 'company', slug: row.slug }),
+      })),
     // Keep the palette useful with hundreds of companies: expose every company
     // root, but only materialize deep section commands for the active company.
     ...(activeCompany
@@ -1087,10 +1107,6 @@
     commandPaletteOpen = true;
   }
 
-  function handleAccountMenu() {
-    handleOpenSettings('general');
-  }
-
   // ── Agent-handoff actions (the hq-* ACTIONS in the ⌘K palette) ─────────────
   // Each opens a Claude Code session cwd'd into HQ with a prepared prompt for
   // the matching hq-* skill. The desktop is a viewer; the agent does the work —
@@ -1640,7 +1656,6 @@
     conflictCount={syncConflictCount}
     conflictCompany={syncConflictCompany}
     {hqFolderPath}
-    accountInitials={accountIdentity.initials}
     {sidebarCollapsed}
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
@@ -1649,7 +1664,6 @@
     onresolveconflicts={handleResolveAggregateConflicts}
     ontogglesidebar={handleToggleSidebar}
     oncommand={handleOpenCommandPalette}
-    onaccount={handleAccountMenu}
     onOpenSettings={handleOpenSettings}
   />
 
@@ -1670,8 +1684,8 @@
           {route}
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
-          {cloudReachable}
-          onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
+          accountEmail={accountEmail}
+          accountInitials={accountIdentity.initials}
           onnavigate={(next) => navigate(fromV4Route(next))}
         />
       {/if}

@@ -536,10 +536,13 @@
   .traffic-lights {
     position: absolute;
     top: 14px;
-    left: 20px;
+    /* Left-aligned with the sidebar content below (10px sidebar inset +
+       8px row padding). */
+    left: 18px;
     display: flex;
     gap: 8px;
-    z-index: 10;
+    /* Above the app's opaque titlebar chrome. */
+    z-index: 99999;
     pointer-events: none;
   }
 

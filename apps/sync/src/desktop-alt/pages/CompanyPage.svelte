@@ -369,18 +369,21 @@
     gap: 8px;
   }
 
+  /* Onboarding button language: borderless secondary fill, 8px radius,
+     opacity hover, gentle scale press — no lift transforms. */
   .company-actions button {
     max-width: 160px;
     height: 30px;
     overflow: hidden;
-    padding: 0 11px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
     background: var(--v4-secondary-bg);
     color: var(--v4-secondary-fg);
     font: inherit;
     font-size: var(--text-base);
     font-weight: 400;
+    transition: opacity 0.15s, transform 0.1s;
     text-overflow: ellipsis;
     white-space: nowrap;
     cursor: pointer;
@@ -389,22 +392,18 @@
   }
 
   @media (hover: hover) and (pointer: fine) {
-    .company-actions button:hover {
-      border-color: var(--v4-hairline);
-      background: var(--v4-active-row);
-      transform: translateY(-1px);
+    .company-actions button:hover:not(:disabled) {
+      opacity: 0.88;
     }
   }
 
   .company-actions button.primary {
-    border-color: transparent;
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
   }
 
-  .company-actions button:active {
-    transform: translateY(0);
-    opacity: 0.72;
+  .company-actions button:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .company-actions button:disabled {

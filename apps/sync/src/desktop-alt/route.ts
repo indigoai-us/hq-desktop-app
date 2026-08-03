@@ -295,14 +295,15 @@ export function getDesktopActiveCompany(
   return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
-/** First ⌘ hotkey assigned to a company row (after the four primary destinations). */
-const COMPANY_HOTKEY_BASE = 5;
+/** First ⌘ hotkey assigned to a company row. */
+const COMPANY_HOTKEY_BASE = 1;
 
 /**
- * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
- * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
- * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
- * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
+ * Slack-style workspace switching: ⌘1–⌘9 map to the companies in switcher
+ * (connected-first) order — the same order the sidebar's workspace menu
+ * renders, which advertises these shortcuts on each row. ⌘0 is the dedicated
+ * Personal-workspace shortcut (its own menu section). The former ⌘1–⌘4
+ * destination hotkeys moved to the ⌘K palette only.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -310,14 +311,17 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'inbox' };
-  if (event.key === '2') return { kind: 'meetings' };
-  if (event.key === '3') return { kind: 'marketplace' };
-  if (event.key === '4') return { kind: 'library' };
+  const rows = sortV4CompaniesConnectedFirst(companies);
 
+  if (event.key === '0') {
+    const personal = rows.find((row) => row.isPersonal);
+    return personal ? { kind: 'company', slug: personal.slug } : null;
+  }
+
+  const companyRows = rows.filter((row) => !row.isPersonal);
   const companyIndex = Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE;
   if (companyIndex >= 0 && companyIndex <= 9 - COMPANY_HOTKEY_BASE) {
-    const company = sortV4CompaniesConnectedFirst(companies)[companyIndex];
+    const company = companyRows[companyIndex];
     if (company) return { kind: 'company', slug: company.slug };
   }
 

@@ -938,13 +938,22 @@
   .primary-action {
     height: 28px;
     padding: 0 12px;
-    border: 1px solid transparent;
-    border-radius: var(--v4-radius-button);
+    border: none;
+    border-radius: 8px;
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
     font-size: var(--type-body, 12px);
-    cursor: default;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .primary-action:hover:not(:disabled) {
+    opacity: 0.88;
+  }
+
+  .primary-action:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .portfolio-tools {

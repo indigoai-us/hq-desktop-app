@@ -739,7 +739,6 @@
     border-radius: var(--v4-radius-pill);
     background: var(--toast-dot);
     content: '';
-    transform: translateY(-1px);
   }
 
   .toast-warn {

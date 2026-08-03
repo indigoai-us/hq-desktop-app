@@ -44,6 +44,7 @@
   import { useCompanySummary } from '../lib/company-summary.svelte';
   import ProjectListView from '../components/ProjectListView.svelte';
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
+  import SidebarSyncMode from '../v4/SidebarSyncMode.svelte';
   import GoalCard from '../v4/GoalCard.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
   import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte';
@@ -734,6 +735,11 @@
             <span class="pulse-meta">· {lastUpdated}</span>
           {/if}
         </div>
+        <!-- Workspace sync scope + on/off, relocated here from the sidebar's
+             workspace switcher menu. -->
+        <div class="pulse-item pulse-sync" data-testid="overview-sync-mode">
+          <SidebarSyncMode {slug} {syncEnabled} />
+        </div>
       </section>
 
       <div class="overview-columns">
@@ -980,6 +986,11 @@
 
   .pulse-cloud {
     align-items: center;
+  }
+
+  .pulse-sync {
+    align-items: center;
+    margin-left: auto;
   }
 
   .pulse-value {

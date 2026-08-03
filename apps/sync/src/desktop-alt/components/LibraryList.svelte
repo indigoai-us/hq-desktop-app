@@ -177,7 +177,6 @@
     .lib-card:hover {
       border-color: var(--v4-control-border);
       background: var(--v4-active-row);
-      transform: translateY(-1px);
     }
   }
 

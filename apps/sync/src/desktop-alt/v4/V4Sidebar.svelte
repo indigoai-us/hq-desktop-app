@@ -19,7 +19,6 @@
   } from './model';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { HQ_CONSOLE_BASE } from '../lib/hq-console';
-  import SidebarSyncMode from './SidebarSyncMode.svelte';
   import './tokens.css';
 
   /**
@@ -40,13 +39,12 @@
   interface Props {
     route: V4Route;
     companies?: Workspace[] | null;
-    /** Signed-in account label for the Settings footer. */
+    /** Signed-in account name for the profile footer. */
     accountLabel?: string | null;
-    /** Vault reachability from list_syncable_workspaces — gates sync-mode
-     *  writes (control renders read-only while offline). Omit to let the
-     *  sidebar resolve it from its own self-load; defaults to reachable. */
-    cloudReachable?: boolean | null;
-    onworkspaceenabledchange?: (slug: string, enabled: boolean) => void;
+    /** Signed-in account email for the profile footer. */
+    accountEmail?: string | null;
+    /** Monogram for the profile footer avatar circle. */
+    accountInitials?: string | null;
     onnavigate?: (route: V4Route) => void;
   }
 
@@ -54,13 +52,10 @@
     route,
     companies,
     accountLabel,
-    cloudReachable = null,
-    onworkspaceenabledchange,
+    accountEmail,
+    accountInitials,
     onnavigate,
   }: Props = $props();
-
-  let fetchedCloudReachable = $state(true);
-  const effectiveCloudReachable = $derived(cloudReachable ?? fetchedCloudReachable);
 
   let fetched = $state<Workspace[]>([]);
   // An explicitly supplied empty list is authoritative: it represents the
@@ -86,6 +81,11 @@
   );
   // The route model only carries children for the expanded company; the
   // sidebar shows the current workspace's sections on global routes too.
+  // Menu sections: companies own ⌘1–⌘9 in list order; Personal sits in its
+  // own section with the dedicated ⌘0 shortcut.
+  const menuCompanies = $derived(model.companies.filter((row) => !row.isPersonal));
+  const menuPersonal = $derived(model.companies.filter((row) => row.isPersonal));
+
   const currentSections = $derived(
     currentRow == null
       ? []
@@ -152,7 +152,6 @@
     void invoke<WorkspacesResult>('list_syncable_workspaces')
       .then((result) => {
         fetched = Array.isArray(result.workspaces) ? result.workspaces : [];
-        fetchedCloudReachable = result.cloudReachable;
       })
       .catch((err) => {
         console.error('list_syncable_workspaces failed:', err);
@@ -301,17 +300,22 @@
 
   <div class="v4-spacer"></div>
 
+  <!-- Profile footer: circle avatar + name + email; opens Settings. -->
   <button
     type="button"
     class="v4-footer"
     class:active={model.settingsActive}
     aria-current={model.settingsActive ? 'page' : undefined}
+    aria-label="Settings"
     onclick={() => go('settings')}
   >
-    <span class="v4-footer-label">Settings</span>
-    {#if accountLabel}
-      <span class="v4-footer-meta">{accountLabel}</span>
-    {/if}
+    <span class="v4-avatar" aria-hidden="true">{accountInitials ?? 'HQ'}</span>
+    <span class="v4-footer-copy">
+      <span class="v4-footer-name">{accountLabel ?? 'Account'}</span>
+      {#if accountEmail}
+        <span class="v4-footer-meta">{accountEmail}</span>
+      {/if}
+    </span>
   </button>
 </aside>
 
@@ -328,11 +332,42 @@
       aria-label="Switch workspace"
       style={`top:${menuPos.top}px;left:${menuPos.left}px`}
     >
-      {#each model.companies as row (row.slug)}
-        <div class="ws-menu-item" role="none">
+      {#each menuCompanies as row, index (row.slug)}
+        <button
+          type="button"
+          class="ws-menu-row"
+          class:current={currentRow != null && row.slug === currentRow.slug}
+          role="menuitem"
+          data-testid={`workspace-option-${row.slug}`}
+          onclick={() => selectWorkspace(row.slug)}
+        >
+          <span class="ws-tile menu" style={`background:${tileGradient(row.slug)}`} aria-hidden="true">
+            {workspaceInitials(row.label)}
+          </span>
+          <span class="ws-menu-copy">
+            <span class="ws-menu-name">{row.label}</span>
+            <span class="ws-menu-meta">
+              <span
+                class={`ws-status-dot ${row.cloudActivated ? 'ok' : 'idle'}`}
+                aria-hidden="true"
+              ></span>
+              {row.cloudActivated ? 'Connected' : 'Local'}
+            </span>
+          </span>
+          {#if row.pendingInvite}
+            <span class="v4-invite-badge" data-testid={`company-invite-badge-${row.slug}`}>Invite</span>
+          {:else if index < 9}
+            <span class="ws-shortcut" aria-hidden="true">⌘{index + 1}</span>
+          {/if}
+        </button>
+      {/each}
+      {#if menuPersonal.length > 0}
+        <div class="ws-menu-divider" role="none"></div>
+        {#each menuPersonal as row (row.slug)}
           <button
             type="button"
             class="ws-menu-row"
+            class:current={currentRow != null && row.slug === currentRow.slug}
             role="menuitem"
             data-testid={`workspace-option-${row.slug}`}
             onclick={() => selectWorkspace(row.slug)}
@@ -342,40 +377,12 @@
             </span>
             <span class="ws-menu-copy">
               <span class="ws-menu-name">{row.label}</span>
-              {#if row.isPersonal}
-                <span class="ws-menu-meta">Personal workspace</span>
-              {:else}
-                <span class="ws-menu-meta">
-                  <span
-                    class={`ws-status-dot ${row.cloudActivated ? 'ok' : 'idle'}`}
-                    aria-hidden="true"
-                  ></span>
-                  {row.cloudActivated ? 'Connected' : 'Local'}
-                </span>
-              {/if}
+              <span class="ws-menu-meta">Personal workspace</span>
             </span>
-            {#if row.pendingInvite}
-              <span class="v4-invite-badge" data-testid={`company-invite-badge-${row.slug}`}>Invite</span>
-            {:else if currentRow && row.slug === currentRow.slug}
-              <svg class="ws-check" width="12" height="10" viewBox="0 0 12 10" aria-hidden="true">
-                <path d="M1 5.4L4.4 8.8L11 1.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            {/if}
+            <span class="ws-shortcut" aria-hidden="true">⌘0</span>
           </button>
-          {#if row.isPersonal || row.cloudActivated}
-            <span class="ws-menu-syncslot">
-              <SidebarSyncMode
-                slug={row.slug}
-                label={row.label}
-                isPersonal={row.isPersonal}
-                syncEnabled={row.syncEnabled}
-                cloudReachable={effectiveCloudReachable}
-                onenabledchange={(enabled) => onworkspaceenabledchange?.(row.slug, enabled)}
-              />
-            </span>
-          {/if}
-        </div>
-      {/each}
+        {/each}
+      {/if}
       <div class="ws-menu-divider" role="none"></div>
       <button type="button" class="ws-menu-row ws-add" role="menuitem" onclick={addWorkspace}>
         <span class="ws-tile menu add" aria-hidden="true">+</span>
@@ -641,6 +648,16 @@
     background: var(--v4-control-faint);
   }
 
+  /* Current workspace: persistent filled selection (macOS menu idiom),
+     no checkmark. */
+  .ws-menu-row.current {
+    background: var(--v4-active-row);
+  }
+
+  .ws-menu-row.current .ws-menu-name {
+    font-weight: 700;
+  }
+
   .ws-menu-row:focus-visible {
     outline: 1.5px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: -1.5px;
@@ -690,25 +707,13 @@
     background: var(--v4-ok);
   }
 
-  .ws-check {
+  /* Slack-style advertised hotkey, right-aligned per row. */
+  .ws-shortcut {
     flex: 0 0 auto;
-    margin-right: 2px;
-    color: var(--v4-text-1);
-  }
-
-  .ws-menu-syncslot {
-    position: absolute;
-    top: 50%;
-    right: 34px;
-    transform: translateY(-50%);
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .ws-menu-item:hover .ws-menu-syncslot,
-  .ws-menu-item:focus-within .ws-menu-syncslot {
-    opacity: 1;
-    pointer-events: auto;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 12px);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
   }
 
   .ws-menu-divider {
@@ -737,58 +742,70 @@
     flex: 0 0 auto;
   }
 
+  /* Profile footer — avatar circle + name + email; opens Settings. */
   .v4-footer {
-    /* Pinned: never shrink under list pressure so the footer stays on-screen
-       and the overflow goes to .v4-company-nav instead (US-007).
-       DESKTOP-011: title + meta use separate grid slots with explicit 3px gap. */
-    display: grid;
-    grid-template-rows: auto auto;
-    gap: var(--v4-row-stack-gap, 3px);
-    justify-items: start;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     width: 100%;
     margin: 0 0 12px;
-    padding: 8px;
+    padding: 6px 8px;
     border: none;
-    border-radius: var(--v4-radius-button);
+    border-radius: 8px;
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--v4-text-1);
     cursor: pointer;
     text-align: left;
     font: inherit;
+    transition: background 0.15s;
   }
 
   .v4-footer:hover,
   .v4-footer.active {
     background: var(--v4-active-row);
-    color: var(--v4-text-1);
   }
 
   .v4-footer:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: -4px;
+    outline-offset: -2px;
   }
 
-  .v4-footer:hover .v4-footer-label,
-  .v4-footer:focus-visible .v4-footer-label,
-  .v4-footer.active .v4-footer-label {
-    color: var(--v4-text-1);
-  }
-
-  .v4-footer.active .v4-footer-label {
-    font-weight: 500;
-  }
-
-  .v4-footer-label {
+  .v4-avatar {
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    background: var(--v4-control-bg);
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 400;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    user-select: none;
+  }
+
+  .v4-footer-copy {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .v4-footer-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
   }
 
   .v4-footer-meta {
     overflow: hidden;
     max-width: 100%;
     color: var(--v4-text-3);
-    font-size: var(--text-sm);
+    font-size: var(--type-metadata, 12px);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

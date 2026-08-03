@@ -638,7 +638,6 @@
     .card:hover {
       border-color: var(--v4-control-border);
       background: var(--v4-raised);
-      transform: translateY(-2px);
       box-shadow: var(--v4-shadow-card);
     }
   }

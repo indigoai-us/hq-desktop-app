@@ -37,8 +37,6 @@
     conflictCount?: number;
     conflictCompany?: string | null;
     hqFolderPath?: string | null;
-    /** Account initials for the profile control (e.g. "CE"). */
-    accountInitials?: string | null;
     sidebarCollapsed?: boolean;
     onsync?: () => void | Promise<void>;
     oncancel?: () => void | Promise<void>;
@@ -47,7 +45,6 @@
     onresolveconflicts?: () => void | Promise<void>;
     ontogglesidebar?: () => void;
     oncommand?: () => void;
-    onaccount?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
   }
 
@@ -67,7 +64,6 @@
     conflictCount = 0,
     conflictCompany = null,
     hqFolderPath = null,
-    accountInitials = null,
     sidebarCollapsed = false,
     onsync,
     oncancel,
@@ -76,7 +72,6 @@
     onresolveconflicts,
     ontogglesidebar,
     oncommand,
-    onaccount,
     onOpenSettings,
   }: Props = $props();
 
@@ -93,7 +88,6 @@
     }),
   );
 
-  const initials = $derived((accountInitials ?? 'HQ').slice(0, 2).toUpperCase());
   let versionOpen = $state(false);
   let versionContainer: HTMLDivElement | null = $state(null);
   let coreVersion = $state<string | null>(null);
@@ -209,7 +203,6 @@
     <button
       type="button"
       class="v4-icon-btn"
-      class:active={!sidebarCollapsed}
       aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
       title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
       aria-pressed={!sidebarCollapsed}
@@ -359,15 +352,6 @@
         />
       {/if}
     </div>
-    <button
-      type="button"
-      class="v4-account"
-      aria-label="Account and settings"
-      title="Account and settings"
-      onclick={() => onaccount?.()}
-    >
-      {initials}
-    </button>
   </div>
 </header>
 
@@ -591,19 +575,15 @@
     cursor: pointer;
   }
 
-  .v4-icon-btn:hover,
-  .v4-icon-btn.active {
-    border-color: var(--v4-hairline);
+  /* Native macOS toolbar behavior: borderless icon at rest, subtle rounded
+     fill on hover/press only — no persistent selected box. */
+  .v4-icon-btn:hover {
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
   }
 
-  /* Pressed global controls stay visibly selected without inheriting the OS
-     accent color. aria-pressed remains the semantic source of truth. */
-  .v4-icon-btn[aria-pressed='true'] {
-    border-color: var(--v4-control-border);
-    background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
-    box-shadow: inset 0 0 0 1px var(--v4-hairline);
+  .v4-icon-btn:active {
+    background: var(--v4-active-row);
     color: var(--v4-text-1);
   }
 
@@ -642,32 +622,6 @@
   }
 
   .v4-action:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: var(--v4-focus-offset, 2px);
-  }
-
-  .v4-account {
-    flex: 0 0 auto;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .v4-account:hover {
-    background: var(--v4-active-row);
-  }
-
-  .v4-account:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: var(--v4-focus-offset, 2px);
   }

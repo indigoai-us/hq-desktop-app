@@ -394,6 +394,7 @@ fn main() {
             commands::oauth::start_oauth_login,
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
+            commands::auth::get_account_email,
             commands::auth::get_auth_state,
             commands::auth::has_stored_token,
             commands::auth::begin_reauth,

@@ -254,7 +254,6 @@
     .project-card:hover {
       border-color: var(--border-strong, var(--v4-control-border));
       background: var(--row-hover, var(--v4-active-row));
-      transform: translateY(-1px);
     }
   }
 

@@ -54,6 +54,18 @@ pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> Strin
     })
 }
 
+/// Signed-in account email from the Cognito id-token claims, for the desktop
+/// sidebar profile footer. Best-effort: any decode/read failure returns None.
+#[tauri::command]
+pub async fn get_account_email() -> Option<String> {
+    let tokens = cognito::get_tokens().await.ok().flatten()?;
+    let id_token = tokens.id_token?;
+    if id_token.is_empty() {
+        return None;
+    }
+    cognito::decode_id_token_claims(&id_token).ok()?.email
+}
+
 #[tauri::command]
 pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
     match crate::commands::dm_notify::resolve_notification_credentials(&app).await {
