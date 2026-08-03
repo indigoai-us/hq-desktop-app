@@ -768,6 +768,7 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::ffi::{OsStr, OsString};
     #[cfg(unix)]
     use std::sync::{Mutex, OnceLock};
@@ -1152,5 +1153,85 @@ exit 0
         let base = std::env::temp_dir().join(format!("hq-cli-clean-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         clean_partial_hq_cli_install(base.to_str().unwrap());
+    }
+
+    #[test]
+    fn failed_foreign_marker_write_never_calls_the_non_convergent_capture() {
+        let records = Cell::new(0usize);
+        let captures = Cell::new(0usize);
+        let failures = Cell::new(0usize);
+
+        for _ in 0..5 {
+            let outcome = decide_post_install(
+                "/Users/t/Library/pnpm/hq",
+                "/Users/t/Library/pnpm/hq",
+                Some("5.77.14"),
+                Some("5.77.14"),
+                "5.84.0",
+                None,
+                "/opt/homebrew/bin/npm",
+                false,
+            );
+            let record = |version: &str| {
+                records.set(records.get() + 1);
+                assert_eq!(version, "5.84.0");
+                Err("config directory is unwritable".to_string())
+            };
+            let clear = || panic!("a non-convergent install must not clear its marker");
+            let capture = |_| captures.set(captures.get() + 1);
+            let record_failure = || failures.set(failures.get() + 1);
+            let emit = |_| panic!("a non-convergent install must not emit cleared");
+            let effects = PostInstallEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+                emit_cleared: &emit,
+            };
+
+            let result = apply_post_install(&outcome, &effects);
+            assert!(matches!(result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)));
+        }
+
+        assert_eq!(records.get(), 5);
+        assert_eq!(captures.get(), 0);
+        assert_eq!(failures.get(), 5);
+    }
+
+    #[test]
+    fn converged_post_install_clears_and_emits_once() {
+        let clears = Cell::new(0usize);
+        let emits = Cell::new(0usize);
+        let outcome = decide_post_install(
+            "/Users/t/.npm-global/bin/hq",
+            "/Users/t/.npm-global/bin/hq",
+            Some("5.77.14"),
+            Some("5.84.0"),
+            "5.84.0",
+            Some("/Users/t/.npm-global"),
+            "/opt/homebrew/bin/npm",
+            true,
+        );
+        let record = |_| panic!("a converged install must not record a non-convergence");
+        let clear = || clears.set(clears.get() + 1);
+        let capture = |_| panic!("a converged install must not capture non-convergence");
+        let record_failure = || panic!("a converged install has no marker failure");
+        let emit = |info: &HqCliUpdateInfo| {
+            emits.set(emits.get() + 1);
+            assert_eq!(info.local.as_deref(), Some("5.84.0"));
+            assert_eq!(info.latest, "5.84.0");
+        };
+        let effects = PostInstallEffects {
+            record: &record,
+            clear: &clear,
+            capture: &capture,
+            record_failure: &record_failure,
+            emit_cleared: &emit,
+        };
+
+        let result = apply_post_install(&outcome, &effects).unwrap();
+        assert_eq!(result.local.as_deref(), Some("5.84.0"));
+        assert_eq!(clears.get(), 1);
+        assert_eq!(emits.get(), 1);
     }
 }

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    report_install_failure, report_non_convergent_install, report_npm_cache_setup_failure,
-    NonConvergenceKind,
+    report_install_failure, report_non_convergent_install,
+    report_npm_cache_setup_failure, NonConvergenceKind,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -196,7 +196,7 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
 }
 
 #[test]
-fn errno_backed_transient_failures_are_suppressed_but_lifecycle_collisions_are_captured() {
+fn errno_backed_exit_without_npm_evidence_stays_captured_for_diagnosis() {
     #[cfg(target_os = "macos")]
     let econnreset_exit = 202;
     #[cfg(target_os = "linux")]
@@ -204,24 +204,11 @@ fn errno_backed_transient_failures_are_suppressed_but_lifecycle_collisions_are_c
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let econnreset_exit = 202;
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        let events = captured_events(|| report_install_failure(Some(econnreset_exit), "", None));
-        assert!(
-            events.is_empty(),
-            "errno-backed network failure was captured"
-        );
-    }
-
-    let lifecycle = "npm error code ECONNRESET\n\
-        npm error command failed\n\
-        npm error command sh -c node postinstall.js\n\
-        application path: /Users/reviewer/project";
-    let events = captured_events(|| report_install_failure(Some(econnreset_exit), lifecycle, None));
+    let events = captured_events(|| report_install_failure(Some(econnreset_exit), "", None));
     assert_eq!(
         events.len(),
         1,
-        "lifecycle collision was incorrectly suppressed"
+        "an unexplained errno-backed exit was incorrectly suppressed"
     );
 
     let event = &events[0];
@@ -242,6 +229,14 @@ fn errno_backed_transient_failures_are_suppressed_but_lifecycle_collisions_are_c
         } else {
             Some("unknown")
         }
+    );
+    assert!(
+        event
+            .extra
+            .get("npm_diagnostics")
+            .and_then(|value| value.as_str())
+            .is_some_and(|summary| summary.contains("errno=")),
+        "the fixed diagnostics summary must carry the closed errno value"
     );
     assert_path_safe(event, &["/Users/", "reviewer", "npm error"]);
 }
@@ -298,6 +293,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
     );
     assert_path_safe(event, &[home.as_str(), "/Users/"]);
 }
+
 
 #[test]
 fn cache_setup_failures_capture_stable_path_safe_envelopes() {

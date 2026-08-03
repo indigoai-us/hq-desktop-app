@@ -1164,19 +1164,21 @@ fn npm_syscall(detail: &str) -> &'static str {
 /// Every field here is either a closed enumeration, a boolean, or a number.
 fn npm_diagnostics_summary(
     exit_code: &str,
+    npm_errno: &str,
     detail: &str,
     path_shape: NpmPathShape,
     prefix_known: bool,
     eacces: bool,
 ) -> String {
     format!(
-        "error_code={} syscall={} path_shape={} prefix_known={} eacces={} exit_code={} stderr_len={}",
+        "error_code={} syscall={} path_shape={} prefix_known={} eacces={} exit_code={} errno={} stderr_len={}",
         npm_error_code(detail),
         npm_syscall(detail),
         path_shape.tag_value(),
         prefix_known,
         eacces,
         exit_code,
+        npm_errno,
         detail.len(),
     )
 }
@@ -1435,8 +1437,10 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
     let npm_path_shape = npm_path_shape(detail, prefix);
     let npm_prefix_known = prefix.is_some();
     let npm_stderr_len = detail.len().to_string();
+    let npm_errno = npm_errno_from_exit_status(exit_code);
     let npm_diagnostics = npm_diagnostics_summary(
         exit_str.as_str(),
+        npm_errno,
         detail,
         npm_path_shape,
         npm_prefix_known,
@@ -1457,7 +1461,7 @@ pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Opti
                 if npm_prefix_known { "true" } else { "false" },
             );
             scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
-            scope.set_tag("npm_errno", npm_errno_from_exit_status(exit_code));
+            scope.set_tag("npm_errno", npm_errno);
             let fingerprint = [
                 "hq-cli-update",
                 "install-failed",

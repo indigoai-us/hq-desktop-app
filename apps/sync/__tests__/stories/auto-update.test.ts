@@ -113,22 +113,26 @@ describe('master automatic-updates switch', () => {
     // 1. A zero exit is not success — the version must reach `latest`, decided
     //    by a single predicate (`install_converged`) rather than a second
     //    hand-rolled comparison that could drift from it.
-    expect(cliUpdate).toContain('convergence_verdict(');
-    expect(cliUpdate).toContain('ConvergenceVerdict::NonConvergent');
+    expect(cliUpdateCore).toContain('pub fn decide_post_install(');
+    expect(cliUpdate).toContain('let outcome = decide_post_install(');
+    expect(cliUpdate).toContain('apply_post_install(&outcome, &effects)');
     // The old code fabricated `latest` as the local version when detection came
     // back empty, which is precisely what made a failed install read as a win.
     expect(cliUpdate).not.toContain('.or_else(|| Some(latest.clone()))');
 
-    // 2. A non-convergent install is recorded and reported, not swallowed.
-    expect(cliUpdate).toContain('record_non_convergent_version(&latest);');
-    expect(cliUpdate).toContain('report_non_convergent_install(');
+    // 2. A non-convergent install is recorded before it may be reported. The
+    //    executor owns this ordering, so a failed marker write fails closed.
+    expect(cliUpdate).toContain('struct PostInstallEffects');
+    expect(cliUpdate).toContain('capture_requires_durable_record');
+    expect(cliUpdate).toContain('report_non_convergent_marker_unpersisted()');
+    expect(cliUpdateCore).toContain('NonConvergenceKind::ForeignManaged');
     // 3. ...and the background loop consults that record before reinstalling.
     expect(normalize(cliUpdate)).toContain(
       'if should_auto_install( &info.latest, non_convergent_cli_version().as_deref(), )',
     );
     // A convergent install must clear the block so a later version is never
     // gated by a condition the user has since fixed.
-    expect(cliUpdate).toContain('clear_non_convergent_version();');
+    expect(cliUpdate).toContain('let clear = || clear_non_convergent_version();');
 
     // 4. Convergence is judged on the binary the app EXECUTES. Using
     //    `get_local_version` here would accept its `npm root -g` fallback —
@@ -139,6 +143,7 @@ describe('master automatic-updates switch', () => {
     const afterInstall = cliUpdate.slice(cliUpdate.indexOf(installCall));
     expect(afterInstall).toContain('let post_install_hq = paths::resolve_bin("hq");');
     expect(afterInstall).toContain('resolved_hq_version(&hq)');
+    expect(afterInstall).toContain('before_version.as_deref()');
     // The gate must be fed the execution-bound probe, never `get_local_version`'s
     // `npm root -g` fallback — that reading moves to `latest` for exactly the
     // pnpm/Homebrew layouts this guards, while the resolved binary stays stale.
@@ -148,6 +153,7 @@ describe('master automatic-updates switch', () => {
     //    cannot get recorded as non-convergent without ever being attempted.
     const beforeInstall = cliUpdate.slice(0, cliUpdate.indexOf(installCall));
     expect(beforeInstall).toContain('let latest = fetch_latest().await?;');
+    expect(beforeInstall).toContain('let already_blocked = non_convergent_cli_version().is_some();');
   });
 
   it('the non-convergent remedy reaches the user instead of the generic retry copy', () => {
