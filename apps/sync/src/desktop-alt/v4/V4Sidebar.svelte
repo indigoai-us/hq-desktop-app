@@ -86,6 +86,12 @@
   const menuCompanies = $derived(model.companies.filter((row) => !row.isPersonal));
   const menuPersonal = $derived(model.companies.filter((row) => row.isPersonal));
 
+  // Sidebar clusters: communication rides at the top (highest frequency),
+  // catalog resources sit below the workspace group.
+  const COMMS_IDS: ReadonlyArray<V4NavId> = ['inbox', 'messages', 'meetings'];
+  const commsNav = $derived(model.nav.filter((row) => COMMS_IDS.includes(row.id)));
+  const resourceNav = $derived(model.nav.filter((row) => !COMMS_IDS.includes(row.id)));
+
   const currentSections = $derived(
     currentRow == null
       ? []
@@ -253,53 +259,68 @@
     </button>
   {/if}
 
-  {#if currentRow}
-    <!-- The selected workspace's sections live directly under its switcher —
-         they belong to the workspace, app-wide destinations follow below. -->
-    <nav
-      class="ws-sections"
-      data-testid={`company-children-${currentRow.slug}`}
-      aria-label={`${currentRow.label} sections`}
-    >
-      {#each currentSections as child (child.id)}
+  <!-- Linear/Slack-style structure: communication first (highest frequency),
+       then the current workspace's own sections under a named group, then
+       catalog resources. The scrollable middle keeps the footer pinned. -->
+  <div class="ws-scroll">
+    <nav class="v4-nav" aria-label="Communication">
+      {#each commsNav as row (row.id)}
         <button
           type="button"
           class="v4-row"
-          class:active={child.active}
-          aria-current={child.active ? 'page' : undefined}
-          data-testid={`company-child-${currentRow.slug}-${child.id}`}
-          onclick={() => goCompanySection(currentRow.slug, child.id)}
+          class:active={row.active}
+          aria-current={row.active ? 'page' : undefined}
+          onclick={() => go(row.id)}
         >
-          <span class="v4-row-label">{child.id === 'more' ? 'Operations' : child.label}</span>
+          <span class="v4-row-label">{row.label}</span>
+          {#if row.id === 'inbox' && notifUnread > 0}
+            <span class="v4-unread-badge" aria-label={`${notifUnread} unread`}>
+              {notifUnread > 99 ? '99+' : notifUnread}
+            </span>
+          {/if}
         </button>
       {/each}
     </nav>
-  {/if}
+
+    {#if currentRow}
+      <div class="ws-eyebrow" aria-hidden="true">{currentRow.label}</div>
+      <nav
+        class="v4-nav"
+        data-testid={`company-children-${currentRow.slug}`}
+        aria-label={`${currentRow.label} sections`}
+      >
+        {#each currentSections as child (child.id)}
+          <button
+            type="button"
+            class="v4-row"
+            class:active={child.active}
+            aria-current={child.active ? 'page' : undefined}
+            data-testid={`company-child-${currentRow.slug}-${child.id}`}
+            onclick={() => goCompanySection(currentRow.slug, child.id)}
+          >
+            <span class="v4-row-label">{child.id === 'more' ? 'Operations' : child.label}</span>
+          </button>
+        {/each}
+      </nav>
+    {/if}
+
+    <div class="ws-eyebrow" aria-hidden="true">Resources</div>
+    <nav class="v4-nav" aria-label="Resources">
+      {#each resourceNav as row (row.id)}
+        <button
+          type="button"
+          class="v4-row"
+          class:active={row.active}
+          aria-current={row.active ? 'page' : undefined}
+          onclick={() => go(row.id)}
+        >
+          <span class="v4-row-label">{row.label}</span>
+        </button>
+      {/each}
+    </nav>
+  </div>
 
   <div class="v4-spacer"></div>
-
-  <!-- App-wide destinations live at the bottom, apart from the workspace
-       context above: everything under the switcher is about that company. -->
-  <div class="ws-divider" aria-hidden="true"></div>
-
-  <nav class="v4-nav" aria-label="Primary">
-    {#each model.nav as row (row.id)}
-      <button
-        type="button"
-        class="v4-row"
-        class:active={row.active}
-        aria-current={row.active ? 'page' : undefined}
-        onclick={() => go(row.id)}
-      >
-        <span class="v4-row-label">{row.label}</span>
-        {#if row.id === 'inbox' && notifUnread > 0}
-          <span class="v4-unread-badge" aria-label={`${notifUnread} unread`}>
-            {notifUnread > 99 ? '99+' : notifUnread}
-          </span>
-        {/if}
-      </button>
-    {/each}
-  </nav>
 
   <!-- Profile footer: circle avatar + name + email; opens Settings. -->
   <button
@@ -568,31 +589,38 @@
     color: var(--v4-text-3);
   }
 
-  .ws-sections {
+  .ws-scroll {
     display: flex;
     flex-direction: column;
     flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
-    gap: var(--v4-row-gap);
     scrollbar-color: var(--v4-hairline) transparent;
     scrollbar-width: thin;
   }
 
-  .ws-sections::-webkit-scrollbar {
+  .ws-scroll::-webkit-scrollbar {
     width: 6px;
   }
 
-  .ws-sections::-webkit-scrollbar-thumb {
+  .ws-scroll::-webkit-scrollbar-thumb {
     border-radius: var(--v4-radius-pill);
     background: var(--v4-hairline);
   }
 
-  .ws-divider {
+  /* Native macOS sidebar group header (Finder/Mail idiom). */
+  .ws-eyebrow {
     flex: 0 0 auto;
-    height: 1px;
-    margin: 12px 8px;
-    background: var(--v4-hairline);
+    overflow: hidden;
+    margin: 16px 0 4px;
+    padding: 0 8px;
+    color: var(--v4-text-3);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .ws-layer {
