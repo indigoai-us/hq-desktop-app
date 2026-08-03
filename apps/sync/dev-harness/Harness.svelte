@@ -380,6 +380,11 @@
     style={`background-image: url(${theme === 'dark' ? wallpaperDark : wallpaperLight})`}
   >
     <div class="mac-window">
+      <div class="traffic-lights" aria-hidden="true">
+        <span class="tl tl-close"></span>
+        <span class="tl tl-min"></span>
+        <span class="tl tl-max"></span>
+      </div>
       <DesktopApp />
     </div>
     <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
@@ -507,6 +512,7 @@
      NSGlassEffectView backing the transparent shell expects — translucent
      tint + backdrop blur over the wallpaper. */
   .mac-window {
+    position: relative;
     width: min(1180px, 100%);
     height: min(760px, 100%);
     border-radius: 12px;
@@ -522,6 +528,37 @@
 
   :global(html[data-force-theme='dark']) .mac-window {
     background: rgba(22, 22, 24, 0.55);
+  }
+
+  /* Decorative macOS traffic lights — the native window draws these over the
+     webview, so the titlebar already reserves the top-left inset for them. */
+  .traffic-lights {
+    position: absolute;
+    top: 14px;
+    left: 20px;
+    display: flex;
+    gap: 8px;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .tl {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.2);
+  }
+
+  .tl-close {
+    background: #ff5f57;
+  }
+
+  .tl-min {
+    background: #febc2e;
+  }
+
+  .tl-max {
+    background: #28c840;
   }
 
   .stage-theme-toggle {
