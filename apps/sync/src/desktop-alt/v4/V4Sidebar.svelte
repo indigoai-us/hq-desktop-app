@@ -276,6 +276,10 @@
     </nav>
   {/if}
 
+  <div class="v4-spacer"></div>
+
+  <!-- App-wide destinations live at the bottom, apart from the workspace
+       context above: everything under the switcher is about that company. -->
   <div class="ws-divider" aria-hidden="true"></div>
 
   <nav class="v4-nav" aria-label="Primary">
@@ -296,9 +300,6 @@
       </button>
     {/each}
   </nav>
-
-
-  <div class="v4-spacer"></div>
 
   <!-- Profile footer: circle avatar + name + email; opens Settings. -->
   <button

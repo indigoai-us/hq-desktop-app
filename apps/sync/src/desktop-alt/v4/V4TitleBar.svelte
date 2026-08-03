@@ -517,8 +517,8 @@
     gap: 6px;
     height: 28px;
     padding: 0 9px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
+    border: none;
+    border-radius: 8px;
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
     font-family: var(--font-mono);
@@ -597,12 +597,14 @@
     height: 14px;
   }
 
+  /* Standard secondary button (onboarding language): borderless fill,
+     8px radius, opacity hover, gentle scale press. */
   .v4-action {
     flex: 0 0 auto;
     height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font: inherit;
@@ -610,10 +612,15 @@
     font-weight: 500;
     line-height: 1;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .v4-action:hover:not(:disabled) {
-    background: var(--v4-active-row);
+    opacity: 0.88;
+  }
+
+  .v4-action:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .v4-action:disabled {
