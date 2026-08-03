@@ -142,7 +142,10 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         event.tags.get("npm_stderr_len").map(String::as_str),
         Some(unexpected_eacces_len.as_str())
     );
-    assert_eq!(event.tags.get("npm_errno").map(String::as_str), Some("unknown"));
+    assert_eq!(
+        event.tags.get("npm_errno").map(String::as_str),
+        Some("unknown")
+    );
     assert_eq!(
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(

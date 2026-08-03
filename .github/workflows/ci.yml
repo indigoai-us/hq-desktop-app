@@ -121,10 +121,10 @@ jobs:
             .
             apps/sync/src-tauri
       - name: Workspace crate tests (hq-desktop-core, hq-platform, hq-telemetry)
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: App crate tests (hq-sync-menubar)
         working-directory: apps/sync/src-tauri
-        run: cargo test
+        run: cargo test --locked
       - name: Root workspace lockfile check
         run: cargo check --workspace --locked
       - name: App workspace lockfile check

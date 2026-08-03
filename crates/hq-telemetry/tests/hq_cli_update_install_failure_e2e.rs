@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    report_install_failure, report_non_convergent_install,
-    report_npm_cache_setup_failure, NonConvergenceKind,
+    report_install_failure, report_non_convergent_install, report_npm_cache_setup_failure,
+    NonConvergenceKind,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -99,7 +99,10 @@ fn assert_unexpected_install_event(
         event.tags.get("npm_stderr_len").map(String::as_str),
         Some(expected_stderr_len)
     );
-    assert_eq!(event.tags.get("npm_errno").map(String::as_str), Some("unknown"));
+    assert_eq!(
+        event.tags.get("npm_errno").map(String::as_str),
+        Some("unknown")
+    );
     assert_eq!(
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(
@@ -294,7 +297,6 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
     );
     assert_path_safe(event, &[home.as_str(), "/Users/"]);
 }
-
 
 #[test]
 fn cache_setup_failures_capture_stable_path_safe_envelopes() {

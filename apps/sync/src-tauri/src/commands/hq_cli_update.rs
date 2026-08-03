@@ -66,20 +66,20 @@ use crate::util::paths;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
-    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
-    hq_version_string, install_argv, install_converged, install_failure_detail,
-    install_failure_report, is_cli_update_dismissed, is_prefix_permission_failure,
-    is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
-    npm_prefix_from_hq_bin, read_installed_version, redact_home, redact_home_in,
-    report_install_failure, report_non_convergent_install,
-    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_unreadable_version, resolved_hq_version, should_auto_install,
-    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
-    version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NonConvergentReport,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NpmLatest, PostInstallOutcome,
-    VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    apply_post_install_effects, auto_update_enabled, classify_install_failure,
+    cli_auto_update_enabled, cmp_semver, decide_post_install, dismissed_cli_version,
+    get_local_version, get_local_version_diagnostics, hq_version_string, install_argv,
+    install_converged, install_failure_detail, install_failure_report, is_cli_update_dismissed,
+    is_prefix_permission_failure, is_windows_locked_binary_failure, non_convergent_cli_version,
+    non_convergent_detail, non_convergent_episode_blocked, npm_prefix_from_hq_bin,
+    read_installed_version, redact_home, redact_home_in, report_install_failure,
+    report_non_convergent_install, report_non_convergent_marker_unpersisted,
+    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergentReport, NpmLatest,
+    PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome, DISMISSED_VERSION_KEY,
+    HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -485,7 +485,7 @@ struct PostInstallEffects<'a> {
     record: &'a dyn Fn(String) -> Result<(), String>,
     clear: &'a dyn Fn(),
     capture: &'a dyn Fn(NonConvergentReport),
-    record_failure: &'a dyn Fn(),
+    record_failure: &'a dyn Fn(String),
     emit_cleared: &'a dyn Fn(HqCliUpdateInfo),
 }
 
@@ -493,42 +493,19 @@ fn apply_post_install(
     outcome: &PostInstallOutcome,
     effects: &PostInstallEffects<'_>,
 ) -> Result<HqCliUpdateInfo, String> {
-    let marker_persisted = match outcome.record_non_convergent.as_deref() {
-        Some(version) => match (effects.record)(version.to_string()) {
-            Ok(()) => true,
-            Err(error) => {
-                log(
-                    "hq-cli-update",
-                    &format!("could not record non-convergent version {version}: {error}"),
-                );
-                (effects.record_failure)();
-                false
-            }
-        },
-        None => true,
+    let core_effects = PostInstallCoreEffects {
+        record: effects.record,
+        clear: effects.clear,
+        capture: effects.capture,
+        record_failure: effects.record_failure,
     };
-
-    if outcome.clear_non_convergent {
-        (effects.clear)();
-    }
-
-    if let Some(report) = outcome.capture.as_ref() {
-        if !outcome.capture_requires_durable_record || marker_persisted {
-            (effects.capture)(report.clone());
-        }
-    }
-
-    match &outcome.result {
-        Ok(success) => {
-            let info = HqCliUpdateInfo {
-                local: Some(success.local.clone()),
-                latest: success.latest.clone(),
-            };
-            (effects.emit_cleared)(info.clone());
-            Ok(info)
-        }
-        Err(detail) => Err(detail.clone()),
-    }
+    let success = apply_post_install_effects(outcome, &core_effects)?;
+    let info = HqCliUpdateInfo {
+        local: Some(success.local),
+        latest: success.latest,
+    };
+    (effects.emit_cleared)(info.clone());
+    Ok(info)
 }
 
 #[tauri::command]
@@ -541,7 +518,7 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // This must be sampled before the install. An unwritable marker reads as
     // absent; the post-install gate then refuses to capture unless this run
     // successfully persists the first-episode marker.
-    let already_blocked = non_convergent_cli_version().is_some();
+    let non_convergent_version = non_convergent_cli_version();
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
         report_npm_cache_setup_failure(category);
         error
@@ -554,6 +531,8 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // nothing ever attempted. Resolving first keeps the comparison and the
     // recorded block bound to the version this run actually asked npm for.
     let latest = fetch_latest().await?;
+    let already_blocked =
+        non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
     log(
         "hq-cli-update",
         &format!(
@@ -651,7 +630,10 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
             report.kind,
         );
     };
-    let record_failure = || report_non_convergent_marker_unpersisted();
+    let record_failure = |error: String| {
+        log("hq-cli-update", &error);
+        report_non_convergent_marker_unpersisted();
+    };
     let emit_cleared = |info: HqCliUpdateInfo| {
         // Frontend uses this to drop the banner immediately on success.
         let _ = app.emit("hq-cli-update:cleared", &info);
@@ -678,7 +660,7 @@ fn record_non_convergent_version(latest: &str) -> Result<(), String> {
         .and_then(|path| {
             hq_desktop_core::first_run::merge_menubar_flags(
                 &path,
-                &[ (
+                &[(
                     NON_CONVERGENT_VERSION_KEY,
                     Value::String(latest.to_string()),
                 )],
@@ -1179,7 +1161,7 @@ exit 0
             };
             let clear = || panic!("a non-convergent install must not clear its marker");
             let capture = |_| captures.set(captures.get() + 1);
-            let record_failure = || failures.set(failures.get() + 1);
+            let record_failure = |_error: String| failures.set(failures.get() + 1);
             let emit = |_| panic!("a non-convergent install must not emit cleared");
             let effects = PostInstallEffects {
                 record: &record,
@@ -1190,7 +1172,9 @@ exit 0
             };
 
             let result = apply_post_install(&outcome, &effects);
-            assert!(matches!(result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)));
+            assert!(
+                matches!(result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX))
+            );
         }
 
         assert_eq!(records.get(), 5);
@@ -1215,7 +1199,7 @@ exit 0
         let record = |_| panic!("a converged install must not record a non-convergence");
         let clear = || clears.set(clears.get() + 1);
         let capture = |_| panic!("a converged install must not capture non-convergence");
-        let record_failure = || panic!("a converged install has no marker failure");
+        let record_failure = |_error: String| panic!("a converged install has no marker failure");
         let emit = |info: HqCliUpdateInfo| {
             emits.set(emits.get() + 1);
             assert_eq!(info.local.as_deref(), Some("5.84.0"));

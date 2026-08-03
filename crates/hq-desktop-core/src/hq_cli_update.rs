@@ -592,7 +592,10 @@ pub fn non_convergence_kind(
     npm_prefix_passed: Option<&str>,
     post_install_hq_bin: &str,
 ) -> NonConvergenceKind {
-    match (npm_prefix_passed, npm_prefix_from_hq_bin(post_install_hq_bin)) {
+    match (
+        npm_prefix_passed,
+        npm_prefix_from_hq_bin(post_install_hq_bin),
+    ) {
         (Some(passed), Some(active_prefix)) if passed == active_prefix => {
             NonConvergenceKind::NpmTargeted
         }
@@ -635,6 +638,16 @@ pub struct PostInstallOutcome {
     pub result: Result<PostInstallSuccess, String>,
 }
 
+/// Injectable post-install effects shared by the app executor and telemetry
+/// artifact tests. This is the production ordering seam: foreign-managed
+/// capture cannot happen unless the marker write succeeds.
+pub struct PostInstallCoreEffects<'a> {
+    pub record: &'a dyn Fn(String) -> Result<(), String>,
+    pub clear: &'a dyn Fn(),
+    pub capture: &'a dyn Fn(NonConvergentReport),
+    pub record_failure: &'a dyn Fn(String),
+}
+
 /// Decide whether an npm install reached the CLI the desktop app resolves
 /// afterwards. `before` is diagnostic context only: it distinguishes the
 /// expected shim-to-npm relocation from an ordinary in-place update, while the
@@ -673,13 +686,7 @@ pub fn decide_post_install(
     npm_bin: &str,
     already_blocked: bool,
 ) -> PostInstallOutcome {
-    let verdict = convergence_verdict(
-        before_version,
-        after_version,
-        before_bin,
-        after_bin,
-        latest,
-    );
+    let verdict = convergence_verdict(before_version, after_version, before_bin, after_bin, latest);
     if matches!(
         verdict,
         ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
@@ -721,8 +728,8 @@ pub fn decide_post_install(
         npm_bin: npm_bin.to_string(),
         hq_bin_changed: before_bin != after_bin,
     });
-    let record_non_convergent = (!already_blocked || kind == NonConvergenceKind::NpmTargeted)
-        .then(|| latest.to_string());
+    let record_non_convergent =
+        (!already_blocked || kind == NonConvergenceKind::NpmTargeted).then(|| latest.to_string());
 
     PostInstallOutcome {
         verdict: ConvergenceVerdict::NonConvergent,
@@ -741,6 +748,40 @@ pub fn decide_post_install(
     }
 }
 
+/// Apply the filesystem and telemetry effects selected by
+/// [`decide_post_install`]. Keeping this executor in the core crate lets the
+/// artifact harness prove the same fail-closed ordering used by the Tauri
+/// command instead of reimplementing it in a test.
+pub fn apply_post_install_effects(
+    outcome: &PostInstallOutcome,
+    effects: &PostInstallCoreEffects<'_>,
+) -> Result<PostInstallSuccess, String> {
+    let marker_persisted = match outcome.record_non_convergent.as_deref() {
+        Some(version) => match (effects.record)(version.to_string()) {
+            Ok(()) => true,
+            Err(error) => {
+                (effects.record_failure)(format!(
+                    "could not record non-convergent version {version}: {error}"
+                ));
+                false
+            }
+        },
+        None => true,
+    };
+
+    if outcome.clear_non_convergent {
+        (effects.clear)();
+    }
+
+    if let Some(report) = outcome.capture.as_ref() {
+        if !outcome.capture_requires_durable_record || marker_persisted {
+            (effects.capture)(report.clone());
+        }
+    }
+
+    outcome.result.clone()
+}
+
 /// Should the background loop auto-install `latest`?
 ///
 /// `false` once an install of that exact version has already completed without
@@ -749,8 +790,12 @@ pub fn decide_post_install(
 /// newer `latest` clears the block on its own (the environment may have been
 /// fixed in between), and the user-initiated "Update" button never consults
 /// this — an explicit click should always be allowed to try again.
+pub fn non_convergent_episode_blocked(non_convergent: Option<&str>, latest: &str) -> bool {
+    non_convergent == Some(latest)
+}
+
 pub fn should_auto_install(latest: &str, non_convergent: Option<&str>) -> bool {
-    non_convergent != Some(latest)
+    !non_convergent_episode_blocked(non_convergent, latest)
 }
 
 /// Stable marker on the non-convergent error string. The UI keys off it to tell
@@ -848,7 +893,10 @@ pub fn report_non_convergent_marker_unpersisted() {
             scope.set_tag("hq_cli_update_kind", "non-convergent-marker-unpersisted");
             scope.set_tag("marker_store", "menubar-json");
             scope.set_tag("marker_error_class", "persistence");
-            scope.set_fingerprint(Some(&["hq-cli-update", "non-convergent-marker-unpersisted"]));
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "non-convergent-marker-unpersisted",
+            ]));
         },
         || {
             sentry::capture_message(
@@ -861,6 +909,7 @@ pub fn report_non_convergent_marker_unpersisted() {
 
 /// Test support for the process-lifetime capture bound. This is deliberately
 /// hidden rather than public API for callers.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn reset_non_convergent_marker_unpersisted_capture_for_tests() {
     MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
@@ -1083,23 +1132,6 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     } else {
         NpmPathShape::Other
     }
-}
-
-/// Return the named npm code without retaining any other stderr text. The raw
-/// token lets errno classification reject a contradicting npm code even when
-/// that code is not in the telemetry allow list.
-fn npm_error_code_token(detail: &str) -> Option<&str> {
-    const MARKERS: &[&str] = &["npm error code ", "npm err! code "];
-
-    detail.lines().find_map(|line| {
-        let line = line.trim();
-        MARKERS.iter().find_map(|marker| {
-            line.get(..marker.len())
-                .filter(|prefix| prefix.eq_ignore_ascii_case(marker))
-                .and_then(|_| line.get(marker.len()..))
-                .and_then(|remainder| remainder.split_ascii_whitespace().next())
-        })
-    })
 }
 
 fn npm_error_code(detail: &str) -> &'static str {
@@ -2979,11 +3011,23 @@ mod tests {
             true,
         );
         assert_eq!(outcome.verdict, ConvergenceVerdict::NonConvergent);
-        assert_eq!(outcome.non_convergence_kind, Some(NonConvergenceKind::ForeignManaged));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
         assert!(outcome.record_non_convergent.is_none());
         assert!(outcome.capture.is_none());
         assert!(outcome.capture_requires_durable_record);
-        assert!(matches!(outcome.result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)));
+        assert!(
+            matches!(outcome.result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX))
+        );
+    }
+
+    #[test]
+    fn non_convergent_episode_block_requires_the_exact_latest_version() {
+        assert!(non_convergent_episode_blocked(Some("5.84.0"), "5.84.0"));
+        assert!(!non_convergent_episode_blocked(Some("5.83.0"), "5.84.0"));
+        assert!(!non_convergent_episode_blocked(None, "5.84.0"));
     }
 
     #[test]
@@ -2998,7 +3042,10 @@ mod tests {
             "/opt/homebrew/bin/npm",
             false,
         );
-        assert_eq!(outcome.non_convergence_kind, Some(NonConvergenceKind::ForeignManaged));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
         assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.84.0"));
         assert!(outcome.capture.is_some());
         assert!(outcome.capture_requires_durable_record);
@@ -3016,7 +3063,10 @@ mod tests {
             "/opt/homebrew/bin/npm",
             true,
         );
-        assert_eq!(outcome.non_convergence_kind, Some(NonConvergenceKind::NpmTargeted));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::NpmTargeted)
+        );
         assert!(outcome.capture.is_some());
         assert!(!outcome.capture_requires_durable_record);
     }

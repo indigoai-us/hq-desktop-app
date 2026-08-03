@@ -19,6 +19,7 @@ const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
 const appUpdater = read('src-tauri/src/updater.rs');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+const ciWorkflow = read('../../.github/workflows/ci.yml');
 const settingsRs = read('src-tauri/src/commands/settings.rs');
 
 describe('master automatic-updates switch', () => {
@@ -123,7 +124,7 @@ describe('master automatic-updates switch', () => {
     // 2. A non-convergent install is recorded before it may be reported. The
     //    executor owns this ordering, so a failed marker write fails closed.
     expect(cliUpdate).toContain('struct PostInstallEffects');
-    expect(cliUpdate).toContain('capture_requires_durable_record');
+    expect(cliUpdateCore).toContain('capture_requires_durable_record');
     expect(cliUpdate).toContain('report_non_convergent_marker_unpersisted()');
     expect(cliUpdateCore).toContain('NonConvergenceKind::ForeignManaged');
     // 3. ...and the background loop consults that record before reinstalling.
@@ -153,7 +154,20 @@ describe('master automatic-updates switch', () => {
     //    cannot get recorded as non-convergent without ever being attempted.
     const beforeInstall = cliUpdate.slice(0, cliUpdate.indexOf(installCall));
     expect(beforeInstall).toContain('let latest = fetch_latest().await?;');
-    expect(beforeInstall).toContain('let already_blocked = non_convergent_cli_version().is_some();');
+    expect(beforeInstall).toContain('let non_convergent_version = non_convergent_cli_version();');
+    expect(normalize(beforeInstall)).toContain(
+      'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);',
+    );
+    // A marker for version A must not suppress the first durable episode for
+    // newly-published version B. The shared predicate is the exact-version
+    // source of truth for both the background gate and the install command.
+    expect(cliUpdateCore).toContain('pub fn non_convergent_episode_blocked(');
+    expect(cliUpdate).toContain('non_convergent_episode_blocked(');
+  });
+
+  it('Rust CI cannot repair a stale lockfile before checking it', () => {
+    expect(ciWorkflow).toContain('cargo test --workspace --locked');
+    expect(ciWorkflow).toMatch(/working-directory: apps\/sync\/src-tauri\s+run: cargo test --locked/);
   });
 
   it('the non-convergent remedy reaches the user instead of the generic retry copy', () => {
