@@ -253,6 +253,21 @@ fn runtime_frame_token(candidate: &str) -> Option<&'static str> {
         .map(|(_, token)| *token)
 }
 
+fn parenthesized_runtime_frame_token(line: &str) -> Option<&'static str> {
+    let line = line.trim();
+    if !line
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("at "))
+    {
+        return None;
+    }
+    let open = line.rfind('(')?;
+    let close = line.rfind(')')?;
+    (open < close)
+        .then(|| runtime_frame_token(line[open + 1..close].trim()))
+        .flatten()
+}
+
 /// Normalize the dying process's ordered, bounded stderr tail without letting
 /// any raw line, path, symbol, or line number escape.
 pub fn runner_stack_shape(tail: &[String]) -> RunnerStackShape {
@@ -267,7 +282,7 @@ pub fn runner_stack_shape(tail: &[String]) -> RunnerStackShape {
             })
             .filter(|candidate| !candidate.is_empty())
             .collect::<Vec<_>>();
-        let tokens = candidates
+        let mut tokens = candidates
             .iter()
             .enumerate()
             .filter_map(|(index, candidate)| {
@@ -282,6 +297,11 @@ pub fn runner_stack_shape(tail: &[String]) -> RunnerStackShape {
                     .flatten()
             })
             .collect::<Vec<_>>();
+        if tokens.is_empty() {
+            if let Some(token) = parenthesized_runtime_frame_token(line) {
+                tokens.push(token);
+            }
+        }
         if tokens.is_empty() {
             frames.push("app");
             redacted_frames = redacted_frames.saturating_add(1);
@@ -2657,6 +2677,18 @@ mod tests {
         assert_eq!(first.redacted_frames, 1);
         assert_ne!(first.shape, second.shape);
         assert_ne!(first.signature, second.signature);
+    }
+
+    #[test]
+    fn runner_stack_shape_recognises_named_v8_parenthesized_locations() {
+        let shape = runner_stack_shape(&[
+            "at Module._compile (node:internal/modules/cjs/loader:1356:14)".to_string(),
+            "at EventEmitter.emit (node:events:517:28)".to_string(),
+        ]);
+
+        assert_eq!(shape.shape, "node_cjs_loader>node_events");
+        assert_eq!(shape.depth, 2);
+        assert_eq!(shape.redacted_frames, 0);
     }
 
     #[test]

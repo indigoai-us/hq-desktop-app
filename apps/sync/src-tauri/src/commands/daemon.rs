@@ -134,12 +134,16 @@ fn begin_watcher_generation(origin: WatcherLaunchOrigin) -> WatcherGeneration {
     generation
 }
 
-fn watcher_generation_is_current(generation: &WatcherGeneration) -> bool {
-    watcher_generation_state()
+fn finish_watcher_generation(generation: &WatcherGeneration) {
+    let mut current = watcher_generation_state()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if current
         .as_ref()
-        == Some(generation)
+        .is_some_and(|current| current.id == generation.id)
+    {
+        *current = None;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -945,10 +949,6 @@ fn watcher_exit_capture_context(
     generation: &WatcherGeneration,
     stderr_tail: &[String],
 ) -> WatcherExitCaptureContext {
-    debug_assert!(
-        watcher_generation_is_current(generation),
-        "the exiting watcher must retain the generation published at its start"
-    );
     let totals = totals
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -956,6 +956,7 @@ fn watcher_exit_capture_context(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let stack = runner_stack_shape(stderr_tail);
+    finish_watcher_generation(generation);
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
         app_quit_in_progress: app_exit_requested(),
@@ -3670,6 +3671,10 @@ mod tests {
     #[test]
     fn watcher_generation_origin_is_durable_after_transient_flags_clear() {
         let generation = begin_watcher_generation(WatcherLaunchOrigin::SupervisorRespawn);
+        // A later generation may become globally current before this one exits;
+        // attribution must still come from the generation captured by its
+        // process closure, never from process-global state sampled at exit.
+        let _newer_generation = begin_watcher_generation(WatcherLaunchOrigin::AppLaunch);
         SUPERVISOR_RESPAWN_IN_FLIGHT.store(false, Ordering::Release);
         HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
         let context = watcher_exit_capture_context(
