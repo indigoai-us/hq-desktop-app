@@ -56,7 +56,7 @@ use serde::Serialize;
 
 use crate::commands::personal::PERSONAL_VAULT_JOURNAL_SLUG;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
-use crate::commands::vault_client::{CompanyBrand, EntityInfo, MembershipInfo, VaultClient};
+use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
 use crate::util::logfile::log;
 
 #[allow(unused_imports)]
@@ -561,6 +561,9 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                 company_name: None,
                 invited_by: inv.invited_by.clone(),
                 invited_at: inv.invited_at.clone(),
+                // Synthesized pending-invite rows never carry branding.
+                branding_enabled: false,
+                brand: None,
             });
         }
 

@@ -238,6 +238,8 @@ mod tests {
             broken_reason: None,
             invited_by: None,
             invited_at: None,
+            branding_enabled: false,
+            brand: None,
         }
     }
 

@@ -903,6 +903,12 @@
       transform: translateY(-12px) scale(0.97);
     }
 
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
   .mbp-brand {
     /* White-label logo slot row (US-005). Sits above the status row; only
        rendered when branding is entitled. */
@@ -911,12 +917,6 @@
     min-height: 24px;
     padding: 10px 16px 0 16px;
     color: var(--popover-text-heading, #ffffff);
-  }
-
-    to {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -50,17 +50,21 @@ const TOKENS_CSS = readFileSync(TOKENS_CSS_PATH, 'utf8');
 const STYLE_ID = 'v4-tokens-fixture';
 
 // Dark defaults from :root in tokens.css
+// Monorepo (DESKTOP-012) achromatic-glass palette. happy-dom does not support
+// backdrop-filter, so --v4-ground resolves through the @supports-not fallback
+// block (near-solid material alpha) with vars substituted textually.
 const DARK = {
-  ground: '#161618',
-  text1: '#f2f2f3',
-  ok: '#30d158',
+  ground: 'rgb(17 17 17 / clamp(0.92, calc(1 - 0.65 * 0.03), 1))',
+  text1: '#f2f2f2',
+  ok: '#41d870',
 } as const;
 
-// Light overrides from @media (prefers-color-scheme: light) in tokens.css
+// Light is the default scheme in the monorepo tokens.css; dark comes from the
+// prefers-color-scheme media block. Status hues resolve via popover fallbacks.
 const LIGHT = {
-  ground: '#f6f6f8',
-  text1: '#111113',
-  ok: '#1a8f3c',
+  ground: 'rgb(242 242 242 / clamp(0.92, calc(1 - 0.65 * 0.03), 1))',
+  text1: '#111111',
+  ok: '#1f9d4d',
 } as const;
 
 type ColorScheme = 'light' | 'dark';
