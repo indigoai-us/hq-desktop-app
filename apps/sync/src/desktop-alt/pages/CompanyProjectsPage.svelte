@@ -63,6 +63,7 @@
   type ProjectFilter = 'all' | 'active' | 'needs-link';
 
   let { slug, onnewproject }: Props = $props();
+  const personalWorkspace = $derived(slug === 'personal');
 
   let objectives = $state<Objective[]>([]);
   let projects = $state<Project[]>([]);
@@ -351,26 +352,31 @@
     provenanceUnavailable = false;
 
     // Best-effort and decoupled: cloud attribution must never gate local work.
-    void loadCompanyProjectProvenance(activeSlug)
-      .then((rows) => {
-        if (cancelled) return;
-        cloudProvenance = indexProjectProvenance(rows);
-        provenanceUnavailable = false;
-        if (selected) {
-          const refreshed = applyProjectProvenance(selected, cloudProvenance);
-          selected = refreshed;
-          void refreshSelectedStoriesForProvenance(refreshed);
-        }
-      })
-      .catch((err) => {
-        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
-        if (!cancelled) provenanceUnavailable = true;
-      });
+    // Personal is user-owned and has no company provenance endpoint.
+    if (!personalWorkspace) {
+      void loadCompanyProjectProvenance(activeSlug)
+        .then((rows) => {
+          if (cancelled) return;
+          cloudProvenance = indexProjectProvenance(rows);
+          provenanceUnavailable = false;
+          if (selected) {
+            const refreshed = applyProjectProvenance(selected, cloudProvenance);
+            selected = refreshed;
+            void refreshSelectedStoriesForProvenance(refreshed);
+          }
+        })
+        .catch((err) => {
+          console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+          if (!cancelled) provenanceUnavailable = true;
+        });
+    }
 
     void (async () => {
       try {
         const [goals, allProjects] = await Promise.all([
-          loadCompanyGoals(activeSlug),
+          personalWorkspace
+            ? Promise.resolve({ objectives: [], initiatives: [] })
+            : loadCompanyGoals(activeSlug),
           loadLocalProjects(),
         ]);
         if (cancelled) return;
@@ -647,15 +653,17 @@
         </select>
       </label>
 
-      <!-- Legacy cycle filter (All / Active / Needs link) for link handoff + contracts. -->
-      <button
-        type="button"
-        class="tool-button"
-        data-testid="portfolio-legacy-filter"
-        onclick={cycleFilter}
-      >
-        Filter: {filterLabel(projectFilter)}
-      </button>
+      {#if !personalWorkspace}
+        <!-- Legacy cycle filter (All / Active / Needs link) for company goal handoff. -->
+        <button
+          type="button"
+          class="tool-button"
+          data-testid="portfolio-legacy-filter"
+          onclick={cycleFilter}
+        >
+          Filter: {filterLabel(projectFilter)}
+        </button>
+      {/if}
 
       <div class="view-toggle" role="group" aria-label="Project view">
         <button
@@ -758,7 +766,7 @@
                       stateContext={portfolioStateContext(column, project)}
                       {now}
                       onselect={(p) => void openProject(p)}
-                      onlinkgoal={!goal ? requestLinkProject : undefined}
+                      onlinkgoal={!personalWorkspace && !goal ? requestLinkProject : undefined}
                       linkBusy={actionBusy === `link-${projectIdentity(project)}`}
                     />
                   {/each}
@@ -817,7 +825,7 @@
                         (project.createdAt
                           ? `started ${formatProjectDate(project.createdAt)}`
                           : 'No description')}
-                      {#if !goal}
+                      {#if !personalWorkspace && !goal}
                         <button
                           type="button"
                           class="link-nudge"
@@ -832,7 +840,7 @@
                       {/if}
                     </span>
                   </div>
-                  <div class="list-goal">{goal ?? 'No goal'}</div>
+                  <div class="list-goal">{personalWorkspace ? '—' : (goal ?? 'No goal')}</div>
                   <div class="list-provenance" data-testid="project-list-provenance">
                     <ProvenanceLine
                       provenance={project.provenance}

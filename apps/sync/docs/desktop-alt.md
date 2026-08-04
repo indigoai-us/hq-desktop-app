@@ -40,11 +40,11 @@ All commands are registered in `src-tauri/src/main.rs`.
 | `get_local_company_goals`, `get_local_projects`, `get_local_project_prd`, `get_local_project_readme` | Read local HQ work-system data for V4 goals, projects, tasks, and detail views. `get_local_projects` scans `personal/board.json`, unlinked `personal/projects/*/prd.json`, and authorized company project trees. |
 | `set_local_project_status`, `set_local_story_passes` | Write V4 project and story status changes back to local project files. |
 
-Company slugs are normalized in Rust, resolved through `list_syncable_workspaces`, and mapped to cloud company UIDs before company-only vault API calls. A broken manifest UID can still resolve if the workspace row exposes the live cloud UID in its broken reason. On the Overview panel, Personal is a user-owned local workspace and does not enter the company summary, board, provenance, goals, or activity loaders.
+Company slugs are normalized in Rust, resolved through `list_syncable_workspaces`, and mapped to cloud company UIDs before company-only vault API calls. A broken manifest UID can still resolve if the workspace row exposes the live cloud UID in its broken reason. Personal is a user-owned local workspace: its Overview, Projects, and Goals views do not enter company summary, board, provenance, goals, or activity loaders.
 
 ## Data + Security Notes
 
-- V4 reads work-system data from local HQ goals/projects where possible, while company Activity and Deployments still use their existing service-backed command paths. Personal projects come from `personal/board.json` plus `personal/projects/*/prd.json`; its overview shows honest local-only states for goals and activity instead of calling company services.
+- V4 reads work-system data from local HQ goals/projects where possible, while company Activity and Deployments still use their existing service-backed command paths. Personal projects come from `personal/board.json` plus `personal/projects/*/prd.json`; its Overview and Projects render that local data, while Goals and activity show honest local-only states instead of calling company services.
 - Projects and tasks display asserted roles separately: **Owner**, **Assignee**, **Created by**, and **Source**. Missing people are omitted instead of repeated as “Unassigned.” Local Git history is tenant-scoped and supplies creator evidence only when no explicit person attribution exists.
 - Deployments intentionally call hq-deploy directly; hq-deploy owns app rows, DNS state, deploy history, passwords, and share-token state.
 - Secrets must never expose plaintext. `get_company_secrets` projects each row into `{ env, count, items: [{ key, upd, rot }] }`; parser and E2E coverage reject recursive `value` or `secret` fields.
