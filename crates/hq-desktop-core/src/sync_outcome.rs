@@ -772,8 +772,8 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 ///   - a Node-too-old startup crash (`saw_node_too_old`): the runner could not
 ///     start under the user's Node version, so this is an environment fault
 ///     surfaced to the UI rather than an alertable product defect.
-///   - exit 75 (`TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`): hq-cloud has
-///     scheduled an automatic retry, so the current UI run must end without a
+///   - exit 75 (`TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`): the runner reports
+///     a retryable network outcome, so the current UI run must end without a
 ///     capture.
 ///
 /// An *unexplained* non-zero exit — no error event seen at all, e.g. the runner
@@ -795,7 +795,7 @@ pub enum RunnerExitDisposition {
     NodeTooOld,
     /// End the UI run after Windows console teardown without a capture.
     WindowsConsoleControl,
-    /// End the UI run after hq-cloud's self-healing network retry without a capture.
+    /// End the UI run after hq-cloud's retryable network outcome without a capture.
     TransientRetry,
     /// Log a fully explained non-zero exit without an additional UI event.
     Ignore,

@@ -226,11 +226,11 @@ fn terminal_sync_error_for_windows_console_control() -> SyncErrorEvent {
 }
 
 const TRANSIENT_RETRY_SYNC_ERROR_MESSAGE: &str =
-    "Sync could not reach HQ and will retry automatically.";
+    "Sync could not reach HQ. Please try Sync Now again.";
 
 /// The generic terminal event ends the renderer's active-sync state while the
-/// runner's exit-75 retry contract schedules the next attempt. It must never
-/// include runner-supplied output, paths, or arguments.
+/// runner reports its retryable exit contract. It must never include
+/// runner-supplied output, paths, or arguments.
 fn terminal_sync_error_for_transient_retry() -> SyncErrorEvent {
     SyncErrorEvent {
         company: None,
