@@ -54,6 +54,217 @@ function countOccurrences(source: string, needle: string): number {
   return source.split(needle).length - 1;
 }
 
+type ProductionSourceName = "main" | "tray" | "windowFocus";
+
+type ProductionSources = Record<ProductionSourceName, string>;
+
+interface BoundaryContract {
+  label: string;
+  file: ProductionSourceName;
+  hook: string;
+  startMarker: string;
+  endMarker: string;
+  afterMarkers?: string[];
+}
+
+const boundaryContracts: BoundaryContract[] = [
+  {
+    label: "popover shortcut seam",
+    file: "main",
+    hook: "NativePanicSeam::GlobalShortcutTogglePopover",
+    startMarker:
+      "if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {",
+    endMarker: "} else if shortcut == &desktop_shortcut",
+  },
+  {
+    label: "desktop shortcut seam",
+    file: "main",
+    hook: "NativePanicSeam::GlobalShortcutToggleDesktop",
+    startMarker: "} else if shortcut == &desktop_shortcut",
+    endMarker: "                .build(),",
+  },
+  {
+    label: "close-requested seam recorder",
+    file: "main",
+    hook: "NativePanicSeam::WindowCloseRequestedHide",
+    startMarker: "fn handle_window_close_requested_hide<F>",
+    endMarker: "fn main() {",
+  },
+  {
+    label: "close-requested callback",
+    file: "main",
+    hook: "handle_window_close_requested_hide(true, || {",
+    startMarker:
+      "if let tauri::WindowEvent::CloseRequested { api, .. } = event {",
+    endMarker: "// Windows: reapply Mica/Acrylic",
+    afterMarkers: ['if window.label() == "main" {'],
+  },
+  {
+    label: "theme-changed seam",
+    file: "main",
+    hook: "NativePanicSeam::WindowThemeChanged",
+    startMarker:
+      "if let tauri::WindowEvent::ThemeChanged(theme) = event {",
+    endMarker: "        })\n        .invoke_handler",
+  },
+  {
+    label: "single-instance seam recorder",
+    file: "main",
+    hook: "NativePanicSeam::SingleInstanceSurfaceExisting",
+    startMarker: "fn surface_existing_instance(app: &tauri::AppHandle) {",
+    endMarker: "fn handle_window_close_requested_hide<F>",
+  },
+  {
+    label: "single-instance callback",
+    file: "main",
+    hook: "surface_existing_instance(app);",
+    startMarker:
+      ".plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {",
+    endMarker: ".plugin(tauri_plugin_shell::init())",
+  },
+  {
+    label: "exit-requested seam",
+    file: "main",
+    hook: "NativePanicSeam::AppExitRequested",
+    startMarker: "if let tauri::RunEvent::ExitRequested { .. } = event {",
+    endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+  },
+  {
+    label: "running phase",
+    file: "main",
+    hook:
+      "set_native_panic_phase(hq_telemetry::NativePanicPhase::Running)",
+    startMarker: "fn main() {",
+    endMarker: "// Wire the foundation crate's injected dependencies",
+  },
+  {
+    label: "exiting phase",
+    file: "main",
+    hook:
+      "set_native_panic_phase(hq_telemetry::NativePanicPhase::Exiting)",
+    startMarker: "if let tauri::RunEvent::ExitRequested { .. } = event {",
+    endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+  },
+  {
+    label: "destroyed phase",
+    file: "main",
+    hook:
+      "set_native_panic_phase(hq_telemetry::NativePanicPhase::Destroyed)",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+  },
+  {
+    label: "tray-left-click seam",
+    file: "tray",
+    hook: "NativePanicSeam::TrayLeftClick",
+    startMarker: "if let TrayIconEvent::Click {",
+    endMarker: "        .build(app)?;",
+  },
+  {
+    label: "tray-blur seam recorder",
+    file: "tray",
+    hook: "NativePanicSeam::TrayBlurHide",
+    startMarker: "pub(crate) fn handle_tray_blur_hide<F>",
+    endMarker: "/// Create the system tray icon with its context menu",
+  },
+  {
+    label: "tray-blur callback",
+    file: "tray",
+    hook: "handle_tray_blur_hide(should_hide, || {",
+    startMarker: "if let WindowEvent::Focused(false) = event {",
+    endMarker: "// NOTE: on macOS there is no tao tray",
+    afterMarkers: ["let should_hide = !is_modal_open()"],
+  },
+  {
+    label: "foreground raise call",
+    file: "windowFocus",
+    hook: "force_foreground_hwnd(hwnd.0 as isize);",
+    startMarker: "fn raise_webview(window: &WebviewWindow, keep_on_top: bool) {",
+    endMarker: '    #[cfg(target_os = "macos")]',
+  },
+  {
+    label: "foreground seam recorder",
+    file: "windowFocus",
+    hook: "NativePanicSeam::WindowForceForeground",
+    startMarker: "fn force_foreground_hwnd(hwnd_raw: isize) {",
+    endMarker: "#[cfg(test)]\nmod tests {",
+  },
+];
+
+function currentSources(): ProductionSources {
+  return { main, tray, windowFocus };
+}
+
+function boundaryError(contract: BoundaryContract, count: number): string {
+  return `${contract.label} must occur exactly once in its ${contract.file} production boundary (found ${count})`;
+}
+
+function fileCountError(contract: BoundaryContract, count: number): string {
+  return `${contract.label} must occur exactly once in ${contract.file} (found ${count})`;
+}
+
+function orderError(contract: BoundaryContract, marker: string): string {
+  return `${contract.label} must remain after ${marker} in its production boundary`;
+}
+
+function productionBoundaryErrors(sources: ProductionSources): string[] {
+  return boundaryContracts.flatMap((contract) => {
+    const source = sources[contract.file];
+    const boundary = sourceBetween(
+      source,
+      contract.startMarker,
+      contract.endMarker,
+    );
+    const count = countOccurrences(boundary, contract.hook);
+    const errors = count === 1 ? [] : [boundaryError(contract, count)];
+
+    const fileCount = countOccurrences(source, contract.hook);
+    if (fileCount !== 1) {
+      errors.push(fileCountError(contract, fileCount));
+    }
+
+    if (count === 1) {
+      const hookIndex = boundary.indexOf(contract.hook);
+      for (const marker of contract.afterMarkers ?? []) {
+        const markerIndex = boundary.indexOf(marker);
+        if (markerIndex === -1 || hookIndex <= markerIndex) {
+          errors.push(orderError(contract, marker));
+        }
+      }
+    }
+
+    return errors;
+  });
+}
+
+function replaceBoundaryHook(
+  source: string,
+  contract: BoundaryContract,
+  replacement: string,
+): string {
+  const boundary = sourceBetween(
+    source,
+    contract.startMarker,
+    contract.endMarker,
+  );
+  const count = countOccurrences(boundary, contract.hook);
+  if (count !== 1) {
+    throw new Error(boundaryError(contract, count));
+  }
+
+  const start = source.indexOf(contract.startMarker);
+  const end = start + boundary.length;
+  return `${source.slice(0, start)}${boundary.replace(contract.hook, replacement)}${source.slice(end)}`;
+}
+
+function withSource(
+  sources: ProductionSources,
+  file: ProductionSourceName,
+  source: string,
+): ProductionSources {
+  return { ...sources, [file]: source };
+}
+
 describe("native panic seam wiring", () => {
   it("keeps every declared seam wired to its expected production source", () => {
     const expectedByFile = new Map<string, [string, string[]]>([
@@ -85,74 +296,45 @@ describe("native panic seam wiring", () => {
         expect(source, `${variant} must remain wired in ${file}`).toContain(
           `NativePanicSeam::${variant}`,
         );
+        expect(
+          countOccurrences(source, `NativePanicSeam::${variant}`),
+          `${variant} must have exactly one production recorder in ${file}`,
+        ).toBe(1);
       }
     }
   });
 
-  it("binds guarded hide helpers to their real window event boundaries", () => {
-    const closeRequestedBoundary = sourceBetween(
-      main,
-      ".on_window_event(|window, event| {",
-      "// Windows: reapply Mica/Acrylic",
-    );
-    const closeEvent = closeRequestedBoundary.indexOf(
-      "if let tauri::WindowEvent::CloseRequested { api, .. } = event",
-    );
-    const mainWindowGuard = closeRequestedBoundary.indexOf(
-      'if window.label() == "main"',
-    );
-    const closeHelper = closeRequestedBoundary.indexOf(
-      "handle_window_close_requested_hide(true, || {",
-    );
-
-    expect(closeEvent).toBeGreaterThan(-1);
-    expect(mainWindowGuard).toBeGreaterThan(closeEvent);
-    expect(closeHelper).toBeGreaterThan(mainWindowGuard);
-    expect(
-      countOccurrences(
-        closeRequestedBoundary,
-        "handle_window_close_requested_hide(",
-      ),
-    ).toBe(1);
-
-    const blurBoundary = sourceBetween(
-      tray,
-      "window.on_window_event(move |event| {",
-      "// NOTE: on macOS there is no tao tray",
-    );
-    const focusLostEvent = blurBoundary.indexOf(
-      "if let WindowEvent::Focused(false) = event",
-    );
-    const guardDecision = blurBoundary.indexOf(
-      "let should_hide = !is_modal_open()",
-    );
-    const blurHelper = blurBoundary.indexOf(
-      "handle_tray_blur_hide(should_hide, || {",
-    );
-
-    expect(focusLostEvent).toBeGreaterThan(-1);
-    expect(guardDecision).toBeGreaterThan(focusLostEvent);
-    expect(blurHelper).toBeGreaterThan(guardDecision);
-    expect(countOccurrences(blurBoundary, "handle_tray_blur_hide(")).toBe(1);
+  it("binds every seam and lifecycle phase to its production boundary", () => {
+    expect(productionBoundaryErrors(currentSources())).toEqual([]);
   });
 
-  it("keeps running, exiting, and destroyed lifecycle hooks at their event boundaries", () => {
-    const running = main.indexOf(
-      "set_native_panic_phase(hq_telemetry::NativePanicPhase::Running)",
-    );
-    const exitRequested = main.indexOf("tauri::RunEvent::ExitRequested");
-    const exiting = main.indexOf(
-      "set_native_panic_phase(hq_telemetry::NativePanicPhase::Exiting)",
-    );
-    const exit = main.indexOf("tauri::RunEvent::Exit)", exitRequested + 1);
-    const destroyed = main.indexOf(
-      "set_native_panic_phase(hq_telemetry::NativePanicPhase::Destroyed)",
-    );
+  it("rejects deletion and same-file relocation at every production boundary", () => {
+    const sources = currentSources();
 
-    expect(running).toBeGreaterThan(-1);
-    expect(exitRequested).toBeGreaterThan(running);
-    expect(exiting).toBeGreaterThan(exitRequested);
-    expect(exit).toBeGreaterThan(exiting);
-    expect(destroyed).toBeGreaterThan(exit);
+    for (const [index, contract] of boundaryContracts.entries()) {
+      const source = sources[contract.file];
+      const deleted = replaceBoundaryHook(
+        source,
+        contract,
+        `__deleted_boundary_hook_${index}__`,
+      );
+      expect(
+        productionBoundaryErrors(withSource(sources, contract.file, deleted)),
+        `${contract.label} deletion must fail the contract`,
+      ).toContain(boundaryError(contract, 0));
+
+      const removed = replaceBoundaryHook(
+        source,
+        contract,
+        `__relocated_boundary_hook_${index}__`,
+      );
+      const relocated = `${removed}\n// same-file relocation probe\n${contract.hook}\n`;
+      expect(
+        productionBoundaryErrors(
+          withSource(sources, contract.file, relocated),
+        ),
+        `${contract.label} same-file relocation must fail the contract`,
+      ).toContain(boundaryError(contract, 0));
+    }
   });
 });
