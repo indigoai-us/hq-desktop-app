@@ -44,7 +44,7 @@ Company slugs are normalized in Rust, resolved through `list_syncable_workspaces
 
 ## Data + Security Notes
 
-- V4 reads work-system data from local HQ goals/projects where possible, while company Activity and Deployments still use their existing service-backed command paths. Personal projects come from `personal/board.json` plus `personal/projects/*/prd.json`; its Overview and Projects render that local data, while Goals and activity show honest local-only states instead of calling company services.
+- V4 reads work-system data from local HQ goals/projects where possible, while company Activity and Deployments still use their existing service-backed command paths. Personal projects come from `personal/board.json` plus `personal/projects/*/prd.json`; its Overview and Projects render that local data, while Goals and the Overview activity digest show honest local-only states instead of calling company services.
 - Projects and tasks display asserted roles separately: **Owner**, **Assignee**, **Created by**, and **Source**. Missing people are omitted instead of repeated as “Unassigned.” Local Git history is tenant-scoped and supplies creator evidence only when no explicit person attribution exists.
 - Deployments intentionally call hq-deploy directly; hq-deploy owns app rows, DNS state, deploy history, passwords, and share-token state.
 - Secrets must never expose plaintext. `get_company_secrets` projects each row into `{ env, count, items: [{ key, upd, rot }] }`; parser and E2E coverage reject recursive `value` or `secret` fields.
