@@ -32,6 +32,28 @@ function nativePanicSeamVariants(): string[] {
     .map((match) => match[1]);
 }
 
+function sourceBetween(
+  source: string,
+  startMarker: string,
+  endMarker: string,
+): string {
+  const start = source.indexOf(startMarker);
+  if (start === -1) {
+    throw new Error(`Missing production boundary start: ${startMarker}`);
+  }
+
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end === -1) {
+    throw new Error(`Missing production boundary end: ${endMarker}`);
+  }
+
+  return source.slice(start, end);
+}
+
+function countOccurrences(source: string, needle: string): number {
+  return source.split(needle).length - 1;
+}
+
 describe("native panic seam wiring", () => {
   it("keeps every declared seam wired to its expected production source", () => {
     const expectedByFile = new Map<string, [string, string[]]>([
@@ -65,6 +87,53 @@ describe("native panic seam wiring", () => {
         );
       }
     }
+  });
+
+  it("binds guarded hide helpers to their real window event boundaries", () => {
+    const closeRequestedBoundary = sourceBetween(
+      main,
+      ".on_window_event(|window, event| {",
+      "// Windows: reapply Mica/Acrylic",
+    );
+    const closeEvent = closeRequestedBoundary.indexOf(
+      "if let tauri::WindowEvent::CloseRequested { api, .. } = event",
+    );
+    const mainWindowGuard = closeRequestedBoundary.indexOf(
+      'if window.label() == "main"',
+    );
+    const closeHelper = closeRequestedBoundary.indexOf(
+      "handle_window_close_requested_hide(true, || {",
+    );
+
+    expect(closeEvent).toBeGreaterThan(-1);
+    expect(mainWindowGuard).toBeGreaterThan(closeEvent);
+    expect(closeHelper).toBeGreaterThan(mainWindowGuard);
+    expect(
+      countOccurrences(
+        closeRequestedBoundary,
+        "handle_window_close_requested_hide(",
+      ),
+    ).toBe(1);
+
+    const blurBoundary = sourceBetween(
+      tray,
+      "window.on_window_event(move |event| {",
+      "// NOTE: on macOS there is no tao tray",
+    );
+    const focusLostEvent = blurBoundary.indexOf(
+      "if let WindowEvent::Focused(false) = event",
+    );
+    const guardDecision = blurBoundary.indexOf(
+      "let should_hide = !is_modal_open()",
+    );
+    const blurHelper = blurBoundary.indexOf(
+      "handle_tray_blur_hide(should_hide, || {",
+    );
+
+    expect(focusLostEvent).toBeGreaterThan(-1);
+    expect(guardDecision).toBeGreaterThan(focusLostEvent);
+    expect(blurHelper).toBeGreaterThan(guardDecision);
+    expect(countOccurrences(blurBoundary, "handle_tray_blur_hide(")).toBe(1);
   });
 
   it("keeps running, exiting, and destroyed lifecycle hooks at their event boundaries", () => {
