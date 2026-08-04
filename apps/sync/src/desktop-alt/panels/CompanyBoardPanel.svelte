@@ -78,6 +78,8 @@
     onopeninbox,
   }: Props = $props();
 
+  const personalWorkspace = $derived(slug === 'personal');
+
   interface InFlightDetail {
     storyTitle: string | null;
     priority: number | null;
@@ -91,7 +93,9 @@
     tone: 'ok' | 'warn' | 'error' | 'idle';
   }
 
-  const resourcesEnabled = $derived(cloudBacked && !connectionIssue && syncEnabled);
+  const resourcesEnabled = $derived(
+    !personalWorkspace && cloudBacked && !connectionIssue && syncEnabled,
+  );
   const summaryState = useCompanySummary({ slug: () => slug, enabled: () => resourcesEnabled });
   const boardState = useCompanyBoard({ slug: () => slug, enabled: () => resourcesEnabled });
 
@@ -230,6 +234,7 @@
 
   /** Honest cloud label — never invents health beyond backed/error state. */
   const cloudPulse = $derived.by((): { label: string; tone: 'ok' | 'warn' | 'error' | 'idle' } => {
+    if (personalWorkspace) return { label: 'personal workspace', tone: 'idle' };
     if (connectionIssue) return { label: 'cached data · reconnect needed', tone: 'error' };
     if (!cloudBacked) return { label: 'local only', tone: 'idle' };
     if (!syncEnabled) return { label: 'sync paused', tone: 'warn' };
@@ -276,7 +281,7 @@
         tone: 'error',
         actions: [{ id: 'inspect-local', label: 'Inspect', kind: 'secondary' }],
       });
-    } else if (!cloudBacked) {
+    } else if (!cloudBacked && !personalWorkspace) {
       cards.push({
         id: 'local-only',
         title: 'This company is local only',
@@ -332,31 +337,35 @@
     loading = true;
     let cancelled = false;
 
-    void loadCompanyProjectProvenance(activeSlug)
-      .then((records) => {
-        if (cancelled) return;
-        cloudProvenance = indexProjectProvenance(records);
-        provenanceUnavailable = false;
-        // Existing overview task rows inherited the provisional project
-        // provenance. Clear the cache so the effect below reloads them with
-        // authoritative cloud attribution.
-        inFlightStory = {};
-        if (selected) {
-          const refreshed = applyProjectProvenance(selected, cloudProvenance);
-          selected = refreshed;
-          void refreshSelectedStoriesForProvenance(refreshed);
-        }
-      })
-      .catch((err) => {
-        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
-        if (!cancelled) provenanceUnavailable = true;
-      });
+    if (!personalWorkspace) {
+      void loadCompanyProjectProvenance(activeSlug)
+        .then((records) => {
+          if (cancelled) return;
+          cloudProvenance = indexProjectProvenance(records);
+          provenanceUnavailable = false;
+          // Existing overview task rows inherited the provisional project
+          // provenance. Clear the cache so the effect below reloads them with
+          // authoritative cloud attribution.
+          inFlightStory = {};
+          if (selected) {
+            const refreshed = applyProjectProvenance(selected, cloudProvenance);
+            selected = refreshed;
+            void refreshSelectedStoriesForProvenance(refreshed);
+          }
+        })
+        .catch((err) => {
+          console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+          if (!cancelled) provenanceUnavailable = true;
+        });
+    }
 
     void (async () => {
       try {
         const [allProjects, goals] = await Promise.all([
           loadLocalProjects(),
-          loadCompanyGoals(activeSlug),
+          personalWorkspace
+            ? Promise.resolve({ objectives: [], initiatives: [] })
+            : loadCompanyGoals(activeSlug),
         ]);
         if (cancelled) return;
         projects = allProjects;
@@ -880,7 +889,11 @@
             {:else if objectives.length === 0}
               <div class="empty-inline" data-testid="empty-goals-state">
                 <span>No goals yet</span>
-                <p>Company goals will appear here after the next board sync.</p>
+                <p>
+                  {personalWorkspace
+                    ? 'Personal goals are not loaded in this view yet.'
+                    : 'Company goals will appear here after the next board sync.'}
+                </p>
               </div>
             {:else}
               <div class="goals-list">
@@ -898,7 +911,13 @@
 
           <!-- 5. Recent activity -->
           <section class="overview-section" data-testid="overview-activity-section">
-            <OverviewActivityDigest {slug} {cloudBacked} {syncEnabled} {onopeninbox} />
+            <OverviewActivityDigest
+              {slug}
+              {cloudBacked}
+              {personalWorkspace}
+              {syncEnabled}
+              {onopeninbox}
+            />
           </section>
         </div>
       </div>

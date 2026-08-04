@@ -11,6 +11,8 @@
   interface Props {
     slug: string;
     cloudBacked?: boolean;
+    /** Personal has local projects but no company activity API. */
+    personalWorkspace?: boolean;
     /** Local sync Off — pause fetches without treating the company as disconnected. */
     syncEnabled?: boolean;
     /** Open the global Inbox for full notification chronology. */
@@ -33,7 +35,13 @@
     top: ActivityContributor[];
   }
 
-  let { slug, cloudBacked = true, syncEnabled = true, onopeninbox }: Props = $props();
+  let {
+    slug,
+    cloudBacked = true,
+    personalWorkspace = false,
+    syncEnabled = true,
+    onopeninbox,
+  }: Props = $props();
   const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
   const emptyStats = (): ActivityStats => ({ files7: 0, edits7: 0, members: 0, vaultSize: '' });
@@ -133,7 +141,9 @@
     </button>
   </header>
 
-  {#if !cloudBacked}
+  {#if personalWorkspace}
+    <p class="digest-empty">Personal projects are local; company activity does not apply.</p>
+  {:else if !cloudBacked}
     <p class="digest-empty">Connect this company to see recent activity.</p>
   {:else if loading && !hasActivity}
     <div class="digest-skeleton" aria-hidden="true">
