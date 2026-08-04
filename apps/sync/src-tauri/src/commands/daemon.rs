@@ -78,6 +78,20 @@ const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 const DAEMON_START_DEADLINE: Duration = Duration::from_secs(2 * 60);
 const WATCHER_STDERR_TAIL_CAP: usize = 8;
 
+/// Retain the exact bounded, ordered stderr tail that the watcher exit path
+/// normalizes. This is intentionally the only mutation seam for watcher stderr
+/// retention, so production and regression coverage cannot diverge into a
+/// last-line-only path.
+fn record_watcher_stderr_tail(stderr_tail: &Mutex<VecDeque<String>>, line: &str) {
+    let mut tail = stderr_tail
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if tail.len() == WATCHER_STDERR_TAIL_CAP {
+        tail.pop_front();
+    }
+    tail.push_back(line.to_string());
+}
+
 /// True only while the supervisor is issuing a respawn request. Capturing the
 /// value at process exit makes the ordering explicit instead of inferring it
 /// from a stale lifecycle breadcrumb.
@@ -164,8 +178,8 @@ fn finish_watcher_generation(generation: &WatcherGeneration) {
 /// Failing to parse a line is non-fatal: blank lines arrive at runner
 /// teardown, and any unknown variant the runner adds in the future
 /// should not kill the watcher.
-fn handle_watch_stdout_line(
-    app: &AppHandle,
+fn handle_watch_stdout_line<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     hq_folder: &str,
     totals: &Mutex<RunTotals>,
     phase_context: &Mutex<WatcherPhaseContext>,
@@ -565,20 +579,22 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
 ///
 /// Returns the handle string on success.
 #[tauri::command]
-pub fn start_daemon(app: AppHandle) -> Result<String, String> {
+pub fn start_daemon<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
     start_daemon_with_origin(app, WatcherLaunchOrigin::Renderer)
 }
 
-pub fn start_daemon_for_app_launch(app: AppHandle) -> Result<String, String> {
+pub fn start_daemon_for_app_launch<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
     start_daemon_with_origin(app, WatcherLaunchOrigin::AppLaunch)
 }
 
-fn start_daemon_for_supervisor_respawn(app: AppHandle) -> Result<String, String> {
+fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<String, String> {
     start_daemon_with_origin(app, WatcherLaunchOrigin::SupervisorRespawn)
 }
 
-fn start_daemon_with_origin(
-    app: AppHandle,
+fn start_daemon_with_origin<R: tauri::Runtime>(
+    app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
     if !try_register_handle(DAEMON_HANDLE) {
@@ -717,13 +733,7 @@ fn start_daemon_with_origin(
                 }
                 ProcessEvent::Stderr(line) => {
                     log("daemon.stderr", &line);
-                    let mut tail = process_stderr_tail
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if tail.len() == WATCHER_STDERR_TAIL_CAP {
-                        tail.pop_front();
-                    }
-                    tail.push_back(line.clone());
+                    record_watcher_stderr_tail(&process_stderr_tail, &line);
                     // Raw stderr can contain user paths and messages. Keep it
                     // in the local log; the capture path receives only the
                     // fixed-vocabulary rollup recorded from parsed errors.
@@ -2061,6 +2071,9 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::process::{deregister_process, try_register_handle};
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
+    use tempfile::TempDir;
 
     // ── Double-start prevention ──────────────────────────────────────────
 
@@ -3668,8 +3681,67 @@ mod tests {
         );
     }
 
+    fn assert_signed_out_entry_point_records_origin(
+        name: &str,
+        expected_origin: WatcherLaunchOrigin,
+        start: impl FnOnce(AppHandle<tauri::test::MockRuntime>) -> Result<String, String>,
+    ) {
+        let app = tauri::test::mock_app();
+        let result = start(app.handle().clone());
+        assert_eq!(
+            result,
+            Err(crate::commands::cognito::REAUTH_MESSAGE.to_string()),
+            "{name} must stop at the signed-out preflight"
+        );
+
+        let generation = watcher_generation_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("the production entry point must publish a generation");
+        assert_eq!(generation.launch_origin, expected_origin, "{name}");
+        assert!(
+            try_register_handle(DAEMON_HANDLE),
+            "{name} must release the daemon guard after refusing signed-out startup"
+        );
+        deregister_process(DAEMON_HANDLE);
+        finish_watcher_generation(&generation);
+    }
+
+    #[test]
+    fn production_watcher_entry_points_publish_their_own_origins_before_signed_out_preflight() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_home = TempDir::new().expect("temporary signed-out home");
+        std::fs::create_dir_all(temp_home.path().join(".hq")).expect("create .hq directory");
+        let _home = scoped_home(temp_home.path());
+        *watcher_generation_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        deregister_process(DAEMON_HANDLE);
+
+        assert_signed_out_entry_point_records_origin(
+            "renderer",
+            WatcherLaunchOrigin::Renderer,
+            start_daemon,
+        );
+        assert_signed_out_entry_point_records_origin(
+            "app launch",
+            WatcherLaunchOrigin::AppLaunch,
+            start_daemon_for_app_launch,
+        );
+        assert_signed_out_entry_point_records_origin(
+            "supervisor respawn",
+            WatcherLaunchOrigin::SupervisorRespawn,
+            start_daemon_for_supervisor_respawn,
+        );
+    }
+
     #[test]
     fn watcher_generation_origin_is_durable_after_transient_flags_clear() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let generation = begin_watcher_generation(WatcherLaunchOrigin::SupervisorRespawn);
         // A later generation may become globally current before this one exits;
         // attribution must still come from the generation captured by its
@@ -3691,15 +3763,28 @@ mod tests {
 
     #[test]
     fn watcher_capture_normalizes_the_dying_generations_full_stderr_tail() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let generation = begin_watcher_generation(WatcherLaunchOrigin::AppLaunch);
-        let tail = vec![
-            "at node:internal/modules/cjs/loader:1218:14".to_string(),
-            "at C:\\Users\\Ada\\private-company\\secret-plan.md:10:2".to_string(),
-            "at node:fs:242:9".to_string(),
-            "private application frame".to_string(),
-        ];
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(WATCHER_STDERR_TAIL_CAP));
+        for line in [
+            "at node:internal/modules/cjs/loader:1218:14",
+            "at C:\\Users\\Ada\\private-company\\secret-plan.md:10:2",
+            "at node:fs:242:9",
+            "private application frame",
+        ] {
+            record_watcher_stderr_tail(&stderr_tail, line);
+        }
+        let tail = stderr_tail
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let context = watcher_exit_capture_context(
-            &Mutex::new(RunTotals::default()),
+            &totals,
             false,
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,

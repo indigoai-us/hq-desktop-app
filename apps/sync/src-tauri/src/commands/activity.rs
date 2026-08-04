@@ -66,7 +66,7 @@ pub fn get_activity_log(app: AppHandle) -> Vec<ActivityEntry> {
 
 /// Record one `progress` event into the session log and push it live to the
 /// activity window if it's open. Called from `commands::sync`'s event dispatch.
-pub fn record_progress(app: &AppHandle, p: &SyncProgressEvent) {
+pub fn record_progress<R: tauri::Runtime>(app: &AppHandle<R>, p: &SyncProgressEvent) {
     let Some(state) = app.try_state::<SessionActivity>() else {
         return;
     };
@@ -100,7 +100,7 @@ pub fn record_progress(app: &AppHandle, p: &SyncProgressEvent) {
 /// on (company, path) over download rows and flip the flag in place, then push a
 /// fresh `activity:list` snapshot to the window (if open) so the verb updates
 /// live. Entries the event doesn't name stay `None` → rendered as "updated".
-pub fn record_new_files(app: &AppHandle, e: &SyncNewFilesEvent) {
+pub fn record_new_files<R: tauri::Runtime>(app: &AppHandle<R>, e: &SyncNewFilesEvent) {
     // Windows parity: persist new-file notifications before touching the
     // session-only activity state so cross-session history survives restarts.
     crate::commands::notification_history::record_new_files(&e.company, &e.files);

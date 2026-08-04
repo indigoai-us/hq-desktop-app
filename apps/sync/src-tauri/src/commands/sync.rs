@@ -787,8 +787,8 @@ pub fn build_sync_spawn_args(
 /// `all-complete`, the aggregated totals are persisted to
 /// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
 /// `lastSyncAt` and conflict count instead of "never" / zero.
-fn handle_sync_line(
-    app: &AppHandle,
+fn handle_sync_line<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     hq_folder: &str,
     totals: &Mutex<RunTotals>,
     phase_context: &Mutex<RunnerPhaseContext>,
@@ -1033,7 +1033,11 @@ fn update_runner_stderr_totals(
 ///
 /// Error records still feed the exit-alert classifier; auth failures are
 /// emitted immediately because the runner deliberately exits 0 after them.
-pub(crate) fn handle_runner_stderr_line(app: &AppHandle, totals: &Mutex<RunTotals>, line: &str) {
+pub(crate) fn handle_runner_stderr_line<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    totals: &Mutex<RunTotals>,
+    line: &str,
+) {
     if let Some(payload) = update_runner_stderr_totals(totals, line) {
         let _ = app.emit(EVENT_SYNC_AUTH_ERROR, payload);
     }
@@ -2565,6 +2569,7 @@ mod tests {
             _signal: Option<i32>,
             _totals: &RunTotals,
             payload: SyncErrorEvent,
+            _context: &ManualRunnerExitContext,
         ) {
             self.captures.push(payload.clone());
             self.terminal_events.push(payload);
@@ -2664,6 +2669,7 @@ mod tests {
             signal,
             &describe_exit(code, signal),
             &totals,
+            &ManualRunnerExitContext::default(),
         );
 
         assert!(
@@ -2841,9 +2847,10 @@ mod tests {
         };
 
         let captures = sentry::test::with_captured_events(|| {
-            capture_runner_exit_error(Some(2), None, &eperm_totals, &payload);
-            capture_runner_exit_error(Some(2), None, &auth_totals, &payload);
-            capture_runner_exit_error(Some(2), None, &no_error_totals, &payload);
+            let context = ManualRunnerExitContext::default();
+            capture_runner_exit_error(Some(2), None, &eperm_totals, &payload, &context);
+            capture_runner_exit_error(Some(2), None, &auth_totals, &payload, &context);
+            capture_runner_exit_error(Some(2), None, &no_error_totals, &payload, &context);
         });
 
         assert_eq!(captures.len(), 3);
@@ -3223,28 +3230,46 @@ mod tests {
     #[test]
     fn manual_runner_capture_reports_its_own_route_scope_phase_windows_and_stack_shape() {
         const WINDOWS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409u32 as i32;
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().expect("temporary HQ folder");
+        let totals = Mutex::new(RunTotals::default());
         let phase = Mutex::new(RunnerPhaseContext::default());
-        let push: SyncEvent = serde_json::from_str(
+        // Feed the runner's actual stdout seam. Calling the phase helper
+        // directly would not prove that handle_sync_line continues to update
+        // the manual run's isolated phase context.
+        handle_sync_line(
+            &handle,
+            hq_folder.path().to_str().expect("UTF-8 temporary path"),
+            &totals,
+            &phase,
+            "test-jwt",
             r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"up"}"#,
-        )
-        .expect("progress event");
-        observe_manual_runner_phase(&phase, &push);
+        );
 
         let private_path = r"C:\Users\Ada\hq\companies\private-company\secret-plan.md";
-        let mut stderr_tail = std::collections::VecDeque::new();
-        push_runner_stderr_tail(
-            &mut stderr_tail,
-            format!(
-                "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76: {private_path}"
-            ),
-        );
-        push_runner_stderr_tail(&mut stderr_tail, "at node:fs:12:4".to_string());
+        let stderr_tail = Mutex::new(std::collections::VecDeque::new());
+        {
+            let mut tail = stderr_tail
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            push_runner_stderr_tail(
+                &mut tail,
+                format!(
+                    "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76: {private_path}"
+                ),
+            );
+            push_runner_stderr_tail(&mut tail, "at node:fs:12:4".to_string());
+        }
         let context = manual_runner_exit_context(
             &SyncRunScope::Company("private-company".to_string()),
             &phase,
-            &Mutex::new(stderr_tail),
+            &stderr_tail,
         );
-        let totals = RunTotals::default();
+        let totals = totals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
 
         let captures = sentry::test::with_captured_events(|| {
             capture_runner_exit_error(
@@ -3280,7 +3305,12 @@ mod tests {
         assert_eq!(event.extra["runner_stack_depth"], serde_json::json!(2));
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "runner-termination", "windows:fault:0xC0000409"]
+            vec![
+                "sync",
+                "runner-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
         );
         assert!(!serialized.contains("private-company"));
         assert!(!serialized.contains(private_path));
