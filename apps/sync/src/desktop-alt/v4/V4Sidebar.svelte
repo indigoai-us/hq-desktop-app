@@ -762,7 +762,7 @@
   }
 
   .ws-eyebrow.general {
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }
 
   .ws-layer {
