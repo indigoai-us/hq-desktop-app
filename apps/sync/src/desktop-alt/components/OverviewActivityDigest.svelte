@@ -236,7 +236,7 @@
     gap: 12px;
     min-width: 0;
     border-top: 1px solid var(--v4-rowline);
-    padding: 8px 0 10px;
+    padding: 10px 0;
     border-bottom: 1px solid var(--v4-rowline);
   }
 
@@ -286,7 +286,7 @@
     align-items: center;
     gap: 10px;
     min-height: 44px;
-    padding: 10px 0;
+    padding: 8px 0 10px;
     border-bottom: 1px solid var(--v4-rowline);
   }
 
