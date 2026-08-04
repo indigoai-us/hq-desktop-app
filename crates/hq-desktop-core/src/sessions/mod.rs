@@ -36,18 +36,49 @@ pub enum AgentOrigin {
     Outpost,
 }
 
+/// Accept an explicit JSON `null` for a field the publisher declares nullable,
+/// yielding the type's default (`""` for `String`).
+///
+/// The heartbeat publisher (hq-pro `src/outpost/session-heartbeat.ts`) types
+/// cwd, project, company, model, startedAt and lastActivityAt as
+/// `string | null` — they are genuinely unresolved when the box cannot map a
+/// company, sniff a model, or read a start time. Modelling them as bare
+/// `String` here made serde reject the ENTIRE batch on the first null, so one
+/// session with an unresolved company silently dropped every other session in
+/// the heartbeat and logged the failure ~22x/minute forever.
+///
+/// A wrong TYPE (a number where a string belongs) still fails, so this widens
+/// the contract to exactly what the publisher promises and no further.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
     pub id: String,
     pub tool: AgentTool,
     pub origin: AgentOrigin,
+    // The six nullable-on-the-wire fields. `default` covers an omitted key,
+    // `null_as_default` covers an explicit null; absence is represented as the
+    // empty string, exactly as the local collectors already do (see
+    // `claude.rs`: `model: tail.model.unwrap_or_default()`).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub cwd: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub project: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub company: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub model: String,
     pub status: SessionStatus,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub started_at: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub last_activity_at: String,
     pub source: String,
 }
