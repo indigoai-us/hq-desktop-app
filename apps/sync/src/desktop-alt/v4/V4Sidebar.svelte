@@ -556,14 +556,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 18px;
-    height: 18px;
+    min-width: 17px;
+    height: 17px;
     padding: 0 5px;
     box-sizing: border-box;
     border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 600;
     line-height: 1;
     font-variant-numeric: tabular-nums;
