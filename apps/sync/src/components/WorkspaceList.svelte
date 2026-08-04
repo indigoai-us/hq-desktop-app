@@ -74,6 +74,10 @@
         return 'npm registry unreachable';
       case 'npm-registry-timeout':
         return 'npm registry timed out';
+      case 'node-missing':
+        return 'Install Node.js';
+      case 'npx-unavailable':
+        return 'Restore npx';
       default:
         return 'Local environment failure';
     }
@@ -164,16 +168,24 @@
     } catch (err) {
       const msg = String(err);
       console.error('connect_workspace_to_cloud failed:', msg);
+      const localEnv = parseLocalEnvFailure(msg);
       // Belt-and-suspenders capture: the backend already reports CLI failures
       // via run_cli_provision::report_provision_error and validation failures
       // via workspaces::capture_connect_error, but capturing here too means
       // any frontend-only failure mode (Tauri invoke serialization, IPC
       // disconnect, plugin error) still reaches Sentry. Tagged distinctly so
       // we can filter without losing the backend events.
-      Sentry.captureException(err instanceof Error ? err : new Error(msg), {
-        tags: { slug, action: 'connect', source: 'frontend' },
-        extra: { msg },
-      });
+      // These two kinds have already passed the backend's ownership-aware
+      // runtime diagnosis. They are expected first-run setup states with an
+      // actionable repair button below, so emitting a paired frontend event
+      // would turn a user-owned missing Node/npx into Sentry noise. The four
+      // older local-env kinds deliberately retain their existing capture.
+      if (localEnv?.kind !== 'node-missing' && localEnv?.kind !== 'npx-unavailable') {
+        Sentry.captureException(err instanceof Error ? err : new Error(msg), {
+          tags: { slug, action: 'connect', source: 'frontend' },
+          extra: { msg },
+        });
+      }
       connectState = { ...connectState, [slug]: msg };
     }
   }

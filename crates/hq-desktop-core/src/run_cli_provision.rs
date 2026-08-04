@@ -68,6 +68,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::hq_resolver::{self, HqInvocation};
 use crate::logfile::log;
 use crate::paths;
+use crate::runtime_diagnosis::{self, RuntimeDiagnosis, RuntimeDiagnosisInput};
 
 /// Last N stderr lines kept in memory so we can attach them to Sentry events.
 /// Capped to keep payloads under Sentry's per-event size limits.
@@ -186,6 +187,46 @@ fn report_provision_error(
             sentry::capture_message(&format!("[provision-cli] {err}"), sentry::Level::Error);
         },
     );
+}
+
+/// Capture an unresolved spawn failure without exposing the resolved program
+/// path or raw process text. Sentry's scrubber does not rewrite message/tags,
+/// so all fields here are closed vocabularies.
+fn report_unexplained_spawn(slug: &str, diagnosis: &RuntimeDiagnosisInput) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("slug", slug);
+            scope.set_tag("provision_kind", "spawn");
+            scope.set_tag(
+                "program_provenance",
+                runtime_diagnosis::program_provenance(
+                    &diagnosis.attempted_program,
+                    &diagnosis.managed_runtime,
+                ),
+            );
+            scope.set_tag(
+                "runtime_owner",
+                runtime_diagnosis::runtime_owner(&diagnosis.managed_runtime),
+            );
+            scope.set_tag("node_probe", diagnosis.node_probe.tag());
+            scope.set_tag("npx_probe", diagnosis.npx_probe.tag());
+            if let Some(reason) = runtime_diagnosis::unknown_reason(&diagnosis.managed_runtime) {
+                scope.set_tag("runtime_unknown_reason", reason);
+            }
+        },
+        || {
+            sentry::capture_message(
+                "[provision-cli] runtime launcher could not be started",
+                sentry::Level::Error,
+            );
+        },
+    );
+}
+
+/// Test-only production reporting seam used by the menubar envelope test.
+#[cfg(any(test, feature = "test-support"))]
+pub fn report_unexplained_spawn_for_test(slug: &str, diagnosis: &RuntimeDiagnosisInput) {
+    report_unexplained_spawn(slug, diagnosis);
 }
 
 /// Inspect the captured stderr tail for unambiguous local-environment
@@ -485,11 +526,34 @@ pub async fn run_cli_provision(
     cmd.kill_on_drop(true);
 
     let invocation_label = invocation.label();
-    let mut child = cmd.spawn().map_err(|e| {
-        let err = CliProvisionError::Spawn(format!("{invocation_label}: {e}"));
-        report_provision_error(&err, slug, &invocation_label, None, &[]);
-        err
-    })?;
+    let attempted_program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let diagnosis =
+                runtime_diagnosis::inspect_spawn_failure(attempted_program.clone(), error.kind())
+                    .await;
+            let detail = format!(
+                "spawn program={attempted_program:?}, error={error}, node_probe={}, npx_probe={}, runtime={:?}",
+                diagnosis.node_probe.tag(),
+                diagnosis.npx_probe.tag(),
+                diagnosis.managed_runtime,
+            );
+            log("provision-cli", &detail);
+            match runtime_diagnosis::diagnose(&diagnosis) {
+                RuntimeDiagnosis::LocalLogOnly { kind } => {
+                    return Err(CliProvisionError::LocalEnv { kind, detail });
+                }
+                RuntimeDiagnosis::Unexplained => {
+                    report_unexplained_spawn(slug, &diagnosis);
+                    return Err(CliProvisionError::Spawn(
+                        "runtime launcher unavailable; see ~/.hq/logs/hq-sync.log [provision-cli]"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+    };
 
     let stdout = child
         .stdout

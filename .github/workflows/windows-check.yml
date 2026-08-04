@@ -110,6 +110,14 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
 
+      - name: Runtime diagnosis tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runtime_diagnosis::tests
+
+      - name: Provision telemetry envelope tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::run_cli_provision::tests
+
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 

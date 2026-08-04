@@ -24,8 +24,11 @@ use chrono::SecondsFormat;
 
 use super::paths::hq_config_dir;
 
-#[cfg(test)]
-static LOG_PATH_TEST_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) static LOG_PATH_TEST_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+#[cfg(any(test, feature = "test-support"))]
+static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Returns `~/.hq/logs/hq-sync.log`. The directory is created on demand.
 ///
@@ -33,7 +36,7 @@ static LOG_PATH_TEST_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new(
 /// the log to an isolated tempdir without mutating `HOME` (which `dirs::home_dir`
 /// falls back to via passwd, so HOME-mutation isn't sufficient anyway).
 pub fn log_path() -> Result<PathBuf, String> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         if let Some(slot) = LOG_PATH_TEST_OVERRIDE.get() {
             if let Ok(guard) = slot.lock() {
@@ -60,6 +63,63 @@ static LOG_FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 
 fn handle() -> &'static Mutex<Option<File>> {
     LOG_FILE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn clear_cached_handle() {
+    if let Some(slot) = LOG_FILE.get() {
+        let mut handle = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *handle = None;
+    }
+}
+
+/// Serialized override for the process-global log destination.
+///
+/// This is deliberately feature-gated: production builds have no mutable log
+/// destination seam. Holding the guard also serializes every reset of the
+/// cached file handle, including tests in sibling modules.
+#[cfg(any(test, feature = "test-support"))]
+pub struct LogOverrideGuard {
+    previous: Option<PathBuf>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl LogOverrideGuard {
+    pub fn new(path: PathBuf) -> Self {
+        Self::set(Some(path))
+    }
+
+    pub fn without_override() -> Self {
+        Self::set(None)
+    }
+
+    fn set(path: Option<PathBuf>) -> Self {
+        let lock = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = LOG_PATH_TEST_OVERRIDE.get_or_init(|| Mutex::new(None));
+        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::mem::replace(&mut *slot, path);
+        drop(slot);
+        clear_cached_handle();
+        Self {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for LogOverrideGuard {
+    fn drop(&mut self) {
+        let slot = LOG_PATH_TEST_OVERRIDE.get_or_init(|| Mutex::new(None));
+        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = self.previous.take();
+        drop(slot);
+        clear_cached_handle();
+    }
 }
 
 fn ensure_open(slot: &mut Option<File>) {
@@ -109,52 +169,9 @@ pub fn log(tag: &str, msg: &str) {
 mod tests {
     use super::*;
 
-    /// Process-wide mutex — every test in this module mutates the
-    /// `LOG_PATH_TEST_OVERRIDE` slot and the global `LOG_FILE` cache, so they
-    /// cannot run in parallel without trampling each other.
-    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-    }
-
-    /// Point `log_path()` at the given file and drop the cached file handle
-    /// so the next `log()` reopens against the override. Returning the
-    /// `TempDir` keeps the directory alive for the test's body.
-    fn with_test_log() -> tempfile::TempDir {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("hq-sync.log");
-        let slot = LOG_PATH_TEST_OVERRIDE.get_or_init(|| Mutex::new(None));
-        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(path);
-
-        if let Some(slot) = LOG_FILE.get() {
-            if let Ok(mut g) = slot.lock() {
-                *g = None;
-            }
-        }
-        tmp
-    }
-
-    fn clear_override() {
-        if let Some(slot) = LOG_PATH_TEST_OVERRIDE.get() {
-            if let Ok(mut g) = slot.lock() {
-                *g = None;
-            }
-        }
-        if let Some(slot) = LOG_FILE.get() {
-            if let Ok(mut g) = slot.lock() {
-                *g = None;
-            }
-        }
-    }
-
     #[test]
     fn test_log_path_default_under_dot_hq_logs() {
-        let _g = lock();
-        clear_override();
+        let _guard = LogOverrideGuard::without_override();
 
         let path = log_path().unwrap();
         assert!(
@@ -165,9 +182,9 @@ mod tests {
 
     #[test]
     fn test_log_appends_timestamped_line() {
-        let _g = lock();
-        let tmp = with_test_log();
+        let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("hq-sync.log");
+        let _guard = LogOverrideGuard::new(path.clone());
 
         log("sync", "first message");
         log("sync", "second message");
@@ -178,28 +195,17 @@ mod tests {
         assert!(contents.starts_with("20"));
         assert!(contents.contains("Z [sync]"));
         assert_eq!(contents.matches('\n').count(), 2);
-
-        clear_override();
     }
 
     #[test]
     fn test_log_swallows_errors_when_path_unwritable() {
-        let _g = lock();
         // Point the override at a path inside a non-existent parent that
         // lives under a *file* (not a directory) — `create_dir_all` cannot
         // succeed because `/dev/null` is a character device. Best-effort
         // logging must swallow the error, not panic.
         let bad = std::path::PathBuf::from("/dev/null/cannot-create/hq-sync.log");
-        let slot = LOG_PATH_TEST_OVERRIDE.get_or_init(|| Mutex::new(None));
-        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(bad);
-        if let Some(slot) = LOG_FILE.get() {
-            if let Ok(mut g) = slot.lock() {
-                *g = None;
-            }
-        }
+        let _guard = LogOverrideGuard::new(bad);
 
         log("sync", "should not panic");
-
-        clear_override();
     }
 }

@@ -1,6 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Why the managed-toolchain root could not be determined.
+///
+/// The token is deliberately closed vocabulary: it can be included in
+/// diagnostic telemetry without exposing a user path or environment value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootDiscoveryError {
+    pub reason: &'static str,
+}
+
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn no_window(cmd: &mut Command) {
@@ -66,19 +75,34 @@ fn legacy_managed_toolchain_dir() -> Option<PathBuf> {
 /// machine can still be running out of the legacy directory. Empty when the
 /// platform's base directory can't be resolved at all.
 pub fn managed_toolchain_roots() -> Vec<PathBuf> {
+    managed_toolchain_roots_checked().unwrap_or_default()
+}
+
+/// Every managed-toolchain root, or an explicit reason why HQ could not look.
+///
+/// Callers that make an ownership decision must use this fallible form:
+/// inability to resolve HOME/LOCALAPPDATA is not evidence that HQ never
+/// provisioned a runtime.  The historical infallible wrapper remains above so
+/// existing preflight behavior stays unchanged.
+pub fn managed_toolchain_roots_checked() -> Result<Vec<PathBuf>, RootDiscoveryError> {
     #[cfg(target_os = "windows")]
     {
-        [managed_toolchain_dir(), legacy_managed_toolchain_dir()]
-            .into_iter()
-            .flatten()
-            .collect()
+        let canonical = managed_toolchain_dir().ok_or(RootDiscoveryError {
+            reason: "base-dir-unresolved",
+        })?;
+        let legacy = legacy_managed_toolchain_dir().ok_or(RootDiscoveryError {
+            reason: "base-dir-unresolved",
+        })?;
+        Ok(vec![canonical, legacy])
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         home_dir()
             .map(|home| vec![managed_toolchain_dir(&home)])
-            .unwrap_or_default()
+            .ok_or(RootDiscoveryError {
+                reason: "base-dir-unresolved",
+            })
     }
 }
 
@@ -107,6 +131,21 @@ pub fn managed_node_executable_in(root: &Path) -> PathBuf {
     #[cfg(not(target_os = "windows"))]
     {
         node_dir.join("bin").join("node")
+    }
+}
+
+/// Absolute path of the managed `npx` shim next to HQ's managed Node runtime.
+pub fn managed_npx_executable_in(root: &Path) -> PathBuf {
+    let node_dir = managed_node_dir_in(root);
+
+    #[cfg(target_os = "windows")]
+    {
+        node_dir.join("npx.cmd")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        node_dir.join("bin").join("npx")
     }
 }
 

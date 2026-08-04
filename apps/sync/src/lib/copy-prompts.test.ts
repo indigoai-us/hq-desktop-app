@@ -210,6 +210,26 @@ describe('buildPrompt', () => {
       expect(out).toMatch(/status\.npmjs\.org|proxy/);
     });
 
+    it('node-missing tells the user to install Node before retrying Connect', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'node-missing', detail: 'node and npx were not found' },
+      });
+      expect(out).toContain('node-missing');
+      expect(out).toMatch(/install.*Node|Node.*install/i);
+      expect(out).toMatch(/attempt the fix/i);
+    });
+
+    it('npx-unavailable tells the user how to restore the Node npm tools', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'npx-unavailable', detail: 'npx was not found' },
+      });
+      expect(out).toContain('npx-unavailable');
+      expect(out).toMatch(/npx|npm/i);
+      expect(out).toMatch(/attempt the fix/i);
+    });
+
     it('falls back gracefully when kind is unknown', () => {
       const out = buildPrompt({
         kind: 'local-env-failure',
@@ -245,6 +265,8 @@ describe('parseLocalEnvFailure (IPC contract)', () => {
       'disk-full',
       'npm-registry-unreachable',
       'npm-registry-timeout',
+      'node-missing',
+      'npx-unavailable',
     ];
     for (const k of kinds) {
       const parsed = parseLocalEnvFailure(`local environment failure (${k}): detail text`);
