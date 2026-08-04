@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::ErrorKind;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
@@ -59,6 +60,12 @@ pub struct RunTotals {
     /// watcher attaches only this fixed-vocabulary rollup to a termination
     /// capture; paths and raw messages remain local breadcrumbs.
     pub runner_error_rollup: RunnerErrorRollup,
+    /// Content-safe runner operation counts for termination diagnostics. Like
+    /// the class rollup, every rendered token is selected in code.
+    pub runner_error_ops: RunnerErrorOpRollup,
+    /// Raw company names remain process-local only so this can report the
+    /// distinct blast radius as a number without ever sending a name.
+    runner_error_companies: HashSet<String>,
     /// The last recognised runner-fatal signature in this pass. This is a
     /// content-safe enum token used only as evidence on a termination event;
     /// it must never affect the capture or suppression decision.
@@ -101,9 +108,19 @@ impl RunTotals {
     pub fn record_error(&mut self, err: &SyncErrorEvent) {
         self.saw_error = true;
         self.runner_error_rollup.record(&err.message);
+        self.runner_error_ops.record(&err.message);
+        if let Some(company) = err.company.as_deref() {
+            self.runner_error_companies.insert(company.to_string());
+        }
         if is_alertable_error(err) {
             self.saw_alertable_error = true;
         }
+    }
+
+    /// The distinct count is safe telemetry; company names never leave this
+    /// process or this private deduplication set.
+    pub fn runner_error_company_count(&self) -> u32 {
+        u32::try_from(self.runner_error_companies.len()).unwrap_or(u32::MAX)
     }
 
     pub fn record_auth_error(&mut self) {
@@ -154,6 +171,18 @@ impl RunnerErrorClass {
             Self::Other => "OTHER",
         }
     }
+
+    fn fingerprint_token(self) -> &'static str {
+        match self {
+            Self::Eperm => "eperm",
+            Self::Eacces => "eacces",
+            Self::Enospc => "enospc",
+            Self::Ebusy => "ebusy",
+            Self::Network => "network",
+            Self::Auth => "auth",
+            Self::Other => "other",
+        }
+    }
 }
 
 /// Map an untrusted runner error message to a fixed telemetry class. This
@@ -179,6 +208,88 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
     } else {
         RunnerErrorClass::Other
     }
+}
+
+/// Fixed, content-safe Node filesystem operation tokens. Every value is
+/// chosen from this declaration and never copied from runner output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorOp {
+    Rename,
+    Unlink,
+    Open,
+    Mkdir,
+    Rmdir,
+    Symlink,
+    Readlink,
+    Stat,
+    Lstat,
+    Chmod,
+    Copyfile,
+    Utimes,
+    Scandir,
+    Read,
+    Write,
+    Access,
+    Other,
+}
+
+impl RunnerErrorOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rename => "rename",
+            Self::Unlink => "unlink",
+            Self::Open => "open",
+            Self::Mkdir => "mkdir",
+            Self::Rmdir => "rmdir",
+            Self::Symlink => "symlink",
+            Self::Readlink => "readlink",
+            Self::Stat => "stat",
+            Self::Lstat => "lstat",
+            Self::Chmod => "chmod",
+            Self::Copyfile => "copyfile",
+            Self::Utimes => "utimes",
+            Self::Scandir => "scandir",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Access => "access",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classify the operation portion of a Node errno message such as
+/// "EPERM: operation not permitted, rename <path>". The message is inspected
+/// only to choose a closed-vocabulary value and is never retained here.
+pub fn classify_runner_error_op(message: &str) -> RunnerErrorOp {
+    let normalized = message.to_ascii_lowercase();
+    for segment in normalized.split(',').skip(1) {
+        let operation = segment
+            .trim_start()
+            .split(|character: char| character.is_whitespace() || character == ':')
+            .next()
+            .unwrap_or_default();
+        let class = match operation {
+            "rename" => RunnerErrorOp::Rename,
+            "unlink" => RunnerErrorOp::Unlink,
+            "open" => RunnerErrorOp::Open,
+            "mkdir" => RunnerErrorOp::Mkdir,
+            "rmdir" => RunnerErrorOp::Rmdir,
+            "symlink" => RunnerErrorOp::Symlink,
+            "readlink" => RunnerErrorOp::Readlink,
+            "stat" => RunnerErrorOp::Stat,
+            "lstat" => RunnerErrorOp::Lstat,
+            "chmod" => RunnerErrorOp::Chmod,
+            "copyfile" => RunnerErrorOp::Copyfile,
+            "utimes" => RunnerErrorOp::Utimes,
+            "scandir" => RunnerErrorOp::Scandir,
+            "read" => RunnerErrorOp::Read,
+            "write" => RunnerErrorOp::Write,
+            "access" => RunnerErrorOp::Access,
+            _ => continue,
+        };
+        return class;
+    }
+    RunnerErrorOp::Other
 }
 
 /// Stable, content-safe cause tokens for a runner that terminates before it
@@ -309,6 +420,108 @@ impl RunnerErrorRollup {
             .into_iter()
             .filter(|(_, count)| *count > 0)
             .map(|(class, count)| format!("{}:{count}", class.tag_name()))
+            .collect();
+        (!rendered.is_empty()).then(|| rendered.join(","))
+    }
+
+    /// Choose a stable, content-safe group token for a runner termination.
+    /// Higher counts win; equal counts deliberately preserve the fixed enum
+    /// declaration order so the same multiset cannot make grouping flap.
+    pub fn fingerprint_token(&self) -> &'static str {
+        let counts = [
+            (RunnerErrorClass::Eperm, self.eperm),
+            (RunnerErrorClass::Eacces, self.eacces),
+            (RunnerErrorClass::Enospc, self.enospc),
+            (RunnerErrorClass::Ebusy, self.ebusy),
+            (RunnerErrorClass::Network, self.network),
+            (RunnerErrorClass::Auth, self.auth),
+            (RunnerErrorClass::Other, self.other),
+        ];
+        let mut dominant = None;
+        let mut dominant_count = 0;
+        for (class, count) in counts {
+            if count > dominant_count {
+                dominant = Some(class);
+                dominant_count = count;
+            }
+        }
+        dominant
+            .map(RunnerErrorClass::fingerprint_token)
+            .unwrap_or("none")
+    }
+}
+
+/// Saturating per-pass counts of the closed Node operation vocabulary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorOpRollup {
+    rename: u32,
+    unlink: u32,
+    open: u32,
+    mkdir: u32,
+    rmdir: u32,
+    symlink: u32,
+    readlink: u32,
+    stat: u32,
+    lstat: u32,
+    chmod: u32,
+    copyfile: u32,
+    utimes: u32,
+    scandir: u32,
+    read: u32,
+    write: u32,
+    access: u32,
+    other: u32,
+}
+
+impl RunnerErrorOpRollup {
+    fn record(&mut self, message: &str) {
+        let count = match classify_runner_error_op(message) {
+            RunnerErrorOp::Rename => &mut self.rename,
+            RunnerErrorOp::Unlink => &mut self.unlink,
+            RunnerErrorOp::Open => &mut self.open,
+            RunnerErrorOp::Mkdir => &mut self.mkdir,
+            RunnerErrorOp::Rmdir => &mut self.rmdir,
+            RunnerErrorOp::Symlink => &mut self.symlink,
+            RunnerErrorOp::Readlink => &mut self.readlink,
+            RunnerErrorOp::Stat => &mut self.stat,
+            RunnerErrorOp::Lstat => &mut self.lstat,
+            RunnerErrorOp::Chmod => &mut self.chmod,
+            RunnerErrorOp::Copyfile => &mut self.copyfile,
+            RunnerErrorOp::Utimes => &mut self.utimes,
+            RunnerErrorOp::Scandir => &mut self.scandir,
+            RunnerErrorOp::Read => &mut self.read,
+            RunnerErrorOp::Write => &mut self.write,
+            RunnerErrorOp::Access => &mut self.access,
+            RunnerErrorOp::Other => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// Render only fixed operation names and decimal counts for a Sentry tag.
+    pub fn tag_value(&self) -> Option<String> {
+        let counts = [
+            (RunnerErrorOp::Rename, self.rename),
+            (RunnerErrorOp::Unlink, self.unlink),
+            (RunnerErrorOp::Open, self.open),
+            (RunnerErrorOp::Mkdir, self.mkdir),
+            (RunnerErrorOp::Rmdir, self.rmdir),
+            (RunnerErrorOp::Symlink, self.symlink),
+            (RunnerErrorOp::Readlink, self.readlink),
+            (RunnerErrorOp::Stat, self.stat),
+            (RunnerErrorOp::Lstat, self.lstat),
+            (RunnerErrorOp::Chmod, self.chmod),
+            (RunnerErrorOp::Copyfile, self.copyfile),
+            (RunnerErrorOp::Utimes, self.utimes),
+            (RunnerErrorOp::Scandir, self.scandir),
+            (RunnerErrorOp::Read, self.read),
+            (RunnerErrorOp::Write, self.write),
+            (RunnerErrorOp::Access, self.access),
+            (RunnerErrorOp::Other, self.other),
+        ];
+        let rendered: Vec<_> = counts
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(operation, count)| format!("{}:{count}", operation.as_str()))
             .collect();
         (!rendered.is_empty()).then(|| rendered.join(","))
     }
@@ -1098,6 +1311,120 @@ mod tests {
         assert!(!tag.contains(path));
         assert!(!tag.contains("hq-tmp-a1b2"));
         assert!(!tag.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn runner_error_rollup_fingerprint_token_is_dominant_class_and_permutation_stable() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let records = [
+            (
+                "personal",
+                format!(
+                    "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+                ),
+            ),
+            (
+                "health",
+                format!("Unauthorized: cognito token rejected, open '{private_path}'"),
+            ),
+            (
+                "personal",
+                format!(
+                    "EPERM: operation not permitted, rename '{private_path}.hq-tmp-c3d4' -> '{private_path}'"
+                ),
+            ),
+            (
+                "health",
+                format!("Unauthorized: cognito token rejected, open '{private_path}'"),
+            ),
+        ];
+
+        let mut first = RunTotals::default();
+        for (company, message) in &records {
+            first.record_error(&make_company_error(Some(company), private_path, message));
+        }
+
+        let mut permuted = RunTotals::default();
+        for (company, message) in records.iter().rev() {
+            permuted.record_error(&make_company_error(Some(company), private_path, message));
+        }
+
+        assert_eq!(first.runner_error_rollup.fingerprint_token(), "eperm");
+        assert_eq!(
+            permuted.runner_error_rollup.fingerprint_token(),
+            "eperm",
+            "ties must use the fixed RunnerErrorClass declaration order"
+        );
+        assert_eq!(
+            first.runner_error_ops.tag_value().as_deref(),
+            Some("rename:2,open:2")
+        );
+        assert_eq!(
+            permuted.runner_error_ops.tag_value(),
+            first.runner_error_ops.tag_value()
+        );
+        assert_eq!(first.runner_error_company_count(), 2);
+        assert_eq!(permuted.runner_error_company_count(), 2);
+        assert_eq!(
+            RunTotals::default().runner_error_rollup.fingerprint_token(),
+            "none"
+        );
+
+        let mut readlink_einval = RunTotals::default();
+        readlink_einval.record_error(&make_company_error(
+            Some("personal"),
+            private_path,
+            &format!("EINVAL: invalid argument, readlink '{private_path}'"),
+        ));
+        assert_eq!(
+            readlink_einval.runner_error_rollup.fingerprint_token(),
+            "other"
+        );
+        assert_eq!(
+            readlink_einval.runner_error_ops.tag_value().as_deref(),
+            Some("readlink:1")
+        );
+    }
+
+    #[test]
+    fn classify_runner_error_op_is_fixed_vocabulary_and_never_leaks_path_or_message() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let cases = [
+            ("rename", RunnerErrorOp::Rename),
+            ("unlink", RunnerErrorOp::Unlink),
+            ("open", RunnerErrorOp::Open),
+            ("mkdir", RunnerErrorOp::Mkdir),
+            ("rmdir", RunnerErrorOp::Rmdir),
+            ("symlink", RunnerErrorOp::Symlink),
+            ("readlink", RunnerErrorOp::Readlink),
+            ("stat", RunnerErrorOp::Stat),
+            ("lstat", RunnerErrorOp::Lstat),
+            ("chmod", RunnerErrorOp::Chmod),
+            ("copyfile", RunnerErrorOp::Copyfile),
+            ("utimes", RunnerErrorOp::Utimes),
+            ("scandir", RunnerErrorOp::Scandir),
+            ("read", RunnerErrorOp::Read),
+            ("write", RunnerErrorOp::Write),
+            ("access", RunnerErrorOp::Access),
+        ];
+
+        for (operation, expected) in cases {
+            let raw_message =
+                format!("EPERM: operation not permitted, {operation} '{private_path}.hq-tmp-a1b2'");
+            let actual = classify_runner_error_op(&raw_message);
+            assert_eq!(
+                actual, expected,
+                "must recognize Node's {operation} errno shape"
+            );
+            assert_eq!(actual.as_str(), operation);
+            assert!(!actual.as_str().contains(private_path));
+            assert!(!actual.as_str().contains("hq-tmp-a1b2"));
+        }
+
+        assert_eq!(
+            classify_runner_error_op(&format!("custom failure at '{private_path}'")),
+            RunnerErrorOp::Other
+        );
     }
 
     #[test]
