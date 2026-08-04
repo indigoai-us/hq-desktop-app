@@ -909,12 +909,12 @@
     flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 36px;
+    height: 36px;
     border-radius: 999px;
     background: var(--v4-control-bg);
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.02em;
     user-select: none;
