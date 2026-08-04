@@ -633,7 +633,7 @@
     gap: 12px;
     width: 100%;
     margin: 0 0 8px;
-    padding: 6px 10px;
+    padding: 8px 10px;
     border: none;
     border-radius: var(--v4-radius-button);
     background: transparent;
@@ -664,8 +664,8 @@
     flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
     border-radius: var(--v4-radius-button);
     background: #b0b0b5;
     box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
