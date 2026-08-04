@@ -131,10 +131,10 @@ export function selectLogoUrl(
 ): string | null {
   if (!brand) return null;
 
-  const lightRemote = nonEmpty(brand.logoUrlLight) ? brand.logoUrlLight! : null;
-  const darkRemote = nonEmpty(brand.logoUrlDark) ? brand.logoUrlDark! : null;
-  const lightData = nonEmpty(cached?.logoDataLight) ? cached!.logoDataLight! : null;
-  const darkData = nonEmpty(cached?.logoDataDark) ? cached!.logoDataDark! : null;
+  const lightRemote = isSafeLogoUrl(brand.logoUrlLight) ? brand.logoUrlLight! : null;
+  const darkRemote = isSafeLogoUrl(brand.logoUrlDark) ? brand.logoUrlDark! : null;
+  const lightData = isSafeLogoUrl(cached?.logoDataLight) ? cached!.logoDataLight! : null;
+  const darkData = isSafeLogoUrl(cached?.logoDataDark) ? cached!.logoDataDark! : null;
 
   const light = lightData ?? lightRemote;
   const dark = darkData ?? darkRemote;
@@ -367,6 +367,20 @@ function nonEmpty(value: string | null | undefined): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/**
+ * Scheme allowlist for tenant logo assets (defense-in-depth against a
+ * poisoned localStorage cache or a hostile brand record): only https remote
+ * URLs and data:image/* payloads may reach an <img src>. Anything else
+ * (javascript:, file:, http:, data:text/html, …) is treated as absent.
+ */
+export function isSafeLogoUrl(value: string | null | undefined): value is string {
+  if (!nonEmpty(value)) return false;
+  const v = value.trim();
+  if (/^https:\/\//i.test(v)) return true;
+  if (/^data:image\//i.test(v)) return true;
+  return false;
+}
+
 function parseCssColor(value: string): { r: number; g: number; b: number } | null {
   const trimmed = value.trim();
   // #RGB / #RRGGBB
@@ -410,14 +424,19 @@ async function fetchAsDataUrl(
   fetchImpl: typeof fetch,
 ): Promise<string | null> {
   try {
-    // data: URLs already offline-ready
-    if (url.startsWith('data:')) return url;
+    // data:image URLs are already offline-ready; other schemes never fetch.
+    if (/^data:/i.test(url)) return isSafeLogoUrl(url) ? url : null;
+    if (!/^https:\/\//i.test(url)) return null;
     const res = await fetchImpl(url, { mode: 'cors', credentials: 'omit' });
     if (!res.ok) return null;
     const blob = await res.blob();
+    // Only image payloads become data URLs (an <img> would not execute
+    // text/html, but a poisoned cache should still never store it).
+    if (!/^image\//i.test(blob.type)) return null;
     // Cap ~256 KB so localStorage stays healthy.
     if (blob.size > 256 * 1024) return null;
-    return await blobToDataUrl(blob);
+    const dataUrl = await blobToDataUrl(blob);
+    return isSafeLogoUrl(dataUrl) ? dataUrl : null;
   } catch {
     return null;
   }

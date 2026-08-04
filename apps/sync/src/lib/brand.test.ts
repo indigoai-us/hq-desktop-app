@@ -14,6 +14,7 @@ import {
   writeBrandCache,
   type BrandSource,
   type CachedBrand,
+  isSafeLogoUrl,
 } from './brand';
 
 const BRAND = {
@@ -210,5 +211,32 @@ describe('cache + syncBrandFromWorkspaces', () => {
     );
     clearBrandCache(storage);
     expect(readBrandCache(storage)).toBeNull();
+  });
+});
+
+describe('isSafeLogoUrl (scheme allowlist)', () => {
+  it('allows https and data:image only', () => {
+    expect(isSafeLogoUrl('https://cdn.example.com/logo.svg')).toBe(true);
+    expect(isSafeLogoUrl('data:image/png;base64,AAAA')).toBe(true);
+    expect(isSafeLogoUrl('http://cdn.example.com/logo.svg')).toBe(false);
+    expect(isSafeLogoUrl('javascript:alert(1)')).toBe(false);
+    expect(isSafeLogoUrl('file:///etc/passwd')).toBe(false);
+    expect(isSafeLogoUrl('data:text/html,<script>1</script>')).toBe(false);
+    expect(isSafeLogoUrl('')).toBe(false);
+    expect(isSafeLogoUrl(null)).toBe(false);
+  });
+
+  it('selectLogoUrl treats unsafe schemes as absent (cache-poisoning guard)', () => {
+    expect(
+      selectLogoUrl({ logoUrlLight: 'javascript:alert(1)', logoUrlDark: 'https://ok.test/d.png' }, 'light'),
+    ).toBe('https://ok.test/d.png');
+    expect(
+      selectLogoUrl(
+        { logoUrlLight: 'https://ok.test/l.png' },
+        'light',
+        { logoDataLight: 'data:text/html,x', logoDataDark: null },
+      ),
+    ).toBe('https://ok.test/l.png');
+    expect(selectLogoUrl({ logoUrlLight: 'file:///x' }, 'light')).toBeNull();
   });
 });
