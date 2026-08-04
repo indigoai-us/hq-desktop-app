@@ -509,9 +509,9 @@ fn observe_exit_without_reaping(pid: u32) -> io::Result<()> {
     }
 }
 
-/// Test-only observation seam. It deliberately feeds the same helper used by
-/// the production wait owner so the error lattice cannot diverge into a mocked
-/// side path.
+// Test-only observation seam. It deliberately feeds the same helper used by
+// the production wait owner so the error lattice cannot diverge into a mocked
+// side path.
 #[cfg(all(unix, test))]
 thread_local! {
     static TEST_OBSERVATION_RESULTS: std::cell::RefCell<std::collections::VecDeque<io::Result<()>>> =
@@ -1565,9 +1565,13 @@ mod registry_exit_order_tests {
         let (exit_tx, exit_rx) = mpsc::channel();
         let runner_handle = handle.clone();
         let runner = thread::spawn(move || {
+            let callback_handle = runner_handle.clone();
             run_process_impl(&runner_handle, &spawn, move |event| {
                 if let ProcessEvent::Exit { signal, .. } = event {
-                    let observed = (is_registered(&runner_handle), is_cancelled(&runner_handle));
+                    let observed = (
+                        is_registered(&callback_handle),
+                        is_cancelled(&callback_handle),
+                    );
                     exit_tx
                         .send((observed, signal))
                         .expect("test receiver must remain alive");
