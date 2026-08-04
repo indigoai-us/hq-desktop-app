@@ -33,8 +33,10 @@
     conflictCount?: number;
     conflictCompany?: string | null;
     hqFolderPath?: string | null;
-    /** Current workspace name shown at the left of the bar (Figma 2588:4406). */
+    /** Current workspace or page name shown at the left of the bar (Figma 2588:4406). */
     workspaceName?: string | null;
+    /** Show the sync dot + "Synced …" line (workspace pages only). */
+    showStatus?: boolean;
     /** Cloud sync toggle state for the active workspace; null hides it. */
     cloudOn?: boolean | null;
     oncloudtoggle?: (next: boolean) => void;
@@ -62,6 +64,7 @@
     conflictCompany = null,
     hqFolderPath = null,
     workspaceName = null,
+    showStatus = true,
     cloudOn = null,
     oncloudtoggle,
     onsync,
@@ -143,12 +146,14 @@
     {#if workspaceName}
       <span class="v4-ws-name">{workspaceName}</span>
     {/if}
-    <span
-      class={`v4-dot ${model.tone}`}
-      class:pulsing={syncState === 'syncing'}
-      aria-hidden="true"
-    ></span>
-    <span class="v4-sentence">{statusLine}</span>
+    {#if showStatus}
+      <span
+        class={`v4-dot ${model.tone}`}
+        class:pulsing={syncState === 'syncing'}
+        aria-hidden="true"
+      ></span>
+      <span class="v4-sentence">{statusLine}</span>
+    {/if}
   </div>
 
   <!-- Flexible noninteractive pad between status and actions — primary drag. -->

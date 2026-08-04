@@ -297,6 +297,26 @@
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
   const activeCompanySyncEnabled = $derived(isWorkspaceSyncEnabled(activeCompany));
+  // General (non-workspace) pages title the bar with the page name and drop
+  // the workspace sync status line; workspace pages keep name + "Synced …".
+  const GENERAL_PAGE_TITLES: Record<string, string> = {
+    home: 'Home',
+    'mission-control': 'Mission Control',
+    inbox: 'Inbox',
+    messages: 'Messages',
+    meetings: 'Meetings',
+    marketplace: 'Marketplace',
+    moderation: 'Moderation',
+    library: 'Library',
+    settings: 'Settings',
+    files: 'Files',
+  };
+  const onCompanyPage = $derived(route.kind === 'company');
+  const titleBarName = $derived(
+    onCompanyPage
+      ? (activeCompany?.displayName ?? 'HQ')
+      : (GENERAL_PAGE_TITLES[route.kind] ?? 'HQ'),
+  );
   const libraryTab = $derived<LibraryTab>(
     route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
   );
@@ -1690,8 +1710,9 @@
       conflictCount={syncConflictCount}
       conflictCompany={syncConflictCompany}
       {hqFolderPath}
-      workspaceName={activeCompany?.displayName ?? 'HQ'}
-      cloudOn={activeCompany ? activeCompanySyncEnabled : null}
+      workspaceName={titleBarName}
+      showStatus={onCompanyPage}
+      cloudOn={onCompanyPage && activeCompany ? activeCompanySyncEnabled : null}
       oncloudtoggle={(next) => void handleCloudToggle(next)}
       onsync={handleSyncAll}
       oncancel={handleCancelSync}

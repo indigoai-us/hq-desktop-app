@@ -749,7 +749,8 @@
   .ws-divider {
     flex: 0 0 auto;
     height: 1px;
-    margin: 16px 10px;
+    /* Spec: 16px above the divider, 24px below it (to the GENERAL label). */
+    margin: 16px 10px 24px;
     background: var(--v4-hairline);
   }
 
@@ -793,7 +794,7 @@
   }
 
   .ws-eyebrow.general {
-    margin-bottom: 6px;
+    margin-bottom: 8px;
   }
 
   .ws-layer {
