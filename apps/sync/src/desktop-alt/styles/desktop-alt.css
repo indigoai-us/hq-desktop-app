@@ -56,8 +56,8 @@ html[data-window='messages'] {
   --border-strong: var(--v4-control-border, var(--c-field-border));
   --row-hover: var(--v4-control-faint, var(--pop-hover));
   --row-active: var(--v4-active-row, var(--pop-hover));
-  --scrollbar-thumb: var(--v4-text-3, var(--dot));
-  --scrollbar-thumb-hover: var(--v4-text-2, var(--c-muted));
+  --scrollbar-thumb: rgba(0, 0, 0, 0.14);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
 
   --emerald: var(--v4-ok, var(--popover-success));
   --amber: var(--v4-warn, #b45309);

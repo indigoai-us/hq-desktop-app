@@ -71,7 +71,7 @@ export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
 
 /** Chrome metrics (SPEC section 4) — exported for shell composition in US-002. */
 export const V4_CHROME_LAYOUT = {
-  titleBarHeightPx: 40,
+  titleBarHeightPx: 64,
   primarySidebarWidthPx: 220,
   secondarySidebarWidthPx: 200,
 } as const;

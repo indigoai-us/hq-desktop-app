@@ -33,6 +33,11 @@
     conflictCount?: number;
     conflictCompany?: string | null;
     hqFolderPath?: string | null;
+    /** Current workspace name shown at the left of the bar (Figma 2588:4406). */
+    workspaceName?: string | null;
+    /** Cloud sync toggle state for the active workspace; null hides it. */
+    cloudOn?: boolean | null;
+    oncloudtoggle?: (next: boolean) => void;
     onsync?: () => void | Promise<void>;
     oncancel?: () => void | Promise<void>;
     onretry?: () => void | Promise<void>;
@@ -56,6 +61,9 @@
     conflictCount = 0,
     conflictCompany = null,
     hqFolderPath = null,
+    workspaceName = null,
+    cloudOn = null,
+    oncloudtoggle,
     onsync,
     oncancel,
     onretry,
@@ -76,6 +84,12 @@
       hydrationIssue,
     }),
   );
+
+  const statusLine = $derived.by(() => {
+    if (syncState === 'idle' && lastSyncLabel) return `Synced ${lastSyncLabel}`;
+    return model.sentence;
+  });
+
 
   let actionPending = $state(false);
   let actionError = $state<string | null>(null);
@@ -131,15 +145,15 @@
   </div>
 
   <div class="v4-status" aria-live="polite">
+    {#if workspaceName}
+      <span class="v4-ws-name">{workspaceName}</span>
+    {/if}
     <span
       class={`v4-dot ${model.tone}`}
       class:pulsing={syncState === 'syncing'}
       aria-hidden="true"
     ></span>
-    <span class="v4-sentence">{model.sentence}</span>
-    {#if model.meta}
-      <span class="v4-meta">{model.meta}</span>
-    {/if}
+    <span class="v4-sentence">{statusLine}</span>
   </div>
 
   <!-- Flexible noninteractive pad between status and actions — primary drag. -->
@@ -163,6 +177,22 @@
         <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
       </svg>
     </button>
+    {#if cloudOn !== null}
+      <button
+        type="button"
+        class="v4-cloud"
+        role="switch"
+        aria-checked={cloudOn}
+        aria-label="Cloud sync"
+        data-tauri-drag-region="false"
+        onclick={() => oncloudtoggle?.(!cloudOn)}
+      >
+        <span class="v4-cloud-track" class:on={cloudOn}>
+          <span class="v4-cloud-thumb"></span>
+        </span>
+        <span class="v4-cloud-label">{cloudOn ? 'Cloud Connected' : 'Cloud Off'}</span>
+      </button>
+    {/if}
     {#if model.recovery === 'hydration'}
       <button
         type="button"
@@ -242,12 +272,12 @@
     z-index: 10;
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex: 0 0 40px;
-    height: 40px;
+    gap: 12px;
+    flex: 0 0 auto;
+    height: 100%;
     overflow: visible;
-    padding: 0 16px 0 0;
-    border-bottom: 1px solid var(--v4-hairline);
+    padding: 0 24px 0 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--v4-text-1) 5%, transparent);
     background: var(--v4-chrome);
     backdrop-filter: var(--v4-glass-filter);
     -webkit-backdrop-filter: var(--v4-glass-filter);
@@ -260,7 +290,7 @@
     align-items: center;
     flex: 0 0 auto;
     gap: 4px;
-    padding-left: 16px;
+    padding-left: 24px;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap
@@ -287,6 +317,18 @@
   .v4-drag-flex {
     flex: 1 1 auto;
     min-width: 12px;
+  }
+
+  .v4-ws-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--v4-text-1);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.16px;
+    line-height: 20px;
+    margin-right: 8px;
   }
 
   .v4-status {
@@ -392,8 +434,8 @@
     -webkit-appearance: none;
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     padding: 0;
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
@@ -421,15 +463,68 @@
   }
 
   .v4-icon {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
+  }
+
+  /* Figma 2588:4442 — green pill switch + secondary label. */
+  .v4-cloud {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 10px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .v4-cloud-track {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: 28px;
+    height: 16px;
+    padding: 2px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    background: var(--v4-idle);
+    transition: background 0.15s;
+  }
+
+  .v4-cloud-track.on {
+    justify-content: flex-end;
+    background: #04c950;
+  }
+
+  .v4-cloud-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+
+  .v4-cloud-label {
+    font-size: 13px;
+    line-height: 16px;
+    color: var(--v4-text-2);
+    white-space: nowrap;
+  }
+
+  .v4-cloud:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 
   /* Standard secondary button (onboarding language): borderless fill,
      8px radius, opacity hover, gentle scale press. */
   .v4-action {
     flex: 0 0 auto;
-    height: 28px;
+    height: 32px;
     padding: 0 12px;
     border: none;
     border-radius: var(--v4-radius-button);

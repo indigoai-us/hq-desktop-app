@@ -896,6 +896,19 @@
     return isWorkspaceSyncEnabled(workspaces.find((workspace) => workspace.slug === slug));
   }
 
+  /** Titlebar cloud switch: optimistic local patch + native persistence. */
+  async function handleCloudToggle(next: boolean) {
+    const slug = activeCompany?.slug;
+    if (!slug) return;
+    applyWorkspaceSyncEnabled(slug, next);
+    try {
+      await invoke<boolean>('set_workspace_sync_enabled', { slug, enabled: next });
+    } catch (err) {
+      console.error('set_workspace_sync_enabled failed:', err);
+      applyWorkspaceSyncEnabled(slug, !next);
+    }
+  }
+
   function applyWorkspaceSyncEnabled(slug: string, enabled: boolean) {
     const patch = (items: Workspace[]) =>
       items.map((workspace) =>
@@ -1677,6 +1690,9 @@
       conflictCount={syncConflictCount}
       conflictCompany={syncConflictCompany}
       {hqFolderPath}
+      workspaceName={activeCompany?.displayName ?? 'HQ'}
+      cloudOn={activeCompany ? activeCompanySyncEnabled : null}
+      oncloudtoggle={(next) => void handleCloudToggle(next)}
       onsync={handleSyncAll}
       oncancel={handleCancelSync}
       onretry={syncState === 'auth-error' ? handleSignInAgain : handleSyncAll}

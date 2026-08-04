@@ -35,9 +35,11 @@
   --v4-radius-structure: 0;
   --v4-radius-button: 8px;
   --v4-radius-field: 8px;
-  --v4-radius-card: 10px;
+  --v4-radius-card: 14px;
   --v4-radius-popover: 10px;
   --v4-radius-pill: 980px;
+  /* Figma surface/card/light — flat tint cards on the window material. */
+  --v4-card-tint: rgba(0, 0, 0, 0.03);
   --v4-shadow-card-light: var(--c-choose-shadow, 0 1px 1.5px rgba(0, 0, 0, 0.1));
   --v4-shadow-card-dark: 0 12px 32px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   --v4-shadow-card: var(--v4-shadow-card-light);
@@ -115,6 +117,7 @@
     --v4-warn: #f59e0b;
     --v4-error: var(--popover-danger, #ef4444);
     --v4-unread: var(--v4-text-1);
+    --v4-card-tint: rgba(255, 255, 255, 0.05);
     --v4-control-bg: rgba(255, 255, 255, 0.1);
     --v4-control-border: rgba(255, 255, 255, 0.16);
     --v4-control-faint: rgba(255, 255, 255, 0.08);
@@ -150,6 +153,7 @@
   --v4-warn: #f59e0b;
   --v4-error: var(--popover-danger, #ef4444);
   --v4-unread: var(--v4-text-1);
+  --v4-card-tint: rgba(255, 255, 255, 0.05);
   --v4-control-bg: rgba(255, 255, 255, 0.1);
   --v4-control-border: rgba(255, 255, 255, 0.16);
   --v4-control-faint: rgba(255, 255, 255, 0.08);

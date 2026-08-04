@@ -44,7 +44,6 @@
   import { useCompanySummary } from '../lib/company-summary.svelte';
   import ProjectListView from '../components/ProjectListView.svelte';
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
-  import SidebarSyncMode from '../v4/SidebarSyncMode.svelte';
   import GoalCard from '../v4/GoalCard.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
   import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte';
@@ -724,18 +723,6 @@
           <span class="stat-value">{goalsCount}</span>
           <span class="stat-label">Goals</span>
         </div>
-        <div class="stat-card stat-cloud">
-          <span class="stat-cloud-status">
-            <span class={`status-dot ${cloudPulse.tone}`} aria-hidden="true"></span>
-            <span class="stat-cloud-label">{cloudPulse.label}</span>
-            {#if lastUpdated}
-              <span class="stat-cloud-meta">· {lastUpdated}</span>
-            {/if}
-          </span>
-          <span class="stat-cloud-control" data-testid="overview-sync-mode">
-            <SidebarSyncMode {slug} {syncEnabled} />
-          </span>
-        </div>
       </section>
 
       <div class="overview-columns">
@@ -938,9 +925,9 @@
   .overview-content {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
     min-width: 0;
-    padding: 4px 20px 24px;
+    padding: 8px 24px 24px;
   }
 
   .board-error {
@@ -958,20 +945,21 @@
   /* Stat tiles — one raised card per headline number. */
   .stat-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(180px, 1.3fr);
-    gap: 12px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
     min-width: 0;
   }
 
   .stat-card {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    justify-content: center;
+    gap: 6px;
     min-width: 0;
-    padding: 14px 16px;
+    min-height: 120px;
+    padding: 16px 20px;
     border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    background: var(--v4-card-tint);
   }
 
   .stat-value {
@@ -993,42 +981,11 @@
     text-overflow: ellipsis;
   }
 
-  .stat-cloud {
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .stat-cloud-status {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    white-space: nowrap;
-  }
-
-  .stat-cloud-label {
-    color: var(--v4-text-1);
-    font-size: var(--type-secondary, 13px);
-    font-weight: 500;
-  }
-
-  .stat-cloud-meta {
-    overflow: hidden;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 12px);
-    text-overflow: ellipsis;
-  }
-
-  .stat-cloud-control {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-  }
 
   .overview-columns {
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.75fr);
-    gap: 20px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
     min-width: 0;
     align-items: start;
   }
@@ -1037,7 +994,7 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: 18px;
+    gap: 16px;
   }
 
   /* Section cards — raised surfaces on the frosted field (reference look). */
@@ -1046,10 +1003,9 @@
     flex-direction: column;
     gap: 6px;
     min-width: 0;
-    padding: 14px 16px 12px;
+    padding: 16px 20px 14px;
     border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    background: var(--v4-card-tint);
   }
 
   .section-header {
@@ -1392,9 +1348,6 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .stat-cloud {
-      grid-column: 1 / -1;
-    }
   }
 
   @container company-board (max-width: 560px) {

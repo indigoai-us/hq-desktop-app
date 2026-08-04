@@ -344,7 +344,9 @@
         >
           {#if currentRow.isPersonal}<User size={20} />{:else}{workspaceInitials(currentRow.label)}{/if}
         </span>
-        <span class="ws-current-name">{currentRow.label}</span>
+        <span class="ws-current-name">
+          {currentRow.isPersonal ? (accountLabel ?? currentRow.label) : currentRow.label}
+        </span>
         <span class="ws-chevron" aria-hidden="true"><CaretDown size={12} /></span>
       </button>
 
@@ -477,7 +479,7 @@
               <User size={18} />
             </span>
             <span class="ws-menu-copy">
-              <span class="ws-menu-name">{row.label}</span>
+              <span class="ws-menu-name">{accountLabel ?? row.label}</span>
               <span class="ws-menu-meta">Personal workspace</span>
             </span>
             <span class="ws-shortcut" aria-hidden="true">⌘0</span>

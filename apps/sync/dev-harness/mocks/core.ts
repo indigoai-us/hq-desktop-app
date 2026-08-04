@@ -477,6 +477,7 @@ const handlers: Record<string, Handler> = {
     new URLSearchParams(window.location.search).get('route'),
   // Company-board path (?view=company)
   get_account_email: () => 'corey@getindigo.ai',
+  set_workspace_sync_enabled: () => true,
   list_syncable_workspaces: () => ({
     workspaces: HARNESS_WORKSPACES,
     cloudReachable: true,
