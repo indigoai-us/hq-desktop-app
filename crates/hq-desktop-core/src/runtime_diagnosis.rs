@@ -98,7 +98,12 @@ pub fn diagnose(input: &RuntimeDiagnosisInput) -> RuntimeDiagnosis {
 }
 
 pub fn is_bare_program(program: &str) -> bool {
-    Path::new(program).components().count() == 1
+    // The test suite exercises Windows paths on macOS too, and Unix's
+    // `Path` treats backslashes as ordinary filename characters. Reject both
+    // separator spellings before asking the host parser about native paths.
+    !program.contains('/')
+        && !program.contains('\\')
+        && Path::new(program).components().count() == 1
 }
 
 /// Closed-cardinality tags for a residual event. Never put the program path,
@@ -286,5 +291,12 @@ mod tests {
             managed_runtime: ManagedRuntime::NotProvisioned,
         };
         assert_eq!(diagnose(&input), RuntimeDiagnosis::Unexplained);
+    }
+
+    #[test]
+    fn windows_absolute_program_is_not_bare_on_every_host_platform() {
+        assert!(!is_bare_program(r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd"));
+        assert!(!is_bare_program("/Users/Ada/.npm-global/bin/npx"));
+        assert!(is_bare_program("npx"));
     }
 }
