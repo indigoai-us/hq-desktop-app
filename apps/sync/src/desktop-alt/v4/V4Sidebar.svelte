@@ -325,7 +325,7 @@
 
     <div class="ws-divider" aria-hidden="true"></div>
 
-    <div class="ws-eyebrow" aria-hidden="true">General</div>
+    <div class="ws-eyebrow general" aria-hidden="true">General</div>
     <nav class="v4-nav ws-group" aria-label="General">
       {#each generalNav as row (row.id)}
         {@const Icon = NAV_ICONS[row.id]}
@@ -554,7 +554,7 @@
     justify-content: space-between;
     height: 16px;
     margin-bottom: 24px;
-    padding: 2px 6px 0;
+    padding: 6px 6px 0;
   }
 
   .ws-lights {
@@ -593,7 +593,7 @@
     align-items: center;
     gap: 12px;
     width: 100%;
-    margin: 0 0 14px;
+    margin: 0 0 8px;
     padding: 6px 10px;
     border: none;
     border-radius: var(--v4-radius-button);
@@ -721,7 +721,7 @@
   .ws-eyebrow {
     flex: 0 0 auto;
     overflow: hidden;
-    margin: 0 0 14px;
+    margin: 0 0 8px;
     padding: 0 10px;
     color: var(--v4-text-3);
     font-size: 10px;
@@ -731,6 +731,10 @@
     text-transform: uppercase;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  .ws-eyebrow.general {
+    margin-bottom: 4px;
   }
 
   .ws-layer {
