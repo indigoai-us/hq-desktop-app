@@ -787,6 +787,9 @@ struct WatcherExitCaptureContext {
     fatal_runner_signature_seen: bool,
     runner_fatal_class: String,
     runner_error_rollup: Option<String>,
+    runner_error_class: &'static str,
+    runner_error_ops: Option<String>,
+    runner_error_companies: u32,
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
 }
@@ -869,6 +872,9 @@ fn watcher_exit_capture_context(
         fatal_runner_signature_seen: totals.saw_fatal_runner_signature,
         runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
         runner_error_rollup: totals.runner_error_rollup.tag_value(),
+        runner_error_class: totals.runner_error_rollup.fingerprint_token(),
+        runner_error_ops: totals.runner_error_ops.tag_value(),
+        runner_error_companies: totals.runner_error_company_count(),
         runner_phase: phase_context.phase.to_string(),
         runner_phase_elapsed_bucket: runner_phase_elapsed_bucket(
             phase_context.observed_at.elapsed(),
@@ -1110,10 +1116,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let (uptime, rss_kb, rss_age) = effects.watcher_exit_diagnostics();
     let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
     let fingerprint_token = termination_fingerprint_token(code, signal);
+    let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
     let fingerprint = [
         "sync",
         "auto-sync-watcher-termination",
         fingerprint_token.as_str(),
+        runner_error_class,
     ];
     let windows_termination = code
         .map(classify_windows_exit_status)
@@ -1152,6 +1160,9 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(rollup) = &context.runner_error_rollup {
         tags.push(("runner_error_rollup", rollup.clone()));
     }
+    if let Some(operations) = &context.runner_error_ops {
+        tags.push(("runner_error_ops", operations.clone()));
+    }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
     if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command) {
@@ -1161,6 +1172,18 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         extras.extend(unrecognized_watcher_exit_extras());
     }
     effects.capture(&message, &fingerprint, &tags, &extras);
+}
+
+/// Context is constructed from the core's closed-vocabulary rollup. Keep this
+/// fail-closed boundary so a future caller cannot place arbitrary runner text
+/// in a Sentry fingerprint through a manually-constructed context.
+fn safe_runner_error_fingerprint_token(candidate: &'static str) -> &'static str {
+    match candidate {
+        "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other" | "none" => {
+            candidate
+        }
+        _ => "none",
+    }
 }
 
 fn watcher_exit_context_extras(
@@ -1197,6 +1220,10 @@ fn watcher_exit_context_extras(
         (
             "runner_fatal_class_seen",
             sentry::protocol::Value::Bool(runner_fatal_class_seen),
+        ),
+        (
+            "runner_error_companies",
+            sentry::protocol::Value::Number(context.runner_error_companies.into()),
         ),
         (
             "runner_phase",
@@ -2484,6 +2511,22 @@ mod tests {
             .unwrap_or_else(|| panic!("missing string extra {key}"))
     }
 
+    fn recorded_number_extra(capture: &RecordedCapture, key: &str) -> u64 {
+        capture
+            .extras
+            .iter()
+            .find_map(|(name, value)| {
+                if name != key {
+                    return None;
+                }
+                match value {
+                    sentry::protocol::Value::Number(value) => value.as_u64(),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| panic!("missing number extra {key}"))
+    }
+
     fn recorded_tag<'a>(capture: &'a RecordedCapture, key: &str) -> &'a str {
         capture
             .tags
@@ -2851,6 +2894,9 @@ mod tests {
             fatal_runner_signature_seen: true,
             runner_fatal_class: "none".to_string(),
             runner_error_rollup: Some("EPERM:2,EACCES:1".to_string()),
+            runner_error_class: "eperm",
+            runner_error_ops: Some("rename:2,open:1".to_string()),
+            runner_error_companies: 2,
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
         };
@@ -2877,6 +2923,8 @@ mod tests {
             recorded_tag(event, "runner_error_rollup"),
             "EPERM:2,EACCES:1"
         );
+        assert_eq!(recorded_tag(event, "runner_error_ops"), "rename:2,open:1");
+        assert_eq!(recorded_number_extra(event, "runner_error_companies"), 2);
         assert_eq!(
             recorded_string_extra(event, "watcher_lifecycle_state"),
             "running"
@@ -2894,11 +2942,78 @@ mod tests {
             vec![
                 "sync",
                 "auto-sync-watcher-termination",
-                "windows:status-ffffffff"
+                "windows:status-ffffffff",
+                "eperm"
             ]
         );
         assert!(event.message.contains("0xFFFFFFFF (origin unknown)"));
         assert!(!event.message.contains("code=Some(-1)"));
+    }
+
+    #[test]
+    fn watcher_termination_fingerprint_carries_runner_error_class() {
+        let eperm_context = WatcherExitCaptureContext {
+            runner_error_class: "eperm",
+            runner_error_ops: Some("rename:1".to_string()),
+            runner_error_companies: 1,
+            ..Default::default()
+        };
+        let auth_context = WatcherExitCaptureContext {
+            runner_error_class: "auth",
+            runner_error_ops: Some("other:1".to_string()),
+            runner_error_companies: 2,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            &eperm_context,
+        );
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            &auth_context,
+        );
+
+        assert_eq!(effects.captures.len(), 2);
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:status-ffffffff",
+                "eperm"
+            ]
+        );
+        assert_eq!(
+            effects.captures[1].fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:status-ffffffff",
+                "auth"
+            ]
+        );
+        assert_eq!(
+            recorded_tag(&effects.captures[0], "runner_error_ops"),
+            "rename:1"
+        );
+        assert_eq!(
+            recorded_number_extra(&effects.captures[1], "runner_error_companies"),
+            2
+        );
     }
 
     #[test]
@@ -2917,6 +3032,9 @@ mod tests {
             fatal_runner_signature_seen: true,
             runner_fatal_class: "none".to_string(),
             runner_error_rollup: Some("EPERM:1".to_string()),
+            runner_error_class: "eperm",
+            runner_error_ops: Some("rename:1".to_string()),
+            runner_error_companies: 1,
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
         };
@@ -2944,6 +3062,8 @@ mod tests {
             "session_terminate"
         );
         assert_eq!(recorded_tag(event, "runner_error_rollup"), "EPERM:1");
+        assert_eq!(recorded_tag(event, "runner_error_ops"), "rename:1");
+        assert_eq!(recorded_number_extra(event, "runner_error_companies"), 1);
         assert_eq!(
             recorded_string_extra(event, "watcher_lifecycle_state"),
             "running"
@@ -2970,7 +3090,8 @@ mod tests {
             vec![
                 "sync",
                 "auto-sync-watcher-termination",
-                "windows:session-terminate"
+                "windows:session-terminate",
+                "eperm"
             ]
         );
         assert!(event.message.contains("0x40010004 (session terminate)"));
@@ -3009,6 +3130,9 @@ mod tests {
         let context = WatcherExitCaptureContext {
             lifecycle_state: "running".to_string(),
             runner_error_rollup: Some("EPERM:1".to_string()),
+            runner_error_class: "eperm",
+            runner_error_ops: Some("rename:1".to_string()),
+            runner_error_companies: 1,
             ..Default::default()
         };
 
@@ -3049,12 +3173,18 @@ mod tests {
         assert_eq!(scrubbed.tags["windows_exit_status"], "0x40010004");
         assert_eq!(scrubbed.tags["windows_exit_class"], "session_terminate");
         assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:1");
+        assert_eq!(scrubbed.tags["runner_error_ops"], "rename:1");
+        assert_eq!(
+            scrubbed.extra["runner_error_companies"],
+            sentry::protocol::Value::Number(1.into())
+        );
         assert_eq!(
             scrubbed.fingerprint,
             vec![
                 "sync",
                 "auto-sync-watcher-termination",
-                "windows:session-terminate"
+                "windows:session-terminate",
+                "eperm"
             ]
         );
     }
@@ -3101,7 +3231,8 @@ mod tests {
             vec![
                 "sync",
                 "auto-sync-watcher-termination",
-                "windows:fault:0xC0000409"
+                "windows:fault:0xC0000409",
+                "none"
             ]
         );
     }
@@ -3149,7 +3280,7 @@ mod tests {
         assert!(!serialized.contains(private_path));
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:126"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:126", "none"]
         );
     }
 

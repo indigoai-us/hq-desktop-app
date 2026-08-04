@@ -173,6 +173,9 @@ fn runner_exit_telemetry_context(
     if let Some(rollup) = totals.runner_error_rollup.tag_value() {
         tags.push(("runner_error_rollup", rollup));
     }
+    if let Some(operations) = totals.runner_error_ops.tag_value() {
+        tags.push(("runner_error_ops", operations));
+    }
     tags.push((
         "runner_fatal_class",
         totals.runner_fatal_class.as_str().to_string(),
@@ -190,6 +193,10 @@ fn runner_exit_telemetry_context(
             "saw_fatal_runner_signature",
             sentry::protocol::Value::Bool(totals.saw_fatal_runner_signature),
         ),
+        (
+            "runner_error_companies",
+            sentry::protocol::Value::Number(totals.runner_error_company_count().into()),
+        ),
     ];
     (tags, extras)
 }
@@ -201,7 +208,13 @@ fn capture_runner_exit_error(
     payload: &SyncErrorEvent,
 ) {
     let termination = termination_fingerprint_token(code, signal);
-    let fingerprint = ["sync", "runner-termination", termination.as_str()];
+    let error_class = totals.runner_error_rollup.fingerprint_token();
+    let fingerprint = [
+        "sync",
+        "runner-termination",
+        termination.as_str(),
+        error_class,
+    ];
     let (tags, extras) = runner_exit_telemetry_context(totals);
     capture_sync_error_with_fingerprint_and_context(
         payload.company.as_deref(),
@@ -2603,7 +2616,12 @@ mod tests {
         );
         let captured_serialized =
             serde_json::to_string(&captured).expect("serialize captured event");
-        for forbidden in ["secret-plan.md", "operation not permitted", "hq-tmp"] {
+        for forbidden in [
+            "secret-plan.md",
+            "operation not permitted",
+            "hq-tmp",
+            "personal",
+        ] {
             assert!(!captured_serialized.contains(forbidden));
         }
 
@@ -2622,6 +2640,11 @@ mod tests {
             ]
         );
         assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:2");
+        assert_eq!(scrubbed.tags["runner_error_ops"], "rename:2");
+        assert_eq!(
+            scrubbed.extra["runner_error_companies"],
+            sentry::protocol::Value::Number(1.into())
+        );
         assert_eq!(
             scrubbed.extra["saw_alertable_error"],
             sentry::protocol::Value::Bool(true)
@@ -2636,11 +2659,68 @@ mod tests {
         );
         assert_eq!(
             scrubbed.fingerprint,
-            vec!["sync", "runner-termination", "exit:2"]
+            vec!["sync", "runner-termination", "exit:2", "eperm"]
         );
-        for forbidden in ["secret-plan.md", "operation not permitted", "hq-tmp"] {
+        for forbidden in [
+            "secret-plan.md",
+            "operation not permitted",
+            "hq-tmp",
+            "personal",
+        ] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn exit_two_captures_are_grouped_by_runner_error_class_not_exit_code_alone() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let mut eperm_totals = RunTotals::default();
+        eperm_totals.record_error(&SyncErrorEvent {
+            company: Some("personal".to_string()),
+            path: private_path.to_string(),
+            message: format!(
+                "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+            ),
+        });
+        let mut auth_totals = RunTotals::default();
+        auth_totals.record_error(&SyncErrorEvent {
+            company: Some("health".to_string()),
+            path: private_path.to_string(),
+            message: "Unauthorized: cognito token rejected".to_string(),
+        });
+        let no_error_totals = RunTotals::default();
+        assert!(hq_desktop_core::sync_outcome::should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            no_error_totals.saw_error,
+            no_error_totals.saw_alertable_error,
+            no_error_totals.saw_node_too_old,
+        ));
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+
+        let captures = sentry::test::with_captured_events(|| {
+            capture_runner_exit_error(Some(2), None, &eperm_totals, &payload);
+            capture_runner_exit_error(Some(2), None, &auth_totals, &payload);
+            capture_runner_exit_error(Some(2), None, &no_error_totals, &payload);
+        });
+
+        assert_eq!(captures.len(), 3);
+        let fingerprints = captures
+            .into_iter()
+            .map(|event| event.fingerprint)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fingerprints,
+            vec![
+                vec!["sync", "runner-termination", "exit:2", "eperm"],
+                vec!["sync", "runner-termination", "exit:2", "auth"],
+                vec!["sync", "runner-termination", "exit:2", "none"],
+            ]
+        );
     }
 
     #[test]
@@ -2678,7 +2758,12 @@ mod tests {
         assert_eq!(event.tags["runner_fatal_class"], "libuv_assert");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "runner-termination", "windows:fault:0xC0000409"]
+            vec![
+                "sync",
+                "runner-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
         );
         assert!(!serialized.contains(private_path));
         assert!(!serialized.contains("UV_HANDLE_CLOSING"));
