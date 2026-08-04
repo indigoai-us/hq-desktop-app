@@ -3712,6 +3712,13 @@ mod tests {
 
     #[test]
     fn production_watcher_entry_points_publish_their_own_origins_before_signed_out_preflight() {
+        // The production entry points acquire DAEMON_HANDLE before reaching
+        // the signed-out preflight. Share the guard-test lock with the
+        // existing lifecycle tests so cargo's parallel runner cannot observe
+        // that short-lived handle ownership as a spurious double start.
+        let _guard = GUARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _environment = ENV_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
