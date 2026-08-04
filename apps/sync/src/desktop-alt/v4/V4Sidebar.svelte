@@ -28,7 +28,7 @@
     House,
     Kanban,
     Lightning,
-    Robot,
+    UserGear,
     SidebarSimple,
     Target,
     Tray,
@@ -86,7 +86,7 @@
     goals: Target,
     projects: Kanban,
     skills: Lightning,
-    workers: Robot,
+    workers: UserGear,
     knowledge: BookOpen,
     team: Users,
   };
@@ -483,7 +483,7 @@
     height: calc(100% - 16px);
     margin: 8px;
     overflow: hidden;
-    padding: 16px;
+    padding: 12px;
     border-radius: 20px;
     background: var(--v4-sidebar, var(--v4-chrome));
     font-family: var(--font-sans);
@@ -502,11 +502,11 @@
     gap: 8px;
     box-sizing: border-box;
     width: 100%;
-    height: var(--v4-row-h);
-    min-height: var(--v4-row-h);
-    max-height: var(--v4-row-h);
+    height: 34px;
+    min-height: 34px;
+    max-height: 34px;
     flex: 0 0 auto;
-    padding: 0 8px;
+    padding: 0 10px;
     border: none;
     /* Native macOS sidebar row: rounded rect selection, not underlines. */
     border-radius: var(--v4-radius-button);
@@ -582,8 +582,8 @@
     align-items: center;
     justify-content: space-between;
     height: 16px;
-    margin-bottom: 24px;
-    padding: 0 8px;
+    margin-bottom: 16px;
+    padding: 2px 6px 0;
   }
 
   .ws-lights {
@@ -640,8 +640,8 @@
     align-items: center;
     gap: 12px;
     width: 100%;
-    margin: 0 0 20px;
-    padding: 0 8px;
+    margin: 0 0 14px;
+    padding: 0 10px;
     border: none;
     border-radius: var(--v4-radius-button);
     background: transparent;
@@ -718,6 +718,7 @@
     flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
+    padding-bottom: 8px;
     scrollbar-color: var(--v4-hairline) transparent;
     scrollbar-width: thin;
   }
@@ -729,7 +730,7 @@
   .ws-divider {
     flex: 0 0 auto;
     height: 1px;
-    margin: 24px 0;
+    margin: 14px 2px;
     background: var(--v4-hairline);
   }
 
@@ -760,8 +761,8 @@
   .ws-eyebrow {
     flex: 0 0 auto;
     overflow: hidden;
-    margin: 0 0 16px;
-    padding: 0 8px;
+    margin: 0 0 10px;
+    padding: 0 10px;
     color: var(--v4-text-3);
     font-size: 10px;
     font-weight: 400;
@@ -927,8 +928,8 @@
     align-items: center;
     gap: 10px;
     width: 100%;
-    margin: 0 0 12px;
-    padding: 6px 8px;
+    margin: 0;
+    padding: 8px 10px;
     border: none;
     border-radius: var(--v4-radius-button);
     background: transparent;
