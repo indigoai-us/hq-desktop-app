@@ -2432,9 +2432,9 @@ mod tests {
             args: vec![
                 "-c".to_string(),
                 concat!(
-                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"message\":\"diagnostic one\"}' >&2; ",
-                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"message\":\"diagnostic two\"}' >&2; ",
-                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"message\":\"diagnostic three\"}' >&2; ",
+                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic one\"}' >&2; ",
+                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic two\"}' >&2; ",
+                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic three\"}' >&2; ",
                     "exit 75"
                 )
                 .to_string(),
@@ -2448,9 +2448,9 @@ mod tests {
             args: vec![
                 "/C".to_string(),
                 concat!(
-                    "echo {\"type\":\"error\",\"diagnostic\":true,\"message\":\"diagnostic one\"} 1>&2 & ",
-                    "echo {\"type\":\"error\",\"diagnostic\":true,\"message\":\"diagnostic two\"} 1>&2 & ",
-                    "echo {\"type\":\"error\",\"diagnostic\":true,\"message\":\"diagnostic three\"} 1>&2 & ",
+                    "echo {\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic one\"} 1>&2 & ",
+                    "echo {\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic two\"} 1>&2 & ",
+                    "echo {\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic three\"} 1>&2 & ",
                     "exit /B 75"
                 )
                 .to_string(),
