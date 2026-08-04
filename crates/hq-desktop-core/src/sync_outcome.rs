@@ -332,6 +332,12 @@ pub fn should_synthesize_all_complete(
 /// never escalate it to a Sentry alert. See `should_alert_on_nonzero_exit`.
 pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 
+/// Exit code returned by hq-cloud's `TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`
+/// retry contract. hq-cloud uses it at the auth-refresh return site, both
+/// discovery return sites, and the fanout tail; the desktop must end the
+/// current UI run without escalating a self-healing retry to Sentry.
+pub const RUNNER_TRANSIENT_RETRY_EXIT: i32 = 75;
+
 /// POSIX SIGTERM. When the runner exits killed by this signal it was OUR
 /// cancellation: `cancel_process_impl` sends SIGTERM (escalating to SIGKILL
 /// only if the runner ignores it) on every expected cancel — the Stop button,
@@ -752,11 +758,11 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
         || is_expected_acl_scope_skip(&err.message))
 }
 
-/// Pure policy: should a *non-zero* runner exit raise a Sentry alert?
+/// Pure policy: how should a *non-zero* runner exit finish?
 ///
 /// Extracted from the `ProcessEvent::Exit` handler so the decision is
-/// unit-testable without a live `AppHandle`. Returns `false` (suppress) for the
-/// non-actionable exits this issue was drowning in, `true` (alert) otherwise:
+/// unit-testable without a live `AppHandle`. It preserves the existing
+/// alert-versus-suppression semantics while distinguishing terminal UI effects:
 ///
 ///   - exit 17 (`OPERATION_LOCKED`): another sync holds the lock — a normal
 ///     concurrent-sync race, never a failure.
@@ -766,6 +772,9 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 ///   - a Node-too-old startup crash (`saw_node_too_old`): the runner could not
 ///     start under the user's Node version, so this is an environment fault
 ///     surfaced to the UI rather than an alertable product defect.
+///   - exit 75 (`TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`): hq-cloud has
+///     scheduled an automatic retry, so the current UI run must end without a
+///     capture.
 ///
 /// An *unexplained* non-zero exit — no error event seen at all, e.g. the runner
 /// panicked or was OOM-killed before emitting protocol — still alerts,
@@ -778,6 +787,53 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 /// and Windows fault statuses stay loud — SIGSEGV/SIGBUS/SIGABRT are crashes,
 /// SIGKILL is OOM or a force-quit worth seeing, and only the one documented
 /// Windows status is expected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerExitDisposition {
+    /// Capture the termination and emit the existing runner-error event.
+    Alert,
+    /// Surface the actionable Node upgrade message without a capture.
+    NodeTooOld,
+    /// End the UI run after Windows console teardown without a capture.
+    WindowsConsoleControl,
+    /// End the UI run after hq-cloud's self-healing network retry without a capture.
+    TransientRetry,
+    /// Log a fully explained non-zero exit without an additional UI event.
+    Ignore,
+}
+
+/// Classify the effects a non-zero runner exit should produce.
+///
+/// This is the sole exit-policy seam: callers that need a boolean must project
+/// from it rather than repeating code, signal, or run-total conditions. Node
+/// remediation intentionally outranks console-control and generic suppression,
+/// preserving the manual-sync dispatch ordering that existed before this
+/// classifier was introduced.
+pub fn classify_runner_exit_disposition(
+    code: Option<i32>,
+    signal: Option<i32>,
+    saw_error: bool,
+    saw_alertable_error: bool,
+    saw_node_too_old: bool,
+) -> RunnerExitDisposition {
+    if saw_node_too_old {
+        return RunnerExitDisposition::NodeTooOld;
+    }
+    if is_windows_console_control_exit(code, signal) {
+        return RunnerExitDisposition::WindowsConsoleControl;
+    }
+    if code == Some(RUNNER_TRANSIENT_RETRY_EXIT) {
+        return RunnerExitDisposition::TransientRetry;
+    }
+    if signal == Some(SIGTERM_SIGNAL)
+        || code == Some(RUNNER_OPERATION_LOCKED_EXIT)
+        || (saw_error && !saw_alertable_error)
+    {
+        return RunnerExitDisposition::Ignore;
+    }
+    RunnerExitDisposition::Alert
+}
+
+/// Boolean compatibility projection for existing capture seams.
 pub fn should_alert_on_nonzero_exit(
     code: Option<i32>,
     signal: Option<i32>,
@@ -785,19 +841,16 @@ pub fn should_alert_on_nonzero_exit(
     saw_alertable_error: bool,
     saw_node_too_old: bool,
 ) -> bool {
-    if signal == Some(SIGTERM_SIGNAL) || is_windows_console_control_exit(code, signal) {
-        return false;
-    }
-    if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
-        return false;
-    }
-    if saw_node_too_old {
-        return false;
-    }
-    if saw_error && !saw_alertable_error {
-        return false;
-    }
-    true
+    matches!(
+        classify_runner_exit_disposition(
+            code,
+            signal,
+            saw_error,
+            saw_alertable_error,
+            saw_node_too_old,
+        ),
+        RunnerExitDisposition::Alert
+    )
 }
 
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
@@ -1448,6 +1501,131 @@ mod tests {
     }
 
     // ── should_alert_on_nonzero_exit ─────────────────────────────────────────
+
+    #[test]
+    fn runner_exit_disposition_precedence_is_pinned() {
+        use RunnerExitDisposition::{
+            Alert, Ignore, NodeTooOld, TransientRetry, WindowsConsoleControl,
+        };
+
+        // This matrix preserves the pre-existing manual-sync dispatch ordering
+        // for every non-75 input while pinning the new hq-cloud retry contract.
+        let cases = [
+            (None, Some(SIGTERM_SIGNAL), false, false, false, Ignore),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                false,
+                false,
+                false,
+                WindowsConsoleControl,
+            ),
+            (
+                Some(RUNNER_OPERATION_LOCKED_EXIT),
+                None,
+                true,
+                true,
+                false,
+                Ignore,
+            ),
+            (Some(1), None, false, false, true, NodeTooOld),
+            (None, Some(SIGTERM_SIGNAL), false, false, true, NodeTooOld),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                false,
+                false,
+                true,
+                NodeTooOld,
+            ),
+            (
+                Some(RUNNER_OPERATION_LOCKED_EXIT),
+                None,
+                false,
+                false,
+                true,
+                NodeTooOld,
+            ),
+            (Some(2), None, true, false, false, Ignore),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                true,
+                true,
+                false,
+                TransientRetry,
+            ),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                false,
+                false,
+                false,
+                TransientRetry,
+            ),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                true,
+                true,
+                true,
+                NodeTooOld,
+            ),
+            (Some(2), None, true, true, false, Alert),
+            (Some(1), None, false, false, false, Alert),
+        ];
+
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old, expected) in cases {
+            assert_eq!(
+                classify_runner_exit_disposition(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                expected,
+                "unexpected disposition for code={code:?}, signal={signal:?}, error={saw_error}, alertable={saw_alertable_error}, node_too_old={saw_node_too_old}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_alert_is_only_a_projection_of_runner_exit_disposition() {
+        let cases = [
+            (None, Some(SIGTERM_SIGNAL), false, false, false),
+            (Some(WINDOWS_CONTROL_C_EXIT), None, false, false, false),
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None, true, true, false),
+            (Some(1), None, false, false, true),
+            (Some(2), None, true, false, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, true, true, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, false, false, false),
+            (Some(2), None, true, true, false),
+            (Some(1), None, false, false, false),
+        ];
+
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old) in cases {
+            assert_eq!(
+                should_alert_on_nonzero_exit(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                matches!(
+                    classify_runner_exit_disposition(
+                        code,
+                        signal,
+                        saw_error,
+                        saw_alertable_error,
+                        saw_node_too_old,
+                    ),
+                    RunnerExitDisposition::Alert
+                )
+            );
+        }
+    }
 
     #[test]
     fn test_exit_alert_suppressed_for_operation_locked() {
