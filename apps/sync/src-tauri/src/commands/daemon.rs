@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
-    app_exit_requested, cancel_process_impl, deregister_process, is_cancelled, is_registered,
-    lookup_pid, run_process_impl, try_register_handle, ProcessError, ProcessEvent,
+    app_exit_requested, cancel_process_impl, deregister_generation, generation_for_handle,
+    is_cancelled, is_cancelled_for_generation, is_registered, lookup_pid, run_process_impl,
+    try_register_handle_gen, ProcessError, ProcessEvent,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, RunTotals};
@@ -431,13 +432,11 @@ fn daemon_appears_alive() -> bool {
     alive
 }
 
-/// Release the guard on a failed start: clear the stamp, then deregister so the
-/// next start can acquire it. Paired with every `start_daemon` preflight bail
-/// (all synchronous, before the spawn thread — no other start can hold the
-/// handle yet, so the unconditional clear is safe).
-fn release_daemon_guard() {
-    clear_daemon_guard_stamp();
-    deregister_process(DAEMON_HANDLE);
+/// Release a failed start only when it still owns both generations. A stale
+/// preflight bail must not erase a replacement watcher or its newer guard stamp.
+fn release_daemon_guard(registration: u64, guard_generation: u64) {
+    clear_daemon_guard_stamp_for(guard_generation);
+    let _ = deregister_generation(DAEMON_HANDLE, registration);
 }
 
 /// Force-clear a guard the supervisor has judged wedged: terminate any lingering
@@ -485,9 +484,23 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
         message: Some("force-clearing wedged start guard (no live daemon on re-check)".into()),
         ..Default::default()
     });
+    // Snapshot both ownership tokens before cancellation. The release below is
+    // generation-scoped, so a replacement that appears after a stale action can
+    // never have its handle or start stamp erased.
+    let registration = generation_for_handle(DAEMON_HANDLE);
+    let guard_generation = daemon_guard()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .map(|stamp| stamp.generation);
+
     // Exactly-once Job Object teardown for this generation, then release the guard.
     let _ = terminate_daemon_once(DaemonFailureCategory::ForceClear);
-    release_daemon_guard();
+    if let Some(registration) = registration {
+        let _ = deregister_generation(DAEMON_HANDLE, registration);
+    }
+    if let Some(guard_generation) = guard_generation {
+        clear_daemon_guard_stamp_for(guard_generation);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -506,9 +519,9 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
 /// Returns the handle string on success.
 #[tauri::command]
 pub fn start_daemon(app: AppHandle) -> Result<String, String> {
-    if !try_register_handle(DAEMON_HANDLE) {
+    let Some(daemon_generation) = try_register_handle_gen(DAEMON_HANDLE) else {
         return Err("Daemon is already starting".to_string());
-    }
+    };
     // Stamp the guard acquisition so the supervisor can bound how long a start
     // may hold it with no live daemon before treating it as wedged. The
     // generation lets this start's exit clear only its own stamp, never a
@@ -522,12 +535,12 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     match crate::commands::cognito::read_tokens_from_file() {
         Ok(Some(_)) => {}
         Ok(None) => {
-            release_daemon_guard();
+            release_daemon_guard(daemon_generation, guard_generation);
             set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(crate::commands::cognito::REAUTH_MESSAGE.to_string());
         }
         Err(err) => {
-            release_daemon_guard();
+            release_daemon_guard(daemon_generation, guard_generation);
             set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(err);
         }
@@ -536,7 +549,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
-            release_daemon_guard();
+            release_daemon_guard(daemon_generation, guard_generation);
             set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
             return Err(e);
         }
@@ -545,7 +558,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // Pre-flight: check if daemon is already running from a previous session
     if let Some(pid) = read_pid_file(&hq_folder_path) {
         if is_pid_alive(pid) {
-            release_daemon_guard();
+            release_daemon_guard(daemon_generation, guard_generation);
             // Inherited runner is live — surface Running without taking ownership.
             set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
             return Err(format!("Daemon is already running (PID {})", pid));
@@ -558,7 +571,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // that could only fail later. Fail honestly up front instead.
     if let Some(bail) = crate::commands::sync::preflight_node_bail() {
         report_preflight_bail(bail.failure, &bail.message);
-        release_daemon_guard();
+        release_daemon_guard(daemon_generation, guard_generation);
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
         return Err(bail.message);
     }
@@ -568,7 +581,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // supervisor.
     if let Some(msg) = crate::commands::sync::preflight_runner_unresolvable() {
         report_preflight_bail(PreflightFailure::RunnerUnresolvable, &msg);
-        release_daemon_guard();
+        release_daemon_guard(daemon_generation, guard_generation);
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
         return Err(msg);
     }
@@ -584,7 +597,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
             &format!("npx cache materialization preflight failed: {msg}"),
         );
         note_environment_preflight_failure();
-        release_daemon_guard();
+        release_daemon_guard(daemon_generation, guard_generation);
         set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
         return Err(msg);
     }
@@ -670,7 +683,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // from cancel_process_impl on app-quit / auto-sync-off /
                     // re-spawn), and rate-limit a crash-loop to ~log2(N) events
                     // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
-                    let cancelled = is_cancelled(DAEMON_HANDLE);
+                    let cancelled = is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
                     let exit_context =
                         watcher_exit_capture_context(&totals, cancelled, &watcher_phase);
                     let last_stderr = process_last_stderr
@@ -2144,18 +2157,20 @@ mod tests {
 
     #[test]
     fn failed_start_releases_guard_immediately() {
-        use crate::commands::process::{deregister_process, try_register_handle};
+        use crate::commands::process::{
+            deregister_process, try_register_handle, try_register_handle_gen,
+        };
         let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_daemon_guard_stamp();
 
         // Simulate a start that acquired the guard then bailed a preflight.
-        assert!(try_register_handle(DAEMON_HANDLE));
-        mark_daemon_guard_acquired();
+        let registration = try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon handle");
+        let guard_generation = mark_daemon_guard_acquired();
         assert!(daemon_guard_age().is_some());
 
         // The preflight-bail path releases the guard on the spot — no deadline,
         // no wedge — so the next start is free to proceed.
-        release_daemon_guard();
+        release_daemon_guard(registration, guard_generation);
         assert!(daemon_guard_age().is_none());
         assert!(try_register_handle(DAEMON_HANDLE));
 
@@ -3124,6 +3139,46 @@ mod tests {
             1,
             "an unexplained runner exit must continue to capture"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_sigkill_skips_capture_but_uncancelled_sigkill_still_captures() {
+        let mut deliberate_stop = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut deliberate_stop,
+            None,
+            Some(9),
+            false,
+            true,
+            "npx",
+            None,
+            &WatcherExitCaptureContext::default(),
+        );
+        assert!(
+            deliberate_stop.captures.is_empty(),
+            "our own escalated SIGKILL must stop at the deliberate-stop boundary"
+        );
+
+        let mut external_kill = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut external_kill,
+            None,
+            Some(9),
+            false,
+            false,
+            "npx",
+            None,
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(
+            external_kill.captures.len(),
+            1,
+            "a never-cancelled SIGKILL must remain visible as a real crash"
+        );
+        assert!(external_kill.captures[0]
+            .message
+            .contains("auto-sync watcher exited unexpectedly"));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader};
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -107,15 +107,42 @@ impl std::error::Error for ProcessError {
 // Process registry
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Default)]
 struct ProcessEntry {
+    /// Monotonic ownership token for this handle registration. A handle string
+    /// and a numeric PID are both reusable; their pair is not an ownership
+    /// proof once a stale cleanup or escalation is scheduled.
+    generation: u64,
     pid: Option<u32>,
     cancelled: bool,
+    /// Published before Unix reaping makes `pid` / its process group reusable.
+    /// Every registry-driven Unix signal checks this while holding the same
+    /// mutex, so a later dispatch cannot target a recycled identity.
+    signal_authority_revoked: bool,
     #[cfg(target_os = "windows")]
     job_handle: Option<isize>,
 }
 
+impl ProcessEntry {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            pid: None,
+            cancelled: false,
+            signal_authority_revoked: false,
+            #[cfg(target_os = "windows")]
+            job_handle: None,
+        }
+    }
+}
+
 static PROCESS_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, ProcessEntry>>>> = OnceLock::new();
+/// A force-clear may release a public handle before its old wait owner reaches
+/// the terminal callback. Keep only the deliberate-stop fact by generation so
+/// that callback cannot misclassify an old SIGKILL as a crash or read a newer
+/// generation's state. The wait owner removes its own record after callback.
+static CANCELLED_GENERATION_TOMBSTONES: OnceLock<Arc<Mutex<HashMap<(String, u64), bool>>>> =
+    OnceLock::new();
+static NEXT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Raised at the single application-exit choke point before child teardown.
 /// The daemon reads this as exit evidence; it does not alter cancellation or
@@ -130,43 +157,103 @@ fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-pub fn pre_register_handle(handle: &str) {
+fn cancelled_generation_tombstones() -> &'static Arc<Mutex<HashMap<(String, u64), bool>>> {
+    CANCELLED_GENERATION_TOMBSTONES.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+fn remember_cancelled_generation(handle: &str, generation: u64, cancelled: bool) {
+    if cancelled {
+        cancelled_generation_tombstones()
+            .lock()
+            .unwrap()
+            .insert((handle.to_string(), generation), true);
+    }
+}
+
+fn clear_cancelled_generation(handle: &str, generation: u64) {
+    cancelled_generation_tombstones()
+        .lock()
+        .unwrap()
+        .remove(&(handle.to_string(), generation));
+}
+
+fn next_process_generation() -> u64 {
+    let generation = NEXT_PROCESS_GENERATION
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
+    assert_ne!(generation, 0, "process registration generations exhausted");
+    generation
+}
+
+/// Register a fresh generation without changing the legacy public helper's
+/// signature. This intentionally retains `pre_register_handle`'s overwrite
+/// semantics for its small set of pre-spawn callers.
+pub fn pre_register_handle_gen(handle: &str) -> u64 {
+    let generation = next_process_generation();
     process_registry()
         .lock()
         .unwrap()
-        .insert(handle.to_string(), ProcessEntry::default());
+        .insert(handle.to_string(), ProcessEntry::new(generation));
+    generation
+}
+
+pub fn pre_register_handle(handle: &str) {
+    let _ = pre_register_handle_gen(handle);
+}
+
+/// Atomically check-and-register a handle, returning the exact generation that
+/// acquired it. Deferred cleanup must retain this value rather than looking a
+/// handle up after it might have been reused.
+pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
+    use std::collections::hash_map::Entry;
+    let mut reg = process_registry().lock().unwrap();
+    match reg.entry(handle.to_string()) {
+        Entry::Occupied(_) => None,
+        Entry::Vacant(v) => {
+            let generation = next_process_generation();
+            v.insert(ProcessEntry::new(generation));
+            Some(generation)
+        }
+    }
 }
 
 /// Atomically check-and-register a handle. Returns `true` if the handle was
 /// newly registered, `false` if it was already present (i.e. a process is
 /// already running under this handle).
 pub fn try_register_handle(handle: &str) -> bool {
-    use std::collections::hash_map::Entry;
+    try_register_handle_gen(handle).is_some()
+}
+
+/// Return the current generation while it is still registered. This is a
+/// snapshot only; any actor that mutates state must pass the returned value
+/// back to a generation-checked operation.
+pub fn generation_for_handle(handle: &str) -> Option<u64> {
+    process_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .map(|entry| entry.generation)
+}
+
+/// Attach a PID to the active generation and return that generation. Existing
+/// callers retain `register_process` below; wait owners use this return value
+/// to ensure their late cleanup cannot remove a replacement.
+pub fn register_process_gen(handle: &str, pid: u32) -> u64 {
     let mut reg = process_registry().lock().unwrap();
-    match reg.entry(handle.to_string()) {
-        Entry::Occupied(_) => false,
-        Entry::Vacant(v) => {
-            v.insert(ProcessEntry::default());
-            true
-        }
+    if let Some(entry) = reg.get_mut(handle) {
+        entry.pid = Some(pid);
+        entry.generation
+    } else {
+        let generation = next_process_generation();
+        let mut entry = ProcessEntry::new(generation);
+        entry.pid = Some(pid);
+        reg.insert(handle.to_string(), entry);
+        generation
     }
 }
 
 pub fn register_process(handle: &str, pid: u32) {
-    let mut reg = process_registry().lock().unwrap();
-    if let Some(entry) = reg.get_mut(handle) {
-        entry.pid = Some(pid);
-    } else {
-        reg.insert(
-            handle.to_string(),
-            ProcessEntry {
-                pid: Some(pid),
-                cancelled: false,
-                #[cfg(target_os = "windows")]
-                job_handle: None,
-            },
-        );
-    }
+    let _ = register_process_gen(handle, pid);
 }
 
 #[cfg(target_os = "windows")]
@@ -177,21 +264,50 @@ fn register_job_handle(handle: &str, job: isize) {
     }
 }
 
-pub fn deregister_process(handle: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        let mut reg = process_registry().lock().unwrap();
-        if let Some(entry) = reg.remove(handle) {
-            if let Some(job) = entry.job_handle {
-                unsafe {
-                    let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
-                }
-            }
+#[cfg(target_os = "windows")]
+fn close_process_entry(entry: ProcessEntry) {
+    if let Some(job) = entry.job_handle {
+        unsafe {
+            let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        process_registry().lock().unwrap().remove(handle);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn close_process_entry(_entry: ProcessEntry) {}
+
+pub fn deregister_process(handle: &str) {
+    let removed = process_registry().lock().unwrap().remove(handle);
+    if let Some(entry) = removed {
+        close_process_entry(entry);
+    }
+}
+
+/// Remove only `generation`'s entry. A stale terminal callback, force-clear,
+/// or app-exit action becomes an observable no-op after a replacement has
+/// acquired the same public handle.
+pub fn deregister_generation(handle: &str, generation: u64) -> bool {
+    let removed = {
+        let mut reg = process_registry().lock().unwrap();
+        let cancelled = reg
+            .get(handle)
+            .filter(|entry| entry.generation == generation)
+            .map(|entry| entry.cancelled);
+        if let Some(cancelled) = cancelled {
+            // Record before removing the active entry, so a concurrent wait
+            // callback sees either its live state or this generation's
+            // tombstone — never an unrelated replacement.
+            remember_cancelled_generation(handle, generation, cancelled);
+            reg.remove(handle)
+        } else {
+            None
+        }
+    };
+    if let Some(entry) = removed {
+        close_process_entry(entry);
+        true
+    } else {
+        false
     }
 }
 
@@ -225,6 +341,25 @@ pub fn is_cancelled(handle: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Generation-aware cancellation lookup for owners that can outlive a handle
+/// reuse (notably the daemon watcher callback).
+pub fn is_cancelled_for_generation(handle: &str, generation: u64) -> bool {
+    let active = process_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .map(|entry| entry.cancelled)
+        .unwrap_or(false);
+    active
+        || cancelled_generation_tombstones()
+            .lock()
+            .unwrap()
+            .get(&(handle.to_string(), generation))
+            .copied()
+            .unwrap_or(false)
+}
+
 fn mark_cancelled(handle: &str) -> bool {
     let mut reg = process_registry().lock().unwrap();
     if let Some(entry) = reg.get_mut(handle) {
@@ -233,6 +368,21 @@ fn mark_cancelled(handle: &str) -> bool {
     } else {
         false
     }
+}
+
+fn revoke_signal_authority_for_generation(handle: &str, generation: u64) -> bool {
+    let mut reg = process_registry().lock().unwrap();
+    reg.get_mut(handle)
+        .map(|entry| revoke_signal_authority_locked(entry, generation))
+        .unwrap_or(false)
+}
+
+fn revoke_signal_authority_locked(entry: &mut ProcessEntry, generation: u64) -> bool {
+    if entry.generation != generation {
+        return false;
+    }
+    entry.signal_authority_revoked = true;
+    true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,6 +466,137 @@ fn assign_child_to_job(handle: &str, child: &std::process::Child) {
 fn assign_child_to_job(_handle: &str, _child: &std::process::Child) {}
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Unix wait / signal-identity boundary
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Wait until `pid` has exited without reaping it. `WNOWAIT` keeps the child
+/// zombie (and therefore its PID/process-group identity reserved) until the
+/// wait owner publishes revocation under the registry lock and performs the
+/// actual `Child::wait`.
+#[cfg(unix)]
+fn observe_exit_without_reaping(pid: u32) -> io::Result<()> {
+    loop {
+        #[cfg(test)]
+        if let Some(result) = take_test_observation_result() {
+            match result {
+                Err(error) if error.raw_os_error() == Some(libc::EINTR) => continue,
+                result => return result,
+            }
+        }
+
+        // Safety: `siginfo_t` is an out-parameter for waitid; a zeroed buffer
+        // is valid input and libc initializes it before success is observed.
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        // Safety: the PID came from this `Child`; the pointer targets the
+        // initialized local output buffer for the duration of the FFI call.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        return Err(error);
+    }
+}
+
+/// Test-only observation seam. It deliberately feeds the same helper used by
+/// the production wait owner so the error lattice cannot diverge into a mocked
+/// side path.
+#[cfg(all(unix, test))]
+thread_local! {
+    static TEST_OBSERVATION_RESULTS: std::cell::RefCell<std::collections::VecDeque<io::Result<()>>> =
+        std::cell::RefCell::new(std::collections::VecDeque::new());
+}
+
+#[cfg(all(unix, test))]
+fn set_test_observation_results(results: Vec<io::Result<()>>) {
+    TEST_OBSERVATION_RESULTS.with(|outcomes| {
+        *outcomes.borrow_mut() = results.into();
+    });
+}
+
+#[cfg(all(unix, test))]
+fn take_test_observation_result() -> Option<io::Result<()>> {
+    TEST_OBSERVATION_RESULTS.with(|outcomes| outcomes.borrow_mut().pop_front())
+}
+
+/// The only Unix reaping path for registry-owned children.
+///
+/// On successful non-reaping observation, revocation is published before the
+/// real reap. If another component has already reaped (`ECHILD`), revocation is
+/// still published before bookkeeping. Other observation errors use a
+/// lock-scoped `try_wait` loop: it retains cancellation authority while the
+/// child still exists, then commits revocation in the same critical section as
+/// the reap. There is deliberately no unrevoked plain-`wait` fallback.
+#[cfg(unix)]
+fn wait_for_terminal_status(
+    child: &mut std::process::Child,
+    handle: &str,
+    generation: u64,
+) -> io::Result<ExitStatus> {
+    match observe_exit_without_reaping(child.id()) {
+        Ok(()) => {
+            let _ = revoke_signal_authority_for_generation(handle, generation);
+            child.wait()
+        }
+        Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {
+            let _ = revoke_signal_authority_for_generation(handle, generation);
+            // This is bookkeeping only. The child identity was already lost, so
+            // no registry-driven signal may be sent while this call reports the
+            // existing wait error through the normal terminal-event path.
+            child.wait()
+        }
+        Err(observation_error) => {
+            eprintln!(
+                "[process] waitid observation failed for {handle} generation {generation}: {observation_error}; using lock-scoped try_wait"
+            );
+            loop {
+                let still_running = {
+                    let mut registry = process_registry().lock().unwrap();
+                    match child.try_wait() {
+                        Ok(None) => true,
+                        Ok(Some(status)) => {
+                            if let Some(entry) = registry.get_mut(handle) {
+                                let _ = revoke_signal_authority_locked(entry, generation);
+                            }
+                            return Ok(status);
+                        }
+                        Err(error) => {
+                            if let Some(entry) = registry.get_mut(handle) {
+                                let _ = revoke_signal_authority_locked(entry, generation);
+                            }
+                            return Err(error);
+                        }
+                    }
+                };
+                if still_running {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_for_terminal_status(
+    child: &mut std::process::Child,
+    _handle: &str,
+    _generation: u64,
+) -> io::Result<ExitStatus> {
+    child.wait()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Pure impl
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -323,6 +604,7 @@ pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Resu
 where
     F: FnMut(ProcessEvent),
 {
+    let pre_registered_generation = generation_for_handle(handle);
     let mut cmd = build_spawn_command(&spawn.cmd, &spawn.args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     put_in_own_process_group(&mut cmd);
@@ -339,7 +621,12 @@ where
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            deregister_process(handle);
+            if let Some(generation) = pre_registered_generation {
+                let _ = deregister_generation(handle, generation);
+                clear_cancelled_generation(handle, generation);
+            } else {
+                deregister_process(handle);
+            }
             return Err(ProcessError::Spawn {
                 cmd: spawn.cmd.clone(),
                 source: e,
@@ -348,7 +635,7 @@ where
     };
 
     let pid = child.id();
-    register_process(handle, pid);
+    let generation = register_process_gen(handle, pid);
     assign_child_to_job(handle, &child);
 
     let stdout = child.stdout.take().expect("stdout pipe");
@@ -437,11 +724,12 @@ where
         }
     }
 
-    let wait_result = child.wait();
+    let wait_result = wait_for_terminal_status(&mut child, handle, generation);
 
     if let Some((stream, source)) = first_stream_err {
         emit_exit_then_deregister(
             handle,
+            generation,
             &mut on_event_mut,
             ProcessEvent::Exit {
                 code: None,
@@ -459,6 +747,7 @@ where
             // termination path rather than mislabel it as a spawn failure.
             emit_exit_then_deregister(
                 handle,
+                generation,
                 &mut on_event_mut,
                 ProcessEvent::Exit {
                     code: None,
@@ -471,6 +760,7 @@ where
     };
     emit_exit_then_deregister(
         handle,
+        generation,
         &mut on_event_mut,
         ProcessEvent::Exit {
             code: status.code(),
@@ -486,12 +776,17 @@ where
 /// can observe whether cancellation was requested for this exact process
 /// generation. The child has already been reaped, and registry cleanup happens
 /// immediately after the callback returns.
-fn emit_exit_then_deregister<F>(handle: &str, on_event: &mut F, event: ProcessEvent)
-where
+fn emit_exit_then_deregister<F>(
+    handle: &str,
+    generation: u64,
+    on_event: &mut F,
+    event: ProcessEvent,
+) where
     F: FnMut(ProcessEvent),
 {
     on_event(event);
-    deregister_process(handle);
+    let _ = deregister_generation(handle, generation);
+    clear_cancelled_generation(handle, generation);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,6 +815,7 @@ where
     F: FnMut(ProcessEvent),
     S: FnOnce(&mut std::process::Child),
 {
+    let pre_registered_generation = generation_for_handle(handle);
     let mut cmd = build_spawn_command(&spawn.cmd, &spawn.args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -538,7 +834,12 @@ where
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            deregister_process(handle);
+            if let Some(generation) = pre_registered_generation {
+                let _ = deregister_generation(handle, generation);
+                clear_cancelled_generation(handle, generation);
+            } else {
+                deregister_process(handle);
+            }
             return Err(ProcessError::Spawn {
                 cmd: spawn.cmd.clone(),
                 source: e,
@@ -547,7 +848,7 @@ where
     };
 
     let pid = child.id();
-    register_process(handle, pid);
+    let generation = register_process_gen(handle, pid);
     assign_child_to_job(handle, &child);
 
     // Let the caller take stdin (and stash the handle) before we start
@@ -641,11 +942,12 @@ where
         }
     }
 
-    let wait_result = child.wait();
+    let wait_result = wait_for_terminal_status(&mut child, handle, generation);
 
     if let Some((stream, source)) = first_stream_err {
         emit_exit_then_deregister(
             handle,
+            generation,
             &mut on_event_mut,
             ProcessEvent::Exit {
                 code: None,
@@ -663,6 +965,7 @@ where
             // caller cannot emit a second, misleading "failed to spawn" alert.
             emit_exit_then_deregister(
                 handle,
+                generation,
                 &mut on_event_mut,
                 ProcessEvent::Exit {
                     code: None,
@@ -675,6 +978,7 @@ where
     };
     emit_exit_then_deregister(
         handle,
+        generation,
         &mut on_event_mut,
         ProcessEvent::Exit {
             code: status.code(),
@@ -690,13 +994,120 @@ where
 // Cancellation
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
-    if !mark_cancelled(handle) {
-        return false;
+/// Result of a registry-checked Unix signal attempt. Refusals are intentional
+/// no-ops: they prove the caller held only a stale or already-reaped identity.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalDispatch {
+    Delivered,
+    RefusedStale,
+    RefusedRevoked,
+    Esrch,
+    Failed(i32),
+}
+
+#[cfg(unix)]
+fn dispatch_signal_checked_locked<F>(
+    entry: &mut ProcessEntry,
+    generation: u64,
+    pid: u32,
+    signal_to_send: Signal,
+    dispatch: F,
+) -> SignalDispatch
+where
+    F: FnOnce(Pid, Signal) -> Result<(), nix::errno::Errno>,
+{
+    if entry.generation != generation || entry.pid != Some(pid) {
+        return SignalDispatch::RefusedStale;
+    }
+    if entry.signal_authority_revoked {
+        return SignalDispatch::RefusedRevoked;
     }
 
+    // Keep the OS dispatch in this critical section. The wait owner uses this
+    // same mutex to publish revocation before (or atomically with) a reap.
+    match dispatch(Pid::from_raw(-(pid as i32)), signal_to_send) {
+        Ok(()) => SignalDispatch::Delivered,
+        Err(nix::errno::Errno::ESRCH) => {
+            entry.signal_authority_revoked = true;
+            SignalDispatch::Esrch
+        }
+        Err(error) => {
+            eprintln!(
+                "[process] failed to dispatch {signal_to_send:?} for generation {generation} pid {pid}: {error}"
+            );
+            SignalDispatch::Failed(error as i32)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn dispatch_signal_checked_with<F>(
+    handle: &str,
+    generation: u64,
+    pid: u32,
+    signal_to_send: Signal,
+    dispatch: F,
+) -> SignalDispatch
+where
+    F: FnOnce(Pid, Signal) -> Result<(), nix::errno::Errno>,
+{
+    let mut registry = process_registry().lock().unwrap();
+    let Some(entry) = registry.get_mut(handle) else {
+        return SignalDispatch::RefusedStale;
+    };
+    dispatch_signal_checked_locked(entry, generation, pid, signal_to_send, dispatch)
+}
+
+/// Mark a known generation as deliberately cancelled and dispatch its first
+/// signal under one lock. App-exit teardown uses this too: it must never turn
+/// its own SIGKILL escalation into an uncancelled watcher crash.
+#[cfg(unix)]
+fn dispatch_cancelled_checked(
+    handle: &str,
+    generation: u64,
+    pid: u32,
+    signal_to_send: Signal,
+) -> SignalDispatch {
+    let mut registry = process_registry().lock().unwrap();
+    let Some(entry) = registry.get_mut(handle) else {
+        return SignalDispatch::RefusedStale;
+    };
+    if entry.generation != generation || entry.pid != Some(pid) {
+        return SignalDispatch::RefusedStale;
+    }
+    if entry.signal_authority_revoked {
+        return SignalDispatch::RefusedRevoked;
+    }
+    let was_cancelled = entry.cancelled;
+    entry.cancelled = true;
+    let outcome =
+        dispatch_signal_checked_locked(entry, generation, pid, signal_to_send, signal::kill);
+    if matches!(outcome, SignalDispatch::Esrch) && !was_cancelled {
+        // A vanished process group was not stopped by this actor. Keep a real
+        // external SIGKILL eligible for reporting instead of claiming it as a
+        // deliberate teardown after the fact.
+        entry.cancelled = false;
+    }
+    outcome
+}
+
+#[cfg(unix)]
+fn dispatch_signal_checked(
+    handle: &str,
+    generation: u64,
+    pid: u32,
+    signal_to_send: Signal,
+) -> SignalDispatch {
+    dispatch_signal_checked_with(handle, generation, pid, signal_to_send, signal::kill)
+}
+
+pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
     #[cfg(target_os = "windows")]
     {
+        if !mark_cancelled(handle) {
+            return false;
+        }
         let job_isize = process_registry()
             .lock()
             .unwrap()
@@ -715,21 +1126,49 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
 
     #[cfg(unix)]
     {
-        let pid = match lookup_pid(handle) {
-            Some(p) => p,
-            None => return true,
+        // Mark cancellation, capture the generation, and send SIGTERM under
+        // one registry lock. Releasing the lock before dispatch would let the
+        // wait owner reap and free this numeric process-group identity first.
+        let target = {
+            let mut registry = process_registry().lock().unwrap();
+            let Some(entry) = registry.get_mut(handle) else {
+                return false;
+            };
+            if entry.signal_authority_revoked {
+                return false;
+            }
+            let Some(pid) = entry.pid else {
+                entry.cancelled = true;
+                return true;
+            };
+            let generation = entry.generation;
+            let was_cancelled = entry.cancelled;
+            entry.cancelled = true;
+            let outcome = dispatch_signal_checked_locked(
+                entry,
+                generation,
+                pid,
+                Signal::SIGTERM,
+                signal::kill,
+            );
+            if matches!(outcome, SignalDispatch::Esrch) && !was_cancelled {
+                entry.cancelled = false;
+            }
+            (generation, pid, outcome)
         };
 
-        let pgid = Pid::from_raw(-(pid as i32));
-        let _ = signal::kill(pgid, Signal::SIGTERM);
+        let (generation, pid, outcome) = target;
+        if matches!(
+            outcome,
+            SignalDispatch::RefusedStale | SignalDispatch::RefusedRevoked | SignalDispatch::Esrch
+        ) {
+            return true;
+        }
 
         let handle_owned = handle.to_string();
         thread::spawn(move || {
             thread::sleep(sigkill_delay);
-            if is_registered(&handle_owned) {
-                let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL);
-                deregister_process(&handle_owned);
-            }
+            let _ = dispatch_signal_checked(&handle_owned, generation, pid, Signal::SIGKILL);
         });
 
         return true;
@@ -737,6 +1176,9 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
 
     #[cfg(not(any(unix, target_os = "windows")))]
     {
+        if !mark_cancelled(handle) {
+            return false;
+        }
         let _ = sigkill_delay;
         true
     }
@@ -746,46 +1188,103 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
 // App-exit teardown
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
+struct RegisteredProcess {
+    handle: String,
+    pid: u32,
+    generation: u64,
+}
+
 /// Snapshot every currently-registered child as `(handle, pid)`.
 ///
 /// On Unix, each child is spawned with `.process_group(0)` and leads its own
 /// process group. On Windows, the pid is paired with a Job Object handle in the
 /// registry so cancellation can terminate the tree.
 pub fn registered_pids() -> Vec<(String, u32)> {
+    registered_processes()
+        .into_iter()
+        .map(|entry| (entry.handle, entry.pid))
+        .collect()
+}
+
+fn registered_processes() -> Vec<RegisteredProcess> {
     process_registry()
         .lock()
         .unwrap()
         .iter()
-        .filter_map(|(h, e)| e.pid.map(|p| (h.clone(), p)))
+        .filter_map(|(handle, entry)| {
+            entry.pid.map(|pid| RegisteredProcess {
+                handle: handle.clone(),
+                pid,
+                generation: entry.generation,
+            })
+        })
         .collect()
+}
+
+/// Re-resolve a legacy `(handle, pid)` snapshot to a generation while holding
+/// the registry lock. Mismatched PIDs are stale and are intentionally never
+/// signalled during app exit.
+fn registered_process_for(handle: &str, pid: u32) -> Option<RegisteredProcess> {
+    process_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .filter(|entry| entry.pid == Some(pid))
+        .map(|entry| RegisteredProcess {
+            handle: handle.to_string(),
+            pid,
+            generation: entry.generation,
+        })
 }
 
 #[cfg(unix)]
 pub fn terminate_pids_for_exit(pids: &[(String, u32)], grace: Duration) {
-    for (_handle, pid) in pids {
-        let _ = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGTERM);
+    let processes: Vec<_> = pids
+        .iter()
+        .filter_map(|(handle, pid)| registered_process_for(handle, *pid))
+        .collect();
+    for process in &processes {
+        let _ = dispatch_cancelled_checked(
+            &process.handle,
+            process.generation,
+            process.pid,
+            Signal::SIGTERM,
+        );
     }
-    if !pids.is_empty() {
+    if !processes.is_empty() {
         thread::sleep(grace);
     }
-    for (handle, pid) in pids {
-        let _ = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGKILL);
-        deregister_process(handle);
+    for process in processes {
+        let _ = dispatch_signal_checked(
+            &process.handle,
+            process.generation,
+            process.pid,
+            Signal::SIGKILL,
+        );
+        // The matching wait owner performs generation-scoped removal after its
+        // terminal callback. Removing here would erase `cancelled` before the
+        // reporting boundary can observe this deliberate app-exit teardown.
     }
 }
 
 #[cfg(target_os = "windows")]
 pub fn terminate_pids_for_exit(pids: &[(String, u32)], _grace: Duration) {
-    for (handle, _pid) in pids {
-        let _ = cancel_process_impl(handle, Duration::ZERO);
-        deregister_process(handle);
+    for (handle, pid) in pids {
+        let Some(process) = registered_process_for(handle, *pid) else {
+            continue;
+        };
+        let _ = cancel_process_impl(&process.handle, Duration::ZERO);
+        let _ = deregister_generation(&process.handle, process.generation);
     }
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
 pub fn terminate_pids_for_exit(pids: &[(String, u32)], _grace: Duration) {
-    for (handle, _pid) in pids {
-        deregister_process(handle);
+    for (handle, pid) in pids {
+        if let Some(process) = registered_process_for(handle, *pid) {
+            let _ = deregister_generation(&process.handle, process.generation);
+        }
     }
 }
 
@@ -806,12 +1305,13 @@ pub fn terminate_all_for_exit(grace: Duration) {
 pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> {
     let handle = Uuid::new_v4().to_string();
 
-    pre_register_handle(&handle);
+    let generation = pre_register_handle_gen(&handle);
 
     let handle_bg = handle.clone();
     thread::spawn(move || {
-        if is_cancelled(&handle_bg) {
-            deregister_process(&handle_bg);
+        if is_cancelled_for_generation(&handle_bg, generation) {
+            let _ = deregister_generation(&handle_bg, generation);
+            clear_cancelled_generation(&handle_bg, generation);
             let _ = app.emit(
                 &format!("process://{}/exit", handle_bg),
                 ExitEvent {
@@ -1021,12 +1521,13 @@ mod registry_exit_order_tests {
     #[test]
     fn exit_callback_observes_cancelled_registry_entry_until_it_returns() {
         let handle = format!("exit-order-test-{}", Uuid::new_v4());
-        pre_register_handle(&handle);
+        let generation = pre_register_handle_gen(&handle);
         assert!(mark_cancelled(&handle));
 
         let mut observed = None;
         emit_exit_then_deregister(
             &handle,
+            generation,
             &mut |event| {
                 assert!(matches!(event, ProcessEvent::Exit { .. }));
                 observed = Some((is_registered(&handle), is_cancelled(&handle)));
@@ -1102,6 +1603,183 @@ mod registry_exit_order_tests {
             "the reporting callback must see the deliberately-cancelled generation"
         );
         assert!(!is_registered(&handle));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_dispatch_two_legal_lock_orderings() {
+        use std::process::Command as StdCommand;
+        use std::sync::atomic::AtomicUsize;
+
+        let handle = format!("dispatch-order-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("acquire test handle");
+        let mut child = StdCommand::new("sh")
+            .args(["-c", "sleep 30"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn live fixture");
+        assert_eq!(register_process_gen(&handle, child.id()), generation);
+        assert!(
+            child.try_wait().expect("probe live fixture").is_none(),
+            "ordering A must dispatch only while the target is still unreaped"
+        );
+
+        let calls = AtomicUsize::new(0);
+        let delivered = dispatch_signal_checked_with(
+            &handle,
+            generation,
+            child.id(),
+            Signal::SIGTERM,
+            |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert_eq!(delivered, SignalDispatch::Delivered);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Ordering B models the wait owner committing revoke+reap before either
+        // cancellation dispatch. Neither immediate nor delayed escalation may
+        // enter the kill seam after that point.
+        assert!(revoke_signal_authority_for_generation(&handle, generation));
+        let immediate = dispatch_signal_checked_with(
+            &handle,
+            generation,
+            child.id(),
+            Signal::SIGTERM,
+            |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        let delayed = dispatch_signal_checked_with(
+            &handle,
+            generation,
+            child.id(),
+            Signal::SIGKILL,
+            |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert_eq!(immediate, SignalDispatch::RefusedRevoked);
+        assert_eq!(delayed, SignalDispatch::RefusedRevoked);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "refused paths must not kill"
+        );
+
+        signal::kill(Pid::from_raw(-(child.id() as i32)), Signal::SIGKILL)
+            .expect("clean up live fixture process group");
+        child.wait().expect("reap live fixture");
+        assert!(deregister_generation(&handle, generation));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observation_error_lattice_refuses_post_reservation_signals() {
+        use std::process::Command as StdCommand;
+        use std::sync::atomic::AtomicUsize;
+
+        fn start_exiting_child(handle: &str) -> (u64, std::process::Child) {
+            let generation = try_register_handle_gen(handle).expect("acquire handle");
+            let child = StdCommand::new("sh")
+                .args(["-c", "exit 0"])
+                .process_group(0)
+                .spawn()
+                .expect("spawn short-lived fixture");
+            assert_eq!(register_process_gen(handle, child.id()), generation);
+            (generation, child)
+        }
+
+        fn assert_refused_after_revocation(handle: &str, generation: u64, pid: u32) {
+            let calls = AtomicUsize::new(0);
+            for signal_to_send in [Signal::SIGTERM, Signal::SIGKILL] {
+                let outcome = dispatch_signal_checked_with(
+                    handle,
+                    generation,
+                    pid,
+                    signal_to_send,
+                    |_, _| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                );
+                assert_eq!(outcome, SignalDispatch::RefusedRevoked);
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+
+        // EINTR is retried inside the production observation helper. The next
+        // successful observation revokes before the real reap.
+        let eintr_handle = format!("observation-eintr-{}", Uuid::new_v4());
+        let (eintr_generation, mut eintr_child) = start_exiting_child(&eintr_handle);
+        let eintr_pid = eintr_child.id();
+        set_test_observation_results(vec![Err(io::Error::from_raw_os_error(libc::EINTR)), Ok(())]);
+        wait_for_terminal_status(&mut eintr_child, &eintr_handle, eintr_generation)
+            .expect("EINTR must retry to the normal observation path");
+        assert_refused_after_revocation(&eintr_handle, eintr_generation, eintr_pid);
+        assert!(deregister_generation(&eintr_handle, eintr_generation));
+
+        // ECHILD means some other reaper consumed the child. The helper must
+        // revoke first and only then perform its bookkeeping wait.
+        let echild_handle = format!("observation-echild-{}", Uuid::new_v4());
+        let (echild_generation, mut echild_child) = start_exiting_child(&echild_handle);
+        let echild_pid = echild_child.id();
+        echild_child
+            .wait()
+            .expect("reap fixture before ECHILD path");
+        set_test_observation_results(vec![Err(io::Error::from_raw_os_error(libc::ECHILD))]);
+        let _ = wait_for_terminal_status(&mut echild_child, &echild_handle, echild_generation);
+        assert_refused_after_revocation(&echild_handle, echild_generation, echild_pid);
+        assert!(deregister_generation(&echild_handle, echild_generation));
+
+        // An irrecoverable observation error uses the lock-scoped try_wait
+        // fallback; it publishes revocation in that critical section once the
+        // fixture becomes waitable.
+        let einval_handle = format!("observation-einval-{}", Uuid::new_v4());
+        let (einval_generation, mut einval_child) = start_exiting_child(&einval_handle);
+        let einval_pid = einval_child.id();
+        set_test_observation_results(vec![Err(io::Error::from_raw_os_error(libc::EINVAL))]);
+        wait_for_terminal_status(&mut einval_child, &einval_handle, einval_generation)
+            .expect("degraded wait path must still report the child status");
+        assert_refused_after_revocation(&einval_handle, einval_generation, einval_pid);
+        assert!(deregister_generation(&einval_handle, einval_generation));
+    }
+
+    #[test]
+    fn force_clear_then_replacement_survives_old_exit_callback() {
+        let handle = format!("generation-replacement-{}", Uuid::new_v4());
+        let old_generation = try_register_handle_gen(&handle).expect("acquire old generation");
+        assert_eq!(register_process_gen(&handle, 41), old_generation);
+        assert!(mark_cancelled(&handle));
+        assert!(deregister_generation(&handle, old_generation));
+
+        let replacement_generation =
+            try_register_handle_gen(&handle).expect("acquire replacement generation");
+        assert_eq!(register_process_gen(&handle, 42), replacement_generation);
+
+        let mut replacement_visible_to_old_callback = false;
+        emit_exit_then_deregister(
+            &handle,
+            old_generation,
+            &mut |_| {
+                replacement_visible_to_old_callback = is_registered(&handle)
+                    && generation_for_handle(&handle) == Some(replacement_generation)
+                    && is_cancelled_for_generation(&handle, old_generation)
+                    && !is_cancelled_for_generation(&handle, replacement_generation);
+            },
+            ProcessEvent::Exit {
+                code: None,
+                signal: Some(9),
+                success: false,
+            },
+        );
+
+        assert!(replacement_visible_to_old_callback);
+        assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
+        assert!(deregister_generation(&handle, replacement_generation));
     }
 }
 
@@ -1234,6 +1912,13 @@ mod exit_teardown_tests {
             .map(|(i, c)| (format!("exit-test-{i}"), c.id()))
             .collect();
 
+        // App-exit teardown intentionally operates only on registry-owned
+        // children; an arbitrary stale `(handle, pid)` pair must never be
+        // signalled after numeric identity reuse.
+        for (handle, pid) in &pids {
+            register_process(handle, *pid);
+        }
+
         for (_, pid) in &pids {
             assert!(alive(*pid), "child {pid} should be alive before teardown");
         }
@@ -1247,6 +1932,9 @@ mod exit_teardown_tests {
         }
         for (_, pid) in &pids {
             assert!(!alive(*pid), "child {pid} must be dead after teardown");
+        }
+        for (handle, _) in &pids {
+            deregister_process(handle);
         }
     }
 
