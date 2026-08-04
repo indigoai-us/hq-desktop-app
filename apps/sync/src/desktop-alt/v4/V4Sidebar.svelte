@@ -632,7 +632,7 @@
     align-items: center;
     gap: 12px;
     width: 100%;
-    margin: 0 0 8px;
+    margin: 0 0 4px;
     padding: 8px 10px;
     border: none;
     border-radius: var(--v4-radius-button);
@@ -760,7 +760,7 @@
   .ws-eyebrow {
     flex: 0 0 auto;
     overflow: hidden;
-    margin: 0 0 8px;
+    margin: 0 0 4px;
     padding: 0 10px;
     color: var(--v4-text-3);
     font-size: 10px;
