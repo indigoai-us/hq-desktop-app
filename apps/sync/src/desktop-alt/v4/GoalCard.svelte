@@ -32,15 +32,20 @@
   function goalStatus(raw: string): { label: string; tone: 'ok' | 'warn' | 'error' | 'idle' } {
     const normalized = raw.toLowerCase().replace(/[_\s]+/g, '-').trim();
     if (normalized === 'on-track' || normalized === 'active' || normalized === 'running') {
-      return { label: 'ON TRACK', tone: 'ok' };
+      return { label: 'On track', tone: 'ok' };
     }
     if (normalized === 'at-risk' || normalized === 'review') {
-      return { label: 'AT RISK', tone: 'warn' };
+      return { label: 'At risk', tone: 'warn' };
     }
     if (normalized === 'off-track' || normalized === 'blocked') {
-      return { label: 'OFF TRACK', tone: 'error' };
+      return { label: 'Off track', tone: 'error' };
     }
-    return { label: normalized ? normalized.replace(/-/g, ' ').toUpperCase() : 'NO STATUS', tone: 'idle' };
+    return {
+      label: normalized
+        ? normalized.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())
+        : 'No status',
+      tone: 'idle',
+    };
   }
 
   function valueText(value: number | string | null | undefined, unit: string | undefined): string {
@@ -72,7 +77,7 @@
         <p class="goal-kr">{krLine}</p>
       {/if}
     </div>
-    <span class="goal-status">
+    <span class={`goal-status ${status.tone}`}>
       <span class={`status-dot ${status.tone}`} aria-hidden="true"></span>
       <span>{status.label}</span>
     </span>
@@ -145,8 +150,14 @@
     font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.2;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+  }
+
+  .goal-status.ok {
+    color: #248a3d;
+  }
+
+  .goal-status.warn {
+    color: #b45309;
   }
 
   .status-dot {

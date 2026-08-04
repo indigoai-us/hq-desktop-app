@@ -139,11 +139,6 @@
 </script>
 
 <header class="v4-titlebar" aria-label="Window chrome">
-  <div class="v4-titlebar-leading">
-    <!-- Padded dead space under the native traffic lights — safe drag only. -->
-    <div class="v4-drag-pad v4-drag-lights" data-tauri-drag-region aria-hidden="true"></div>
-  </div>
-
   <div class="v4-status" aria-live="polite">
     {#if workspaceName}
       <span class="v4-ws-name">{workspaceName}</span>
@@ -276,8 +271,7 @@
     flex: 0 0 auto;
     height: 100%;
     overflow: visible;
-    padding: 0 35px 0 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--v4-text-1) 5%, transparent);
+    padding: 0 35px 0 24px;
     background: var(--v4-chrome);
     backdrop-filter: var(--v4-glass-filter);
     -webkit-backdrop-filter: var(--v4-glass-filter);
@@ -285,24 +279,21 @@
     font-family: var(--font-sans);
   }
 
-  .v4-titlebar-leading {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-    gap: 4px;
-    padding-left: 24px;
+  /* Divider inset to the shared content gutters. */
+  .v4-titlebar::after {
+    content: '';
+    position: absolute;
+    left: 24px;
+    right: 35px;
+    bottom: 0;
+    height: 1px;
+    background: color-mix(in srgb, var(--v4-text-1) 5%, transparent);
   }
+
 
   /* Windows uses the native decorated title bar (system controls + Snap
      Layouts). The HQ toolbar sits below it — no macOS traffic-light gutter. */
-  :global(html[data-platform='windows']) .v4-titlebar-leading {
-    padding-left: 12px;
-  }
 
-  :global(html[data-platform='windows']) .v4-drag-lights {
-    width: 0;
-    display: none;
-  }
 
   .v4-drag-pad {
     flex: 0 0 auto;
@@ -310,9 +301,6 @@
     min-height: 100%;
   }
 
-  .v4-drag-lights {
-    width: 8px;
-  }
 
   .v4-drag-flex {
     flex: 1 1 auto;

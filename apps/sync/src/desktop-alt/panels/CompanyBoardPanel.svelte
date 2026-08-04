@@ -1113,7 +1113,7 @@
 
   .work-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(72px, 96px);
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 12px;
     min-height: 52px;
@@ -1247,7 +1247,9 @@
 
   .ac-cell {
     display: grid;
-    grid-template-columns: minmax(36px, 56px) auto;
+    grid-template-columns: minmax(36px, 56px) minmax(28px, auto);
+    justify-content: end;
+    justify-items: end;
     align-items: center;
     gap: 8px;
     color: var(--v4-text-3);

@@ -234,6 +234,7 @@
     justify-content: space-between;
     gap: 12px;
     min-width: 0;
+    border-top: 1px solid var(--v4-rowline);
     padding: 8px 0 10px;
     border-bottom: 1px solid var(--v4-rowline);
   }
@@ -307,7 +308,7 @@
   .digest-copy {
     display: grid;
     min-width: 0;
-    gap: var(--v4-row-stack-gap, 3px);
+    gap: 1px;
   }
 
   .digest-title {
@@ -323,7 +324,7 @@
   .digest-meta {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 11px;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
