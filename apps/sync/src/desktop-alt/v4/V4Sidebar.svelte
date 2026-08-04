@@ -560,7 +560,7 @@
   .ws-lights {
     display: flex;
     gap: 9px;
-    padding: 1px;
+    padding: 4px;
   }
 
   .ws-lights-spacer {
