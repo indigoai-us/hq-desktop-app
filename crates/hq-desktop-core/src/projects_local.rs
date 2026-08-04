@@ -1,11 +1,15 @@
 //! Local-PRD reader commands for the Projects surface (US-003).
 //!
 //! The Projects surface needs to list projects + read stories straight from the
-//! local HQ tree — fast, offline, and cross-company — instead of round-tripping
-//! to the vault for every render. These two commands scan the resolved HQ folder
-//! and parse the on-disk `board.json` + `prd.json` files directly.
+//! local HQ tree — fast, offline, and across Personal plus company workspaces —
+//! instead of round-tripping to the vault for every render. These two commands
+//! scan the resolved HQ folder and parse the on-disk `board.json` + `prd.json`
+//! files directly.
 //!
 //! Data shapes (modeled from real files):
+//!   * `personal/board.json` and `personal/projects/<name>/prd.json` — the
+//!     user-owned local project workspace. Board rows without a PRD remain
+//!     visible; linked PRDs must stay inside `personal/projects/`.
 //!   * `companies/<slug>/board.json` — `{ company, objectives[], initiatives[],
 //!     projects[] }`. Each project: `id, title, description, status, scope, app,
 //!     initiative_id, objective_id, prd_path, created_at, updated_at`.
@@ -22,8 +26,8 @@
 //! ## Empty local state
 //!
 //! These commands are the *local* fast path. When the HQ folder cannot be
-//! resolved to a real directory on disk, or no `companies/*/projects/*/prd.json`
-//! exist, `get_local_projects` returns an **empty list** rather than erroring.
+//! resolved to a real directory on disk, or no Personal/company projects exist,
+//! `get_local_projects` returns an **empty list** rather than erroring.
 //! This module deliberately has no vault/network fallback: keeping the local
 //! reader pure (filesystem only, no network, no auth) makes it testable and
 //! leaves any alternate data source to the caller. A malformed unlinked
@@ -76,7 +80,7 @@ pub struct LocalProject {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Company slug the project belongs to (the `companies/<slug>/` dir).
+    /// Workspace slug: `personal` or the owning `companies/<slug>/` directory.
     pub company: String,
     #[serde(default)]
     pub status: String,
@@ -1266,11 +1270,12 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
     scan_local_projects_scoped(hq_root, None)
 }
 
-/// Scan only the explicitly authorized canonical company slugs.
+/// Scan Personal plus only the explicitly authorized canonical company slugs.
 ///
-/// Filtering happens before board/PRD content is opened, so an unauthorized
-/// local folder is never parsed and a symlinked company alias cannot borrow a
-/// different tenant's canonical identity.
+/// Personal is user-owned and is not company-membership gated. Company filtering
+/// happens before board/PRD content is opened, so an unauthorized local company
+/// folder is never parsed and a symlinked company alias cannot borrow a different
+/// tenant's canonical identity.
 pub fn scan_local_projects_for_companies(
     hq_root: &Path,
     authorized_companies: &HashSet<String>,

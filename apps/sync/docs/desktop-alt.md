@@ -29,7 +29,7 @@ All commands are registered in `src-tauri/src/main.rs`.
 
 | Command | Purpose |
 | --- | --- |
-| `desktop_alt_enabled` | Returns the Indigo gate result. |
+| `desktop_alt_enabled` | Returns the signed-in desktop eligibility result. |
 | `open_desktop_alt_window` | Shows/focuses an existing `desktop-alt` window or builds the decorated window. The window is built `transparent(true)` and gets its native macOS glass backing applied via `glass::apply_liquid_glass_window` immediately after build (0.8.1-beta.1). |
 | `get_company_project_creators` | Legacy-named cloud attribution lookup. It returns normalized owner, assignee, creator, and origin fields keyed by project id / PRD path. Desktop surfaces prefer explicit local attribution, fill missing fields from this cloud result, and use the same-company PRD's first Git author only as a final **Created by** fallback. A creator is never relabeled as an owner. |
 | `get_company_summary` | Returns counts for the company header and overview stats. |
@@ -37,14 +37,14 @@ All commands are registered in `src-tauri/src/main.rs`.
 | `get_company_activity` | Reads activity data from the vault API at `/companies/{companyUid}/activity`. |
 | `get_company_deployments` | Reads hq-deploy apps from `https://api.indigo-hq.com/api/apps/me` with `x-org-slug`. |
 | `get_company_secrets` | Reads hq-pro secrets metadata from `/secrets/{companyUid}` and returns grouped key metadata only. |
-| `get_local_company_goals`, `get_local_projects`, `get_local_project_prd`, `get_local_project_readme` | Read local HQ work-system data for V4 goals, projects, tasks, and detail views. |
+| `get_local_company_goals`, `get_local_projects`, `get_local_project_prd`, `get_local_project_readme` | Read local HQ work-system data for V4 goals, projects, tasks, and detail views. `get_local_projects` scans `personal/board.json`, unlinked `personal/projects/*/prd.json`, and authorized company project trees. |
 | `set_local_project_status`, `set_local_story_passes` | Write V4 project and story status changes back to local project files. |
 
-Company slugs are normalized in Rust, resolved through `list_syncable_workspaces`, and mapped to cloud company UIDs before vault API calls. A broken manifest UID can still resolve if the workspace row exposes the live cloud UID in its broken reason.
+Company slugs are normalized in Rust, resolved through `list_syncable_workspaces`, and mapped to cloud company UIDs before company-only vault API calls. A broken manifest UID can still resolve if the workspace row exposes the live cloud UID in its broken reason. On the Overview panel, Personal is a user-owned local workspace and does not enter the company summary, board, provenance, goals, or activity loaders.
 
 ## Data + Security Notes
 
-- V4 reads work-system data from local HQ goals/projects where possible, while Activity and Deployments still use their existing service-backed command paths.
+- V4 reads work-system data from local HQ goals/projects where possible, while company Activity and Deployments still use their existing service-backed command paths. Personal projects come from `personal/board.json` plus `personal/projects/*/prd.json`; its overview shows honest local-only states for goals and activity instead of calling company services.
 - Projects and tasks display asserted roles separately: **Owner**, **Assignee**, **Created by**, and **Source**. Missing people are omitted instead of repeated as “Unassigned.” Local Git history is tenant-scoped and supplies creator evidence only when no explicit person attribution exists.
 - Deployments intentionally call hq-deploy directly; hq-deploy owns app rows, DNS state, deploy history, passwords, and share-token state.
 - Secrets must never expose plaintext. `get_company_secrets` projects each row into `{ env, count, items: [{ key, upd, rot }] }`; parser and E2E coverage reject recursive `value` or `secret` fields.

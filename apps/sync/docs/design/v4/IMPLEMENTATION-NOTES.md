@@ -14,6 +14,9 @@ requirement to restore retired standalone screens.
   Messages window remains native and independent.
 - Companies are first-class primary-sidebar rows. Company tasks live as PRD
   stories inside Projects rather than a standalone Tasks route.
+- Personal is a user-owned local workspace: its Overview board renders
+  `personal/board.json` and `personal/projects/*/prd.json`, and that panel does
+  not call company summary, board, provenance, goals, or activity services.
 - Company sections are Overview, Goals, Projects, Skills, Workers, Knowledge,
   Team, Activity, Deployments, Secrets, and Settings.
 - Library includes Skills, Workers, Installed, and Profile. Marketplace and
