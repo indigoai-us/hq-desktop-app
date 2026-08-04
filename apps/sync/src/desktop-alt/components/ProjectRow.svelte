@@ -219,20 +219,18 @@
     gap: var(--space-2, 8px);
     width: 100%;
     min-width: 0;
-    padding: var(--space-3, 10px);
+    padding: 12px 14px;
     overflow: hidden;
-    border: 1px solid var(--border, var(--v4-hairline));
-    /* Movable work objects may be rounded; columns stay naked. */
-    border-radius: var(--v4-radius-button);
-    background: var(--row-active, var(--v4-raised));
+    /* Flat tint card — no border, no shadow, no accent stripe. */
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
     color: inherit;
     font: inherit;
     text-align: left;
     cursor: pointer;
-    transition:
-      background 140ms ease,
-      border-color 140ms ease,
-      transform 140ms ease;
+    transition: background 140ms ease;
   }
 
   .project-open {
@@ -252,8 +250,7 @@
 
   @media (hover: hover) and (pointer: fine) {
     .project-card:hover {
-      border-color: var(--border-strong, var(--v4-control-border));
-      background: var(--row-hover, var(--v4-active-row));
+      background: var(--v4-active-row);
     }
   }
 
@@ -281,24 +278,30 @@
     min-width: 0;
   }
 
+  /* Standard status pill — quiet inset chip; live goes system green. */
   .status-tag {
     display: inline-flex;
     align-items: center;
+    flex: 0 0 auto;
     gap: 6px;
+    height: 22px;
     min-width: 0;
     overflow: hidden;
-    color: var(--muted-2, var(--v4-text-2));
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, var(--text-micro, 10px));
-    font-weight: 600;
-    letter-spacing: 0.09em;
-    line-height: 15px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-inset);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1;
     text-overflow: ellipsis;
-    text-transform: uppercase;
     white-space: nowrap;
   }
   .status-tag[data-status='live'] {
-    color: var(--emerald, var(--v4-ok));
+    border-color: rgba(52, 199, 89, 0.45);
+    background: rgba(52, 199, 89, 0.12);
+    color: #248a3d;
   }
 
   .status-dot {
@@ -309,13 +312,13 @@
     background: var(--muted-3, var(--v4-idle));
   }
   .status-dot[data-status='in-progress'] {
-    background: var(--blue, var(--v4-ok));
+    background: #34c759;
   }
   .status-dot[data-status='complete'] {
     background: var(--muted-2, var(--v4-text-2));
   }
   .status-dot.is-live {
-    background: var(--emerald, var(--v4-ok));
+    background: #34c759;
     animation: dot-pulse 1.8s ease-in-out infinite;
   }
 
@@ -324,19 +327,17 @@
     align-items: center;
     flex: 0 0 auto;
     max-width: 50%;
+    height: 22px;
     overflow: hidden;
-    padding: 1px 7px;
-    border: 1px solid color-mix(in srgb, var(--blue, var(--v4-ok)) 38%, transparent);
-    border-radius: 3px;
-    background: var(--row-hover, var(--v4-control-faint));
-    color: var(--blue, var(--v4-text-2));
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    line-height: 15px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-inset);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1;
     text-overflow: ellipsis;
-    text-transform: uppercase;
     white-space: nowrap;
   }
 
@@ -476,7 +477,7 @@
     height: 6px;
     flex: 0 0 auto;
     border-radius: 999px;
-    background: var(--emerald, var(--v4-ok));
+    background: #34c759;
     animation: dot-pulse 1.8s ease-in-out infinite;
   }
 

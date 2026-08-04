@@ -229,16 +229,17 @@
   function goalStatus(raw: string): GoalStatus {
     const normalized = raw.toLowerCase().replace(/[_\s]+/g, '-').trim();
     if (normalized === 'on-track' || normalized === 'active' || normalized === 'running') {
-      return { label: 'ON TRACK', tone: 'ok', atRisk: false };
+      return { label: 'On track', tone: 'ok', atRisk: false };
     }
     if (normalized === 'at-risk' || normalized === 'review') {
-      return { label: 'AT RISK', tone: 'warn', atRisk: true };
+      return { label: 'At risk', tone: 'warn', atRisk: true };
     }
     if (normalized === 'off-track' || normalized === 'blocked') {
-      return { label: 'OFF TRACK', tone: 'error', atRisk: true };
+      return { label: 'Off track', tone: 'error', atRisk: true };
     }
+    const spaced = normalized.replace(/-/g, ' ');
     return {
-      label: normalized ? normalized.replace(/-/g, ' ').toUpperCase() : 'NO STATUS',
+      label: spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : 'No status',
       tone: 'idle',
       atRisk: false,
     };
@@ -687,7 +688,7 @@
                     <h3 id="goal-detail-title" data-testid="goal-detail-title">
                       {selectedGoal.title || 'Untitled goal'}
                     </h3>
-                    <span class="goal-status" data-testid="goal-detail-status">
+                    <span class={`goal-status tone-${selectedStatus.tone}`} data-testid="goal-detail-status">
                       <span class={`status-dot ${selectedStatus.tone}`} aria-hidden="true"></span>
                       <span>{selectedStatus.label}</span>
                     </span>
@@ -881,18 +882,28 @@
   }
 
   .new-goal-button {
+    display: inline-flex;
+    align-items: center;
     flex: 0 0 auto;
-    height: 30px;
+    height: 32px;
     padding: 0 12px;
-    border: 1px solid transparent;
-    border-radius: var(--v4-radius-button);
+    border: none;
+    border-radius: 8px;
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 500;
-    line-height: 30px;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .new-goal-button:hover:not(:disabled) {
+    opacity: 0.88;
+  }
+
+  .new-goal-button:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .new-goal-button:focus-visible,
@@ -923,14 +934,16 @@
     line-height: 1.35;
   }
 
-  /* DESKTOP-007 workspace: naked canvas, hairline list/detail split */
+  /* DESKTOP-007 workspace: one flat tint card, hairline list/detail split */
   .goals-workspace {
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    overflow: hidden;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
   }
 
   .goals-list-pane {
@@ -945,7 +958,7 @@
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
     min-height: 0;
     overflow-y: auto;
     padding: 6px;
@@ -958,8 +971,9 @@
     gap: 10px;
     width: 100%;
     min-height: 48px;
-    padding: 8px 10px;
+    padding: 8px 10px 10px;
     border: 0;
+    border-bottom: 1px solid var(--v4-rowline);
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
@@ -970,13 +984,16 @@
     transition: background 140ms ease;
   }
 
+  .goal-list-row:last-child {
+    border-bottom: 0;
+  }
+
   .goal-list-row:hover {
     background: var(--v4-active-row);
   }
 
   .goal-list-row.is-selected {
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--v4-hairline);
+    background: var(--v4-active-row);
     color: var(--v4-text-1);
   }
 
@@ -1033,22 +1050,25 @@
   .goal-detail-back {
     display: none;
     align-self: flex-start;
-    min-height: 24px;
-    padding: 0 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
+    height: 32px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .goal-detail-back:hover {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
+    opacity: 0.88;
+  }
+
+  .goal-detail-back:active {
+    transform: scale(0.97);
   }
 
   .goal-detail-heading {
@@ -1074,17 +1094,28 @@
     white-space: nowrap;
   }
 
+  /* Text-only secondary status — sentence case, tone-colored ink. */
   .goal-status {
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
     gap: 6px;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: var(--type-metadata, 12px);
     font-weight: 400;
     line-height: 1.2;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+  }
+
+  .goal-status.tone-ok {
+    color: #248a3d;
+  }
+
+  .goal-status.tone-warn {
+    color: #b45309;
+  }
+
+  .goal-status.tone-error {
+    color: var(--v4-error);
   }
 
   .goal-meta {
@@ -1111,10 +1142,11 @@
     border-top: 1px solid var(--v4-hairline);
   }
 
+  /* Tiny 10px eyebrow — the only sanctioned uppercase label. */
   .section-label {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 10px;
     font-weight: 600;
     line-height: 1.2;
     letter-spacing: 0.04em;
@@ -1135,7 +1167,7 @@
   }
 
   .status-dot.ok {
-    background: var(--v4-ok);
+    background: #34c759;
   }
 
   .status-dot.warn {
@@ -1161,8 +1193,9 @@
     padding: 0 0 8px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 10px;
     font-weight: 400;
+    letter-spacing: 0.04em;
     line-height: 1.2;
     text-align: left;
     text-transform: uppercase;
@@ -1251,24 +1284,29 @@
   }
 
   .review-proposal-button {
+    display: inline-flex;
+    align-items: center;
     flex: 0 0 auto;
     margin-left: auto;
-    padding: 0 8px;
-    min-height: 24px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
+    height: 32px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .review-proposal-button:hover:not(:disabled) {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
+    opacity: 0.88;
+  }
+
+  .review-proposal-button:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .linked-row {
@@ -1460,12 +1498,9 @@
       background: var(--v4-ground);
     }
 
-    .goal-list-row:hover {
-      background: var(--v4-control-faint);
-    }
-
+    .goal-list-row:hover,
     .goal-list-row.is-selected {
-      background: transparent;
+      background: var(--v4-control-faint);
     }
   }
 </style>

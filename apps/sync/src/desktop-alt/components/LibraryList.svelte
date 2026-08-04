@@ -4,10 +4,9 @@
    * skills), shared by the root Library page and the per-company panel.
    * Presentational only: applies the text filter and emits onselect(item).
    *
-   * Visual language (Palantir-leaning): dark surface tiles, near-square corners,
-   * hairline borders, a kind accent bar, monospace ALL-CAPS micro-labels, and a
-   * pill hierarchy — scope (CORE / PERSONAL / company), worker type + team, or
-   * skill pack + tool count.
+   * Visual language (V4 flat tint): borderless card-tint tiles with the shared
+   * card radius, 13px sentence-case labels, and neutral status pills — scope
+   * (core / personal / company), worker type + team, or skill pack + tool count.
    */
   import {
     filterLibraryItems,
@@ -149,39 +148,36 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
     align-items: start;
-    gap: var(--v4-space-2);
+    gap: var(--v4-space-4, 16px);
     min-width: 0;
   }
 
+  /* Flat tint cards — no hairline shell, no accent bar, no shadow. */
   .lib-card {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-2);
     min-width: 0;
-    padding: var(--v4-space-3);
+    padding: 16px 20px 14px;
     overflow: hidden;
-    border: 1px solid var(--v4-hairline);
+    border: none;
     border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    box-shadow: var(--v4-shadow-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
     text-align: left;
     cursor: pointer;
-    transition:
-      background 140ms ease,
-      border-color 140ms ease,
-      transform 140ms ease;
+    transition: background 140ms ease;
   }
 
   @media (hover: hover) and (pointer: fine) {
     .lib-card:hover {
-      border-color: var(--v4-control-border);
       background: var(--v4-active-row);
     }
   }
 
   .lib-card:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 1px solid var(--v4-focus-ring);
     outline-offset: 2px;
   }
 
@@ -197,12 +193,10 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    color: var(--v4-text-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    font-weight: 600;
-    letter-spacing: 0;
-    text-transform: uppercase;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 13px);
+    font-weight: 400;
+    line-height: 1.25;
   }
 
   .kind-dot {
@@ -222,9 +216,9 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 13px);
     font-weight: 600;
-    line-height: 18px;
+    line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -241,48 +235,26 @@
     align-items: center;
     max-width: 100%;
     overflow: hidden;
-    padding: 1px 7px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-active-row);
-    color: var(--v4-text-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    font-weight: 600;
-    letter-spacing: 0;
-    line-height: 15px;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-inset);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1;
     text-overflow: ellipsis;
-    text-transform: uppercase;
     white-space: nowrap;
   }
 
   .pill.scope {
     flex: 0 0 auto;
   }
-  .scope-core {
-    border-color: var(--v4-hairline);
-    color: var(--v4-text-2);
-  }
-  .scope-personal {
-    border-color: var(--v4-hairline);
-    color: var(--v4-text-2);
-  }
-  .scope-company {
-    border-color: var(--v4-hairline);
-    color: var(--v4-text-2);
-  }
 
   /* Meta pills (type / pack / counts) stay neutral so scope dominates. */
-  .pill.meta {
-    color: var(--v4-text-2);
-  }
   .pill.meta.ghost {
     background: transparent;
-    color: var(--v4-text-2);
-  }
-  .pill.meta.pack {
-    border-color: var(--v4-hairline);
-    color: var(--v4-text-2);
   }
 
   .card-desc {
@@ -290,8 +262,8 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
-    line-height: 16px;
+    font-size: var(--type-secondary, 13px);
+    line-height: 1.35;
     /* Clamp to two lines so tiles stay uniform. */
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -316,7 +288,7 @@
 
   .empty-state span {
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, 13px);
   }
 
   .collection-footer {
@@ -326,7 +298,7 @@
     gap: var(--v4-space-3);
     padding: var(--v4-space-4) 0 var(--v4-space-2);
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, 13px);
     font-variant-numeric: tabular-nums;
   }
 
@@ -347,7 +319,7 @@
   }
 
   .collection-footer button:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 1px solid var(--v4-focus-ring);
     outline-offset: 4px;
   }
 

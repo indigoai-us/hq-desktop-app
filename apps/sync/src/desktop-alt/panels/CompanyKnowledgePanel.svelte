@@ -156,16 +156,17 @@
 </section>
 
 <style>
-  /* DESKTOP-008: naked canvas, hairline tree/preview split — no rounded outer shell. */
+  /* DESKTOP-008: flat tint card with a hairline tree/preview split inside. */
   .company-knowledge-panel,
   .knowledge-workspace {
     gap: 0;
     min-width: 0;
     min-height: 0;
     height: 100%;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
     overflow: hidden;
     font-family: var(--font-sans);
   }
@@ -257,27 +258,30 @@
     display: none;
     align-self: flex-start;
     flex: 0 0 auto;
-    min-height: 24px;
+    height: 32px;
     margin: 8px 10px 0;
-    padding: 0 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .knowledge-detail-back:hover {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
+    opacity: 0.88;
+  }
+
+  .knowledge-detail-back:active {
+    transform: scale(0.97);
   }
 
   .knowledge-detail-back:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
+    outline: 1px solid var(--v4-focus-ring, var(--v4-text-1));
     outline-offset: 2px;
   }
 
@@ -351,10 +355,13 @@
 
   @media (prefers-reduced-transparency: reduce) {
     .company-knowledge-panel,
-    .knowledge-workspace,
+    .knowledge-workspace {
+      background: var(--v4-raised);
+    }
+
     .knowledge-tree-pane,
     .knowledge-preview-pane {
-      background: var(--v4-ground, #f2f2f2);
+      background: transparent;
     }
 
     .knowledge-search {

@@ -368,7 +368,8 @@
 
   <header class="page-header meetings-toolbar">
     <div class="ph-titles">
-      <h1>Meetings</h1>
+      <!-- Page title lives in the window title bar; keep the h1 for AT only. -->
+      <h1 class="visually-hidden">Meetings</h1>
       <div class="subtitle">{toolbarMeta}</div>
       {#if fetchError}
         <div class="page-error" role="status" data-testid="meetings-refresh-error">
@@ -649,14 +650,14 @@
     grid-template-columns: minmax(0, 1fr);
     gap: var(--v4-row-stack-gap, 3px);
   }
-  .ph-titles h1 {
-    margin: 0;
-    color: var(--v4-text-1);
-    font-family: var(--font-display, var(--font-sans));
-    font-size: var(--type-detail, 18px);
-    font-weight: 600;
-    line-height: 1.2;
-    letter-spacing: -0.01em;
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
   .subtitle {
     margin: 0;
@@ -677,12 +678,15 @@
   .error-pill {
     display: inline-flex;
     align-items: center;
-    padding: 1px 7px;
-    border: 1px solid var(--v4-control-border);
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
     border-radius: var(--v4-radius-pill);
+    background: var(--v4-inset);
     color: var(--v4-error);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1;
     white-space: nowrap;
   }
   .error-copy {
@@ -702,8 +706,8 @@
   }
   .report-link:hover:not(:disabled) { color: var(--v4-text-2); }
   .report-link:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
   }
   .report-link:disabled { opacity: 0.55; cursor: default; }
 
@@ -748,33 +752,31 @@
   .btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
     flex: 0 0 auto;
-    padding: 5px 10px;
-    border: 1px solid transparent;
-    border-radius: var(--v4-radius-button);
+    height: 32px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
     white-space: nowrap;
     cursor: pointer;
-    transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1);
+    transition: opacity 0.15s, transform 0.1s;
   }
-  .btn:hover:not(:disabled) { border-color: transparent; background: var(--v4-primary-bg); }
+  .btn:hover:not(:disabled) { opacity: 0.88; }
+  .btn:active:not(:disabled) { transform: scale(0.97); }
   .btn:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
   }
   .btn:disabled { opacity: 0.5; cursor: default; }
   .btn.subtle {
-    border-color: var(--v4-control-border);
     background: var(--v4-secondary-bg);
     color: var(--v4-secondary-fg);
-  }
-  .btn.subtle:hover:not(:disabled) {
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
   }
   .btn .icon {
     display: flex;
@@ -819,18 +821,18 @@
   .url-invite-company:disabled { opacity: 0.55; cursor: default; }
   .url-invite-btn { flex: 0 0 auto; }
 
-  /* Up next — discrete strip (not a raised card grid cell). */
+  /* Up next — flat tint card (no border, no shadow). */
   .next-strip {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 12px;
     min-height: 48px;
-    padding: 8px 0;
-    border: 0;
-    border-top: 1px solid var(--v4-hairline);
-    border-radius: 0;
-    background: transparent;
+    padding: 16px 20px 14px;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
   }
   .next-time {
     min-width: 58px;
@@ -865,16 +867,16 @@
   }
   .next-join { flex: 0 0 auto; }
 
-  /* Bot / calendar health — discrete status payload strip. */
+  /* Bot / calendar health — flat tint card (no border, no shadow). */
   .health-strip {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px 16px;
-    padding: 8px 0;
-    border-top: 1px solid var(--v4-rowline);
-    border-bottom: 1px solid var(--v4-rowline);
-    border-radius: 0;
-    background: transparent;
+    padding: 16px 20px 14px;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
   }
   .health-item {
     min-width: 0;
@@ -883,7 +885,7 @@
   }
   .health-label {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -904,39 +906,41 @@
     font-size: var(--type-metadata, 10px);
   }
 
-  /* Secondary sections — naked, hairline only (no rounded outer cards). */
+  /* Secondary sections — flat tint cards with standard section headers. */
   .secondary-grid {
     display: grid;
     grid-template-columns: 1.4fr 1fr;
-    gap: 20px;
+    gap: 16px;
     align-items: start;
   }
   .secondary-section {
     min-width: 0;
-    border-radius: 0;
-    background: transparent;
+    padding: 16px 20px 14px;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
   }
   .section-head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 0 0 8px;
-    border-bottom: 1px solid var(--v4-rowline);
+    min-height: 28px;
   }
   .section-head h3 {
     margin: 0;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 13px);
     font-weight: 600;
-    letter-spacing: 0.06em;
-    line-height: 14px;
-    text-transform: uppercase;
+    letter-spacing: 0;
+    line-height: 1.25;
+    text-transform: none;
   }
   .section-head > span {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    line-height: 14px;
+    font-size: var(--type-metadata, 12px);
+    line-height: 1.25;
   }
   .section-error {
     margin: 8px 0 0;
@@ -969,7 +973,11 @@
     line-height: 16px;
   }
 
-  .sync-list { display: flex; flex-direction: column; }
+  .sync-list {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--v4-rowline);
+  }
   .sync-source {
     display: grid;
     grid-template-columns: 22px minmax(0, 1fr) auto;
@@ -1013,20 +1021,28 @@
     white-space: nowrap;
   }
   .status-pill {
+    display: inline-flex;
+    align-items: center;
     max-width: 110px;
+    height: 22px;
     overflow: hidden;
-    padding: 2px 8px;
-    border: 1px solid var(--v4-control-border);
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
     border-radius: var(--v4-radius-pill);
-    color: var(--v4-text-2);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    line-height: 14px;
+    background: var(--v4-inset);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .recent-list { display: flex; flex-direction: column; }
+  .recent-list {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--v4-rowline);
+  }
   .recent-row {
     padding: 10px 0;
     border-bottom: 1px solid var(--v4-rowline);
@@ -1081,9 +1097,4 @@
     .sync-source { transition: none; }
   }
 
-  @media (prefers-reduced-transparency: reduce) {
-    .next-strip {
-      background: transparent;
-    }
-  }
 </style>

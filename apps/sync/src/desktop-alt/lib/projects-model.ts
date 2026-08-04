@@ -356,7 +356,7 @@ export type ProjectGroupMode = 'status' | 'company';
 export const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'active', label: 'Active' },
-  { value: 'in-progress', label: 'In Progress' },
+  { value: 'in-progress', label: 'In progress' },
   { value: 'complete', label: 'Completed' },
   { value: 'archived', label: 'Archived' },
 ];
@@ -440,7 +440,7 @@ export const PROJECT_LIST_STATUS_ORDER: Record<ProjectListStatus, number> = {
 /** Human label for each effective list status (section headers + badges). */
 export const PROJECT_LIST_STATUS_LABEL: Record<ProjectListStatus, string> = {
   live: 'Running',
-  'in-progress': 'In Progress',
+  'in-progress': 'In progress',
   pending: 'Planned',
   complete: 'Completed',
   archived: 'Archived',
@@ -587,7 +587,7 @@ export type EditableProjectStatus = (typeof EDITABLE_PROJECT_STATUSES)[number];
 export const EDITABLE_PROJECT_STATUS_LABEL: Record<EditableProjectStatus, string> = {
   planned: 'Planned',
   prd_created: 'PRD Created',
-  in_progress: 'In Progress',
+  in_progress: 'In progress',
   completed: 'Completed',
   archived: 'Archived',
 };

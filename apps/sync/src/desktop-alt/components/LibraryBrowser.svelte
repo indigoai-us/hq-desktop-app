@@ -325,8 +325,8 @@
   }
 
   .segmented button:focus-visible {
-    outline: 2px solid var(--v4-control-border);
-    outline-offset: 2px;
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
   }
 
   .seg-count {
@@ -354,46 +354,46 @@
     align-items: center;
     gap: 6px;
     height: 32px;
-    padding: 0 var(--v4-space-2);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     cursor: pointer;
-    transition:
-      background 140ms ease,
-      border-color 140ms ease;
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .scope-trigger:hover {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
+    opacity: 0.88;
+  }
+
+  .scope-trigger:active {
+    transform: scale(0.97);
   }
 
   .scope-trigger.active {
-    border-color: var(--v4-control-border);
     background: var(--v4-active-row);
   }
 
   .scope-trigger:focus-visible {
-    outline: 2px solid var(--v4-control-border);
-    outline-offset: 2px;
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
   }
 
   .scope-label {
     color: var(--v4-text-2);
     font-family: var(--font-mono);
-    font-size: var(--text-micro);
+    font-size: 10px;
     font-weight: 600;
     letter-spacing: 0;
     text-transform: uppercase;
   }
 
   .scope-value {
-    color: var(--v4-text-1);
-    font-size: var(--text-base);
+    color: inherit;
+    font-size: 13px;
     font-weight: 600;
   }
 
@@ -507,12 +507,12 @@
     min-width: 0;
     height: 32px;
     padding: 0 var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
+    border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
+    background: var(--v4-inset);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
   }
 
   .search::placeholder {
@@ -520,7 +520,7 @@
   }
 
   .search:focus-visible {
-    outline: 2px solid var(--v4-control-border);
+    outline: 1px solid var(--v4-focus-ring);
     outline-offset: 1px;
   }
 
@@ -542,10 +542,10 @@
 
   .card-skeleton {
     height: 104px;
-    border: 1px solid var(--v4-hairline);
+    border: none;
     border-radius: var(--v4-radius-card);
     background: var(--v4-control-faint);
-    box-shadow: var(--v4-shadow-card);
+    box-shadow: none;
     animation: lib-skeleton-pulse 1.3s ease-in-out infinite;
   }
 

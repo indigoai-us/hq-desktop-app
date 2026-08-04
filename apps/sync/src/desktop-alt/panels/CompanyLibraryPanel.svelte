@@ -148,8 +148,9 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--v4-space-4);
+    min-height: 28px;
     padding-bottom: var(--v4-space-3);
-    border-bottom: 1px solid var(--v4-hairline);
+    border-bottom: 1px solid var(--v4-rowline);
   }
 
   .company-library-header div {
@@ -163,14 +164,21 @@
 
   .company-library-header h2 {
     color: var(--v4-text-1);
-    font-size: var(--type-section);
+    font-size: var(--type-body);
     font-weight: 600;
+    line-height: 1.25;
   }
 
-  .company-library-header p,
-  .company-library-header > span {
+  .company-library-header p {
     color: var(--v4-text-3);
     font-size: var(--type-secondary);
+  }
+
+  .company-library-header > span {
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata);
+    font-weight: 400;
+    line-height: 1.25;
   }
 
   .company-library-header p {
@@ -188,7 +196,7 @@
     background: transparent;
     box-shadow: none;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, 13px);
     text-align: center;
   }
 </style>

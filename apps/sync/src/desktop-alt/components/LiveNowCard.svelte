@@ -174,40 +174,39 @@
   .card {
     min-width: 0;
     overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-raised);
-  }
-  .card.live {
-    border-color: var(--v4-control-border);
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
   }
   .card-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 10px 12px;
+    min-height: 28px;
+    padding: 12px 20px 8px;
     border-bottom: 1px solid var(--v4-rowline);
     background: transparent;
   }
   .card-header h3 {
     margin: 0;
-    color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 13px);
     font-weight: 600;
-    line-height: 16px;
+    line-height: 1.25;
   }
   .card-header h3.live-title {
-    color: var(--v4-ok);
+    color: #248a3d;
   }
   .card-header > span {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 12px);
     line-height: 14px;
   }
   .card-body {
-    padding: 12px;
+    padding: 12px 20px 14px;
   }
   .live-main {
     display: flex;
@@ -353,37 +352,34 @@
     align-items: center;
     gap: 6px;
     flex: 0 0 auto;
-    padding: 6px 12px;
-    border: 1px solid var(--v4-control-border);
+    height: 32px;
+    padding: 0 12px;
+    border: none;
     border-radius: var(--v4-radius-button);
     background: var(--v4-secondary-bg);
     color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
-    transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1), opacity 140ms cubic-bezier(.2,.7,.2,1);
+    transition: opacity 0.15s, transform 0.1s;
   }
   .btn:hover:not(:disabled) {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
+    opacity: 0.88;
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(0.97);
   }
   .btn:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
+    outline: 1px solid var(--v4-focus-ring);
+    outline-offset: var(--v4-focus-offset, 2px);
   }
   .btn:disabled {
     opacity: 0.56;
     cursor: default;
   }
   .btn.primary {
-    border-color: transparent;
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
-  }
-  .btn.primary:hover:not(:disabled) {
-    border-color: transparent;
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
   }

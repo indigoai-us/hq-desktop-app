@@ -1607,8 +1607,9 @@
   <main class="settings-main">
     <header class="page-header">
       <div>
-        <p>{saved ? 'Saved' : 'menubar.json'}</p>
-        <h1 id="settings-title">Settings</h1>
+        <!-- Page title lives in the window title bar; keep the h1 for AT only. -->
+        <h1 id="settings-title" class="visually-hidden">Settings</h1>
+        {#if saved}<p>Saved</p>{/if}
       </div>
     </header>
 
@@ -1628,8 +1629,8 @@
 
     <fieldset class="settings-controls" disabled={!settingsReady}>
     <section id="sync" class="settings-section">
-      <h2>Sync</h2>
       <div class="settings-card">
+        <h2>Sync</h2>
         <div class="setting-row">
           <div><strong>HQ folder</strong><span>{hqPathLabel}</span></div>
           <button
@@ -1706,8 +1707,8 @@
     </section>
 
     <section id="notifications" class="settings-section">
-      <h2>Notifications</h2>
       <div class="settings-card">
+        <h2>Notifications</h2>
         <label class="setting-row">
           <span><strong>Sync notifications</strong><small>Notify when sync needs attention.</small></span>
           <input
@@ -1788,15 +1789,15 @@
     </section>
 
     <section id="widget" class="settings-section">
-      <h2>Widget</h2>
       <div class="settings-card">
+        <h2>Widget</h2>
         <WidgetSettings showLoadError={false} />
       </div>
     </section>
 
     <section id="updates" class="settings-section">
-      <h2>Updates</h2>
       <div class="settings-card">
+        <h2>Updates</h2>
         <!-- Master automatic-updates switch (default ON). One toggle governs
              silent, no-prompt install of the app itself (self-update +
              restart), the hq CLI, and hq-core (drift-safe rescue). Supersedes
@@ -2094,8 +2095,8 @@
     </section>
 
     <section id="general" class="settings-section">
-      <h2>General</h2>
       <div class="settings-card">
+        <h2>General</h2>
         <label class="setting-row">
           <span>
             <strong>Start at login</strong>
@@ -2230,8 +2231,8 @@
     </fieldset>
 
     <section id="appearance" class="settings-section" data-testid="settings-appearance">
-      <h2>Appearance</h2>
       <div class="settings-card">
+        <h2>Appearance</h2>
         <div class="setting-row appearance-row">
           <span>
             <strong>Theme</strong>
@@ -2303,8 +2304,8 @@
 
     <fieldset class="settings-controls" disabled={!settingsReady}>
     <section id="meetings" class="settings-section">
-      <h2>Meetings</h2>
       <div class="settings-card">
+        <h2>Meetings</h2>
         <label class="setting-row" class:gated-row={!meetingsEnabled}>
           <span><strong>Meeting detection</strong><small>Detect active meeting apps and surface recording actions.</small></span>
           <input
@@ -2419,12 +2420,24 @@
     border: 0;
   }
 
-  .settings-section h2,
+  /* Section header inside the flat tint card — body size, weight 600, 28px
+     row rhythm (reference: CompanyBoardPanel .section-header). */
+  .settings-section h2 {
+    display: flex;
+    align-items: center;
+    min-height: 28px;
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 13px);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
   .page-header p {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    font-weight: 500;
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
     line-height: 1.25;
   }
 
@@ -2441,24 +2454,30 @@
     overflow: visible;
   }
 
-  h1 {
-    margin: 2px 0 0;
-    font-size: var(--text-lg);
-    font-weight: 500;
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .settings-section {
     display: grid;
-    gap: 8px;
+    gap: 16px;
     scroll-margin-top: 12px;
   }
 
+  /* Flat tint card — no raised fill, no shadow, no 1px group border. */
   .settings-card {
     display: grid;
     overflow: visible;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    padding: 16px 20px 14px;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
     box-shadow: none;
   }
 
@@ -2468,7 +2487,7 @@
     align-items: center;
     gap: 12px;
     min-height: 48px;
-    padding: 10px 12px;
+    padding: 10px 0;
     border-top: 1px solid var(--v4-rowline);
   }
 
@@ -2502,14 +2521,14 @@
 
   strong {
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 13px);
     font-weight: 500;
   }
 
   small,
   .setting-row div span {
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 12px);
     line-height: 1.35;
   }
 
@@ -2528,7 +2547,7 @@
     backdrop-filter: var(--v4-glass-filter-soft);
     -webkit-backdrop-filter: var(--v4-glass-filter-soft);
     color: var(--v4-error);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 13px);
     line-height: 1.35;
   }
 
@@ -2539,14 +2558,24 @@
 
   .error button {
     flex: 0 0 auto;
-    min-height: 28px;
-    padding: 0 var(--v4-space-3);
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+    height: 32px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
+    font-size: 13px;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .error button:hover:not(:disabled) {
+    opacity: 0.88;
+  }
+
+  .error button:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .error button:disabled {
@@ -2563,18 +2592,18 @@
     min-width: 0;
   }
 
-  /* macOS-style toggle pill — the one place green is allowed as a control fill
-     (SPEC §5/§6: "26×16 pills, on = green fill — the one non-dot color
-     exception, matching macOS"). The track and knob route through shared tokens. */
+  /* macOS-style toggle pill — matches the title bar cloud switch
+     (.v4-cloud-track/.v4-cloud-thumb): 28×16 track, 12px white thumb,
+     ON = system green, OFF = idle grey. */
   input[type='checkbox'] {
     appearance: none;
     -webkit-appearance: none;
     position: relative;
     flex-shrink: 0;
-    width: 26px;
+    width: 28px;
     height: 16px;
     border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-bg);
+    background: var(--v4-idle);
     cursor: pointer;
     transition: background-color 0.15s ease;
   }
@@ -2587,17 +2616,17 @@
     width: 12px;
     height: 12px;
     border-radius: var(--v4-radius-pill);
-    background: var(--c-bg);
-    box-shadow: var(--v4-shadow-card);
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
     transition: transform 0.15s ease;
   }
 
   input[type='checkbox']:checked {
-    background: var(--v4-ok);
+    background: #34c759;
   }
 
   input[type='checkbox']:checked::after {
-    transform: translateX(10px);
+    transform: translateX(12px);
   }
 
   input[type='checkbox']:disabled {
@@ -2624,7 +2653,7 @@
     background: var(--v4-inset);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--type-body, 13px);
   }
 
   select {
@@ -2654,7 +2683,7 @@
     gap: 7px;
     min-height: 30px;
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-body, 13px);
     cursor: pointer;
   }
 
@@ -2733,7 +2762,7 @@
     border: 1px solid var(--v4-control-border);
     border-radius: 50%;
     background: var(--v4-text-1);
-    box-shadow: var(--v4-shadow-card);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   }
 
   .range-control input[type='range']:focus-visible {
@@ -2747,38 +2776,44 @@
 
   .range-control output {
     color: var(--v4-text-2);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 12px);
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
 
   .gated-row em {
     padding: 3px 7px;
-    border: 1px solid var(--v4-hairline);
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
     border-radius: var(--v4-radius-pill);
+    background: var(--v4-inset);
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 12px);
     font-style: normal;
   }
 
-  /* Trailing row affordance (Change… / Manage) — quiet pill matching the V4
-     control language. */
+  /* Trailing row affordance (Change… / Manage) — standard borderless
+     secondary button: opacity hover, gentle scale press. */
   .row-button {
     justify-self: end;
-    height: 30px;
+    height: 32px;
     padding: 0 12px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
+    border: none;
+    border-radius: 8px;
     background: var(--v4-secondary-bg);
     color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     cursor: pointer;
     white-space: nowrap;
+    transition: opacity 0.15s, transform 0.1s;
   }
 
-  .row-button:hover {
-    border-color: var(--v4-text-3);
+  .row-button:hover:not(:disabled) {
+    opacity: 0.88;
+  }
+
+  .row-button:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .row-button:focus-visible {
@@ -2799,15 +2834,24 @@
 
   .platforms button {
     min-width: 58px;
-    height: 26px;
+    height: 28px;
     padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: transparent;
-    color: var(--v4-text-2);
+    border: none;
+    border-radius: 8px;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .platforms button:hover:not(:disabled) {
+    opacity: 0.88;
+  }
+
+  .platforms button:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .platforms button.active {
@@ -2831,7 +2875,6 @@
 
   .row-button.primary {
     background: var(--v4-primary-bg);
-    border-color: transparent;
     color: var(--v4-primary-fg);
   }
 
@@ -2848,21 +2891,28 @@
     cursor: progress;
   }
 
+  /* Status pill (reference: CompanyBoardPanel .status-pill.live) — 12px
+     sentence case, system-green tint, positive text #248a3d. */
   .perm-pill {
+    display: inline-flex;
+    align-items: center;
     justify-self: end;
-    padding: 3px 8px;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid rgba(52, 199, 89, 0.45);
     border-radius: var(--v4-radius-pill);
-    background: color-mix(in srgb, var(--v4-ok) 18%, transparent);
-    color: var(--v4-ok);
-    font-size: var(--text-base);
-    font-weight: 600;
+    background: rgba(52, 199, 89, 0.12);
+    color: #248a3d;
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1;
     white-space: nowrap;
   }
 
   .version-value {
     justify-self: end;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 12px);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -2870,29 +2920,23 @@
   .version-chip {
     display: inline-flex;
     align-items: center;
-    min-height: 28px;
-    padding: 0 9px;
-    border: 1px solid var(--v4-hairline);
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
     border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
+    background: var(--v4-inset);
+    color: var(--v4-text-3);
     font-family: var(--font-mono);
-    font-size: var(--type-metadata, var(--text-xs));
+    font-size: var(--type-metadata, 12px);
     font-variant-numeric: tabular-nums;
     line-height: 1;
     white-space: nowrap;
   }
 
   .version-chip.core {
-    border-color: color-mix(in srgb, var(--v4-ok) 32%, var(--v4-hairline));
-    background: color-mix(in srgb, var(--v4-ok) 8%, var(--v4-control-faint));
-    color: var(--v4-text-1);
-  }
-
-  .notice-card {
-    margin-top: 8px;
-    border-top: 1px solid var(--v4-rowline);
-    background: transparent;
+    border-color: rgba(52, 199, 89, 0.45);
+    background: rgba(52, 199, 89, 0.12);
+    color: #248a3d;
   }
 
   .notice-row {

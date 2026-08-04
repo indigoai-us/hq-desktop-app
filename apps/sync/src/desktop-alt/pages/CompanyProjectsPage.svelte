@@ -936,14 +936,14 @@
   }
 
   .primary-action {
-    height: 28px;
+    height: 32px;
     padding: 0 12px;
     border: none;
-    border-radius: var(--v4-radius-button);
+    border-radius: 8px;
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
     cursor: pointer;
     transition: opacity 0.15s, transform 0.1s;
   }
@@ -966,13 +966,13 @@
   .project-search input,
   .tool-select select,
   .tool-button {
-    height: 28px;
+    height: 32px;
     border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
+    border-radius: 8px;
     background: var(--v4-secondary-bg);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
   }
 
   .project-search input {
@@ -990,6 +990,24 @@
     padding: 0 10px;
     color: var(--v4-secondary-fg);
     cursor: default;
+  }
+
+  /* Secondary button — flat, borderless, opacity hover. */
+  .tool-button {
+    padding: 0 12px;
+    border: none;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .tool-button:hover {
+    opacity: 0.88;
+  }
+
+  .tool-button:active {
+    transform: scale(0.97);
   }
 
   .view-toggle {
@@ -1150,7 +1168,7 @@
     height: 6px;
     flex: 0 0 auto;
     border-radius: 999px;
-    background: var(--v4-ok);
+    background: #34c759;
   }
 
   .kanban-stack {
@@ -1234,11 +1252,12 @@
     padding: 0 4px;
   }
 
+  /* Tiny 10px eyebrow — the only sanctioned uppercase label. */
   .project-table-head {
     min-height: 30px;
     border-bottom: 1px solid var(--v4-hairline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: 10px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
@@ -1251,7 +1270,7 @@
     padding: 0 4px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: 10px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
@@ -1269,10 +1288,16 @@
 
   .project-list-row {
     min-height: 52px;
+    padding-top: 10px;
+    padding-bottom: 10px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-2);
     font-size: var(--type-body, 12px);
     cursor: pointer;
+  }
+
+  .project-list-row:last-child {
+    border-bottom: 0;
   }
 
   .project-list-row:hover {
@@ -1419,10 +1444,9 @@
 
   .skeleton-card {
     height: 96px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    opacity: 0.48;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
   }
 
   @media (prefers-reduced-motion: reduce) {

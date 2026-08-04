@@ -62,8 +62,8 @@
 <section class="inbox-page page" aria-labelledby="desktop-page-title" data-testid="desktop-alt-inbox">
   <header class="page-header inbox-header">
     <div class="inbox-titles">
-      <span class="inbox-kicker">Notification center</span>
-      <h1 id="desktop-page-title">Inbox</h1>
+      <!-- Page title lives in the window title bar; keep the h1 for AT only. -->
+      <h1 id="desktop-page-title" class="visually-hidden">Inbox</h1>
       <p class="inbox-subtitle" data-testid="inbox-unread-count">
         {subtitle}
       </p>
@@ -108,23 +108,14 @@
     gap: 3px;
   }
 
-  .inbox-kicker {
-    color: var(--v4-text-3, var(--muted));
-    font-size: var(--text-micro, 10px);
-    font-weight: 650;
-    letter-spacing: 0.075em;
-    line-height: 1.2;
-    text-transform: uppercase;
-  }
-
-  .inbox-titles h1 {
-    margin: 0;
-    color: var(--v4-text-1, var(--fg));
-    font-family: var(--font-display, var(--font-sans));
-    font-size: clamp(24px, 3vw, 30px);
-    font-weight: 650;
-    line-height: 1.08;
-    letter-spacing: -0.025em;
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .inbox-subtitle {
@@ -162,9 +153,9 @@
      containers (DESKTOP-002). Spacing + hairlines establish structure. */
   .notif-host :global(.nr) {
     min-height: 52px;
-    padding: 8px 10px;
+    padding: 8px 10px 10px;
     border-radius: 0;
-    font-size: var(--type-body, 15px);
+    font-size: var(--type-body, 13px);
     box-shadow: inset 0 -1px 0 var(--v4-rowline, var(--border));
   }
 
@@ -173,7 +164,7 @@
   }
 
   .notif-host :global(.nr-ts) {
-    font-size: var(--type-metadata, 13px);
+    font-size: var(--type-metadata, 12px);
   }
 
   .notif-host :global(.nr-icon) {
@@ -188,7 +179,7 @@
 
   .notif-host :global(.nr-meta-type) {
     max-width: 18ch;
-    font-size: var(--type-metadata, 13px);
+    font-size: var(--type-metadata, 12px);
   }
 
   /* Comfortable density paddings from NotificationFeed assume a card panel —
@@ -196,7 +187,7 @@
   .notif-host :global(.notif-comfortable .notif-day-label) {
     padding-left: 8px;
     padding-right: 8px;
-    font-size: var(--type-metadata, 13px);
+    font-size: var(--type-metadata, 12px);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
   }

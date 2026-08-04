@@ -489,23 +489,32 @@
 
   .team-action-button {
     flex: 0 0 auto;
-    height: 30px;
+    height: 32px;
     padding: 0 12px;
-    border: 1px solid transparent;
-    border-radius: var(--v4-radius-button);
+    border: none;
+    border-radius: 8px;
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
     font-weight: 500;
-    line-height: 30px;
+    line-height: 32px;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .team-action-button.secondary {
-    border: 1px solid var(--v4-hairline);
-    background: transparent;
-    color: var(--v4-text-1);
+    border: none;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
+  }
+
+  .team-action-button:hover:not(:disabled) {
+    opacity: 0.88;
+  }
+
+  .team-action-button:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .team-action-button:disabled {
@@ -516,20 +525,21 @@
   .team-action-button:focus-visible,
   .team-member-row:focus-visible,
   .team-detail-back:focus-visible {
-    outline: 2px solid var(--v4-text-1);
+    outline: 1px solid var(--v4-focus-ring);
     outline-offset: 2px;
   }
 
-  /* DESKTOP-009: naked canvas, hairline list/detail split — no rounded outer shell. */
+  /* DESKTOP-009: flat tint card with a hairline list/detail split inside. */
   .team-workspace {
     display: grid;
     grid-template-columns: minmax(280px, 34%) minmax(0, 1fr);
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    border: none;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-card-tint);
+    box-shadow: none;
     overflow: hidden;
   }
 
@@ -560,7 +570,7 @@
     min-height: 48px;
     padding: 10px 12px;
     border: 0;
-    border-top: 1px solid var(--v4-hairline);
+    border-bottom: 1px solid var(--v4-rowline);
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
@@ -571,8 +581,8 @@
     transition: background 140ms ease;
   }
 
-  .team-member-row:first-child {
-    border-top: 0;
+  .team-member-row:last-child {
+    border-bottom: 0;
   }
 
   .team-member-row:hover {
@@ -611,13 +621,19 @@
   }
 
   .kind-badge {
+    display: inline-flex;
+    align-items: center;
     flex: 0 0 auto;
-    font-size: var(--type-metadata, 10px);
-    color: var(--v4-text-3);
-    padding: 2px 8px;
-    border: 1px solid var(--v4-hairline);
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
     border-radius: var(--v4-radius-pill);
-    line-height: 1.25;
+    background: var(--v4-inset);
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1;
+    white-space: nowrap;
   }
 
   .team-detail-pane {
@@ -650,16 +666,25 @@
     display: none;
     flex: 0 0 auto;
     align-self: flex-start;
-    height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: transparent;
-    color: var(--v4-text-2);
+    height: 32px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--v4-secondary-bg);
+    color: var(--v4-secondary-fg);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .team-detail-back:hover {
+    opacity: 0.88;
+  }
+
+  .team-detail-back:active {
+    transform: scale(0.97);
   }
 
   .team-detail-heading {
@@ -756,7 +781,7 @@
   .section-label {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -899,7 +924,7 @@
       width: 100%;
       min-width: 0;
       height: auto;
-      min-height: 30px;
+      min-height: 32px;
       padding: 6px 10px;
       line-height: 1.2;
       overflow-wrap: anywhere;
@@ -955,12 +980,15 @@
   }
 
   @media (prefers-reduced-transparency: reduce) {
-    .team-workspace,
+    .team-workspace {
+      background: var(--v4-raised);
+    }
+
     .team-list-pane,
     .team-detail-pane,
     .skill-chip,
     .project-chip {
-      background: var(--v4-bg, #fff);
+      background: transparent;
     }
 
     .team-member-row:hover {

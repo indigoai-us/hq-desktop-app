@@ -371,6 +371,7 @@
     align-items: center;
     gap: var(--space-2);
     width: 100%;
+    min-height: 28px;
     padding: var(--space-2);
     border: 0;
     border-radius: 0;
@@ -428,14 +429,17 @@
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
     align-items: start;
     gap: var(--space-2);
-    margin-top: var(--space-2);
+    margin-top: 0;
+    padding-top: var(--space-2);
+    /* Hairline under the section header, per the section standard. */
+    border-top: 1px solid var(--v4-rowline);
   }
 
   .section-show-more {
     min-height: 34px;
     padding: var(--space-2);
     border: 0;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--v4-rowline);
     border-radius: 0;
     background: transparent;
     color: var(--muted-2);

@@ -118,15 +118,16 @@
   .page-header h1 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-lg);
+    font-size: var(--type-detail, 22px);
     font-weight: 600;
-    line-height: 1.15;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
   }
 
   .page-header p {
     margin: 5px 0 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--type-secondary, 13px);
     line-height: 1.4;
   }
 </style>
