@@ -454,7 +454,7 @@
     height: calc(100% - 16px);
     margin: 8px;
     overflow: hidden;
-    padding: 12px;
+    padding: 8px;
     border-radius: 20px;
     background: var(--v4-sidebar, var(--v4-chrome));
     font-family: var(--font-sans);
@@ -593,8 +593,8 @@
     align-items: center;
     gap: 12px;
     width: 100%;
-    margin: 0 0 16px;
-    padding: 0 10px;
+    margin: 0 0 14px;
+    padding: 6px 10px;
     border: none;
     border-radius: var(--v4-radius-button);
     background: transparent;
@@ -606,7 +606,12 @@
   }
 
   .ws-current:hover {
-    opacity: 0.8;
+    background: var(--v4-control-faint);
+  }
+
+  .ws-current:hover .ws-current-name,
+  .ws-current:hover .ws-chevron {
+    color: var(--v4-text-1);
   }
 
   .ws-current:focus-visible {
@@ -716,7 +721,7 @@
   .ws-eyebrow {
     flex: 0 0 auto;
     overflow: hidden;
-    margin: 0 0 16px;
+    margin: 0 0 14px;
     padding: 0 10px;
     color: var(--v4-text-3);
     font-size: 10px;
