@@ -1104,6 +1104,10 @@
     border-top: 1px solid var(--v4-rowline);
   }
 
+  .goals-list :global(.goal-card:nth-last-child(-n + 2)) {
+    border-bottom: 0;
+  }
+
   .work-list {
     display: flex;
     flex-direction: column;
