@@ -1099,10 +1099,6 @@
     navigate({ kind: 'settings', tab });
   }
 
-  function handleToggleSidebar() {
-    sidebarCollapsed = !sidebarCollapsed;
-  }
-
   function handleOpenCommandPalette() {
     commandPaletteOpen = true;
   }
@@ -1661,7 +1657,6 @@
         accountEmail={accountEmail}
         accountInitials={accountIdentity.initials}
         onnavigate={(next) => navigate(fromV4Route(next))}
-        ontogglesidebar={handleToggleSidebar}
       />
     {/if}
   {/if}
@@ -1683,13 +1678,11 @@
       conflictCount={syncConflictCount}
       conflictCompany={syncConflictCompany}
       {hqFolderPath}
-      {sidebarCollapsed}
       onsync={handleSyncAll}
       oncancel={handleCancelSync}
       onretry={syncState === 'auth-error' ? handleSignInAgain : handleSyncAll}
       onretryhydration={handleRetryHydration}
       onresolveconflicts={handleResolveAggregateConflicts}
-      ontogglesidebar={handleToggleSidebar}
       oncommand={handleOpenCommandPalette}
       onOpenSettings={handleOpenSettings}
     />

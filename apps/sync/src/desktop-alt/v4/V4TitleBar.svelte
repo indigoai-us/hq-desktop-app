@@ -37,13 +37,11 @@
     conflictCount?: number;
     conflictCompany?: string | null;
     hqFolderPath?: string | null;
-    sidebarCollapsed?: boolean;
     onsync?: () => void | Promise<void>;
     oncancel?: () => void | Promise<void>;
     onretry?: () => void | Promise<void>;
     onretryhydration?: () => void | Promise<void>;
     onresolveconflicts?: () => void | Promise<void>;
-    ontogglesidebar?: () => void;
     oncommand?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
   }
@@ -64,13 +62,11 @@
     conflictCount = 0,
     conflictCompany = null,
     hqFolderPath = null,
-    sidebarCollapsed = false,
     onsync,
     oncancel,
     onretry,
     onretryhydration,
     onresolveconflicts,
-    ontogglesidebar,
     oncommand,
     onOpenSettings,
   }: Props = $props();
@@ -200,19 +196,6 @@
   <div class="v4-titlebar-leading">
     <!-- Padded dead space under the native traffic lights — safe drag only. -->
     <div class="v4-drag-pad v4-drag-lights" data-tauri-drag-region aria-hidden="true"></div>
-    <button
-      type="button"
-      class="v4-icon-btn"
-      aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
-      title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
-      aria-pressed={!sidebarCollapsed}
-      onclick={() => ontogglesidebar?.()}
-    >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect x="1.75" y="2.25" width="12.5" height="11.5" rx="2" stroke="currentColor" stroke-width="1.2" />
-        <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
-      </svg>
-    </button>
   </div>
 
   <div class="v4-status" aria-live="polite">

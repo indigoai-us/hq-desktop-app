@@ -29,7 +29,6 @@
     Kanban,
     Lightning,
     UserCircle,
-    SidebarSimple,
     Target,
     Tray,
     Users,
@@ -62,8 +61,6 @@
     /** Monogram for the profile footer avatar circle. */
     accountInitials?: string | null;
     onnavigate?: (route: V4Route) => void;
-    /** Collapse the sidepane (the in-pane SidebarSimple control). */
-    ontogglesidebar?: () => void;
   }
 
   let {
@@ -73,7 +70,6 @@
     accountEmail,
     accountInitials,
     onnavigate,
-    ontogglesidebar,
   }: Props = $props();
 
   /** Decorative window lights only render outside Tauri — the native window
@@ -284,15 +280,6 @@
     {:else}
       <div class="ws-lights-spacer" aria-hidden="true"></div>
     {/if}
-    <button
-      type="button"
-      class="ws-toggle"
-      aria-label="Hide sidebar"
-      title="Hide sidebar"
-      onclick={() => ontogglesidebar?.()}
-    >
-      <SidebarSimple size={16} />
-    </button>
   </div>
 
   <div class="ws-scroll">
@@ -566,7 +553,7 @@
     align-items: center;
     justify-content: space-between;
     height: 16px;
-    margin-bottom: 16px;
+    margin-bottom: 24px;
     padding: 2px 6px 0;
   }
 
@@ -600,31 +587,13 @@
     background: #19c332;
   }
 
-  .ws-toggle {
-    display: grid;
-    place-items: center;
-    width: 16px;
-    height: 16px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--v4-text-3);
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.15s;
-  }
-
-  .v4-sidebar:hover .ws-toggle,
-  .ws-toggle:focus-visible {
-    opacity: 1;
-  }
 
   .ws-current {
     display: flex;
     align-items: center;
     gap: 12px;
     width: 100%;
-    margin: 0 0 14px;
+    margin: 0 0 16px;
     padding: 0 10px;
     border: none;
     border-radius: var(--v4-radius-button);
@@ -654,7 +623,7 @@
     width: 40px;
     height: 40px;
     border-radius: var(--v4-radius-button);
-    background: linear-gradient(135deg, #a1a1a6, #7d7d82);
+    background: #b0b0b5;
     box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
     color: #fff;
     font-size: 15px;
@@ -716,7 +685,7 @@
   .ws-divider {
     flex: 0 0 auto;
     height: 1px;
-    margin: 14px 2px;
+    margin: 16px 2px;
     background: var(--v4-hairline);
   }
 
@@ -747,7 +716,7 @@
   .ws-eyebrow {
     flex: 0 0 auto;
     overflow: hidden;
-    margin: 0 0 10px;
+    margin: 0 0 16px;
     padding: 0 10px;
     color: var(--v4-text-3);
     font-size: 10px;
