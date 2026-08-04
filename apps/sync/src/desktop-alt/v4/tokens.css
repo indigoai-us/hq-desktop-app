@@ -5,6 +5,17 @@
  * semantic states (success, warning, error) retain color. Translucent region
  * fills sit over the native window material. Their tints stay neutral while a
  * restrained amount of live backdrop color keeps the material visibly vibrant.
+ *
+ * Brand carve-out (US-005 white-label branding): when an Enterprise-entitled
+ * company has a brand record (`brandingEnabled` + `CompanyBrandSettings`), the
+ * desktop applies a tenant accent via the `--v4-brand-*` layer and
+ * `:root[data-branded='true']` overrides below. That accent may recolor chrome
+ * (active-tab/selection tint, primary CTA, focus rings, links) in both light
+ * and dark appearance. Status colors, the three text grays, and surfaces keep
+ * their reserved semantics and must not be overridden by branding. Absent
+ * brand or entitlement -> HQ defaults, never an error. Do not "fix" a branded
+ * accent back to monochrome as a policy violation — the carve-out is
+ * intentional.
  */
 :root {
   /* Readable desktop ramp with visible hierarchy. Metadata stays compact but
@@ -39,6 +50,18 @@
   --v4-shadow-card: var(--v4-shadow-card-light);
   --v4-shadow-popover: var(--pop-shadow, var(--shadow-popover-light, 0 22px 55px rgba(0, 0, 0, 0.22)));
   --v4-shadow-window: var(--shadow-window-light, 0 24px 70px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12));
+
+
+  /* Brand accent layer (US-005). Inactive until :root gets data-branded='true'
+     set by src/lib/brand.ts. Unbranded chrome never reads these. */
+  --v4-brand-accent: transparent;
+  --v4-brand-accent-soft: transparent;
+  --v4-brand-accent-hover: transparent;
+  --v4-brand-on-accent: #ffffff;
+  --v4-cta-bg: var(--v4-control-bg);
+  --v4-cta-text: var(--v4-text-1);
+  --v4-cta-hover: var(--v4-control-bg);
+  --v4-link: var(--v4-text-2);
 
   /* spacing scale — 4px base step */
   --v4-space-1: 4px;
@@ -296,4 +319,43 @@
       --v4-fallback-material-alpha: 1;
     }
   }
+}
+
+/* ── Branded chrome (tenant accent, US-005) ─────────────────────────────────
+   Applied only when src/lib/brand.ts sets data-branded on the document root.
+   Placed last so it wins over every appearance block above at equal
+   specificity. Status / text / surfaces stay reserved. */
+:root[data-branded='true'],
+:root[data-branded='true'][data-force-theme='light'],
+:root[data-branded='true'][data-force-theme='dark'] {
+  --v4-active-row: var(--v4-brand-accent-soft);
+  --v4-cta-bg: var(--v4-brand-accent);
+  --v4-cta-text: var(--v4-brand-on-accent);
+  --v4-cta-hover: var(--v4-brand-accent-hover);
+  --v4-focus-ring: var(--v4-brand-accent);
+  --v4-link: var(--v4-brand-accent);
+}
+
+:root[data-branded='true'] :focus-visible {
+  outline-color: var(--v4-brand-accent);
+}
+
+:root[data-branded='true'] a.v4-link,
+:root[data-branded='true'] .v4-link {
+  color: var(--v4-link);
+}
+
+:root[data-branded='true'] .companies-action.primary,
+:root[data-branded='true'] button.primary,
+:root[data-branded='true'] .v4-cta,
+:root[data-branded='true'] .primary-btn {
+  background: var(--v4-cta-bg);
+  color: var(--v4-cta-text);
+}
+
+:root[data-branded='true'] .companies-action.primary:hover,
+:root[data-branded='true'] button.primary:hover,
+:root[data-branded='true'] .v4-cta:hover,
+:root[data-branded='true'] .primary-btn:hover {
+  background: var(--v4-cta-hover);
 }

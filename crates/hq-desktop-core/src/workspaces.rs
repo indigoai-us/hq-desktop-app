@@ -35,6 +35,19 @@ pub enum WorkspaceState {
     Broken,
 }
 
+/// Per-company white-label brand (hq-pro `CompanyBrand`). All fields optional;
+/// absent record / absent fields mean HQ defaults (never an error).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyBrand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_url_light: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_url_dark: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -61,6 +74,13 @@ pub struct Workspace {
     pub invited_by: Option<String>,
     /// ISO timestamp the invite was created (`invitedAt` on the membership row).
     pub invited_at: Option<String>,
+    /// Enterprise white-label entitlement from the membership enrichment.
+    /// Absent/false → HQ defaults (safe either deploy order).
+    #[serde(default)]
+    pub branding_enabled: bool,
+    /// Tenant brand record when entitled; rides the membership payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand: Option<CompanyBrand>,
 }
 
 #[derive(Debug, Clone, Serialize)]

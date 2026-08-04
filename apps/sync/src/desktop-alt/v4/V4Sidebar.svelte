@@ -17,6 +17,8 @@
     type V4Route,
   } from './model';
   import SidebarSyncMode from './SidebarSyncMode.svelte';
+  import BrandLogoSlot from '../../lib/BrandLogoSlot.svelte';
+  import type { CachedBrand } from '../../lib/brand';
   import './tokens.css';
 
   /**
@@ -32,6 +34,9 @@
    * Pointer reveal waits a short hover-intent delay so sweeping the mouse down
    * the list doesn't mount every control and fan out one get_sync_mode vault
    * round-trip per row. Focus reveals immediately.
+   *
+   * Logo slot (US-005): tenant logo + powered-by lockup when branded; HQ mark
+   * only when unbranded.
    */
 
   interface Props {
@@ -44,6 +49,8 @@
      *  sidebar resolve it from its own self-load; defaults to reachable. */
     cloudReachable?: boolean | null;
     onworkspaceenabledchange?: (slug: string, enabled: boolean) => void;
+    /** Active white-label brand (US-005); null → HQ defaults. */
+    brand?: CachedBrand | null;
     onnavigate?: (route: V4Route) => void;
   }
 
@@ -53,6 +60,7 @@
     accountLabel,
     cloudReachable = null,
     onworkspaceenabledchange,
+    brand = null,
     onnavigate,
   }: Props = $props();
 
@@ -173,6 +181,15 @@
 </script>
 
 <aside class="v4-sidebar" aria-label="Primary navigation">
+  <div class="v4-logo-slot" data-tauri-drag-region>
+    <BrandLogoSlot
+      brand={brand}
+      brandingEnabled={brand?.brandingEnabled ?? false}
+      size="desktop"
+      companyName={brand?.companySlug ?? null}
+    />
+  </div>
+
   <nav class="v4-nav" aria-label="Primary">
     {#each model.nav as row (row.id)}
       <button
@@ -336,6 +353,13 @@
     -webkit-backdrop-filter: var(--v4-glass-filter);
     box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-sans);
+  }
+
+  .v4-logo-slot {
+    flex: 0 0 auto;
+    margin: 0 0 12px;
+    padding: 0 8px;
+    min-height: 22px;
   }
 
   .v4-nav {

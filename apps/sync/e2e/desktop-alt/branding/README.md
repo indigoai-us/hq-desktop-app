@@ -17,8 +17,9 @@ with `getComputedStyle` and `prefers-color-scheme` media queries. Options:
 | **tauri-driver + WebDriver** | No macOS WKWebView WebDriver support — cannot drive the real Tauri window's style tree on this platform. |
 | **Vitest + happy-dom (this harness)** | Injects the real `src/desktop-alt/v4/tokens.css`, resolves `@media (prefers-color-scheme: …)`, and mounts real Svelte V4 chrome with mocked Tauri bridges. Fast, CI-friendly, no app binary. |
 
-Brand product wiring (US-005) is still out of scope; this story freezes the
-token contract and the fixture injection path so branded cases can fill in later.
+US-005 branded chrome cases live in the same `chrome-tokens.spec.ts` file
+(real `describe('branded chrome (US-005)')` block): accent tokens, logo
+variants + BrandLogoSlot, powered-by lockup, offline cache, entitlement-lost.
 
 ## How `prefers-color-scheme` emulation works
 
@@ -75,15 +76,16 @@ Typecheck (also run in `.github/workflows/desktop-alt-e2e.yml`):
 pnpm typecheck
 ```
 
-## Adding branded cases (US-005+)
+## Branded cases (US-005)
 
-1. Open `chrome-tokens.spec.ts` and replace the
-   `describe.todo('branded chrome (US-005)')` block with a real `describe`.
-2. Load brand via `loadBrandFixture()` or `TEST_BRAND`; set entitlement to
-   `'entitled'`.
-3. Mount the product chrome that applies logo / accent overrides.
-4. Assert DOM (logo `src`s) and any CSS variables product introduces.
-5. Keep the default-token and “app shell mounts with HQ defaults” cases green —
+Implemented in `chrome-tokens.spec.ts` under `describe('branded chrome (US-005)')`:
+
+1. Load brand via `loadBrandFixture()` / `TEST_BRAND` (optional `HQ_SYNC_BRAND_FIXTURE`).
+2. Apply via product APIs: `applyBrandToDocument`, `syncBrandFromWorkspaces`,
+   `BrandLogoSlot`, `selectLogoUrl`, `deriveAccentTokens`, cache helpers.
+3. Assert accent tokens (incl. popover mirrors + reserved tokens untouched),
+   logo light/dark + fallback, powered-by lockup, offline cache, entitlement-lost.
+4. Keep the default-token and “app shell mounts with HQ defaults” cases green —
    branded paths must not break unbranded chrome.
 
 ## CI
