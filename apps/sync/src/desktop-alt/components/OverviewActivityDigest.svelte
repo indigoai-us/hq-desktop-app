@@ -112,10 +112,11 @@
   const hasActivity = $derived(
     activity.top.length > 0 || activity.sparkline.some((v) => v > 0) || activity.stats.edits7 > 0,
   );
+  // One clean readout — the meta line below carries the time window.
   const summaryLine = $derived(
     [
-      activity.stats.edits7 > 0 ? `${activity.stats.edits7} edits · 7d` : null,
-      activity.stats.files7 > 0 ? `${activity.stats.files7} files · 7d` : null,
+      activity.stats.edits7 > 0 ? `${activity.stats.edits7} edits` : null,
+      activity.stats.files7 > 0 ? `${activity.stats.files7} files` : null,
       activity.stats.members > 0 ? `${activity.stats.members} members` : null,
       activity.stats.vaultSize ? activity.stats.vaultSize : null,
     ]

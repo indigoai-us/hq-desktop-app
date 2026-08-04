@@ -613,7 +613,7 @@
     justify-content: space-between;
     height: 16px;
     margin-bottom: 24px;
-    padding: 6px 6px 0;
+    padding: 10px 6px 0;
   }
 
   .ws-lights {
