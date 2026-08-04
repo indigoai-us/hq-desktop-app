@@ -189,13 +189,13 @@
 <style>
   .digest {
     display: grid;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
   }
 
   .digest-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     min-height: 28px;
