@@ -174,6 +174,22 @@
     return { destroy: () => node.remove() };
   }
 
+  const TILE_GRADIENTS = [
+    ['#b8a8f0', '#9b8ce8'],
+    ['#f2a9c4', '#e88bb0'],
+    ['#9ec9f5', '#7fb3ee'],
+    ['#93dbc0', '#6fcaa8'],
+    ['#f7c297', '#f0a878'],
+    ['#a9b8f2', '#8a9ce8'],
+  ] as const;
+
+  function tileGradient(slug: string): string {
+    let hash = 0;
+    for (const ch of slug) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+    const [from, to] = TILE_GRADIENTS[Math.abs(hash) % TILE_GRADIENTS.length];
+    return `linear-gradient(135deg, ${from}, ${to})`;
+  }
+
   function workspaceInitials(label: string): string {
     const words = label.trim().split(/\s+/).filter(Boolean);
     if (words.length === 0) return '?';
@@ -283,7 +299,7 @@
   </div>
 
   <div class="ws-scroll">
-    <div class="ws-eyebrow" aria-hidden="true">Workspaces</div>
+    <div class="ws-eyebrow" aria-hidden="true">Workspace</div>
     {#if currentRow}
       <button
         type="button"
@@ -294,7 +310,11 @@
         data-testid="workspace-switcher"
         onclick={toggleSwitcher}
       >
-        <span class="ws-tile" aria-hidden="true">
+        <span
+          class="ws-tile"
+          style={`background:${tileGradient(currentRow.slug)}`}
+          aria-hidden="true"
+        >
           {workspaceInitials(currentRow.label)}
         </span>
         <span class="ws-current-name">{currentRow.label}</span>
@@ -391,7 +411,11 @@
           data-testid={`workspace-option-${row.slug}`}
           onclick={() => selectWorkspace(row.slug)}
         >
-          <span class="ws-tile menu" aria-hidden="true">
+          <span
+            class="ws-tile menu"
+            style={`background:${tileGradient(row.slug)}`}
+            aria-hidden="true"
+          >
             {workspaceInitials(row.label)}
           </span>
           <span class="ws-menu-copy">
@@ -422,7 +446,11 @@
             data-testid={`workspace-option-${row.slug}`}
             onclick={() => selectWorkspace(row.slug)}
           >
-            <span class="ws-tile menu" aria-hidden="true">
+            <span
+              class="ws-tile menu"
+              style={`background:${tileGradient(row.slug)}`}
+              aria-hidden="true"
+            >
               {workspaceInitials(row.label)}
             </span>
             <span class="ws-menu-copy">
@@ -448,8 +476,8 @@
   .v4-sidebar {
     display: flex;
     flex-direction: column;
-    flex: 0 0 280px;
-    width: 280px;
+    flex: 0 0 240px;
+    width: 240px;
     min-height: 0;
     height: calc(100% - 16px);
     margin: 8px;
