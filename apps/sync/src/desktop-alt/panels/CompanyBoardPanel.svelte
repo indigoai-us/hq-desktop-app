@@ -827,7 +827,11 @@
                         </span>
                       {/if}
                     </button>
-                    <span class="status-pill" class:review={status.tone === 'warn'}>
+                    <span
+                      class="status-pill"
+                      class:review={status.tone === 'warn'}
+                      class:live={status.tone === 'ok'}
+                    >
                       <span class={`status-dot ${status.tone}`} aria-hidden="true"></span>
                       <span>{status.label}</span>
                     </span>
@@ -1218,7 +1222,7 @@
     gap: 6px;
     height: 22px;
     padding: 0 8px;
-    border: 1px solid var(--v4-hairline);
+    border: 1px solid color-mix(in srgb, var(--v4-text-1) 7%, transparent);
     border-radius: var(--v4-radius-pill);
     background: var(--v4-inset);
     color: var(--v4-text-3);
@@ -1226,6 +1230,13 @@
     font-weight: 400;
     line-height: 1;
     white-space: nowrap;
+  }
+
+  /* Live/running: system-green border, text, and tint. */
+  .status-pill.live {
+    border-color: rgba(52, 199, 89, 0.45);
+    background: rgba(52, 199, 89, 0.12);
+    color: #248a3d;
   }
 
   .status-pill.review {
