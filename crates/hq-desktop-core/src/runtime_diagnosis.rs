@@ -838,25 +838,34 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn windows_timed_out_probe_is_terminated_and_reaped() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let pid_path = tmp.path().join("windows-probe.pid");
-        let escaped_pid_path = pid_path.to_string_lossy().replace('\'', "''");
-        let script = format!(
-            "Set-Content -NoNewline -LiteralPath '{escaped_pid_path}' -Value $PID; while ($true) {{ Start-Sleep -Milliseconds 50 }}"
-        );
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let outcome = probe_command(
+        let mut command = paths::tokio_spawn_command(
             "powershell.exe",
-            &["-NoProfile", "-NonInteractive", "-Command", &script],
-            deadline,
-        )
-        .await;
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ],
+        );
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().expect("spawn slow Windows probe");
+        let pid = child.id().expect("spawned probe pid");
+
+        let run_deadline = Instant::now() + Duration::from_millis(100);
+        assert!(
+            timeout_at(run_deadline, child.wait()).await.is_err(),
+            "the probe must still be running when its execution budget ends",
+        );
+        let outcome = terminate_and_reap(child, Instant::now() + Duration::from_secs(2)).await;
         assert_eq!(outcome, ProbeOutcome::Timeout);
 
-        let pid = std::fs::read_to_string(&pid_path).expect("probe recorded its pid");
         let liveness_script = format!(
             "if (Get-Process -Id {} -ErrorAction SilentlyContinue) {{ exit 1 }} else {{ exit 0 }}",
-            pid.trim(),
+            pid,
         );
         let status = std::process::Command::new("powershell.exe")
             .args([
