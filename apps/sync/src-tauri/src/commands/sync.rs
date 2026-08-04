@@ -2444,14 +2444,15 @@ mod tests {
         };
         #[cfg(windows)]
         let spawn = SpawnArgs {
-            cmd: "cmd.exe".to_string(),
+            cmd: "powershell.exe".to_string(),
             args: vec![
-                "/C".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
                 concat!(
-                    "echo {\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic one\"} 1>&2 & ",
-                    "echo {\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic two\"} 1>&2 & ",
-                    "echo {\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic three\"} 1>&2 & ",
-                    "exit /B 75"
+                    "[Console]::Error.WriteLine('{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic one\"}'); ",
+                    "[Console]::Error.WriteLine('{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic two\"}'); ",
+                    "[Console]::Error.WriteLine('{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic three\"}'); ",
+                    "exit 75"
                 )
                 .to_string(),
             ],
