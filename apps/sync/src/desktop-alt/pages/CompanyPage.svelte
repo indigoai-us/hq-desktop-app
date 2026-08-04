@@ -200,6 +200,9 @@
 <section class="company-page" aria-labelledby="company-page-title">
   <h1 id="company-page-title" class="visually-hidden">{company.displayName}</h1>
 
+  <!-- Needs-driven actions only (accept invite / connect). The standing
+       Invite + New-project row is gone; New project lives on Projects. -->
+  {#if pendingInvite || connectable}
   <header class="company-actions-row">
     <div></div>
     <div class="company-actions" aria-label="Company actions">
@@ -244,28 +247,9 @@
           {/if}
         </button>
       {/if}
-      {#if !pendingInvite}
-        <!-- DESKTOP-003: Invite + New project stay visible; Settings / ops live under More. -->
-        <button
-          type="button"
-          onclick={openInvite}
-          disabled={inviteOpening}
-          aria-busy={inviteOpening}
-        >
-          {inviteOpening ? 'Opening…' : 'Invite'}
-        </button>
-        <button
-          type="button"
-          class="primary"
-          onclick={() => void startNewProject()}
-          disabled={newProjectBusy}
-          aria-busy={newProjectBusy}
-        >
-          {newProjectBusy ? 'Opening…' : 'New project'}
-        </button>
-      {/if}
     </div>
   </header>
+  {/if}
 
   {#if actionError}
     <p class="company-action-error" role="status">{actionError}</p>
@@ -313,7 +297,11 @@
         {:else if tab === 'goals'}
           <CompanyGoalsPage slug={company.slug} />
         {:else if tab === 'projects'}
-          <CompanyProjectsPage slug={company.slug} />
+          <!-- New project lives here now — the only place it appears. -->
+          <CompanyProjectsPage
+            slug={company.slug}
+            onnewproject={() => void startNewProject()}
+          />
         {:else if tab === 'skills'}
           <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
         {:else if tab === 'workers'}

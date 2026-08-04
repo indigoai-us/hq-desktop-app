@@ -28,6 +28,7 @@
     House,
     Kanban,
     Lightning,
+    User,
     UserCircle,
     Target,
     Tray,
@@ -195,6 +196,9 @@
     return `linear-gradient(135deg, ${from}, ${to})`;
   }
 
+  /** Personal keeps a quiet solid grey tile with a person glyph. */
+  const PERSONAL_TILE = '#b0b0b5';
+
   function workspaceInitials(label: string): string {
     const words = label.trim().split(/\s+/).filter(Boolean);
     if (words.length === 0) return '?';
@@ -317,10 +321,10 @@
       >
         <span
           class="ws-tile"
-          style={`background:${tileGradient(currentRow.slug)}`}
+          style={`background:${currentRow.isPersonal ? PERSONAL_TILE : tileGradient(currentRow.slug)}`}
           aria-hidden="true"
         >
-          {workspaceInitials(currentRow.label)}
+          {#if currentRow.isPersonal}<User size={20} />{:else}{workspaceInitials(currentRow.label)}{/if}
         </span>
         <span class="ws-current-name">{currentRow.label}</span>
         <span class="ws-chevron" aria-hidden="true"><CaretDown size={16} /></span>
@@ -451,12 +455,8 @@
             data-testid={`workspace-option-${row.slug}`}
             onclick={() => selectWorkspace(row.slug)}
           >
-            <span
-              class="ws-tile menu"
-              style={`background:${tileGradient(row.slug)}`}
-              aria-hidden="true"
-            >
-              {workspaceInitials(row.label)}
+            <span class="ws-tile menu" style={`background:${PERSONAL_TILE}`} aria-hidden="true">
+              <User size={18} />
             </span>
             <span class="ws-menu-copy">
               <span class="ws-menu-name">{row.label}</span>
@@ -773,7 +773,7 @@
   }
 
   .ws-eyebrow.general {
-    margin-bottom: 6px;
+    margin-bottom: 8px;
   }
 
   .ws-layer {

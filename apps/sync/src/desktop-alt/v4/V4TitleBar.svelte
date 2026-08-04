@@ -348,7 +348,7 @@
     flex: 0 0 40px;
     height: 40px;
     overflow: visible;
-    padding: 0 12px 0 0;
+    padding: 0 16px 0 0;
     border-bottom: 1px solid var(--v4-hairline);
     background: var(--v4-chrome);
     backdrop-filter: var(--v4-glass-filter);
@@ -362,8 +362,7 @@
     align-items: center;
     flex: 0 0 auto;
     gap: 4px;
-    /* 78px left inset clears the overlay traffic lights (macOS). */
-    padding-left: 78px;
+    padding-left: 16px;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap
@@ -502,8 +501,9 @@
     padding: 0 9px;
     border: none;
     border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
+    background: transparent;
     color: var(--v4-text-3);
+    transition: background 0.15s;
     font-family: var(--font-mono);
     font-size: var(--type-metadata, 10px);
     font-variant-numeric: tabular-nums;
@@ -513,8 +513,7 @@
 
   .v4-version:hover,
   .v4-version[aria-expanded='true'] {
-    border-color: var(--v4-control-border);
-    background: var(--v4-secondary-bg);
+    background: var(--v4-control-faint);
     color: var(--v4-text-1);
   }
 

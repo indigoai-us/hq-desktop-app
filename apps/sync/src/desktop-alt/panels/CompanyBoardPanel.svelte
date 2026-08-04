@@ -705,35 +705,36 @@
         <div class="board-error" role="alert" data-testid="board-error">{error}</div>
       {/if}
 
-      <!-- 1. Compact pulse row (live monitor strip — low height, real counts only) -->
-      <section class="pulse-row" aria-label="Company pulse" data-testid="overview-pulse">
-        <div class="pulse-item">
-          <span class="pulse-value">{projectPulseCount}</span>
-          <span class="pulse-label">projects</span>
+      <!-- 1. Stat tiles — one card per headline number, cloud tile carries the
+           live sync status and scope control. -->
+      <section class="stat-grid" aria-label="Company pulse" data-testid="overview-pulse">
+        <div class="stat-card">
+          <span class="stat-value">{projectPulseCount}</span>
+          <span class="stat-label">Projects</span>
         </div>
-        <div class="pulse-item">
-          <span class="pulse-value">{storiesInProgress}</span>
-          <span class="pulse-label">stories moving</span>
+        <div class="stat-card">
+          <span class="stat-value">{storiesInProgress}</span>
+          <span class="stat-label">Stories moving</span>
         </div>
-        <div class="pulse-item">
-          <span class="pulse-value">{acPercent}%</span>
-          <span class="pulse-label">checks passing</span>
+        <div class="stat-card">
+          <span class="stat-value">{acPercent}%</span>
+          <span class="stat-label">Checks passing</span>
         </div>
-        <div class="pulse-item">
-          <span class="pulse-value">{goalsCount}</span>
-          <span class="pulse-label">goals</span>
+        <div class="stat-card">
+          <span class="stat-value">{goalsCount}</span>
+          <span class="stat-label">Goals</span>
         </div>
-        <div class="pulse-item pulse-cloud">
-          <span class={`status-dot ${cloudPulse.tone}`} aria-hidden="true"></span>
-          <span class="pulse-label">{cloudPulse.label}</span>
-          {#if lastUpdated}
-            <span class="pulse-meta">· {lastUpdated}</span>
-          {/if}
-        </div>
-        <!-- Workspace sync scope + on/off, relocated here from the sidebar's
-             workspace switcher menu. -->
-        <div class="pulse-item pulse-sync" data-testid="overview-sync-mode">
-          <SidebarSyncMode {slug} {syncEnabled} />
+        <div class="stat-card stat-cloud">
+          <span class="stat-cloud-status">
+            <span class={`status-dot ${cloudPulse.tone}`} aria-hidden="true"></span>
+            <span class="stat-cloud-label">{cloudPulse.label}</span>
+            {#if lastUpdated}
+              <span class="stat-cloud-meta">· {lastUpdated}</span>
+            {/if}
+          </span>
+          <span class="stat-cloud-control" data-testid="overview-sync-mode">
+            <SidebarSyncMode {slug} {syncEnabled} />
+          </span>
         </div>
       </section>
 
@@ -937,8 +938,9 @@
   .overview-content {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
     min-width: 0;
+    padding: 4px 20px 24px;
   }
 
   .board-error {
@@ -953,59 +955,74 @@
     line-height: 1.35;
   }
 
-  /* Compact pulse — open summary content separated from the work list. */
-  .pulse-row {
-    display: flex;
-    align-items: center;
-    min-height: 34px;
+  /* Stat tiles — one raised card per headline number. */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(180px, 1.3fr);
+    gap: 12px;
     min-width: 0;
-    overflow: auto hidden;
-    border: 0;
-    border-top: 1px solid var(--v4-hairline);
-    border-radius: 0;
-    background: transparent;
   }
 
-  .pulse-item {
+  .stat-card {
     display: flex;
-    align-items: baseline;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 14px 16px;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
+  }
+
+  .stat-value {
+    color: var(--v4-text-1);
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.2px;
+    line-height: 1.1;
+  }
+
+  .stat-label {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 12px);
+    font-weight: 400;
+    line-height: 1.2;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .stat-cloud {
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .stat-cloud-status {
+    display: flex;
+    align-items: center;
     gap: 6px;
     min-width: 0;
-    flex: 0 0 auto;
-    padding: 0 12px;
-    border-right: 1px solid var(--v4-hairline);
     white-space: nowrap;
   }
 
-  .pulse-item:last-child {
-    border-right: 0;
-  }
-
-  .pulse-cloud {
-    align-items: center;
-  }
-
-  .pulse-sync {
-    align-items: center;
-    margin-left: auto;
-  }
-
-  .pulse-value {
+  .stat-cloud-label {
     color: var(--v4-text-1);
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.2;
+    font-size: var(--type-secondary, 13px);
+    font-weight: 500;
   }
 
-  .pulse-label,
-  .pulse-meta {
+  .stat-cloud-meta {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 400;
-    line-height: 1.2;
+    font-size: var(--type-metadata, 12px);
     text-overflow: ellipsis;
+  }
+
+  .stat-cloud-control {
+    display: flex;
+    align-items: center;
+    min-width: 0;
   }
 
   .overview-columns {
@@ -1023,16 +1040,16 @@
     gap: 18px;
   }
 
+  /* Section cards — raised surfaces on the frosted field (reference look). */
   .overview-section {
     display: flex;
     flex-direction: column;
     gap: 6px;
     min-width: 0;
-    /* Naked section: no rounded outer box, no raised fill. */
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
+    padding: 14px 16px 12px;
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-card);
   }
 
   .section-header {
@@ -1348,7 +1365,7 @@
 
   /* Adapt to the canvas after the persistent sidebar has taken its share.
      A viewport query leaves this two-column layout clipped around 960–1120px. */
-  @container company-board (max-width: 900px) {
+  @container company-board (max-width: 720px) {
     .overview-columns {
       grid-template-columns: 1fr;
     }
@@ -1371,16 +1388,12 @@
       max-width: 160px;
     }
 
-    .pulse-row {
-      flex-wrap: wrap;
-      min-height: 0;
+    .stat-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .pulse-item {
-      flex: 1 1 40%;
-      padding: 8px 12px;
-      border-right: 0;
-      border-bottom: 1px solid var(--v4-hairline);
+    .stat-cloud {
+      grid-column: 1 / -1;
     }
   }
 
