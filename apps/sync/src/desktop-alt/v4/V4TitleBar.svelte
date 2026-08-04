@@ -290,7 +290,7 @@
     align-items: center;
     flex: 0 0 auto;
     gap: 4px;
-    padding-left: 44px;
+    padding-left: 24px;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap
