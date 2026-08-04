@@ -327,7 +327,7 @@
           {#if currentRow.isPersonal}<User size={20} />{:else}{workspaceInitials(currentRow.label)}{/if}
         </span>
         <span class="ws-current-name">{currentRow.label}</span>
-        <span class="ws-chevron" aria-hidden="true"><CaretDown size={16} /></span>
+        <span class="ws-chevron" aria-hidden="true"><CaretDown size={12} /></span>
       </button>
 
       <nav
@@ -563,7 +563,7 @@
     border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 600;
     line-height: 1;
     font-variant-numeric: tabular-nums;
