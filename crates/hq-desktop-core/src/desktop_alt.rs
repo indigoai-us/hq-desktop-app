@@ -2102,6 +2102,16 @@ impl HqScopedDirectory {
     pub(crate) fn remove_file(&self, file_name: &std::ffi::OsStr) -> Result<(), std::io::Error> {
         windows_scoped_directory::remove_file(self, file_name)
     }
+
+    /// Drop retained directory handles so path-based replacement can rename
+    /// entries in the already-authorized directory without sharing violations.
+    pub(crate) fn release_directory_chain(&mut self) {
+        if let Some(handles) = std::sync::Arc::get_mut(&mut self.descriptors) {
+            handles.clear();
+        } else {
+            self.descriptors = std::sync::Arc::new(Vec::new());
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

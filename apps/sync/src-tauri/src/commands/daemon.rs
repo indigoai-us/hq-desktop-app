@@ -1498,7 +1498,7 @@ fn crash_state() -> &'static Mutex<WatcherCrashState> {
 
 /// Record that a watcher was just spawned (called from `start_daemon`).
 fn note_watcher_spawned() {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.spawn_at = Some(Instant::now());
     // A spawn proves the runtime resolved, so the preflight failure streak is
     // over and a future episode gets a fresh first alert.
@@ -1513,7 +1513,7 @@ fn note_watcher_spawned() {
 /// Record an alertable preflight refusal and return the consecutive count so
 /// the caller can rate-limit captures.
 fn note_runner_preflight_failure() -> u32 {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.preflight_fails = st.preflight_fails.saturating_add(1);
     st.preflight_fails
 }
@@ -1521,7 +1521,7 @@ fn note_runner_preflight_failure() -> u32 {
 /// Update the crash-loop state on an unexpected watcher exit and return the
 /// consecutive-failure count so the caller can decide whether to capture.
 fn note_watcher_crashed() -> u32 {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
     if is_fast_failure(ran, FAST_FAIL_WINDOW) {
         st.consecutive = st.consecutive.saturating_add(1);
@@ -1544,7 +1544,7 @@ fn note_watcher_capture_policy_streak(
     policy: WatcherExitCapturePolicy,
     global_consecutive: u32,
 ) -> u32 {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     if policy == WatcherExitCapturePolicy::CaptureRateLimited {
         st.exec_not_runnable_consecutive =
             next_exec_not_runnable_streak(st.exec_not_runnable_consecutive, policy);
@@ -1565,7 +1565,7 @@ fn next_exec_not_runnable_streak(previous: u32, policy: WatcherExitCapturePolicy
 }
 
 fn reset_exec_not_runnable_failure_streak() {
-    crash_state().lock().unwrap().exec_not_runnable_consecutive = 0;
+    crash_state().lock().unwrap_or_else(|e| e.into_inner()).exec_not_runnable_consecutive = 0;
 }
 
 /// Apply the same exponential retry dampening when a preflight positively
@@ -1573,7 +1573,7 @@ fn reset_exec_not_runnable_failure_streak() {
 /// must not create a Sentry event; the backoff merely prevents the supervisor
 /// from retrying the same user-actionable diagnosis every 30 seconds.
 fn note_environment_preflight_failure() {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.consecutive = st.consecutive.saturating_add(1);
     st.backoff_until = Some(
         Instant::now() + respawn_backoff(st.consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
@@ -1582,7 +1582,7 @@ fn note_environment_preflight_failure() {
 
 /// Record the latest RSS (KB) sampled from the live watcher (supervisor tick).
 fn note_watcher_rss(kb: u64) {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.last_rss_kb = Some(kb);
     st.last_rss_at = Some(Instant::now());
 }
@@ -1590,7 +1590,7 @@ fn note_watcher_rss(kb: u64) {
 /// Snapshot for enriching a crash capture: watcher uptime (since spawn), the
 /// last RSS sample, and how long before now that sample was taken.
 fn watcher_exit_diagnostics() -> (Option<Duration>, Option<u64>, Option<Duration>) {
-    let st = crash_state().lock().unwrap();
+    let st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     let uptime = st.spawn_at.map(|t| t.elapsed());
     let rss_age = st.last_rss_at.map(|t| t.elapsed());
     (uptime, st.last_rss_kb, rss_age)
@@ -1598,7 +1598,7 @@ fn watcher_exit_diagnostics() -> (Option<Duration>, Option<u64>, Option<Duration
 
 /// Supervisor helper: is the watcher still inside its respawn-backoff window?
 fn within_respawn_backoff() -> bool {
-    let st = crash_state().lock().unwrap();
+    let st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.backoff_until
         .map(|until| Instant::now() < until)
         .unwrap_or(false)
@@ -1608,7 +1608,7 @@ fn within_respawn_backoff() -> bool {
 /// clear the crash-loop state so backoff + capture rate-limiting reset for the
 /// next failure episode.
 fn reset_crash_state_if_recovered() {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     if should_reset_after_recovery(st.spawn_at.map(|t| t.elapsed()), FAST_FAIL_WINDOW) {
         st.consecutive = 0;
         st.exec_not_runnable_consecutive = 0;
@@ -3495,7 +3495,7 @@ mod tests {
     #[test]
     fn preflight_failure_streak_resets_after_a_successful_spawn() {
         {
-            let mut st = crash_state().lock().unwrap();
+            let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
             *st = WatcherCrashState::default();
         }
         assert_eq!(note_runner_preflight_failure(), 1);
