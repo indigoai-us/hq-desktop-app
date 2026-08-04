@@ -167,7 +167,6 @@
       onrefresh?.();
     } catch (err) {
       const msg = String(err);
-      console.error('connect_workspace_to_cloud failed:', msg);
       const localEnv = parseLocalEnvFailure(msg);
       // Belt-and-suspenders capture: the backend already reports CLI failures
       // via run_cli_provision::report_provision_error and validation failures
@@ -180,13 +179,19 @@
       // actionable repair button below, so emitting a paired frontend event
       // would turn a user-owned missing Node/npx into Sentry noise. The four
       // older local-env kinds deliberately retain their existing capture.
-      if (localEnv?.kind !== 'node-missing' && localEnv?.kind !== 'npx-unavailable') {
+      const expectedRuntimeGap =
+        localEnv?.kind === 'node-missing' || localEnv?.kind === 'npx-unavailable';
+      if (!expectedRuntimeGap) {
+        console.error('connect_workspace_to_cloud failed:', msg);
         Sentry.captureException(err instanceof Error ? err : new Error(msg), {
           tags: { slug, action: 'connect', source: 'frontend' },
           extra: { msg },
         });
       }
-      connectState = { ...connectState, [slug]: msg };
+      const stateMessage = expectedRuntimeGap
+        ? `local environment failure (${localEnv.kind}): ${localEnv.detail}`
+        : msg;
+      connectState = { ...connectState, [slug]: stateMessage };
     }
   }
 </script>

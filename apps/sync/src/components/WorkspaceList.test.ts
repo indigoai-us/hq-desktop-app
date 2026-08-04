@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ErrorEvent, EventHint } from '@sentry/svelte';
 
 vi.mock('svelte', async () => {
   // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
@@ -17,6 +18,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn() }));
 vi.mock('@sentry/svelte', () => ({ captureException: mocks.captureException }));
 
 import { flushSync, mount, unmount } from 'svelte';
+import { beforeSend } from '../sentry-before-send';
 import WorkspaceList from './WorkspaceList.svelte';
 
 let component: ReturnType<typeof mount> | null = null;
@@ -27,6 +29,7 @@ afterEach(async () => {
   component = null;
   host?.remove();
   host = null;
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -74,10 +77,28 @@ describe('WorkspaceList Connect error reporting', () => {
     ['node-missing', 'Install Node.js'],
     ['npx-unavailable', 'Restore npx'],
   ])('does not report a proven %s setup failure and renders its repair affordance', async (kind, label) => {
-    await renderRejectedConnect(`local environment failure (${kind}): ${label}`);
+    const privatePath = '/Users/Ada/Library/Application Support/Indigo HQ/toolchain/node/bin/node';
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await renderRejectedConnect(`local environment failure (${kind}): ${privatePath}`);
     expect(mocks.captureException).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
     expect(host?.textContent).toContain(label);
     expect(host?.textContent).not.toContain('Connect failed — click to retry');
+    expect(host?.innerHTML).not.toContain(privatePath);
+
+    // Model the browser SDK's default console integration, then pass the
+    // resulting breadcrumbs through the production scrubber. The expected
+    // setup path must have no route into a later, unrelated Sentry event.
+    const event: ErrorEvent = {
+      type: undefined,
+      breadcrumbs: consoleError.mock.calls.map((args) => ({
+        category: 'console',
+        message: args.map(String).join(' '),
+        data: { arguments: args.map(String) },
+      })),
+    };
+    const scrubbed = beforeSend(event, {} as EventHint);
+    expect(JSON.stringify(scrubbed)).not.toContain(privatePath);
   });
 
   it('continues reporting an unclassified Connect rejection once', async () => {

@@ -7,7 +7,9 @@ mod tests {
     use std::io::ErrorKind;
 
     use hq_desktop_core::hq_resolver::HqInvocation;
-    use hq_desktop_core::runtime_diagnosis::{ProbeOutcome, RuntimeDiagnosisInput};
+    use hq_desktop_core::runtime_diagnosis::{
+        ProbeOutcome, ProgramProvenance, RuntimeDiagnosisInput,
+    };
     use hq_desktop_core::toolchain::ManagedRuntime;
 
     use super::report_unexplained_spawn_for_test;
@@ -21,6 +23,7 @@ mod tests {
                 &HqInvocation::Local(private_path.to_string()),
                 &RuntimeDiagnosisInput {
                     attempted_program: private_path.to_string(),
+                    program_provenance: ProgramProvenance::Other,
                     spawn_error_kind: ErrorKind::NotFound,
                     node_probe: ProbeOutcome::PermissionDenied,
                     npx_probe: ProbeOutcome::ProbeError(

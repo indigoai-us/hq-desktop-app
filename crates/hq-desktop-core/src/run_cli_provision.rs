@@ -151,7 +151,7 @@ fn parse_provision_stdout(lines: &[String]) -> Result<CliProvisionResult, String
 fn report_provision_error(
     err: &CliProvisionError,
     slug: &str,
-    invocation_kind: &str,
+    invocation_label: &str,
     exit_code: Option<i32>,
     stderr_tail: &[String],
 ) {
@@ -179,7 +179,7 @@ fn report_provision_error(
             if let Some(k) = local_env_kind {
                 scope.set_tag("local_env_kind", k);
             }
-            scope.set_tag("cli_invocation", invocation_kind);
+            scope.set_tag("cli_invocation", invocation_label);
             scope.set_tag("exit_code", &exit_str);
             scope.set_extra("stderr_tail", stderr_blob.into());
         },
@@ -206,13 +206,7 @@ fn report_unexplained_spawn(
             scope.set_tag("cli_invocation", invocation_kind);
             scope.set_tag("exit_code", "signal/none");
             scope.set_extra("stderr_tail", "".into());
-            scope.set_tag(
-                "program_provenance",
-                runtime_diagnosis::program_provenance(
-                    &diagnosis.attempted_program,
-                    &diagnosis.managed_runtime,
-                ),
-            );
+            scope.set_tag("program_provenance", diagnosis.program_provenance.tag());
             scope.set_tag(
                 "runtime_owner",
                 runtime_diagnosis::runtime_owner(&diagnosis.managed_runtime),
@@ -250,17 +244,20 @@ fn finish_spawn_failure(
     spawn_error: &std::io::Error,
     diagnosis: RuntimeDiagnosisInput,
 ) -> CliProvisionError {
-    let detail = format!(
+    let log_detail = format!(
         "spawn program={:?}, error={spawn_error}, node_probe={:?}, npx_probe={:?}, runtime={:?}",
         diagnosis.attempted_program,
         diagnosis.node_probe,
         diagnosis.npx_probe,
         diagnosis.managed_runtime,
     );
-    log("provision-cli", &detail);
+    log("provision-cli", &log_detail);
 
     match runtime_diagnosis::diagnose(&diagnosis) {
-        RuntimeDiagnosis::LocalLogOnly { kind } => CliProvisionError::LocalEnv { kind, detail },
+        RuntimeDiagnosis::LocalLogOnly { kind, user_detail } => CliProvisionError::LocalEnv {
+            kind,
+            detail: user_detail.to_string(),
+        },
         RuntimeDiagnosis::Unexplained => {
             let error =
                 CliProvisionError::Spawn(format!("{sentry_invocation_label}: {spawn_error}"));
@@ -712,7 +709,7 @@ pub async fn run_cli_provision(
     };
 
     if let Err(ref err) = result {
-        report_provision_error(err, slug, invocation_kind, exit_code, &stderr_tail);
+        report_provision_error(err, slug, &invocation.label(), exit_code, &stderr_tail);
     }
     result
 }
@@ -723,6 +720,7 @@ pub async fn run_cli_provision(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     /// The struct must accept the exact JSON shape documented in
     /// `cloud-provision.ts::ProvisionResult`. Locks the CLI ↔ Rust contract.
@@ -1029,6 +1027,7 @@ mod tests {
         let spawn_error = std::io::Error::new(std::io::ErrorKind::NotFound, private_detail);
         let diagnosis = RuntimeDiagnosisInput {
             attempted_program: "npx".to_string(),
+            program_provenance: runtime_diagnosis::ProgramProvenance::BareName,
             spawn_error_kind: std::io::ErrorKind::NotFound,
             node_probe: runtime_diagnosis::ProbeOutcome::NotFound,
             npx_probe: runtime_diagnosis::ProbeOutcome::NotFound,
@@ -1061,9 +1060,55 @@ mod tests {
         assert!(error
             .to_string()
             .starts_with("local environment failure (node-missing):"));
+        assert!(
+            !error.to_string().contains(private_detail),
+            "private diagnostic detail must not cross the Tauri IPC boundary",
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("Install Node.js and reopen HQ Sync"),
+            "the returned detail must stay bounded and actionable",
+        );
         let log = std::fs::read_to_string(log_path).expect("local diagnostic log");
         assert!(log.contains(private_detail));
         assert!(log.contains("node_probe=NotFound"));
         assert!(log.contains("npx_probe=NotFound"));
+    }
+
+    #[test]
+    fn proven_npx_gap_keeps_the_managed_node_path_out_of_ipc() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        let managed_node = PathBuf::from(
+            "/Users/Ada/Library/Application Support/Indigo HQ/toolchain/node/bin/node",
+        );
+        let spawn_error = std::io::Error::new(std::io::ErrorKind::NotFound, "npx missing");
+        let diagnosis = RuntimeDiagnosisInput {
+            attempted_program: "npx".to_string(),
+            program_provenance: runtime_diagnosis::ProgramProvenance::BareName,
+            spawn_error_kind: std::io::ErrorKind::NotFound,
+            node_probe: runtime_diagnosis::ProbeOutcome::Ok,
+            npx_probe: runtime_diagnosis::ProbeOutcome::NotFound,
+            managed_runtime: crate::toolchain::ManagedRuntime::Present {
+                node: managed_node.clone(),
+            },
+        };
+
+        let error = finish_spawn_failure(
+            "acme",
+            "npx",
+            "npx:@indigoai-us/hq-cli@^5.10.0",
+            &spawn_error,
+            diagnosis,
+        );
+        let ipc = error.to_string();
+
+        assert!(ipc.starts_with("local environment failure (npx-unavailable):"));
+        assert!(!ipc.contains(&managed_node.to_string_lossy().to_string()));
+        assert!(ipc.contains("Repair or reinstall Node.js and reopen HQ Sync"));
+        let log = std::fs::read_to_string(log_path).expect("local diagnostic log");
+        assert!(log.contains(&managed_node.to_string_lossy().to_string()));
     }
 }

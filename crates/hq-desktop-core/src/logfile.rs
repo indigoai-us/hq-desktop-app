@@ -28,7 +28,7 @@ use super::paths::hq_config_dir;
 pub(crate) static LOG_PATH_TEST_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
 #[cfg(any(test, feature = "test-support"))]
-static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+pub(crate) static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Returns `~/.hq/logs/hq-sync.log`. The directory is created on demand.
 ///

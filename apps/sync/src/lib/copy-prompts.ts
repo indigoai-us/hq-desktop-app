@@ -44,6 +44,11 @@ export type LocalEnvKind =
   | 'node-missing'
   | 'npx-unavailable';
 
+const RUNTIME_LOCAL_ENV_DETAILS: Partial<Record<LocalEnvKind, string>> = {
+  'node-missing': 'Install Node.js and reopen HQ Sync, then retry Connect.',
+  'npx-unavailable': 'Repair or reinstall Node.js and reopen HQ Sync, then retry Connect.',
+};
+
 export interface Issue {
   kind: IssueKind;
   payload?: Record<string, unknown>;
@@ -489,7 +494,11 @@ export function parseLocalEnvFailure(
     'npx-unavailable',
   ]);
   if (!known.has(kind)) return null;
-  return { kind, detail };
+  // These two kinds are deliberately local-log-only. Normalize their detail
+  // at the frontend boundary as defense in depth, so an older backend cannot
+  // carry a private resolved path into UI state, a repair prompt, or a later
+  // browser-console breadcrumb.
+  return { kind, detail: RUNTIME_LOCAL_ENV_DETAILS[kind] ?? detail };
 }
 
 export function buildPrompt(issue: Issue): string {

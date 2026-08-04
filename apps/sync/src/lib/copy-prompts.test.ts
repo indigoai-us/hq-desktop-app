@@ -272,9 +272,28 @@ describe('parseLocalEnvFailure (IPC contract)', () => {
       const parsed = parseLocalEnvFailure(`local environment failure (${k}): detail text`);
       expect(parsed).not.toBeNull();
       expect(parsed?.kind).toBe(k);
-      expect(parsed?.detail).toBe('detail text');
+      if (k === 'node-missing') {
+        expect(parsed?.detail).toBe('Install Node.js and reopen HQ Sync, then retry Connect.');
+      } else if (k === 'npx-unavailable') {
+        expect(parsed?.detail).toBe(
+          'Repair or reinstall Node.js and reopen HQ Sync, then retry Connect.',
+        );
+      } else {
+        expect(parsed?.detail).toBe('detail text');
+      }
     }
   });
+
+  it.each(['node-missing', 'npx-unavailable'])(
+    'drops private backend detail for %s before it reaches frontend consumers',
+    (kind) => {
+      const privatePath = '/Users/Ada/Library/Application Support/Indigo HQ/toolchain/node/bin/node';
+      const parsed = parseLocalEnvFailure(
+        `local environment failure (${kind}): ${privatePath}`,
+      );
+      expect(parsed?.detail).not.toContain(privatePath);
+    },
+  );
 
   it('returns null for vault errors so they route to the generic branch', () => {
     expect(
