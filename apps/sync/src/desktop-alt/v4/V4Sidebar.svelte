@@ -749,7 +749,7 @@
   .ws-divider {
     flex: 0 0 auto;
     height: 1px;
-    margin: 16px 2px;
+    margin: 16px 10px;
     background: var(--v4-hairline);
   }
 
