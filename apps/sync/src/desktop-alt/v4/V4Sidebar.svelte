@@ -455,7 +455,7 @@
     margin: 8px;
     overflow: hidden;
     padding: 8px;
-    border-radius: 20px;
+    border-radius: 14px;
     background: var(--v4-sidebar, var(--v4-chrome));
     font-family: var(--font-sans);
   }

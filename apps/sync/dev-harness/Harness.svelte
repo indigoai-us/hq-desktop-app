@@ -509,7 +509,7 @@
     position: relative;
     width: min(1180px, 100%);
     height: min(800px, 100%);
-    border-radius: 26px;
+    border-radius: 18px;
     overflow: hidden;
     background: rgba(255, 255, 255, 0.8);
     -webkit-backdrop-filter: blur(50px);
