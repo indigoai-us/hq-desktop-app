@@ -84,4 +84,22 @@ describe('WorkspaceList Connect error reporting', () => {
     await renderRejectedConnect('runtime launcher unavailable; see log', false);
     expect(mocks.captureException).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    'npm-cache-permission',
+    'disk-full',
+    'npm-registry-unreachable',
+    'npm-registry-timeout',
+  ])('continues reporting the pre-existing %s local environment kind once', async (kind) => {
+    await renderRejectedConnect(`local environment failure (${kind}): existing repair detail`);
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'local environment failure (future-kind): unrecognized backend kind',
+    'raw IPC serialization failure',
+  ])('continues reporting an unknown rejection once: %s', async (message) => {
+    await renderRejectedConnect(message, false);
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+  });
 });

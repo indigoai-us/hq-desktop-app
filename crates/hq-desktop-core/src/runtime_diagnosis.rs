@@ -167,11 +167,15 @@ pub async fn inspect_spawn_failure(
 }
 
 async fn probe_version(program: &str, deadline: Instant) -> ProbeOutcome {
+    probe_command(program, &["--version"], deadline).await
+}
+
+async fn probe_command(program: &str, args: &[&str], deadline: Instant) -> ProbeOutcome {
     if Instant::now() >= deadline {
         return ProbeOutcome::Timeout;
     }
 
-    let mut command = paths::tokio_spawn_command(program, &["--version"]);
+    let mut command = paths::tokio_spawn_command(program, args);
     command
         .env("PATH", paths::child_path())
         .stdin(Stdio::null())
@@ -198,9 +202,14 @@ async fn probe_version(program: &str, deadline: Instant) -> ProbeOutcome {
             _ => ProbeOutcome::ProbeError(error.kind().to_string()),
         },
         Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            ProbeOutcome::Timeout
+            let kill_error = child.kill().await.err();
+            let wait_error = child.wait().await.err();
+            match (kill_error, wait_error) {
+                (None, None) => ProbeOutcome::Timeout,
+                (kill_error, wait_error) => ProbeOutcome::ProbeError(format!(
+                    "timeout cleanup failed: kill={kill_error:?}, wait={wait_error:?}"
+                )),
+            }
         }
     }
 }
@@ -295,8 +304,62 @@ mod tests {
 
     #[test]
     fn windows_absolute_program_is_not_bare_on_every_host_platform() {
-        assert!(!is_bare_program(r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd"));
+        assert!(!is_bare_program(
+            r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd"
+        ));
         assert!(!is_bare_program("/Users/Ada/.npm-global/bin/npx"));
         assert!(is_bare_program("npx"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_probe_is_reaped_and_the_deadline_is_shared() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("slow-probe.sh");
+        let first_pid = tmp.path().join("first.pid");
+        let second_pid = tmp.path().join("second.pid");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s' \"$$\" > \"$1\"\nwhile :; do :; done\n",
+        )
+        .expect("write probe script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make probe executable");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let first = probe_command(
+            script.to_str().expect("utf-8 script path"),
+            &[first_pid.to_str().expect("utf-8 pid path")],
+            deadline,
+        )
+        .await;
+        let second = probe_command(
+            script.to_str().expect("utf-8 script path"),
+            &[second_pid.to_str().expect("utf-8 pid path")],
+            deadline,
+        )
+        .await;
+
+        assert_eq!(first, ProbeOutcome::Timeout);
+        assert_eq!(second, ProbeOutcome::Timeout);
+        assert!(
+            !second_pid.exists(),
+            "the second probe must not start after the shared deadline"
+        );
+
+        let pid = std::fs::read_to_string(&first_pid).expect("probe recorded its pid");
+        let alive = std::process::Command::new("/bin/kill")
+            .args(["-0", pid.trim()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("probe pid liveness check")
+            .success();
+        assert!(
+            !alive,
+            "the timed-out probe child must be killed and reaped"
+        );
     }
 }

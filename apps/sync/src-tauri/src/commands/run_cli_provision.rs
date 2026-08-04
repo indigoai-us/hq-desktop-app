@@ -38,6 +38,17 @@ mod tests {
 
         assert!(!serialized.contains(private_path));
         assert!(!serialized.contains("raw process output must stay local"));
+        assert_eq!(
+            scrubbed.message.as_deref(),
+            Some(
+                "[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: No such file or directory (os error 2)"
+            )
+        );
+        assert_eq!(
+            scrubbed.tags["cli_invocation"],
+            "npx:@indigoai-us/hq-cli@^5.10.0"
+        );
+        assert_eq!(scrubbed.tags["exit_code"], "signal/none");
         assert_eq!(scrubbed.tags["program_provenance"], "other");
         assert_eq!(scrubbed.tags["runtime_owner"], "unknown");
         assert_eq!(

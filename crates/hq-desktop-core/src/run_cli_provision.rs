@@ -190,13 +190,22 @@ fn report_provision_error(
 }
 
 /// Capture an unresolved spawn failure without exposing the resolved program
-/// path or raw process text. Sentry's scrubber does not rewrite message/tags,
-/// so all fields here are closed vocabularies.
-fn report_unexplained_spawn(slug: &str, diagnosis: &RuntimeDiagnosisInput) {
+/// path or raw process text. The message preserves the existing spawn error
+/// classification; every newly added diagnostic tag uses a closed vocabulary
+/// because Sentry's scrubber does not rewrite tags.
+fn report_unexplained_spawn(
+    slug: &str,
+    invocation_label: &str,
+    error: &CliProvisionError,
+    diagnosis: &RuntimeDiagnosisInput,
+) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("slug", slug);
             scope.set_tag("provision_kind", "spawn");
+            scope.set_tag("cli_invocation", invocation_label);
+            scope.set_tag("exit_code", "signal/none");
+            scope.set_extra("stderr_tail", "".into());
             scope.set_tag(
                 "program_provenance",
                 runtime_diagnosis::program_provenance(
@@ -215,10 +224,7 @@ fn report_unexplained_spawn(slug: &str, diagnosis: &RuntimeDiagnosisInput) {
             }
         },
         || {
-            sentry::capture_message(
-                "[provision-cli] runtime launcher could not be started",
-                sentry::Level::Error,
-            );
+            sentry::capture_message(&format!("[provision-cli] {error}"), sentry::Level::Error);
         },
     );
 }
@@ -226,7 +232,36 @@ fn report_unexplained_spawn(slug: &str, diagnosis: &RuntimeDiagnosisInput) {
 /// Test-only production reporting seam used by the menubar envelope test.
 #[cfg(any(test, feature = "test-support"))]
 pub fn report_unexplained_spawn_for_test(slug: &str, diagnosis: &RuntimeDiagnosisInput) {
-    report_unexplained_spawn(slug, diagnosis);
+    let invocation_label = "npx:@indigoai-us/hq-cli@^5.10.0";
+    let error = CliProvisionError::Spawn(format!(
+        "{invocation_label}: No such file or directory (os error 2)"
+    ));
+    report_unexplained_spawn(slug, invocation_label, &error, diagnosis);
+}
+
+fn finish_spawn_failure(
+    slug: &str,
+    invocation_label: &str,
+    spawn_error: &std::io::Error,
+    diagnosis: RuntimeDiagnosisInput,
+) -> CliProvisionError {
+    let detail = format!(
+        "spawn program={:?}, error={spawn_error}, node_probe={:?}, npx_probe={:?}, runtime={:?}",
+        diagnosis.attempted_program,
+        diagnosis.node_probe,
+        diagnosis.npx_probe,
+        diagnosis.managed_runtime,
+    );
+    log("provision-cli", &detail);
+
+    match runtime_diagnosis::diagnose(&diagnosis) {
+        RuntimeDiagnosis::LocalLogOnly { kind } => CliProvisionError::LocalEnv { kind, detail },
+        RuntimeDiagnosis::Unexplained => {
+            let error = CliProvisionError::Spawn(format!("{invocation_label}: {spawn_error}"));
+            report_unexplained_spawn(slug, invocation_label, &error, &diagnosis);
+            error
+        }
+    }
 }
 
 /// Inspect the captured stderr tail for unambiguous local-environment
@@ -383,9 +418,10 @@ pub enum CliProvisionError {
     /// instead of a generic "vault error" message.
     ///
     /// `kind` is one of: `"npm-cache-permission"`, `"disk-full"`,
-    /// `"npm-registry-unreachable"`, `"npm-registry-timeout"` — and these
-    /// strings are part of the IPC contract with the frontend's
-    /// `OpenInClaudeCodeButton` / `copy-prompts.ts` registry.
+    /// `"npm-registry-unreachable"`, `"npm-registry-timeout"`,
+    /// `"node-missing"`, or `"npx-unavailable"` — and these strings are part
+    /// of the IPC contract with the frontend's `OpenInClaudeCodeButton` /
+    /// `copy-prompts.ts` registry.
     LocalEnv { kind: &'static str, detail: String },
     /// Exit code 3 — entity created, manifest patched, config written, but
     /// the initial `share()` upload failed. The CLI's stdout still emits a
@@ -533,25 +569,12 @@ pub async fn run_cli_provision(
             let diagnosis =
                 runtime_diagnosis::inspect_spawn_failure(attempted_program.clone(), error.kind())
                     .await;
-            let detail = format!(
-                "spawn program={attempted_program:?}, error={error}, node_probe={}, npx_probe={}, runtime={:?}",
-                diagnosis.node_probe.tag(),
-                diagnosis.npx_probe.tag(),
-                diagnosis.managed_runtime,
-            );
-            log("provision-cli", &detail);
-            match runtime_diagnosis::diagnose(&diagnosis) {
-                RuntimeDiagnosis::LocalLogOnly { kind } => {
-                    return Err(CliProvisionError::LocalEnv { kind, detail });
-                }
-                RuntimeDiagnosis::Unexplained => {
-                    report_unexplained_spawn(slug, &diagnosis);
-                    return Err(CliProvisionError::Spawn(
-                        "runtime launcher unavailable; see ~/.hq/logs/hq-sync.log [provision-cli]"
-                            .to_string(),
-                    ));
-                }
-            }
+            return Err(finish_spawn_failure(
+                slug,
+                &invocation_label,
+                &error,
+                diagnosis,
+            ));
         }
     };
 
@@ -987,5 +1010,51 @@ mod tests {
         let s: String = e.into();
         assert!(s.contains("spawn"));
         assert!(s.contains("not on PATH"));
+    }
+
+    #[test]
+    fn proven_missing_node_is_returned_and_logged_without_a_sentry_event() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        let private_detail = "/Users/Ada/.nvm/npx was not found";
+        let spawn_error = std::io::Error::new(std::io::ErrorKind::NotFound, private_detail);
+        let diagnosis = RuntimeDiagnosisInput {
+            attempted_program: "npx".to_string(),
+            spawn_error_kind: std::io::ErrorKind::NotFound,
+            node_probe: runtime_diagnosis::ProbeOutcome::NotFound,
+            npx_probe: runtime_diagnosis::ProbeOutcome::NotFound,
+            managed_runtime: crate::toolchain::ManagedRuntime::NotProvisioned,
+        };
+        let result = std::cell::RefCell::new(None);
+
+        let captures = sentry::test::with_captured_events(|| {
+            result.replace(Some(finish_spawn_failure(
+                "acme",
+                "npx:@indigoai-us/hq-cli@^5.10.0",
+                &spawn_error,
+                diagnosis,
+            )));
+        });
+
+        assert!(
+            captures.is_empty(),
+            "a proven user-owned setup gap stays local"
+        );
+        let error = result.into_inner().expect("spawn failure result");
+        assert!(matches!(
+            &error,
+            CliProvisionError::LocalEnv {
+                kind: "node-missing",
+                ..
+            }
+        ));
+        assert!(error
+            .to_string()
+            .starts_with("local environment failure (node-missing):"));
+        let log = std::fs::read_to_string(log_path).expect("local diagnostic log");
+        assert!(log.contains(private_detail));
+        assert!(log.contains("node_probe=NotFound"));
+        assert!(log.contains("npx_probe=NotFound"));
     }
 }
