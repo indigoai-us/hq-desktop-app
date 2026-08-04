@@ -15,6 +15,7 @@ use crate::paths;
 use crate::toolchain::ManagedRuntime;
 
 const TOTAL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const PROBE_CLEANUP_RESERVE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeOutcome {
@@ -171,7 +172,10 @@ async fn probe_version(program: &str, deadline: Instant) -> ProbeOutcome {
 }
 
 async fn probe_command(program: &str, args: &[&str], deadline: Instant) -> ProbeOutcome {
-    if Instant::now() >= deadline {
+    let Some(run_deadline) = deadline.checked_sub(PROBE_CLEANUP_RESERVE) else {
+        return ProbeOutcome::Timeout;
+    };
+    if Instant::now() >= run_deadline {
         return ProbeOutcome::Timeout;
     }
 
@@ -193,7 +197,7 @@ async fn probe_command(program: &str, args: &[&str], deadline: Instant) -> Probe
         }
     };
 
-    match timeout_at(deadline, child.wait()).await {
+    match timeout_at(run_deadline, child.wait()).await {
         Ok(Ok(status)) if status.success() => ProbeOutcome::Ok,
         Ok(Ok(status)) => ProbeOutcome::NonZeroExit(status.code().unwrap_or(-1)),
         Ok(Err(error)) => match error.kind() {
@@ -202,15 +206,33 @@ async fn probe_command(program: &str, args: &[&str], deadline: Instant) -> Probe
             _ => ProbeOutcome::ProbeError(error.kind().to_string()),
         },
         Err(_) => {
-            let kill_error = child.kill().await.err();
-            let wait_error = child.wait().await.err();
-            match (kill_error, wait_error) {
-                (None, None) => ProbeOutcome::Timeout,
-                (kill_error, wait_error) => ProbeOutcome::ProbeError(format!(
-                    "timeout cleanup failed: kill={kill_error:?}, wait={wait_error:?}"
-                )),
-            }
+            let kill_result = child.start_kill();
+            bounded_reap(kill_result, child.wait(), deadline).await
         }
+    }
+}
+
+async fn bounded_reap<F>(
+    kill_result: std::io::Result<()>,
+    wait: F,
+    deadline: Instant,
+) -> ProbeOutcome
+where
+    F: std::future::Future<Output = std::io::Result<std::process::ExitStatus>>,
+{
+    let kill_error = kill_result.err().map(|error| error.kind().to_string());
+    match timeout_at(deadline, wait).await {
+        Ok(Ok(_)) if kill_error.is_none() => ProbeOutcome::Timeout,
+        Ok(Ok(_)) => {
+            ProbeOutcome::ProbeError(format!("timeout cleanup failed: kill={kill_error:?}"))
+        }
+        Ok(Err(error)) => ProbeOutcome::ProbeError(format!(
+            "timeout cleanup failed: kill={kill_error:?}, wait={}",
+            error.kind()
+        )),
+        Err(_) => ProbeOutcome::ProbeError(format!(
+            "timeout cleanup deadline exceeded: kill={kill_error:?}"
+        )),
     }
 }
 
@@ -303,6 +325,38 @@ mod tests {
     }
 
     #[test]
+    fn unresolvable_platform_base_keeps_missing_node_reportable() {
+        let discovery = paths::managed_toolchain_roots_from_base(None);
+        assert_eq!(
+            discovery
+                .as_ref()
+                .expect_err("missing base must be explicit")
+                .reason,
+            "base-dir-unresolved"
+        );
+        let managed_runtime = crate::toolchain::classify_runtime_from_discovery(discovery);
+        assert_eq!(
+            managed_runtime,
+            ManagedRuntime::Unknown {
+                reason: "base-dir-unresolved",
+            }
+        );
+
+        let input = RuntimeDiagnosisInput {
+            attempted_program: "npx".to_string(),
+            spawn_error_kind: ErrorKind::NotFound,
+            node_probe: ProbeOutcome::NotFound,
+            npx_probe: ProbeOutcome::NotFound,
+            managed_runtime,
+        };
+        assert_eq!(
+            diagnose(&input),
+            RuntimeDiagnosis::Unexplained,
+            "failure to resolve HOME/LOCALAPPDATA is never proof of user ownership"
+        );
+    }
+
+    #[test]
     fn windows_absolute_program_is_not_bare_on_every_host_platform() {
         assert!(!is_bare_program(
             r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd"
@@ -360,6 +414,27 @@ mod tests {
         assert!(
             !alive,
             "the timed-out probe child must be killed and reaped"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_that_cannot_finish_is_bounded_by_the_total_deadline() {
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(40);
+        let outcome = bounded_reap(
+            Ok(()),
+            std::future::pending::<std::io::Result<std::process::ExitStatus>>(),
+            deadline,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, ProbeOutcome::ProbeError(ref detail) if detail.contains("cleanup deadline exceeded")),
+            "an unreapable child must fail loudly: {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "cleanup must not outlive the total diagnosis budget"
         );
     }
 }

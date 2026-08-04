@@ -86,23 +86,37 @@ pub fn managed_toolchain_roots() -> Vec<PathBuf> {
 /// existing preflight behavior stays unchanged.
 pub fn managed_toolchain_roots_checked() -> Result<Vec<PathBuf>, RootDiscoveryError> {
     #[cfg(target_os = "windows")]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+
+    #[cfg(not(target_os = "windows"))]
+    let base = home_dir();
+
+    managed_toolchain_roots_from_base(base)
+}
+
+/// Platform-routed root construction from an already-discovered base path.
+///
+/// Keeping discovery separate from construction gives tests a deterministic
+/// way to prove that an unresolved HOME/LOCALAPPDATA remains an error without
+/// mutating process-global environment variables.
+pub(crate) fn managed_toolchain_roots_from_base(
+    base: Option<PathBuf>,
+) -> Result<Vec<PathBuf>, RootDiscoveryError> {
+    let base = base.ok_or(RootDiscoveryError {
+        reason: "base-dir-unresolved",
+    })?;
+
+    #[cfg(target_os = "windows")]
     {
-        let canonical = managed_toolchain_dir().ok_or(RootDiscoveryError {
-            reason: "base-dir-unresolved",
-        })?;
-        let legacy = legacy_managed_toolchain_dir().ok_or(RootDiscoveryError {
-            reason: "base-dir-unresolved",
-        })?;
-        Ok(vec![canonical, legacy])
+        Ok(vec![
+            base.join("IndigoHQ").join("toolchain"),
+            base.join("Indigo HQ").join("toolchain"),
+        ])
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        home_dir()
-            .map(|home| vec![managed_toolchain_dir(&home)])
-            .ok_or(RootDiscoveryError {
-                reason: "base-dir-unresolved",
-            })
+        Ok(vec![managed_toolchain_dir(&base)])
     }
 }
 
@@ -825,9 +839,9 @@ mod tests {
         let git_cmd = dirs
             .iter()
             .position(|dir| dir == &toolchain.join("git").join("cmd"));
-        let git_mingw = dirs.iter().position(|dir| {
-            dir == &toolchain.join("git").join("mingw64").join("bin")
-        });
+        let git_mingw = dirs
+            .iter()
+            .position(|dir| dir == &toolchain.join("git").join("mingw64").join("bin"));
 
         assert!(
             matches!((node, npm, wrappers), (Some(n), Some(p), Some(w)) if n < p && p < w),

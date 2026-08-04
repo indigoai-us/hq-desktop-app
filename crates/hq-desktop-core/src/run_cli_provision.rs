@@ -151,7 +151,7 @@ fn parse_provision_stdout(lines: &[String]) -> Result<CliProvisionResult, String
 fn report_provision_error(
     err: &CliProvisionError,
     slug: &str,
-    invocation_label: &str,
+    invocation_kind: &str,
     exit_code: Option<i32>,
     stderr_tail: &[String],
 ) {
@@ -179,7 +179,7 @@ fn report_provision_error(
             if let Some(k) = local_env_kind {
                 scope.set_tag("local_env_kind", k);
             }
-            scope.set_tag("cli_invocation", invocation_label);
+            scope.set_tag("cli_invocation", invocation_kind);
             scope.set_tag("exit_code", &exit_str);
             scope.set_extra("stderr_tail", stderr_blob.into());
         },
@@ -195,7 +195,7 @@ fn report_provision_error(
 /// because Sentry's scrubber does not rewrite tags.
 fn report_unexplained_spawn(
     slug: &str,
-    invocation_label: &str,
+    invocation_kind: &str,
     error: &CliProvisionError,
     diagnosis: &RuntimeDiagnosisInput,
 ) {
@@ -203,7 +203,7 @@ fn report_unexplained_spawn(
         |scope| {
             scope.set_tag("slug", slug);
             scope.set_tag("provision_kind", "spawn");
-            scope.set_tag("cli_invocation", invocation_label);
+            scope.set_tag("cli_invocation", invocation_kind);
             scope.set_tag("exit_code", "signal/none");
             scope.set_extra("stderr_tail", "".into());
             scope.set_tag(
@@ -231,17 +231,22 @@ fn report_unexplained_spawn(
 
 /// Test-only production reporting seam used by the menubar envelope test.
 #[cfg(any(test, feature = "test-support"))]
-pub fn report_unexplained_spawn_for_test(slug: &str, diagnosis: &RuntimeDiagnosisInput) {
-    let invocation_label = "npx:@indigoai-us/hq-cli@^5.10.0";
+pub fn report_unexplained_spawn_for_test(
+    slug: &str,
+    invocation: &HqInvocation,
+    diagnosis: &RuntimeDiagnosisInput,
+) {
+    let invocation_label = invocation.sentry_label();
     let error = CliProvisionError::Spawn(format!(
         "{invocation_label}: No such file or directory (os error 2)"
     ));
-    report_unexplained_spawn(slug, invocation_label, &error, diagnosis);
+    report_unexplained_spawn(slug, invocation.telemetry_kind(), &error, diagnosis);
 }
 
 fn finish_spawn_failure(
     slug: &str,
-    invocation_label: &str,
+    invocation_kind: &str,
+    sentry_invocation_label: &str,
     spawn_error: &std::io::Error,
     diagnosis: RuntimeDiagnosisInput,
 ) -> CliProvisionError {
@@ -257,8 +262,9 @@ fn finish_spawn_failure(
     match runtime_diagnosis::diagnose(&diagnosis) {
         RuntimeDiagnosis::LocalLogOnly { kind } => CliProvisionError::LocalEnv { kind, detail },
         RuntimeDiagnosis::Unexplained => {
-            let error = CliProvisionError::Spawn(format!("{invocation_label}: {spawn_error}"));
-            report_unexplained_spawn(slug, invocation_label, &error, &diagnosis);
+            let error =
+                CliProvisionError::Spawn(format!("{sentry_invocation_label}: {spawn_error}"));
+            report_unexplained_spawn(slug, invocation_kind, &error, &diagnosis);
             error
         }
     }
@@ -561,7 +567,8 @@ pub async fn run_cli_provision(
     // leak processes the user has no UI to kill.
     cmd.kill_on_drop(true);
 
-    let invocation_label = invocation.label();
+    let invocation_kind = invocation.telemetry_kind();
+    let sentry_invocation_label = invocation.sentry_label();
     let attempted_program = cmd.as_std().get_program().to_string_lossy().into_owned();
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -571,7 +578,8 @@ pub async fn run_cli_provision(
                     .await;
             return Err(finish_spawn_failure(
                 slug,
-                &invocation_label,
+                invocation_kind,
+                &sentry_invocation_label,
                 &error,
                 diagnosis,
             ));
@@ -704,7 +712,7 @@ pub async fn run_cli_provision(
     };
 
     if let Err(ref err) = result {
-        report_provision_error(err, slug, &invocation_label, exit_code, &stderr_tail);
+        report_provision_error(err, slug, invocation_kind, exit_code, &stderr_tail);
     }
     result
 }
@@ -1031,6 +1039,7 @@ mod tests {
         let captures = sentry::test::with_captured_events(|| {
             result.replace(Some(finish_spawn_failure(
                 "acme",
+                "npx",
                 "npx:@indigoai-us/hq-cli@^5.10.0",
                 &spawn_error,
                 diagnosis,

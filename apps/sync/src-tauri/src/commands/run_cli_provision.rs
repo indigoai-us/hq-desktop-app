@@ -6,6 +6,7 @@ pub use hq_desktop_core::run_cli_provision::*;
 mod tests {
     use std::io::ErrorKind;
 
+    use hq_desktop_core::hq_resolver::HqInvocation;
     use hq_desktop_core::runtime_diagnosis::{ProbeOutcome, RuntimeDiagnosisInput};
     use hq_desktop_core::toolchain::ManagedRuntime;
 
@@ -17,6 +18,7 @@ mod tests {
         let captures = sentry::test::with_captured_events(|| {
             report_unexplained_spawn_for_test(
                 "acme",
+                &HqInvocation::Local(private_path.to_string()),
                 &RuntimeDiagnosisInput {
                     attempted_program: private_path.to_string(),
                     spawn_error_kind: ErrorKind::NotFound,
@@ -41,13 +43,10 @@ mod tests {
         assert_eq!(
             scrubbed.message.as_deref(),
             Some(
-                "[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: No such file or directory (os error 2)"
+                "[provision-cli] spawn `hq` failed: local: No such file or directory (os error 2)"
             )
         );
-        assert_eq!(
-            scrubbed.tags["cli_invocation"],
-            "npx:@indigoai-us/hq-cli@^5.10.0"
-        );
+        assert_eq!(scrubbed.tags["cli_invocation"], "local");
         assert_eq!(scrubbed.tags["exit_code"], "signal/none");
         assert_eq!(scrubbed.tags["program_provenance"], "other");
         assert_eq!(scrubbed.tags["runtime_owner"], "unknown");

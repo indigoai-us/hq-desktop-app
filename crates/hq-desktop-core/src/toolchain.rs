@@ -84,7 +84,13 @@ fn inspect_path(
 /// Existing callers intentionally continue using [`classify`] and
 /// [`classify_roots`], whose behavior is preserved for sync preflight.
 pub fn classify_runtime() -> ManagedRuntime {
-    let roots = match paths::managed_toolchain_roots_checked() {
+    classify_runtime_from_discovery(paths::managed_toolchain_roots_checked())
+}
+
+pub(crate) fn classify_runtime_from_discovery(
+    discovery: Result<Vec<PathBuf>, paths::RootDiscoveryError>,
+) -> ManagedRuntime {
+    let roots = match discovery {
         Ok(roots) => roots,
         Err(error) => {
             return ManagedRuntime::Unknown {
