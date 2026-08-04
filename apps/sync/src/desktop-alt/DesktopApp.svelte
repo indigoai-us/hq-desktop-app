@@ -1663,7 +1663,6 @@
 
   <div class="desktop-column">
     <V4TitleBar
-      version={__APP_VERSION__}
       {syncState}
       watchedCount={watchedWorkspaceCount}
       {lastSyncLabel}
@@ -1684,7 +1683,6 @@
       onretryhydration={handleRetryHydration}
       onresolveconflicts={handleResolveAggregateConflicts}
       oncommand={handleOpenCommandPalette}
-      onOpenSettings={handleOpenSettings}
     />
 
     <div class="desktop-body">

@@ -1,9 +1,6 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
   import type { SyncState } from '../lib/sync-model';
-  import type { SettingsTab } from '../route';
-  import VersionPopout from '../components/VersionPopout.svelte';
-  import CopyPromptButton from '../../components/CopyPromptButton.svelte';
+    import CopyPromptButton from '../../components/CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte';
   import { getV4TitleBarModel, type V4HydrationIssue } from './model';
   import './tokens.css';
@@ -16,7 +13,6 @@
    * header and never interactive controls.
    */
   interface Props {
-    version: string;
     syncState: SyncState;
     /** Connected workspaces being watched (companies + personal). */
     watchedCount: number;
@@ -43,11 +39,9 @@
     onretryhydration?: () => void | Promise<void>;
     onresolveconflicts?: () => void | Promise<void>;
     oncommand?: () => void;
-    onOpenSettings?: (tab?: SettingsTab) => void;
   }
 
   let {
-    version,
     syncState,
     watchedCount,
     lastSyncLabel = null,
@@ -68,7 +62,6 @@
     onretryhydration,
     onresolveconflicts,
     oncommand,
-    onOpenSettings,
   }: Props = $props();
 
   const model = $derived(
@@ -84,41 +77,10 @@
     }),
   );
 
-  let versionOpen = $state(false);
-  let versionContainer: HTMLDivElement | null = $state(null);
-  let coreVersion = $state<string | null>(null);
-  let coreVersionLoading = $state(true);
-  let coreVersionError = $state(false);
   let actionPending = $state(false);
   let actionError = $state<string | null>(null);
   let actionErrorDetail = $state('');
   let actionContext = '';
-  let coreVersionLoadGeneration = 0;
-  const coreVersionLabel = $derived.by(() => {
-    if (coreVersionLoading) return 'Core checking…';
-    if (coreVersion) return `Core v${coreVersion}`;
-    return coreVersionError ? 'Core unavailable' : 'Core not detected';
-  });
-
-  async function refreshCoreVersion() {
-    const generation = ++coreVersionLoadGeneration;
-    coreVersionLoading = true;
-    coreVersionError = false;
-    try {
-      const next = await invoke<string | null>('get_hq_version');
-      if (generation === coreVersionLoadGeneration) {
-        coreVersion = next;
-        coreVersionError = false;
-      }
-    } catch (err) {
-      if (generation !== coreVersionLoadGeneration) return;
-      console.error('titlebar: failed to read HQ Core version', err);
-      coreVersion = null;
-      coreVersionError = true;
-    } finally {
-      if (generation === coreVersionLoadGeneration) coreVersionLoading = false;
-    }
-  }
 
   async function handleAction(): Promise<void> {
     if (actionPending) return;
@@ -159,37 +121,7 @@
     actionErrorDetail = '';
   });
 
-  $effect(() => {
-    if (!versionOpen) return;
 
-    function onMouseDown(event: MouseEvent) {
-      if (!(event.target instanceof Node)) return;
-      if (versionContainer && !versionContainer.contains(event.target)) {
-        versionOpen = false;
-      }
-    }
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') versionOpen = false;
-    }
-
-    window.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  });
-
-  $effect(() => {
-    // Read once on mount and again whenever the update popout opens/closes so
-    // a Core update completed in Settings becomes visible without relaunching.
-    versionOpen;
-    void refreshCoreVersion();
-    return () => {
-      coreVersionLoadGeneration += 1;
-    };
-  });
 </script>
 
 <header class="v4-titlebar" aria-label="Window chrome">
@@ -301,40 +233,6 @@
             : model.action.label}
       </button>
     {/if}
-    <div class="v4-version-wrap" bind:this={versionContainer}>
-      <button
-        type="button"
-        class="v4-version"
-        data-testid="version-label"
-        aria-expanded={versionOpen}
-        aria-haspopup="dialog"
-        aria-label={`HQ desktop app v${version}; ${coreVersionLabel}; ${
-          coreVersionError ? 'retry Core version and open updates' : 'open updates'
-        }`}
-        onclick={() => (versionOpen = !versionOpen)}
-      >
-        <span class="v4-version-app">App v{version}</span>
-        <span class="v4-version-divider" aria-hidden="true">·</span>
-        <span class="v4-version-core" data-testid="core-version-label">
-          {coreVersionLabel}
-        </span>
-        {#if coreVersionError && !coreVersionLoading}
-          <span
-            class="v4-version-retry"
-            data-testid="core-version-retry"
-            aria-hidden="true"
-          >Retry</span>
-        {/if}
-      </button>
-      {#if versionOpen}
-        <VersionPopout
-          {version}
-          placement="below"
-          onOpenSettings={(tab) => onOpenSettings?.(tab)}
-          onclose={() => (versionOpen = false)}
-        />
-      {/if}
-    </div>
   </div>
 </header>
 
@@ -488,58 +386,6 @@
     white-space: nowrap;
   }
 
-  .v4-version-wrap {
-    position: relative;
-    flex: 0 0 auto;
-  }
-
-  .v4-version {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 28px;
-    padding: 0 9px;
-    border: none;
-    border-radius: var(--v4-radius-button);
-    background: transparent;
-    color: var(--v4-text-3);
-    transition: background 0.15s;
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .v4-version:hover,
-  .v4-version[aria-expanded='true'] {
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-  }
-
-  .v4-version-app {
-    color: var(--v4-text-3);
-    font-weight: 450;
-  }
-
-  .v4-version-divider {
-    color: var(--v4-hairline-strong, var(--v4-text-3));
-  }
-
-  .v4-version-core {
-    color: var(--v4-text-1);
-    font-weight: 650;
-  }
-
-  .v4-version-retry {
-    color: var(--v4-text-1);
-    font-weight: 500;
-  }
-
-  .v4-version:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: var(--v4-focus-offset, 2px);
-  }
 
   .v4-icon-btn {
     appearance: none;
