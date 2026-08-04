@@ -269,6 +269,7 @@ html[data-window='messages'] ::-webkit-scrollbar-corner {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 /* The central canvas inherits one native sans family and a readable body
@@ -281,7 +282,7 @@ html[data-window='messages'] ::-webkit-scrollbar-corner {
 }
 
 .page {
-  padding: 16px 22px;
+  padding: 16px 24px;
   animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
 }
 

@@ -276,7 +276,7 @@
     flex: 0 0 auto;
     height: 100%;
     overflow: visible;
-    padding: 0 24px 0 0;
+    padding: 0 35px 0 0;
     border-bottom: 1px solid color-mix(in srgb, var(--v4-text-1) 5%, transparent);
     background: var(--v4-chrome);
     backdrop-filter: var(--v4-glass-filter);
@@ -410,11 +410,12 @@
     white-space: nowrap;
   }
 
+  /* Figma: 16px rhythm between search, the cloud toggle, and Sync. */
   .v4-title-actions {
     display: flex;
     align-items: center;
     flex: 0 0 auto;
-    gap: 6px;
+    gap: 16px;
   }
 
   .v4-action-error {

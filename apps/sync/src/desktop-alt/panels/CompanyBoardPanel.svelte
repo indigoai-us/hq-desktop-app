@@ -725,34 +725,35 @@
         </div>
       </section>
 
+      <!-- 2. Needs you -->
+      <section
+        class="overview-section"
+        aria-labelledby="board-needs-title"
+        data-testid="overview-needs-you"
+      >
+        <header class="section-header">
+          <h2 id="board-needs-title">Needs you</h2>
+          <span>
+            {needsYouCards.length}
+            {needsYouCards.length === 1 ? 'item' : 'items'}
+          </span>
+        </header>
+        {#if needsYouCards.length === 0}
+          <p class="empty-inline">Nothing needs you right now.</p>
+        {:else}
+          <div class="needs-queue">
+            {#each needsYouCards as card (card.id)}
+              <NeedsYouCard
+                {card}
+                onaction={(actionId) => handleNeedsYouAction(card.id, actionId)}
+              />
+            {/each}
+          </div>
+        {/if}
+      </section>
+
       <div class="overview-columns">
         <div class="overview-col overview-col-main">
-          <!-- 2. Needs you -->
-          <section
-            class="overview-section"
-            aria-labelledby="board-needs-title"
-            data-testid="overview-needs-you"
-          >
-            <header class="section-header">
-              <h2 id="board-needs-title">Needs you</h2>
-              <span>
-                {needsYouCards.length}
-                {needsYouCards.length === 1 ? 'item' : 'items'}
-              </span>
-            </header>
-            {#if needsYouCards.length === 0}
-              <p class="empty-inline">Nothing needs you right now.</p>
-            {:else}
-              <div class="needs-queue">
-                {#each needsYouCards as card (card.id)}
-                  <NeedsYouCard
-                    {card}
-                    onaction={(actionId) => handleNeedsYouAction(card.id, actionId)}
-                  />
-                {/each}
-              </div>
-            {/if}
-          </section>
 
           <!-- 3. In flight -->
           <section
@@ -844,55 +845,54 @@
         </div>
 
         <div class="overview-col overview-col-side">
-          <!-- 4. Team activity — who did what, first thing in the rail. -->
+          <!-- 4. Team activity — who did what, beside the work. -->
           <section class="overview-section" data-testid="overview-activity-section">
             <OverviewActivityDigest {slug} {cloudBacked} {syncEnabled} {onopeninbox} />
           </section>
-
-          <!-- 5. Goals -->
-          <section
-            class="overview-section"
-            aria-labelledby="board-goals-title"
-            data-testid="overview-goals"
-          >
-            <header class="section-header">
-              <h2 id="board-goals-title">Goals</h2>
-              <button
-                type="button"
-                class="section-link"
-                data-testid="overview-view-goals"
-                onclick={() => onopengoals?.()}
-              >
-                View all
-              </button>
-            </header>
-            {#if loading}
-              <div class="goals-list" aria-busy="true">
-                {#each [0, 1] as row (row)}
-                  <div class="goal-skeleton"></div>
-                {/each}
-              </div>
-            {:else if objectives.length === 0}
-              <div class="empty-inline" data-testid="empty-goals-state">
-                <span>No goals yet</span>
-                <p>Company goals will appear here after the next board sync.</p>
-              </div>
-            {:else}
-              <div class="goals-list">
-                {#each objectives as objective (objective.id || objective.title)}
-                  <GoalCard
-                    {objective}
-                    progress={objectiveProgress(objective)}
-                    projectCount={linkedProjects(objective).length}
-                    storyCount={incompleteStoryCount(linkedProjects(objective))}
-                  />
-                {/each}
-              </div>
-            {/if}
-          </section>
-
         </div>
       </div>
+
+      <!-- 5. Goals — full-width card, items flowing in two columns. -->
+      <section
+        class="overview-section"
+        aria-labelledby="board-goals-title"
+        data-testid="overview-goals"
+      >
+        <header class="section-header">
+          <h2 id="board-goals-title">Goals</h2>
+          <button
+            type="button"
+            class="section-link"
+            data-testid="overview-view-goals"
+            onclick={() => onopengoals?.()}
+          >
+            View all
+          </button>
+        </header>
+        {#if loading}
+          <div class="goals-list" aria-busy="true">
+            {#each [0, 1] as row (row)}
+              <div class="goal-skeleton"></div>
+            {/each}
+          </div>
+        {:else if objectives.length === 0}
+          <div class="empty-inline" data-testid="empty-goals-state">
+            <span>No goals yet</span>
+            <p>Company goals will appear here after the next board sync.</p>
+          </div>
+        {:else}
+          <div class="goals-list">
+            {#each objectives as objective (objective.id || objective.title)}
+              <GoalCard
+                {objective}
+                progress={objectiveProgress(objective)}
+                projectCount={linkedProjects(objective).length}
+                storyCount={incompleteStoryCount(linkedProjects(objective))}
+              />
+            {/each}
+          </div>
+        {/if}
+      </section>
     </div>
 
     {#if false}
@@ -927,7 +927,7 @@
     flex-direction: column;
     gap: 16px;
     min-width: 0;
-    padding: 8px 24px 24px;
+    padding: 0 0 16px;
   }
 
   .board-error {
@@ -956,8 +956,7 @@
     justify-content: center;
     gap: 6px;
     min-width: 0;
-    min-height: 120px;
-    padding: 16px 20px;
+    padding: 20px;
     border-radius: var(--v4-radius-card);
     background: var(--v4-card-tint);
   }
@@ -1090,8 +1089,9 @@
   }
 
   .goals-list {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 40px;
     min-width: 0;
     border-top: 1px solid var(--v4-rowline);
   }
