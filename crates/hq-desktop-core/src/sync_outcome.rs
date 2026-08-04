@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::ErrorKind;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
@@ -59,6 +60,12 @@ pub struct RunTotals {
     /// watcher attaches only this fixed-vocabulary rollup to a termination
     /// capture; paths and raw messages remain local breadcrumbs.
     pub runner_error_rollup: RunnerErrorRollup,
+    /// Content-safe runner operation counts for termination diagnostics. Like
+    /// the class rollup, every rendered token is selected in code.
+    pub runner_error_ops: RunnerErrorOpRollup,
+    /// Raw company names remain process-local only so this can report the
+    /// distinct blast radius as a number without ever sending a name.
+    runner_error_companies: HashSet<String>,
     /// The last recognised runner-fatal signature in this pass. This is a
     /// content-safe enum token used only as evidence on a termination event;
     /// it must never affect the capture or suppression decision.
@@ -101,9 +108,19 @@ impl RunTotals {
     pub fn record_error(&mut self, err: &SyncErrorEvent) {
         self.saw_error = true;
         self.runner_error_rollup.record(&err.message);
+        self.runner_error_ops.record(&err.message);
+        if let Some(company) = err.company.as_deref() {
+            self.runner_error_companies.insert(company.to_string());
+        }
         if is_alertable_error(err) {
             self.saw_alertable_error = true;
         }
+    }
+
+    /// The distinct count is safe telemetry; company names never leave this
+    /// process or this private deduplication set.
+    pub fn runner_error_company_count(&self) -> u32 {
+        u32::try_from(self.runner_error_companies.len()).unwrap_or(u32::MAX)
     }
 
     pub fn record_auth_error(&mut self) {
@@ -154,6 +171,18 @@ impl RunnerErrorClass {
             Self::Other => "OTHER",
         }
     }
+
+    fn fingerprint_token(self) -> &'static str {
+        match self {
+            Self::Eperm => "eperm",
+            Self::Eacces => "eacces",
+            Self::Enospc => "enospc",
+            Self::Ebusy => "ebusy",
+            Self::Network => "network",
+            Self::Auth => "auth",
+            Self::Other => "other",
+        }
+    }
 }
 
 /// Map an untrusted runner error message to a fixed telemetry class. This
@@ -179,6 +208,88 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
     } else {
         RunnerErrorClass::Other
     }
+}
+
+/// Fixed, content-safe Node filesystem operation tokens. Every value is
+/// chosen from this declaration and never copied from runner output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorOp {
+    Rename,
+    Unlink,
+    Open,
+    Mkdir,
+    Rmdir,
+    Symlink,
+    Readlink,
+    Stat,
+    Lstat,
+    Chmod,
+    Copyfile,
+    Utimes,
+    Scandir,
+    Read,
+    Write,
+    Access,
+    Other,
+}
+
+impl RunnerErrorOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rename => "rename",
+            Self::Unlink => "unlink",
+            Self::Open => "open",
+            Self::Mkdir => "mkdir",
+            Self::Rmdir => "rmdir",
+            Self::Symlink => "symlink",
+            Self::Readlink => "readlink",
+            Self::Stat => "stat",
+            Self::Lstat => "lstat",
+            Self::Chmod => "chmod",
+            Self::Copyfile => "copyfile",
+            Self::Utimes => "utimes",
+            Self::Scandir => "scandir",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Access => "access",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classify the operation portion of a Node errno message such as
+/// "EPERM: operation not permitted, rename <path>". The message is inspected
+/// only to choose a closed-vocabulary value and is never retained here.
+pub fn classify_runner_error_op(message: &str) -> RunnerErrorOp {
+    let normalized = message.to_ascii_lowercase();
+    for segment in normalized.split(',').skip(1) {
+        let operation = segment
+            .trim_start()
+            .split(|character: char| character.is_whitespace() || character == ':')
+            .next()
+            .unwrap_or_default();
+        let class = match operation {
+            "rename" => RunnerErrorOp::Rename,
+            "unlink" => RunnerErrorOp::Unlink,
+            "open" => RunnerErrorOp::Open,
+            "mkdir" => RunnerErrorOp::Mkdir,
+            "rmdir" => RunnerErrorOp::Rmdir,
+            "symlink" => RunnerErrorOp::Symlink,
+            "readlink" => RunnerErrorOp::Readlink,
+            "stat" => RunnerErrorOp::Stat,
+            "lstat" => RunnerErrorOp::Lstat,
+            "chmod" => RunnerErrorOp::Chmod,
+            "copyfile" => RunnerErrorOp::Copyfile,
+            "utimes" => RunnerErrorOp::Utimes,
+            "scandir" => RunnerErrorOp::Scandir,
+            "read" => RunnerErrorOp::Read,
+            "write" => RunnerErrorOp::Write,
+            "access" => RunnerErrorOp::Access,
+            _ => continue,
+        };
+        return class;
+    }
+    RunnerErrorOp::Other
 }
 
 /// Stable, content-safe cause tokens for a runner that terminates before it
@@ -312,6 +423,108 @@ impl RunnerErrorRollup {
             .collect();
         (!rendered.is_empty()).then(|| rendered.join(","))
     }
+
+    /// Choose a stable, content-safe group token for a runner termination.
+    /// Higher counts win; equal counts deliberately preserve the fixed enum
+    /// declaration order so the same multiset cannot make grouping flap.
+    pub fn fingerprint_token(&self) -> &'static str {
+        let counts = [
+            (RunnerErrorClass::Eperm, self.eperm),
+            (RunnerErrorClass::Eacces, self.eacces),
+            (RunnerErrorClass::Enospc, self.enospc),
+            (RunnerErrorClass::Ebusy, self.ebusy),
+            (RunnerErrorClass::Network, self.network),
+            (RunnerErrorClass::Auth, self.auth),
+            (RunnerErrorClass::Other, self.other),
+        ];
+        let mut dominant = None;
+        let mut dominant_count = 0;
+        for (class, count) in counts {
+            if count > dominant_count {
+                dominant = Some(class);
+                dominant_count = count;
+            }
+        }
+        dominant
+            .map(RunnerErrorClass::fingerprint_token)
+            .unwrap_or("none")
+    }
+}
+
+/// Saturating per-pass counts of the closed Node operation vocabulary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorOpRollup {
+    rename: u32,
+    unlink: u32,
+    open: u32,
+    mkdir: u32,
+    rmdir: u32,
+    symlink: u32,
+    readlink: u32,
+    stat: u32,
+    lstat: u32,
+    chmod: u32,
+    copyfile: u32,
+    utimes: u32,
+    scandir: u32,
+    read: u32,
+    write: u32,
+    access: u32,
+    other: u32,
+}
+
+impl RunnerErrorOpRollup {
+    fn record(&mut self, message: &str) {
+        let count = match classify_runner_error_op(message) {
+            RunnerErrorOp::Rename => &mut self.rename,
+            RunnerErrorOp::Unlink => &mut self.unlink,
+            RunnerErrorOp::Open => &mut self.open,
+            RunnerErrorOp::Mkdir => &mut self.mkdir,
+            RunnerErrorOp::Rmdir => &mut self.rmdir,
+            RunnerErrorOp::Symlink => &mut self.symlink,
+            RunnerErrorOp::Readlink => &mut self.readlink,
+            RunnerErrorOp::Stat => &mut self.stat,
+            RunnerErrorOp::Lstat => &mut self.lstat,
+            RunnerErrorOp::Chmod => &mut self.chmod,
+            RunnerErrorOp::Copyfile => &mut self.copyfile,
+            RunnerErrorOp::Utimes => &mut self.utimes,
+            RunnerErrorOp::Scandir => &mut self.scandir,
+            RunnerErrorOp::Read => &mut self.read,
+            RunnerErrorOp::Write => &mut self.write,
+            RunnerErrorOp::Access => &mut self.access,
+            RunnerErrorOp::Other => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// Render only fixed operation names and decimal counts for a Sentry tag.
+    pub fn tag_value(&self) -> Option<String> {
+        let counts = [
+            (RunnerErrorOp::Rename, self.rename),
+            (RunnerErrorOp::Unlink, self.unlink),
+            (RunnerErrorOp::Open, self.open),
+            (RunnerErrorOp::Mkdir, self.mkdir),
+            (RunnerErrorOp::Rmdir, self.rmdir),
+            (RunnerErrorOp::Symlink, self.symlink),
+            (RunnerErrorOp::Readlink, self.readlink),
+            (RunnerErrorOp::Stat, self.stat),
+            (RunnerErrorOp::Lstat, self.lstat),
+            (RunnerErrorOp::Chmod, self.chmod),
+            (RunnerErrorOp::Copyfile, self.copyfile),
+            (RunnerErrorOp::Utimes, self.utimes),
+            (RunnerErrorOp::Scandir, self.scandir),
+            (RunnerErrorOp::Read, self.read),
+            (RunnerErrorOp::Write, self.write),
+            (RunnerErrorOp::Access, self.access),
+            (RunnerErrorOp::Other, self.other),
+        ];
+        let rendered: Vec<_> = counts
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(operation, count)| format!("{}:{count}", operation.as_str()))
+            .collect();
+        (!rendered.is_empty()).then(|| rendered.join(","))
+    }
 }
 
 /// A successful runner exit normally needs a synthetic AllComplete when the
@@ -331,6 +544,12 @@ pub fn should_synthesize_all_complete(
 /// or scheduled sync is already mid-run — not a failure, so the menubar must
 /// never escalate it to a Sentry alert. See `should_alert_on_nonzero_exit`.
 pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
+
+/// Exit code returned by hq-cloud's `TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`
+/// retry contract. hq-cloud uses it at the auth-refresh return site, both
+/// discovery return sites, and the fanout tail; the desktop must end the
+/// current UI run without escalating a self-healing retry to Sentry.
+pub const RUNNER_TRANSIENT_RETRY_EXIT: i32 = 75;
 
 /// POSIX SIGTERM. When the runner exits killed by this signal it was OUR
 /// cancellation: `cancel_process_impl` sends SIGTERM (escalating to SIGKILL
@@ -752,11 +971,11 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
         || is_expected_acl_scope_skip(&err.message))
 }
 
-/// Pure policy: should a *non-zero* runner exit raise a Sentry alert?
+/// Pure policy: how should a *non-zero* runner exit finish?
 ///
 /// Extracted from the `ProcessEvent::Exit` handler so the decision is
-/// unit-testable without a live `AppHandle`. Returns `false` (suppress) for the
-/// non-actionable exits this issue was drowning in, `true` (alert) otherwise:
+/// unit-testable without a live `AppHandle`. It preserves the existing
+/// alert-versus-suppression semantics while distinguishing terminal UI effects:
 ///
 ///   - exit 17 (`OPERATION_LOCKED`): another sync holds the lock — a normal
 ///     concurrent-sync race, never a failure.
@@ -766,6 +985,9 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 ///   - a Node-too-old startup crash (`saw_node_too_old`): the runner could not
 ///     start under the user's Node version, so this is an environment fault
 ///     surfaced to the UI rather than an alertable product defect.
+///   - exit 75 (`TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`): the runner reports
+///     a retryable network outcome, so the current UI run must end without a
+///     capture.
 ///
 /// An *unexplained* non-zero exit — no error event seen at all, e.g. the runner
 /// panicked or was OOM-killed before emitting protocol — still alerts,
@@ -778,6 +1000,53 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 /// and Windows fault statuses stay loud — SIGSEGV/SIGBUS/SIGABRT are crashes,
 /// SIGKILL is OOM or a force-quit worth seeing, and only the one documented
 /// Windows status is expected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerExitDisposition {
+    /// Capture the termination and emit the existing runner-error event.
+    Alert,
+    /// Surface the actionable Node upgrade message without a capture.
+    NodeTooOld,
+    /// End the UI run after Windows console teardown without a capture.
+    WindowsConsoleControl,
+    /// End the UI run after hq-cloud's retryable network outcome without a capture.
+    TransientRetry,
+    /// Log a fully explained non-zero exit without an additional UI event.
+    Ignore,
+}
+
+/// Classify the effects a non-zero runner exit should produce.
+///
+/// This is the sole exit-policy seam: callers that need a boolean must project
+/// from it rather than repeating code, signal, or run-total conditions. Node
+/// remediation intentionally outranks console-control and generic suppression,
+/// preserving the manual-sync dispatch ordering that existed before this
+/// classifier was introduced.
+pub fn classify_runner_exit_disposition(
+    code: Option<i32>,
+    signal: Option<i32>,
+    saw_error: bool,
+    saw_alertable_error: bool,
+    saw_node_too_old: bool,
+) -> RunnerExitDisposition {
+    if saw_node_too_old {
+        return RunnerExitDisposition::NodeTooOld;
+    }
+    if is_windows_console_control_exit(code, signal) {
+        return RunnerExitDisposition::WindowsConsoleControl;
+    }
+    if code == Some(RUNNER_TRANSIENT_RETRY_EXIT) {
+        return RunnerExitDisposition::TransientRetry;
+    }
+    if signal == Some(SIGTERM_SIGNAL)
+        || code == Some(RUNNER_OPERATION_LOCKED_EXIT)
+        || (saw_error && !saw_alertable_error)
+    {
+        return RunnerExitDisposition::Ignore;
+    }
+    RunnerExitDisposition::Alert
+}
+
+/// Boolean compatibility projection for existing capture seams.
 pub fn should_alert_on_nonzero_exit(
     code: Option<i32>,
     signal: Option<i32>,
@@ -785,19 +1054,16 @@ pub fn should_alert_on_nonzero_exit(
     saw_alertable_error: bool,
     saw_node_too_old: bool,
 ) -> bool {
-    if signal == Some(SIGTERM_SIGNAL) || is_windows_console_control_exit(code, signal) {
-        return false;
-    }
-    if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
-        return false;
-    }
-    if saw_node_too_old {
-        return false;
-    }
-    if saw_error && !saw_alertable_error {
-        return false;
-    }
-    true
+    matches!(
+        classify_runner_exit_disposition(
+            code,
+            signal,
+            saw_error,
+            saw_alertable_error,
+            saw_node_too_old,
+        ),
+        RunnerExitDisposition::Alert
+    )
 }
 
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
@@ -1045,6 +1311,120 @@ mod tests {
         assert!(!tag.contains(path));
         assert!(!tag.contains("hq-tmp-a1b2"));
         assert!(!tag.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn runner_error_rollup_fingerprint_token_is_dominant_class_and_permutation_stable() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let records = [
+            (
+                "personal",
+                format!(
+                    "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+                ),
+            ),
+            (
+                "health",
+                format!("Unauthorized: cognito token rejected, open '{private_path}'"),
+            ),
+            (
+                "personal",
+                format!(
+                    "EPERM: operation not permitted, rename '{private_path}.hq-tmp-c3d4' -> '{private_path}'"
+                ),
+            ),
+            (
+                "health",
+                format!("Unauthorized: cognito token rejected, open '{private_path}'"),
+            ),
+        ];
+
+        let mut first = RunTotals::default();
+        for (company, message) in &records {
+            first.record_error(&make_company_error(Some(company), private_path, message));
+        }
+
+        let mut permuted = RunTotals::default();
+        for (company, message) in records.iter().rev() {
+            permuted.record_error(&make_company_error(Some(company), private_path, message));
+        }
+
+        assert_eq!(first.runner_error_rollup.fingerprint_token(), "eperm");
+        assert_eq!(
+            permuted.runner_error_rollup.fingerprint_token(),
+            "eperm",
+            "ties must use the fixed RunnerErrorClass declaration order"
+        );
+        assert_eq!(
+            first.runner_error_ops.tag_value().as_deref(),
+            Some("rename:2,open:2")
+        );
+        assert_eq!(
+            permuted.runner_error_ops.tag_value(),
+            first.runner_error_ops.tag_value()
+        );
+        assert_eq!(first.runner_error_company_count(), 2);
+        assert_eq!(permuted.runner_error_company_count(), 2);
+        assert_eq!(
+            RunTotals::default().runner_error_rollup.fingerprint_token(),
+            "none"
+        );
+
+        let mut readlink_einval = RunTotals::default();
+        readlink_einval.record_error(&make_company_error(
+            Some("personal"),
+            private_path,
+            &format!("EINVAL: invalid argument, readlink '{private_path}'"),
+        ));
+        assert_eq!(
+            readlink_einval.runner_error_rollup.fingerprint_token(),
+            "other"
+        );
+        assert_eq!(
+            readlink_einval.runner_error_ops.tag_value().as_deref(),
+            Some("readlink:1")
+        );
+    }
+
+    #[test]
+    fn classify_runner_error_op_is_fixed_vocabulary_and_never_leaks_path_or_message() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let cases = [
+            ("rename", RunnerErrorOp::Rename),
+            ("unlink", RunnerErrorOp::Unlink),
+            ("open", RunnerErrorOp::Open),
+            ("mkdir", RunnerErrorOp::Mkdir),
+            ("rmdir", RunnerErrorOp::Rmdir),
+            ("symlink", RunnerErrorOp::Symlink),
+            ("readlink", RunnerErrorOp::Readlink),
+            ("stat", RunnerErrorOp::Stat),
+            ("lstat", RunnerErrorOp::Lstat),
+            ("chmod", RunnerErrorOp::Chmod),
+            ("copyfile", RunnerErrorOp::Copyfile),
+            ("utimes", RunnerErrorOp::Utimes),
+            ("scandir", RunnerErrorOp::Scandir),
+            ("read", RunnerErrorOp::Read),
+            ("write", RunnerErrorOp::Write),
+            ("access", RunnerErrorOp::Access),
+        ];
+
+        for (operation, expected) in cases {
+            let raw_message =
+                format!("EPERM: operation not permitted, {operation} '{private_path}.hq-tmp-a1b2'");
+            let actual = classify_runner_error_op(&raw_message);
+            assert_eq!(
+                actual, expected,
+                "must recognize Node's {operation} errno shape"
+            );
+            assert_eq!(actual.as_str(), operation);
+            assert!(!actual.as_str().contains(private_path));
+            assert!(!actual.as_str().contains("hq-tmp-a1b2"));
+        }
+
+        assert_eq!(
+            classify_runner_error_op(&format!("custom failure at '{private_path}'")),
+            RunnerErrorOp::Other
+        );
     }
 
     #[test]
@@ -1448,6 +1828,131 @@ mod tests {
     }
 
     // ── should_alert_on_nonzero_exit ─────────────────────────────────────────
+
+    #[test]
+    fn runner_exit_disposition_precedence_is_pinned() {
+        use RunnerExitDisposition::{
+            Alert, Ignore, NodeTooOld, TransientRetry, WindowsConsoleControl,
+        };
+
+        // This matrix preserves the pre-existing manual-sync dispatch ordering
+        // for every non-75 input while pinning the new hq-cloud retry contract.
+        let cases = [
+            (None, Some(SIGTERM_SIGNAL), false, false, false, Ignore),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                false,
+                false,
+                false,
+                WindowsConsoleControl,
+            ),
+            (
+                Some(RUNNER_OPERATION_LOCKED_EXIT),
+                None,
+                true,
+                true,
+                false,
+                Ignore,
+            ),
+            (Some(1), None, false, false, true, NodeTooOld),
+            (None, Some(SIGTERM_SIGNAL), false, false, true, NodeTooOld),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                false,
+                false,
+                true,
+                NodeTooOld,
+            ),
+            (
+                Some(RUNNER_OPERATION_LOCKED_EXIT),
+                None,
+                false,
+                false,
+                true,
+                NodeTooOld,
+            ),
+            (Some(2), None, true, false, false, Ignore),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                true,
+                true,
+                false,
+                TransientRetry,
+            ),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                false,
+                false,
+                false,
+                TransientRetry,
+            ),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                true,
+                true,
+                true,
+                NodeTooOld,
+            ),
+            (Some(2), None, true, true, false, Alert),
+            (Some(1), None, false, false, false, Alert),
+        ];
+
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old, expected) in cases {
+            assert_eq!(
+                classify_runner_exit_disposition(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                expected,
+                "unexpected disposition for code={code:?}, signal={signal:?}, error={saw_error}, alertable={saw_alertable_error}, node_too_old={saw_node_too_old}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_alert_is_only_a_projection_of_runner_exit_disposition() {
+        let cases = [
+            (None, Some(SIGTERM_SIGNAL), false, false, false),
+            (Some(WINDOWS_CONTROL_C_EXIT), None, false, false, false),
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None, true, true, false),
+            (Some(1), None, false, false, true),
+            (Some(2), None, true, false, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, true, true, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, false, false, false),
+            (Some(2), None, true, true, false),
+            (Some(1), None, false, false, false),
+        ];
+
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old) in cases {
+            assert_eq!(
+                should_alert_on_nonzero_exit(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                matches!(
+                    classify_runner_exit_disposition(
+                        code,
+                        signal,
+                        saw_error,
+                        saw_alertable_error,
+                        saw_node_too_old,
+                    ),
+                    RunnerExitDisposition::Alert
+                )
+            );
+        }
+    }
 
     #[test]
     fn test_exit_alert_suppressed_for_operation_locked() {

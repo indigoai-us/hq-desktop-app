@@ -40,9 +40,9 @@ use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, classify_runner_error_class, classify_runner_fatal_class, describe_exit,
-    is_windows_console_control_exit, should_alert_on_nonzero_exit, should_synthesize_all_complete,
-    termination_fingerprint_token, RunnerErrorClass,
+    classify_error_event, classify_runner_error_class, classify_runner_exit_disposition,
+    classify_runner_fatal_class, describe_exit, should_synthesize_all_complete,
+    termination_fingerprint_token, RunnerErrorClass, RunnerExitDisposition,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use tauri::{AppHandle, Emitter};
@@ -173,6 +173,9 @@ fn runner_exit_telemetry_context(
     if let Some(rollup) = totals.runner_error_rollup.tag_value() {
         tags.push(("runner_error_rollup", rollup));
     }
+    if let Some(operations) = totals.runner_error_ops.tag_value() {
+        tags.push(("runner_error_ops", operations));
+    }
     tags.push((
         "runner_fatal_class",
         totals.runner_fatal_class.as_str().to_string(),
@@ -190,6 +193,10 @@ fn runner_exit_telemetry_context(
             "saw_fatal_runner_signature",
             sentry::protocol::Value::Bool(totals.saw_fatal_runner_signature),
         ),
+        (
+            "runner_error_companies",
+            sentry::protocol::Value::Number(totals.runner_error_company_count().into()),
+        ),
     ];
     (tags, extras)
 }
@@ -201,7 +208,13 @@ fn capture_runner_exit_error(
     payload: &SyncErrorEvent,
 ) {
     let termination = termination_fingerprint_token(code, signal);
-    let fingerprint = ["sync", "runner-termination", termination.as_str()];
+    let error_class = totals.runner_error_rollup.fingerprint_token();
+    let fingerprint = [
+        "sync",
+        "runner-termination",
+        termination.as_str(),
+        error_class,
+    ];
     let (tags, extras) = runner_exit_telemetry_context(totals);
     capture_sync_error_with_fingerprint_and_context(
         payload.company.as_deref(),
@@ -217,15 +230,26 @@ fn capture_runner_exit_error(
 /// can receive it before the runner emits any protocol event. Emit the existing
 /// terminal renderer event without capturing to Sentry so both desktop surfaces
 /// leave their active-sync state instead of remaining stuck on "syncing".
-fn terminal_sync_error_for_windows_console_control_exit(
-    code: Option<i32>,
-    signal: Option<i32>,
-) -> Option<SyncErrorEvent> {
-    is_windows_console_control_exit(code, signal).then(|| SyncErrorEvent {
+fn terminal_sync_error_for_windows_console_control() -> SyncErrorEvent {
+    SyncErrorEvent {
         company: None,
         path: "(runner)".to_string(),
         message: "Sync stopped by Windows. Please try Sync Now again.".to_string(),
-    })
+    }
+}
+
+const TRANSIENT_RETRY_SYNC_ERROR_MESSAGE: &str =
+    "Sync could not reach HQ. Please try Sync Now again.";
+
+/// The generic terminal event ends the renderer's active-sync state while the
+/// runner reports its retryable exit contract. It must never include
+/// runner-supplied output, paths, or arguments.
+fn terminal_sync_error_for_transient_retry() -> SyncErrorEvent {
+    SyncErrorEvent {
+        company: None,
+        path: "(runner)".to_string(),
+        message: TRANSIENT_RETRY_SYNC_ERROR_MESSAGE.to_string(),
+    }
 }
 
 /// Capture and surface the terminal runner error exactly once. The renderer
@@ -240,6 +264,101 @@ fn report_runner_exit_error(
 ) -> tauri::Result<()> {
     capture_runner_exit_error(code, signal, totals, &payload);
     app.emit(EVENT_SYNC_ERROR, payload)
+}
+
+/// Effects performed after the shared core classifier decides how a manual
+/// runner exit ends. Keeping effects behind this narrow seam lets the
+/// real-child regression test exercise production routing without a live Tauri
+/// app or Sentry transport.
+trait RunnerExitEffects {
+    fn log(&mut self, message: &str);
+    fn capture_and_emit_exit(
+        &mut self,
+        code: Option<i32>,
+        signal: Option<i32>,
+        totals: &RunTotals,
+        payload: SyncErrorEvent,
+    );
+    fn emit_sync_error(&mut self, payload: SyncErrorEvent);
+}
+
+struct ProductionRunnerExitEffects<'a> {
+    app: &'a AppHandle,
+}
+
+impl RunnerExitEffects for ProductionRunnerExitEffects<'_> {
+    fn log(&mut self, message: &str) {
+        log("sync", message);
+    }
+
+    fn capture_and_emit_exit(
+        &mut self,
+        code: Option<i32>,
+        signal: Option<i32>,
+        totals: &RunTotals,
+        payload: SyncErrorEvent,
+    ) {
+        let _ = report_runner_exit_error(self.app, code, signal, totals, payload);
+    }
+
+    fn emit_sync_error(&mut self, payload: SyncErrorEvent) {
+        let _ = self.app.emit(EVENT_SYNC_ERROR, payload);
+    }
+}
+
+/// Apply the single core disposition at the manual-sync boundary. The
+/// classifier owns all code/signal/run-total branching; this function owns only
+/// the corresponding capture, terminal-event, and local-log effects.
+fn apply_runner_exit_disposition<E: RunnerExitEffects>(
+    effects: &mut E,
+    disposition: RunnerExitDisposition,
+    code: Option<i32>,
+    signal: Option<i32>,
+    exit_desc: &str,
+    totals: &RunTotals,
+) {
+    match disposition {
+        RunnerExitDisposition::Alert => effects.capture_and_emit_exit(
+            code,
+            signal,
+            totals,
+            SyncErrorEvent {
+                company: None,
+                path: "(runner)".to_string(),
+                message: format!("hq-sync-runner exited {exit_desc}"),
+            },
+        ),
+        RunnerExitDisposition::NodeTooOld => {
+            effects.log(&format!(
+                "runner exited non-zero ({exit_desc}) due to Node too old — surfacing update-Node message, not alerting"
+            ));
+            effects.emit_sync_error(SyncErrorEvent {
+                company: None,
+                path: "(node)".to_string(),
+                message: format!(
+                    "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync. \
+                     Please update Node (https://nodejs.org), then try Sync again."
+                ),
+            });
+        }
+        RunnerExitDisposition::WindowsConsoleControl => {
+            effects.log(&format!(
+                "runner exited non-zero ({exit_desc}) from a Windows console-control event \
+                 — ending Sync Now UI state without alerting"
+            ));
+            effects.emit_sync_error(terminal_sync_error_for_windows_console_control());
+        }
+        RunnerExitDisposition::TransientRetry => {
+            effects.log(&format!(
+                "runner exited non-zero ({exit_desc}) for a transient HQ network retry — ending Sync Now UI state without alerting"
+            ));
+            effects.emit_sync_error(terminal_sync_error_for_transient_retry());
+        }
+        RunnerExitDisposition::Ignore => effects.log(&format!(
+            "runner exited non-zero ({exit_desc}) but fully explained by benign conditions \
+             (cancelled / locked / not-provisioned / network reset) — not alerting"
+        )),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1660,80 +1779,23 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 // the frontend already knows. A non-zero exit means the runner
                 // bailed before emitting a useful protocol stream.
                 if !success {
-                    // Not every non-zero exit is an actionable defect. The
-                    // runner exits 2 whenever ANY error event was emitted mid-
-                    // fanout — including the vault's correct 404 for a not-yet-
-                    // provisioned company, transient network resets the next
-                    // cycle recovers from, and expected per-file ACL-scope skips
-                    // (403 SCOPE_EXCEEDS_PARENT) — and exit 17 when another sync
-                    // already holds the lock. Those flooded this Sentry issue
-                    // with un-actionable noise. Consult the run's error
-                    // classification (accumulated from `error` events on EITHER
-                    // channel — stdout via `handle_sync_line`, stderr via the
-                    // arm above) and only capture a genuine defect. Every error
-                    // event + stderr breadcrumb was already surfaced to the UI
-                    // and the local sync log, so suppression loses no
-                    // diagnostics — only the Sentry alert.
                     let totals_snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    if should_alert_on_nonzero_exit(
+                    let disposition = classify_runner_exit_disposition(
                         code,
                         signal,
                         totals_snapshot.saw_error,
                         totals_snapshot.saw_alertable_error,
                         totals_snapshot.saw_node_too_old,
-                    ) {
-                        let _ = report_runner_exit_error(
-                            &app_bg,
-                            code,
-                            signal,
-                            &totals_snapshot,
-                            crate::events::SyncErrorEvent {
-                                company: None,
-                                path: "(runner)".to_string(),
-                                message: format!("hq-sync-runner exited {}", exit_desc),
-                            },
-                        );
-                    } else if totals_snapshot.saw_node_too_old {
-                        log(
-                            "sync",
-                            &format!(
-                                "runner exited non-zero ({}) due to Node too old — surfacing update-Node message, not alerting",
-                                exit_desc
-                            ),
-                        );
-                        let _ = app_bg.emit(
-                            EVENT_SYNC_ERROR,
-                            crate::events::SyncErrorEvent {
-                                company: None,
-                                path: "(node)".to_string(),
-                                message: format!(
-                                    "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync. \
-                                     Please update Node (https://nodejs.org), then try Sync again."
-                                ),
-                            },
-                        );
-                    } else if let Some(payload) =
-                        terminal_sync_error_for_windows_console_control_exit(code, signal)
-                    {
-                        log(
-                            "sync",
-                            &format!(
-                                "runner exited non-zero ({}) from a Windows console-control event \
-                                 — ending Sync Now UI state without alerting",
-                                exit_desc
-                            ),
-                        );
-                        let _ = app_bg.emit(EVENT_SYNC_ERROR, payload);
-                    } else {
-                        log(
-                            "sync",
-                            &format!(
-                                "runner exited non-zero ({}) but fully explained by benign/transient conditions \
-                                 (locked / not-provisioned / network reset) — not alerting",
-                                exit_desc
-                            ),
-                        );
-                    }
+                    );
+                    let mut effects = ProductionRunnerExitEffects { app: &app_bg };
+                    apply_runner_exit_disposition(
+                        &mut effects,
+                        disposition,
+                        code,
+                        signal,
+                        &exit_desc,
+                        &totals_snapshot,
+                    );
                 } else {
                     // Successful exit but no AllComplete observed (e.g.
                     // runner bailed on setup-needed for a brand-new account
@@ -2338,26 +2400,153 @@ mod tests {
     }
 
     #[test]
-    fn windows_console_control_exit_ends_manual_sync_without_sentry_capture() {
-        let event = terminal_sync_error_for_windows_console_control_exit(Some(-1073741510), None)
-            .expect("STATUS_CONTROL_C_EXIT needs a terminal renderer event");
+    fn windows_console_control_disposition_ends_manual_sync_without_sentry_capture() {
+        let event = terminal_sync_error_for_windows_console_control();
         assert_eq!(event.company, None);
         assert_eq!(event.path, "(runner)");
         assert_eq!(
             event.message,
             "Sync stopped by Windows. Please try Sync Now again."
         );
+    }
 
-        for code in [-1073741509, -1073741819, -1073741571, 0, 1, 2, 17, 126, 127] {
+    #[derive(Default)]
+    struct RecordingRunnerExitEffects {
+        logs: Vec<String>,
+        captures: Vec<SyncErrorEvent>,
+        terminal_events: Vec<SyncErrorEvent>,
+    }
+
+    impl RunnerExitEffects for RecordingRunnerExitEffects {
+        fn log(&mut self, message: &str) {
+            self.logs.push(message.to_string());
+        }
+
+        fn capture_and_emit_exit(
+            &mut self,
+            _code: Option<i32>,
+            _signal: Option<i32>,
+            _totals: &RunTotals,
+            payload: SyncErrorEvent,
+        ) {
+            self.captures.push(payload.clone());
+            self.terminal_events.push(payload);
+        }
+
+        fn emit_sync_error(&mut self, payload: SyncErrorEvent) {
+            self.terminal_events.push(payload);
+        }
+    }
+
+    fn run_real_transient_retry_runner() -> (RunTotals, (Option<i32>, Option<i32>, bool)) {
+        #[cfg(unix)]
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                concat!(
+                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic one\"}' >&2; ",
+                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic two\"}' >&2; ",
+                    "printf '%s\\n' '{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic three\"}' >&2; ",
+                    "exit 75"
+                )
+                .to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        #[cfg(windows)]
+        let spawn = SpawnArgs {
+            cmd: "powershell.exe".to_string(),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                concat!(
+                    "[Console]::Error.WriteLine('{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic one\"}'); ",
+                    "[Console]::Error.WriteLine('{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic two\"}'); ",
+                    "[Console]::Error.WriteLine('{\"type\":\"error\",\"diagnostic\":true,\"path\":\"(runner)\",\"message\":\"diagnostic three\"}'); ",
+                    "exit 75"
+                )
+                .to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let mut terminal = None;
+
+        run_process_impl(
+            "manual-runner-transient-retry",
+            &spawn,
+            |event| match event {
+                ProcessEvent::Stderr(line) => {
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) => {}
+            },
+        )
+        .expect("real fake runner should run");
+
+        let totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let terminal = terminal.expect("real child must emit its terminal event");
+        (totals, terminal)
+    }
+
+    #[test]
+    fn real_child_exit_75_uses_the_no_capture_transient_retry_effect_path() {
+        let (totals, (code, signal, success)) = run_real_transient_retry_runner();
+        assert_eq!(code, Some(75));
+        assert_eq!(signal, None);
+        assert!(!success);
+        assert!(totals.saw_error);
+        assert!(totals.saw_alertable_error);
+        assert_eq!(
+            totals.runner_error_rollup.tag_value().as_deref(),
+            Some("OTHER:3")
+        );
+
+        let disposition = classify_runner_exit_disposition(
+            code,
+            signal,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old,
+        );
+        assert_eq!(disposition, RunnerExitDisposition::TransientRetry);
+
+        let mut effects = RecordingRunnerExitEffects::default();
+        apply_runner_exit_disposition(
+            &mut effects,
+            disposition,
+            code,
+            signal,
+            &describe_exit(code, signal),
+            &totals,
+        );
+
+        assert!(
+            effects.captures.is_empty(),
+            "exit 75 must not capture to Sentry"
+        );
+        assert_eq!(effects.terminal_events.len(), 1);
+        assert_eq!(effects.terminal_events[0].company, None);
+        assert_eq!(effects.terminal_events[0].path, "(runner)");
+        assert_eq!(
+            effects.terminal_events[0].message,
+            TRANSIENT_RETRY_SYNC_ERROR_MESSAGE
+        );
+        let recorded = format!("{:?}{:?}", effects.logs, effects.terminal_events);
+        for runner_supplied in ["diagnostic one", "diagnostic two", "diagnostic three"] {
             assert!(
-                terminal_sync_error_for_windows_console_control_exit(Some(code), None).is_none(),
-                "only STATUS_CONTROL_C_EXIT may follow the terminal no-capture path: {code}"
+                !recorded.contains(runner_supplied),
+                "transient retry effect must not copy runner content: {runner_supplied}"
             );
         }
-        assert!(
-            terminal_sync_error_for_windows_console_control_exit(Some(-1073741510), Some(15))
-                .is_none()
-        );
     }
 
     #[test]
@@ -2392,7 +2581,7 @@ mod tests {
             }
 
             let totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            assert!(should_alert_on_nonzero_exit(
+            assert!(hq_desktop_core::sync_outcome::should_alert_on_nonzero_exit(
                 Some(2),
                 None,
                 totals.saw_error,
@@ -2427,7 +2616,12 @@ mod tests {
         );
         let captured_serialized =
             serde_json::to_string(&captured).expect("serialize captured event");
-        for forbidden in ["secret-plan.md", "operation not permitted", "hq-tmp"] {
+        for forbidden in [
+            "secret-plan.md",
+            "operation not permitted",
+            "hq-tmp",
+            "personal",
+        ] {
             assert!(!captured_serialized.contains(forbidden));
         }
 
@@ -2446,6 +2640,11 @@ mod tests {
             ]
         );
         assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:2");
+        assert_eq!(scrubbed.tags["runner_error_ops"], "rename:2");
+        assert_eq!(
+            scrubbed.extra["runner_error_companies"],
+            sentry::protocol::Value::Number(1.into())
+        );
         assert_eq!(
             scrubbed.extra["saw_alertable_error"],
             sentry::protocol::Value::Bool(true)
@@ -2460,11 +2659,68 @@ mod tests {
         );
         assert_eq!(
             scrubbed.fingerprint,
-            vec!["sync", "runner-termination", "exit:2"]
+            vec!["sync", "runner-termination", "exit:2", "eperm"]
         );
-        for forbidden in ["secret-plan.md", "operation not permitted", "hq-tmp"] {
+        for forbidden in [
+            "secret-plan.md",
+            "operation not permitted",
+            "hq-tmp",
+            "personal",
+        ] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn exit_two_captures_are_grouped_by_runner_error_class_not_exit_code_alone() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let mut eperm_totals = RunTotals::default();
+        eperm_totals.record_error(&SyncErrorEvent {
+            company: Some("personal".to_string()),
+            path: private_path.to_string(),
+            message: format!(
+                "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+            ),
+        });
+        let mut auth_totals = RunTotals::default();
+        auth_totals.record_error(&SyncErrorEvent {
+            company: Some("health".to_string()),
+            path: private_path.to_string(),
+            message: "Unauthorized: cognito token rejected".to_string(),
+        });
+        let no_error_totals = RunTotals::default();
+        assert!(hq_desktop_core::sync_outcome::should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            no_error_totals.saw_error,
+            no_error_totals.saw_alertable_error,
+            no_error_totals.saw_node_too_old,
+        ));
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+
+        let captures = sentry::test::with_captured_events(|| {
+            capture_runner_exit_error(Some(2), None, &eperm_totals, &payload);
+            capture_runner_exit_error(Some(2), None, &auth_totals, &payload);
+            capture_runner_exit_error(Some(2), None, &no_error_totals, &payload);
+        });
+
+        assert_eq!(captures.len(), 3);
+        let fingerprints = captures
+            .into_iter()
+            .map(|event| event.fingerprint)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fingerprints,
+            vec![
+                vec!["sync", "runner-termination", "exit:2", "eperm"],
+                vec!["sync", "runner-termination", "exit:2", "auth"],
+                vec!["sync", "runner-termination", "exit:2", "none"],
+            ]
+        );
     }
 
     #[test]
@@ -2502,7 +2758,12 @@ mod tests {
         assert_eq!(event.tags["runner_fatal_class"], "libuv_assert");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "runner-termination", "windows:fault:0xC0000409"]
+            vec![
+                "sync",
+                "runner-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
         );
         assert!(!serialized.contains(private_path));
         assert!(!serialized.contains("UV_HANDLE_CLOSING"));
