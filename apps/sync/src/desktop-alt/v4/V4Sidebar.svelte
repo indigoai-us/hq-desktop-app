@@ -199,6 +199,24 @@
   /** Personal keeps a quiet solid grey tile with a person glyph. */
   const PERSONAL_TILE = '#b0b0b5';
 
+  /* "Synced 12m ago" per workspace, from the source workspace list. */
+  const lastSyncedBySlug = $derived(
+    new Map((companies ?? fetched).map((w) => [w.slug, w.lastSyncedAt ?? null])),
+  );
+
+  function syncedLabel(slug: string): string | null {
+    const iso = lastSyncedBySlug.get(slug);
+    if (!iso) return null;
+    const ms = Date.now() - new Date(iso).getTime();
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    const mins = Math.floor(ms / 60_000);
+    if (mins < 1) return 'Synced just now';
+    if (mins < 60) return `Synced ${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `Synced ${hours}h ago`;
+    return `Synced ${Math.floor(hours / 24)}d ago`;
+  }
+
   function workspaceInitials(label: string): string {
     const words = label.trim().split(/\s+/).filter(Boolean);
     if (words.length === 0) return '?';
@@ -434,7 +452,7 @@
                 class={`ws-status-dot ${row.cloudActivated ? 'ok' : 'idle'}`}
                 aria-hidden="true"
               ></span>
-              {row.cloudActivated ? 'Connected' : 'Local'}
+              {row.cloudActivated ? (syncedLabel(row.slug) ?? 'Connected') : 'Local'}
             </span>
           </span>
           {#if row.pendingInvite}
