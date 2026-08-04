@@ -1247,12 +1247,12 @@
 
   .ac-cell {
     display: grid;
-    grid-template-columns: minmax(36px, 56px) minmax(28px, auto);
+    grid-template-columns: 56px auto;
     justify-content: end;
-    justify-items: end;
     align-items: center;
     gap: 8px;
     color: var(--v4-text-3);
+    text-align: right;
     font-size: var(--type-metadata, var(--text-micro));
     font-weight: 400;
     line-height: 1.2;

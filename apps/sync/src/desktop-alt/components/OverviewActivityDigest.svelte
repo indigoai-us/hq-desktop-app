@@ -285,7 +285,7 @@
     align-items: center;
     gap: 10px;
     min-height: 44px;
-    padding: 7px 0;
+    padding: 10px 0;
     border-bottom: 1px solid var(--v4-rowline);
   }
 

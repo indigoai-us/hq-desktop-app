@@ -85,7 +85,7 @@
 
 <style>
   .v4-card {
-    padding: 12px 0;
+    padding: 10px 0;
     border: 0;
     border-top: 1px solid var(--v4-rowline);
     border-radius: 0;

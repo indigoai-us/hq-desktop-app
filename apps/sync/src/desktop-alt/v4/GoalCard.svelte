@@ -101,7 +101,7 @@
     min-width: 0;
     flex-direction: column;
     gap: 8px;
-    padding: 10px 0 12px;
+    padding: 10px 0;
     border: 0;
     border-bottom: 1px solid var(--v4-rowline);
     border-radius: 0;
