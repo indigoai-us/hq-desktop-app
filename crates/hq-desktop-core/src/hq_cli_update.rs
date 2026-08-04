@@ -3031,6 +3031,46 @@ mod tests {
     }
 
     #[test]
+    fn post_install_version_rollover_starts_and_closes_a_new_episode() {
+        let latest = "5.84.0";
+        let old_marker = Some("5.83.0");
+        let first_episode_blocked = non_convergent_episode_blocked(old_marker, latest);
+        assert!(!first_episode_blocked);
+
+        let first = decide_post_install(
+            "/Users/t/Library/pnpm/hq",
+            "/Users/t/Library/pnpm/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            latest,
+            None,
+            "/opt/homebrew/bin/npm",
+            first_episode_blocked,
+        );
+        assert_eq!(first.record_non_convergent.as_deref(), Some(latest));
+        assert!(first.capture.is_some());
+        assert!(first.capture_requires_durable_record);
+
+        let durable_marker = first.record_non_convergent.as_deref();
+        let repeat_episode_blocked = non_convergent_episode_blocked(durable_marker, latest);
+        assert!(repeat_episode_blocked);
+
+        let repeat = decide_post_install(
+            "/Users/t/Library/pnpm/hq",
+            "/Users/t/Library/pnpm/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            latest,
+            None,
+            "/opt/homebrew/bin/npm",
+            repeat_episode_blocked,
+        );
+        assert!(repeat.record_non_convergent.is_none());
+        assert!(repeat.capture.is_none());
+        assert!(repeat.capture_requires_durable_record);
+    }
+
+    #[test]
     fn post_install_first_foreign_managed_episode_requires_a_durable_record() {
         let outcome = decide_post_install(
             "/Users/t/.asdf/shims/hq",
