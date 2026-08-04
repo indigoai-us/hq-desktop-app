@@ -3429,6 +3429,8 @@ mod tests {
             broken_reason: broken_reason.map(str::to_string),
             invited_by: None,
             invited_at: None,
+            branding_enabled: false,
+            brand: None,
         }
     }
 
@@ -3942,6 +3944,8 @@ mod tests {
                 broken_reason: None,
                 invited_by: None,
                 invited_at: None,
+            branding_enabled: false,
+            brand: None,
             }
         }
 

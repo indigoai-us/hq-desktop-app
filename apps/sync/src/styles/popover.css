@@ -96,6 +96,14 @@ textarea,
   --switch-off: rgba(120, 120, 120, 0.28);
   --switch-on: #34c759;
 
+  /* Brand accent layer (US-005). Inactive until html[data-branded='true'].
+     Status/notice colors and text hierarchy stay reserved; only primary CTA,
+     progress fill, focus, and active toggle pick up the tenant accent. */
+  --popover-brand-accent: transparent;
+  --popover-brand-accent-soft: transparent;
+  --popover-brand-accent-hover: transparent;
+  --popover-brand-on-accent: #ffffff;
+
   /* ---- Type scale ---------------------------------------------------- */
   /* Match the desktop app: one body size and one display size. Hierarchy is
      carried by weight, uppercase/tracking, mono, and text color. */
@@ -121,6 +129,23 @@ textarea,
   --radius-md: 6px; /* grouped buttons and larger controls */
   --radius-lg: 6px; /* genuine compact object cards */
   --radius-xl: 8px; /* floating popover windows */
+}
+
+/* Branded popover chrome — remaps primary CTA / progress / toggles only. */
+:root[data-branded='true'] {
+  --popover-primary: var(--popover-brand-accent);
+  --popover-primary-hover: var(--popover-brand-accent-hover);
+  --popover-primary-active: var(--popover-brand-accent-hover);
+  --popover-primary-text: var(--popover-brand-on-accent);
+  --popover-progress-fill: var(--popover-brand-accent);
+}
+
+:root[data-branded='true'] :focus-visible {
+  outline-color: var(--popover-brand-accent);
+}
+
+:root[data-branded='true'] a {
+  color: var(--popover-brand-accent);
 }
 
 @media (prefers-reduced-transparency: reduce) {

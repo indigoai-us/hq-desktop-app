@@ -297,6 +297,16 @@ where
         let role = membership_for_slug.and_then(|m| m.role.clone());
         let invited_by = membership_for_slug.and_then(|m| m.invited_by.clone());
         let invited_at = membership_for_slug.and_then(|m| m.invited_at.clone());
+        // White-label brand rides the membership enrichment (US-005). Absent
+        // entitlement or brand → HQ defaults; never an error.
+        let branding_enabled = membership_for_slug
+            .map(|m| m.branding_enabled)
+            .unwrap_or(false);
+        let brand = if branding_enabled {
+            membership_for_slug.and_then(|m| m.brand.clone())
+        } else {
+            None
+        };
 
         let (state, cloud_uid, bucket_name, broken_reason) = match (&entry.cloud_uid, cloud_entity_for_slug, cloud_reachable) {
             // Manifest says connected, cloud confirms (UIDs match) → Synced.
@@ -366,6 +376,8 @@ where
                 broken_reason,
                 invited_by,
                 invited_at,
+                branding_enabled,
+                brand,
             },
         );
     }
@@ -399,6 +411,12 @@ where
                     .and_then(|e| e.display_name.clone())
             })
             .unwrap_or_else(|| humanize_slug(&entity.slug));
+        let branding_enabled = mem.branding_enabled;
+        let brand = if branding_enabled {
+            mem.brand.clone()
+        } else {
+            None
+        };
         by_slug.insert(
             entity.slug.clone(),
             Workspace {
@@ -417,6 +435,8 @@ where
                 broken_reason: None,
                 invited_by: mem.invited_by.clone(),
                 invited_at: mem.invited_at.clone(),
+                branding_enabled,
+                brand,
             },
         );
     }
@@ -454,6 +474,9 @@ where
         broken_reason: None,
         invited_by: None,
         invited_at: None,
+        // Personal vault never carries tenant branding.
+        branding_enabled: false,
+        brand: None,
     });
 
     ordered.extend(by_slug.into_values());
@@ -538,6 +561,9 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                 company_name: None,
                 invited_by: inv.invited_by.clone(),
                 invited_at: inv.invited_at.clone(),
+                // Synthesized pending-invite rows never carry branding.
+                branding_enabled: false,
+                brand: None,
             });
         }
 
@@ -971,6 +997,8 @@ mod tests {
             company_name: None,
             invited_by: Some(person_uid.into()),
             invited_at: Some("2026-03-01T00:00:00Z".into()),
+            branding_enabled: false,
+            brand: None,
         }
     }
 

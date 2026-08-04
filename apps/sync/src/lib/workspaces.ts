@@ -1,3 +1,5 @@
+import type { CompanyBrandSettings } from './brand';
+
 // Mirrors src-tauri/src/commands/workspaces.rs::Workspace.
 // Returned by the Rust `list_syncable_workspaces` Tauri command and rendered
 // by the menubar's WorkspaceList component.
@@ -30,6 +32,16 @@ export interface Workspace {
   // NOT CONNECTED invite row from them.
   invitedBy: string | null;
   invitedAt: string | null;
+  /**
+   * Enterprise white-label entitlement (hq-pro brandingEnabled). Rides the
+   * existing membership enrichment on list_syncable_workspaces. Absent/false
+   * → HQ defaults (safe either deploy order). Optional for older caches.
+   */
+  brandingEnabled?: boolean;
+  /**
+   * Tenant brand record when entitled. Absent when not entitled or unset.
+   */
+  brand?: CompanyBrandSettings | null;
 }
 
 export function isWorkspaceSyncEnabled(

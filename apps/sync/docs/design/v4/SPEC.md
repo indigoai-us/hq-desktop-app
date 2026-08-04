@@ -49,7 +49,19 @@ The desktop window is three products in one quiet macOS shell:
 --v4-active-row:     rgba(255,255,255,0.08);  /* sidebar/list selection */
 ```
 
-Card borders at ~0.3 alpha of warn/error are allowed only on needs-attention / error cards (e.g. `rgba(254,188,46,0.3)`). Diff highlights in conflict resolution use 0.07-alpha green/amber fills. **No purple anywhere** (hard Indigo policy).
+Card borders at ~0.3 alpha of warn/error are allowed only on needs-attention / error cards (e.g. `rgba(254,188,46,0.3)`). Diff highlights in conflict resolution use 0.07-alpha green/amber fills. **No purple anywhere** in the unbranded app (hard Indigo policy).
+
+### Branded-tenant carve-out (US-005 white-label branding)
+
+When an Enterprise-entitled company carries a brand record (`brandingEnabled` + `CompanyBrandSettings` with optional `logoUrlLight` / `logoUrlDark` / `accentColor`), the desktop may apply a **tenant accent** via the `--v4-brand-*` / `--popover-brand-*` layer (`html[data-branded='true']`). That accent recolors chrome broadly — at minimum active-tab/selection tint and primary CTA, and tastefully focus rings, links, active sidebar rows, and toggles — in both light and dark appearance.
+
+**Reserved (must not be overridden by branding):**
+
+- Status colors: `--v4-ok`, `--v4-warn`, `--v4-error`, `--v4-unread`, `--v4-idle`
+- Text grays: `--v4-text-1`, `--v4-text-2`, `--v4-text-3`
+- Surfaces: `--v4-ground`, `--v4-raised`, `--v4-inset`, hairlines
+
+Absent brand record or `brandingEnabled` → HQ defaults (status-only color language). Do not treat a branded accent as a policy violation or "fix" it back to monochrome.
 
 ## 3. Typography
 

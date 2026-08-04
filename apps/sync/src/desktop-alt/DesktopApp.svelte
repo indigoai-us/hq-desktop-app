@@ -18,6 +18,13 @@
     type Workspace,
     type WorkspacesResult,
   } from '../lib/workspaces';
+  import {
+    applyBrandToDocument,
+    cacheLogoAssets,
+    readBrandCache,
+    syncBrandFromWorkspaces,
+    type CachedBrand,
+  } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
@@ -163,6 +170,16 @@
 
   const cachedWorkspaces = readCachedWorkspaces();
   const cachedCompanies = getDesktopCompanies(cachedWorkspaces);
+
+  // White-label brand (US-005) — seed from cache for offline, refresh on workspace load.
+  let brand = $state<CachedBrand | null>(null);
+  {
+    const seed = readBrandCache();
+    if (seed) {
+      brand = seed;
+      applyBrandToDocument(seed);
+    }
+  }
 
   // The persisted last-visited slug, frozen at startup: the auto-landing must
   // keep honoring the value from the PREVIOUS session even while this session's
@@ -764,6 +781,23 @@
       // is what blanked/froze the desktop on focus/sync.
       // Launch owns cheap workspace/sidebar metadata only. Company resources
       // are loaded lazily by the selected route and shared across its consumers.
+      // Brand rides membership fields on workspaces — no new poll/endpoint (US-005).
+      {
+        const activeSlug =
+          route.kind === 'company' || route.kind === 'files' ? route.slug : undefined;
+        const nextBrand = syncBrandFromWorkspaces(nextWorkspaces, {
+          cloudReachable,
+          preferSlug: activeSlug,
+        });
+        brand = nextBrand;
+        applyBrandToDocument(nextBrand);
+        if (nextBrand) {
+          void cacheLogoAssets(nextBrand).then((withAssets) => {
+            brand = withAssets;
+            applyBrandToDocument(withAssets);
+          });
+        }
+      }
       startCompanyStore();
       if (nextCompanies.length > 0) queueDesktopRenderAudit();
       // Re-resolve the default landing on the FIRST live workspace load
@@ -793,6 +827,12 @@
       workspaceError =
         sanitizeVisibleIdentifiers(String(err), { companies: workspaces }).trim() ||
         'Workspace status unavailable';
+      // Offline: keep cached branding rather than flashing HQ defaults (US-005).
+      {
+        const cached = readBrandCache();
+        brand = cached;
+        applyBrandToDocument(cached);
+      }
     }
   }
 
@@ -1670,6 +1710,7 @@
           {route}
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
+          {brand}
           {cloudReachable}
           onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
           onnavigate={(next) => navigate(fromV4Route(next))}
