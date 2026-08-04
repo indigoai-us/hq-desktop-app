@@ -150,19 +150,42 @@ pub struct OutpostView {
 /// `origin=outpost` (the emitter already sets it, but we never trust the wire).
 /// A malformed payload yields `Err` so the caller can log + ignore rather than
 /// poisoning the store.
+/// First non-whitespace byte is `[` — i.e. the payload is the bare-array shape.
+fn looks_like_array(payload: &[u8]) -> bool {
+    payload
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'[')
+}
+
 pub fn parse_heartbeat(payload: &[u8]) -> Result<Vec<AgentSession>, String> {
     // Try the bare array first (the documented shape), then the envelope.
-    if let Ok(sessions) = serde_json::from_slice::<Vec<AgentSession>>(payload) {
-        return Ok(stamp_outpost(sessions));
-    }
+    let array_err = match serde_json::from_slice::<Vec<AgentSession>>(payload) {
+        Ok(sessions) => return Ok(stamp_outpost(sessions)),
+        Err(e) => e,
+    };
     #[derive(Deserialize)]
     struct Envelope {
         #[serde(default)]
         sessions: Vec<AgentSession>,
     }
-    let env: Envelope =
-        serde_json::from_slice(payload).map_err(|e| format!("heartbeat parse: {e}"))?;
-    Ok(stamp_outpost(env.sessions))
+    match serde_json::from_slice::<Envelope>(payload) {
+        Ok(env) => Ok(stamp_outpost(env.sessions)),
+        // Report whichever error actually describes this payload. When the
+        // payload IS an array, the envelope attempt only ever says "invalid
+        // type: map, expected a sequence", which names the fallback's
+        // disappointment rather than the real per-field cause. That is how a
+        // null-field contract mismatch stayed unexplained while logging
+        // ~22x/minute: the useful error was thrown away by the fallback.
+        Err(envelope_err) => Err(format!(
+            "heartbeat parse: {}",
+            if looks_like_array(payload) {
+                array_err
+            } else {
+                envelope_err
+            }
+        )),
+    }
 }
 
 pub fn stamp_outpost(sessions: Vec<AgentSession>) -> Vec<AgentSession> {
@@ -370,6 +393,137 @@ mod tests {
     #[test]
     fn parse_heartbeat_rejects_garbage() {
         assert!(parse_heartbeat(b"not json").is_err());
+    }
+
+    // ── nullable wire fields (hq-pro AgentSession contract) ─────────────────
+    //
+    // The publisher (hq-pro `src/outpost/session-heartbeat.ts`) declares cwd,
+    // project, company, model, startedAt and lastActivityAt as `string | null`
+    // — they are genuinely absent when the box cannot resolve a company, sniff
+    // a model, or read a start time. This struct declared them as plain
+    // `String`, so serde rejected the WHOLE batch on the first null: every
+    // session in the heartbeat was dropped and the failure logged ~22x/minute
+    // indefinitely ("invalid type: null, expected a string").
+
+    /// A heartbeat exactly as the publisher emits it when fields are unresolved.
+    fn payload_with_nulls() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!([{
+            "id": "sess-1",
+            "tool": "claude",
+            "origin": "local",
+            "cwd": null,
+            "project": null,
+            "company": null,
+            "model": null,
+            "status": "running",
+            "startedAt": null,
+            "lastActivityAt": null,
+            "source": "outpost-heartbeat"
+        }]))
+        .unwrap()
+    }
+
+    #[test]
+    fn parse_heartbeat_accepts_null_for_producer_nullable_fields() {
+        let sessions = parse_heartbeat(&payload_with_nulls()).expect("nulls must parse");
+        assert_eq!(sessions.len(), 1);
+        let s = &sessions[0];
+        assert_eq!(s.id, "sess-1");
+        assert_eq!(s.origin, AgentOrigin::Outpost);
+        // Null becomes the empty string — the same way the local collectors
+        // already represent an unresolved field (`model: tail.model
+        // .unwrap_or_default()` in sessions/claude.rs).
+        assert_eq!(s.cwd, "");
+        assert_eq!(s.project, "");
+        assert_eq!(s.company, "");
+        assert_eq!(s.model, "");
+        assert_eq!(s.started_at, "");
+        assert_eq!(s.last_activity_at, "");
+    }
+
+    #[test]
+    fn parse_heartbeat_accepts_nulls_inside_the_envelope_shape() {
+        let inner: serde_json::Value =
+            serde_json::from_slice(&payload_with_nulls()).unwrap();
+        let bytes = serde_json::to_vec(&serde_json::json!({ "sessions": inner })).unwrap();
+        let sessions = parse_heartbeat(&bytes).expect("nulls must parse in envelope too");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].company, "");
+    }
+
+    #[test]
+    fn parse_heartbeat_keeps_sibling_sessions_when_one_has_nulls() {
+        // The regression that made this expensive: one unresolved field cost
+        // the entire heartbeat, not just the session it appeared on.
+        let mut batch = serde_json::to_value(vec![outpost_session("good")]).unwrap();
+        let nulls: serde_json::Value =
+            serde_json::from_slice(&payload_with_nulls()).unwrap();
+        batch
+            .as_array_mut()
+            .unwrap()
+            .push(nulls.as_array().unwrap()[0].clone());
+        let bytes = serde_json::to_vec(&batch).unwrap();
+
+        let sessions = parse_heartbeat(&bytes).expect("batch must survive one null-y session");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "good");
+        assert_eq!(sessions[0].company, "indigo");
+        assert_eq!(sessions[1].id, "sess-1");
+    }
+
+    #[test]
+    fn parse_heartbeat_still_rejects_null_in_non_nullable_fields() {
+        // `id`, `tool`, `origin`, `status` and `source` are NOT nullable in the
+        // publisher's contract. Loosening those too would silently swallow a
+        // genuinely malformed heartbeat instead of surfacing it.
+        for field in ["id", "tool", "origin", "status", "source"] {
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&payload_with_nulls()).unwrap();
+            v[0][field] = serde_json::Value::Null;
+            let bytes = serde_json::to_vec(&v).unwrap();
+            assert!(
+                parse_heartbeat(&bytes).is_err(),
+                "null {field} must still be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_heartbeat_reports_the_array_error_for_an_array_payload() {
+        // The envelope fallback always fails an array payload with "invalid
+        // type: map, expected a sequence", which names the fallback's
+        // disappointment rather than the real cause. That is how a null-field
+        // contract mismatch stayed unexplained while logging ~22x/minute.
+        let mut v: serde_json::Value = serde_json::from_slice(&payload_with_nulls()).unwrap();
+        v[0]["company"] = serde_json::json!(42);
+        let bytes = serde_json::to_vec(&v).unwrap();
+
+        let err = parse_heartbeat(&bytes).unwrap_err();
+        assert!(
+            err.contains("invalid type: integer"),
+            "error should name the offending field's type, got: {err}",
+        );
+        assert!(
+            !err.contains("expected a sequence"),
+            "error should not report the envelope fallback's failure, got: {err}",
+        );
+    }
+
+    #[test]
+    fn parse_heartbeat_still_reports_envelope_errors_for_object_payloads() {
+        let bytes = br#"{"sessions": 5}"#;
+        let err = parse_heartbeat(bytes).unwrap_err();
+        assert!(err.contains("heartbeat parse:"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_heartbeat_still_rejects_wrong_types_in_nullable_fields() {
+        // Nullable is not "anything goes" — a number where a string belongs is
+        // still a contract violation worth reporting.
+        let mut v: serde_json::Value = serde_json::from_slice(&payload_with_nulls()).unwrap();
+        v[0]["company"] = serde_json::json!(42);
+        let bytes = serde_json::to_vec(&v).unwrap();
+        assert!(parse_heartbeat(&bytes).is_err());
     }
 
     // ── sessions topic derivation ───────────────────────────────────────────
