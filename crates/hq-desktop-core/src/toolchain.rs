@@ -56,15 +56,25 @@ enum PathState {
 }
 
 /// Use metadata instead of `Path::is_file`/`is_dir`, which turns every I/O
-/// error into `false`. A non-NotFound error makes ownership unknown.
+/// error into `false`. Only a path that is absent both when followed and when
+/// inspected as a link is verified absent; type mismatches, dangling links,
+/// and every non-NotFound error keep ownership unknown.
 fn inspect_path(
     path: &Path,
     accepts: impl FnOnce(&Metadata) -> bool,
 ) -> Result<PathState, &'static str> {
     match std::fs::metadata(path) {
         Ok(metadata) if accepts(&metadata) => Ok(PathState::Present),
-        Ok(_) => Ok(PathState::Absent),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(PathState::Absent),
+        Ok(_) => Err("path-uninspectable"),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => Err("path-uninspectable"),
+                Err(link_error) if link_error.kind() == ErrorKind::NotFound => {
+                    Ok(PathState::Absent)
+                }
+                Err(_) => Err("path-uninspectable"),
+            }
+        }
         Err(_) => Err("path-uninspectable"),
     }
 }
@@ -90,6 +100,12 @@ fn classify_runtime_roots(roots: &[PathBuf]) -> ManagedRuntime {
     let mut missing_npx: Option<PathBuf> = None;
 
     for root in roots {
+        match inspect_path(root, Metadata::is_dir) {
+            Ok(PathState::Present) => {}
+            Ok(PathState::Absent) => continue,
+            Err(reason) => return ManagedRuntime::Unknown { reason },
+        }
+
         let node_dir = paths::managed_node_dir_in(root);
         let node = paths::managed_node_executable_in(root);
         let node_dir_state = match inspect_path(&node_dir, Metadata::is_dir) {
@@ -212,7 +228,12 @@ mod tests {
         std::fs::create_dir_all(node.parent().unwrap()).unwrap();
 
         let state = classify_roots(&[tmp.path().to_path_buf()]);
-        assert_eq!(state, ManagedToolchain::Incomplete { expected_node: node });
+        assert_eq!(
+            state,
+            ManagedToolchain::Incomplete {
+                expected_node: node
+            }
+        );
         assert!(state.missing_node().is_some());
     }
 
@@ -282,6 +303,59 @@ mod tests {
         // be collapsed into the NotProvisioned user-owned state.
         assert_eq!(
             classify_runtime_roots(&[PathBuf::from("/dev/null")]),
+            ManagedRuntime::Unknown {
+                reason: "path-uninspectable",
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_diagnosis_keeps_a_wrong_type_managed_root_unknown() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("toolchain");
+        std::fs::write(&root, b"not a directory").unwrap();
+
+        assert_eq!(
+            classify_runtime_roots(&[root]),
+            ManagedRuntime::Unknown {
+                reason: "path-uninspectable",
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_diagnosis_keeps_a_dangling_managed_root_unknown() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("toolchain");
+        symlink(tmp.path().join("missing-toolchain"), &root).unwrap();
+
+        assert_eq!(
+            classify_runtime_roots(&[root]),
+            ManagedRuntime::Unknown {
+                reason: "path-uninspectable",
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_diagnosis_keeps_a_dangling_managed_node_dir_unknown() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("toolchain");
+        std::fs::create_dir(&root).unwrap();
+        symlink(
+            tmp.path().join("missing-node"),
+            paths::managed_node_dir_in(&root),
+        )
+        .unwrap();
+
+        assert_eq!(
+            classify_runtime_roots(&[root]),
             ManagedRuntime::Unknown {
                 reason: "path-uninspectable",
             }
