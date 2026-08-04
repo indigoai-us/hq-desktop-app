@@ -174,19 +174,24 @@
     return { destroy: () => node.remove() };
   }
 
+  /* Cross-hue pastel pairs — each tile blends two different colors. */
   const TILE_GRADIENTS = [
-    ['#b8a8f0', '#9b8ce8'],
-    ['#f2a9c4', '#e88bb0'],
-    ['#9ec9f5', '#7fb3ee'],
-    ['#93dbc0', '#6fcaa8'],
-    ['#f7c297', '#f0a878'],
-    ['#a9b8f2', '#8a9ce8'],
+    ['#b3a4f0', '#86c5f0'],
+    ['#f5b08e', '#ee8fb6'],
+    ['#8fdcc0', '#7fb9ef'],
+    ['#f4c68b', '#97d6a4'],
+    ['#f09cb0', '#b39cf0'],
+    ['#97d0e8', '#a8e6b8'],
   ] as const;
 
+  /* Assign palette slots by list position so visible workspaces never share
+     a gradient (cycles only past six workspaces). */
+  const tileIndexBySlug = $derived(
+    new Map(model.companies.map((row, index) => [row.slug, index % TILE_GRADIENTS.length])),
+  );
+
   function tileGradient(slug: string): string {
-    let hash = 0;
-    for (const ch of slug) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-    const [from, to] = TILE_GRADIENTS[Math.abs(hash) % TILE_GRADIENTS.length];
+    const [from, to] = TILE_GRADIENTS[tileIndexBySlug.get(slug) ?? 0];
     return `linear-gradient(135deg, ${from}, ${to})`;
   }
 
