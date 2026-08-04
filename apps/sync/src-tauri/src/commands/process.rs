@@ -1042,6 +1042,67 @@ mod registry_exit_order_tests {
         assert!(!is_registered(&handle));
         assert!(!is_cancelled(&handle));
     }
+
+    /// The SIGKILL escalation is a deliberate stop, not a watcher crash.  The
+    /// exit callback is the reporting boundary, so the cancellation record has
+    /// to remain observable there even when the child ignores SIGTERM and is
+    /// eventually killed.
+    #[cfg(unix)]
+    #[test]
+    fn escalation_sigkill_keeps_cancelled_observable_in_exit_callback() {
+        let handle = format!("sigkill-cancel-observable-{}", Uuid::new_v4());
+        pre_register_handle(&handle);
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "trap '' TERM; while :; do sleep 1; done".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let (exit_tx, exit_rx) = mpsc::channel();
+        let runner_handle = handle.clone();
+        let runner = thread::spawn(move || {
+            run_process_impl(&runner_handle, &spawn, move |event| {
+                if let ProcessEvent::Exit { signal, .. } = event {
+                    let observed = (is_registered(&runner_handle), is_cancelled(&runner_handle));
+                    exit_tx
+                        .send((observed, signal))
+                        .expect("test receiver must remain alive");
+                }
+            })
+        });
+
+        let start = std::time::Instant::now();
+        while lookup_pid(&handle).is_none() {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "runner did not register its child within the bounded test window"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            cancel_process_impl(&handle, Duration::from_millis(100)),
+            "the registered child must accept cancellation"
+        );
+        let (observed, signal) = exit_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("the escalation must produce one terminal callback");
+        runner
+            .join()
+            .expect("the process runner thread must not panic")
+            .expect("the killed child must still complete the process runner");
+
+        assert_eq!(signal, Some(Signal::SIGKILL as i32));
+        assert_eq!(
+            observed,
+            (true, true),
+            "the reporting callback must see the deliberately-cancelled generation"
+        );
+        assert!(!is_registered(&handle));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
