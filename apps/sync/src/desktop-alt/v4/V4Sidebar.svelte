@@ -28,7 +28,7 @@
     House,
     Kanban,
     Lightning,
-    UserGear,
+    UserCircle,
     SidebarSimple,
     Target,
     Tray,
@@ -86,7 +86,7 @@
     goals: Target,
     projects: Kanban,
     skills: Lightning,
-    workers: UserGear,
+    workers: UserCircle,
     knowledge: BookOpen,
     team: Users,
   };
@@ -176,22 +176,6 @@
   function portal(node: HTMLElement) {
     document.body.appendChild(node);
     return { destroy: () => node.remove() };
-  }
-
-  const TILE_GRADIENTS = [
-    ['#6366f1', '#8b5cf6'],
-    ['#0ea5e9', '#6366f1'],
-    ['#f59e0b', '#ef4444'],
-    ['#10b981', '#0ea5e9'],
-    ['#ec4899', '#8b5cf6'],
-    ['#475569', '#1e293b'],
-  ] as const;
-
-  function tileGradient(slug: string): string {
-    let hash = 0;
-    for (const ch of slug) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-    const [from, to] = TILE_GRADIENTS[Math.abs(hash) % TILE_GRADIENTS.length];
-    return `linear-gradient(135deg, ${from}, ${to})`;
   }
 
   function workspaceInitials(label: string): string {
@@ -323,7 +307,7 @@
         data-testid="workspace-switcher"
         onclick={toggleSwitcher}
       >
-        <span class="ws-tile" style={`background:${tileGradient(currentRow.slug)}`} aria-hidden="true">
+        <span class="ws-tile" aria-hidden="true">
           {workspaceInitials(currentRow.label)}
         </span>
         <span class="ws-current-name">{currentRow.label}</span>
@@ -420,7 +404,7 @@
           data-testid={`workspace-option-${row.slug}`}
           onclick={() => selectWorkspace(row.slug)}
         >
-          <span class="ws-tile menu" style={`background:${tileGradient(row.slug)}`} aria-hidden="true">
+          <span class="ws-tile menu" aria-hidden="true">
             {workspaceInitials(row.label)}
           </span>
           <span class="ws-menu-copy">
@@ -451,7 +435,7 @@
             data-testid={`workspace-option-${row.slug}`}
             onclick={() => selectWorkspace(row.slug)}
           >
-            <span class="ws-tile menu" style={`background:${tileGradient(row.slug)}`} aria-hidden="true">
+            <span class="ws-tile menu" aria-hidden="true">
               {workspaceInitials(row.label)}
             </span>
             <span class="ws-menu-copy">
@@ -661,7 +645,8 @@
     outline-offset: 2px;
   }
 
-  /* Figma: 40px workspace tile, 8px radius. */
+  /* Figma: 40px workspace tile, 8px radius. Neutral grey monogram until
+     workspaces carry real logos. */
   .ws-tile {
     flex: 0 0 auto;
     display: inline-grid;
@@ -669,6 +654,7 @@
     width: 40px;
     height: 40px;
     border-radius: var(--v4-radius-button);
+    background: linear-gradient(135deg, #a1a1a6, #7d7d82);
     box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
     color: #fff;
     font-size: 15px;
