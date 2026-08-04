@@ -2478,10 +2478,9 @@ mod tests {
         )
         .expect("real fake runner should run");
 
-        (
-            totals.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-            terminal.expect("real child must emit its terminal event"),
-        )
+        let totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let terminal = terminal.expect("real child must emit its terminal event");
+        (totals, terminal)
     }
 
     #[test]
