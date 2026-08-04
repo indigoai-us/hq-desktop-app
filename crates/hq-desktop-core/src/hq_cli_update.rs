@@ -666,8 +666,9 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
 /// user-machine setup failure.
 ///
 /// npm uses `<prefix>/lib/node_modules` on Unix and `<prefix>/node_modules`
-/// on Windows. It can also fail while linking `<prefix>/bin/hq`. Normalize
-/// separators so an event captured on either platform follows the same rule.
+/// on Windows. It can also fail while linking `<prefix>/bin/hq` or one of the
+/// Windows hq shim forms. Normalize separators so an event captured on either
+/// platform follows the same rule.
 pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool {
     let detail = detail.to_ascii_lowercase().replace('\\', "/");
     let is_permission_error = detail.contains("eacces") || detail.contains("permission denied");
@@ -687,6 +688,9 @@ pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool 
         format!("{prefix}/lib/node_modules"),
         format!("{prefix}/node_modules"),
         format!("{prefix}/bin/hq"),
+        format!("{prefix}/hq"),
+        format!("{prefix}/hq.cmd"),
+        format!("{prefix}/hq.ps1"),
     ]
     .iter()
     .any(|target| detail.contains(target))
@@ -780,15 +784,27 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
             .trim_end_matches(['/', '\\'])
             .to_ascii_lowercase()
             .replace('\\', "/");
-        if !prefix.is_empty()
-            && [
+        if !prefix.is_empty() {
+            if [
                 format!("{prefix}/lib/node_modules"),
                 format!("{prefix}/node_modules"),
             ]
             .iter()
             .any(|target| path.contains(target))
-        {
-            return NpmPathShape::SelectedPrefixNodeModules;
+            {
+                return NpmPathShape::SelectedPrefixNodeModules;
+            }
+            if [
+                format!("{prefix}/bin/hq"),
+                format!("{prefix}/hq"),
+                format!("{prefix}/hq.cmd"),
+                format!("{prefix}/hq.ps1"),
+            ]
+            .iter()
+            .any(|target| path == *target)
+            {
+                return NpmPathShape::BinHq;
+            }
         }
     }
 
@@ -925,11 +941,18 @@ fn is_safe_npm_package_name(value: &str) -> bool {
 }
 
 fn npm_lifecycle_failure(detail: &str) -> NpmLifecycleFailure {
-    let failed = detail.lines().any(|line| {
+    // Treat this as a lifecycle failure only when npm supplied both of its
+    // structured signals: a command-failed line and a lifecycle-specific
+    // code. In particular, an OS errno (for example ENOENT or EACCES) that
+    // happens to appear beside build output must stay on the Unexpected path.
+    let npm_code = npm_error_code(detail);
+    let lifecycle_code =
+        npm_code.bytes().all(|byte| byte.is_ascii_digit()) || npm_code == "ELIFECYCLE";
+    let command_failed = detail.lines().any(|line| {
         let line = line.trim().to_ascii_lowercase();
         line.starts_with("npm error command failed") || line.starts_with("npm err! command failed")
     });
-    if !failed {
+    if !(lifecycle_code && command_failed) {
         return NpmLifecycleFailure {
             failed: false,
             package: None,
@@ -956,6 +979,19 @@ fn npm_lifecycle_failure(detail: &str) -> NpmLifecycleFailure {
         failed: true,
         package,
     }
+}
+
+fn is_indigoai_owned_npm_package(package: &str) -> bool {
+    package.starts_with("@indigoai-us/")
+}
+
+fn is_third_party_npm_lifecycle_failure(detail: &str) -> bool {
+    let lifecycle = npm_lifecycle_failure(detail);
+    lifecycle.failed
+        && lifecycle
+            .package
+            .as_deref()
+            .is_some_and(|package| !is_indigoai_owned_npm_package(package))
 }
 
 /// A normalized local-log record for an npm attempt. It deliberately contains
@@ -1043,8 +1079,10 @@ pub fn is_windows_locked_binary_failure(exit_code: Option<i32>, detail: &str) ->
 }
 
 /// Stable classification for a failed npm install. Expected local-machine
-/// failures stay actionable in the UI/local log but must not page Sentry;
-/// unexpected failures are captured with a separate fingerprint.
+/// failures stay actionable in the UI/local log and normally do not page
+/// Sentry. A bin collision that survived npm's forced remedy is the exception:
+/// it stays observable at Warning under its own fingerprint. Third-party
+/// lifecycle failures remain Error-level but have a separate fingerprint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallFailureKind {
     ExpectedPrefixPermission,
@@ -1052,6 +1090,7 @@ pub enum InstallFailureKind {
     ExpectedWindowsLockedBinary,
     ExpectedTransientRegistry,
     ExpectedBinCollision,
+    UnexpectedLifecycle,
     Unexpected,
 }
 
@@ -1091,6 +1130,8 @@ pub fn classify_install_failure_with_final_attempt(
         InstallFailureKind::ExpectedTransientRegistry
     } else if final_attempt_forced && is_npm_bin_collision(detail, prefix) {
         InstallFailureKind::ExpectedBinCollision
+    } else if is_third_party_npm_lifecycle_failure(detail) {
+        InstallFailureKind::UnexpectedLifecycle
     } else {
         InstallFailureKind::Unexpected
     }
@@ -1098,8 +1139,9 @@ pub fn classify_install_failure_with_final_attempt(
 
 impl InstallFailureKind {
     /// A stable grouping key for diagnostics and Sentry. We intentionally keep
-    /// expected local failures separate from actual updater defects; the former
-    /// are not sent to Sentry at all by `report_install_failure`.
+    /// expected local failures separate from actual updater defects; the
+    /// post-force bin-collision exception remains visible at Warning while the
+    /// other expected kinds are not sent by `report_install_failure`.
     pub fn fingerprint_component(self) -> &'static str {
         match self {
             Self::ExpectedPrefixPermission => "expected-prefix-permission",
@@ -1107,6 +1149,7 @@ impl InstallFailureKind {
             Self::ExpectedWindowsLockedBinary => "expected-windows-locked-binary",
             Self::ExpectedTransientRegistry => "expected-transient-registry",
             Self::ExpectedBinCollision => "expected-bin-collision",
+            Self::UnexpectedLifecycle => "unexpected-lifecycle",
             Self::Unexpected => "unexpected",
         }
     }
@@ -1170,7 +1213,7 @@ pub fn install_failure_detail_with_final_attempt(
             "An existing hq shim is blocking this update. Remove or rename the stale shim, then run the copied command in a fresh terminal."
                 .to_string()
         }
-        InstallFailureKind::Unexpected => format!(
+        InstallFailureKind::Unexpected | InstallFailureKind::UnexpectedLifecycle => format!(
             "npm install exited with status {}",
             exit_code
                 .map(|code| code.to_string())
@@ -1180,7 +1223,8 @@ pub fn install_failure_detail_with_final_attempt(
 }
 
 /// Decide whether a CLI-install failure should be reported to Sentry, and with
-/// what message. Returns `None` for every EXPECTED local-machine failure — the
+/// what message. Returns `None` for expected local-machine failures except a
+/// post-force bin collision, which is captured once at Warning — the
 /// permission failure at the selected npm global prefix (HQ-SYNC-WEB-Y: exit
 /// 243, 180 events / 7 users), the Windows child abort codes, and the Windows
 /// `EPERM` locked-binary condition (HQ-DESKTOP-3N: exit -4048). The app already
@@ -1204,10 +1248,20 @@ pub fn install_failure_report_with_final_attempt(
     prefix: Option<&str>,
     final_attempt_forced: bool,
 ) -> Option<String> {
-    if classify_install_failure_with_final_attempt(exit_code, detail, prefix, final_attempt_forced)
-        != InstallFailureKind::Unexpected
-    {
-        return None;
+    match classify_install_failure_with_final_attempt(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+    ) {
+        InstallFailureKind::ExpectedBinCollision => {
+            return Some("[hq-cli-update] hq shim collision survived npm --force".to_string())
+        }
+        InstallFailureKind::Unexpected | InstallFailureKind::UnexpectedLifecycle => {}
+        InstallFailureKind::ExpectedPrefixPermission
+        | InstallFailureKind::ExpectedWindowsAbort
+        | InstallFailureKind::ExpectedWindowsLockedBinary
+        | InstallFailureKind::ExpectedTransientRegistry => return None,
     }
     let exit_str = exit_code
         .map(|c| c.to_string())
@@ -1216,12 +1270,13 @@ pub fn install_failure_report_with_final_attempt(
 }
 
 /// Capture an auto/manual CLI-install failure to Sentry — but only when it is a
-/// genuine, unexpected failure (see `install_failure_report`). The expected
-/// permission failure at the selected global prefix is deliberately NOT
-/// captured: it floods Sentry with an unactionable Error every auto-update
-/// cycle while the user already has the copy-the-command fallback. Captures
-/// include only a normalized, closed-enumeration diagnostic summary; the raw
-/// npm stderr remains in the local diagnostic log and never reaches Sentry.
+/// reportable failure (see `install_failure_report`). The expected permission
+/// failure at the selected global prefix is deliberately NOT captured: it
+/// floods Sentry with an unactionable Error every auto-update cycle while the
+/// user already has the copy-the-command fallback. A post-force bin collision
+/// is instead captured once at Warning. Captures include only a normalized,
+/// closed-enumeration diagnostic summary; raw npm stderr remains in the local
+/// diagnostic log and never reaches Sentry.
 pub fn report_install_failure(exit_code: Option<i32>, detail: &str, prefix: Option<&str>) {
     report_install_failure_with_final_attempt(exit_code, detail, prefix, false);
 }
@@ -1271,6 +1326,14 @@ pub fn report_install_failure_with_final_attempt(
             scope.set_tag("npm_syscall", npm_syscall(detail));
             scope.set_tag("npm_path_shape", npm_path_shape.tag_value());
             scope.set_tag(
+                "npm_final_attempt_forced",
+                if final_attempt_forced {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
+            scope.set_tag(
                 "npm_lifecycle_failed",
                 if npm_lifecycle.failed {
                     "true"
@@ -1299,7 +1362,12 @@ pub fn report_install_failure_with_final_attempt(
             scope.set_extra("npm_diagnostics", npm_diagnostics.into());
         },
         || {
-            sentry::capture_message(&message, sentry::Level::Error);
+            let level = if kind == InstallFailureKind::ExpectedBinCollision {
+                sentry::Level::Warning
+            } else {
+                sentry::Level::Error
+            };
+            sentry::capture_message(&message, level);
         },
     );
 }
@@ -2106,6 +2174,26 @@ mod tests {
                 package: None,
             }
         );
+        assert_eq!(
+            npm_lifecycle_failure(
+                "npm error code ENOENT\nnpm error command failed\nnpm error path /tmp/lib/node_modules/better-sqlite3"
+            ),
+            NpmLifecycleFailure {
+                failed: false,
+                package: None,
+            },
+            "errno output must not be misclassified as a lifecycle failure"
+        );
+        assert_eq!(
+            npm_lifecycle_failure(
+                "npm error code 1\nnpm error path /tmp/lib/node_modules/better-sqlite3\nbuild output: npm error command failed"
+            ),
+            NpmLifecycleFailure {
+                failed: false,
+                package: None,
+            },
+            "only npm's structured command-failed marker can classify a lifecycle failure"
+        );
 
         let summary = npm_install_attempt_summary(Some(1), scoped, Some("/Users/alice/toolchain"));
         assert!(summary.contains("npm_code=1"));
@@ -2128,6 +2216,24 @@ mod tests {
             let detail = format!("npm error code EEXIST\nnpm error path {path}");
             assert!(is_npm_bin_collision(&detail, None), "detail: {detail}");
         }
+        let custom_windows_prefix = "C:\\Users\\alice\\AppData\\Local\\hq-tools";
+        let custom_windows_collision =
+            format!("npm error code EEXIST\nnpm error path {custom_windows_prefix}\\hq.ps1");
+        assert!(is_npm_bin_collision(
+            &custom_windows_collision,
+            Some(custom_windows_prefix)
+        ));
+        let custom_windows_permission =
+            format!("npm error code EACCES\nnpm error path {custom_windows_prefix}\\hq.cmd");
+        assert_eq!(
+            classify_install_failure(
+                Some(243),
+                &custom_windows_permission,
+                Some(custom_windows_prefix)
+            ),
+            InstallFailureKind::ExpectedPrefixPermission,
+            "a custom Windows npm prefix must retain permission suppression"
+        );
         assert_eq!(
             classify_install_failure(Some(1), bin_collision, Some("/usr/local")),
             InstallFailureKind::Unexpected
@@ -2148,7 +2254,7 @@ mod tests {
                 Some("/usr/local"),
                 true,
             ),
-            None
+            Some("[hq-cli-update] hq shim collision survived npm --force".to_string())
         );
 
         let lifecycle_output = "npm error code 1\n\
@@ -2163,6 +2269,28 @@ mod tests {
                 Some("/usr/local"),
                 true,
             ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn third_party_lifecycle_has_its_own_group_but_owned_or_unknown_packages_stay_unexpected() {
+        let third_party = "npm error code 1\nnpm error command failed\nnpm error path /usr/local/lib/node_modules/better-sqlite3";
+        assert_eq!(
+            classify_install_failure(Some(1), third_party, Some("/usr/local")),
+            InstallFailureKind::UnexpectedLifecycle
+        );
+
+        let owned = "npm error code 1\nnpm error command failed\nnpm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            classify_install_failure(Some(1), owned, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+
+        let unattributable =
+            "npm error code 1\nnpm error command failed\nnpm error path /usr/local/build/work";
+        assert_eq!(
+            classify_install_failure(Some(1), unattributable, Some("/usr/local")),
             InstallFailureKind::Unexpected
         );
     }

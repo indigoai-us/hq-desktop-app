@@ -212,13 +212,44 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
 }
 
 #[test]
-fn force_exhausted_structured_bin_collision_is_suppressed_at_the_transport() {
+fn force_exhausted_structured_bin_collision_stays_visible_as_a_warning() {
     let bin_collision = "npm error code EEXIST\n\
         npm error path /usr/local/bin/hq";
     let events = captured_events(|| {
         report_install_failure_with_final_attempt(Some(1), bin_collision, Some("/usr/local"), true)
     });
-    assert!(events.is_empty(), "forced bin collision must not capture");
+    assert_eq!(events.len(), 1, "forced bin collision must capture once");
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] hq shim collision survived npm --force")
+    );
+    assert_eq!(
+        fingerprint(event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "expected-bin-collision",
+            "1"
+        ]
+    );
+    assert_eq!(
+        event.tags.get("install_failure_kind").map(String::as_str),
+        Some("expected-bin-collision")
+    );
+    assert_eq!(
+        event
+            .tags
+            .get("npm_final_attempt_forced")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.tags.get("npm_path_shape").map(String::as_str),
+        Some("bin-hq")
+    );
+    assert_path_safe(event, &["/usr/local", "npm error"]);
 
     let events =
         captured_events(|| report_install_failure(Some(1), bin_collision, Some("/usr/local")));
@@ -232,6 +263,62 @@ fn force_exhausted_structured_bin_collision_is_suppressed_at_the_transport() {
         bin_collision.len().to_string().as_str(),
         None,
     );
+}
+
+#[test]
+fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_are_loud() {
+    let third_party = "npm error code 1\n\
+        npm error command failed\n\
+        npm error path /Users/alice/toolchain/lib/node_modules/better-sqlite3\n\
+        npm error command sh -c prebuild-install || node-gyp rebuild";
+    let events = captured_events(|| {
+        report_install_failure(Some(1), third_party, Some("/Users/alice/toolchain"))
+    });
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        fingerprint(event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected-lifecycle",
+            "1"
+        ]
+    );
+    assert_eq!(
+        event.tags.get("install_failure_kind").map(String::as_str),
+        Some("unexpected-lifecycle")
+    );
+    assert_eq!(
+        event.tags.get("npm_lifecycle_failed").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.tags.get("npm_lifecycle_package").map(String::as_str),
+        Some("better-sqlite3")
+    );
+    assert_eq!(
+        event
+            .tags
+            .get("npm_final_attempt_forced")
+            .map(String::as_str),
+        Some("false")
+    );
+    assert_path_safe(event, &["/Users/", "alice", "toolchain", "npm error"]);
+
+    for detail in [
+        "npm error code 1\nnpm error command failed\nnpm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli",
+        "npm error code 1\nnpm error command failed\nnpm error path /usr/local/build/work",
+    ] {
+        let events = captured_events(|| report_install_failure(Some(1), detail, Some("/usr/local")));
+        assert_eq!(events.len(), 1, "owned or unattributable failure must remain visible");
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(
+            fingerprint(&events[0]),
+            ["hq-cli-update", "install-failed", "unexpected", "1"]
+        );
+    }
 }
 
 #[test]
