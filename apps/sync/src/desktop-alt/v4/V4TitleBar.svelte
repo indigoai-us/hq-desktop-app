@@ -290,7 +290,7 @@
     align-items: center;
     flex: 0 0 auto;
     gap: 4px;
-    padding-left: 24px;
+    padding-left: 44px;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap
@@ -348,14 +348,14 @@
   }
 
   .v4-dot {
-    flex: 0 0 6px;
-    width: 6px;
-    height: 6px;
+    flex: 0 0 8px;
+    width: 8px;
+    height: 8px;
     border-radius: var(--v4-radius-pill);
   }
 
   .v4-dot.ok {
-    background: var(--v4-ok);
+    background: #34c759;
   }
 
   .v4-dot.warn {
@@ -392,10 +392,10 @@
   }
 
   .v4-sentence {
-    color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 500;
-    line-height: 1;
+    color: var(--v4-text-2);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
     white-space: nowrap;
   }
 
@@ -497,7 +497,7 @@
 
   .v4-cloud-track.on {
     justify-content: flex-end;
-    background: #04c950;
+    background: #34c759;
   }
 
   .v4-cloud-thumb {

@@ -136,15 +136,18 @@
   }
 
   .v4-card-action {
-    padding: 5px 10px;
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 12px;
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
-    line-height: 1;
+    line-height: 16px;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -152,7 +155,6 @@
   .v4-card-action.primary {
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
-    box-shadow: var(--v4-shadow-card);
   }
 
   .v4-card-action.secondary {

@@ -986,7 +986,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
     min-width: 0;
-    align-items: start;
+    align-items: stretch;
   }
 
   .overview-col {
@@ -994,6 +994,10 @@
     min-width: 0;
     flex-direction: column;
     gap: 16px;
+  }
+
+  .overview-col > .overview-section {
+    flex: 1 1 auto;
   }
 
   /* Section cards — raised surfaces on the frosted field (reference look). */
