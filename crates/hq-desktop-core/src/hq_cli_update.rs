@@ -800,7 +800,11 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     .any(|target| path.ends_with(target) || path.contains(&format!("{target}/hq-cli")))
     {
         NpmPathShape::GlobalLibNodeModules
-    } else if path.ends_with("/bin/hq") || path.ends_with("/hq.cmd") {
+    } else if path.ends_with("/bin/hq")
+        || ["/npm/hq", "/npm/hq.cmd", "/npm/hq.ps1"]
+            .iter()
+            .any(|target| path.ends_with(target))
+    {
         NpmPathShape::BinHq
     } else {
         NpmPathShape::Other
@@ -1137,8 +1141,10 @@ pub fn install_failure_detail_with_final_attempt(
             .to_string();
     }
     if kind == InstallFailureKind::ExpectedBinCollision {
-        return "An existing hq program is blocking this update. Close the competing hq process or terminal, then run the copied command in a fresh terminal to replace it."
-            .to_string();
+        return format!(
+            "An existing hq shim is blocking this update. Remove or rename the stale shim named in npm's output, then run the copied command in a fresh terminal.\n\n{}",
+            detail.trim()
+        );
     }
     if npm_lifecycle_failure(detail).failed {
         return "A dependency build step failed while npm was installing hq. Run the copied command in a terminal to see the full build output and repair the local toolchain."
@@ -1161,7 +1167,7 @@ pub fn install_failure_detail_with_final_attempt(
             "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly.".to_string()
         }
         InstallFailureKind::ExpectedBinCollision => {
-            "An existing hq program is blocking this update. Close the competing hq process or terminal, then run the copied command in a fresh terminal to replace it."
+            "An existing hq shim is blocking this update. Remove or rename the stale shim, then run the copied command in a fresh terminal."
                 .to_string()
         }
         InstallFailureKind::Unexpected => format!(
@@ -2114,6 +2120,14 @@ mod tests {
         let bin_collision = "npm error code EEXIST\n\
             npm error path /usr/local/bin/hq";
         assert!(is_npm_bin_collision(bin_collision, Some("/usr/local")));
+        for path in [
+            "C:\\Users\\alice\\AppData\\Roaming\\npm\\hq",
+            "C:\\Users\\alice\\AppData\\Roaming\\npm\\hq.cmd",
+            "C:\\Users\\alice\\AppData\\Roaming\\npm\\hq.ps1",
+        ] {
+            let detail = format!("npm error code EEXIST\nnpm error path {path}");
+            assert!(is_npm_bin_collision(&detail, None), "detail: {detail}");
+        }
         assert_eq!(
             classify_install_failure(Some(1), bin_collision, Some("/usr/local")),
             InstallFailureKind::Unexpected
@@ -2162,8 +2176,9 @@ mod tests {
             Some("/usr/local"),
             true,
         );
-        assert!(detail.contains("existing hq program"), "got: {detail}");
+        assert!(detail.contains("stale shim"), "got: {detail}");
         assert!(detail.contains("copied command"), "got: {detail}");
+        assert!(detail.contains("/usr/local/bin/hq"), "got: {detail}");
 
         let lifecycle = "npm error code 1\n\
             npm error command failed\n\

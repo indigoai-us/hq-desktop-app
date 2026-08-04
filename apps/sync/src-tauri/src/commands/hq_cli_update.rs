@@ -666,7 +666,7 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         log(
             "hq-cli-update",
             &format!(
-                "install failed (kind={}, exit {:?}): {detail}",
+                "install failed (kind={}, exit {:?}); raw npm output retained locally: {raw_detail}",
                 failure_kind.fingerprint_component(),
                 output.status.code()
             ),
