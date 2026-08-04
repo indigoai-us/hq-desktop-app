@@ -493,7 +493,7 @@
     display: flex;
     flex-direction: column;
     flex: 0 0 auto;
-    gap: var(--v4-row-gap);
+    gap: 0;
   }
 
   .v4-row {
