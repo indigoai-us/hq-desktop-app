@@ -545,14 +545,20 @@
     text-overflow: ellipsis;
   }
 
-  /* Native macOS sidebar count (Mail-style): a plain muted number, no pill. */
+  /* Small count chip: light circular fill behind a compact number. */
   .v4-unread-badge {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    background: transparent;
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, 13px);
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font-size: 11px;
     font-weight: 600;
     line-height: 1;
     font-variant-numeric: tabular-nums;
