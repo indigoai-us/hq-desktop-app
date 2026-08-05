@@ -6,6 +6,7 @@
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
+  import DaybookApp from './v2/DaybookApp.svelte';
   import ActivityLog from '../src/components/ActivityLog.svelte';
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
@@ -230,9 +231,20 @@
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'settings';
   // Theme is reactive for the desktop stage's Light/Dark toggle. The desktop
-  // view previews light-first (the redesign target); everything else keeps the
-  // historical dark default so existing ?view= links render unchanged.
+  // view previews light-first (the redesign target); the v2 concept previews
+  // dark-first (its home appearance); everything else keeps the historical
+  // dark default so existing ?view= links render unchanged.
   let theme = $state(params.get('theme') ?? (params.get('view') === 'desktop' ? 'light' : 'dark'));
+
+  // V1 ↔ V2 stage switcher (design-review affordance on the mac stage).
+  function switchVersion(v: 'desktop' | 'v2') {
+    if (view === v) return;
+    const next = new URLSearchParams(window.location.search);
+    next.set('view', v);
+    // Each version opens on its home appearance unless the user re-toggles.
+    next.delete('theme');
+    window.location.search = next.toString();
+  }
   const bannerKind = params.get('kind') ?? 'share';
   const scenario = params.get('scenario');
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
@@ -268,7 +280,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home'
+      : view === 'company' || view === 'desktop' || view === 'home' || view === 'v2'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -382,17 +394,52 @@
     <div class="mac-window">
       <DesktopApp />
     </div>
-    <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
-      <button
-        type="button"
-        class:active={theme === 'light'}
-        onclick={() => (theme = 'light')}
-      >Light</button>
-      <button
-        type="button"
-        class:active={theme === 'dark'}
-        onclick={() => (theme = 'dark')}
-      >Dark</button>
+    <div class="stage-controls">
+      <div class="stage-theme-toggle" role="group" aria-label="Preview version">
+        <button type="button" class="active">V1</button>
+        <button type="button" onclick={() => switchVersion('v2')}>V2</button>
+      </div>
+      <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
+        <button
+          type="button"
+          class:active={theme === 'light'}
+          onclick={() => (theme = 'light')}
+        >Light</button>
+        <button
+          type="button"
+          class:active={theme === 'dark'}
+          onclick={() => (theme = 'dark')}
+        >Dark</button>
+      </div>
+    </div>
+  </div>
+{:else if view === 'v2'}
+  <!-- V2 concept ("Daybook", from Corey's draft) on the same real-life stage.
+       Dark is its home appearance; the toggle still previews light. -->
+  <div
+    class="mac-stage"
+    style={`background-image: url(${theme === 'dark' ? wallpaperDark : wallpaperLight})`}
+  >
+    <div class="mac-window v2-window">
+      <DaybookApp {theme} />
+    </div>
+    <div class="stage-controls">
+      <div class="stage-theme-toggle" role="group" aria-label="Preview version">
+        <button type="button" onclick={() => switchVersion('desktop')}>V1</button>
+        <button type="button" class="active">V2</button>
+      </div>
+      <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
+        <button
+          type="button"
+          class:active={theme === 'light'}
+          onclick={() => (theme = 'light')}
+        >Light</button>
+        <button
+          type="button"
+          class:active={theme === 'dark'}
+          onclick={() => (theme = 'dark')}
+        >Dark</button>
+      </div>
     </div>
   </div>
 {:else if view === 'banner'}
@@ -526,6 +573,32 @@
       0 16px 48px rgba(0, 0, 0, 0.55);
   }
 
+
+  /* V2 concept window: darker, colder glass than the v1 material. */
+  .mac-window.v2-window {
+    background: rgba(250, 250, 252, 0.78);
+  }
+
+  :global(html[data-force-theme='dark']) .mac-window.v2-window {
+    background: rgba(14, 14, 18, 0.82);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.12),
+      0 16px 48px rgba(0, 0, 0, 0.55);
+  }
+
+  .stage-controls {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    gap: 10px;
+  }
+
+  .stage-controls .stage-theme-toggle {
+    position: static;
+    transform: none;
+  }
 
   .stage-theme-toggle {
     position: fixed;

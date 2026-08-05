@@ -33,4 +33,12 @@ export default defineConfig({
     port: 1422,
     strictPort: true,
   },
+  // Static build of the harness for shareable design previews:
+  // vite build --config vite.preview.config.ts
+  build: {
+    outDir: 'dist-preview',
+    rollupOptions: {
+      input: resolve(__dirname, 'dev-harness/index.html'),
+    },
+  },
 });
