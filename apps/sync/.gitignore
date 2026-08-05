@@ -18,3 +18,4 @@ src-tauri/gen/schemas/windows-schema.json
 *.key
 *.cer
 *.p8
+dist-preview
