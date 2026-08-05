@@ -262,11 +262,21 @@ fn set_lifecycle_state(next: WatchDaemonState, category: DaemonFailureCategory) 
 /// Uses the process-registry cancelled flag so crash / stall / cancel /
 /// force-clear / backoff paths never double-`TerminateJobObject`.
 fn terminate_daemon_once(category: DaemonFailureCategory) -> bool {
+    terminate_daemon_once_with_delay(category, SIGKILL_DELAY)
+}
+
+/// Testable core of [`terminate_daemon_once`]. Production always supplies the
+/// five-second grace period; native process tests shorten only the wait while
+/// exercising the identical cancellation and lifecycle path.
+fn terminate_daemon_once_with_delay(
+    category: DaemonFailureCategory,
+    sigkill_delay: Duration,
+) -> bool {
     let already = is_cancelled(DAEMON_HANDLE);
     if !should_terminate_job_on_path(already, category) {
         return false;
     }
-    let cancelled = cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+    let cancelled = cancel_process_impl(DAEMON_HANDLE, sigkill_delay);
     if cancelled {
         match category {
             DaemonFailureCategory::HeartbeatStall => {
@@ -3143,6 +3153,95 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn watchdog_escalation_records_no_capture() {
+        use crate::commands::process::{deregister_process, SpawnArgs};
+        use std::sync::mpsc;
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+        HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(true, Ordering::Release);
+
+        let daemon_generation =
+            try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon generation");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let runner = thread::spawn(move || {
+            let mut terminal = None;
+            let captures = sentry::test::with_captured_events(|| {
+                run_process_impl(
+                    DAEMON_HANDLE,
+                    &SpawnArgs {
+                        cmd: "sh".to_string(),
+                        args: vec![
+                            "-c".to_string(),
+                            "trap '' TERM; echo ready; while :; do sleep 1; done".to_string(),
+                        ],
+                        cwd: None,
+                        env: None,
+                    },
+                    |event| match event {
+                        ProcessEvent::Stdout(line) if line == "ready" => {
+                            ready_tx
+                                .send(())
+                                .expect("watchdog readiness receiver must remain alive");
+                        }
+                        ProcessEvent::Exit {
+                            code,
+                            signal,
+                            success,
+                        } => {
+                            let cancelled =
+                                is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
+                            handle_watcher_exit(
+                                code,
+                                signal,
+                                success,
+                                cancelled,
+                                "npx",
+                                None,
+                                &WatcherExitCaptureContext::default(),
+                            );
+                            terminal = Some((code, signal, success, cancelled));
+                        }
+                        _ => {}
+                    },
+                )
+                .expect("watchdog fixture must reach its terminal callback");
+            });
+            (
+                terminal.expect("watchdog fixture must emit one terminal event"),
+                captures,
+            )
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("watchdog fixture must install its SIGTERM trap before cancellation");
+        assert!(lookup_pid(DAEMON_HANDLE).is_some());
+
+        assert!(terminate_daemon_once_with_delay(
+            DaemonFailureCategory::HeartbeatStall,
+            Duration::from_millis(100),
+        ));
+        let ((code, signal, success, cancelled), captures) = runner
+            .join()
+            .expect("watchdog process runner must not panic");
+        HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
+
+        assert_eq!((code, signal, success), (None, Some(9), false));
+        assert!(
+            cancelled,
+            "the terminal reporting boundary must see cancellation"
+        );
+        assert!(
+            captures.is_empty(),
+            "the real watcher capture path must stay silent for watchdog SIGKILL escalation"
+        );
+        assert_eq!(current_lifecycle_state(), WatchDaemonState::Stopped);
+        assert!(!is_registered(DAEMON_HANDLE));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cancelled_sigkill_skips_capture_but_uncancelled_sigkill_still_captures() {
         let mut deliberate_stop = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3179,6 +3278,17 @@ mod tests {
         assert!(external_kill.captures[0]
             .message
             .contains("auto-sync watcher exited unexpectedly"));
+        assert_eq!(
+            external_kill.captures[0].fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none"]
+        );
+        assert!(external_kill.captures[0]
+            .tags
+            .contains(&("runner_fatal_class".to_string(), "none".to_string())));
+        assert!(external_kill.captures[0].extras.contains(&(
+            "watcher_cancelled".to_string(),
+            sentry::protocol::Value::String("false".to_string())
+        )));
     }
 
     #[test]
