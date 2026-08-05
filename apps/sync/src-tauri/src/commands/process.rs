@@ -1785,6 +1785,69 @@ mod registry_exit_order_tests {
         assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
         assert!(deregister_generation(&handle, replacement_generation));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn released_generation_keeps_escalation_authority_without_targeting_replacement() {
+        use std::sync::atomic::AtomicUsize;
+
+        let handle = format!("released-generation-escalation-{}", Uuid::new_v4());
+        let old_generation = try_register_handle_gen(&handle).expect("acquire old generation");
+        assert_eq!(register_process_gen(&handle, 41), old_generation);
+        assert!(mark_cancelled(&handle));
+
+        // Force-clear releases the public handle before the delayed SIGKILL.
+        // The old generation must retain only its own signal capability so the
+        // replacement can start immediately without making the old child
+        // unkillable or exposing the replacement to the stale escalation.
+        assert!(deregister_generation(&handle, old_generation));
+        let replacement_generation =
+            try_register_handle_gen(&handle).expect("acquire replacement generation");
+        assert_eq!(register_process_gen(&handle, 42), replacement_generation);
+
+        let calls = AtomicUsize::new(0);
+        let old_dispatch = dispatch_signal_checked_with(
+            &handle,
+            old_generation,
+            41,
+            Signal::SIGKILL,
+            |pid, signal| {
+                assert_eq!(pid, Pid::from_raw(-41));
+                assert_eq!(signal, Signal::SIGKILL);
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert_eq!(
+            old_dispatch,
+            SignalDispatch::Delivered,
+            "releasing a public handle must not cancel its old generation's pending escalation"
+        );
+
+        let replacement_dispatch =
+            dispatch_signal_checked_with(&handle, old_generation, 42, Signal::SIGKILL, |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+        assert_eq!(replacement_dispatch, SignalDispatch::RefusedStale);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert!(revoke_signal_authority_for_generation(
+            &handle,
+            old_generation
+        ));
+        assert_eq!(
+            dispatch_signal_checked_with(&handle, old_generation, 41, Signal::SIGKILL, |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },),
+            SignalDispatch::RefusedRevoked
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert!(deregister_generation(&handle, old_generation));
+        assert!(deregister_generation(&handle, replacement_generation));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
