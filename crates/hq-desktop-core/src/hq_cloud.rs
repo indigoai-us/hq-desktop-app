@@ -294,7 +294,21 @@
 /// the prior delete-intent / Windows materialization / qmd-reindex floors.
 /// Raising the tilde floor changes the npx cache key so an existing
 /// `~6.14.19` resolution cannot keep serving 6.14.19.
-pub const HQ_CLOUD_VERSION: &str = "~6.14.24";
+///
+/// `~6.14.24` -> `~6.14.47`: floor the pin at hq-cloud 6.14.47, which stops a
+/// macOS Finder `Icon\r` file from wedging auto-sync permanently
+/// (hq-cloud#287). Such a path can never be stored — a control character is
+/// invalid in an S3 key — so the push leg threw per file, the throw became a
+/// `type: "error"`, and a non-empty `errors[]` returns PARTIAL_SYNC_EXIT. One
+/// such file therefore made EVERY watch pass exit non-zero, which the menubar
+/// reports as "auto-sync watcher exited unexpectedly" forever. Finder scatters
+/// these across a tree, so the reporting machine saw 100+ per run.
+///
+/// This bump is load-bearing, not cosmetic: the tilde already RESOLVES any
+/// 6.14.x, but an install holding a cached `~6.14.24` resolution keeps
+/// serving the old runner. Raising the floor changes the npx cache key, which
+/// is what actually delivers the fix to existing users.
+pub const HQ_CLOUD_VERSION: &str = "~6.14.47";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
