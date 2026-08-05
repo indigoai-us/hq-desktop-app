@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use hq_desktop_core::hq_cli_update::{report_install_failure, report_npm_cache_setup_failure};
+use hq_desktop_core::hq_cli_update::{
+    report_install_failure, report_install_failure_with_final_attempt,
+    report_npm_cache_setup_failure,
+};
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
 
@@ -52,6 +55,7 @@ fn assert_unexpected_install_event(
     expected_failure_site: &str,
     expected_path_shape: &str,
     expected_stderr_len: &str,
+    expected_lifecycle_package: Option<&str>,
 ) {
     assert_eq!(event.level, sentry::Level::Error);
     assert_eq!(
@@ -95,6 +99,18 @@ fn assert_unexpected_install_event(
     assert_eq!(
         event.tags.get("npm_stderr_len").map(String::as_str),
         Some(expected_stderr_len)
+    );
+    assert_eq!(
+        event.tags.get("npm_lifecycle_failed").map(String::as_str),
+        Some(if expected_lifecycle_package.is_some() {
+            "true"
+        } else {
+            "false"
+        })
+    );
+    assert_eq!(
+        event.tags.get("npm_lifecycle_package").map(String::as_str),
+        expected_lifecycle_package
     );
     assert_eq!(
         event.extra.get("npm_diagnostics"),
@@ -143,6 +159,7 @@ fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics()
         "cache",
         "npm-cache",
         cache_eacces_len.as_str(),
+        None,
     );
     assert_path_safe(&events[0], &["/Users/", "alice", "_cacache", "npm error"]);
 
@@ -154,11 +171,12 @@ fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics()
     assert_eq!(events.len(), 1);
     assert_unexpected_install_event(
         &events[0],
-        "unknown",
+        "ELIFECYCLE",
         "false",
         "other",
         "other",
         unknown_len.as_str(),
+        Some("unrecognized"),
     );
     assert_path_safe(&events[0], &["/Users/", "carol", "npm error"]);
 }
@@ -180,16 +198,127 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
     );
     assert_unexpected_install_event(
         &events[0],
-        "unknown",
+        "1",
         "false",
         "other",
         "none",
         lifecycle_len.as_str(),
+        Some("unrecognized"),
     );
     assert_path_safe(
         &events[0],
         &["/Users/", "reviewer", "ETARGET", "ECONNRESET", "npm error"],
     );
+}
+
+#[test]
+fn force_exhausted_structured_bin_collision_stays_visible_as_a_warning() {
+    let bin_collision = "npm error code EEXIST\n\
+        npm error path /usr/local/bin/hq";
+    let events = captured_events(|| {
+        report_install_failure_with_final_attempt(Some(1), bin_collision, Some("/usr/local"), true)
+    });
+    assert_eq!(events.len(), 1, "forced bin collision must capture once");
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] hq shim collision survived npm --force")
+    );
+    assert_eq!(
+        fingerprint(event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "expected-bin-collision",
+            "1"
+        ]
+    );
+    assert_eq!(
+        event.tags.get("install_failure_kind").map(String::as_str),
+        Some("expected-bin-collision")
+    );
+    assert_eq!(
+        event
+            .tags
+            .get("npm_final_attempt_forced")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.tags.get("npm_path_shape").map(String::as_str),
+        Some("bin-hq")
+    );
+    assert_path_safe(event, &["/usr/local", "npm error"]);
+
+    let events =
+        captured_events(|| report_install_failure(Some(1), bin_collision, Some("/usr/local")));
+    assert_eq!(events.len(), 1, "unforced collision must remain loud");
+    assert_unexpected_install_event(
+        &events[0],
+        "EEXIST",
+        "false",
+        "other",
+        "bin-hq",
+        bin_collision.len().to_string().as_str(),
+        None,
+    );
+}
+
+#[test]
+fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_are_loud() {
+    let third_party = "npm error code 1\n\
+        npm error command failed\n\
+        npm error path /Users/alice/toolchain/lib/node_modules/better-sqlite3\n\
+        npm error command sh -c prebuild-install || node-gyp rebuild";
+    let events = captured_events(|| {
+        report_install_failure(Some(1), third_party, Some("/Users/alice/toolchain"))
+    });
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        fingerprint(event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected-lifecycle",
+            "1"
+        ]
+    );
+    assert_eq!(
+        event.tags.get("install_failure_kind").map(String::as_str),
+        Some("unexpected-lifecycle")
+    );
+    assert_eq!(
+        event.tags.get("npm_lifecycle_failed").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.tags.get("npm_lifecycle_package").map(String::as_str),
+        Some("better-sqlite3")
+    );
+    assert_eq!(
+        event
+            .tags
+            .get("npm_final_attempt_forced")
+            .map(String::as_str),
+        Some("false")
+    );
+    assert_path_safe(event, &["/Users/", "alice", "toolchain", "npm error"]);
+
+    for detail in [
+        "npm error code 1\nnpm error command failed\nnpm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli",
+        "npm error code 1\nnpm error command failed\nnpm error path /usr/local/build/work",
+    ] {
+        let events = captured_events(|| report_install_failure(Some(1), detail, Some("/usr/local")));
+        assert_eq!(events.len(), 1, "owned or unattributable failure must remain visible");
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(
+            fingerprint(&events[0]),
+            ["hq-cli-update", "install-failed", "unexpected", "1"]
+        );
+    }
 }
 
 #[test]
