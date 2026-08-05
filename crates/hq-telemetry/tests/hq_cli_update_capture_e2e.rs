@@ -394,7 +394,7 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
     );
     assert_eq!(
         events[0].tags.get("npm_error_code").map(String::as_str),
-        Some("unknown")
+        Some("none")
     );
 
     let transient_network = "npm error code ECONNRESET\nnpm error network request reset";

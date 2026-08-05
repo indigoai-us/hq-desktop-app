@@ -68,17 +68,20 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_update_enabled, classify_install_failure,
-    cli_auto_update_enabled, cmp_semver, decide_post_install, dismissed_cli_version,
-    get_local_version, get_local_version_diagnostics, hq_version_string, install_argv,
-    install_converged, install_failure_detail, install_failure_report, is_cli_update_dismissed,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, non_convergent_cli_version,
-    non_convergent_detail, non_convergent_episode_blocked, npm_prefix_from_hq_bin,
-    read_installed_version, redact_home, redact_home_in, report_install_failure,
-    report_non_convergent_install, report_non_convergent_marker_unpersisted,
-    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo,
-    InstallFailureKind, LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergentReport,
+    classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
+    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
+    hq_version_string, install_argv, install_converged, install_failure_detail,
+    install_failure_detail_with_final_attempt, install_failure_report, is_cli_update_dismissed,
+    is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
+    is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
+    non_convergent_episode_blocked, npm_install_attempt_summary, npm_prefix_from_hq_bin,
+    pnpm_install_argv, read_installed_version, redact_home, redact_home_in, report_install_failure,
+    report_install_failure_with_final_attempt, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
+    version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallFailureKind,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport,
     NpmLatest, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
@@ -244,8 +247,8 @@ fn npm_output_detail(output: &std::process::Output) -> String {
 /// An EEXIST bin collision: an existing `<prefix>/bin/hq` that npm did not
 /// create blocks the bin-link, so npm bails rather than clobber it. npm's own
 /// documented remedy is a `--force` retry (HQ-SYNC-B).
-fn is_bin_exists_failure(detail: &str) -> bool {
-    detail.contains("EEXIST")
+fn is_bin_exists_failure(detail: &str, prefix: Option<&str>) -> bool {
+    is_npm_bin_collision(detail, prefix)
 }
 
 /// An `ENOTEMPTY` partial/interrupted-install failure. npm updates a package by
@@ -361,6 +364,72 @@ async fn run_npm_install(
     .map_err(|e| format!("spawn npm: {e}"))
 }
 
+const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;
+
+#[derive(Debug)]
+struct NpmInstallAttempt {
+    rung: &'static str,
+    forced: bool,
+    summary: String,
+}
+
+#[derive(Debug)]
+struct NpmInstallRun {
+    output: std::process::Output,
+    final_attempt_forced: bool,
+}
+
+async fn run_recorded_npm_install_attempt(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: Option<&str>,
+    args: Vec<String>,
+    rung: &'static str,
+    forced: bool,
+    ledger: &mut Vec<NpmInstallAttempt>,
+) -> Result<std::process::Output, String> {
+    let output = run_npm_install(npm, path, npm_cache, args).await?;
+    let detail = npm_output_detail(&output);
+    ledger.push(NpmInstallAttempt {
+        rung,
+        forced,
+        summary: npm_install_attempt_summary(output.status.code(), &detail, prefix),
+    });
+    Ok(output)
+}
+
+fn log_npm_install_attempt_ledger(ledger: &[NpmInstallAttempt]) {
+    let entries = ledger
+        .iter()
+        .map(|attempt| {
+            format!(
+                "rung={} forced={} {}",
+                attempt.rung, attempt.forced, attempt.summary
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    log(
+        "hq-cli-update",
+        &format!("install attempt ledger (path-free): [{entries}]"),
+    );
+}
+
+fn verify_active_cli_version(local: Option<String>, latest: &str) -> Result<String, String> {
+    match local {
+        Some(local) if install_converged(Some(&local), latest) => Ok(local),
+        Some(local) => Err(format!(
+            "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
+             The update was not applied to the CLI on PATH."
+        )),
+        None => Err(format!(
+            "npm completed, but the active HQ CLI version could not be verified \
+             (expected v{latest})."
+        )),
+    }
+}
+
 /// Build the npm child with the exact PATH and app-owned cache the updater
 /// needs. Keeping this at the process boundary means every retry inherits the
 /// same cache instead of falling back to a potentially root-owned `~/.npm`.
@@ -400,9 +469,21 @@ async fn run_npm_install_with_retries(
     npm_cache: &Path,
     prefix: Option<&str>,
     base_args: Vec<String>,
-) -> Result<std::process::Output, String> {
+) -> Result<NpmInstallRun, String> {
+    let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
+
     // First attempt: a plain (non-forced) global install.
-    let mut output = run_npm_install(npm, path, npm_cache, base_args.clone()).await?;
+    let mut output = run_recorded_npm_install_attempt(
+        npm,
+        path,
+        npm_cache,
+        prefix,
+        base_args.clone(),
+        "plain",
+        false,
+        &mut ledger,
+    )
+    .await?;
 
     // EEXIST bin collision: an existing `<prefix>/bin/hq` npm didn't create
     // blocks the bin-link, so npm bails rather than clobber it. Retry ONCE with
@@ -411,14 +492,24 @@ async fn run_npm_install_with_retries(
     // retry; every other failure falls straight through to the error below.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_bin_exists_failure(&detail) {
+        if is_bin_exists_failure(&detail, prefix) && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS {
             log(
                 "hq-cli-update",
                 &format!("install hit EEXIST bin collision; retrying with --force: {detail}"),
             );
             let mut forced = base_args.clone();
             forced.push("--force".to_string());
-            output = run_npm_install(npm, path, npm_cache, forced).await?;
+            output = run_recorded_npm_install_attempt(
+                npm,
+                path,
+                npm_cache,
+                prefix,
+                forced,
+                "forced-bin-collision",
+                true,
+                &mut ledger,
+            )
+            .await?;
         }
     }
 
@@ -434,15 +525,50 @@ async fn run_npm_install_with_retries(
     if !output.status.success() {
         let detail = npm_output_detail(&output);
         if is_partial_install_failure(&detail) {
-            if let Some(prefix) = prefix {
+            if let Some(cleanup_prefix) = prefix {
                 log(
                     "hq-cli-update",
                     &format!(
                         "install hit ENOTEMPTY partial install; cleaning and retrying: {detail}"
                     ),
                 );
-                clean_partial_hq_cli_install(prefix);
-                output = run_npm_install(npm, path, npm_cache, base_args.clone()).await?;
+                clean_partial_hq_cli_install(cleanup_prefix);
+                output = run_recorded_npm_install_attempt(
+                    npm,
+                    path,
+                    npm_cache,
+                    prefix,
+                    base_args.clone(),
+                    "cleanup-plain",
+                    false,
+                    &mut ledger,
+                )
+                .await?;
+
+                // Cleanup changes the on-disk package state. If its plain
+                // retry exposes the same structured bin collision, the npm
+                // remedy is newly armed once more. This is intentionally
+                // distinct from the Windows backoff rung below: a later
+                // EEXIST after EPERM remains loud because force did not
+                // directly produce that final output.
+                if !output.status.success()
+                    && is_bin_exists_failure(&npm_output_detail(&output), prefix)
+                    && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+                {
+                    let mut forced = base_args.clone();
+                    forced.push("--force".to_string());
+                    output = run_recorded_npm_install_attempt(
+                        npm,
+                        path,
+                        npm_cache,
+                        prefix,
+                        forced,
+                        "cleanup-forced-bin-collision",
+                        true,
+                        &mut ledger,
+                    )
+                    .await?;
+                }
             } else {
                 log(
                     "hq-cli-update",
@@ -463,7 +589,9 @@ async fn run_npm_install_with_retries(
     // through to the error handler.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_windows_locked_binary_failure(output.status.code(), &detail) {
+        if is_windows_locked_binary_failure(output.status.code(), &detail)
+            && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+        {
             log(
                 "hq-cli-update",
                 &format!(
@@ -471,11 +599,133 @@ async fn run_npm_install_with_retries(
                 ),
             );
             tokio::time::sleep(LOCKED_BINARY_RETRY_BACKOFF).await;
-            output = run_npm_install(npm, path, npm_cache, base_args).await?;
+            output = run_recorded_npm_install_attempt(
+                npm,
+                path,
+                npm_cache,
+                prefix,
+                base_args,
+                "windows-backoff-plain",
+                false,
+                &mut ledger,
+            )
+            .await?;
         }
     }
 
-    Ok(output)
+    log_npm_install_attempt_ledger(&ledger);
+    let final_attempt_forced = ledger.last().is_some_and(|attempt| attempt.forced);
+    Ok(NpmInstallRun {
+        output,
+        final_attempt_forced,
+    })
+}
+
+/// Update a pnpm-managed `hq` with pnpm itself. npm cannot replace a shim in
+/// pnpm's flat global dir — `npm install -g` writes an unrelated prefix, exits
+/// 0, and the shim on PATH stays stale, which is exactly the non-convergent
+/// loop the convergence gate below catches after the fact. Branching here fixes
+/// it up front: the tool that owns the binary performs the update. Single
+/// attempt on purpose — the npm retry ladder (EEXIST/ENOTEMPTY/EPERM) encodes
+/// npm-specific failure shapes that don't apply to `pnpm add -g`.
+async fn install_hq_cli_update_via_pnpm(
+    app: &AppHandle,
+    hq: &str,
+    latest: &str,
+) -> Result<HqCliUpdateInfo, String> {
+    const MANUAL_CMD: &str = "pnpm add -g @indigoai-us/hq-cli@latest";
+    let pnpm = paths::resolve_bin("pnpm");
+    if pnpm == "pnpm" {
+        return Err(format!(
+            "hq was installed with pnpm, but pnpm could not be found. \
+             Update manually: {MANUAL_CMD}"
+        ));
+    }
+    let path = paths::child_path();
+    let args = pnpm_install_argv();
+    log(
+        "hq-cli-update",
+        &format!(
+            "install: pnpm-managed hq detected — spawning pnpm {}",
+            args.join(" ")
+        ),
+    );
+    let output = {
+        let pnpm = pnpm.clone();
+        let path = path.clone();
+        let args = args.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = paths::spawn_command(&pnpm, &[]);
+            cmd.args(&args).env("PATH", &path);
+            cmd.output()
+        })
+        .await
+        .map_err(|e| format!("join blocking task: {e}"))?
+        .map_err(|e| format!("spawn pnpm: {e}"))?
+    };
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        log(
+            "hq-cli-update",
+            &format!(
+                "pnpm install failed (exit {:?}): {}",
+                output.status.code(),
+                redact_home(&detail)
+            ),
+        );
+        return Err(format!(
+            "pnpm could not update the HQ CLI: {detail}\nYou can run it manually: {MANUAL_CMD}"
+        ));
+    }
+    // Same convergence gate as the npm path: a zero exit must have moved the
+    // binary the app actually resolves.
+    let resolved = {
+        let hq = hq.to_string();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let local = match verify_active_cli_version(resolved.clone(), latest) {
+        Ok(version) => version,
+        Err(reason) => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "{reason} — pnpm path, hq={} — recording as non-convergent",
+                    redact_home(hq)
+                ),
+            );
+            if let Err(error) = record_non_convergent_version(latest) {
+                log(
+                    "hq-cli-update",
+                    &format!("could not record pnpm non-convergent version {latest}: {error}"),
+                );
+                report_non_convergent_marker_unpersisted();
+            }
+            report_non_convergent_install(
+                latest,
+                resolved.as_deref(),
+                hq,
+                None,
+                &pnpm,
+                false,
+                NonConvergenceKind::NpmTargeted,
+            );
+            return Err(non_convergent_detail(hq, resolved.as_deref(), latest));
+        }
+    };
+    clear_non_convergent_version();
+    log(
+        "hq-cli-update",
+        &format!("pnpm install succeeded: local={local} latest={latest}"),
+    );
+    let info = HqCliUpdateInfo {
+        local: Some(local),
+        latest: latest.to_string(),
+    };
+    let _ = app.emit("hq-cli-update:cleared", &info);
+    Ok(info)
 }
 
 /// The side effects selected by the pure core post-install decision. Keeping
@@ -526,6 +776,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
+    if is_pnpm_global_shim(&hq) {
+        // Pin the target before spawning, same as the npm path below.
+        let latest = fetch_latest().await?;
+        return install_hq_cli_update_via_pnpm(&app, &hq, &latest).await;
+    }
     let prefix = npm_prefix_from_hq_bin(&hq);
     let base_args = install_argv(prefix.as_deref());
     // This must be sampled before the install. An unwritable marker reads as
@@ -565,18 +820,28 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .flatten()
     };
 
-    let output =
+    let install_run =
         run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
+    let output = install_run.output;
 
     if !output.status.success() {
         let raw_detail = npm_output_detail(&output);
-        let failure_kind =
-            classify_install_failure(output.status.code(), &raw_detail, prefix.as_deref());
-        let detail = install_failure_detail(output.status.code(), &raw_detail, prefix.as_deref());
+        let failure_kind = classify_install_failure_with_final_attempt(
+            output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+        );
+        let detail = install_failure_detail_with_final_attempt(
+            output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+        );
         log(
             "hq-cli-update",
             &format!(
-                "install failed (kind={}, exit {:?}): {detail}",
+                "install failed (kind={}, exit {:?}); raw npm output retained locally: {raw_detail}",
                 failure_kind.fingerprint_component(),
                 output.status.code()
             ),
@@ -584,7 +849,12 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // Report using the original npm output so Sentry's diagnostic extra is
         // never replaced by the UI fallback text. Expected environment kinds
         // deliberately no-op inside `report_install_failure`.
-        report_install_failure(output.status.code(), &raw_detail, prefix.as_deref());
+        report_install_failure_with_final_attempt(
+            output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+        );
         return Err(detail);
     }
 
@@ -850,7 +1120,7 @@ count=$((count + 1))
 printf '%s' "$count" > "$state"
 printf '%s|%s\n' "$NPM_CONFIG_CACHE" "$*" >> "$attempts"
 case "{}:$count" in
-  eexist:1) printf '%s\n' 'npm error code EEXIST' >&2; exit 1 ;;
+  eexist:1) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
   enotempty:1) printf '%s\n' 'npm error code ENOTEMPTY' >&2; exit 1 ;;
   eperm:1) printf '%s\n' 'npm error code EPERM; npm error errno -4048' >&2; exit 1 ;;
 esac
@@ -879,7 +1149,10 @@ exit 0
             .await
             .unwrap();
 
-            assert!(output.status.success(), "{mode} retry path should recover");
+            assert!(
+                output.output.status.success(),
+                "{mode} retry path should recover"
+            );
             let lines: Vec<_> = fs::read_to_string(&attempts)
                 .unwrap()
                 .lines()
@@ -893,6 +1166,139 @@ exit 0
                 );
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_retry_ladder_rearms_force_only_after_cleanup() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+case "$count" in
+  1) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+  2) printf '%s\n' 'npm error code ENOTEMPTY' >&2; exit 1 ;;
+  3) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+  4) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+esac
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap())),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        assert!(run.final_attempt_forced);
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 4, "retry work must stay within the hard cap");
+        assert!(!lines[0].contains("--force"));
+        assert!(lines[1].contains("--force"));
+        assert!(!lines[2].contains("--force"));
+        assert!(lines[3].contains("--force"));
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                run.output.status.code(),
+                &npm_output_detail(&run.output),
+                Some(prefix.to_str().unwrap()),
+                run.final_attempt_forced,
+            ),
+            InstallFailureKind::ExpectedBinCollision
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn eexist_after_windows_backoff_is_not_silently_forced_or_suppressed() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+case "$count" in
+  1) printf '%s\n' 'npm error code EPERM' 'npm error errno -4048' >&2; exit 1 ;;
+  2) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+esac
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap())),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        assert!(!run.final_attempt_forced);
+        let lines = fs::read_to_string(&attempts).unwrap();
+        assert_eq!(lines.lines().count(), 2);
+        assert!(lines.lines().all(|line| !line.contains("--force")));
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                run.output.status.code(),
+                &npm_output_detail(&run.output),
+                Some(prefix.to_str().unwrap()),
+                run.final_attempt_forced,
+            ),
+            InstallFailureKind::Unexpected
+        );
     }
 
     #[cfg(unix)]
@@ -941,7 +1347,7 @@ exit 0
         .unwrap();
 
         assert!(
-            output.status.success(),
+            output.output.status.success(),
             "the isolated-cache install must converge"
         );
         assert_eq!(
@@ -1002,13 +1408,22 @@ exit 0
     #[test]
     fn eexist_is_the_only_failure_that_arms_the_forced_retry() {
         assert!(is_bin_exists_failure(
-            "npm ERR! code EEXIST\nnpm ERR! path /usr/local/bin/hq"
+            "npm ERR! code EEXIST\nnpm ERR! path /usr/local/bin/hq",
+            Some("/usr/local"),
         ));
         assert!(!is_bin_exists_failure(
-            "npm ERR! code EACCES: permission denied, mkdir '/usr/local/lib/node_modules'"
+            "npm ERR! code EACCES: permission denied, mkdir '/usr/local/lib/node_modules'",
+            Some("/usr/local"),
         ));
-        assert!(!is_bin_exists_failure("npm ERR! network timeout"));
-        assert!(!is_bin_exists_failure(""));
+        assert!(!is_bin_exists_failure(
+            "npm error code 1\nnpm error command failed\nscript output EEXIST",
+            Some("/usr/local"),
+        ));
+        assert!(!is_bin_exists_failure(
+            "npm ERR! network timeout",
+            Some("/usr/local")
+        ));
+        assert!(!is_bin_exists_failure("", Some("/usr/local")));
     }
 
     // The forced retry reuses the base args plus `--force`, still targeting the

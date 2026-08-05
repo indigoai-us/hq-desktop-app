@@ -167,7 +167,9 @@ describe('master automatic-updates switch', () => {
 
     // 5. The target is pinned BEFORE npm runs, so a release published mid-install
     //    cannot get recorded as non-convergent without ever being attempted.
-    const beforeInstall = cliUpdate.slice(0, cliUpdate.indexOf(installCall));
+    const retryInstall = cliUpdate.indexOf(installCall);
+    expect(retryInstall).toBeGreaterThan(-1);
+    const beforeInstall = cliUpdate.slice(0, retryInstall);
     expect(beforeInstall).toContain('let latest = fetch_latest().await?;');
     expect(beforeInstall).toContain('let non_convergent_version = non_convergent_cli_version();');
     expect(normalize(beforeInstall)).toContain(
@@ -183,6 +185,22 @@ describe('master automatic-updates switch', () => {
   it('Rust CI cannot repair a stale lockfile before checking it', () => {
     expect(ciWorkflow).toContain('cargo test --workspace --locked');
     expect(ciWorkflow).toMatch(/working-directory: apps\/sync\/src-tauri\s+run: cargo test --locked/);
+  });
+
+  it('the CLI installer keeps its bounded retry ladder and final-attempt context', () => {
+    // The live install path must go through the four-attempt bounded ladder,
+    // rather than bypassing its causal `--force` bookkeeping. That context is
+    // what lets the core classifier distinguish a collision that survived npm's
+    // remedy from an initial EEXIST that is still unexpected and loud.
+    expect(cliUpdate).toContain('const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;');
+    expect(cliUpdate).toContain('run_npm_install_with_retries(');
+    expect(cliUpdate).toContain('"cleanup-forced-bin-collision"');
+    expect(cliUpdate).toContain('let final_attempt_forced = ledger.last().is_some_and');
+    expect(cliUpdate).toContain('classify_install_failure_with_final_attempt(');
+    expect(cliUpdate).toContain('report_install_failure_with_final_attempt(');
+    expect(normalize(cliUpdateCore)).toContain(
+      'scope.set_tag( "npm_final_attempt_forced",',
+    );
   });
 
   it('the non-convergent remedy reaches the user instead of the generic retry copy', () => {
