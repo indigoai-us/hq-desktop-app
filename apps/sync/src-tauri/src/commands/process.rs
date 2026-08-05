@@ -4,7 +4,7 @@
 //!                    events, emits `process://{handle}/exit` on termination.
 //! `cancel_process` — sends SIGTERM to the process group; after 5 s, SIGKILL.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, BufRead, BufReader};
 #[cfg(unix)]
@@ -12,7 +12,7 @@ use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -28,7 +28,6 @@ use nix::{
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-#[cfg(target_os = "windows")]
 use crate::util::logfile::log;
 
 #[cfg(target_os = "windows")]
@@ -36,7 +35,9 @@ use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{
+    CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -48,7 +49,9 @@ use windows::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
+};
 
 /// The point in the process lifecycle that failed.
 ///
@@ -69,6 +72,11 @@ pub enum ProcessError {
     Wait {
         source: io::Error,
     },
+    OwnershipLost {
+        handle: String,
+        generation: u64,
+        cleanup_error: Option<io::Error>,
+    },
 }
 
 impl ProcessError {
@@ -81,6 +89,9 @@ impl ProcessError {
             Self::Spawn { source, .. } => Some(source.kind()),
             Self::Stream { source, .. } => Some(source.kind()),
             Self::Wait { source } => Some(source.kind()),
+            Self::OwnershipLost { cleanup_error, .. } => {
+                cleanup_error.as_ref().map(io::Error::kind)
+            }
         }
     }
 
@@ -89,6 +100,9 @@ impl ProcessError {
             Self::Spawn { source, .. } => source.raw_os_error(),
             Self::Stream { source, .. } => source.raw_os_error(),
             Self::Wait { source } => source.raw_os_error(),
+            Self::OwnershipLost { cleanup_error, .. } => {
+                cleanup_error.as_ref().and_then(io::Error::raw_os_error)
+            }
         }
     }
 }
@@ -99,6 +113,20 @@ impl fmt::Display for ProcessError {
             Self::Spawn { cmd, source } => write!(f, "spawn '{cmd}': {source}"),
             Self::Stream { stream, source } => write!(f, "{stream}: {source}"),
             Self::Wait { source } => write!(f, "{source}"),
+            Self::OwnershipLost {
+                handle,
+                generation,
+                cleanup_error,
+            } => {
+                write!(
+                    f,
+                    "process generation {generation} lost ownership of handle {handle} before attachment"
+                )?;
+                if let Some(error) = cleanup_error {
+                    write!(f, "; stale child cleanup failed: {error}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -109,6 +137,9 @@ impl std::error::Error for ProcessError {
             Self::Spawn { source, .. } => Some(source),
             Self::Stream { source, .. } => Some(source),
             Self::Wait { source } => Some(source),
+            Self::OwnershipLost { cleanup_error, .. } => cleanup_error
+                .as_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static)),
         }
     }
 }
@@ -117,14 +148,21 @@ impl std::error::Error for ProcessError {
 // Process registry
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessTerminalOwner {
+    Running,
+    TerminationClaimed,
+    TerminalObserved,
+}
+
 struct ProcessEntry {
     /// A public handle can be reused after a cancelled run. Deferred cleanup
     /// must therefore carry this ownership token rather than only the handle.
     generation: u64,
     pid: Option<u32>,
     cancelled: bool,
-    #[cfg(target_os = "windows")]
-    job_handle: Option<isize>,
+    terminal_owner: ProcessTerminalOwner,
+    termination_target: Option<ProcessTerminationTarget>,
 }
 
 impl ProcessEntry {
@@ -133,8 +171,8 @@ impl ProcessEntry {
             generation,
             pid: None,
             cancelled: false,
-            #[cfg(target_os = "windows")]
-            job_handle: None,
+            terminal_owner: ProcessTerminalOwner::Running,
+            termination_target: None,
         }
     }
 }
@@ -158,10 +196,17 @@ pub struct CancellationAttempt {
     pub termination_effected: bool,
 }
 
+#[derive(Default)]
+struct CancellationRecordsState {
+    records: HashMap<(String, u64), CancellationRecord>,
+    pending_publications: HashSet<(String, u64)>,
+}
+
 static PROCESS_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, ProcessEntry>>>> = OnceLock::new();
-static CANCELLATION_RECORDS: OnceLock<Arc<Mutex<HashMap<(String, u64), CancellationRecord>>>> =
+static CANCELLATION_RECORDS: OnceLock<Arc<(Mutex<CancellationRecordsState>, Condvar)>> =
     OnceLock::new();
 static NEXT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
+const CANCELLATION_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Raised at the single application-exit choke point before child teardown.
 /// The daemon reads this as exit evidence; it does not alter cancellation or
@@ -176,8 +221,13 @@ fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-fn cancellation_records() -> &'static Arc<Mutex<HashMap<(String, u64), CancellationRecord>>> {
-    CANCELLATION_RECORDS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+fn cancellation_records() -> &'static Arc<(Mutex<CancellationRecordsState>, Condvar)> {
+    CANCELLATION_RECORDS.get_or_init(|| {
+        Arc::new((
+            Mutex::new(CancellationRecordsState::default()),
+            Condvar::new(),
+        ))
+    })
 }
 
 fn next_process_generation() -> u64 {
@@ -243,11 +293,13 @@ pub fn register_process_gen(handle: &str, pid: u32) -> u64 {
     let mut reg = process_registry().lock().unwrap();
     if let Some(entry) = reg.get_mut(handle) {
         entry.pid = Some(pid);
+        entry.termination_target = Some(ProcessTerminationTarget::for_pid(pid));
         entry.generation
     } else {
         let generation = next_process_generation();
         let mut entry = ProcessEntry::new(generation);
         entry.pid = Some(pid);
+        entry.termination_target = Some(ProcessTerminationTarget::for_pid(pid));
         reg.insert(handle.to_string(), entry);
         generation
     }
@@ -257,31 +309,11 @@ pub fn register_process(handle: &str, pid: u32) {
     let _ = register_process_gen(handle, pid);
 }
 
-#[cfg(target_os = "windows")]
-fn register_job_handle(handle: &str, generation: u64, job: isize) -> bool {
-    let mut reg = process_registry().lock().unwrap();
-    if let Some(entry) = reg
-        .get_mut(handle)
-        .filter(|entry| entry.generation == generation)
-    {
-        entry.job_handle = Some(job);
-        true
-    } else {
-        false
+fn close_process_entry(mut entry: ProcessEntry) {
+    if let Some(target) = entry.termination_target.take() {
+        close_termination_target(target);
     }
 }
-
-#[cfg(target_os = "windows")]
-fn close_process_entry(entry: ProcessEntry) {
-    if let Some(job) = entry.job_handle {
-        unsafe {
-            let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn close_process_entry(_entry: ProcessEntry) {}
 
 pub fn deregister_process(handle: &str) {
     let removed = process_registry().lock().unwrap().remove(handle);
@@ -369,8 +401,10 @@ pub fn is_cancelled_for_generation(handle: &str, generation: u64) -> bool {
     };
     registry_cancelled
         || cancellation_records()
+            .0
             .lock()
             .unwrap()
+            .records
             .contains_key(&(handle.to_string(), generation))
 }
 
@@ -381,18 +415,95 @@ pub fn cancellation_record_for_generation(
     handle: &str,
     generation: u64,
 ) -> Option<CancellationRecord> {
-    cancellation_records()
-        .lock()
-        .unwrap()
-        .get(&(handle.to_string(), generation))
-        .copied()
+    let key = (handle.to_string(), generation);
+    let (records, publication_completed) = &**cancellation_records();
+    let state = records.lock().unwrap();
+    let (state, timeout) = publication_completed
+        .wait_timeout_while(state, CANCELLATION_PUBLICATION_TIMEOUT, |state| {
+            state.pending_publications.contains(&key)
+        })
+        .unwrap();
+    if timeout.timed_out() && state.pending_publications.contains(&key) {
+        log(
+            "process",
+            &format!(
+                "cancellation publication timed out for {handle} generation {generation}; retaining non-effective attribution"
+            ),
+        );
+        return state.records.get(&key).copied().map(|mut record| {
+            record.termination_effected = false;
+            record
+        });
+    }
+    state.records.get(&key).copied()
 }
 
 fn clear_cancellation_record(handle: &str, generation: u64) {
-    cancellation_records()
-        .lock()
-        .unwrap()
-        .remove(&(handle.to_string(), generation));
+    let key = (handle.to_string(), generation);
+    let (records, publication_completed) = &**cancellation_records();
+    let mut state = records.lock().unwrap();
+    state.records.remove(&key);
+    state.pending_publications.remove(&key);
+    publication_completed.notify_all();
+}
+
+fn begin_cancellation_publication(
+    handle: &str,
+    generation: u64,
+    cause: Option<SyncCancelCause>,
+) -> (bool, bool) {
+    let key = (handle.to_string(), generation);
+    let (records, _) = &**cancellation_records();
+    let mut state = records.lock().unwrap();
+    let created = !state.records.contains_key(&key);
+    let record = state.records.entry(key.clone()).or_default();
+    if let Some(cause) = cause {
+        record.cause.get_or_insert(cause);
+    }
+    let owns_publication = state.pending_publications.insert(key);
+    (owns_publication, created)
+}
+
+fn begin_effect_publication_if_record(handle: &str, generation: u64) -> bool {
+    let key = (handle.to_string(), generation);
+    let (records, _) = &**cancellation_records();
+    let mut state = records.lock().unwrap();
+    if !state.records.contains_key(&key) {
+        return false;
+    }
+    state.pending_publications.insert(key)
+}
+
+fn complete_cancellation_publication(
+    handle: &str,
+    generation: u64,
+    observed_effect: bool,
+    attribution_allowed: bool,
+) -> bool {
+    let key = (handle.to_string(), generation);
+    let (records, publication_completed) = &**cancellation_records();
+    let mut state = records.lock().unwrap();
+    if let Some(record) = state.records.get_mut(&key) {
+        record.termination_effected |= observed_effect && attribution_allowed;
+    }
+    let termination_effected = state
+        .records
+        .get(&key)
+        .is_some_and(|record| record.termination_effected);
+    state.pending_publications.remove(&key);
+    publication_completed.notify_all();
+    termination_effected
+}
+
+fn abandon_cancellation_publication(handle: &str, generation: u64, remove_record: bool) {
+    let key = (handle.to_string(), generation);
+    let (records, publication_completed) = &**cancellation_records();
+    let mut state = records.lock().unwrap();
+    state.pending_publications.remove(&key);
+    if remove_record {
+        state.records.remove(&key);
+    }
+    publication_completed.notify_all();
 }
 
 fn mark_cancelled(handle: &str) -> bool {
@@ -475,24 +586,12 @@ fn assign_child_to_job(
     handle: &str,
     generation: u64,
     child: &std::process::Child,
-) -> JobAssignment {
+) -> (Option<isize>, JobAssignment) {
     let proc_handle = HANDLE(child.as_raw_handle());
     unsafe {
         match create_kill_on_close_job() {
             Ok(job) => match AssignProcessToJobObject(job, proc_handle) {
-                Ok(()) if register_job_handle(handle, generation, job.0 as isize) => {
-                    JobAssignment::Attached
-                }
-                Ok(()) => {
-                    let _ = CloseHandle(job);
-                    log(
-                        "process",
-                        &format!(
-                            "job attachment lost ownership for {handle} generation {generation}"
-                        ),
-                    );
-                    JobAssignment::AssignFailed
-                }
+                Ok(()) => (Some(job.0 as isize), JobAssignment::Attached),
                 Err(e) => {
                     let _ = CloseHandle(job);
                     log(
@@ -501,7 +600,7 @@ fn assign_child_to_job(
                             "AssignProcessToJobObject failed for {handle} generation {generation}: {e}"
                         ),
                     );
-                    JobAssignment::AssignFailed
+                    (None, JobAssignment::AssignFailed)
                 }
             },
             Err(e) => {
@@ -511,7 +610,7 @@ fn assign_child_to_job(
                         "create_kill_on_close_job failed for {handle} generation {generation}: {e}"
                     ),
                 );
-                JobAssignment::CreateFailed
+                (None, JobAssignment::CreateFailed)
             }
         }
     }
@@ -522,33 +621,121 @@ fn assign_child_to_job(
     _handle: &str,
     _generation: u64,
     _child: &std::process::Child,
-) -> JobAssignment {
-    JobAssignment::Attached
+) -> (Option<isize>, JobAssignment) {
+    (None, JobAssignment::Attached)
 }
 
-/// Snapshot of an exact generation's OS termination handles. It is copied
-/// while holding the registry mutex and used only after that mutex is released;
-/// record publication and the OS call deliberately happen under the separate
-/// cancellation-record mutex so an Exit callback cannot see a half-published
-/// result.
-#[derive(Clone, Copy, Default)]
+/// Exact-generation OS termination authority. Windows handles are transferred
+/// out of the registry when cancellation wins the terminal claim, so cleanup
+/// cannot close or recycle them while the termination call is in flight.
+#[derive(Default)]
 struct ProcessTerminationTarget {
     pid: Option<u32>,
     #[cfg(target_os = "windows")]
     job_handle: Option<isize>,
+    #[cfg(target_os = "windows")]
+    process_handle: Option<isize>,
+    #[cfg(target_os = "windows")]
+    owns_handles: bool,
 }
 
-fn target_for_generation(handle: &str, generation: u64) -> Option<ProcessTerminationTarget> {
+impl ProcessTerminationTarget {
+    fn for_pid(pid: u32) -> Self {
+        Self {
+            pid: Some(pid),
+            ..Self::default()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn duplicate_child_process_handle(child: &std::process::Child) -> Option<isize> {
+    let source_process = unsafe { GetCurrentProcess() };
+    let source_handle = HANDLE(child.as_raw_handle());
+    let mut duplicate = HANDLE::default();
+    let result = unsafe {
+        DuplicateHandle(
+            source_process,
+            source_handle,
+            source_process,
+            &mut duplicate,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    match result {
+        Ok(()) => Some(duplicate.0 as isize),
+        Err(error) => {
+            log(
+                "process",
+                &format!("DuplicateHandle failed for pid {}: {error}", child.id()),
+            );
+            None
+        }
+    }
+}
+
+fn prepare_termination_target(
+    handle: &str,
+    generation: u64,
+    child: &std::process::Child,
+) -> (ProcessTerminationTarget, JobAssignment) {
+    let (job_handle, assignment) = assign_child_to_job(handle, generation, child);
+    ProcessTerminationTarget::for_pid(child.id())
+        .with_platform_handles(job_handle, child, assignment)
+}
+
+impl ProcessTerminationTarget {
+    #[cfg(target_os = "windows")]
+    fn with_platform_handles(
+        mut self,
+        job_handle: Option<isize>,
+        child: &std::process::Child,
+        assignment: JobAssignment,
+    ) -> (Self, JobAssignment) {
+        self.job_handle = job_handle;
+        self.process_handle = duplicate_child_process_handle(child);
+        self.owns_handles = true;
+        (self, assignment)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn with_platform_handles(
+        self,
+        _job_handle: Option<isize>,
+        _child: &std::process::Child,
+        assignment: JobAssignment,
+    ) -> (Self, JobAssignment) {
+        (self, assignment)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn close_termination_target(target: ProcessTerminationTarget) {
+    if !target.owns_handles {
+        return;
+    }
+    for raw in [target.job_handle, target.process_handle]
+        .into_iter()
+        .flatten()
+    {
+        unsafe {
+            let _ = CloseHandle(HANDLE(raw as *mut std::ffi::c_void));
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn close_termination_target(_target: ProcessTerminationTarget) {}
+
+fn pid_for_generation(handle: &str, generation: u64) -> Option<u32> {
     process_registry()
         .lock()
         .unwrap()
         .get(handle)
         .filter(|entry| entry.generation == generation)
-        .map(|entry| ProcessTerminationTarget {
-            pid: entry.pid,
-            #[cfg(target_os = "windows")]
-            job_handle: entry.job_handle,
-        })
+        .and_then(|entry| entry.pid)
 }
 
 fn cancellation_requested_for_generation(handle: &str, generation: u64) -> bool {
@@ -670,7 +857,7 @@ fn windows_descendants(root_pid: u32) -> Vec<u32> {
 /// determines `termination_effected`, because it is the runner's terminal
 /// status that is later classified.
 #[cfg(target_os = "windows")]
-fn terminate_windows_pid_tree(root_pid: u32) -> bool {
+fn terminate_windows_pid_tree(root_pid: u32, root_handle: Option<isize>) -> bool {
     #[cfg(test)]
     if let Some(opened) = take_test_windows_open_process_result() {
         if !opened {
@@ -693,8 +880,6 @@ fn terminate_windows_pid_tree(root_pid: u32) -> bool {
 
     let mut pids = windows_descendants(root_pid);
     pids.reverse();
-    pids.push(root_pid);
-    let mut root_terminated = false;
 
     for pid in pids {
         let process = match unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) } {
@@ -712,7 +897,6 @@ fn terminate_windows_pid_tree(root_pid: u32) -> bool {
             let _ = CloseHandle(process);
         }
         match result {
-            Ok(()) if pid == root_pid => root_terminated = true,
             Ok(()) => {}
             Err(error) => log(
                 "process",
@@ -720,11 +904,55 @@ fn terminate_windows_pid_tree(root_pid: u32) -> bool {
             ),
         }
     }
-    root_terminated
+
+    if let Some(raw) = root_handle {
+        return match unsafe { TerminateProcess(HANDLE(raw as *mut std::ffi::c_void), 1) } {
+            Ok(()) => true,
+            Err(error) => {
+                log(
+                    "process",
+                    &format!("TerminateProcess failed for root pid {root_pid}: {error}"),
+                );
+                false
+            }
+        };
+    }
+
+    let process = match unsafe { OpenProcess(PROCESS_TERMINATE, false, root_pid) } {
+        Ok(process) => process,
+        Err(error) => {
+            log(
+                "process",
+                &format!("OpenProcess(PROCESS_TERMINATE) failed for root pid {root_pid}: {error}"),
+            );
+            return false;
+        }
+    };
+    let result = unsafe { TerminateProcess(process, 1) };
+    unsafe {
+        let _ = CloseHandle(process);
+    }
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            log(
+                "process",
+                &format!("TerminateProcess failed for root pid {root_pid}: {error}"),
+            );
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn terminate_target(target: ProcessTerminationTarget) -> bool {
+    let result = terminate_windows_target(&target);
+    close_termination_target(target);
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_windows_target(target: &ProcessTerminationTarget) -> bool {
     if let Some(job) = target.job_handle {
         #[cfg(test)]
         if let Some(terminated) = take_test_windows_job_result() {
@@ -742,7 +970,10 @@ fn terminate_target(target: ProcessTerminationTarget) -> bool {
             }
         };
     }
-    target.pid.map(terminate_windows_pid_tree).unwrap_or(false)
+    target
+        .pid
+        .map(|pid| terminate_windows_pid_tree(pid, target.process_handle))
+        .unwrap_or(false)
 }
 
 #[cfg(unix)]
@@ -758,34 +989,190 @@ fn terminate_target(_target: ProcessTerminationTarget) -> bool {
     false
 }
 
-/// Complete a cancellation that was recorded before the child had a pid or a
-/// Job Object. The registry is sampled first and released before the record
-/// lock is acquired; the record lock then spans the OS call and publication so
-/// the terminal callback cannot observe a requested-but-not-yet-published kill.
-fn complete_pre_spawn_cancellation(handle: &str, generation: u64) {
-    complete_pre_spawn_cancellation_with(handle, generation, terminate_target);
+#[cfg(target_os = "windows")]
+fn windows_target_has_exited(target: &ProcessTerminationTarget) -> Option<bool> {
+    #[cfg(test)]
+    if !target.owns_handles {
+        return Some(false);
+    }
+    let raw = target.process_handle?;
+    let observed = unsafe { WaitForSingleObject(HANDLE(raw as *mut std::ffi::c_void), 0) };
+    if observed == WAIT_OBJECT_0 {
+        Some(true)
+    } else if observed == WAIT_TIMEOUT {
+        Some(false)
+    } else {
+        log(
+            "process",
+            &format!(
+                "WaitForSingleObject returned unexpected status {}",
+                observed.0
+            ),
+        );
+        None
+    }
 }
 
-fn complete_pre_spawn_cancellation_with<F>(handle: &str, generation: u64, terminate: F)
-where
-    F: FnOnce(ProcessTerminationTarget) -> bool,
-{
-    if !cancellation_requested_for_generation(handle, generation) {
-        return;
+#[cfg(not(target_os = "windows"))]
+fn windows_target_has_exited(_target: &ProcessTerminationTarget) -> Option<bool> {
+    Some(false)
+}
+
+enum ProcessAttachOutcome {
+    Attached {
+        generation: u64,
+    },
+    Cancelled {
+        generation: u64,
+        target: ProcessTerminationTarget,
+        attribution_allowed: bool,
+    },
+    RefusedStale {
+        generation: u64,
+        target: ProcessTerminationTarget,
+    },
+}
+
+/// Atomically attach the prepared OS target to the generation snapshotted
+/// before spawn. A stale runner never writes its pid or handles into a
+/// replacement entry. If cancellation already won, attachment transfers the
+/// target directly to that cancellation instead of exposing it to cleanup.
+fn attach_prepared_process(
+    handle: &str,
+    expected_generation: Option<u64>,
+    target: ProcessTerminationTarget,
+    owns_cancellation_publication: bool,
+) -> ProcessAttachOutcome {
+    let pid = target
+        .pid
+        .expect("spawned process target must carry its pid");
+    let mut registry = process_registry().lock().unwrap();
+
+    let generation = if let Some(expected_generation) = expected_generation {
+        let Some(entry) = registry
+            .get_mut(handle)
+            .filter(|entry| entry.generation == expected_generation && entry.pid.is_none())
+        else {
+            return ProcessAttachOutcome::RefusedStale {
+                generation: expected_generation,
+                target,
+            };
+        };
+        entry.pid = Some(pid);
+        if entry.cancelled && owns_cancellation_publication {
+            match windows_target_has_exited(&target) {
+                Some(true) => {
+                    entry.terminal_owner = ProcessTerminalOwner::TerminalObserved;
+                }
+                observed_running => {
+                    entry.terminal_owner = ProcessTerminalOwner::TerminationClaimed;
+                    return ProcessAttachOutcome::Cancelled {
+                        generation: expected_generation,
+                        target,
+                        attribution_allowed: observed_running == Some(false),
+                    };
+                }
+            }
+        }
+        entry.termination_target = Some(target);
+        expected_generation
+    } else {
+        use std::collections::hash_map::Entry;
+        match registry.entry(handle.to_string()) {
+            Entry::Occupied(_) => {
+                return ProcessAttachOutcome::RefusedStale {
+                    generation: 0,
+                    target,
+                };
+            }
+            Entry::Vacant(vacant) => {
+                let generation = next_process_generation();
+                let mut entry = ProcessEntry::new(generation);
+                entry.pid = Some(pid);
+                entry.termination_target = Some(target);
+                vacant.insert(entry);
+                generation
+            }
+        }
+    };
+
+    ProcessAttachOutcome::Attached { generation }
+}
+
+fn mark_terminal_observed(handle: &str, generation: u64) -> bool {
+    let mut registry = process_registry().lock().unwrap();
+    let Some(entry) = registry
+        .get_mut(handle)
+        .filter(|entry| entry.generation == generation)
+    else {
+        return false;
+    };
+    if entry.terminal_owner == ProcessTerminalOwner::Running {
+        entry.terminal_owner = ProcessTerminalOwner::TerminalObserved;
+        true
+    } else {
+        false
     }
-    let Some(target) = target_for_generation(handle, generation) else {
-        return;
+}
+
+fn close_child_pipes(child: &mut std::process::Child) {
+    drop(child.stdin.take());
+    drop(child.stdout.take());
+    drop(child.stderr.take());
+}
+
+fn kill_child_directly_or_confirm_exited(child: &mut std::process::Child) -> io::Result<bool> {
+    match child.kill() {
+        Ok(()) => Ok(false),
+        Err(kill_error) => match child.try_wait() {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Err(kill_error),
+            Err(probe_error) => Err(io::Error::new(
+                probe_error.kind(),
+                format!(
+                    "direct stale-child kill failed: {kill_error}; exit probe also failed: {probe_error}"
+                ),
+            )),
+        },
+    }
+}
+
+fn terminate_stale_spawn(
+    child: &mut std::process::Child,
+    target: ProcessTerminationTarget,
+) -> io::Result<()> {
+    close_child_pipes(child);
+    #[cfg(unix)]
+    let terminated = target
+        .pid
+        .is_some_and(|pid| signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL).is_ok());
+    #[cfg(target_os = "windows")]
+    let terminated = terminate_target(target);
+    #[cfg(not(any(unix, target_os = "windows")))]
+    let terminated = terminate_target(target);
+
+    let already_reaped = if terminated {
+        false
+    } else {
+        kill_child_directly_or_confirm_exited(child)?
     };
-    let key = (handle.to_string(), generation);
-    let mut records = cancellation_records().lock().unwrap();
-    let Some(record) = records.get_mut(&key) else {
-        // The actor that marked the registry entry has not published its
-        // cancellation record yet. It already snapshotted this generation's
-        // target and still owns the termination call, so issuing another one
-        // here could make Exit run before the causal record exists.
-        return;
-    };
-    record.termination_effected |= terminate(target);
+    if already_reaped {
+        Ok(())
+    } else {
+        child.wait().map(|_| ())
+    }
+}
+
+fn ownership_lost_error(
+    handle: &str,
+    generation: u64,
+    cleanup_error: Option<io::Error>,
+) -> ProcessError {
+    ProcessError::OwnershipLost {
+        handle: handle.to_string(),
+        generation,
+        cleanup_error,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -796,7 +1183,30 @@ pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Resu
 where
     F: FnMut(ProcessEvent),
 {
-    let pre_registered_generation = generation_for_handle(handle);
+    run_process_impl_inner(handle, generation_for_handle(handle), spawn, on_event)
+}
+
+pub(crate) fn run_process_impl_for_generation<F>(
+    handle: &str,
+    generation: u64,
+    spawn: &SpawnArgs,
+    on_event: F,
+) -> Result<(), ProcessError>
+where
+    F: FnMut(ProcessEvent),
+{
+    run_process_impl_inner(handle, Some(generation), spawn, on_event)
+}
+
+fn run_process_impl_inner<F>(
+    handle: &str,
+    pre_registered_generation: Option<u64>,
+    spawn: &SpawnArgs,
+    on_event: F,
+) -> Result<(), ProcessError>
+where
+    F: FnMut(ProcessEvent),
+{
     let mut cmd = build_spawn_command(&spawn.cmd, &spawn.args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     put_in_own_process_group(&mut cmd);
@@ -816,8 +1226,6 @@ where
             if let Some(generation) = pre_registered_generation {
                 let _ = deregister_generation(handle, generation);
                 clear_cancellation_record(handle, generation);
-            } else {
-                deregister_process(handle);
             }
             return Err(ProcessError::Spawn {
                 cmd: spawn.cmd.clone(),
@@ -826,10 +1234,44 @@ where
         }
     };
 
-    let pid = child.id();
-    let generation = register_process_gen(handle, pid);
-    let _job_assignment = assign_child_to_job(handle, generation, &child);
-    complete_pre_spawn_cancellation(handle, generation);
+    let prepared_generation = pre_registered_generation.unwrap_or(0);
+    let (target, _job_assignment) = prepare_termination_target(handle, prepared_generation, &child);
+    let owns_cancellation_publication = pre_registered_generation
+        .is_some_and(|generation| begin_effect_publication_if_record(handle, generation));
+    let generation = match attach_prepared_process(
+        handle,
+        pre_registered_generation,
+        target,
+        owns_cancellation_publication,
+    ) {
+        ProcessAttachOutcome::Attached { generation } => {
+            if owns_cancellation_publication {
+                let _ = complete_cancellation_publication(handle, generation, false, true);
+            }
+            generation
+        }
+        ProcessAttachOutcome::Cancelled {
+            generation,
+            target,
+            attribution_allowed,
+        } => {
+            let _ = terminate_claimed_target_with(
+                handle,
+                generation,
+                target,
+                attribution_allowed,
+                terminate_target,
+            );
+            generation
+        }
+        ProcessAttachOutcome::RefusedStale { generation, target } => {
+            if owns_cancellation_publication && generation != 0 {
+                let _ = complete_cancellation_publication(handle, generation, false, true);
+            }
+            let cleanup_error = terminate_stale_spawn(&mut child, target).err();
+            return Err(ownership_lost_error(handle, generation, cleanup_error));
+        }
+    };
 
     let stdout = child.stdout.take().expect("stdout pipe");
     let stderr = child.stderr.take().expect("stderr pipe");
@@ -977,6 +1419,7 @@ fn emit_exit_then_deregister<F>(
 ) where
     F: FnMut(ProcessEvent),
 {
+    let _ = mark_terminal_observed(handle, generation);
     on_event(event);
     let _ = deregister_generation(handle, generation);
     clear_cancellation_record(handle, generation);
@@ -1008,7 +1451,40 @@ where
     F: FnMut(ProcessEvent),
     S: FnOnce(&mut std::process::Child),
 {
-    let pre_registered_generation = generation_for_handle(handle);
+    run_process_with_stdin_impl_inner(
+        handle,
+        generation_for_handle(handle),
+        spawn,
+        on_event,
+        on_spawn,
+    )
+}
+
+pub(crate) fn run_process_with_stdin_impl_for_generation<F, S>(
+    handle: &str,
+    generation: u64,
+    spawn: &SpawnArgs,
+    on_event: F,
+    on_spawn: S,
+) -> Result<(), ProcessError>
+where
+    F: FnMut(ProcessEvent),
+    S: FnOnce(&mut std::process::Child),
+{
+    run_process_with_stdin_impl_inner(handle, Some(generation), spawn, on_event, on_spawn)
+}
+
+fn run_process_with_stdin_impl_inner<F, S>(
+    handle: &str,
+    pre_registered_generation: Option<u64>,
+    spawn: &SpawnArgs,
+    on_event: F,
+    on_spawn: S,
+) -> Result<(), ProcessError>
+where
+    F: FnMut(ProcessEvent),
+    S: FnOnce(&mut std::process::Child),
+{
     let mut cmd = build_spawn_command(&spawn.cmd, &spawn.args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1030,8 +1506,6 @@ where
             if let Some(generation) = pre_registered_generation {
                 let _ = deregister_generation(handle, generation);
                 clear_cancellation_record(handle, generation);
-            } else {
-                deregister_process(handle);
             }
             return Err(ProcessError::Spawn {
                 cmd: spawn.cmd.clone(),
@@ -1040,10 +1514,44 @@ where
         }
     };
 
-    let pid = child.id();
-    let generation = register_process_gen(handle, pid);
-    let _job_assignment = assign_child_to_job(handle, generation, &child);
-    complete_pre_spawn_cancellation(handle, generation);
+    let prepared_generation = pre_registered_generation.unwrap_or(0);
+    let (target, _job_assignment) = prepare_termination_target(handle, prepared_generation, &child);
+    let owns_cancellation_publication = pre_registered_generation
+        .is_some_and(|generation| begin_effect_publication_if_record(handle, generation));
+    let generation = match attach_prepared_process(
+        handle,
+        pre_registered_generation,
+        target,
+        owns_cancellation_publication,
+    ) {
+        ProcessAttachOutcome::Attached { generation } => {
+            if owns_cancellation_publication {
+                let _ = complete_cancellation_publication(handle, generation, false, true);
+            }
+            generation
+        }
+        ProcessAttachOutcome::Cancelled {
+            generation,
+            target,
+            attribution_allowed,
+        } => {
+            let _ = terminate_claimed_target_with(
+                handle,
+                generation,
+                target,
+                attribution_allowed,
+                terminate_target,
+            );
+            generation
+        }
+        ProcessAttachOutcome::RefusedStale { generation, target } => {
+            if owns_cancellation_publication && generation != 0 {
+                let _ = complete_cancellation_publication(handle, generation, false, true);
+            }
+            let cleanup_error = terminate_stale_spawn(&mut child, target).err();
+            return Err(ownership_lost_error(handle, generation, cleanup_error));
+        }
+    };
 
     // Let the caller take stdin (and stash the handle) before we start
     // reading stdout/stderr — if the caller's setup writes a startup
@@ -1188,17 +1696,84 @@ where
 // Cancellation
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn mark_cancelled_generation(handle: &str, generation: u64) -> Option<ProcessTerminationTarget> {
+enum CancellationClaim {
+    Stale,
+    TerminalObserved,
+    AlreadyClaimed,
+    PendingAttachment,
+    Target {
+        target: ProcessTerminationTarget,
+        attribution_allowed: bool,
+    },
+}
+
+// Lock order is intentionally non-nesting: publication helpers release the
+// cancellation-record mutex before this function acquires the registry mutex;
+// a successful claim transfers the target out before the record mutex is taken
+// again for the OS call. `TerminationClaimed` is the terminal linearization
+// point. A terminal observation (or a signalled retained Windows process
+// handle) that wins first stays natural; a cancellation claim that wins first
+// exclusively owns the subsequent termination status.
+fn claim_cancelled_generation(handle: &str, generation: u64) -> CancellationClaim {
     let mut registry = process_registry().lock().unwrap();
-    let entry = registry
+    let Some(entry) = registry
         .get_mut(handle)
-        .filter(|entry| entry.generation == generation)?;
-    entry.cancelled = true;
-    Some(ProcessTerminationTarget {
-        pid: entry.pid,
-        #[cfg(target_os = "windows")]
-        job_handle: entry.job_handle,
-    })
+        .filter(|entry| entry.generation == generation)
+    else {
+        return CancellationClaim::Stale;
+    };
+    match entry.terminal_owner {
+        ProcessTerminalOwner::TerminalObserved => return CancellationClaim::TerminalObserved,
+        ProcessTerminalOwner::TerminationClaimed => return CancellationClaim::AlreadyClaimed,
+        ProcessTerminalOwner::Running => {}
+    }
+    let Some(target) = entry.termination_target.as_ref() else {
+        entry.cancelled = true;
+        return CancellationClaim::PendingAttachment;
+    };
+    match windows_target_has_exited(target) {
+        Some(true) => {
+            entry.terminal_owner = ProcessTerminalOwner::TerminalObserved;
+            CancellationClaim::TerminalObserved
+        }
+        observed_running => {
+            entry.cancelled = true;
+            entry.terminal_owner = ProcessTerminalOwner::TerminationClaimed;
+            CancellationClaim::Target {
+                target: entry
+                    .termination_target
+                    .take()
+                    .expect("claimed target must remain attached"),
+                attribution_allowed: observed_running == Some(false),
+            }
+        }
+    }
+}
+
+fn terminate_claimed_target_with<F>(
+    handle: &str,
+    generation: u64,
+    target: ProcessTerminationTarget,
+    attribution_allowed: bool,
+    terminate: F,
+) -> bool
+where
+    F: FnOnce(ProcessTerminationTarget) -> bool,
+{
+    let key = (handle.to_string(), generation);
+    let (records, publication_completed) = &**cancellation_records();
+    let mut state = records.lock().unwrap();
+    let observed = terminate(target);
+    if let Some(record) = state.records.get_mut(&key) {
+        record.termination_effected |= observed && attribution_allowed;
+    }
+    let termination_effected = state
+        .records
+        .get(&key)
+        .is_some_and(|record| record.termination_effected);
+    state.pending_publications.remove(&key);
+    publication_completed.notify_all();
+    termination_effected
 }
 
 #[cfg(unix)]
@@ -1208,19 +1783,95 @@ fn schedule_sigkill_escalation(handle: String, generation: u64, sigkill_delay: D
         if !cancellation_requested_for_generation(&handle, generation) {
             return;
         }
-        let Some(target) = target_for_generation(&handle, generation) else {
+        let Some(pid) = pid_for_generation(&handle, generation) else {
             return;
         };
-        let Some(pid) = target.pid else {
-            return;
-        };
-        let key = (handle.clone(), generation);
-        let mut records = cancellation_records().lock().unwrap();
-        let effect = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL).is_ok();
-        if let Some(record) = records.get_mut(&key) {
-            record.termination_effected |= effect;
+        if begin_effect_publication_if_record(&handle, generation) {
+            let _ = terminate_claimed_target_with(
+                &handle,
+                generation,
+                ProcessTerminationTarget::for_pid(pid),
+                true,
+                |target| {
+                    target.pid.is_some_and(|pid| {
+                        signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL).is_ok()
+                    })
+                },
+            );
         }
     });
+}
+
+fn cancel_registered_generation_with<P, F>(
+    handle: &str,
+    generation: u64,
+    cause: Option<SyncCancelCause>,
+    sigkill_delay: Duration,
+    after_publish: P,
+    terminate: F,
+) -> CancellationAttempt
+where
+    P: FnOnce(),
+    F: FnOnce(ProcessTerminationTarget) -> bool,
+{
+    let (owns_publication, created_record) =
+        begin_cancellation_publication(handle, generation, cause);
+    if !owns_publication {
+        let record = cancellation_record_for_generation(handle, generation).unwrap_or_default();
+        return CancellationAttempt {
+            executed: cancellation_requested_for_generation(handle, generation),
+            termination_effected: record.termination_effected,
+        };
+    }
+
+    // Test barriers pause here. Cause evidence is already visible while the
+    // registry is not yet marked, so attachment either precedes the mark and is
+    // claimed below or follows it and owns the process-layer completion.
+    after_publish();
+    let claim = claim_cancelled_generation(handle, generation);
+
+    let (termination_effected, target_pid) = match claim {
+        CancellationClaim::Stale | CancellationClaim::TerminalObserved => {
+            abandon_cancellation_publication(handle, generation, created_record);
+            return CancellationAttempt::default();
+        }
+        CancellationClaim::AlreadyClaimed => (
+            complete_cancellation_publication(handle, generation, false, true),
+            None,
+        ),
+        CancellationClaim::PendingAttachment => (
+            complete_cancellation_publication(handle, generation, false, true),
+            None,
+        ),
+        CancellationClaim::Target {
+            target,
+            attribution_allowed,
+        } => {
+            let target_pid = target.pid;
+            (
+                terminate_claimed_target_with(
+                    handle,
+                    generation,
+                    target,
+                    attribution_allowed,
+                    terminate,
+                ),
+                target_pid,
+            )
+        }
+    };
+
+    #[cfg(unix)]
+    if target_pid.is_some() {
+        schedule_sigkill_escalation(handle.to_string(), generation, sigkill_delay);
+    }
+    #[cfg(not(unix))]
+    let _ = (sigkill_delay, target_pid);
+
+    CancellationAttempt {
+        executed: true,
+        termination_effected,
+    }
 }
 
 fn cancel_registered_generation(
@@ -1229,37 +1880,14 @@ fn cancel_registered_generation(
     cause: Option<SyncCancelCause>,
     sigkill_delay: Duration,
 ) -> CancellationAttempt {
-    let Some(target) = mark_cancelled_generation(handle, generation) else {
-        return CancellationAttempt::default();
-    };
-
-    // The registry mutex is released before taking this lock. Keep this lock
-    // across the termination syscall and the observed-result write so a wait
-    // callback cannot classify an exit against a partially published record.
-    let key = (handle.to_string(), generation);
-    let mut records = cancellation_records().lock().unwrap();
-    let record = records.entry(key).or_default();
-    if let Some(cause) = cause {
-        // Preserve the first explicit initiator: an app-exit teardown racing a
-        // user Stop must not rewrite the cause that actually began the stop.
-        record.cause.get_or_insert(cause);
-    }
-    let observed = terminate_target(target);
-    record.termination_effected |= observed;
-    let termination_effected = record.termination_effected;
-    drop(records);
-
-    #[cfg(unix)]
-    if target.pid.is_some() {
-        schedule_sigkill_escalation(handle.to_string(), generation, sigkill_delay);
-    }
-    #[cfg(not(unix))]
-    let _ = sigkill_delay;
-
-    CancellationAttempt {
-        executed: true,
-        termination_effected,
-    }
+    cancel_registered_generation_with(
+        handle,
+        generation,
+        cause,
+        sigkill_delay,
+        || {},
+        terminate_target,
+    )
 }
 
 /// Cancel exactly the generation owned by a sync initiator. A stale watchdog is
@@ -1335,13 +1963,19 @@ pub fn terminate_pids_for_exit(pids: &[(String, u32, u64)], grace: Duration) {
         thread::sleep(grace);
     }
     for (handle, pid, generation) in pids {
-        let key = (handle.clone(), *generation);
-        let mut records = cancellation_records().lock().unwrap();
-        let effect = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGKILL).is_ok();
-        if let Some(record) = records.get_mut(&key) {
-            record.termination_effected |= effect;
+        if begin_effect_publication_if_record(handle, *generation) {
+            let _ = terminate_claimed_target_with(
+                handle,
+                *generation,
+                ProcessTerminationTarget::for_pid(*pid),
+                true,
+                |target| {
+                    target.pid.is_some_and(|pid| {
+                        signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL).is_ok()
+                    })
+                },
+            );
         }
-        drop(records);
         let _ = deregister_generation(handle, *generation);
     }
 }
@@ -1690,6 +2324,7 @@ mod windows_spawn_tests {
         assert!(!terminate_target(ProcessTerminationTarget {
             pid: None,
             job_handle: Some(1),
+            ..ProcessTerminationTarget::default()
         }));
 
         for outcomes in [
@@ -1805,11 +2440,151 @@ mod windows_spawn_tests {
             ))
         );
     }
+
+    #[test]
+    fn naturally_completed_windows_code_one_cannot_be_claimed_by_late_cancellation() {
+        let handle = format!("windows-natural-exit-race-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register test generation");
+        let mut command = build_spawn_command(
+            "cmd.exe",
+            &["/d".to_string(), "/c".to_string(), "exit /b 1".to_string()],
+        );
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let mut child = command.spawn().expect("spawn natural code-one child");
+        let (target, _) = prepare_termination_target(&handle, generation, &child);
+        assert!(matches!(
+            attach_prepared_process(&handle, Some(generation), target, false),
+            ProcessAttachOutcome::Attached {
+                generation: attached
+            } if attached == generation
+        ));
+
+        let status = child.wait().expect("observe natural child exit");
+        assert_eq!(status.code(), Some(1));
+        let attempt = cancel_process_for_generation(
+            &handle,
+            generation,
+            SyncCancelCause::UserStop,
+            Duration::ZERO,
+        );
+
+        assert_eq!(
+            attempt,
+            CancellationAttempt::default(),
+            "a signalled root-process handle proves the code-one exit predated cancellation"
+        );
+        assert!(
+            cancellation_record_for_generation(&handle, generation).is_none(),
+            "late cancellation must not create suppressible attribution"
+        );
+        assert!(
+            !is_cancelled(&handle),
+            "late cancellation must not rewrite a natural terminal state"
+        );
+        assert!(deregister_generation(&handle, generation));
+    }
+
+    #[test]
+    fn claimed_windows_target_survives_registry_cleanup_until_termination_finishes() {
+        let handle = format!("windows-cleanup-race-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register test generation");
+        let spawn = SpawnArgs {
+            cmd: "cmd.exe".to_string(),
+            args: vec![
+                "/d".to_string(),
+                "/c".to_string(),
+                "ping 127.0.0.1 -n 30 > nul".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let mut command = build_spawn_command(&spawn.cmd, &spawn.args);
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let mut child = command.spawn().expect("spawn Windows fixture child");
+        let (target, _) = prepare_termination_target(&handle, generation, &child);
+        assert!(matches!(
+            attach_prepared_process(&handle, Some(generation), target, false),
+            ProcessAttachOutcome::Attached {
+                generation: attached
+            } if attached == generation
+        ));
+
+        let (claimed_tx, claimed_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let cancel_handle = handle.clone();
+        let canceller = thread::spawn(move || {
+            let attempt = cancel_registered_generation_with(
+                &cancel_handle,
+                generation,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                Duration::ZERO,
+                || {},
+                |target| {
+                    claimed_tx.send(()).expect("announce target claim");
+                    resume_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("cleanup must release termination barrier");
+                    terminate_target(target)
+                },
+            );
+            done_tx.send(attempt).expect("return cancellation result");
+        });
+
+        claimed_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("cancellation must claim the owned handles");
+        assert!(
+            deregister_generation(&handle, generation),
+            "cleanup may remove registry bookkeeping after handle ownership transfers"
+        );
+        resume_tx.send(()).expect("resume Windows termination");
+        let attempt = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("termination must finish with the transferred handles");
+        canceller.join().expect("canceller thread must not panic");
+        assert_eq!(
+            attempt,
+            CancellationAttempt {
+                executed: true,
+                termination_effected: true,
+            }
+        );
+        let status = child.wait().expect("reap terminated fixture child");
+        assert_eq!(status.code(), Some(1));
+        clear_cancellation_record(&handle, generation);
+    }
 }
 
 #[cfg(test)]
 mod registry_exit_order_tests {
     use super::*;
+
+    #[cfg(any(unix, target_os = "windows"))]
+    fn long_running_spawn() -> SpawnArgs {
+        #[cfg(unix)]
+        {
+            SpawnArgs {
+                cmd: "sh".to_string(),
+                args: vec!["-c".to_string(), "exec sleep 30".to_string()],
+                cwd: None,
+                env: None,
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            SpawnArgs {
+                cmd: "cmd.exe".to_string(),
+                args: vec![
+                    "/d".to_string(),
+                    "/c".to_string(),
+                    "ping 127.0.0.1 -n 30 > nul".to_string(),
+                ],
+                cwd: None,
+                env: None,
+            }
+        }
+    }
 
     #[test]
     fn exit_callback_observes_cancelled_registry_entry_until_it_returns() {
@@ -1908,6 +2683,61 @@ mod registry_exit_order_tests {
         assert!(deregister_generation(&handle, second));
     }
 
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn ordinary_runner_refuses_stale_generation_attachment_without_touching_replacement() {
+        let handle = format!("ordinary-stale-attach-test-{}", Uuid::new_v4());
+        let stale = try_register_handle_gen(&handle).expect("stale generation acquires handle");
+        assert!(deregister_generation(&handle, stale));
+        let replacement =
+            try_register_handle_gen(&handle).expect("replacement generation acquires handle");
+
+        let mut events = Vec::new();
+        let error =
+            run_process_impl_for_generation(&handle, stale, &long_running_spawn(), |event| {
+                events.push(event)
+            })
+            .expect_err("stale generation must be refused after its child spawns");
+
+        assert!(matches!(
+            error,
+            ProcessError::OwnershipLost { generation, .. } if generation == stale
+        ));
+        assert!(events.is_empty());
+        assert_eq!(generation_for_handle(&handle), Some(replacement));
+        assert_eq!(lookup_pid(&handle), None);
+        assert!(deregister_generation(&handle, replacement));
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn stdin_runner_refuses_stale_generation_attachment_without_touching_replacement() {
+        let handle = format!("stdin-stale-attach-test-{}", Uuid::new_v4());
+        let stale = try_register_handle_gen(&handle).expect("stale generation acquires handle");
+        assert!(deregister_generation(&handle, stale));
+        let replacement =
+            try_register_handle_gen(&handle).expect("replacement generation acquires handle");
+        let on_spawn_called = AtomicBool::new(false);
+
+        let error = run_process_with_stdin_impl_for_generation(
+            &handle,
+            stale,
+            &long_running_spawn(),
+            |_| {},
+            |_| on_spawn_called.store(true, Ordering::Release),
+        )
+        .expect_err("stale stdin generation must be refused after its child spawns");
+
+        assert!(matches!(
+            error,
+            ProcessError::OwnershipLost { generation, .. } if generation == stale
+        ));
+        assert!(!on_spawn_called.load(Ordering::Acquire));
+        assert_eq!(generation_for_handle(&handle), Some(replacement));
+        assert_eq!(lookup_pid(&handle), None);
+        assert!(deregister_generation(&handle, replacement));
+    }
+
     #[test]
     fn first_explicit_cancellation_cause_is_not_rewritten_by_app_exit() {
         let handle = format!("cause-order-test-{}", Uuid::new_v4());
@@ -1935,6 +2765,51 @@ mod registry_exit_order_tests {
         clear_cancellation_record(&handle, generation);
     }
 
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn terminal_observation_refuses_a_late_cancellation() {
+        let handle = format!("terminal-before-cancel-test-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register generation");
+        #[cfg(unix)]
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            cwd: None,
+            env: None,
+        };
+        #[cfg(target_os = "windows")]
+        let spawn = SpawnArgs {
+            cmd: "cmd.exe".to_string(),
+            args: vec!["/d".to_string(), "/c".to_string(), "exit /b 1".to_string()],
+            cwd: None,
+            env: None,
+        };
+
+        let mut late_cancellation = None;
+        run_process_impl(&handle, &spawn, |event| {
+            if let ProcessEvent::Exit { code, .. } = event {
+                assert_eq!(code, Some(1));
+                let attempt = cancel_process_for_generation(
+                    &handle,
+                    generation,
+                    SyncCancelCause::UserStop,
+                    Duration::ZERO,
+                );
+                late_cancellation = Some((
+                    attempt,
+                    cancellation_record_for_generation(&handle, generation),
+                ));
+            }
+        })
+        .expect("natural code-one child should reach its terminal callback");
+
+        assert_eq!(
+            late_cancellation,
+            Some((CancellationAttempt::default(), None)),
+            "a cancellation observed after the terminal status cannot own that exit"
+        );
+    }
+
     #[test]
     fn abandoned_preflight_generation_clears_its_exact_cancellation_record() {
         let handle = format!("abandoned-generation-test-{}", Uuid::new_v4());
@@ -1953,37 +2828,88 @@ mod registry_exit_order_tests {
         assert!(cancellation_record_for_generation(&handle, generation).is_none());
     }
 
+    #[cfg(any(unix, target_os = "windows"))]
     #[test]
-    fn checkpoint_waits_for_the_canceller_to_publish_its_record() {
+    fn publication_precedes_the_cancelled_mark_and_attached_child_is_terminated() {
         let handle = format!("publication-order-test-{}", Uuid::new_v4());
         let generation = try_register_handle_gen(&handle).expect("register generation");
-        assert_eq!(register_process_gen(&handle, 424_244), generation);
-        assert!(mark_cancelled_generation(&handle, generation).is_some());
-
-        let calls = std::cell::Cell::new(0_u8);
-        complete_pre_spawn_cancellation_with(&handle, generation, |_| {
-            calls.set(calls.get() + 1);
-            true
+        let spawn = long_running_spawn();
+        let mut command = build_spawn_command(&spawn.cmd, &spawn.args);
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        put_in_own_process_group(&mut command);
+        let mut child = command.spawn().expect("spawn publication-race fixture");
+        let child_pid = child.id();
+        let (target, _) = prepare_termination_target(&handle, generation, &child);
+        let (published_tx, published_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle_in_thread = handle.clone();
+        let canceller = thread::spawn(move || {
+            let attempt = cancel_registered_generation_with(
+                &handle_in_thread,
+                generation,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                Duration::ZERO,
+                || {
+                    published_tx.send(()).expect("announce publication");
+                    resume_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("attachment must release publication barrier");
+                },
+                |target| {
+                    assert_eq!(target.pid, Some(child_pid));
+                    terminate_target(target)
+                },
+            );
+            done_tx.send(attempt).expect("return cancellation attempt");
         });
+
+        published_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("canceller must publish before marking");
+        {
+            let state = cancellation_records().0.lock().unwrap();
+            assert!(state.records.contains_key(&(handle.clone(), generation)));
+            assert!(state
+                .pending_publications
+                .contains(&(handle.clone(), generation)));
+        }
+        assert!(!cancellation_requested_for_generation(&handle, generation));
+
+        let owns_publication = begin_effect_publication_if_record(&handle, generation);
+        assert!(
+            !owns_publication,
+            "the active canceller retains publication ownership"
+        );
+        assert!(matches!(
+            attach_prepared_process(
+                &handle,
+                Some(generation),
+                target,
+                owns_publication,
+            ),
+            ProcessAttachOutcome::Attached {
+                generation: attached
+            } if attached == generation
+        ));
+
+        resume_tx.send(()).expect("resume canceller");
+        let attempt = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("canceller must finish after attachment");
+        canceller.join().expect("canceller thread must not panic");
         assert_eq!(
-            calls.get(),
-            0,
-            "the canceller that marked the generation still owns publication and termination"
+            attempt,
+            CancellationAttempt {
+                executed: true,
+                termination_effected: true,
+            }
         );
-        assert!(cancellation_record_for_generation(&handle, generation).is_none());
-
-        cancellation_records().lock().unwrap().insert(
-            (handle.clone(), generation),
-            CancellationRecord {
-                cause: Some(SyncCancelCause::TimeoutWatchdog),
-                termination_effected: false,
-            },
+        let status = child.wait().expect("reap publication-race fixture");
+        assert!(
+            !status.success(),
+            "the attached child must actually terminate"
         );
-        complete_pre_spawn_cancellation_with(&handle, generation, |_| {
-            calls.set(calls.get() + 1);
-            true
-        });
-        assert_eq!(calls.get(), 1);
         assert_eq!(
             cancellation_record_for_generation(&handle, generation),
             Some(CancellationRecord {
