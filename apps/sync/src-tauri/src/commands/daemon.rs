@@ -9,12 +9,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
     app_exit_requested, cancel_process_impl, deregister_process, is_cancelled, is_registered,
     lookup_pid, run_process_impl, try_register_handle, ProcessError, ProcessEvent,
 };
+#[cfg(target_os = "windows")]
+use crate::commands::session_end_observer::SessionEndObserverHandle;
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, RunTotals};
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
@@ -29,8 +33,9 @@ use hq_desktop_core::sync_outcome::{
     describe_exit, is_windows_console_control_exit, normalized_abort_description,
     should_capture_watcher_exit, spawn_failure_capture_policy, spawn_failure_fingerprint_token,
     termination_fingerprint_token, termination_fingerprint_token_for_host,
-    watcher_exit_capture_policy, windows_exit_status_hex, windows_fault_symbol,
-    SpawnFailureCapturePolicy, TerminationHost, WatcherExitCapturePolicy,
+    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
+    windows_exit_status_hex, windows_fault_symbol, SpawnFailureCapturePolicy, TerminationHost,
+    WatcherExitCapturePolicy, WindowsTerminatorAttribution, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 
 #[cfg(target_os = "windows")]
@@ -671,8 +676,12 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // re-spawn), and rate-limit a crash-loop to ~log2(N) events
                     // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
                     let cancelled = is_cancelled(DAEMON_HANDLE);
-                    let exit_context =
-                        watcher_exit_capture_context(&totals, cancelled, &watcher_phase);
+                    let exit_context = watcher_exit_capture_context(
+                        &totals,
+                        cancelled,
+                        &watcher_phase,
+                        current_windows_terminator_attribution(&app),
+                    );
                     let last_stderr = process_last_stderr
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -793,6 +802,7 @@ struct WatcherExitCaptureContext {
     runner_error_companies: u32,
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
+    windows_terminator: Option<WindowsTerminatorAttribution>,
 }
 
 #[derive(Debug, Clone)]
@@ -856,6 +866,7 @@ fn watcher_exit_capture_context(
     totals: &Mutex<RunTotals>,
     cancelled: bool,
     phase_context: &Mutex<WatcherPhaseContext>,
+    windows_terminator: Option<WindowsTerminatorAttribution>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -881,7 +892,24 @@ fn watcher_exit_capture_context(
             phase_context.observed_at.elapsed(),
         )
         .to_string(),
+        windows_terminator,
     }
+}
+
+#[cfg(target_os = "windows")]
+fn current_windows_terminator_attribution(app: &AppHandle) -> Option<WindowsTerminatorAttribution> {
+    Some(
+        app.try_state::<SessionEndObserverHandle>()
+            .map(|observer| observer.tracker().attribution_now())
+            .unwrap_or(WindowsTerminatorAttribution::ObserverUnavailable),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_windows_terminator_attribution(
+    _app: &AppHandle,
+) -> Option<WindowsTerminatorAttribution> {
+    None
 }
 
 /// Effects used by the production watcher handlers.
@@ -1032,7 +1060,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     let capture_policy = if is_benign_watcher_exit(code, signal) {
         WatcherExitCapturePolicy::LocalLogOnly
     } else {
-        watcher_exit_capture_policy(code, signal)
+        watcher_exit_capture_policy_with_attribution(code, signal, context.windows_terminator)
     };
     let policy_consecutive =
         effects.note_watcher_capture_policy_streak(capture_policy, consecutive);
@@ -1079,21 +1107,39 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     context: &WatcherExitCaptureContext,
 ) {
     if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
-        effects.log(
-            "daemon",
-            &format!(
-                "environmental watcher exit #{consecutive} — capture skipped \
-                 (code={code:?} signal={signal:?})"
-            ),
-        );
-        effects.add_breadcrumb(
-            "daemon.exit",
-            sentry::Level::Info,
-            format!(
-                "environmental auto-sync watcher exit #{consecutive}: \
-                 code={code:?} signal={signal:?}"
-            ),
-        );
+        if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
+            && signal.is_none()
+            && context.windows_terminator == Some(WindowsTerminatorAttribution::SessionEndObserved)
+        {
+            effects.log(
+                "daemon",
+                &format!("session-end-observed watcher exit #{consecutive} — capture skipped"),
+            );
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
+                    "session-end-observed auto-sync watcher exit #{consecutive}: \
+                     windows_terminator=session_end_observed"
+                ),
+            );
+        } else {
+            effects.log(
+                "daemon",
+                &format!(
+                    "environmental watcher exit #{consecutive} — capture skipped \
+                     (code={code:?} signal={signal:?})"
+                ),
+            );
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
+                    "environmental auto-sync watcher exit #{consecutive}: \
+                     code={code:?} signal={signal:?}"
+                ),
+            );
+        }
         return;
     }
 
@@ -1174,6 +1220,11 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
     if let Some(operations) = &context.runner_error_ops {
         tags.push(("runner_error_ops", operations.clone()));
+    }
+    if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none() {
+        if let Some(attribution) = context.windows_terminator {
+            tags.push(("windows_terminator", attribution.class_name().to_string()));
+        }
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
@@ -3142,6 +3193,7 @@ mod tests {
             runner_error_companies: 2,
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
+            windows_terminator: None,
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3283,6 +3335,7 @@ mod tests {
             runner_error_companies: 1,
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
+            windows_terminator: None,
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3365,6 +3418,129 @@ mod tests {
             deliberate_stop.captures.is_empty(),
             "a cancelled app-quit path remains deliberately silent"
         );
+    }
+
+    #[test]
+    fn watcher_session_terminate_with_observed_session_end_is_local_log_only() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        let context = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+
+        assert!(effects.captures.is_empty());
+        assert!(effects
+            .logs
+            .iter()
+            .any(|(_, message)| { message.contains("session-end-observed watcher exit") }));
+        assert!(effects.breadcrumbs.iter().any(|(category, _, message)| {
+            category == "daemon.exit" && message.contains("windows_terminator=session_end_observed")
+        }));
+    }
+
+    #[test]
+    fn watcher_session_terminate_unattributed_or_failed_still_captures_with_fixed_tag() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        for attribution in [
+            WindowsTerminatorAttribution::Unattributed,
+            WindowsTerminatorAttribution::ObserverUnavailable,
+            WindowsTerminatorAttribution::ObserverFailed,
+        ] {
+            let context = WatcherExitCaptureContext {
+                windows_terminator: Some(attribution),
+                ..Default::default()
+            };
+            let mut effects = RecordingWatcherEffects::default();
+
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(OBSERVED_SESSION_TERMINATE_EXIT),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                current_termination_host(),
+                &context,
+            );
+
+            assert_eq!(effects.captures.len(), 1);
+            assert_eq!(
+                recorded_tag(&effects.captures[0], "windows_terminator"),
+                attribution.class_name()
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_session_terminate_without_attribution_keeps_the_existing_capture_shape() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:session-terminate",
+                "none"
+            ]
+        );
+        assert!(effects.captures[0]
+            .tags
+            .iter()
+            .all(|(name, _)| *name != "windows_terminator"));
+    }
+
+    #[test]
+    fn affirmed_attribution_does_not_change_any_other_exit_shape() {
+        let context = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+
+        assert_eq!(effects.captures.len(), 1);
+        assert!(effects.captures[0]
+            .tags
+            .iter()
+            .all(|(name, _)| *name != "windows_terminator"));
     }
 
     #[test]
