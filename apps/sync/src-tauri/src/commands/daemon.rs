@@ -3260,6 +3260,14 @@ mod tests {
         );
 
         let mut external_kill = RecordingWatcherEffects::default();
+        let external_context = WatcherExitCaptureContext {
+            lifecycle_state: "running".to_string(),
+            runner_fatal_class: "none".to_string(),
+            runner_error_class: "none",
+            runner_phase: "unknown".to_string(),
+            runner_phase_elapsed_bucket: "under_1m".to_string(),
+            ..Default::default()
+        };
         handle_watcher_exit_with_effects(
             &mut external_kill,
             None,
@@ -3268,7 +3276,7 @@ mod tests {
             false,
             "npx",
             None,
-            &WatcherExitCaptureContext::default(),
+            &external_context,
         );
         assert_eq!(
             external_kill.captures.len(),
