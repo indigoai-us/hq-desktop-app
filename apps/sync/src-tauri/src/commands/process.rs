@@ -75,6 +75,16 @@ impl ProcessError {
         matches!(self, Self::OwnershipLost { .. })
     }
 
+    pub fn ownership_cleanup_failed(&self) -> bool {
+        matches!(
+            self,
+            Self::OwnershipLost {
+                cleanup_error: Some(_),
+                ..
+            }
+        )
+    }
+
     pub fn error_kind(&self) -> Option<io::ErrorKind> {
         match self {
             Self::Spawn { source, .. } => Some(source.kind()),
@@ -299,14 +309,25 @@ pub fn generation_for_handle(handle: &str) -> Option<u64> {
 /// callers retain `register_process` below; wait owners use this return value
 /// to ensure their late cleanup cannot remove a replacement.
 pub fn register_process_gen(handle: &str, pid: u32) -> u64 {
+    let mut containment = ChildContainment::default();
+    register_process_gen_with_containment(handle, pid, &mut containment)
+}
+
+fn register_process_gen_with_containment(
+    handle: &str,
+    pid: u32,
+    containment: &mut ChildContainment,
+) -> u64 {
     let mut reg = process_registry().lock().unwrap();
     if let Some(entry) = reg.active.get_mut(handle) {
         entry.pid = Some(pid);
+        containment.attach_to_entry(entry);
         entry.generation
     } else {
         let generation = next_process_generation();
         let mut entry = ProcessEntry::new(generation);
         entry.pid = Some(pid);
+        containment.attach_to_entry(&mut entry);
         reg.active.insert(handle.to_string(), entry);
         generation
     }
@@ -328,6 +349,16 @@ fn register_process_for_generation(
     generation: u64,
     pid: u32,
 ) -> ProcessAttachOutcome {
+    let mut containment = ChildContainment::default();
+    register_process_for_generation_with_containment(handle, generation, pid, &mut containment)
+}
+
+fn register_process_for_generation_with_containment(
+    handle: &str,
+    generation: u64,
+    pid: u32,
+    containment: &mut ChildContainment,
+) -> ProcessAttachOutcome {
     let mut registry = process_registry().lock().unwrap();
     let Some(entry) = registry
         .active
@@ -343,6 +374,7 @@ fn register_process_for_generation(
     if entry.cancelled {
         ProcessAttachOutcome::Cancelled
     } else {
+        containment.attach_to_entry(entry);
         ProcessAttachOutcome::Attached
     }
 }
@@ -565,6 +597,37 @@ fn take_test_stale_cleanup_failure(handle: &str) -> Option<io::Error> {
         .map(|kind| io::Error::new(kind, "injected stale-child cleanup failure"))
 }
 
+#[cfg(test)]
+type TestDegradedWaitHook = Box<dyn FnOnce() + Send + 'static>;
+
+#[cfg(test)]
+fn test_degraded_wait_hooks() -> &'static Mutex<HashMap<String, TestDegradedWaitHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, TestDegradedWaitHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn set_test_degraded_wait_hook<F>(handle: &str, hook: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    test_degraded_wait_hooks()
+        .lock()
+        .unwrap()
+        .insert(handle.to_string(), Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_test_degraded_wait_hook(handle: &str) {
+    let hook = test_degraded_wait_hooks().lock().unwrap().remove(handle);
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_test_degraded_wait_hook(_handle: &str) {}
+
 #[cfg(unix)]
 fn put_in_own_process_group(cmd: &mut Command) {
     cmd.process_group(0);
@@ -605,47 +668,114 @@ unsafe fn create_kill_on_close_job() -> Result<HANDLE, String> {
     Ok(job)
 }
 
-#[cfg(target_os = "windows")]
-fn assign_child_to_job(handle: &str, generation: u64, child: &std::process::Child) -> bool {
-    let proc_handle = HANDLE(child.as_raw_handle());
-    unsafe {
-        match create_kill_on_close_job() {
-            Ok(job) => match AssignProcessToJobObject(job, proc_handle) {
-                Ok(()) => {
-                    let mut registry = process_registry().lock().unwrap();
-                    let Some(entry) = registry.active.get_mut(handle).filter(|entry| {
-                        entry.generation == generation && entry.pid == Some(child.id())
-                    }) else {
-                        // The child is already inside a KILL_ON_JOB_CLOSE job.
-                        // Closing our sole handle terminates its tree without
-                        // touching the replacement generation.
+#[derive(Default)]
+struct ChildContainment {
+    #[cfg(target_os = "windows")]
+    job_handle: Option<isize>,
+}
+
+impl ChildContainment {
+    /// Put the child in a private kill-on-close job immediately after spawn,
+    /// before any ownership decision can reject it. Descendants created while
+    /// the spawn actor is checking its generation therefore inherit the same
+    /// containment instead of escaping a later direct-parent cleanup.
+    fn establish(handle: &str, child: &std::process::Child) -> Self {
+        let mut containment = Self::default();
+        #[cfg(target_os = "windows")]
+        unsafe {
+            let proc_handle = HANDLE(child.as_raw_handle());
+            match create_kill_on_close_job() {
+                Ok(job) => match AssignProcessToJobObject(job, proc_handle) {
+                    Ok(()) => containment.job_handle = Some(job.0 as isize),
+                    Err(error) => {
                         let _ = CloseHandle(job);
-                        return false;
-                    };
-                    entry.job_handle = Some(job.0 as isize);
+                        eprintln!(
+                            "[process] AssignProcessToJobObject failed for handle {handle}: {error}"
+                        );
+                    }
+                },
+                Err(error) => {
+                    eprintln!(
+                        "[process] create_kill_on_close_job failed for handle {handle}: {error}"
+                    );
                 }
-                Err(e) => {
-                    let _ = CloseHandle(job);
-                    eprintln!("[process] AssignProcessToJobObject failed for handle {handle}: {e}");
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (handle, child);
+        containment
+    }
+
+    fn attach_to_entry(&mut self, entry: &mut ProcessEntry) {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(job) = self.job_handle.take() {
+                debug_assert!(entry.job_handle.is_none());
+                entry.job_handle = Some(job);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = entry;
+    }
+
+    /// Terminate a still-private Windows process tree. On other platforms the
+    /// process-group cleanup below remains authoritative.
+    fn terminate_tree(&mut self, handle: &str) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            let Some(job) = self.job_handle.take() else {
+                return false;
+            };
+            let job_handle = HANDLE(job as *mut std::ffi::c_void);
+            let terminated = unsafe {
+                match TerminateJobObject(job_handle, 1) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!(
+                            "[process] failed to terminate private stale-child job for handle {handle}: {error}"
+                        );
+                        false
+                    }
                 }
-            },
-            Err(e) => {
-                eprintln!("[process] create_kill_on_close_job failed for handle {handle}: {e}");
+            };
+            unsafe {
+                if let Err(error) = CloseHandle(job_handle) {
+                    eprintln!(
+                        "[process] failed to close private stale-child job for handle {handle}: {error}"
+                    );
+                }
+            }
+            terminated
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = handle;
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ChildContainment {
+    fn drop(&mut self) {
+        if let Some(job) = self.job_handle.take() {
+            unsafe {
+                if let Err(error) = CloseHandle(HANDLE(job as *mut std::ffi::c_void)) {
+                    eprintln!("[process] failed to close pending child Job Object: {error}");
+                }
             }
         }
     }
-    true
-}
-
-#[cfg(not(target_os = "windows"))]
-fn assign_child_to_job(_handle: &str, _generation: u64, _child: &std::process::Child) -> bool {
-    true
 }
 
 /// Terminate and reap a child whose spawn actor no longer owns the public
 /// handle. Cleanup uses the still-owned `Child` identity directly and must not
 /// inspect or mutate the replacement registered under the same handle.
-fn terminate_stale_spawn(handle: &str, child: &mut std::process::Child) -> io::Result<()> {
+fn terminate_stale_spawn(
+    handle: &str,
+    child: &mut std::process::Child,
+    containment: &mut ChildContainment,
+) -> io::Result<()> {
     #[cfg(test)]
     if let Some(error) = take_test_stale_cleanup_failure(handle) {
         return Err(error);
@@ -653,7 +783,9 @@ fn terminate_stale_spawn(handle: &str, child: &mut std::process::Child) -> io::R
 
     close_child_pipes(child);
 
-    let already_reaped = {
+    let already_reaped = if containment.terminate_tree(handle) {
+        false
+    } else {
         #[cfg(unix)]
         {
             match signal::kill(Pid::from_raw(-(child.id() as i32)), Signal::SIGKILL) {
@@ -769,26 +901,91 @@ fn kill_child_directly_or_confirm_exited(child: &mut std::process::Child) -> io:
 fn ownership_lost_after_spawn(
     handle: &str,
     generation: u64,
-    child: &mut std::process::Child,
+    mut child: std::process::Child,
     attached_to_registry: bool,
+    mut containment: ChildContainment,
 ) -> ProcessError {
-    let cleanup_error = if attached_to_registry {
+    let cleanup_result = if attached_to_registry {
         #[cfg(unix)]
         {
-            terminate_registered_spawn(child, handle, generation).err()
+            terminate_registered_spawn(&mut child, handle, generation)
         }
         #[cfg(not(unix))]
         {
-            terminate_stale_spawn(handle, child).err()
+            terminate_stale_spawn(handle, &mut child, &mut containment)
         }
     } else {
-        terminate_stale_spawn(handle, child).err()
+        terminate_stale_spawn(handle, &mut child, &mut containment)
     };
-    if attached_to_registry && cleanup_error.is_none() {
-        let _ = revoke_signal_authority_for_generation(handle, generation);
-        let _ = deregister_generation(handle, generation);
+
+    match cleanup_result {
+        Ok(()) => {
+            if attached_to_registry {
+                let _ = revoke_signal_authority_for_generation(handle, generation);
+                let _ = deregister_generation(handle, generation);
+            }
+            ownership_lost_error(handle, generation, None)
+        }
+        Err(cleanup_error) => {
+            spawn_ownership_cleanup_owner(
+                handle.to_string(),
+                generation,
+                child,
+                attached_to_registry,
+                containment,
+            );
+            ownership_lost_error(handle, generation, Some(cleanup_error))
+        }
     }
-    ownership_lost_error(handle, generation, cleanup_error)
+}
+
+/// Preserve the sole `Child` wait/reap owner after an immediate stale-child
+/// cleanup failure. The background owner retries teardown, then waits even if
+/// that retry also fails; it never publishes terminal state for the replacement
+/// generation and removes only the exact attached generation it was handed.
+fn spawn_ownership_cleanup_owner(
+    handle: String,
+    generation: u64,
+    mut child: std::process::Child,
+    attached_to_registry: bool,
+    mut containment: ChildContainment,
+) {
+    thread::spawn(move || {
+        let retry = if attached_to_registry {
+            #[cfg(unix)]
+            {
+                terminate_registered_spawn(&mut child, &handle, generation)
+            }
+            #[cfg(not(unix))]
+            {
+                terminate_stale_spawn(&handle, &mut child, &mut containment)
+            }
+        } else {
+            terminate_stale_spawn(&handle, &mut child, &mut containment)
+        };
+
+        if let Err(retry_error) = retry {
+            eprintln!(
+                "[process] background stale-child cleanup retry failed for handle {handle} generation {generation}: {retry_error}; retaining wait owner"
+            );
+            close_child_pipes(&mut child);
+            let wait_result = if attached_to_registry {
+                wait_for_terminal_status(&mut child, &handle, generation).map(|_| ())
+            } else {
+                child.wait().map(|_| ())
+            };
+            if let Err(wait_error) = wait_result {
+                eprintln!(
+                    "[process] background stale-child wait failed for handle {handle} generation {generation}: {wait_error}"
+                );
+            }
+        }
+
+        if attached_to_registry {
+            let _ = revoke_signal_authority_for_generation(&handle, generation);
+            let _ = deregister_generation(&handle, generation);
+        }
+    });
 }
 
 fn ownership_lost_error(
@@ -902,7 +1099,10 @@ fn wait_for_terminal_status(
                 let still_running = {
                     let mut registry = process_registry().lock().unwrap();
                     match child.try_wait() {
-                        Ok(None) => true,
+                        Ok(None) => {
+                            run_test_degraded_wait_hook(handle);
+                            true
+                        }
                         Ok(Some(status)) => {
                             if let Some(entry) =
                                 entry_for_generation_mut(&mut registry, handle, generation)
@@ -1004,31 +1204,40 @@ where
             });
         }
     };
+    let mut containment = ChildContainment::establish(handle, &child);
     run_test_post_spawn_hook(handle, &child);
 
     let pid = child.id();
     let generation = if let Some(generation) = pre_registered_generation {
-        match register_process_for_generation(handle, generation, pid) {
+        match register_process_for_generation_with_containment(
+            handle,
+            generation,
+            pid,
+            &mut containment,
+        ) {
             ProcessAttachOutcome::Attached => generation,
             ProcessAttachOutcome::Cancelled => {
                 return Err(ownership_lost_after_spawn(
-                    handle, generation, &mut child, true,
+                    handle,
+                    generation,
+                    child,
+                    true,
+                    containment,
                 ));
             }
             ProcessAttachOutcome::RefusedStale => {
                 return Err(ownership_lost_after_spawn(
-                    handle, generation, &mut child, false,
+                    handle,
+                    generation,
+                    child,
+                    false,
+                    containment,
                 ));
             }
         }
     } else {
-        register_process_gen(handle, pid)
+        register_process_gen_with_containment(handle, pid, &mut containment)
     };
-    if !assign_child_to_job(handle, generation, &child) {
-        return Err(ownership_lost_after_spawn(
-            handle, generation, &mut child, true,
-        ));
-    }
 
     let stdout = child.stdout.take().expect("stdout pipe");
     let stderr = child.stderr.take().expect("stderr pipe");
@@ -1236,31 +1445,40 @@ where
             });
         }
     };
+    let mut containment = ChildContainment::establish(handle, &child);
     run_test_post_spawn_hook(handle, &child);
 
     let pid = child.id();
     let generation = if let Some(generation) = pre_registered_generation {
-        match register_process_for_generation(handle, generation, pid) {
+        match register_process_for_generation_with_containment(
+            handle,
+            generation,
+            pid,
+            &mut containment,
+        ) {
             ProcessAttachOutcome::Attached => generation,
             ProcessAttachOutcome::Cancelled => {
                 return Err(ownership_lost_after_spawn(
-                    handle, generation, &mut child, true,
+                    handle,
+                    generation,
+                    child,
+                    true,
+                    containment,
                 ));
             }
             ProcessAttachOutcome::RefusedStale => {
                 return Err(ownership_lost_after_spawn(
-                    handle, generation, &mut child, false,
+                    handle,
+                    generation,
+                    child,
+                    false,
+                    containment,
                 ));
             }
         }
     } else {
-        register_process_gen(handle, pid)
+        register_process_gen_with_containment(handle, pid, &mut containment)
     };
-    if !assign_child_to_job(handle, generation, &child) {
-        return Err(ownership_lost_after_spawn(
-            handle, generation, &mut child, true,
-        ));
-    }
 
     // Let the caller take stdin (and stash the handle) before we start
     // reading stdout/stderr — if the caller's setup writes a startup
@@ -2414,41 +2632,106 @@ mod registry_exit_order_tests {
         use std::process::Command as StdCommand;
         use std::sync::atomic::AtomicUsize;
 
-        let handle = format!("dispatch-order-{}", Uuid::new_v4());
-        let generation = try_register_handle_gen(&handle).expect("acquire test handle");
-        let mut child = StdCommand::new("sh")
+        // Ordering A: the dispatcher owns the registry lock before the wait
+        // owner can publish revocation. Pause at the real kill seam, start the
+        // wait owner, then release the signal. The target is demonstrably live
+        // and unreaped when dispatch wins.
+        let dispatch_first_handle = format!("dispatch-first-{}", Uuid::new_v4());
+        let dispatch_first_generation =
+            try_register_handle_gen(&dispatch_first_handle).expect("acquire test handle");
+        let mut dispatch_first_child = StdCommand::new("sh")
             .args(["-c", "sleep 30"])
             .process_group(0)
             .spawn()
             .expect("spawn live fixture");
-        assert_eq!(register_process_gen(&handle, child.id()), generation);
+        let dispatch_first_pid = dispatch_first_child.id();
+        assert_eq!(
+            register_process_gen(&dispatch_first_handle, dispatch_first_pid),
+            dispatch_first_generation
+        );
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let killer_handle = dispatch_first_handle.clone();
+        let killer = thread::spawn(move || {
+            dispatch_signal_checked_with(
+                &killer_handle,
+                dispatch_first_generation,
+                dispatch_first_pid,
+                Signal::SIGKILL,
+                |target, signal_to_send| {
+                    entered_tx
+                        .send(())
+                        .expect("ordering receiver must remain alive");
+                    release_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("test must release the lock-held dispatcher");
+                    signal::kill(target, signal_to_send)
+                },
+            )
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("dispatcher must reach the lock-held kill seam");
         assert!(
-            child.try_wait().expect("probe live fixture").is_none(),
+            dispatch_first_child
+                .try_wait()
+                .expect("probe live fixture")
+                .is_none(),
             "ordering A must dispatch only while the target is still unreaped"
         );
+        let waiter_handle = dispatch_first_handle.clone();
+        let waiter = thread::spawn(move || {
+            wait_for_terminal_status(
+                &mut dispatch_first_child,
+                &waiter_handle,
+                dispatch_first_generation,
+            )
+        });
+        release_tx.send(()).expect("release lock-held dispatcher");
+        assert_eq!(
+            killer.join().expect("dispatcher thread must not panic"),
+            SignalDispatch::Delivered
+        );
+        let status = waiter
+            .join()
+            .expect("wait owner must not panic")
+            .expect("wait owner must reap the signalled child");
+        assert_eq!(exit_signal(&status), Some(Signal::SIGKILL as i32));
+        assert!(deregister_generation(
+            &dispatch_first_handle,
+            dispatch_first_generation
+        ));
+
+        // Ordering B: the wait owner really reaps a second child and publishes
+        // revocation before either cancellation dispatch. Neither immediate nor
+        // delayed escalation may enter the recording kill seam afterwards.
+        let reap_first_handle = format!("reap-first-{}", Uuid::new_v4());
+        let reap_first_generation =
+            try_register_handle_gen(&reap_first_handle).expect("acquire reap-first handle");
+        let mut reap_first_child = StdCommand::new("sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn reap-first fixture");
+        let reap_first_pid = reap_first_child.id();
+        assert_eq!(
+            register_process_gen(&reap_first_handle, reap_first_pid),
+            reap_first_generation
+        );
+        let status = wait_for_terminal_status(
+            &mut reap_first_child,
+            &reap_first_handle,
+            reap_first_generation,
+        )
+        .expect("wait owner must reap before stale dispatches");
+        assert!(status.success());
 
         let calls = AtomicUsize::new(0);
-        let delivered = dispatch_signal_checked_with(
-            &handle,
-            generation,
-            child.id(),
-            Signal::SIGTERM,
-            |_, _| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        );
-        assert_eq!(delivered, SignalDispatch::Delivered);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-
-        // Ordering B models the wait owner committing revoke+reap before either
-        // cancellation dispatch. Neither immediate nor delayed escalation may
-        // enter the kill seam after that point.
-        assert!(revoke_signal_authority_for_generation(&handle, generation));
         let immediate = dispatch_signal_checked_with(
-            &handle,
-            generation,
-            child.id(),
+            &reap_first_handle,
+            reap_first_generation,
+            reap_first_pid,
             Signal::SIGTERM,
             |_, _| {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -2456,9 +2739,9 @@ mod registry_exit_order_tests {
             },
         );
         let delayed = dispatch_signal_checked_with(
-            &handle,
-            generation,
-            child.id(),
+            &reap_first_handle,
+            reap_first_generation,
+            reap_first_pid,
             Signal::SIGKILL,
             |_, _| {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -2469,14 +2752,13 @@ mod registry_exit_order_tests {
         assert_eq!(delayed, SignalDispatch::RefusedRevoked);
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            1,
+            0,
             "refused paths must not kill"
         );
-
-        signal::kill(Pid::from_raw(-(child.id() as i32)), Signal::SIGKILL)
-            .expect("clean up live fixture process group");
-        child.wait().expect("reap live fixture");
-        assert!(deregister_generation(&handle, generation));
+        assert!(deregister_generation(
+            &reap_first_handle,
+            reap_first_generation
+        ));
     }
 
     #[cfg(unix)]
@@ -2539,14 +2821,51 @@ mod registry_exit_order_tests {
         assert!(deregister_generation(&echild_handle, echild_generation));
 
         // An irrecoverable observation error uses the lock-scoped try_wait
-        // fallback; it publishes revocation in that critical section once the
-        // fixture becomes waitable.
+        // fallback. While the child is still running the first poll proves
+        // cancellation authority remains live; after the delivered SIGKILL the
+        // same path atomically publishes revocation with the reap.
         let einval_handle = format!("observation-einval-{}", Uuid::new_v4());
-        let (einval_generation, mut einval_child) = start_exiting_child(&einval_handle);
+        let einval_generation =
+            try_register_handle_gen(&einval_handle).expect("acquire EINVAL handle");
+        let mut einval_child = StdCommand::new("sh")
+            .args(["-c", "sleep 30"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn live EINVAL fixture");
         let einval_pid = einval_child.id();
-        set_test_observation_results(vec![Err(io::Error::from_raw_os_error(libc::EINVAL))]);
-        wait_for_terminal_status(&mut einval_child, &einval_handle, einval_generation)
+        assert_eq!(
+            register_process_gen(&einval_handle, einval_pid),
+            einval_generation
+        );
+        let (poll_tx, poll_rx) = mpsc::channel();
+        set_test_degraded_wait_hook(&einval_handle, move || {
+            poll_tx
+                .send(())
+                .expect("degraded-wait receiver must remain alive");
+        });
+        let waiter_handle = einval_handle.clone();
+        let einval_waiter = thread::spawn(move || {
+            set_test_observation_results(vec![Err(io::Error::from_raw_os_error(libc::EINVAL))]);
+            wait_for_terminal_status(&mut einval_child, &waiter_handle, einval_generation)
+        });
+        poll_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("live child must enter degraded polling");
+        assert_eq!(
+            dispatch_signal_checked(
+                &einval_handle,
+                einval_generation,
+                einval_pid,
+                Signal::SIGKILL,
+            ),
+            SignalDispatch::Delivered,
+            "degraded observation must retain signal authority while the child is unreaped"
+        );
+        let status = einval_waiter
+            .join()
+            .expect("degraded wait owner must not panic")
             .expect("degraded wait path must still report the child status");
+        assert_eq!(exit_signal(&status), Some(Signal::SIGKILL as i32));
         assert_refused_after_revocation(&einval_handle, einval_generation, einval_pid);
         assert!(deregister_generation(&einval_handle, einval_generation));
     }

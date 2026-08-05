@@ -488,12 +488,18 @@ fn force_clear_daemon_guard_with_probe<F>(daemon_alive_probe: F)
 where
     F: FnOnce() -> bool,
 {
-    force_clear_daemon_guard_impl(daemon_alive_probe())
+    // Capture the actor that crossed the wedge deadline before probing. A
+    // replacement may register while the liveness check runs; the stale actor
+    // must keep its original tokens rather than re-resolving that replacement.
+    let ownership = *daemon_guard()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    force_clear_daemon_guard_impl(ownership, daemon_alive_probe())
 }
 
 /// Force-clear with the liveness re-probe result injected, so the abort/kill
 /// decision is unit-testable without a real pid file.
-fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
+fn force_clear_daemon_guard_impl(ownership: Option<DaemonGuardStamp>, daemon_alive_recheck: bool) {
     if daemon_alive_recheck {
         // The supervisor thought the daemon was down, but it is alive on
         // re-check — the "down" reading was a liveness flake. Aborting here is
@@ -527,14 +533,6 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
         message: Some("force-clearing wedged start guard (no live daemon on re-check)".into()),
         ..Default::default()
     });
-    // Snapshot the paired registry/guard ownership record in one critical
-    // section. A concurrent respawn can replace the whole stamp, but can never
-    // make this force-clear combine one start's registration with another's
-    // guard generation.
-    let ownership = *daemon_guard()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
     force_clear_daemon_generation(ownership);
 }
 
@@ -1398,6 +1396,41 @@ fn record_watcher_process_error_with_effects<E: WatcherProcessEffects>(
     effects: &mut E,
     error: ProcessError,
 ) {
+    if error.ownership_cleanup_failed() {
+        let kind = error.error_kind().unwrap_or(std::io::ErrorKind::Other);
+        let raw_os_error = error.raw_os_error();
+        effects.reset_exec_not_runnable_failure_streak();
+        let consecutive = effects.note_watcher_crashed();
+        let lifecycle_state = if effects.within_respawn_backoff() {
+            WatchDaemonState::Backoff
+        } else {
+            WatchDaemonState::Stopped
+        };
+        effects.set_lifecycle_state(lifecycle_state, DaemonFailureCategory::Crash);
+        effects.log(
+            "daemon",
+            &format!(
+                "stale watcher cleanup failed; background wait owner retained without touching its replacement: {error}"
+            ),
+        );
+        if should_capture_crash(consecutive) {
+            effects.capture(
+                &format!(
+                    "auto-sync watcher stale-child cleanup failed \
+                     (kind={kind:?} raw_os_error={raw_os_error:?}, consecutive #{consecutive})"
+                ),
+                &["sync", "auto-sync-watcher-ownership-cleanup"],
+                &[],
+                &[],
+            );
+        } else {
+            effects.log(
+                "daemon",
+                &format!("stale watcher cleanup failure #{consecutive} — capture rate-limited"),
+            );
+        }
+        return;
+    }
     if error.is_ownership_lost() {
         effects.log(
             "daemon",
@@ -2303,7 +2336,7 @@ mod tests {
         // hq_desktop_core::daemon.) The supervisor then force-clears it — the
         // liveness re-probe reports no live daemon (injected here for
         // determinism), so it proceeds…
-        force_clear_daemon_guard_impl(false);
+        force_clear_daemon_guard_with_probe(|| false);
 
         // …which releases both the stamp and the registry handle, so the very
         // next respawn succeeds instead of looping on "already starting".
@@ -2412,7 +2445,7 @@ mod tests {
         // alive (a flake). Force-clear must abort: the guard stamp and the
         // registry handle both survive, so the live watcher is neither killed nor
         // deregistered.
-        force_clear_daemon_guard_impl(true);
+        force_clear_daemon_guard_with_probe(|| true);
         assert!(
             daemon_guard_age().is_some(),
             "aborted force-clear must keep the stamp"
@@ -3458,6 +3491,106 @@ mod tests {
         );
         assert_eq!(current_lifecycle_state(), WatchDaemonState::Stopped);
         assert!(!is_registered(DAEMON_HANDLE));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncancelled_real_sigkill_reaches_the_production_capture_boundary() {
+        use crate::commands::process::{deregister_process, SpawnArgs};
+        use nix::{
+            sys::signal::{self, Signal},
+            unistd::Pid,
+        };
+        use std::sync::mpsc;
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+        note_watcher_spawned();
+        let daemon_generation =
+            try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon generation");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let runner = thread::spawn(move || {
+            let mut terminal = None;
+            let captures = sentry::test::with_captured_events(|| {
+                run_process_impl_for_generation(
+                    DAEMON_HANDLE,
+                    daemon_generation,
+                    &SpawnArgs {
+                        cmd: "sh".to_string(),
+                        args: vec![
+                            "-c".to_string(),
+                            "echo ready; while :; do sleep 1; done".to_string(),
+                        ],
+                        cwd: None,
+                        env: None,
+                    },
+                    |event| match event {
+                        ProcessEvent::Stdout(line) if line == "ready" => {
+                            ready_tx
+                                .send(())
+                                .expect("SIGKILL readiness receiver must remain alive");
+                        }
+                        ProcessEvent::Exit {
+                            code,
+                            signal,
+                            success,
+                        } => {
+                            let cancelled =
+                                is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
+                            let context = WatcherExitCaptureContext {
+                                lifecycle_state: "running".to_string(),
+                                runner_fatal_class: "none".to_string(),
+                                runner_error_class: "none",
+                                runner_phase: "unknown".to_string(),
+                                runner_phase_elapsed_bucket: "under_1m".to_string(),
+                                ..Default::default()
+                            };
+                            handle_watcher_exit(
+                                code, signal, success, cancelled, "npx", None, &context,
+                            );
+                            terminal = Some((code, signal, success, cancelled));
+                        }
+                        _ => {}
+                    },
+                )
+                .expect("externally killed fixture must reach its terminal callback");
+            });
+            (
+                terminal.expect("externally killed fixture must emit one terminal event"),
+                captures,
+            )
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("fixture must become ready before the external kill");
+        let pid = lookup_pid(DAEMON_HANDLE).expect("fixture must publish its pid");
+        signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL)
+            .expect("external SIGKILL must reach the process group");
+
+        let ((code, signal, success, cancelled), captures) = runner
+            .join()
+            .expect("external-SIGKILL runner must not panic");
+        assert_eq!((code, signal, success), (None, Some(9), false));
+        assert!(!cancelled, "the external kill must remain unclaimed");
+        assert_eq!(
+            captures.len(),
+            1,
+            "the real capture boundary must emit once"
+        );
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("external SIGKILL event remains sendable");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none"]
+        );
+        assert_eq!(event.tags["runner_fatal_class"], "none");
+        assert_eq!(
+            event.extra["watcher_cancelled"],
+            sentry::protocol::Value::String("false".to_string())
+        );
+        assert!(!is_registered(DAEMON_HANDLE));
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
     }
 
     #[cfg(unix)]
