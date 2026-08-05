@@ -2570,10 +2570,8 @@ mod tests {
             ),
             "cancel-ineffective"
         );
-        let alertable = RunTotals {
-            saw_alertable_error: true,
-            ..RunTotals::default()
-        };
+        let mut alertable = RunTotals::default();
+        alertable.saw_alertable_error = true;
         assert_eq!(
             residual_sync_termination_reason(
                 CancellationRecord {
