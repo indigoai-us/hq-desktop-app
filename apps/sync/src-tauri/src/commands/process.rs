@@ -1041,7 +1041,7 @@ fn attach_prepared_process(
     handle: &str,
     expected_generation: Option<u64>,
     target: ProcessTerminationTarget,
-    owns_cancellation_publication: bool,
+    _owns_cancellation_publication: bool,
 ) -> ProcessAttachOutcome {
     let pid = target
         .pid
@@ -1059,7 +1059,12 @@ fn attach_prepared_process(
             };
         };
         entry.pid = Some(pid);
-        if entry.cancelled && owns_cancellation_publication {
+        // A cancellation may have observed this generation before the child had
+        // a pid. Its publication can still be pending when the spawner reaches
+        // this point, so publication ownership is not an attachment ownership
+        // signal. Once the exact generation is marked cancelled, transfer the
+        // newly attached target to the process-layer cancellation path.
+        if entry.cancelled {
             match windows_target_has_exited(&target) {
                 Some(true) => {
                     entry.terminal_owner = ProcessTerminalOwner::TerminalObserved;
@@ -2920,6 +2925,114 @@ mod registry_exit_order_tests {
 
         assert!(deregister_generation(&handle, generation));
         clear_cancellation_record(&handle, generation);
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn cancelled_mark_cannot_race_attachment_before_publication_completes() {
+        let handle = format!("cancelled-mark-attach-race-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register generation");
+        let spawn = long_running_spawn();
+        let mut command = build_spawn_command(&spawn.cmd, &spawn.args);
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        put_in_own_process_group(&mut command);
+        let mut child = command.spawn().expect("spawn cancellation-race fixture");
+        let (target, _) = prepare_termination_target(&handle, generation, &child);
+
+        let (published_tx, published_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let cancel_handle = handle.clone();
+        let canceller = thread::spawn(move || {
+            let attempt = cancel_registered_generation_with(
+                &cancel_handle,
+                generation,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                Duration::ZERO,
+                || {
+                    published_tx.send(()).expect("announce publication");
+                    resume_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("test must resume cancellation");
+                },
+                terminate_target,
+            );
+            done_tx.send(attempt).expect("return cancellation result");
+        });
+
+        published_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("cancellation must publish its cause before marking");
+
+        // The spawner first observes the already-pending record, then pauses
+        // before attachment. Hold completion after the canceller marks the
+        // generation so the attachment sees exactly that stale observation.
+        let owns_publication = begin_effect_publication_if_record(&handle, generation);
+        assert!(
+            !owns_publication,
+            "the in-flight cancellation must retain publication ownership"
+        );
+        let (records, _) = &**cancellation_records();
+        let publication_guard = records.lock().unwrap();
+        resume_tx
+            .send(())
+            .expect("resume canceller so it can mark the generation");
+        let marked = (0..100).any(|_| {
+            if cancellation_requested_for_generation(&handle, generation) {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(marked, "canceller must mark before attachment races it");
+
+        let outcome = attach_prepared_process(&handle, Some(generation), target, owns_publication);
+        drop(publication_guard);
+
+        let initial_attempt = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("pending cancellation must finish publishing");
+        canceller.join().expect("canceller thread must not panic");
+        assert!(initial_attempt.executed);
+
+        let attached_was_claimed = matches!(&outcome, ProcessAttachOutcome::Cancelled { .. });
+        match outcome {
+            ProcessAttachOutcome::Cancelled {
+                target,
+                attribution_allowed,
+                ..
+            } => {
+                assert!(terminate_claimed_target_with(
+                    &handle,
+                    generation,
+                    target,
+                    attribution_allowed,
+                    terminate_target,
+                ));
+            }
+            ProcessAttachOutcome::Attached { .. } => {
+                // Keep the RED test leak-free on the buggy implementation.
+                let target = process_registry()
+                    .lock()
+                    .unwrap()
+                    .get_mut(&handle)
+                    .and_then(|entry| entry.termination_target.take())
+                    .expect("attached fixture must retain a cleanup target");
+                let _ = terminate_target(target);
+            }
+            ProcessAttachOutcome::RefusedStale { target, .. } => {
+                let _ = terminate_target(target);
+            }
+        }
+        let _ = child.wait().expect("reap cancellation-race fixture");
+        let _ = deregister_generation(&handle, generation);
+        clear_cancellation_record(&handle, generation);
+
+        assert!(
+            attached_was_claimed,
+            "a marked generation must transfer the child to process-layer cancellation even while publication is pending"
+        );
     }
 
     #[cfg(unix)]
