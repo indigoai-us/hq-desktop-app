@@ -135,13 +135,22 @@ impl ProcessEntry {
     }
 }
 
-static PROCESS_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, ProcessEntry>>>> = OnceLock::new();
-/// A force-clear may release a public handle before its old wait owner reaches
-/// the terminal callback. Keep only the deliberate-stop fact by generation so
-/// that callback cannot misclassify an old SIGKILL as a crash or read a newer
-/// generation's state. The wait owner removes its own record after callback.
-static CANCELLED_GENERATION_TOMBSTONES: OnceLock<Arc<Mutex<HashMap<(String, u64), bool>>>> =
-    OnceLock::new();
+struct RetiredProcessEntry {
+    handle: String,
+    entry: ProcessEntry,
+}
+
+#[derive(Default)]
+struct ProcessRegistry {
+    /// The one generation that currently owns each public handle.
+    active: HashMap<String, ProcessEntry>,
+    /// Generations whose public handle was released before their wait owner
+    /// finished. Keeping their full entry preserves delayed escalation and
+    /// cancellation evidence without exposing a replacement generation.
+    retired: HashMap<u64, RetiredProcessEntry>,
+}
+
+static PROCESS_REGISTRY: OnceLock<Arc<Mutex<ProcessRegistry>>> = OnceLock::new();
 static NEXT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Raised at the single application-exit choke point before child teardown.
@@ -153,28 +162,45 @@ pub fn app_exit_requested() -> bool {
     APP_EXIT_REQUESTED.load(Ordering::Acquire)
 }
 
-fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
-    PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+fn process_registry() -> &'static Arc<Mutex<ProcessRegistry>> {
+    PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(ProcessRegistry::default())))
 }
 
-fn cancelled_generation_tombstones() -> &'static Arc<Mutex<HashMap<(String, u64), bool>>> {
-    CANCELLED_GENERATION_TOMBSTONES.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+fn entry_for_generation<'a>(
+    registry: &'a ProcessRegistry,
+    handle: &str,
+    generation: u64,
+) -> Option<&'a ProcessEntry> {
+    registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
 }
 
-fn remember_cancelled_generation(handle: &str, generation: u64, cancelled: bool) {
-    if cancelled {
-        cancelled_generation_tombstones()
-            .lock()
-            .unwrap()
-            .insert((handle.to_string(), generation), true);
+fn entry_for_generation_mut<'a>(
+    registry: &'a mut ProcessRegistry,
+    handle: &str,
+    generation: u64,
+) -> Option<&'a mut ProcessEntry> {
+    let active_matches = registry
+        .active
+        .get(handle)
+        .is_some_and(|entry| entry.generation == generation);
+    if active_matches {
+        return registry.active.get_mut(handle);
     }
-}
-
-fn clear_cancelled_generation(handle: &str, generation: u64) {
-    cancelled_generation_tombstones()
-        .lock()
-        .unwrap()
-        .remove(&(handle.to_string(), generation));
+    registry
+        .retired
+        .get_mut(&generation)
+        .filter(|retired| retired.handle == handle)
+        .map(|retired| &mut retired.entry)
 }
 
 fn next_process_generation() -> u64 {
@@ -193,6 +219,7 @@ pub fn pre_register_handle_gen(handle: &str) -> u64 {
     process_registry()
         .lock()
         .unwrap()
+        .active
         .insert(handle.to_string(), ProcessEntry::new(generation));
     generation
 }
@@ -207,7 +234,7 @@ pub fn pre_register_handle(handle: &str) {
 pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
     use std::collections::hash_map::Entry;
     let mut reg = process_registry().lock().unwrap();
-    match reg.entry(handle.to_string()) {
+    match reg.active.entry(handle.to_string()) {
         Entry::Occupied(_) => None,
         Entry::Vacant(v) => {
             let generation = next_process_generation();
@@ -231,6 +258,7 @@ pub fn generation_for_handle(handle: &str) -> Option<u64> {
     process_registry()
         .lock()
         .unwrap()
+        .active
         .get(handle)
         .map(|entry| entry.generation)
 }
@@ -240,14 +268,14 @@ pub fn generation_for_handle(handle: &str) -> Option<u64> {
 /// to ensure their late cleanup cannot remove a replacement.
 pub fn register_process_gen(handle: &str, pid: u32) -> u64 {
     let mut reg = process_registry().lock().unwrap();
-    if let Some(entry) = reg.get_mut(handle) {
+    if let Some(entry) = reg.active.get_mut(handle) {
         entry.pid = Some(pid);
         entry.generation
     } else {
         let generation = next_process_generation();
         let mut entry = ProcessEntry::new(generation);
         entry.pid = Some(pid);
-        reg.insert(handle.to_string(), entry);
+        reg.active.insert(handle.to_string(), entry);
         generation
     }
 }
@@ -259,7 +287,7 @@ pub fn register_process(handle: &str, pid: u32) {
 #[cfg(target_os = "windows")]
 fn register_job_handle(handle: &str, job: isize) {
     let mut reg = process_registry().lock().unwrap();
-    if let Some(entry) = reg.get_mut(handle) {
+    if let Some(entry) = reg.active.get_mut(handle) {
         entry.job_handle = Some(job);
     }
 }
@@ -277,50 +305,76 @@ fn close_process_entry(entry: ProcessEntry) {
 fn close_process_entry(_entry: ProcessEntry) {}
 
 pub fn deregister_process(handle: &str) {
-    let removed = process_registry().lock().unwrap().remove(handle);
+    let removed = process_registry().lock().unwrap().active.remove(handle);
     if let Some(entry) = removed {
         close_process_entry(entry);
     }
 }
 
-/// Remove only `generation`'s entry. A stale terminal callback, force-clear,
-/// or app-exit action becomes an observable no-op after a replacement has
-/// acquired the same public handle.
+/// Release only `generation`'s public handle. If its wait owner has not yet
+/// revoked signal authority, retain the full generation privately until that
+/// owner completes. This lets a delayed escalation kill the old child without
+/// ever resolving through a replacement generation's handle.
 pub fn deregister_generation(handle: &str, generation: u64) -> bool {
-    let removed = {
+    let (removed, matched) = {
         let mut reg = process_registry().lock().unwrap();
-        let cancelled = reg
+        let active_matches = reg
+            .active
             .get(handle)
-            .filter(|entry| entry.generation == generation)
-            .map(|entry| entry.cancelled);
-        if let Some(cancelled) = cancelled {
-            // Record before removing the active entry, so a concurrent wait
-            // callback sees either its live state or this generation's
-            // tombstone — never an unrelated replacement.
-            remember_cancelled_generation(handle, generation, cancelled);
-            reg.remove(handle)
+            .is_some_and(|entry| entry.generation == generation);
+        if active_matches {
+            let entry = reg
+                .active
+                .remove(handle)
+                .expect("matching active generation must remain present");
+            if entry.pid.is_some() && !entry.signal_authority_revoked {
+                let replaced = reg.retired.insert(
+                    generation,
+                    RetiredProcessEntry {
+                        handle: handle.to_string(),
+                        entry,
+                    },
+                );
+                debug_assert!(replaced.is_none(), "process generation must be unique");
+                (None, true)
+            } else {
+                (Some(entry), true)
+            }
+        } else if reg
+            .retired
+            .get(&generation)
+            .is_some_and(|retired| retired.handle == handle)
+        {
+            let retired = reg
+                .retired
+                .remove(&generation)
+                .expect("matching retired generation must remain present");
+            (Some(retired.entry), true)
         } else {
-            None
+            (None, false)
         }
     };
     if let Some(entry) = removed {
         close_process_entry(entry);
-        true
-    } else {
-        false
     }
+    matched
 }
 
 pub fn lookup_pid(handle: &str) -> Option<u32> {
     process_registry()
         .lock()
         .unwrap()
+        .active
         .get(handle)
         .and_then(|e| e.pid)
 }
 
 pub fn is_registered(handle: &str) -> bool {
-    process_registry().lock().unwrap().contains_key(handle)
+    process_registry()
+        .lock()
+        .unwrap()
+        .active
+        .contains_key(handle)
 }
 
 /// Whether the process under `handle` was deliberately cancelled (SIGTERM sent
@@ -336,6 +390,7 @@ pub fn is_cancelled(handle: &str) -> bool {
     process_registry()
         .lock()
         .unwrap()
+        .active
         .get(handle)
         .map(|e| e.cancelled)
         .unwrap_or(false)
@@ -344,25 +399,15 @@ pub fn is_cancelled(handle: &str) -> bool {
 /// Generation-aware cancellation lookup for owners that can outlive a handle
 /// reuse (notably the daemon watcher callback).
 pub fn is_cancelled_for_generation(handle: &str, generation: u64) -> bool {
-    let active = process_registry()
-        .lock()
-        .unwrap()
-        .get(handle)
-        .filter(|entry| entry.generation == generation)
+    let registry = process_registry().lock().unwrap();
+    entry_for_generation(&registry, handle, generation)
         .map(|entry| entry.cancelled)
-        .unwrap_or(false);
-    active
-        || cancelled_generation_tombstones()
-            .lock()
-            .unwrap()
-            .get(&(handle.to_string(), generation))
-            .copied()
-            .unwrap_or(false)
+        .unwrap_or(false)
 }
 
 fn mark_cancelled(handle: &str) -> bool {
     let mut reg = process_registry().lock().unwrap();
-    if let Some(entry) = reg.get_mut(handle) {
+    if let Some(entry) = reg.active.get_mut(handle) {
         entry.cancelled = true;
         true
     } else {
@@ -372,7 +417,7 @@ fn mark_cancelled(handle: &str) -> bool {
 
 fn revoke_signal_authority_for_generation(handle: &str, generation: u64) -> bool {
     let mut reg = process_registry().lock().unwrap();
-    reg.get_mut(handle)
+    entry_for_generation_mut(&mut reg, handle, generation)
         .map(|entry| revoke_signal_authority_locked(entry, generation))
         .unwrap_or(false)
 }
@@ -566,13 +611,17 @@ fn wait_for_terminal_status(
                     match child.try_wait() {
                         Ok(None) => true,
                         Ok(Some(status)) => {
-                            if let Some(entry) = registry.get_mut(handle) {
+                            if let Some(entry) =
+                                entry_for_generation_mut(&mut registry, handle, generation)
+                            {
                                 let _ = revoke_signal_authority_locked(entry, generation);
                             }
                             return Ok(status);
                         }
                         Err(error) => {
-                            if let Some(entry) = registry.get_mut(handle) {
+                            if let Some(entry) =
+                                entry_for_generation_mut(&mut registry, handle, generation)
+                            {
                                 let _ = revoke_signal_authority_locked(entry, generation);
                             }
                             return Err(error);
@@ -590,10 +639,12 @@ fn wait_for_terminal_status(
 #[cfg(not(unix))]
 fn wait_for_terminal_status(
     child: &mut std::process::Child,
-    _handle: &str,
-    _generation: u64,
+    handle: &str,
+    generation: u64,
 ) -> io::Result<ExitStatus> {
-    child.wait()
+    let result = child.wait();
+    let _ = revoke_signal_authority_for_generation(handle, generation);
+    result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -623,7 +674,6 @@ where
         Err(e) => {
             if let Some(generation) = pre_registered_generation {
                 let _ = deregister_generation(handle, generation);
-                clear_cancelled_generation(handle, generation);
             } else {
                 deregister_process(handle);
             }
@@ -786,7 +836,6 @@ fn emit_exit_then_deregister<F>(
 {
     on_event(event);
     let _ = deregister_generation(handle, generation);
-    clear_cancelled_generation(handle, generation);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -836,7 +885,6 @@ where
         Err(e) => {
             if let Some(generation) = pre_registered_generation {
                 let _ = deregister_generation(handle, generation);
-                clear_cancelled_generation(handle, generation);
             } else {
                 deregister_process(handle);
             }
@@ -1053,7 +1101,7 @@ where
     F: FnOnce(Pid, Signal) -> Result<(), nix::errno::Errno>,
 {
     let mut registry = process_registry().lock().unwrap();
-    let Some(entry) = registry.get_mut(handle) else {
+    let Some(entry) = entry_for_generation_mut(&mut registry, handle, generation) else {
         return SignalDispatch::RefusedStale;
     };
     dispatch_signal_checked_locked(entry, generation, pid, signal_to_send, dispatch)
@@ -1070,7 +1118,7 @@ fn dispatch_cancelled_checked(
     signal_to_send: Signal,
 ) -> SignalDispatch {
     let mut registry = process_registry().lock().unwrap();
-    let Some(entry) = registry.get_mut(handle) else {
+    let Some(entry) = entry_for_generation_mut(&mut registry, handle, generation) else {
         return SignalDispatch::RefusedStale;
     };
     if entry.generation != generation || entry.pid != Some(pid) {
@@ -1111,6 +1159,7 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
         let job_isize = process_registry()
             .lock()
             .unwrap()
+            .active
             .get(handle)
             .and_then(|e| e.job_handle);
 
@@ -1131,7 +1180,7 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
         // wait owner reap and free this numeric process-group identity first.
         let target = {
             let mut registry = process_registry().lock().unwrap();
-            let Some(entry) = registry.get_mut(handle) else {
+            let Some(entry) = registry.active.get_mut(handle) else {
                 return false;
             };
             if entry.signal_authority_revoked {
@@ -1211,6 +1260,7 @@ fn registered_processes() -> Vec<RegisteredProcess> {
     process_registry()
         .lock()
         .unwrap()
+        .active
         .iter()
         .filter_map(|(handle, entry)| {
             entry.pid.map(|pid| RegisteredProcess {
@@ -1229,6 +1279,7 @@ fn registered_process_for(handle: &str, pid: u32) -> Option<RegisteredProcess> {
     process_registry()
         .lock()
         .unwrap()
+        .active
         .get(handle)
         .filter(|entry| entry.pid == Some(pid))
         .map(|entry| RegisteredProcess {
@@ -1311,7 +1362,6 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
     thread::spawn(move || {
         if is_cancelled_for_generation(&handle_bg, generation) {
             let _ = deregister_generation(&handle_bg, generation);
-            clear_cancelled_generation(&handle_bg, generation);
             let _ = app.emit(
                 &format!("process://{}/exit", handle_bg),
                 ExitEvent {
@@ -1783,6 +1833,10 @@ mod registry_exit_order_tests {
 
         assert!(replacement_visible_to_old_callback);
         assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
+        assert!(revoke_signal_authority_for_generation(
+            &handle,
+            replacement_generation
+        ));
         assert!(deregister_generation(&handle, replacement_generation));
     }
 
@@ -1846,6 +1900,10 @@ mod registry_exit_order_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         assert!(deregister_generation(&handle, old_generation));
+        assert!(revoke_signal_authority_for_generation(
+            &handle,
+            replacement_generation
+        ));
         assert!(deregister_generation(&handle, replacement_generation));
     }
 }
