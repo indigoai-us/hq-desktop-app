@@ -830,8 +830,6 @@ fn require_same_project_write_target(
 }
 
 struct ProjectWriteAnchor {
-    hq_root: PathBuf,
-    parent_rel: String,
     target_path: PathBuf,
     target_name: std::ffi::OsString,
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -849,27 +847,17 @@ impl ProjectWriteAnchor {
         #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         let directory = {
             let parent = relative.parent().unwrap_or_else(|| Path::new(""));
-            let parent_rel_for_open = parent
+            let parent_rel = parent
                 .to_str()
                 .ok_or_else(|| "project write parent is not valid UTF-8".to_string())?;
-            let directory = open_hq_scoped_directory(&target.hq_root, parent_rel_for_open)?;
+            let directory = open_hq_scoped_directory(&target.hq_root, parent_rel)?;
             // Open the terminal through the retained directory descriptor now,
             // before any mutation is prepared, so a non-file target fails closed.
             let _ = directory.open_regular_file(&target_name)?;
             directory
         };
 
-        let parent_rel = {
-            let parent = relative.parent().unwrap_or_else(|| Path::new(""));
-            parent
-                .to_str()
-                .ok_or_else(|| "project write parent is not valid UTF-8".to_string())?
-                .to_string()
-        };
-
         Ok(Self {
-            hq_root: target.hq_root.clone(),
-            parent_rel,
             target_path: target.absolute_path.clone(),
             target_name,
             #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -1764,7 +1752,7 @@ fn error_with_preserved_version(
 /// point. Unlike a check-then-rename preflight, no unseen target version is
 /// overwritten without first being preserved.
 fn commit_json_mutation_with_exchange<Mutate, Validate>(
-    target: &mut ProjectWriteAnchor,
+    target: &ProjectWriteAnchor,
     initial_snapshot: Vec<u8>,
     mut mutate: Mutate,
     mut validate_target: Validate,
@@ -1851,7 +1839,7 @@ pub fn write_project_status(
     run_project_write_start_hook();
     let _write_lock = acquire_project_write_lock(hq_root)?;
     let target = resolve_project_write_path(hq_root, board_path, "board.json")?;
-    let mut write_anchor = ProjectWriteAnchor::open(&target)?;
+    let write_anchor = ProjectWriteAnchor::open(&target)?;
     let expected_prd_path = normalize_project_identity_path(prd_path);
 
     require_same_project_write_target(hq_root, &target, "board.json")?;
@@ -1859,7 +1847,7 @@ pub fn write_project_status(
         .read_bytes()
         .map_err(|e| format!("could not read board.json at {board_path:?}: {e}"))?;
     commit_json_mutation_with_exchange(
-        &mut write_anchor,
+        &write_anchor,
         snapshot,
         |base| {
             let mut tree: serde_json::Value = serde_json::from_slice(base)
@@ -1952,14 +1940,14 @@ pub fn write_story_passes(
     run_project_write_start_hook();
     let _write_lock = acquire_project_write_lock(hq_root)?;
     let target = resolve_project_write_path(hq_root, prd_path, "prd.json")?;
-    let mut write_anchor = ProjectWriteAnchor::open(&target)?;
+    let write_anchor = ProjectWriteAnchor::open(&target)?;
 
     require_same_project_write_target(hq_root, &target, "prd.json")?;
     let snapshot = write_anchor
         .read_bytes()
         .map_err(|e| format!("could not read prd.json at {prd_path:?}: {e}"))?;
     commit_json_mutation_with_exchange(
-        &mut write_anchor,
+        &write_anchor,
         snapshot,
         |base| {
             let mut tree: serde_json::Value = serde_json::from_slice(base)
@@ -1995,7 +1983,7 @@ struct PreparedAtomicJsonWrite {
 }
 
 impl PreparedAtomicJsonWrite {
-    fn exchange(mut self, target: &mut ProjectWriteAnchor) -> Result<AtomicJsonExchange, String> {
+    fn exchange(mut self, target: &ProjectWriteAnchor) -> Result<AtomicJsonExchange, String> {
         run_project_write_at_exchange_hook();
 
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -2003,13 +1991,7 @@ impl PreparedAtomicJsonWrite {
             .directory
             .exchange_files(&self.temp_name, &target.target_name)?;
         #[cfg(target_os = "windows")]
-        let displaced_path = {
-            self.directory.release_directory_chain();
-            target.directory.release_directory_chain();
-            let displaced_path = atomic_exchange_file(&self.temp_path, &target.target_path)?;
-            target.directory = open_hq_scoped_directory(&target.hq_root, &target.parent_rel)?;
-            displaced_path
-        };
+        let displaced_path = atomic_exchange_file(&self.temp_path, &target.target_path)?;
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         atomic_exchange_file(&self.temp_path, &target.target_path)?;
 
@@ -2116,45 +2098,6 @@ fn read_displaced_regular_file(path: &Path) -> Result<Vec<u8>, String> {
     ))
 }
 
-
-#[cfg(target_os = "windows")]
-fn read_displaced_path(path: &Path) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-        format!(
-            "could not read displaced project JSON at {}: {error}; the path was preserved",
-            path.display()
-        )
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "could not read displaced project JSON at {}: entry is a symlink; the path was preserved",
-            path.display()
-        ));
-    }
-    if !metadata.is_file() {
-        return Err(format!(
-            "could not read displaced project JSON at {}: entry is not a regular file; the path was preserved",
-            path.display()
-        ));
-    }
-    let mut file = std::fs::File::open(path).map_err(|error| {
-        format!(
-            "could not read displaced project JSON at {}: {error}; the path was preserved",
-            path.display()
-        )
-    })?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|error| {
-        format!(
-            "could not read displaced project JSON at {}: {error}; the path was preserved",
-            path.display()
-        )
-    })?;
-    Ok(bytes)
-}
-
 impl DisplacedAtomicJsonWrite {
     fn capture(
         path: PathBuf,
@@ -2163,7 +2106,7 @@ impl DisplacedAtomicJsonWrite {
         #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         entry_name: std::ffi::OsString,
     ) -> Result<Self, String> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         let bytes = {
             use std::io::Read;
             let mut file = directory.open_regular_file(&entry_name).map_err(|error| {
@@ -2181,8 +2124,6 @@ impl DisplacedAtomicJsonWrite {
             })?;
             bytes
         };
-        #[cfg(target_os = "windows")]
-        let bytes = read_displaced_path(&path)?;
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         let bytes = read_displaced_regular_file(&path)?;
 
@@ -2201,9 +2142,9 @@ impl DisplacedAtomicJsonWrite {
     }
 
     fn discard(self) {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         let result = self.directory.remove_file(&self.entry_name);
-        #[cfg(any(target_os = "windows", not(any(target_os = "macos", target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         let result = std::fs::remove_file(&self.path);
 
         if let Err(error) = result {
@@ -2308,19 +2249,7 @@ fn atomic_exchange_file(temp: &Path, target: &Path) -> Result<PathBuf, String> {
         ) -> i32;
     }
 
-    let temp_resolved = std::fs::canonicalize(temp).map_err(|error| {
-        format!(
-            "could not resolve replacement temp {} before exchange: {error}",
-            temp.display()
-        )
-    })?;
-    let target_resolved = std::fs::canonicalize(target).map_err(|error| {
-        format!(
-            "could not resolve project JSON target {} before exchange: {error}",
-            target.display()
-        )
-    })?;
-    let backup_path = temp_resolved.with_extension("displaced");
+    let backup_path = temp.with_extension("displaced");
     if std::fs::symlink_metadata(&backup_path).is_ok() {
         return Err(format!(
             "could not reserve displaced project JSON path {}",
@@ -2328,8 +2257,8 @@ fn atomic_exchange_file(temp: &Path, target: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    let temp_wide: Vec<u16> = temp_resolved.as_os_str().encode_wide().chain([0]).collect();
-    let target_wide: Vec<u16> = target_resolved.as_os_str().encode_wide().chain([0]).collect();
+    let temp_wide: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain([0]).collect();
     let backup_wide: Vec<u16> = backup_path.as_os_str().encode_wide().chain([0]).collect();
     let replaced = unsafe {
         ReplaceFileW(
@@ -2537,12 +2466,10 @@ mod tests {
         for required in [
             "directory.open_regular_file(&self.target_name)?",
             "target.directory.create_new_file(&temp_name)",
-            "release_directory_chain();",
-            "atomic_exchange_file(&self.temp_path, &target.target_path)?;",
-            "target.directory = open_hq_scoped_directory(&target.hq_root, &target.parent_rel)?;",
-            ".with_extension(\"displaced\")",
-            "read_displaced_path(&path)?;",
-            "std::fs::remove_file(&self.path);",
+            "let displaced_path = atomic_exchange_file(&self.temp_path, &target.target_path)?;",
+            "#[cfg(target_os = \"windows\")]\n                displaced_path,",
+            "self.temp_path\n                    .with_extension(\"displaced\")",
+            "let result = self.directory.remove_file(&self.entry_name);",
         ] {
             assert!(
                 source.contains(required),
@@ -3813,12 +3740,12 @@ mod tests {
         let original = fs::read(&target_path).unwrap();
         let resolved =
             resolve_project_write_path(&root, "companies/indigo/board.json", "board.json").unwrap();
-        let mut target = ProjectWriteAnchor::open(&resolved).unwrap();
+        let target = ProjectWriteAnchor::open(&resolved).unwrap();
         let candidate = serde_json::json!({"projects": [], "candidate": true});
         let prepared = prepare_atomic_json_write(&target, &candidate).unwrap();
         let expected_candidate = prepared.serialized.clone();
 
-        let exchanged = prepared.exchange(&mut target).unwrap();
+        let exchanged = prepared.exchange(&target).unwrap();
 
         assert_eq!(fs::read(&target_path).unwrap(), expected_candidate);
         assert_eq!(
@@ -3840,14 +3767,14 @@ mod tests {
         let original = fs::read(&target_path).unwrap();
         let resolved =
             resolve_project_write_path(&root, "companies/indigo/board.json", "board.json").unwrap();
-        let mut target = ProjectWriteAnchor::open(&resolved).unwrap();
+        let target = ProjectWriteAnchor::open(&resolved).unwrap();
         let outside = root.with_extension("outside-secret.json");
         let outside_bytes = br#"{"tenant":"outside","secret":true}"#;
         fs::write(&outside, outside_bytes).unwrap();
 
         let candidate = serde_json::json!({"projects": [], "candidate": true});
         let prepared = prepare_atomic_json_write(&target, &candidate).unwrap();
-        let exchanged = prepared.exchange(&mut target).unwrap();
+        let exchanged = prepared.exchange(&target).unwrap();
         let displaced_path = exchanged.displaced.path.clone();
         let preserved_original = displaced_path.with_extension("original");
 
