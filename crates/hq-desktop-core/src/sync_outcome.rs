@@ -299,6 +299,7 @@ pub fn classify_runner_error_op(message: &str) -> RunnerErrorOp {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunnerFatalClass {
     LibuvAssert,
+    NodeCheckAbort,
     NodeFatal,
     HeapOom,
     RustPanic,
@@ -314,6 +315,7 @@ impl RunnerFatalClass {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::LibuvAssert => "libuv_assert",
+            Self::NodeCheckAbort => "node_check_abort",
             Self::NodeFatal => "node_fatal",
             Self::HeapOom => "heap_oom",
             Self::RustPanic => "rust_panic",
@@ -333,6 +335,7 @@ impl RunnerFatalClass {
 /// match deliberately requires both an assertion marker and a libuv-specific
 /// source/handle marker so ordinary application assertions remain `none`.
 pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
+    let left_trimmed = line.trim_start();
     let msg = line.to_ascii_lowercase();
     if is_node_too_old_signature(&msg) {
         RunnerFatalClass::NodeTooOld
@@ -343,6 +346,8 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
             || msg.contains("src/win/async.c"))
     {
         RunnerFatalClass::LibuvAssert
+    } else if left_trimmed.starts_with('#') && msg.contains("assertion failed:") {
+        RunnerFatalClass::NodeCheckAbort
     } else if msg.contains("javascript heap out of memory") {
         RunnerFatalClass::HeapOom
     } else if msg.contains("panicked at") {
@@ -559,6 +564,36 @@ pub const RUNNER_TRANSIENT_RETRY_EXIT: i32 = 75;
 /// 23 "killed by SIGTERM (cancelled)" events). See `should_alert_on_nonzero_exit`.
 pub const SIGTERM_SIGNAL: i32 = 15;
 
+/// POSIX SIGABRT. A native abort is reported as this signal by Unix process
+/// status APIs, including the macOS watcher event that motivated the merged
+/// auto-sync watcher termination group.
+pub const SIGABRT_SIGNAL: i32 = 6;
+
+/// Node on Windows reports an abort as this process exit code rather than a
+/// Unix signal. The observed Windows watcher event used this convention, so it
+/// is normalized with POSIX SIGABRT only when the host is explicitly Windows.
+pub const NODE_WINDOWS_ABORT_EXIT: i32 = 134;
+
+/// Host semantics used to interpret a watcher process termination. The host is
+/// an explicit input so tests can exercise both wire encodings on every CI
+/// platform instead of silently relying on the build machine's operating
+/// system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminationHost {
+    Posix,
+    Windows,
+}
+
+/// Select the production host interpretation. This is intentionally the only
+/// cfg-derived part of watcher termination normalization.
+pub fn current_termination_host() -> TerminationHost {
+    if cfg!(target_os = "windows") {
+        TerminationHost::Windows
+    } else {
+        TerminationHost::Posix
+    }
+}
+
 /// Windows `STATUS_CONTROL_C_EXIT` (`0xC000013A`) represented as the signed
 /// process exit code Rust reports. Windows gives this status to a console
 /// process when its default console-control handler ends it, including a
@@ -687,6 +722,38 @@ pub fn termination_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> 
         (None, Some(signal)) => format!("signal:{signal}"),
         (Some(code), Some(signal)) => format!("invalid:exit:{code}+signal:{signal}"),
         (None, None) => "unknown".to_string(),
+    }
+}
+
+/// Return the stable watcher-facing description for the two observed abort
+/// encodings. A bare exit 134 is only a Node abort on Windows; retaining the
+/// explicit host input prevents POSIX shell-wrapped exit codes from regrouping.
+pub fn normalized_abort_description(
+    code: Option<i32>,
+    signal: Option<i32>,
+    host: TerminationHost,
+) -> Option<&'static str> {
+    match (code, signal, host) {
+        (None, Some(SIGABRT_SIGNAL), _) => Some("aborted with SIGABRT"),
+        (Some(NODE_WINDOWS_ABORT_EXIT), None, TerminationHost::Windows) => {
+            Some("aborted (Node abort exit code 134)")
+        }
+        _ => None,
+    }
+}
+
+/// Stable watcher-only fingerprint component that joins Node's Windows abort
+/// exit convention with POSIX SIGABRT while leaving every other raw termination
+/// token unchanged. The base helper remains the manual-sync wire contract.
+pub fn termination_fingerprint_token_for_host(
+    code: Option<i32>,
+    signal: Option<i32>,
+    host: TerminationHost,
+) -> String {
+    if normalized_abort_description(code, signal, host).is_some() {
+        "abort:sigabrt".to_string()
+    } else {
+        termination_fingerprint_token(code, signal)
     }
 }
 
@@ -1238,6 +1305,118 @@ mod tests {
     }
 
     #[test]
+    fn normalized_abort_fingerprints_join_only_the_observed_host_encodings() {
+        for (code, signal, host) in [
+            (
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                None,
+                TerminationHost::Windows,
+            ),
+            (None, Some(SIGABRT_SIGNAL), TerminationHost::Posix),
+            (None, Some(SIGABRT_SIGNAL), TerminationHost::Windows),
+        ] {
+            assert_eq!(
+                termination_fingerprint_token_for_host(code, signal, host),
+                "abort:sigabrt"
+            );
+        }
+
+        assert_eq!(
+            termination_fingerprint_token_for_host(
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                None,
+                TerminationHost::Posix,
+            ),
+            "exit:134"
+        );
+    }
+
+    #[test]
+    fn normalized_abort_descriptions_are_exact_and_host_scoped() {
+        assert_eq!(
+            normalized_abort_description(None, Some(SIGABRT_SIGNAL), TerminationHost::Posix),
+            Some("aborted with SIGABRT")
+        );
+        assert_eq!(
+            normalized_abort_description(None, Some(SIGABRT_SIGNAL), TerminationHost::Windows),
+            Some("aborted with SIGABRT")
+        );
+        assert_eq!(
+            normalized_abort_description(
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                None,
+                TerminationHost::Windows,
+            ),
+            Some("aborted (Node abort exit code 134)")
+        );
+
+        for (code, signal, host) in [
+            (Some(NODE_WINDOWS_ABORT_EXIT), None, TerminationHost::Posix),
+            (
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                Some(SIGABRT_SIGNAL),
+                TerminationHost::Windows,
+            ),
+            (None, None, TerminationHost::Posix),
+            (Some(221), None, TerminationHost::Windows),
+        ] {
+            assert_eq!(normalized_abort_description(code, signal, host), None);
+        }
+    }
+
+    #[test]
+    fn non_abort_host_tokens_delegate_byte_for_byte_to_the_base_contract() {
+        let cases = [
+            (Some(0), None, "exit:0"),
+            (Some(1), None, "exit:1"),
+            (Some(2), None, "exit:2"),
+            (Some(126), None, "exit:126"),
+            (Some(127), None, "exit:127"),
+            (Some(221), None, "exit:221"),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                "windows:console-control",
+            ),
+            (
+                Some(WINDOWS_SESSION_TERMINATE_EXIT),
+                None,
+                "windows:session-terminate",
+            ),
+            (
+                Some(0xC000_0409u32 as i32),
+                None,
+                "windows:fault:0xC0000409",
+            ),
+            (Some(2), Some(2), "invalid:exit:2+signal:2"),
+            (None, None, "unknown"),
+        ];
+
+        for host in [TerminationHost::Posix, TerminationHost::Windows] {
+            for (code, signal, expected) in cases {
+                assert_eq!(
+                    termination_fingerprint_token_for_host(code, signal, host),
+                    expected
+                );
+                assert_eq!(
+                    termination_fingerprint_token_for_host(code, signal, host),
+                    termination_fingerprint_token(code, signal)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn current_termination_host_matches_the_build_target() {
+        let expected = if cfg!(target_os = "windows") {
+            TerminationHost::Windows
+        } else {
+            TerminationHost::Posix
+        };
+        assert_eq!(current_termination_host(), expected);
+    }
+
+    #[test]
     fn posix_termination_tokens_and_descriptions_are_byte_identical() {
         for (code, signal, token, description) in [
             (Some(126), None, "exit:126", "with code 126"),
@@ -1498,6 +1677,63 @@ mod tests {
         assert_eq!(token, "libuv_assert");
         assert!(!token.contains("Ada"));
         assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn node_check_abort_classifier_requires_the_observed_assertion_line_shape() {
+        let companion = r"  #  C:\WINDOWS\system32\cmd.exe [44452]: char *__cdecl node::Realloc<char>(char *,unsigned __int64) at c:\ws\src\util-inl.h:378";
+        let assertion = "  #  Assertion failed: !(n > 0) || (ret != nullptr)";
+
+        assert_eq!(
+            classify_runner_fatal_class(assertion),
+            RunnerFatalClass::NodeCheckAbort
+        );
+        assert_eq!(
+            classify_runner_fatal_class(companion),
+            RunnerFatalClass::None
+        );
+        assert_eq!(
+            classify_runner_fatal_class(
+                "# Assertion failed: loop != nullptr, src\\\\win\\\\async.c libuv"
+            ),
+            RunnerFatalClass::LibuvAssert
+        );
+        assert_eq!(
+            classify_runner_fatal_class("Assertion failed: !(n > 0) || (ret != nullptr)"),
+            RunnerFatalClass::None
+        );
+        assert_eq!(
+            RunnerFatalClass::NodeCheckAbort.as_str(),
+            "node_check_abort"
+        );
+    }
+
+    #[test]
+    fn node_check_abort_stderr_rollup_is_sticky_across_the_observed_pair() {
+        let companion = r"  #  C:\WINDOWS\system32\cmd.exe [44452]: char *__cdecl node::Realloc<char>(char *,unsigned __int64) at c:\ws\src\util-inl.h:378";
+        let assertion = "  #  Assertion failed: !(n > 0) || (ret != nullptr)";
+
+        let mut companion_then_assertion = RunTotals::default();
+        for line in [companion, assertion, "", "    at journal.js:1:1"] {
+            companion_then_assertion.record_stderr_line(line);
+        }
+        assert_eq!(
+            companion_then_assertion.runner_fatal_class,
+            RunnerFatalClass::NodeCheckAbort
+        );
+
+        let mut assertion_then_companion = RunTotals::default();
+        for line in [assertion, companion, ""] {
+            assertion_then_companion.record_stderr_line(line);
+        }
+        assert_eq!(
+            assertion_then_companion.runner_fatal_class,
+            RunnerFatalClass::NodeCheckAbort
+        );
+
+        let mut companion_only = RunTotals::default();
+        companion_only.record_stderr_line(companion);
+        assert_eq!(companion_only.runner_fatal_class, RunnerFatalClass::None);
     }
 
     #[test]
