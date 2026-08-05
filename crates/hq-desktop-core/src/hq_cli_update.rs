@@ -1462,6 +1462,21 @@ pub fn is_pnpm_global_shim(hq_bin: &str) -> bool {
     if parent.file_name().and_then(|n| n.to_str()) == Some("pnpm") {
         return true;
     }
+    // pnpm ≥11 nests shims one level deeper: `<pnpm-home>/bin/hq`. The parent
+    // is now literally named `bin`, which is exactly the shape
+    // `npm_prefix_from_hq_bin` reads as an npm prefix — so without this arm,
+    // npm would install into `<pnpm-home>/{bin,lib}` and never move the shim.
+    // The grandparent being the pnpm home (named `pnpm`, or holding pnpm's
+    // `global/` store) is what tells the two layouts apart.
+    if parent.file_name().and_then(|n| n.to_str()) == Some("bin") {
+        if let Some(grandparent) = parent.parent() {
+            if grandparent.file_name().and_then(|n| n.to_str()) == Some("pnpm")
+                || grandparent.join("global").is_dir()
+            {
+                return true;
+            }
+        }
+    }
     // Custom PNPM_HOME: pnpm keeps its `global/` store beside the shims, which
     // no npm prefix layout does.
     parent.join("global").is_dir()
@@ -1719,6 +1734,20 @@ mod tests {
         assert!(is_pnpm_global_shim(
             "C:\\Users\\test\\AppData\\Local\\pnpm\\hq"
         ));
+        // pnpm ≥11: shims nest under `<pnpm-home>/bin` — a parent literally
+        // named `bin`, the same shape npm prefixes use. Regression from the
+        // live smoke on 2026-08-05: pnpm 11.0.9 wrote ~/Library/pnpm/bin/hq
+        // and the flat-dir checks above all missed it.
+        assert!(is_pnpm_global_shim("/Users/test/Library/pnpm/bin/hq"));
+        assert!(is_pnpm_global_shim("/home/test/.local/share/pnpm/bin/hq"));
+        // Custom PNPM_HOME with the v11 nesting: global/ store marks the home.
+        let tmp_v11 = tempfile::TempDir::new().unwrap();
+        let home_v11 = tmp_v11.path().join("my-tools");
+        std::fs::create_dir_all(home_v11.join("global")).unwrap();
+        std::fs::create_dir_all(home_v11.join("bin")).unwrap();
+        let shim_v11 = home_v11.join("bin").join("hq");
+        std::fs::write(&shim_v11, "#!/bin/sh\n").unwrap();
+        assert!(is_pnpm_global_shim(shim_v11.to_str().unwrap()));
         // Custom PNPM_HOME: shims beside a `global/` store dir.
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("my-tools");
