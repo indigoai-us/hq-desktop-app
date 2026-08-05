@@ -641,11 +641,50 @@ fn terminate_registered_spawn(
         SignalDispatch::RefusedStale | SignalDispatch::RefusedRevoked => {
             kill_child_directly_or_confirm_exited(child)?
         }
+        SignalDispatch::Failed(_) => {
+            kill_registered_child_directly_or_confirm_exited(child, handle, generation)?
+        }
     };
     if already_reaped {
         Ok(())
     } else {
         wait_for_terminal_status(child, handle, generation).map(|_| ())
+    }
+}
+
+#[cfg(unix)]
+fn kill_registered_child_directly_or_confirm_exited(
+    child: &mut std::process::Child,
+    handle: &str,
+    generation: u64,
+) -> io::Result<bool> {
+    match child.kill() {
+        Ok(()) => Ok(false),
+        Err(kill_error) => {
+            let mut registry = process_registry().lock().unwrap();
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    if let Some(entry) = entry_for_generation_mut(&mut registry, handle, generation)
+                    {
+                        let _ = revoke_signal_authority_locked(entry, generation);
+                    }
+                    Ok(true)
+                }
+                Ok(None) => Err(kill_error),
+                Err(probe_error) => {
+                    if let Some(entry) = entry_for_generation_mut(&mut registry, handle, generation)
+                    {
+                        let _ = revoke_signal_authority_locked(entry, generation);
+                    }
+                    Err(io::Error::new(
+                        probe_error.kind(),
+                        format!(
+                            "direct registered-child kill failed: {kill_error}; exit probe also failed: {probe_error}"
+                        ),
+                    ))
+                }
+            }
+        }
     }
 }
 
