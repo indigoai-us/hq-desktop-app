@@ -193,6 +193,7 @@ pub fn session_end_observer_status(app: tauri::AppHandle) -> &'static str {
 mod windows_observer {
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
@@ -483,8 +484,8 @@ mod windows_observer {
                 0,
                 0,
                 0,
-                None::<HWND>,
-                None::<HMENU>,
+                HWND::default(),
+                HMENU::default(),
                 instance,
                 None::<*const c_void>,
             ) {
@@ -553,7 +554,7 @@ mod windows_observer {
         while !quit_seen && !shared.shutdown_requested.load(Ordering::Acquire) {
             unsafe {
                 let mut message = MSG::default();
-                while PeekMessageW(&mut message, HWND(0), 0, 0, PM_REMOVE).as_bool() {
+                while PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE).as_bool() {
                     if message.message == WM_QUIT {
                         quit_seen = true;
                         break;
@@ -645,7 +646,7 @@ mod windows_observer {
         }
         unsafe {
             let mut message = MSG::default();
-            while PeekMessageW(&mut message, HWND(0), 0, 0, PM_REMOVE).as_bool() {}
+            while PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE).as_bool() {}
         }
         shared.tracker.set_readiness(ObserverReadiness::Stopped);
     }
