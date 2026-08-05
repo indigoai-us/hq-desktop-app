@@ -235,16 +235,6 @@
   // dark-first (its home appearance); everything else keeps the historical
   // dark default so existing ?view= links render unchanged.
   let theme = $state(params.get('theme') ?? (params.get('view') === 'desktop' ? 'light' : 'dark'));
-
-  // V1 ↔ V2 stage switcher (design-review affordance on the mac stage).
-  function switchVersion(v: 'desktop' | 'v2') {
-    if (view === v) return;
-    const next = new URLSearchParams(window.location.search);
-    next.set('view', v);
-    // Each version opens on its home appearance unless the user re-toggles.
-    next.delete('theme');
-    window.location.search = next.toString();
-  }
   const bannerKind = params.get('kind') ?? 'share';
   const scenario = params.get('scenario');
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
@@ -394,28 +384,23 @@
     <div class="mac-window">
       <DesktopApp />
     </div>
-    <div class="stage-controls">
-      <div class="stage-theme-toggle" role="group" aria-label="Preview version">
-        <button type="button" class="active">V1</button>
-        <button type="button" onclick={() => switchVersion('v2')}>V2</button>
-      </div>
-      <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
-        <button
-          type="button"
-          class:active={theme === 'light'}
-          onclick={() => (theme = 'light')}
-        >Light</button>
-        <button
-          type="button"
-          class:active={theme === 'dark'}
-          onclick={() => (theme = 'dark')}
-        >Dark</button>
-      </div>
+    <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
+      <button
+        type="button"
+        class:active={theme === 'light'}
+        onclick={() => (theme = 'light')}
+      >Light</button>
+      <button
+        type="button"
+        class:active={theme === 'dark'}
+        onclick={() => (theme = 'dark')}
+      >Dark</button>
     </div>
   </div>
 {:else if view === 'v2'}
   <!-- V2 concept ("Daybook", from Corey's draft) on the same real-life stage.
-       Dark is its home appearance; the toggle still previews light. -->
+       Dark is its home appearance; the toggle still previews light.
+       (v1 stays reachable at ?view=desktop — no on-stage switcher.) -->
   <div
     class="mac-stage"
     style={`background-image: url(${theme === 'dark' ? wallpaperDark : wallpaperLight})`}
@@ -423,23 +408,17 @@
     <div class="mac-window v2-window">
       <DaybookApp {theme} />
     </div>
-    <div class="stage-controls">
-      <div class="stage-theme-toggle" role="group" aria-label="Preview version">
-        <button type="button" onclick={() => switchVersion('desktop')}>V1</button>
-        <button type="button" class="active">V2</button>
-      </div>
-      <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
-        <button
-          type="button"
-          class:active={theme === 'light'}
-          onclick={() => (theme = 'light')}
-        >Light</button>
-        <button
-          type="button"
-          class:active={theme === 'dark'}
-          onclick={() => (theme = 'dark')}
-        >Dark</button>
-      </div>
+    <div class="stage-theme-toggle" role="group" aria-label="Preview appearance">
+      <button
+        type="button"
+        class:active={theme === 'light'}
+        onclick={() => (theme = 'light')}
+      >Light</button>
+      <button
+        type="button"
+        class:active={theme === 'dark'}
+        onclick={() => (theme = 'dark')}
+      >Dark</button>
     </div>
   </div>
 {:else if view === 'banner'}
@@ -584,20 +563,6 @@
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.12),
       0 16px 48px rgba(0, 0, 0, 0.55);
-  }
-
-  .stage-controls {
-    position: fixed;
-    bottom: 28px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: inline-flex;
-    gap: 10px;
-  }
-
-  .stage-controls .stage-theme-toggle {
-    position: static;
-    transform: none;
   }
 
   .stage-theme-toggle {
