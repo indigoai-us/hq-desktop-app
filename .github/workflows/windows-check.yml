@@ -40,6 +40,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -81,6 +83,31 @@ jobs:
       - name: Windows tests
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins
+
+      # The base half is deliberately a red proof: it materializes this PR's
+      # merge-base in a CI-local worktree and requires the legacy manual-sync
+      # decision seam to report capture for code 1/no signal.
+      - name: Base sync cancellation red proof
+        timeout-minutes: 12
+        working-directory: .
+        run: node scripts/sync-cancel-base-probe.mjs
+
+      # Runs a feature-gated path in the real menubar binary. The probe starts
+      # a fixture child through the production registry, performs a generation-
+      # aware Windows cancellation, and must observe the actual code-1 exit as
+      # an effective timeout cancellation that suppresses capture.
+      - name: Candidate sync cancellation artifact probe
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        shell: pwsh
+        run: |
+          cargo build --target x86_64-pc-windows-msvc --features sync-cancel-probe
+          $raw = & .\target\x86_64-pc-windows-msvc\debug\hq-sync-menubar.exe --sync-cancel-probe | Select-Object -Last 1
+          if ($LASTEXITCODE -ne 0) { throw "sync-cancel probe failed with exit code $LASTEXITCODE" }
+          $probe = $raw | ConvertFrom-Json
+          if ($probe.exit_code -ne 1 -or $probe.cause -ne "timeout-watchdog" -or -not $probe.terminated -or $probe.decision -ne "suppress") {
+            throw "unexpected sync-cancel probe result: $raw"
+          }
 
       # Both sides of the `e2e-automation` gate are covered: the default run
       # above proves a shipped build cannot read

@@ -191,6 +191,20 @@ fn surface_existing_instance(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    #[cfg(feature = "sync-cancel-probe")]
+    if std::env::args().any(|arg| arg == "--sync-cancel-probe") {
+        match commands::process::run_sync_cancel_probe() {
+            Ok(result) => {
+                println!("{result}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("sync-cancel-probe failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
     // here in the binary and passed in, so the crate carries no build-env coupling.
