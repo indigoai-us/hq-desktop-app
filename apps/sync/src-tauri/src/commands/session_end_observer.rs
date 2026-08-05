@@ -520,7 +520,7 @@ mod windows_observer {
                 (&context as *const WindowContext) as isize,
             );
         }
-        shared.hwnd.store(hwnd.0, Ordering::Release);
+        shared.hwnd.store(hwnd.0 as isize, Ordering::Release);
 
         if shared.shutdown_requested.load(Ordering::Acquire) {
             owner_thread_teardown(&shared, hwnd, &context, false, None);
