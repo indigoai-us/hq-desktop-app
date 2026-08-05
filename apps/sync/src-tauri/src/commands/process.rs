@@ -508,6 +508,63 @@ fn build_spawn_command(path: &str, args: &[String]) -> Command {
     cmd
 }
 
+// Test-only spawn boundary used by the real-child ownership regressions. Hooks
+// are keyed by handle so parallel process tests cannot consume one another's
+// synchronization point.
+#[cfg(test)]
+type TestPostSpawnHook = Box<dyn FnOnce(&std::process::Child) + Send + 'static>;
+
+#[cfg(test)]
+fn test_post_spawn_hooks() -> &'static Mutex<HashMap<String, TestPostSpawnHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, TestPostSpawnHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn set_test_post_spawn_hook<F>(handle: &str, hook: F)
+where
+    F: FnOnce(&std::process::Child) + Send + 'static,
+{
+    test_post_spawn_hooks()
+        .lock()
+        .unwrap()
+        .insert(handle.to_string(), Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_test_post_spawn_hook(handle: &str, child: &std::process::Child) {
+    let hook = test_post_spawn_hooks().lock().unwrap().remove(handle);
+    if let Some(hook) = hook {
+        hook(child);
+    }
+}
+
+#[cfg(not(test))]
+fn run_test_post_spawn_hook(_handle: &str, _child: &std::process::Child) {}
+
+#[cfg(test)]
+fn test_stale_cleanup_failures() -> &'static Mutex<HashMap<String, io::ErrorKind>> {
+    static FAILURES: OnceLock<Mutex<HashMap<String, io::ErrorKind>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn set_test_stale_cleanup_failure(handle: &str, kind: io::ErrorKind) {
+    test_stale_cleanup_failures()
+        .lock()
+        .unwrap()
+        .insert(handle.to_string(), kind);
+}
+
+#[cfg(test)]
+fn take_test_stale_cleanup_failure(handle: &str) -> Option<io::Error> {
+    test_stale_cleanup_failures()
+        .lock()
+        .unwrap()
+        .remove(handle)
+        .map(|kind| io::Error::new(kind, "injected stale-child cleanup failure"))
+}
+
 #[cfg(unix)]
 fn put_in_own_process_group(cmd: &mut Command) {
     cmd.process_group(0);
@@ -588,7 +645,12 @@ fn assign_child_to_job(_handle: &str, _generation: u64, _child: &std::process::C
 /// Terminate and reap a child whose spawn actor no longer owns the public
 /// handle. Cleanup uses the still-owned `Child` identity directly and must not
 /// inspect or mutate the replacement registered under the same handle.
-fn terminate_stale_spawn(child: &mut std::process::Child) -> io::Result<()> {
+fn terminate_stale_spawn(handle: &str, child: &mut std::process::Child) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(error) = take_test_stale_cleanup_failure(handle) {
+        return Err(error);
+    }
+
     close_child_pipes(child);
 
     let already_reaped = {
@@ -717,10 +779,10 @@ fn ownership_lost_after_spawn(
         }
         #[cfg(not(unix))]
         {
-            terminate_stale_spawn(child).err()
+            terminate_stale_spawn(handle, child).err()
         }
     } else {
-        terminate_stale_spawn(child).err()
+        terminate_stale_spawn(handle, child).err()
     };
     if attached_to_registry && cleanup_error.is_none() {
         let _ = revoke_signal_authority_for_generation(handle, generation);
@@ -942,6 +1004,7 @@ where
             });
         }
     };
+    run_test_post_spawn_hook(handle, &child);
 
     let pid = child.id();
     let generation = if let Some(generation) = pre_registered_generation {
@@ -1173,6 +1236,7 @@ where
             });
         }
     };
+    run_test_post_spawn_hook(handle, &child);
 
     let pid = child.id();
     let generation = if let Some(generation) = pre_registered_generation {
@@ -1932,6 +1996,93 @@ mod windows_spawn_tests {
             "windows:status-ffffffff"
         );
     }
+
+    #[test]
+    fn stale_spawn_job_contains_descendant_before_ownership_check() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        fn powershell_quote(path: &std::path::Path) -> String {
+            path.to_string_lossy().replace('\'', "''")
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let descendant_script = tmp.path().join("descendant.ps1");
+        let parent_script = tmp.path().join("parent.ps1");
+        let descendant_pid_path = tmp.path().join("descendant.pid");
+        std::fs::write(&descendant_script, "Start-Sleep -Seconds 120\r\n")
+            .expect("write descendant fixture");
+        std::fs::write(
+            &parent_script,
+            format!(
+                "$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '{}')\r\nSet-Content -LiteralPath '{}' -Value $child.Id\r\nWait-Process -Id $child.Id\r\n",
+                powershell_quote(&descendant_script),
+                powershell_quote(&descendant_pid_path),
+            ),
+        )
+        .expect("write parent fixture");
+
+        let handle = format!("windows-stale-tree-{}", Uuid::new_v4());
+        let stale_generation = try_register_handle_gen(&handle).expect("acquire stale generation");
+        assert!(deregister_generation(&handle, stale_generation));
+        let replacement_generation =
+            try_register_handle_gen(&handle).expect("acquire replacement generation");
+
+        let descendant_pid = Arc::new(AtomicU32::new(0));
+        let hook_pid = descendant_pid.clone();
+        let hook_path = descendant_pid_path.clone();
+        set_test_post_spawn_hook(&handle, move |_| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if let Ok(raw) = std::fs::read_to_string(&hook_path) {
+                    if let Ok(pid) = raw.trim().parse::<u32>() {
+                        hook_pid.store(pid, Ordering::Release);
+                        return;
+                    }
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+
+        let result = run_process_impl_for_generation(
+            &handle,
+            stale_generation,
+            &SpawnArgs {
+                cmd: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoProfile".to_string(),
+                    "-ExecutionPolicy".to_string(),
+                    "Bypass".to_string(),
+                    "-File".to_string(),
+                    parent_script.to_string_lossy().into_owned(),
+                ],
+                cwd: None,
+                env: None,
+            },
+            |_| {},
+        );
+
+        assert!(matches!(result, Err(ProcessError::OwnershipLost { .. })));
+        let pid = descendant_pid.load(Ordering::Acquire);
+        assert_ne!(pid, 0, "the parent fixture must start its descendant");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while hq_desktop_core::daemon::is_pid_alive(pid) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        let descendant_survived = hq_desktop_core::daemon::is_pid_alive(pid);
+        if descendant_survived {
+            let pid_arg = pid.to_string();
+            let _ = Command::new("taskkill")
+                .args(["/PID", pid_arg.as_str(), "/T", "/F"])
+                .status();
+        }
+
+        assert!(
+            !descendant_survived,
+            "a stale pre-attach child and every descendant must die with its private Job Object"
+        );
+        assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
+        assert!(deregister_generation(&handle, replacement_generation));
+    }
 }
 
 #[cfg(test)]
@@ -2022,6 +2173,83 @@ mod registry_exit_order_tests {
             "the stale child PID must never overwrite the replacement entry"
         );
 
+        assert!(deregister_generation(&handle, replacement_generation));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_cleanup_failure_transfers_child_to_background_reaper() {
+        let handle = format!("stale-cleanup-owner-{}", Uuid::new_v4());
+        let stale_generation = try_register_handle_gen(&handle).expect("acquire stale generation");
+        assert!(deregister_generation(&handle, stale_generation));
+        let replacement_generation =
+            try_register_handle_gen(&handle).expect("acquire replacement generation");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pid_path = tmp.path().join("stale-child.pid");
+        let mut env = HashMap::new();
+        env.insert(
+            "HQ_STALE_CHILD_PID_FILE".to_string(),
+            pid_path.to_string_lossy().into_owned(),
+        );
+        let hook_path = pid_path.clone();
+        set_test_post_spawn_hook(&handle, move |_| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !hook_path.exists() && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        set_test_stale_cleanup_failure(&handle, io::ErrorKind::PermissionDenied);
+
+        let result = run_process_impl_for_generation(
+            &handle,
+            stale_generation,
+            &SpawnArgs {
+                cmd: "sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "trap '' TERM; echo $$ > \"$HQ_STALE_CHILD_PID_FILE\"; while :; do sleep 1; done"
+                        .to_string(),
+                ],
+                cwd: None,
+                env: Some(env),
+            },
+            |_| {},
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProcessError::OwnershipLost {
+                cleanup_error: Some(_),
+                ..
+            })
+        ));
+        let pid = std::fs::read_to_string(&pid_path)
+            .expect("fixture must publish its pid")
+            .trim()
+            .parse::<i32>()
+            .expect("fixture pid must be numeric");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let reaped = loop {
+            match signal::kill(Pid::from_raw(pid), None) {
+                Err(nix::errno::Errno::ESRCH) => break true,
+                _ if std::time::Instant::now() >= deadline => break false,
+                _ => thread::sleep(Duration::from_millis(20)),
+            }
+        };
+        if !reaped {
+            let _ = signal::kill(Pid::from_raw(-pid), Signal::SIGKILL);
+            let mut status = 0;
+            unsafe {
+                libc::waitpid(pid, &mut status, 0);
+            }
+        }
+
+        assert!(
+            reaped,
+            "a failed first cleanup attempt must transfer the Child to a background owner that kills and reaps it"
+        );
+        assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
         assert!(deregister_generation(&handle, replacement_generation));
     }
 

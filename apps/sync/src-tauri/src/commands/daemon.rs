@@ -481,7 +481,14 @@ fn release_daemon_guard(registration: u64, guard_generation: u64) {
 /// is reaped rather than orphaned — on Windows this closes the KILL_ON_JOB_CLOSE
 /// job (killing the tree); on Unix it SIGTERM/SIGKILLs the process group.
 fn force_clear_daemon_guard() {
-    force_clear_daemon_guard_impl(daemon_appears_alive())
+    force_clear_daemon_guard_with_probe(daemon_appears_alive)
+}
+
+fn force_clear_daemon_guard_with_probe<F>(daemon_alive_probe: F)
+where
+    F: FnOnce() -> bool,
+{
+    force_clear_daemon_guard_impl(daemon_alive_probe())
 }
 
 /// Force-clear with the liveness re-probe result injected, so the abort/kill
@@ -2208,6 +2215,48 @@ mod tests {
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
     }
 
+    #[test]
+    fn force_clear_keeps_the_stamp_that_triggered_its_liveness_probe() {
+        use crate::commands::process::{deregister_process, try_register_handle_gen};
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+
+        let stale_registration =
+            try_register_handle_gen(DAEMON_HANDLE).expect("acquire stale daemon generation");
+        let stale_guard = mark_daemon_guard_acquired(stale_registration);
+        assert!(deregister_generation(DAEMON_HANDLE, stale_registration));
+
+        let mut replacement = None;
+        force_clear_daemon_guard_with_probe(|| {
+            let registration = try_register_handle_gen(DAEMON_HANDLE)
+                .expect("replacement must acquire the released handle");
+            let guard = mark_daemon_guard_acquired(registration);
+            replacement = Some((registration, guard));
+            false
+        });
+
+        let (replacement_registration, replacement_guard) =
+            replacement.expect("the probe must install a replacement generation");
+        assert_eq!(
+            generation_for_handle(DAEMON_HANDLE),
+            Some(replacement_registration),
+            "a force-clear actor must not re-resolve and remove the generation installed during its probe"
+        );
+        let surviving_guard = daemon_guard()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .expect("the replacement guard must survive the stale force-clear");
+        assert_eq!(surviving_guard.registration, replacement_registration);
+        assert_eq!(surviving_guard.generation, replacement_guard);
+        assert_ne!(surviving_guard.generation, stale_guard);
+
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+    }
+
     // ── Respawn-deadlock recovery (start-guard wedge) ────────────────────
     //
     // Regression for the supervisor crash-loop: a start that acquired the
@@ -3189,6 +3238,45 @@ mod tests {
             .logs
             .iter()
             .any(|(_, message)| { message.contains("terminal exit handler owns capture") }));
+    }
+
+    #[test]
+    fn stale_spawn_cleanup_failure_is_captured_and_enters_backoff() {
+        let mut effects = RecordingWatcherEffects::default();
+
+        record_watcher_process_error_with_effects(
+            &mut effects,
+            ProcessError::OwnershipLost {
+                handle: DAEMON_HANDLE.to_string(),
+                generation: 42,
+                cleanup_error: Some(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected cleanup failure",
+                )),
+            },
+        );
+
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)],
+            "failed cleanup is an internal watcher fault, not a successful stale discard"
+        );
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec!["sync", "auto-sync-watcher-ownership-cleanup"]
+        );
+        assert!(effects.captures[0]
+            .message
+            .contains("stale-child cleanup failed"));
+        assert!(effects.logs.iter().any(|(target, message)| {
+            target == "daemon"
+                && message.contains("stale watcher cleanup failed")
+                && message.contains("generation 42")
+        }));
+        assert!(!effects.logs.iter().any(|(_, message)| {
+            message.contains("stale watcher spawn discarded without touching its replacement")
+        }));
     }
 
     #[test]
