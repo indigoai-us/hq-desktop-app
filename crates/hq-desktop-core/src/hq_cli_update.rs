@@ -1440,6 +1440,43 @@ pub fn npm_prefix_from_hq_bin(hq_bin: &str) -> Option<String> {
     }
 }
 
+/// Whether the resolved `hq` is a shim in pnpm's *flat* global bin directory
+/// (`~/Library/pnpm` on macOS, `~/.local/share/pnpm` on Linux,
+/// `%LOCALAPPDATA%\pnpm` on Windows, or a custom `PNPM_HOME`). npm cannot
+/// update such an install: `npm install -g` writes an unrelated prefix, exits
+/// 0, and the shim on PATH stays stale — the exact non-convergent loop
+/// `install_converged` guards. pnpm-managed installs must be updated with
+/// pnpm itself (`pnpm add -g`), so the installer branches on this.
+pub fn is_pnpm_global_shim(hq_bin: &str) -> bool {
+    if hq_bin == "hq" {
+        return false;
+    }
+    let path = Path::new(hq_bin);
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return false;
+    };
+    // Every default pnpm home is a directory literally named `pnpm` holding the
+    // shims flat (…/pnpm/hq). An npm layout never matches: its Unix shims live
+    // under a dir named `bin`, and its Windows shims sit directly in a prefix
+    // that is not named `pnpm`.
+    if parent.file_name().and_then(|n| n.to_str()) == Some("pnpm") {
+        return true;
+    }
+    // Custom PNPM_HOME: pnpm keeps its `global/` store beside the shims, which
+    // no npm prefix layout does.
+    parent.join("global").is_dir()
+}
+
+/// argv for updating a pnpm-managed global install. pnpm resolves the right
+/// global dir itself from its own config/PNPM_HOME — no `--prefix` juggling.
+pub fn pnpm_install_argv() -> Vec<String> {
+    vec![
+        "add".to_string(),
+        "-g".to_string(),
+        HQ_CLI_PACKAGE.to_string(),
+    ]
+}
+
 fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path::PathBuf> {
     let is_windows_npm_shim = hq_bin
         .extension()
@@ -1666,6 +1703,50 @@ mod tests {
             npm_prefix_from_hq_bin("/Users/test/.npm-global/bin/hq"),
             Some("/Users/test/.npm-global".to_string())
         );
+    }
+
+    /// A pnpm-managed `hq` must route the installer to `pnpm add -g` — npm
+    /// cannot replace a shim in pnpm's flat global dir (the non-convergent
+    /// class this whole module guards). Detection is by layout: the default
+    /// pnpm homes on every OS, plus a custom PNPM_HOME via its `global/` store.
+    #[test]
+    fn pnpm_global_shim_detected_by_layout() {
+        // Default pnpm homes (the field case: ~/Library/pnpm/hq at v5.77.4).
+        assert!(is_pnpm_global_shim("/Users/test/Library/pnpm/hq"));
+        assert!(is_pnpm_global_shim("/home/test/.local/share/pnpm/hq"));
+        // Backslash separators only parse as components on Windows.
+        #[cfg(windows)]
+        assert!(is_pnpm_global_shim(
+            "C:\\Users\\test\\AppData\\Local\\pnpm\\hq"
+        ));
+        // Custom PNPM_HOME: shims beside a `global/` store dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("my-tools");
+        std::fs::create_dir_all(home.join("global")).unwrap();
+        let shim = home.join("hq");
+        std::fs::write(&shim, "#!/bin/sh\n").unwrap();
+        assert!(is_pnpm_global_shim(shim.to_str().unwrap()));
+    }
+
+    #[test]
+    fn pnpm_global_shim_false_for_npm_layouts_and_missing_hq() {
+        assert!(!is_pnpm_global_shim("hq"));
+        assert!(!is_pnpm_global_shim("/opt/homebrew/bin/hq"));
+        assert!(!is_pnpm_global_shim("/Users/test/.npm-global/bin/hq"));
+        assert!(!is_pnpm_global_shim(
+            "/Users/test/Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq"
+        ));
+    }
+
+    /// Lock the pnpm argv shape the same way `install_argv` is locked: a typo
+    /// (dropping `-g`, wrong package) must fail a unit test, not a user.
+    #[test]
+    fn pnpm_install_argv_targets_global_hq_cli_latest() {
+        let argv = pnpm_install_argv();
+        assert_eq!(argv[0], "add");
+        assert_eq!(argv[1], "-g");
+        assert!(argv[2].starts_with("@indigoai-us/hq-cli@"));
+        assert!(argv[2].ends_with("@latest"));
     }
 
     /// Convergence is the property the old code never checked: npm exiting 0
