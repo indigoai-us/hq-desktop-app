@@ -822,6 +822,24 @@ where
     Ok(())
 }
 
+/// Run a child only while `generation` still owns `handle`.
+///
+/// The daemon acquires its singleton generation before asynchronous preflight
+/// and spawn work. This internal seam lets that original owner be fenced from a
+/// replacement that acquired the same public handle in the meantime.
+pub(crate) fn run_process_impl_for_generation<F>(
+    handle: &str,
+    generation: u64,
+    spawn: &SpawnArgs,
+    on_event: F,
+) -> Result<(), ProcessError>
+where
+    F: FnMut(ProcessEvent),
+{
+    let _ = generation;
+    run_process_impl(handle, spawn, on_event)
+}
+
 /// Keep the registry entry alive through the terminal callback so consumers
 /// can observe whether cancellation was requested for this exact process
 /// generation. The child has already been reaped, and registry cleanup happens
@@ -1233,6 +1251,19 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
     }
 }
 
+/// Cancel only the exact registration that scheduled the action.
+///
+/// Generation-aware daemon actors use this seam so a watchdog or force-clear
+/// from generation N cannot retarget a replacement registered as N+1.
+pub(crate) fn cancel_process_generation_impl(
+    handle: &str,
+    generation: u64,
+    sigkill_delay: Duration,
+) -> bool {
+    let _ = generation;
+    cancel_process_impl(handle, sigkill_delay)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // App-exit teardown
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1592,6 +1623,67 @@ mod registry_exit_order_tests {
         assert_eq!(observed, Some((true, true)));
         assert!(!is_registered(&handle));
         assert!(!is_cancelled(&handle));
+    }
+
+    #[test]
+    fn stale_generation_cannot_cancel_replacement_before_attach() {
+        let handle = format!("stale-cancel-generation-{}", Uuid::new_v4());
+        let stale_generation = try_register_handle_gen(&handle).expect("acquire stale generation");
+        assert!(deregister_generation(&handle, stale_generation));
+
+        let replacement_generation =
+            try_register_handle_gen(&handle).expect("acquire replacement generation");
+
+        assert!(
+            !cancel_process_generation_impl(&handle, stale_generation, Duration::ZERO),
+            "a stale daemon actor must be refused instead of cancelling the replacement"
+        );
+        assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
+        assert!(
+            !is_cancelled_for_generation(&handle, replacement_generation),
+            "the replacement must retain its uncancelled state"
+        );
+
+        assert!(deregister_generation(&handle, replacement_generation));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_runner_cannot_attach_to_or_cleanup_replacement_generation() {
+        let handle = format!("stale-runner-generation-{}", Uuid::new_v4());
+        let stale_generation = try_register_handle_gen(&handle).expect("acquire stale generation");
+        assert!(deregister_generation(&handle, stale_generation));
+
+        let replacement_generation =
+            try_register_handle_gen(&handle).expect("acquire replacement generation");
+        let spawn = SpawnArgs {
+            cmd: "sh".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            cwd: None,
+            env: None,
+        };
+        let mut events = Vec::new();
+
+        let result = run_process_impl_for_generation(&handle, stale_generation, &spawn, |event| {
+            events.push(event)
+        });
+
+        assert!(
+            result.is_err(),
+            "a runner whose registration was retired must not become active again"
+        );
+        assert!(
+            events.is_empty(),
+            "the stale runner must not emit terminal state for the replacement"
+        );
+        assert_eq!(generation_for_handle(&handle), Some(replacement_generation));
+        assert_eq!(
+            lookup_pid(&handle),
+            None,
+            "the stale child PID must never overwrite the replacement entry"
+        );
+
+        assert!(deregister_generation(&handle, replacement_generation));
     }
 
     /// The SIGKILL escalation is a deliberate stop, not a watcher crash.  The
