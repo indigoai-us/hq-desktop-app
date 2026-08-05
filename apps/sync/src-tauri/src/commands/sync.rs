@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, classify_runner_error_class,
+    classify_error_event, classify_runner_error_class, classify_runner_exit_disposition,
     classify_runner_exit_disposition_with_cancellation, classify_runner_fatal_class, describe_exit,
     should_synthesize_all_complete, termination_fingerprint_token, RunnerErrorClass,
     RunnerExitDisposition, SyncCancelCause,
