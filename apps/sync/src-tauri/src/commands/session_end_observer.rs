@@ -204,7 +204,7 @@ pub fn session_end_observer_status(app: tauri::AppHandle) -> &'static str {
 #[cfg(target_os = "windows")]
 mod windows_observer {
     use std::ffi::c_void;
-    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
@@ -234,7 +234,11 @@ mod windows_observer {
 
     const TERMSRV_READY_WAIT_MS: u64 = 10_000;
     const STEADY_TICK_MS: u32 = 60_000;
+    const MESSAGE_DRAIN_BATCH: usize = 64;
     const RPC_S_INVALID_BINDING_HRESULT: u32 = 0x8007_06A6;
+    const REGISTRATION_READY: u8 = 0;
+    const REGISTRATION_IN_FLIGHT: u8 = 1;
+    const REGISTRATION_STOPPING: u8 = 2;
 
     type RegistrationSeam = Box<dyn Fn(HWND) -> Result<(), Error> + Send + Sync>;
     type ReadyEventSeam = Box<dyn Fn() -> Option<HANDLE> + Send + Sync>;
@@ -247,6 +251,7 @@ mod windows_observer {
         open_termsrv_ready_event: ReadyEventSeam,
         on_thread_start: Option<ThreadHook>,
         after_window_created: Option<WindowHook>,
+        before_recovery_registration: Option<ThreadHook>,
     }
 
     impl ObserverSeams {
@@ -257,6 +262,7 @@ mod windows_observer {
                 open_termsrv_ready_event: Box::new(|| unsafe { open_termsrv_ready_event() }),
                 on_thread_start: None,
                 after_window_created: None,
+                before_recovery_registration: None,
             }
         }
     }
@@ -297,8 +303,55 @@ mod windows_observer {
     struct ObserverShared {
         tracker: Arc<SessionEndTracker>,
         shutdown_requested: AtomicBool,
+        registration_lifecycle: AtomicU8,
         shutdown_event: Option<ShutdownEvent>,
         hwnd: AtomicIsize,
+    }
+
+    impl ObserverShared {
+        /// Linearization point shared by shutdown and each WTS registration.
+        /// A registration starts only when its READY -> IN_FLIGHT transition
+        /// wins before STOPPING; shutdown never waits on an in-flight RPC.
+        fn try_begin_registration(&self) -> bool {
+            self.registration_lifecycle
+                .compare_exchange(
+                    REGISTRATION_READY,
+                    REGISTRATION_IN_FLIGHT,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        }
+
+        fn finish_registration(&self) {
+            // Shutdown can replace IN_FLIGHT with STOPPING while the Win32 call
+            // is running. Never overwrite that winning stop transition.
+            let _ = self.registration_lifecycle.compare_exchange(
+                REGISTRATION_IN_FLIGHT,
+                REGISTRATION_READY,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+
+        fn stopping(&self) -> bool {
+            self.registration_lifecycle.load(Ordering::Acquire) == REGISTRATION_STOPPING
+                || self.shutdown_requested.load(Ordering::Acquire)
+        }
+
+        fn request_shutdown(&self) -> bool {
+            // Publish STOPPING first. Once it wins, no registration transition
+            // can start in the interval before the flag and event are visible.
+            if self
+                .registration_lifecycle
+                .swap(REGISTRATION_STOPPING, Ordering::AcqRel)
+                == REGISTRATION_STOPPING
+            {
+                return false;
+            }
+            self.shutdown_requested.store(true, Ordering::Release);
+            true
+        }
     }
 
     struct WindowContext {
@@ -335,6 +388,7 @@ mod windows_observer {
             let shared = Arc::new(ObserverShared {
                 tracker,
                 shutdown_requested: AtomicBool::new(false),
+                registration_lifecycle: AtomicU8::new(REGISTRATION_READY),
                 shutdown_event,
                 hwnd: AtomicIsize::new(0),
             });
@@ -375,7 +429,7 @@ mod windows_observer {
         /// Request a level-triggered shutdown and wait only through the supplied
         /// bound. A timed-out observer is detached rather than delaying app exit.
         pub fn shutdown(&self, deadline: Duration) {
-            if self.shared.shutdown_requested.swap(true, Ordering::AcqRel) {
+            if !self.shared.request_shutdown() {
                 return;
             }
             if let Some(event) = &self.shared.shutdown_event {
@@ -435,6 +489,19 @@ mod windows_observer {
         }
     }
 
+    fn attempt_registration(
+        shared: &ObserverShared,
+        hwnd: HWND,
+        register: &RegistrationSeam,
+    ) -> Option<Result<(), Error>> {
+        if !shared.try_begin_registration() {
+            return None;
+        }
+        let result = register(hwnd);
+        shared.finish_registration();
+        Some(result)
+    }
+
     fn wait_millis_until(deadline_ms: u64, now_ms: u64) -> u32 {
         deadline_ms.saturating_sub(now_ms).min(u64::from(u32::MAX)) as u32
     }
@@ -485,7 +552,7 @@ mod windows_observer {
             shared.tracker.set_readiness(ObserverReadiness::Failed);
             return;
         };
-        if shared.shutdown_requested.load(Ordering::Acquire) {
+        if shared.stopping() {
             shared.tracker.set_readiness(ObserverReadiness::Stopped);
             return;
         }
@@ -575,7 +642,7 @@ mod windows_observer {
             hook(hwnd);
         }
 
-        if shared.shutdown_requested.load(Ordering::Acquire) {
+        if shared.stopping() {
             owner_thread_teardown(&shared, hwnd, &context, false, None, &seams);
             return;
         }
@@ -583,12 +650,14 @@ mod windows_observer {
         let mut registered = false;
         let mut recovery_deadline = None;
         let mut termsrv_ready_event = None;
-        match (seams.register)(hwnd) {
-            Ok(()) => {
+        match attempt_registration(&shared, hwnd, &seams.register) {
+            Some(Ok(())) => {
                 registered = true;
-                shared.tracker.set_readiness(ObserverReadiness::Registered);
+                if !shared.stopping() {
+                    shared.tracker.set_readiness(ObserverReadiness::Registered);
+                }
             }
-            Err(error) if is_termsrv_not_ready(&error) => {
+            Some(Err(error)) if !shared.stopping() && is_termsrv_not_ready(&error) => {
                 shared.tracker.set_readiness(ObserverReadiness::Recovering);
                 recovery_deadline = Some(
                     shared
@@ -598,30 +667,56 @@ mod windows_observer {
                 );
                 termsrv_ready_event = (seams.open_termsrv_ready_event)();
             }
-            Err(_) => {
+            Some(Err(_)) if !shared.stopping() => {
                 shared.tracker.set_readiness(ObserverReadiness::Failed);
                 crate::util::logfile::log(
                     "session-end",
                     "session-end observer registration failed",
                 );
             }
+            Some(Err(_)) | None => {}
+        }
+        if shared.stopping() {
+            owner_thread_teardown(
+                &shared,
+                hwnd,
+                &context,
+                registered,
+                termsrv_ready_event,
+                &seams,
+            );
+            return;
         }
 
         let mut quit_seen = false;
         let mut recovery_retry_requested = false;
-        while !quit_seen && !shared.shutdown_requested.load(Ordering::Acquire) {
+        while !quit_seen && !shared.stopping() {
             unsafe {
                 let mut message = MSG::default();
-                while PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE).as_bool() {
+                let mut drained = 0;
+                while drained < MESSAGE_DRAIN_BATCH {
+                    if shared.stopping() {
+                        break;
+                    }
+                    if recovery_deadline
+                        .is_some_and(|deadline| shared.tracker.now_millis() >= deadline)
+                    {
+                        recovery_retry_requested = true;
+                        break;
+                    }
+                    if !PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE).as_bool() {
+                        break;
+                    }
+                    drained += 1;
                     if message.message == WM_QUIT {
                         quit_seen = true;
                         break;
                     }
-                    TranslateMessage(&message);
+                    let _ = TranslateMessage(&message);
                     DispatchMessageW(&message);
                 }
             }
-            if quit_seen || shared.shutdown_requested.load(Ordering::Acquire) {
+            if quit_seen || shared.stopping() {
                 break;
             }
 
@@ -630,21 +725,33 @@ mod windows_observer {
                 recovery_retry_requested = true;
             }
             if recovery_retry_requested {
+                if let Some(hook) = seams.before_recovery_registration.take() {
+                    hook();
+                }
+                if shared.stopping() {
+                    break;
+                }
                 recovery_retry_requested = false;
                 recovery_deadline = None;
                 close_optional_handle(&mut termsrv_ready_event);
-                match (seams.register)(hwnd) {
-                    Ok(()) => {
+                match attempt_registration(&shared, hwnd, &seams.register) {
+                    Some(Ok(())) => {
                         registered = true;
-                        shared.tracker.set_readiness(ObserverReadiness::Registered);
+                        if !shared.stopping() {
+                            shared.tracker.set_readiness(ObserverReadiness::Registered);
+                        }
                     }
-                    Err(_) => {
+                    Some(Err(_)) if !shared.stopping() => {
                         shared.tracker.set_readiness(ObserverReadiness::Failed);
                         crate::util::logfile::log(
                             "session-end",
                             "session-end observer recovery failed",
                         );
                     }
+                    Some(Err(_)) | None => {}
+                }
+                if shared.stopping() {
+                    break;
                 }
             }
 
@@ -665,7 +772,7 @@ mod windows_observer {
                     MWMO_INPUTAVAILABLE,
                 )
             };
-            if result == WAIT_OBJECT_0 {
+            if result == WAIT_OBJECT_0 || shared.stopping() {
                 break;
             }
             if result == WAIT_FAILED {
@@ -731,7 +838,9 @@ mod windows_observer {
         use std::thread;
         use std::time::{Duration, Instant};
         use windows::core::HRESULT;
-        use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SendMessageW, WTS_SESSION_LOCK};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsWindow, PostMessageW, SendMessageW, WM_NULL, WTS_SESSION_LOCK,
+        };
 
         static WINDOWS_OBSERVER_TEST_LOCK: Mutex<()> = Mutex::new(());
         const TEST_WAIT: Duration = Duration::from_secs(5);
@@ -842,6 +951,7 @@ mod windows_observer {
                 open_termsrv_ready_event: Box::new(|| None),
                 on_thread_start: None,
                 after_window_created: None,
+                before_recovery_registration: None,
             }
         }
 
@@ -990,6 +1100,124 @@ mod windows_observer {
             assert_eq!(late_register_calls.load(TestOrdering::Acquire), 0);
             assert_eq!(unregister_calls.load(TestOrdering::Acquire), 0);
             assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
+
+        #[test]
+        fn shutdown_wins_before_the_recovery_registration_transition() {
+            let _guard = test_guard();
+            let (clock, tracker) = tracker();
+            let register_calls = Arc::new(AtomicUsize::new(0));
+            let calls = Arc::clone(&register_calls);
+            let (at_transition_tx, at_transition_rx) = mpsc::sync_channel(1);
+            let (release_transition_tx, release_transition_rx) = mpsc::sync_channel(1);
+            let mut seams = test_seams(
+                move |_| {
+                    calls.fetch_add(1, TestOrdering::AcqRel);
+                    Err(termsrv_not_ready_error())
+                },
+                |_| Ok(()),
+            );
+            seams.before_recovery_registration = Some(Box::new(move || {
+                let _ = at_transition_tx.send(());
+                release_transition_rx
+                    .recv_timeout(TEST_WAIT)
+                    .expect("test did not release recovery transition");
+            }));
+            let handle = Arc::new(SessionEndObserverHandle::start_with(tracker, seams));
+            wait_for_readiness(&handle, ObserverReadiness::Recovering, TEST_WAIT);
+            let hwnd = observer_hwnd(&handle);
+
+            clock.set(TERMSRV_READY_WAIT_MS);
+            unsafe { PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0)) }
+                .expect("failed to wake observer for recovery transition");
+            at_transition_rx
+                .recv_timeout(TEST_WAIT)
+                .expect("observer did not reach the recovery transition");
+
+            let (shutdown_done_tx, shutdown_done_rx) = mpsc::sync_channel(1);
+            let shutdown_handle = Arc::clone(&handle);
+            let shutdown_thread = thread::spawn(move || {
+                shutdown_handle.shutdown(Duration::from_millis(500));
+                let _ = shutdown_done_tx.send(());
+            });
+            wait_until(TEST_WAIT, "shutdown flag was not published", || {
+                handle.shared.shutdown_requested.load(Ordering::Acquire)
+            });
+            release_transition_tx
+                .send(())
+                .expect("failed to release recovery transition");
+            shutdown_done_rx
+                .recv_timeout(TEST_WAIT)
+                .expect("bounded shutdown did not return");
+            wait_until(TEST_WAIT, "shutdown caller did not finish", || {
+                shutdown_thread.is_finished()
+            });
+            shutdown_thread.join().expect("shutdown caller panicked");
+
+            assert_eq!(
+                register_calls.load(TestOrdering::Acquire),
+                1,
+                "shutdown must prevent the armed recovery call from starting"
+            );
+            assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
+
+        #[test]
+        fn continuous_message_input_cannot_starve_recovery_or_shutdown() {
+            let _guard = test_guard();
+            let (clock, tracker) = tracker();
+            let register_calls = Arc::new(AtomicUsize::new(0));
+            let calls = Arc::clone(&register_calls);
+            let seams = test_seams(
+                move |_| {
+                    calls.fetch_add(1, TestOrdering::AcqRel);
+                    Err(termsrv_not_ready_error())
+                },
+                |_| Ok(()),
+            );
+            let handle = SessionEndObserverHandle::start_with(tracker, seams);
+            wait_for_readiness(&handle, ObserverReadiness::Recovering, TEST_WAIT);
+            let hwnd = observer_hwnd(&handle);
+
+            let keep_posting = Arc::new(AtomicBool::new(true));
+            let posting = Arc::clone(&keep_posting);
+            let hwnd_raw = hwnd.0 as isize;
+            let poster = thread::spawn(move || {
+                let hwnd = HWND(hwnd_raw as *mut c_void);
+                while posting.load(TestOrdering::Acquire) {
+                    let _ = unsafe { PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0)) };
+                }
+            });
+
+            clock.set(TERMSRV_READY_WAIT_MS);
+            let recovery_until = Instant::now() + TEST_WAIT;
+            while handle.tracker().readiness() != ObserverReadiness::Failed
+                && Instant::now() < recovery_until
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            let recovery_completed = handle.tracker().readiness() == ObserverReadiness::Failed;
+            let shutdown_started = Instant::now();
+            handle.shutdown(Duration::from_millis(500));
+            let shutdown_elapsed = shutdown_started.elapsed();
+            let shutdown_acknowledged = handle.tracker().readiness() == ObserverReadiness::Stopped;
+
+            keep_posting.store(false, TestOrdering::Release);
+            wait_until(TEST_WAIT, "message poster did not finish", || {
+                poster.is_finished()
+            });
+            poster.join().expect("message poster panicked");
+
+            assert!(
+                recovery_completed,
+                "message input starved the recovery deadline"
+            );
+            assert_eq!(register_calls.load(TestOrdering::Acquire), 2);
+            assert!(
+                shutdown_acknowledged,
+                "message input starved owner-thread shutdown acknowledgement"
+            );
+            assert!(shutdown_elapsed < Duration::from_secs(1));
         }
 
         #[test]
