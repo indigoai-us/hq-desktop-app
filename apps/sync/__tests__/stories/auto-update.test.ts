@@ -105,6 +105,21 @@ describe('master automatic-updates switch', () => {
     expect(settingsRs).toContain('auto_update: Some(prefs.auto_update.unwrap_or(true))');
   });
 
+  it('the CLI installer coalesces overlapping backend requests before episode ownership', () => {
+    const commandStart = cliUpdate.indexOf('pub async fn install_hq_cli_update(');
+    const onceStart = cliUpdate.indexOf('async fn install_hq_cli_update_once(');
+    const command = cliUpdate.slice(commandStart, onceStart);
+    const oneShot = cliUpdate.slice(onceStart);
+
+    expect(cliUpdateCore).toContain('pub struct AsyncSingleFlight');
+    expect(normalize(command)).toContain(
+      '.run(move || install_hq_cli_update_once(app)) .await',
+    );
+    expect(command).not.toContain('non_convergent_cli_version()');
+    expect(oneShot).toContain('let non_convergent_version = non_convergent_cli_version();');
+    expect(oneShot).toContain('run_npm_install_with_retries(&npm');
+  });
+
   it('the CLI auto-installer cannot loop on an install that never converges', () => {
     // A prod app spent weeks reinstalling the same CLI version on every launch
     // and every 6h check: npm exited 0 into a prefix nothing read, so the

@@ -1,8 +1,11 @@
+use std::cell::Cell;
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    report_install_failure, report_unreadable_version, BinaryAnchorShape,
-    LocalVersionProbeDiagnostics, VersionProbeOutcome,
+    apply_post_install_effects, decide_post_install, report_install_failure,
+    report_non_convergent_install, report_unreadable_version, BinaryAnchorShape,
+    LocalVersionProbeDiagnostics, NonConvergentReport, PostInstallCoreEffects, VersionProbeOutcome,
+    NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -29,6 +32,210 @@ fn captured_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
             ..Default::default()
         },
     )
+}
+
+fn fingerprint(event: &sentry::protocol::Event<'_>) -> Vec<String> {
+    event.fingerprint.iter().map(ToString::to_string).collect()
+}
+
+fn composed_non_convergent_events(
+    hq_bin: &str,
+    npm_prefix: Option<&str>,
+    already_blocked: bool,
+    durable_record: bool,
+) -> (Vec<sentry::protocol::Event<'static>>, usize, usize, usize) {
+    let records = Cell::new(0usize);
+    let captures = Cell::new(0usize);
+    let record_failures = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(
+            hq_bin,
+            hq_bin,
+            Some("5.77.14"),
+            Some("5.77.14"),
+            "5.84.0",
+            npm_prefix,
+            "/opt/homebrew/bin/npm",
+            already_blocked,
+        );
+        let record = |version: String| {
+            records.set(records.get() + 1);
+            assert_eq!(version, "5.84.0");
+            if durable_record {
+                Ok(())
+            } else {
+                Err("fixture marker write failed".to_string())
+            }
+        };
+        let clear = || panic!("non-convergence must not clear the marker");
+        let capture = |report: NonConvergentReport| {
+            captures.set(captures.get() + 1);
+            report_non_convergent_install(
+                &report.latest,
+                report.local.as_deref(),
+                &report.hq_bin,
+                report.npm_prefix.as_deref(),
+                &report.npm_bin,
+                report.hq_bin_changed,
+                report.kind,
+            );
+        };
+        let record_failure = |_error: String| {
+            record_failures.set(record_failures.get() + 1);
+        };
+        let result = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)
+        ));
+    });
+
+    (events, records.get(), captures.get(), record_failures.get())
+}
+
+fn assert_non_convergent_event(
+    event: &sentry::protocol::Event<'_>,
+    expected_kind: &str,
+    expected_hq_source: &str,
+    expected_hq_bin: &str,
+    expected_prefix: &str,
+) {
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install completed but the detected CLI version did not change")
+    );
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    let expected_npm_source = if cfg!(target_os = "windows") {
+        "unknown"
+    } else {
+        "homebrew"
+    };
+    let expected_prefix_known = if expected_prefix == "npm default prefix" {
+        "false"
+    } else {
+        "true"
+    };
+    for (tag, expected) in [
+        ("hq_cli_update_kind", "install-non-convergent"),
+        ("non_convergence_kind", expected_kind),
+        ("latest", "5.84.0"),
+        ("local", "5.77.14"),
+        ("hq_bin_source", expected_hq_source),
+        ("npm_bin_source", expected_npm_source),
+        ("hq_bin_changed", "false"),
+        ("prefix_known", expected_prefix_known),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    assert_eq!(
+        event.extra.get("hq_bin").and_then(Value::as_str),
+        Some(expected_hq_bin)
+    );
+    assert_eq!(
+        event.extra.get("npm_prefix").and_then(Value::as_str),
+        Some(expected_prefix)
+    );
+}
+
+#[test]
+fn foreign_managed_first_episodes_capture_only_after_a_durable_record() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let expected_sources = if cfg!(target_os = "windows") {
+        ["unknown", "unknown"]
+    } else {
+        ["pnpm", "login-shell"]
+    };
+    for (relative, expected_extra, expected_source) in [
+        ("Library/pnpm/hq", "~/Library/pnpm/hq", expected_sources[0]),
+        (".asdf/shims/hq", "~/.asdf/shims/hq", expected_sources[1]),
+    ] {
+        let hq_bin = home.join(relative).to_string_lossy().to_string();
+        let (events, records, captures, record_failures) =
+            composed_non_convergent_events(&hq_bin, None, false, true);
+        assert_eq!(records, 1);
+        assert_eq!(captures, 1);
+        assert_eq!(record_failures, 0);
+        assert_eq!(events.len(), 1);
+        assert_non_convergent_event(
+            &events[0],
+            "foreign-managed",
+            expected_source,
+            expected_extra,
+            "npm default prefix",
+        );
+        let serialized = serde_json::to_string(&events[0]).expect("serialize event");
+        assert!(!serialized.contains(&home_text));
+
+        let (events, records, captures, record_failures) =
+            composed_non_convergent_events(&hq_bin, None, false, false);
+        assert!(events.is_empty(), "a failed marker write must fail closed");
+        assert_eq!(records, 1);
+        assert_eq!(captures, 0);
+        assert_eq!(record_failures, 1);
+    }
+}
+
+#[test]
+fn foreign_managed_repeat_episodes_stay_suppressed_through_the_executor() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    for relative in ["Library/pnpm/hq", ".asdf/shims/hq"] {
+        let hq_bin = home.join(relative).to_string_lossy().to_string();
+        let (events, records, captures, record_failures) =
+            composed_non_convergent_events(&hq_bin, None, true, true);
+        assert!(events.is_empty());
+        assert_eq!(records, 0);
+        assert_eq!(captures, 0);
+        assert_eq!(record_failures, 0);
+    }
+}
+
+#[test]
+fn npm_targeted_non_convergence_stays_loud_for_an_already_marked_episode() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let prefix = home.join(".npm-global").to_string_lossy().to_string();
+    let hq_bin = home
+        .join(".npm-global/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let expected_hq_source = if cfg!(target_os = "windows") {
+        "unknown"
+    } else {
+        "npm-global"
+    };
+
+    let (events, records, captures, record_failures) =
+        composed_non_convergent_events(&hq_bin, Some(&prefix), true, true);
+    assert_eq!(records, 1);
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    assert_non_convergent_event(
+        &events[0],
+        "npm-targeted",
+        expected_hq_source,
+        "~/.npm-global/bin/hq",
+        "~/.npm-global",
+    );
+    let serialized = serde_json::to_string(&events[0]).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
 }
 
 #[test]

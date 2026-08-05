@@ -1,7 +1,10 @@
-//! Pure and synchronous support for the HQ CLI update command layer.
+//! Shared support for the HQ CLI update command layer: pure decision and
+//! reporting helpers plus its async single-flight boundary.
 
+use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -646,6 +649,103 @@ pub struct PostInstallCoreEffects<'a> {
     pub clear: &'a dyn Fn(),
     pub capture: &'a dyn Fn(NonConvergentReport),
     pub record_failure: &'a dyn Fn(String),
+}
+
+struct AsyncSingleFlightState<T> {
+    next_generation: u64,
+    active: Option<AsyncSingleFlightActive<T>>,
+}
+
+struct AsyncSingleFlightActive<T> {
+    generation: u64,
+    receiver: tokio::sync::watch::Receiver<Option<Result<T, String>>>,
+}
+
+/// Coalesce overlapping async operations into one execution and share its
+/// result with every caller that arrived while it was in flight.
+///
+/// The worker runs independently of any one caller, so cancelling a waiting UI
+/// request cannot abandon the operation or strand later waiters. Generation
+/// identity prevents a late waiter for an older result from clearing a newer
+/// flight.
+pub struct AsyncSingleFlight<T> {
+    state: Arc<tokio::sync::Mutex<AsyncSingleFlightState<T>>>,
+}
+
+impl<T> AsyncSingleFlight<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(tokio::sync::Mutex::new(AsyncSingleFlightState {
+                next_generation: 0,
+                active: None,
+            })),
+        }
+    }
+
+    pub async fn run<F, Fut>(&self, operation: F) -> Result<T, String>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let mut receiver = {
+            let mut state = self.state.lock().await;
+            if let Some(active) = state.active.as_ref() {
+                active.receiver.clone()
+            } else {
+                state.next_generation = state.next_generation.wrapping_add(1);
+                let generation = state.next_generation;
+                let (sender, receiver) = tokio::sync::watch::channel(None);
+                state.active = Some(AsyncSingleFlightActive {
+                    generation,
+                    receiver: receiver.clone(),
+                });
+
+                let shared_state = Arc::clone(&self.state);
+                let worker = tokio::spawn(operation());
+                tokio::spawn(async move {
+                    let result = match worker.await {
+                        Ok(result) => result,
+                        Err(error) => Err(format!("shared async operation failed: {error}")),
+                    };
+                    // Retain the result even if every original caller was
+                    // cancelled; a waiter that joined this generation can
+                    // still observe the completed operation.
+                    sender.send_replace(Some(result));
+
+                    let mut state = shared_state.lock().await;
+                    if state
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.generation == generation)
+                    {
+                        state.active = None;
+                    }
+                });
+                receiver
+            }
+        };
+
+        loop {
+            if let Some(result) = receiver.borrow().clone() {
+                return result;
+            }
+            if receiver.changed().await.is_err() {
+                return Err("shared async operation ended without a result".to_string());
+            }
+        }
+    }
+}
+
+impl<T> Default for AsyncSingleFlight<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Decide whether an npm install reached the CLI the desktop app resolves
@@ -3068,6 +3168,79 @@ mod tests {
         assert!(repeat.record_non_convergent.is_none());
         assert!(repeat.capture.is_none());
         assert!(repeat.capture_requires_durable_record);
+    }
+
+    #[tokio::test]
+    async fn overlapping_first_episode_installs_share_one_claim_and_capture() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        use std::sync::Arc;
+        use tokio::sync::Notify;
+
+        let flight = AsyncSingleFlight::<PostInstallSuccess>::new();
+        let installs = Arc::new(AtomicUsize::new(0));
+        let records = Arc::new(AtomicUsize::new(0));
+        let captures = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        let make_operation = || {
+            let installs = Arc::clone(&installs);
+            let records = Arc::clone(&records);
+            let captures = Arc::clone(&captures);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            move || async move {
+                installs.fetch_add(1, AtomicOrdering::SeqCst);
+                entered.notify_one();
+                release.notified().await;
+                let outcome = decide_post_install(
+                    "/Users/t/Library/pnpm/hq",
+                    "/Users/t/Library/pnpm/hq",
+                    Some("5.77.14"),
+                    Some("5.77.14"),
+                    "5.84.0",
+                    None,
+                    "/opt/homebrew/bin/npm",
+                    false,
+                );
+                let record = |_version: String| {
+                    records.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(())
+                };
+                let clear = || panic!("non-convergence must not clear the marker");
+                let capture = |_report| {
+                    captures.fetch_add(1, AtomicOrdering::SeqCst);
+                };
+                let record_failure = |_error| panic!("the marker write must succeed");
+                apply_post_install_effects(
+                    &outcome,
+                    &PostInstallCoreEffects {
+                        record: &record,
+                        clear: &clear,
+                        capture: &capture,
+                        record_failure: &record_failure,
+                    },
+                )
+            }
+        };
+        let first = flight.run(make_operation());
+        let second = flight.run(make_operation());
+        let release_when_overlapped = async {
+            entered.notified().await;
+            tokio::task::yield_now().await;
+            release.notify_waiters();
+        };
+
+        let (first_result, second_result, ()) =
+            tokio::join!(first, second, release_when_overlapped);
+        assert!(matches!(
+            first_result,
+            Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)
+        ));
+        assert_eq!(first_result.err(), second_result.err());
+        assert_eq!(installs.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(records.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(captures.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[test]

@@ -56,6 +56,7 @@
 //! that needs sudo).
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -76,10 +77,10 @@ pub use hq_desktop_core::hq_cli_update::{
     report_non_convergent_install, report_non_convergent_marker_unpersisted,
     report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
     should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergentReport, NpmLatest,
-    PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome, DISMISSED_VERSION_KEY,
-    HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo,
+    InstallFailureKind, LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergentReport,
+    NpmLatest, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
+    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -508,8 +509,20 @@ fn apply_post_install(
     Ok(info)
 }
 
+static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateInfo>> = OnceLock::new();
+
+fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateInfo> {
+    HQ_CLI_INSTALL_FLIGHT.get_or_init(AsyncSingleFlight::new)
+}
+
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+    hq_cli_install_flight()
+        .run(move || install_hq_cli_update_once(app))
+        .await
+}
+
+async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
