@@ -50,20 +50,31 @@ const workspace = {
   invitedAt: null,
 };
 
-async function renderRejectedConnect(message: string, expectsRepairAffordance = true) {
+async function renderRejectedConnect(
+  message: string,
+  expectsRepairAffordance = true,
+  state: 'local-only' | 'broken' = 'local-only',
+) {
   mocks.invoke.mockRejectedValueOnce(new Error(message));
   host = document.createElement('div');
   document.body.appendChild(host);
   component = mount(WorkspaceList, {
     target: host,
     props: {
-      workspaces: [workspace],
+      workspaces: [
+        {
+          ...workspace,
+          state,
+          brokenReason: state === 'broken' ? 'Manifest points at a retired cloud vault' : null,
+        },
+      ],
       cloudReachable: true,
       hqFolderPath: '/Users/Ada/HQ',
     },
   });
   flushSync();
-  host.querySelector<HTMLButtonElement>('[aria-label="Connect Acme to cloud"]')?.click();
+  const action = state === 'broken' ? 'Reconnect' : 'Connect';
+  host.querySelector<HTMLButtonElement>(`[aria-label="${action} Acme to cloud"]`)?.click();
   await vi.waitFor(() => {
     flushSync();
     expect(host?.textContent).toContain(
@@ -100,6 +111,26 @@ describe('WorkspaceList Connect error reporting', () => {
     const scrubbed = beforeSend(event, {} as EventHint);
     expect(JSON.stringify(scrubbed)).not.toContain(privatePath);
   });
+
+  it.each([
+    ['node-missing', 'Install Node.js'],
+    ['npx-unavailable', 'Restore npx'],
+  ])(
+    'renders the actionable %s repair on a broken workspace while keeping it unreported',
+    async (kind, label) => {
+      await renderRejectedConnect(
+        `local environment failure (${kind}): expected first-run setup gap`,
+        true,
+        'broken',
+      );
+
+      expect(mocks.captureException).not.toHaveBeenCalled();
+      expect(host?.textContent).toContain(label);
+      expect(host?.textContent).toContain('Fix in Claude Code');
+      expect(host?.textContent).not.toContain('Reconnect failed — click to retry');
+      expect(host?.textContent).not.toContain('Copy repair prompt');
+    },
+  );
 
   it('continues reporting an unclassified Connect rejection once', async () => {
     await renderRejectedConnect('runtime launcher unavailable; see log', false);
