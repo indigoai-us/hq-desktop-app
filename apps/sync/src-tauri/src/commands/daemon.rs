@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
-    app_exit_requested, cancel_process_impl, deregister_generation, generation_for_handle,
-    is_cancelled, is_cancelled_for_generation, is_registered, lookup_pid, run_process_impl,
-    try_register_handle_gen, ProcessError, ProcessEvent,
+    app_exit_requested, cancel_process_generation_impl, deregister_generation,
+    generation_for_handle, is_cancelled_for_generation, is_registered, lookup_pid,
+    run_process_impl, run_process_impl_for_generation, try_register_handle_gen, ProcessError,
+    ProcessEvent,
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, RunTotals};
@@ -154,7 +155,11 @@ fn handle_watch_stdout_line(
     true
 }
 
-fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished: Arc<AtomicBool>) {
+fn start_daemon_heartbeat_watchdog(
+    generation: u64,
+    last_heartbeat: Arc<Mutex<Instant>>,
+    finished: Arc<AtomicBool>,
+) {
     thread::spawn(move || loop {
         thread::sleep(DAEMON_HEARTBEAT_CHECK_INTERVAL);
         if finished.load(Ordering::Acquire) {
@@ -165,7 +170,7 @@ fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .elapsed();
         if should_cancel_stalled_daemon(
-            is_registered(DAEMON_HANDLE),
+            generation_for_handle(DAEMON_HANDLE) == Some(generation),
             heartbeat_age,
             DAEMON_HEARTBEAT_TIMEOUT,
         ) {
@@ -178,7 +183,8 @@ fn start_daemon_heartbeat_watchdog(last_heartbeat: Arc<Mutex<Instant>>, finished
             );
             // Exactly-once Job Object / process-group teardown for this generation.
             HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(true, Ordering::Release);
-            if !terminate_daemon_once(DaemonFailureCategory::HeartbeatStall) {
+            if !terminate_daemon_generation_once(generation, DaemonFailureCategory::HeartbeatStall)
+            {
                 HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
             }
             return;
@@ -272,11 +278,26 @@ fn terminate_daemon_once_with_delay(
     category: DaemonFailureCategory,
     sigkill_delay: Duration,
 ) -> bool {
-    let already = is_cancelled(DAEMON_HANDLE);
+    let Some(generation) = generation_for_handle(DAEMON_HANDLE) else {
+        return false;
+    };
+    terminate_daemon_generation_once_with_delay(generation, category, sigkill_delay)
+}
+
+fn terminate_daemon_generation_once(generation: u64, category: DaemonFailureCategory) -> bool {
+    terminate_daemon_generation_once_with_delay(generation, category, SIGKILL_DELAY)
+}
+
+fn terminate_daemon_generation_once_with_delay(
+    generation: u64,
+    category: DaemonFailureCategory,
+    sigkill_delay: Duration,
+) -> bool {
+    let already = is_cancelled_for_generation(DAEMON_HANDLE, generation);
     if !should_terminate_job_on_path(already, category) {
         return false;
     }
-    let cancelled = cancel_process_impl(DAEMON_HANDLE, sigkill_delay);
+    let cancelled = cancel_process_generation_impl(DAEMON_HANDLE, generation, sigkill_delay);
     if cancelled {
         match category {
             DaemonFailureCategory::HeartbeatStall => {
@@ -368,6 +389,10 @@ static DAEMON_GUARD_GEN: AtomicU64 = AtomicU64::new(0);
 struct DaemonGuardStamp {
     /// Which start acquisition owns this stamp; only that generation may clear it.
     generation: u64,
+    /// Process-registry generation acquired by the same start. Keeping the two
+    /// tokens in one stamp prevents force-clear from pairing owners across a
+    /// concurrent respawn.
+    registration: u64,
     /// When the guard was acquired, or when the daemon was last confirmed live —
     /// a live confirmation refreshes this so the wedge deadline only ever measures
     /// time the daemon has been observed *down*, never a healthy generation's age.
@@ -382,12 +407,13 @@ fn daemon_guard() -> &'static Mutex<Option<DaemonGuardStamp>> {
 
 /// Stamp a new start acquiring the singleton guard. Returns the generation id so
 /// the owning start thread can later clear *only its own* stamp.
-fn mark_daemon_guard_acquired() -> u64 {
+fn mark_daemon_guard_acquired(registration: u64) -> u64 {
     let generation = DAEMON_GUARD_GEN
         .fetch_add(1, Ordering::AcqRel)
         .wrapping_add(1);
     *daemon_guard().lock().unwrap_or_else(|p| p.into_inner()) = Some(DaemonGuardStamp {
         generation,
+        registration,
         since: Instant::now(),
     });
     generation
@@ -494,23 +520,28 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
         message: Some("force-clearing wedged start guard (no live daemon on re-check)".into()),
         ..Default::default()
     });
-    // Snapshot both ownership tokens before cancellation. The release below is
-    // generation-scoped, so a replacement that appears after a stale action can
-    // never have its handle or start stamp erased.
-    let registration = generation_for_handle(DAEMON_HANDLE);
-    let guard_generation = daemon_guard()
+    // Snapshot the paired registry/guard ownership record in one critical
+    // section. A concurrent respawn can replace the whole stamp, but can never
+    // make this force-clear combine one start's registration with another's
+    // guard generation.
+    let ownership = *daemon_guard()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .map(|stamp| stamp.generation);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    // Exactly-once Job Object teardown for this generation, then release the guard.
-    let _ = terminate_daemon_once(DaemonFailureCategory::ForceClear);
-    if let Some(registration) = registration {
-        let _ = deregister_generation(DAEMON_HANDLE, registration);
-    }
-    if let Some(guard_generation) = guard_generation {
-        clear_daemon_guard_stamp_for(guard_generation);
-    }
+    force_clear_daemon_generation(ownership);
+}
+
+/// Complete a force-clear using the ownership snapshots captured by its actor.
+/// If either token is stale, the generation-scoped operations are no-ops and a
+/// replacement watcher/guard remains untouched.
+fn force_clear_daemon_generation(ownership: Option<DaemonGuardStamp>) {
+    let Some(ownership) = ownership else {
+        return;
+    };
+    let _ =
+        terminate_daemon_generation_once(ownership.registration, DaemonFailureCategory::ForceClear);
+    let _ = deregister_generation(DAEMON_HANDLE, ownership.registration);
+    clear_daemon_guard_stamp_for(ownership.generation);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,7 +567,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // may hold it with no live daemon before treating it as wedged. The
     // generation lets this start's exit clear only its own stamp, never a
     // respawn's fresher one.
-    let guard_generation = mark_daemon_guard_acquired();
+    let guard_generation = mark_daemon_guard_acquired(daemon_generation);
     set_lifecycle_state(WatchDaemonState::Starting, DaemonFailureCategory::None);
 
     // A signed-out watcher can only emit auth-error and exit 0. Refuse that
@@ -631,87 +662,97 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // precise final diagnostic even when the ambient scope changes first.
     let last_stderr = Arc::new(Mutex::new(None::<String>));
     let watcher_command = spawn_args.cmd.clone();
-    start_daemon_heartbeat_watchdog(last_heartbeat.clone(), daemon_finished.clone());
+    start_daemon_heartbeat_watchdog(
+        daemon_generation,
+        last_heartbeat.clone(),
+        daemon_finished.clone(),
+    );
 
     thread::spawn(move || {
         let process_heartbeat = last_heartbeat.clone();
         let process_finished = daemon_finished.clone();
         let process_last_stderr = last_stderr.clone();
         let process_watcher_phase = watcher_phase.clone();
-        let result = run_process_impl(DAEMON_HANDLE, &spawn_args, move |event| {
-            // Surface stderr and non-success exits unconditionally — they
-            // are the only signals the user has when the watcher dies
-            // (e.g. "Unknown argument: --watch" on a stale runner pin).
-            // Stdout is parsed for ndjson SyncEvents so each watcher pass
-            // updates `.hq-sync-journal.json` and refreshes the popover's
-            // "Last synced" stat — without that, the UI only ever showed
-            // the timestamp of the last manual `Sync Now` click.
-            match event {
-                ProcessEvent::Stdout(line) => {
-                    if handle_watch_stdout_line(
-                        &app,
-                        &hq_folder,
-                        &totals,
-                        &process_watcher_phase,
-                        &line,
-                    ) {
-                        *process_heartbeat
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+        let result = run_process_impl_for_generation(
+            DAEMON_HANDLE,
+            daemon_generation,
+            &spawn_args,
+            move |event| {
+                // Surface stderr and non-success exits unconditionally — they
+                // are the only signals the user has when the watcher dies
+                // (e.g. "Unknown argument: --watch" on a stale runner pin).
+                // Stdout is parsed for ndjson SyncEvents so each watcher pass
+                // updates `.hq-sync-journal.json` and refreshes the popover's
+                // "Last synced" stat — without that, the UI only ever showed
+                // the timestamp of the last manual `Sync Now` click.
+                match event {
+                    ProcessEvent::Stdout(line) => {
+                        if handle_watch_stdout_line(
+                            &app,
+                            &hq_folder,
+                            &totals,
+                            &process_watcher_phase,
+                            &line,
+                        ) {
+                            *process_heartbeat
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+                        }
                     }
-                }
-                ProcessEvent::Stderr(line) => {
-                    log("daemon.stderr", &line);
-                    *process_last_stderr
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(line.clone());
-                    // Raw stderr can contain user paths and messages. Keep it
-                    // in the local log; the capture path receives only the
-                    // fixed-vocabulary rollup recorded from parsed errors.
-                    crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
-                }
-                ProcessEvent::Exit {
-                    code,
-                    signal,
-                    success,
-                } => {
-                    // Mark this generation complete before the process helper
-                    // deregisters its shared handle. That prevents this
-                    // generation's watchdog from ever cancelling a newly
-                    // registered replacement during the restart handoff.
-                    process_finished.store(true, Ordering::Release);
-                    log(
-                        "daemon",
-                        &format!(
-                            "exited: code={:?} signal={:?} success={}",
-                            code, signal, success
-                        ),
-                    );
-                    // Auto-sync runs unattended, so a crashed watcher was
-                    // previously invisible (log-only). Capture genuine crashes
-                    // to #hq-alerts — but NOT a deliberate stop (a bare SIGTERM
-                    // from cancel_process_impl on app-quit / auto-sync-off /
-                    // re-spawn), and rate-limit a crash-loop to ~log2(N) events
-                    // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
-                    let cancelled = is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
-                    let exit_context =
-                        watcher_exit_capture_context(&totals, cancelled, &watcher_phase);
-                    let last_stderr = process_last_stderr
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clone();
-                    handle_watcher_exit(
+                    ProcessEvent::Stderr(line) => {
+                        log("daemon.stderr", &line);
+                        *process_last_stderr
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(line.clone());
+                        // Raw stderr can contain user paths and messages. Keep it
+                        // in the local log; the capture path receives only the
+                        // fixed-vocabulary rollup recorded from parsed errors.
+                        crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
+                    }
+                    ProcessEvent::Exit {
                         code,
                         signal,
                         success,
-                        cancelled,
-                        &watcher_command,
-                        last_stderr.as_deref(),
-                        &exit_context,
-                    );
+                    } => {
+                        // Mark this generation complete before the process helper
+                        // deregisters its shared handle. That prevents this
+                        // generation's watchdog from ever cancelling a newly
+                        // registered replacement during the restart handoff.
+                        process_finished.store(true, Ordering::Release);
+                        log(
+                            "daemon",
+                            &format!(
+                                "exited: code={:?} signal={:?} success={}",
+                                code, signal, success
+                            ),
+                        );
+                        // Auto-sync runs unattended, so a crashed watcher was
+                        // previously invisible (log-only). Capture genuine crashes
+                        // to #hq-alerts — but NOT a deliberate stop (a bare SIGTERM
+                        // from cancel_process_impl on app-quit / auto-sync-off /
+                        // re-spawn), and rate-limit a crash-loop to ~log2(N) events
+                        // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
+                        let cancelled =
+                            is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
+                        let exit_context =
+                            watcher_exit_capture_context(&totals, cancelled, &watcher_phase);
+                        let last_stderr = process_last_stderr
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        handle_watcher_exit(
+                            code,
+                            signal,
+                            success,
+                            cancelled,
+                            &watcher_command,
+                            last_stderr.as_deref(),
+                            &exit_context,
+                        );
+                    }
                 }
-            }
-        });
+            },
+        );
 
         daemon_finished.store(true, Ordering::Release);
         // `run_process_impl` has returned, so it already deregistered the
@@ -1336,10 +1377,11 @@ fn unrecognized_watcher_exit_extras() -> Vec<(&'static str, sentry::protocol::Va
     ]
 }
 
-/// Process errors after a child has started already flow through the Exit arm.
-/// Only the typed Spawn variant is allowed to use a "failed to spawn" capture;
-/// this prevents stream/wait errors from being captured twice under a false
-/// spawn label.
+/// Process errors after an owned child has started flow through the Exit arm.
+/// Ownership loss is local-only because that actor must not publish terminal
+/// state for a replacement. Only the typed Spawn variant may use a "failed to
+/// spawn" capture, preventing stream/wait errors from being captured twice
+/// under a false spawn label.
 fn record_watcher_process_error(error: ProcessError) {
     let mut effects = ProductionWatcherProcessEffects;
     record_watcher_process_error_with_effects(&mut effects, error);
@@ -1349,6 +1391,13 @@ fn record_watcher_process_error_with_effects<E: WatcherProcessEffects>(
     effects: &mut E,
     error: ProcessError,
 ) {
+    if error.is_ownership_lost() {
+        effects.log(
+            "daemon",
+            &format!("stale watcher spawn discarded without touching its replacement: {error}"),
+        );
+        return;
+    }
     if !error.is_spawn() {
         effects.log(
             "daemon",
@@ -1606,7 +1655,10 @@ fn next_exec_not_runnable_streak(previous: u32, policy: WatcherExitCapturePolicy
 }
 
 fn reset_exec_not_runnable_failure_streak() {
-    crash_state().lock().unwrap_or_else(|e| e.into_inner()).exec_not_runnable_consecutive = 0;
+    crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .exec_not_runnable_consecutive = 0;
 }
 
 /// Apply the same exponential retry dampening when a preflight positively
@@ -2011,7 +2063,9 @@ mod tests {
         // Simulate a spawned watch runner that never wrote .hq-sync.pid.
         assert!(try_register_handle(DAEMON_HANDLE));
         register_process(DAEMON_HANDLE, std::process::id());
-        mark_daemon_guard_acquired();
+        mark_daemon_guard_acquired(
+            generation_for_handle(DAEMON_HANDLE).expect("registered daemon generation"),
+        );
 
         let (app_owned, child_alive, daemon_alive, sample_pid) = observe_daemon_liveness();
         assert!(app_owned, "handle is registered");
@@ -2106,6 +2160,54 @@ mod tests {
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
     }
 
+    #[test]
+    fn stale_watchdog_and_force_clear_cannot_touch_replacement_generation() {
+        use crate::commands::process::{deregister_process, try_register_handle_gen};
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+
+        let stale_generation =
+            try_register_handle_gen(DAEMON_HANDLE).expect("acquire stale daemon generation");
+        let stale_guard_generation = mark_daemon_guard_acquired(stale_generation);
+        let stale_ownership = *daemon_guard().lock().unwrap_or_else(|p| p.into_inner());
+        assert!(deregister_generation(DAEMON_HANDLE, stale_generation));
+        let replacement_generation =
+            try_register_handle_gen(DAEMON_HANDLE).expect("acquire replacement daemon generation");
+        let replacement_guard_generation = mark_daemon_guard_acquired(replacement_generation);
+
+        assert!(
+            !terminate_daemon_generation_once_with_delay(
+                stale_generation,
+                DaemonFailureCategory::HeartbeatStall,
+                Duration::ZERO,
+            ),
+            "a stale watchdog must not cancel the replacement"
+        );
+        force_clear_daemon_generation(stale_ownership);
+
+        assert_eq!(
+            generation_for_handle(DAEMON_HANDLE),
+            Some(replacement_generation)
+        );
+        assert!(
+            !is_cancelled_for_generation(DAEMON_HANDLE, replacement_generation),
+            "stale daemon actors must leave replacement cancellation state unchanged"
+        );
+        let surviving_guard = daemon_guard()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .expect("replacement guard must survive stale force-clear");
+        assert_eq!(surviving_guard.generation, replacement_guard_generation);
+        assert_eq!(surviving_guard.registration, replacement_generation);
+        assert_ne!(stale_guard_generation, replacement_guard_generation);
+
+        deregister_process(DAEMON_HANDLE);
+        clear_daemon_guard_stamp();
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+    }
+
     // ── Respawn-deadlock recovery (start-guard wedge) ────────────────────
     //
     // Regression for the supervisor crash-loop: a start that acquired the
@@ -2124,7 +2226,9 @@ mod tests {
 
         // A prior start took the guard and stamped its acquisition…
         assert!(try_register_handle(DAEMON_HANDLE));
-        mark_daemon_guard_acquired();
+        mark_daemon_guard_acquired(
+            generation_for_handle(DAEMON_HANDLE).expect("registered daemon generation"),
+        );
 
         // …then wedged. The supervisor's respawn calls `start_daemon`, whose
         // `try_register_handle` is refused — this IS the "Daemon is already
@@ -2175,7 +2279,7 @@ mod tests {
 
         // Simulate a start that acquired the guard then bailed a preflight.
         let registration = try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon handle");
-        let guard_generation = mark_daemon_guard_acquired();
+        let guard_generation = mark_daemon_guard_acquired(registration);
         assert!(daemon_guard_age().is_some());
 
         // The preflight-bail path releases the guard on the spot — no deadline,
@@ -2200,7 +2304,7 @@ mod tests {
         clear_daemon_guard_stamp();
 
         // A start acquired the guard some time ago and the daemon went live.
-        mark_daemon_guard_acquired();
+        mark_daemon_guard_acquired(0);
         // Each live supervisor tick refreshes the stamp against "now"…
         note_daemon_guard_alive();
 
@@ -2251,7 +2355,9 @@ mod tests {
         clear_daemon_guard_stamp();
 
         assert!(try_register_handle(DAEMON_HANDLE));
-        mark_daemon_guard_acquired();
+        mark_daemon_guard_acquired(
+            generation_for_handle(DAEMON_HANDLE).expect("registered daemon generation"),
+        );
 
         // The supervisor thought the daemon was down, but the re-probe says it is
         // alive (a flake). Force-clear must abort: the guard stamp and the
@@ -2280,10 +2386,10 @@ mod tests {
         clear_daemon_guard_stamp();
 
         // Generation 1 acquires the guard, then its watcher exits.
-        let gen1 = mark_daemon_guard_acquired();
+        let gen1 = mark_daemon_guard_acquired(101);
         // In the gap between gen1 deregistering the handle and clearing its stamp,
         // a supervisor respawn re-acquires the freed handle and stamps gen2.
-        let gen2 = mark_daemon_guard_acquired();
+        let gen2 = mark_daemon_guard_acquired(102);
         assert_ne!(gen1, gen2, "each acquisition gets a fresh generation");
 
         // gen1's late, generation-scoped clear must be a no-op — gen2 owns the
@@ -3057,6 +3163,32 @@ mod tests {
                     && message.contains("terminal exit handler owns capture")
             }));
         }
+    }
+
+    #[test]
+    fn stale_spawn_ownership_loss_is_local_log_only() {
+        let mut effects = RecordingWatcherEffects::default();
+
+        record_watcher_process_error_with_effects(
+            &mut effects,
+            ProcessError::OwnershipLost {
+                handle: DAEMON_HANDLE.to_string(),
+                generation: 41,
+                cleanup_error: None,
+            },
+        );
+
+        assert!(effects.captures.is_empty());
+        assert!(effects.lifecycle.is_empty());
+        assert!(effects.logs.iter().any(|(target, message)| {
+            target == "daemon"
+                && message.contains("stale watcher spawn discarded")
+                && message.contains("generation 41")
+        }));
+        assert!(!effects
+            .logs
+            .iter()
+            .any(|(_, message)| { message.contains("terminal exit handler owns capture") }));
     }
 
     #[test]
