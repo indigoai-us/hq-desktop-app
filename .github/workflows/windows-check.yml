@@ -113,6 +113,14 @@ jobs:
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 
+      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
+      # the WebView2 runtime the app embeds; when they drift by a major version
+      # session creation fails ("only supports Microsoft Edge version N").
+      # Install a driver matched to the runtime and shadow the preinstalled one.
+      - name: Install msedgedriver matching the WebView2 runtime
+        shell: pwsh
+        run: scripts/ensure-msedgedriver.ps1
+
       # `--features e2e-automation` compiles in the WebView2 automation bridge
       # (src-tauri/src/util/webview2_automation.rs) that forwards msedgedriver's
       # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS into the app's webviews. It is off
@@ -198,6 +206,14 @@ jobs:
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
+
+      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
+      # the WebView2 runtime the app embeds; when they drift by a major version
+      # session creation fails ("only supports Microsoft Edge version N").
+      # Install a driver matched to the runtime and shadow the preinstalled one.
+      - name: Install msedgedriver matching the WebView2 runtime
+        shell: pwsh
+        run: scripts/ensure-msedgedriver.ps1
 
       # Same flag as the windows-check job: `e2e-automation` is what lets
       # msedgedriver attach, and it is never on in a shipped build. The honest
