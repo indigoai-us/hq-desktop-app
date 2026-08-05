@@ -3252,6 +3252,7 @@ mod tests {
             true,
             "npx",
             None,
+            current_termination_host(),
             &WatcherExitCaptureContext::default(),
         );
         assert!(
@@ -3276,6 +3277,7 @@ mod tests {
             false,
             "npx",
             None,
+            current_termination_host(),
             &external_context,
         );
         assert_eq!(
