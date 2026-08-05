@@ -1083,11 +1083,18 @@ mod windows_observer {
             );
             let hwnd = observer_hwnd(&handle);
 
+            let before_query_ms = super::super::MonotonicClock::now_millis(clock.as_ref());
             assert_eq!(
                 send_message_bounded(hwnd, WM_QUERYENDSESSION, WPARAM(0), LPARAM(0)),
                 LRESULT(1)
             );
-            assert_eq!(tracker.pending_query_millis_for_test(), Some(0));
+            let after_query_ms = super::super::MonotonicClock::now_millis(clock.as_ref());
+            assert!(
+                tracker
+                    .pending_query_millis_for_test()
+                    .is_some_and(|stamp| { (before_query_ms..=after_query_ms).contains(&stamp) }),
+                "query timestamp must come from the injected monotonic clock"
+            );
             assert_eq!(
                 tracker.attribution_now(),
                 WindowsTerminatorAttribution::Unattributed
