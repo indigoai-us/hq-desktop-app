@@ -371,6 +371,18 @@ pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
     cmd
 }
 
+/// Background `git` probe helper for HQ-tree scans (project creator history).
+///
+/// Applies [`no_window`] so Windows project/Overview refreshes do not flash a
+/// console for every `git` invocation. Also sets `GIT_OPTIONAL_LOCKS=0` so
+/// read-only history walks never contend with an interactive git index lock.
+pub fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    no_window(&mut cmd);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
 /// Tokio equivalent of [`spawn_command`]. Tokio wraps std::process::Command,
 /// so Windows npm shims retain Rust's batch-aware dispatch and escaping.
 pub fn tokio_spawn_command(path: &str, args: &[&str]) -> tokio::process::Command {
@@ -682,6 +694,16 @@ mod tests {
     #[test]
     fn test_create_no_window_constant_matches_windows_api() {
         assert_eq!(CREATE_NO_WINDOW, 0x0800_0000);
+    }
+
+    #[test]
+    fn test_git_command_targets_git_and_disables_optional_locks() {
+        let cmd = git_command();
+        assert_eq!(cmd.get_program(), "git");
+        let locks = cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == "GIT_OPTIONAL_LOCKS").then_some(value));
+        assert_eq!(locks, Some(Some(std::ffi::OsStr::new("0"))));
     }
 
     #[cfg(all(test, target_os = "windows"))]
