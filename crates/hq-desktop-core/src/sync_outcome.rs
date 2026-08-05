@@ -1231,8 +1231,12 @@ pub fn classify_runner_exit_disposition_with_cancellation(
         );
     }
 
-    let exit_matches_app_termination = (code == Some(1) && signal.is_none())
-        || (code.is_none() && matches!(signal, Some(SIGTERM_SIGNAL) | Some(SIGKILL_SIGNAL)));
+    let exit_matches_app_termination = match current_termination_host() {
+        TerminationHost::Windows => code == Some(1) && signal.is_none(),
+        TerminationHost::Posix => {
+            code.is_none() && matches!(signal, Some(SIGTERM_SIGNAL) | Some(SIGKILL_SIGNAL))
+        }
+    };
     if let Some(cause) = cause.filter(|_| termination_effected && exit_matches_app_termination) {
         return RunnerExitDisposition::CancelledByApp(cause);
     }
@@ -2510,10 +2514,14 @@ mod tests {
 
     #[test]
     fn effective_app_cancellation_is_suppressed_only_for_its_own_exit_shape() {
+        let (owned_code, owned_signal) = match current_termination_host() {
+            TerminationHost::Windows => (Some(1), None),
+            TerminationHost::Posix => (None, Some(SIGTERM_SIGNAL)),
+        };
         assert_eq!(
             classify_runner_exit_disposition_with_cancellation(
-                Some(1),
-                None,
+                owned_code,
+                owned_signal,
                 Some(SyncCancelCause::TimeoutWatchdog),
                 true,
                 false,
@@ -2569,8 +2577,29 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn code_one_is_not_an_app_termination_shape_on_posix() {
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+    }
+
     #[test]
     fn cancellation_classifier_preserves_legacy_policy_outside_exact_effective_stops() {
+        let (owned_code, owned_signal) = match current_termination_host() {
+            TerminationHost::Windows => (Some(1), None),
+            TerminationHost::Posix => (None, Some(SIGTERM_SIGNAL)),
+        };
         for (code, signal, saw_error, saw_alertable_error, saw_node_too_old) in [
             (Some(1), None, false, false, false),
             (Some(RUNNER_OPERATION_LOCKED_EXIT), None, true, true, false),
@@ -2602,8 +2631,8 @@ mod tests {
         for cause in [SyncCancelCause::UserStop, SyncCancelCause::AppQuit] {
             assert_eq!(
                 classify_runner_exit_disposition_with_cancellation(
-                    Some(1),
-                    None,
+                    owned_code,
+                    owned_signal,
                     Some(cause),
                     true,
                     false,
@@ -2616,18 +2645,20 @@ mod tests {
 
         // Unix terminal status shapes are attributable only with an exact,
         // observed application termination. A bare SIGKILL remains loud.
-        assert_eq!(
-            classify_runner_exit_disposition_with_cancellation(
-                None,
-                Some(SIGKILL_SIGNAL),
-                Some(SyncCancelCause::UserStop),
-                true,
-                false,
-                false,
-                false,
-            ),
-            RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop),
-        );
+        if current_termination_host() == TerminationHost::Posix {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    None,
+                    Some(SIGKILL_SIGNAL),
+                    Some(SyncCancelCause::UserStop),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop),
+            );
+        }
         assert_eq!(
             classify_runner_exit_disposition_with_cancellation(
                 None,
@@ -2645,8 +2676,8 @@ mod tests {
         // never over a genuine alertable runner fault.
         assert_eq!(
             classify_runner_exit_disposition_with_cancellation(
-                Some(1),
-                None,
+                owned_code,
+                owned_signal,
                 Some(SyncCancelCause::TimeoutWatchdog),
                 true,
                 false,

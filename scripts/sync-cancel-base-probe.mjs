@@ -152,7 +152,12 @@ try {
     run("git", ["-C", repo, "worktree", "remove", "--force", worktreeRoot], {
       timeout: 120_000,
     });
-  } catch {
+  } catch (error) {
+    process.stderr.write(
+      `git worktree cleanup failed; removing the isolated directory directly: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
     rmSync(worktreeRoot, { recursive: true, force: true });
   }
 }

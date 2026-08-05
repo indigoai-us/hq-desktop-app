@@ -763,6 +763,13 @@ fn terminate_target(_target: ProcessTerminationTarget) -> bool {
 /// lock is acquired; the record lock then spans the OS call and publication so
 /// the terminal callback cannot observe a requested-but-not-yet-published kill.
 fn complete_pre_spawn_cancellation(handle: &str, generation: u64) {
+    complete_pre_spawn_cancellation_with(handle, generation, terminate_target);
+}
+
+fn complete_pre_spawn_cancellation_with<F>(handle: &str, generation: u64, terminate: F)
+where
+    F: FnOnce(ProcessTerminationTarget) -> bool,
+{
     if !cancellation_requested_for_generation(handle, generation) {
         return;
     }
@@ -771,13 +778,14 @@ fn complete_pre_spawn_cancellation(handle: &str, generation: u64) {
     };
     let key = (handle.to_string(), generation);
     let mut records = cancellation_records().lock().unwrap();
-    if let Some(record) = records.get_mut(&key) {
-        record.termination_effected |= terminate_target(target);
-    } else {
-        // Legacy handle-scoped callers can cancel a pre-registered process too;
-        // preserve their termination behavior without inventing a sync cause.
-        let _ = terminate_target(target);
-    }
+    let Some(record) = records.get_mut(&key) else {
+        // The actor that marked the registry entry has not published its
+        // cancellation record yet. It already snapshotted this generation's
+        // target and still owns the termination call, so issuing another one
+        // here could make Exit run before the causal record exists.
+        return;
+    };
+    record.termination_effected |= terminate(target);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1943,6 +1951,49 @@ mod registry_exit_order_tests {
         assert!(abandon_process_generation(&handle, generation));
         assert!(!is_registered(&handle));
         assert!(cancellation_record_for_generation(&handle, generation).is_none());
+    }
+
+    #[test]
+    fn checkpoint_waits_for_the_canceller_to_publish_its_record() {
+        let handle = format!("publication-order-test-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register generation");
+        assert_eq!(register_process_gen(&handle, 424_244), generation);
+        assert!(mark_cancelled_generation(&handle, generation).is_some());
+
+        let calls = std::cell::Cell::new(0_u8);
+        complete_pre_spawn_cancellation_with(&handle, generation, |_| {
+            calls.set(calls.get() + 1);
+            true
+        });
+        assert_eq!(
+            calls.get(),
+            0,
+            "the canceller that marked the generation still owns publication and termination"
+        );
+        assert!(cancellation_record_for_generation(&handle, generation).is_none());
+
+        cancellation_records().lock().unwrap().insert(
+            (handle.clone(), generation),
+            CancellationRecord {
+                cause: Some(SyncCancelCause::TimeoutWatchdog),
+                termination_effected: false,
+            },
+        );
+        complete_pre_spawn_cancellation_with(&handle, generation, |_| {
+            calls.set(calls.get() + 1);
+            true
+        });
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            cancellation_record_for_generation(&handle, generation),
+            Some(CancellationRecord {
+                cause: Some(SyncCancelCause::TimeoutWatchdog),
+                termination_effected: true,
+            })
+        );
+
+        assert!(deregister_generation(&handle, generation));
+        clear_cancellation_record(&handle, generation);
     }
 
     #[cfg(unix)]
