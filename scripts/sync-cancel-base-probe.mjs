@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,15 @@ const processPath = join(worktreeRoot, "apps", "sync", "src-tauri", "src", "comm
 const mainPath = join(worktreeRoot, "apps", "sync", "src-tauri", "src", "main.rs");
 const manifestPath = join(worktreeRoot, "apps", "sync", "src-tauri", "Cargo.toml");
 const targetDir = join(repo, "apps", "sync", "src-tauri", "target");
+const sidecarNodeModules = join(repo, "apps", "sync", "sidecar", "recall-sdk-bridge", "node_modules");
+const baseSidecarNodeModules = join(
+  worktreeRoot,
+  "apps",
+  "sync",
+  "sidecar",
+  "recall-sdk-bridge",
+  "node_modules",
+);
 
 const baseProbe = String.raw`
 /// CI-only red proof injected into the merge-base artifact. It drives the
@@ -90,6 +99,13 @@ try {
   run("git", ["-C", repo, "worktree", "add", "--detach", worktreeRoot, mergeBase], {
     timeout: 120_000,
   });
+  if (!existsSync(sidecarNodeModules)) {
+    throw new Error("the checked-out sidecar dependencies are unavailable for the base-artifact proof");
+  }
+  // The detached merge-base worktree deliberately has no untracked dependencies.
+  // A junction lets its Tauri build use the workflow's already-installed sidecar
+  // dependencies without copying them into, or changing, the base source tree.
+  symlinkSync(sidecarNodeModules, baseSidecarNodeModules, "junction");
   const processSource = readFileSync(processPath, "utf8");
   const processMarker = "// Tauri commands";
   if (!processSource.includes(processMarker)) {
