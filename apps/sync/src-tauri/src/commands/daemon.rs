@@ -2020,6 +2020,8 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
 mod tests {
     use super::*;
 
+    static REAL_WATCHER_EXIT_HANDLE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     // ── Double-start prevention ──────────────────────────────────────────
 
     #[test]
@@ -2470,7 +2472,8 @@ mod tests {
             cwd: None,
             env: None,
         };
-        let handle = format!("watcher-policy-real-exit-{code}");
+        let sequence = REAL_WATCHER_EXIT_HANDLE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let handle = format!("watcher-policy-real-exit-{code}-{sequence}");
         let mut terminal = None;
         run_process_impl(&handle, &spawn, |event| {
             if let ProcessEvent::Exit {
