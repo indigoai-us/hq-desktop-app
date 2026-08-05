@@ -680,7 +680,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         &totals,
                         cancelled,
                         &watcher_phase,
-                        current_windows_terminator_attribution(&app),
+                        current_windows_terminator_attribution(&app, code, signal),
                     );
                     let last_stderr = process_last_stderr
                         .lock()
@@ -897,7 +897,14 @@ fn watcher_exit_capture_context(
 }
 
 #[cfg(target_os = "windows")]
-fn current_windows_terminator_attribution(app: &AppHandle) -> Option<WindowsTerminatorAttribution> {
+fn current_windows_terminator_attribution(
+    app: &AppHandle,
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> Option<WindowsTerminatorAttribution> {
+    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
+        return None;
+    }
     Some(
         app.try_state::<SessionEndObserverHandle>()
             .map(|observer| observer.tracker().attribution_now())
@@ -908,6 +915,8 @@ fn current_windows_terminator_attribution(app: &AppHandle) -> Option<WindowsTerm
 #[cfg(not(target_os = "windows"))]
 fn current_windows_terminator_attribution(
     _app: &AppHandle,
+    _code: Option<i32>,
+    _signal: Option<i32>,
 ) -> Option<WindowsTerminatorAttribution> {
     None
 }
@@ -3442,20 +3451,82 @@ mod tests {
         );
 
         assert!(effects.captures.is_empty());
-        assert!(effects
-            .logs
-            .iter()
-            .any(|(_, message)| { message.contains("session-end-observed watcher exit") }));
-        assert!(effects.breadcrumbs.iter().any(|(category, _, message)| {
-            category == "daemon.exit" && message.contains("windows_terminator=session_end_observed")
-        }));
+        assert_eq!(
+            effects.logs,
+            vec![(
+                "daemon".to_string(),
+                "session-end-observed watcher exit #1 — capture skipped".to_string(),
+            )]
+        );
+        assert_eq!(
+            effects.breadcrumbs,
+            vec![(
+                "daemon.exit".to_string(),
+                "Info".to_string(),
+                "session-end-observed auto-sync watcher exit #1: windows_terminator=session_end_observed"
+                    .to_string(),
+            )]
+        );
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::None)]
+        );
     }
 
     #[test]
-    fn watcher_session_terminate_unattributed_or_failed_still_captures_with_fixed_tag() {
+    fn watcher_session_terminate_unattributed_still_captures_with_terminator_tag() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        let mut baseline = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut baseline,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        let context = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::Unattributed),
+            ..Default::default()
+        };
+        let mut attributed = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut attributed,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+
+        assert_eq!(baseline.captures.len(), 1);
+        assert_eq!(attributed.captures.len(), 1);
+        let baseline = &baseline.captures[0];
+        let attributed = &attributed.captures[0];
+        assert_eq!(attributed.message, baseline.message);
+        assert_eq!(attributed.fingerprint, baseline.fingerprint);
+        assert_eq!(attributed.extras, baseline.extras);
+        assert_eq!(attributed.tags.len(), baseline.tags.len() + 1);
+        assert_eq!(
+            &attributed.tags[..baseline.tags.len()],
+            baseline.tags.as_slice()
+        );
+        assert_eq!(
+            attributed.tags.last(),
+            Some(&("windows_terminator".to_string(), "unattributed".to_string()))
+        );
+    }
+
+    #[test]
+    fn watcher_session_terminate_observer_unavailable_and_failed_fail_closed() {
         const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
         for attribution in [
-            WindowsTerminatorAttribution::Unattributed,
             WindowsTerminatorAttribution::ObserverUnavailable,
             WindowsTerminatorAttribution::ObserverFailed,
         ] {
@@ -3464,7 +3535,6 @@ mod tests {
                 ..Default::default()
             };
             let mut effects = RecordingWatcherEffects::default();
-
             handle_watcher_exit_with_effects(
                 &mut effects,
                 Some(OBSERVED_SESSION_TERMINATE_EXIT),
@@ -3518,29 +3588,59 @@ mod tests {
     }
 
     #[test]
-    fn affirmed_attribution_does_not_change_any_other_exit_shape() {
+    fn affirmed_attribution_does_not_suppress_or_tag_any_other_exit_shape() {
         let context = WatcherExitCaptureContext {
             windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
             ..Default::default()
         };
-        let mut effects = RecordingWatcherEffects::default();
-        handle_watcher_exit_with_effects(
-            &mut effects,
-            Some(0xC000_0409u32 as i32),
-            None,
-            false,
-            false,
-            "npx",
-            None,
-            current_termination_host(),
-            &context,
-        );
+        let cases = [
+            (Some(1), None, false),
+            (Some(2), None, false),
+            (Some(126), None, false),
+            (Some(127), None, false),
+            (Some(221), None, true),
+            (Some(0xC000_0409u32 as i32), None, true),
+            (Some(-1), None, true),
+            (Some(WINDOWS_SESSION_TERMINATE_EXIT), Some(9), true),
+        ];
 
-        assert_eq!(effects.captures.len(), 1);
-        assert!(effects.captures[0]
-            .tags
-            .iter()
-            .all(|(name, _)| *name != "windows_terminator"));
+        for (code, signal, should_capture) in cases {
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                signal,
+                false,
+                false,
+                "npx",
+                None,
+                current_termination_host(),
+                &context,
+            );
+
+            assert_eq!(
+                effects.captures.len(),
+                usize::from(should_capture),
+                "code={code:?} signal={signal:?}"
+            );
+            for capture in &effects.captures {
+                assert!(
+                    capture
+                        .tags
+                        .iter()
+                        .all(|(name, _)| name != "windows_terminator"),
+                    "code={code:?} signal={signal:?}"
+                );
+            }
+            if matches!(code, Some(1 | 2)) {
+                assert!(effects.logs.iter().any(|(_, message)| {
+                    message.starts_with("environmental watcher exit #1 — capture skipped")
+                }));
+                assert!(effects.breadcrumbs.iter().any(|(_, _, message)| {
+                    message.starts_with("environmental auto-sync watcher exit #1")
+                }));
+            }
+        }
     }
 
     #[test]

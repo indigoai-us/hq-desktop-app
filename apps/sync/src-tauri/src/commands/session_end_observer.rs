@@ -143,6 +143,18 @@ impl SessionEndTracker {
             .readiness
     }
 
+    fn now_millis(&self) -> u64 {
+        self.clock.now_millis()
+    }
+
+    #[cfg(test)]
+    fn pending_query_millis_for_test(&self) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending_query_ms
+    }
+
     /// Return an attribution that is safe to feed directly to capture policy.
     /// Failed or stopped observation wins over an otherwise fresh affirmation.
     pub fn attribution_now(&self) -> WindowsTerminatorAttribution {
@@ -220,9 +232,34 @@ mod windows_observer {
 
     use super::{ObserverReadiness, SessionEndTracker};
 
-    const TERMSRV_READY_WAIT: Duration = Duration::from_secs(10);
-    const STEADY_TICK: Duration = Duration::from_secs(60);
+    const TERMSRV_READY_WAIT_MS: u64 = 10_000;
+    const STEADY_TICK_MS: u32 = 60_000;
     const RPC_S_INVALID_BINDING_HRESULT: u32 = 0x8007_06A6;
+
+    type RegistrationSeam = Box<dyn Fn(HWND) -> Result<(), Error> + Send + Sync>;
+    type ReadyEventSeam = Box<dyn Fn() -> Option<HANDLE> + Send + Sync>;
+    type ThreadHook = Box<dyn FnOnce() + Send>;
+    type WindowHook = Box<dyn FnOnce(HWND) + Send>;
+
+    struct ObserverSeams {
+        register: RegistrationSeam,
+        unregister: RegistrationSeam,
+        open_termsrv_ready_event: ReadyEventSeam,
+        on_thread_start: Option<ThreadHook>,
+        after_window_created: Option<WindowHook>,
+    }
+
+    impl ObserverSeams {
+        fn production() -> Self {
+            Self {
+                register: Box::new(|hwnd| unsafe { register_session_notifications(hwnd) }),
+                unregister: Box::new(|hwnd| unsafe { WTSUnRegisterSessionNotification(hwnd) }),
+                open_termsrv_ready_event: Box::new(|| unsafe { open_termsrv_ready_event() }),
+                on_thread_start: None,
+                after_window_created: None,
+            }
+        }
+    }
 
     /// A manual-reset event shared between the app thread and observer thread.
     /// The event is created before spawn so shutdown cannot miss an early phase.
@@ -266,7 +303,7 @@ mod windows_observer {
 
     struct WindowContext {
         tracker: Arc<SessionEndTracker>,
-        session_id: u32,
+        session_id: Option<u32>,
         destroyed: AtomicBool,
     }
 
@@ -279,6 +316,10 @@ mod windows_observer {
 
     impl SessionEndObserverHandle {
         pub fn start(tracker: Arc<SessionEndTracker>) -> Self {
+            Self::start_with(tracker, ObserverSeams::production())
+        }
+
+        fn start_with(tracker: Arc<SessionEndTracker>, seams: ObserverSeams) -> Self {
             let shutdown_event = match ShutdownEvent::create() {
                 Ok(event) => Some(event),
                 Err(_) => {
@@ -306,7 +347,7 @@ mod windows_observer {
             let thread_shared = Arc::clone(&shared);
             let thread = thread::Builder::new()
                 .name("hq-session-end-observer".to_string())
-                .spawn(move || observer_thread(thread_shared));
+                .spawn(move || observer_thread(thread_shared, seams));
 
             match thread {
                 Ok(thread) => Self {
@@ -394,11 +435,8 @@ mod windows_observer {
         }
     }
 
-    fn wait_millis_until(deadline: Instant) -> u32 {
-        deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis()
-            .min(u128::from(u32::MAX)) as u32
+    fn wait_millis_until(deadline_ms: u64, now_ms: u64) -> u32 {
+        deadline_ms.saturating_sub(now_ms).min(u64::from(u32::MAX)) as u32
     }
 
     unsafe extern "system" fn observer_wndproc(
@@ -422,7 +460,9 @@ mod windows_observer {
                 LRESULT(0)
             }
             WM_WTSSESSION_CHANGE => {
-                if wparam.0 as u32 == WTS_SESSION_LOGOFF && lparam.0 as u32 == context.session_id {
+                if wparam.0 as u32 == WTS_SESSION_LOGOFF
+                    && context.session_id == Some(lparam.0 as u32)
+                {
                     context.tracker.note_wts_logoff_same_session();
                 }
                 LRESULT(0)
@@ -437,7 +477,10 @@ mod windows_observer {
         }
     }
 
-    fn observer_thread(shared: Arc<ObserverShared>) {
+    fn observer_thread(shared: Arc<ObserverShared>, mut seams: ObserverSeams) {
+        if let Some(hook) = seams.on_thread_start.take() {
+            hook();
+        }
         let Some(shutdown_event) = shared.shutdown_event.as_ref() else {
             shared.tracker.set_readiness(ObserverReadiness::Failed);
             return;
@@ -501,13 +544,20 @@ mod windows_observer {
             }
         };
 
-        let mut session_id = u32::MAX;
-        if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session_id) }.is_err() {
+        let mut raw_session_id = 0;
+        let session_id = if unsafe {
+            ProcessIdToSessionId(GetCurrentProcessId(), &mut raw_session_id)
+        }
+        .is_ok()
+        {
+            Some(raw_session_id)
+        } else {
             crate::util::logfile::log(
                 "session-end",
                 "session-end observer session lookup unavailable",
             );
-        }
+            None
+        };
         let context = WindowContext {
             tracker: Arc::clone(&shared.tracker),
             session_id,
@@ -521,24 +571,32 @@ mod windows_observer {
             );
         }
         shared.hwnd.store(hwnd.0 as isize, Ordering::Release);
+        if let Some(hook) = seams.after_window_created.take() {
+            hook(hwnd);
+        }
 
         if shared.shutdown_requested.load(Ordering::Acquire) {
-            owner_thread_teardown(&shared, hwnd, &context, false, None);
+            owner_thread_teardown(&shared, hwnd, &context, false, None, &seams);
             return;
         }
 
         let mut registered = false;
         let mut recovery_deadline = None;
         let mut termsrv_ready_event = None;
-        match unsafe { register_session_notifications(hwnd) } {
+        match (seams.register)(hwnd) {
             Ok(()) => {
                 registered = true;
                 shared.tracker.set_readiness(ObserverReadiness::Registered);
             }
             Err(error) if is_termsrv_not_ready(&error) => {
                 shared.tracker.set_readiness(ObserverReadiness::Recovering);
-                recovery_deadline = Some(Instant::now() + TERMSRV_READY_WAIT);
-                termsrv_ready_event = unsafe { open_termsrv_ready_event() };
+                recovery_deadline = Some(
+                    shared
+                        .tracker
+                        .now_millis()
+                        .saturating_add(TERMSRV_READY_WAIT_MS),
+                );
+                termsrv_ready_event = (seams.open_termsrv_ready_event)();
             }
             Err(_) => {
                 shared.tracker.set_readiness(ObserverReadiness::Failed);
@@ -567,14 +625,15 @@ mod windows_observer {
                 break;
             }
 
-            if recovery_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let now_ms = shared.tracker.now_millis();
+            if recovery_deadline.is_some_and(|deadline| now_ms >= deadline) {
                 recovery_retry_requested = true;
             }
             if recovery_retry_requested {
                 recovery_retry_requested = false;
                 recovery_deadline = None;
                 close_optional_handle(&mut termsrv_ready_event);
-                match unsafe { register_session_notifications(hwnd) } {
+                match (seams.register)(hwnd) {
                     Ok(()) => {
                         registered = true;
                         shared.tracker.set_readiness(ObserverReadiness::Registered);
@@ -596,8 +655,8 @@ mod windows_observer {
                 }
             }
             let timeout = recovery_deadline
-                .map(wait_millis_until)
-                .unwrap_or(STEADY_TICK.as_millis() as u32);
+                .map(|deadline| wait_millis_until(deadline, shared.tracker.now_millis()))
+                .unwrap_or(STEADY_TICK_MS);
             let result = unsafe {
                 MsgWaitForMultipleObjectsEx(
                     Some(&handles),
@@ -614,12 +673,22 @@ mod windows_observer {
                 crate::util::logfile::log("session-end", "session-end observer wait failed");
                 break;
             }
-            if recovery_deadline.is_some() && result.0 == WAIT_OBJECT_0.0 + 1 {
+            if recovery_deadline.is_some()
+                && termsrv_ready_event.is_some()
+                && result.0 == WAIT_OBJECT_0.0 + 1
+            {
                 recovery_retry_requested = true;
             }
         }
 
-        owner_thread_teardown(&shared, hwnd, &context, registered, termsrv_ready_event);
+        owner_thread_teardown(
+            &shared,
+            hwnd,
+            &context,
+            registered,
+            termsrv_ready_event,
+            &seams,
+        );
     }
 
     fn owner_thread_teardown(
@@ -628,9 +697,10 @@ mod windows_observer {
         context: &WindowContext,
         registered: bool,
         mut termsrv_ready_event: Option<HANDLE>,
+        seams: &ObserverSeams,
     ) {
         if registered && !context.destroyed.load(Ordering::Acquire) {
-            if unsafe { WTSUnRegisterSessionNotification(hwnd) }.is_err() {
+            if (seams.unregister)(hwnd).is_err() {
                 crate::util::logfile::log("session-end", "session-end observer unregister failed");
             }
         }
@@ -649,6 +719,435 @@ mod windows_observer {
             while PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE).as_bool() {}
         }
         shared.tracker.set_readiness(ObserverReadiness::Stopped);
+    }
+
+    #[cfg(test)]
+    mod windows_tests {
+        use super::super::TestClock;
+        use super::*;
+        use hq_desktop_core::sync_outcome::WindowsTerminatorAttribution;
+        use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as TestOrdering};
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::thread;
+        use std::time::{Duration, Instant};
+        use windows::core::HRESULT;
+        use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SendMessageW, WTS_SESSION_LOCK};
+
+        static WINDOWS_OBSERVER_TEST_LOCK: Mutex<()> = Mutex::new(());
+        const TEST_WAIT: Duration = Duration::from_secs(5);
+        const REAL_REGISTRATION_WAIT: Duration = Duration::from_secs(15);
+
+        struct AdvancingTestClock {
+            started_at: Instant,
+            offset_ms: AtomicU64,
+        }
+
+        impl Default for AdvancingTestClock {
+            fn default() -> Self {
+                Self {
+                    started_at: Instant::now(),
+                    offset_ms: AtomicU64::new(0),
+                }
+            }
+        }
+
+        impl AdvancingTestClock {
+            fn advance_by(&self, millis: u64) {
+                self.offset_ms.fetch_add(millis, TestOrdering::AcqRel);
+            }
+        }
+
+        impl super::super::MonotonicClock for AdvancingTestClock {
+            fn now_millis(&self) -> u64 {
+                let elapsed = self
+                    .started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64;
+                elapsed.saturating_add(self.offset_ms.load(TestOrdering::Acquire))
+            }
+        }
+
+        fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+            WINDOWS_OBSERVER_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        fn tracker() -> (Arc<TestClock>, Arc<SessionEndTracker>) {
+            let clock = Arc::new(TestClock::default());
+            let tracker = Arc::new(SessionEndTracker::new(clock.clone()));
+            (clock, tracker)
+        }
+
+        fn wait_until(deadline: Duration, message: &str, mut predicate: impl FnMut() -> bool) {
+            let until = Instant::now() + deadline;
+            while !predicate() {
+                assert!(Instant::now() < until, "{message}");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn wait_for_readiness(
+            handle: &SessionEndObserverHandle,
+            expected: ObserverReadiness,
+            deadline: Duration,
+        ) {
+            wait_until(deadline, "observer readiness deadline expired", || {
+                handle.tracker().readiness() == expected
+            });
+        }
+
+        fn observer_hwnd(handle: &SessionEndObserverHandle) -> HWND {
+            wait_until(TEST_WAIT, "observer did not publish its window", || {
+                handle.shared.hwnd.load(Ordering::Acquire) != 0
+            });
+            HWND(handle.shared.hwnd.load(Ordering::Acquire) as *mut c_void)
+        }
+
+        fn send_message_bounded(
+            hwnd: HWND,
+            message: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            let hwnd_raw = hwnd.0 as isize;
+            let (done_tx, done_rx) = mpsc::sync_channel(1);
+            let sender = thread::spawn(move || {
+                let hwnd = HWND(hwnd_raw as *mut c_void);
+                let result = unsafe { SendMessageW(hwnd, message, wparam, lparam) };
+                let _ = done_tx.send(result.0);
+            });
+            let result = done_rx
+                .recv_timeout(TEST_WAIT)
+                .expect("observer did not dispatch a window message before the deadline");
+            wait_until(TEST_WAIT, "message sender did not finish", || {
+                sender.is_finished()
+            });
+            sender.join().expect("message sender panicked");
+            LRESULT(result)
+        }
+
+        fn termsrv_not_ready_error() -> Error {
+            Error::from_hresult(HRESULT(RPC_S_INVALID_BINDING_HRESULT as i32))
+        }
+
+        fn test_seams(
+            register: impl Fn(HWND) -> Result<(), Error> + Send + Sync + 'static,
+            unregister: impl Fn(HWND) -> Result<(), Error> + Send + Sync + 'static,
+        ) -> ObserverSeams {
+            ObserverSeams {
+                register: Box::new(register),
+                unregister: Box::new(unregister),
+                open_termsrv_ready_event: Box::new(|| None),
+                on_thread_start: None,
+                after_window_created: None,
+            }
+        }
+
+        #[test]
+        fn message_input_without_a_termsrv_event_does_not_consume_the_final_retry() {
+            let _guard = test_guard();
+            let (_clock, tracker) = tracker();
+            let register_calls = Arc::new(AtomicUsize::new(0));
+            let calls = Arc::clone(&register_calls);
+            let seams = test_seams(
+                move |_| {
+                    calls.fetch_add(1, TestOrdering::AcqRel);
+                    Err(termsrv_not_ready_error())
+                },
+                |_| Ok(()),
+            );
+            let handle = SessionEndObserverHandle::start_with(Arc::clone(&tracker), seams);
+
+            wait_for_readiness(&handle, ObserverReadiness::Recovering, TEST_WAIT);
+            let hwnd = observer_hwnd(&handle);
+            assert_eq!(
+                send_message_bounded(hwnd, WM_QUERYENDSESSION, WPARAM(0), LPARAM(0)),
+                LRESULT(1)
+            );
+            wait_until(TEST_WAIT, "query message was not recorded", || {
+                tracker.pending_query_millis_for_test() == Some(0)
+            });
+            thread::sleep(Duration::from_millis(50));
+            let calls_after_message = register_calls.load(TestOrdering::Acquire);
+
+            handle.shutdown(Duration::from_millis(500));
+
+            assert_eq!(calls_after_message, 1);
+            assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
+
+        #[test]
+        fn injected_recovery_deadline_allows_exactly_one_final_retry() {
+            let _guard = test_guard();
+            let (clock, tracker) = tracker();
+            let register_calls = Arc::new(AtomicUsize::new(0));
+            let calls = Arc::clone(&register_calls);
+            let seams = test_seams(
+                move |_| {
+                    calls.fetch_add(1, TestOrdering::AcqRel);
+                    Err(termsrv_not_ready_error())
+                },
+                |_| Ok(()),
+            );
+            let handle = SessionEndObserverHandle::start_with(Arc::clone(&tracker), seams);
+            wait_for_readiness(&handle, ObserverReadiness::Recovering, TEST_WAIT);
+            let hwnd = observer_hwnd(&handle);
+
+            clock.set(TERMSRV_READY_WAIT_MS);
+            send_message_bounded(hwnd, WM_QUERYENDSESSION, WPARAM(0), LPARAM(0));
+            wait_for_readiness(&handle, ObserverReadiness::Failed, TEST_WAIT);
+            assert_eq!(register_calls.load(TestOrdering::Acquire), 2);
+
+            send_message_bounded(hwnd, WM_QUERYENDSESSION, WPARAM(0), LPARAM(0));
+            thread::sleep(Duration::from_millis(50));
+            let calls_after_failure = register_calls.load(TestOrdering::Acquire);
+            handle.shutdown(Duration::from_millis(500));
+
+            assert_eq!(calls_after_failure, 2);
+            assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
+
+        #[test]
+        fn shutdown_before_window_publication_creates_no_window_and_joins() {
+            let _guard = test_guard();
+            let (_clock, tracker) = tracker();
+            let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = mpsc::sync_channel(1);
+            let windows_created = Arc::new(AtomicUsize::new(0));
+            let created = Arc::clone(&windows_created);
+            let mut seams = test_seams(|_| Ok(()), |_| Ok(()));
+            seams.on_thread_start = Some(Box::new(move || {
+                let _ = entered_tx.send(());
+                release_rx
+                    .recv_timeout(TEST_WAIT)
+                    .expect("test did not release observer thread");
+            }));
+            seams.after_window_created = Some(Box::new(move |_| {
+                created.fetch_add(1, TestOrdering::AcqRel);
+            }));
+            let handle = Arc::new(SessionEndObserverHandle::start_with(tracker, seams));
+            entered_rx
+                .recv_timeout(TEST_WAIT)
+                .expect("observer did not enter the start hook");
+
+            let (shutdown_done_tx, shutdown_done_rx) = mpsc::sync_channel(1);
+            let shutdown_handle = Arc::clone(&handle);
+            let shutdown_thread = thread::spawn(move || {
+                shutdown_handle.shutdown(Duration::from_millis(500));
+                let _ = shutdown_done_tx.send(());
+            });
+            wait_until(TEST_WAIT, "shutdown flag was not published", || {
+                handle.shared.shutdown_requested.load(Ordering::Acquire)
+            });
+            release_tx.send(()).expect("failed to release observer");
+            shutdown_done_rx
+                .recv_timeout(TEST_WAIT)
+                .expect("bounded shutdown did not return");
+            wait_until(TEST_WAIT, "shutdown caller did not finish", || {
+                shutdown_thread.is_finished()
+            });
+            shutdown_thread.join().expect("shutdown caller panicked");
+
+            assert_eq!(windows_created.load(TestOrdering::Acquire), 0);
+            assert_eq!(handle.shared.hwnd.load(Ordering::Acquire), 0);
+            assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
+
+        #[test]
+        fn shutdown_during_recovery_never_registers_after_teardown_or_unregisters() {
+            let _guard = test_guard();
+            let (_clock, tracker) = tracker();
+            let register_calls = Arc::new(AtomicUsize::new(0));
+            let late_register_calls = Arc::new(AtomicUsize::new(0));
+            let unregister_calls = Arc::new(AtomicUsize::new(0));
+            let teardown_started = Arc::new(AtomicBool::new(false));
+            let calls = Arc::clone(&register_calls);
+            let late_calls = Arc::clone(&late_register_calls);
+            let teardown = Arc::clone(&teardown_started);
+            let unregistrations = Arc::clone(&unregister_calls);
+            let seams = test_seams(
+                move |_| {
+                    calls.fetch_add(1, TestOrdering::AcqRel);
+                    if teardown.load(TestOrdering::Acquire) {
+                        late_calls.fetch_add(1, TestOrdering::AcqRel);
+                    }
+                    Err(termsrv_not_ready_error())
+                },
+                move |_| {
+                    unregistrations.fetch_add(1, TestOrdering::AcqRel);
+                    Ok(())
+                },
+            );
+            let handle = SessionEndObserverHandle::start_with(tracker, seams);
+            wait_for_readiness(&handle, ObserverReadiness::Recovering, TEST_WAIT);
+
+            teardown_started.store(true, TestOrdering::Release);
+            handle.shutdown(Duration::from_millis(500));
+
+            assert!((1..=2).contains(&register_calls.load(TestOrdering::Acquire)));
+            assert_eq!(late_register_calls.load(TestOrdering::Acquire), 0);
+            assert_eq!(unregister_calls.load(TestOrdering::Acquire), 0);
+            assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
+
+        #[test]
+        fn registered_teardown_unregisters_on_the_owner_thread_before_destroy() {
+            let _guard = test_guard();
+            let (_clock, tracker) = tracker();
+            let registration_thread = Arc::new(Mutex::new(None));
+            let unregister_calls = Arc::new(AtomicUsize::new(0));
+            let unregistered_on_owner = Arc::new(AtomicBool::new(false));
+            let window_alive_during_unregister = Arc::new(AtomicBool::new(false));
+            let register_thread = Arc::clone(&registration_thread);
+            let unregister_thread = Arc::clone(&registration_thread);
+            let calls = Arc::clone(&unregister_calls);
+            let same_thread = Arc::clone(&unregistered_on_owner);
+            let alive = Arc::clone(&window_alive_during_unregister);
+            let seams = test_seams(
+                move |_| {
+                    *register_thread
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(thread::current().id());
+                    Ok(())
+                },
+                move |hwnd| {
+                    calls.fetch_add(1, TestOrdering::AcqRel);
+                    let owner = unregister_thread
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    same_thread.store(
+                        owner.is_some_and(|owner| owner == thread::current().id()),
+                        TestOrdering::Release,
+                    );
+                    alive.store(unsafe { IsWindow(hwnd).as_bool() }, TestOrdering::Release);
+                    Ok(())
+                },
+            );
+            let handle = SessionEndObserverHandle::start_with(tracker, seams);
+            wait_for_readiness(&handle, ObserverReadiness::Registered, TEST_WAIT);
+
+            handle.shutdown(Duration::from_millis(500));
+
+            assert_eq!(unregister_calls.load(TestOrdering::Acquire), 1);
+            assert!(unregistered_on_owner.load(TestOrdering::Acquire));
+            assert!(window_alive_during_unregister.load(TestOrdering::Acquire));
+            assert_eq!(handle.shared.hwnd.load(Ordering::Acquire), 0);
+            assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
+
+        #[test]
+        fn shutdown_acknowledgement_is_bounded_and_a_second_call_is_a_noop() {
+            let _guard = test_guard();
+            let (_clock, tracker) = tracker();
+            let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = mpsc::sync_channel(1);
+            let mut seams = test_seams(|_| Ok(()), |_| Ok(()));
+            seams.after_window_created = Some(Box::new(move |_| {
+                let _ = entered_tx.send(());
+                release_rx
+                    .recv_timeout(TEST_WAIT)
+                    .expect("test did not release window-created hook");
+            }));
+            let handle = SessionEndObserverHandle::start_with(tracker, seams);
+            entered_rx
+                .recv_timeout(TEST_WAIT)
+                .expect("observer did not reach window-created hook");
+
+            let started = Instant::now();
+            handle.shutdown(Duration::from_millis(100));
+            let first_elapsed = started.elapsed();
+            let second_started = Instant::now();
+            handle.shutdown(Duration::from_secs(1));
+            let second_elapsed = second_started.elapsed();
+            release_tx.send(()).expect("failed to release observer");
+            wait_for_readiness(&handle, ObserverReadiness::Stopped, TEST_WAIT);
+
+            assert!(first_elapsed < Duration::from_millis(500));
+            assert!(second_elapsed < Duration::from_millis(50));
+        }
+
+        #[test]
+        fn real_window_registration_dispatches_only_committed_same_session_end_signals() {
+            let _guard = test_guard();
+            let clock = Arc::new(AdvancingTestClock::default());
+            let tracker = Arc::new(SessionEndTracker::new(clock.clone()));
+            let handle = SessionEndObserverHandle::start(Arc::clone(&tracker));
+            wait_for_readiness(
+                &handle,
+                ObserverReadiness::Registered,
+                REAL_REGISTRATION_WAIT,
+            );
+            let hwnd = observer_hwnd(&handle);
+
+            assert_eq!(
+                send_message_bounded(hwnd, WM_QUERYENDSESSION, WPARAM(0), LPARAM(0)),
+                LRESULT(1)
+            );
+            assert_eq!(tracker.pending_query_millis_for_test(), Some(0));
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::Unattributed
+            );
+
+            send_message_bounded(hwnd, WM_ENDSESSION, WPARAM(0), LPARAM(0));
+            assert_eq!(tracker.pending_query_millis_for_test(), None);
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::Unattributed
+            );
+
+            send_message_bounded(hwnd, WM_ENDSESSION, WPARAM(1), LPARAM(0));
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::SessionEndObserved
+            );
+            clock.advance_by(20_001);
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::Unattributed
+            );
+
+            let mut own_session_id = 0;
+            unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut own_session_id) }
+                .expect("current process session id must resolve");
+            send_message_bounded(
+                hwnd,
+                WM_WTSSESSION_CHANGE,
+                WPARAM(WTS_SESSION_LOCK as usize),
+                LPARAM(own_session_id as isize),
+            );
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::Unattributed
+            );
+            send_message_bounded(
+                hwnd,
+                WM_WTSSESSION_CHANGE,
+                WPARAM(WTS_SESSION_LOGOFF as usize),
+                LPARAM(own_session_id.wrapping_add(1) as isize),
+            );
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::Unattributed
+            );
+            send_message_bounded(
+                hwnd,
+                WM_WTSSESSION_CHANGE,
+                WPARAM(WTS_SESSION_LOGOFF as usize),
+                LPARAM(own_session_id as isize),
+            );
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::SessionEndObserved
+            );
+
+            handle.shutdown(Duration::from_millis(500));
+            assert_eq!(handle.tracker().readiness(), ObserverReadiness::Stopped);
+        }
     }
 
     pub use SessionEndObserverHandle as ExportedSessionEndObserverHandle;
@@ -693,6 +1192,7 @@ mod tests {
         let tracker = SessionEndTracker::new(clock.clone());
 
         tracker.note_query_end_session();
+        assert_eq!(tracker.pending_query_millis_for_test(), Some(0));
         assert_eq!(
             tracker.attribution_now(),
             WindowsTerminatorAttribution::Unattributed
@@ -700,6 +1200,7 @@ mod tests {
 
         clock.set(20_001);
         tracker.note_end_session(false);
+        assert_eq!(tracker.pending_query_millis_for_test(), None);
         assert_eq!(
             tracker.attribution_now(),
             WindowsTerminatorAttribution::Unattributed
