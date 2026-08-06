@@ -34,9 +34,12 @@
     MagnifyingGlass,
     Note,
     Package,
+    Paperclip,
+    PaperPlaneRight,
     Robot,
     RocketLaunch,
     ShieldCheck,
+    Smiley,
     SignOut,
     UserCircle,
     VideoCamera,
@@ -616,7 +619,11 @@
                   bind:value={composerText}
                   onkeydown={(e) => { if (e.key === 'Enter') sendMessage(); }}
                 />
-                <button class="send" onclick={sendMessage}>Send</button>
+                <div class="composer-bar">
+                  <button class="cmp-ic" aria-label="Attach a file" onclick={() => toast('File picker would open')}><Paperclip size={15} /></button>
+                  <button class="cmp-ic" aria-label="Add emoji" onclick={() => toast('Emoji picker would open')}><Smiley size={15} /></button>
+                  <button class="cmp-send" aria-label="Send message" onclick={sendMessage}><PaperPlaneRight size={13} weight="fill" /></button>
+                </div>
               </div>
             {/if}
           </div>
@@ -1071,13 +1078,18 @@
   .chip:active { border-color: var(--border-active); }
   .chip.g { color: var(--t2); background: transparent; border-color: var(--line2); }
   .chip.g:hover { background: var(--hover); color: var(--t1); border-color: var(--line2); }
-  /* Tight gutter: the Send button sets the height, 6px of air around it. */
-  .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 6px 6px 6px 14px; }
-  .composer input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
+  /* Two-row composer: input on top, action bar (attach · emoji … send) below. */
+  .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 12px 10px 8px 14px; transition: border-color 0.12s; }
+  .composer:focus-within { border-color: var(--border-active); }
+  .composer input { width: 100%; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
   .composer input::placeholder { color: var(--t3); }
-  /* Standard-size primary button; text matches the secondary buttons. */
-  .send { flex-shrink: 0; font-size: 12px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 8px; padding: 5px 12px; }
-  .send:hover { opacity: 0.88; }
+  .composer-bar { display: flex; align-items: center; gap: 2px; }
+  .cmp-ic { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--t3); transition: color 0.12s, background 0.12s; }
+  .cmp-ic:hover { color: var(--t1); background: var(--hover); }
+  /* Send: primary small icon button. */
+  .cmp-send { display: grid; place-items: center; width: 28px; height: 26px; margin-left: auto; border-radius: 6px; background: var(--ice-ink); color: var(--badge-fg); transition: opacity 0.15s, transform 0.1s; }
+  .cmp-send:hover { opacity: 0.88; }
+  .cmp-send:active { transform: scale(0.95); }
 
   /* ═══════════ Board ═══════════ */
   .board { flex: 1; display: flex; gap: 14px; padding: 20px; overflow: auto; }
