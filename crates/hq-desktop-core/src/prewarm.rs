@@ -197,6 +197,22 @@ pub fn materialize_hq_cloud_cache() -> Result<(), String> {
     }
 }
 
+/// Run `work` while holding the same cross-process advisory lock
+/// [`materialize_hq_cloud_cache`] takes.
+///
+/// The runner-target probe/repair writes into the very cache tree npx
+/// materializes, so it must serialize against a concurrent HQ window doing the
+/// same thing. Waiting is bounded exactly as materialization's is; if the lock
+/// cannot be taken, `work` still runs unlocked rather than blocking the caller
+/// — the repair is idempotent and the alternative is refusing to help at all.
+pub fn with_materialization_lock<T>(work: impl FnOnce() -> T) -> T {
+    let lock = materialization_lock_path()
+        .and_then(|path| acquire_materialization_lock_in(&path, MATERIALIZATION_LOCK_WAIT));
+    let result = work();
+    drop(lock);
+    result
+}
+
 /// Spawn a detached thread that warms the npx cache for
 /// `@indigoai-us/hq-cloud@HQ_CLOUD_VERSION`. Returns immediately; the
 /// caller never joins the thread.

@@ -110,6 +110,13 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
 
+      # The runner-target probe has a Windows-specific arm (no POSIX mode bit,
+      # so executability is never asserted and the shim's `.cmd`/`.exe` variants
+      # are what "exists" means there). Windows is the only place that arm runs.
+      - name: Runner target probe tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runner_target::tests
+
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
 

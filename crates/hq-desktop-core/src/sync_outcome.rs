@@ -653,6 +653,76 @@ pub fn session_end_affirms(affirmed_end_ms: Option<u64>, now_ms: u64) -> bool {
 /// a cause.
 pub const WINDOWS_STATUS_FFFFFFFF: i32 = -1;
 
+/// Whether a watcher exit is one whose terminator attribution is worth
+/// consulting and recording.
+///
+/// `DBG_TERMINATE_PROCESS` (`0x40010004`) has always qualified. `0xFFFFFFFF`
+/// now qualifies too: it is precisely the status whose own documentation says
+/// the capture "must carry lifecycle and runner diagnostics before triage can
+/// infer a cause", and discarding a fresh session-end affirmation for it left
+/// every such event unattributable.
+///
+/// This governs *attribution only*. Suppression stays with
+/// [`watcher_exit_capture_policy_with_attribution`], which still downgrades
+/// exactly one shape — `0x40010004` + `SessionEndObserved`.
+pub fn windows_terminator_attribution_applies(code: Option<i32>, signal: Option<i32>) -> bool {
+    signal.is_none()
+        && matches!(
+            code,
+            Some(WINDOWS_SESSION_TERMINATE_EXIT) | Some(WINDOWS_STATUS_FFFFFFFF)
+        )
+}
+
+/// Which process the app actually registered, waited on, and RSS-sampled.
+///
+/// On Windows `resolve_bin("npx")` yields `npx.cmd` (Node ships no `npx.exe`)
+/// and `std::process::Command` performs its own cmd.exe dispatch for `.cmd`
+/// programs — so the registered child is cmd.exe, not the Node runner. Its exit
+/// status and its working set both describe the shim. Recording that fact keeps
+/// an 8MB cmd.exe footprint from ever being read as the runner's memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherChildKind {
+    CmdShim,
+    DirectExecutable,
+}
+
+impl WatcherChildKind {
+    /// Stable, content-safe token for a Sentry extra.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::CmdShim => "cmd_shim",
+            Self::DirectExecutable => "direct_executable",
+        }
+    }
+
+    /// What the recorded RSS sample describes.
+    ///
+    /// `launcher` is deliberately not `runner`: even a directly executed `npx`
+    /// spawns the runner as a separate process, so the sampled working set
+    /// belongs to the launcher HQ registered, never necessarily to Node.
+    pub fn rss_scope(self) -> &'static str {
+        match self {
+            Self::CmdShim => "cmd_shim",
+            Self::DirectExecutable => "launcher",
+        }
+    }
+}
+
+/// Classify the registered child from the resolved watcher command's extension
+/// alone. No syscall, no path text ever leaves this function.
+pub fn classify_watcher_child_kind(watcher_command: &str) -> WatcherChildKind {
+    let file_name = watcher_command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let extension = file_name.rsplit_once('.').map(|(_, ext)| ext);
+    match extension {
+        Some("cmd") | Some("bat") => WatcherChildKind::CmdShim,
+        _ => WatcherChildKind::DirectExecutable,
+    }
+}
+
 /// A content-safe classification of a raw Windows process status. This remains
 /// pure and deliberately has no `target_os` gate: test jobs on every platform
 /// must pin the Windows wire values even though only Windows emits them.
@@ -1335,6 +1405,134 @@ mod tests {
             termination_fingerprint_token(Some(2), None),
             termination_fingerprint_token(Some(126), None)
         );
+    }
+
+    /// HQ-DESKTOP-4M: the indeterminate Windows status is exactly the one whose
+    /// capture needs attribution most, and it was the one the gate excluded.
+    #[test]
+    fn windows_terminator_attribution_covers_the_indeterminate_status() {
+        assert!(windows_terminator_attribution_applies(
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            None
+        ));
+        assert!(windows_terminator_attribution_applies(
+            Some(0xFFFF_FFFFu32 as i32),
+            None
+        ));
+
+        // A signalled exit is a POSIX shape; ordinary and fault statuses have
+        // their own diagnostics and must not acquire a terminator tag.
+        assert!(!windows_terminator_attribution_applies(
+            Some(0xFFFF_FFFFu32 as i32),
+            Some(9)
+        ));
+        assert!(!windows_terminator_attribution_applies(Some(126), None));
+        assert!(!windows_terminator_attribution_applies(
+            Some(WINDOWS_CONTROL_C_EXIT),
+            None
+        ));
+        assert!(!windows_terminator_attribution_applies(
+            Some(0xC000_0409u32 as i32),
+            None
+        ));
+        assert!(!windows_terminator_attribution_applies(None, None));
+    }
+
+    /// Attribution may only ever ADD information. Widening the terminator gate
+    /// must not let any attribution downgrade the indeterminate status to a
+    /// breadcrumb — only `0x40010004` + `SessionEndObserved` is suppressible.
+    #[test]
+    fn indeterminate_status_stays_captured_under_every_attribution() {
+        for attribution in [
+            None,
+            Some(WindowsTerminatorAttribution::SessionEndObserved),
+            Some(WindowsTerminatorAttribution::Unattributed),
+            Some(WindowsTerminatorAttribution::ObserverUnavailable),
+            Some(WindowsTerminatorAttribution::ObserverFailed),
+        ] {
+            assert_eq!(
+                watcher_exit_capture_policy_with_attribution(
+                    Some(WINDOWS_STATUS_FFFFFFFF),
+                    None,
+                    attribution
+                ),
+                WatcherExitCapturePolicy::Capture,
+                "indeterminate status was downgraded for {attribution:?}"
+            );
+        }
+
+        // The one shipped suppression is unchanged.
+        assert_eq!(
+            watcher_exit_capture_policy_with_attribution(
+                Some(WINDOWS_SESSION_TERMINATE_EXIT),
+                None,
+                Some(WindowsTerminatorAttribution::SessionEndObserved)
+            ),
+            WatcherExitCapturePolicy::LocalLogOnly
+        );
+    }
+
+    /// Sentry grouping continuity: neither lane in this cluster may regroup.
+    #[test]
+    fn cluster_fingerprints_are_unchanged() {
+        for host in [TerminationHost::Posix, TerminationHost::Windows] {
+            assert_eq!(
+                termination_fingerprint_token_for_host(Some(126), None, host),
+                "exit:126"
+            );
+            assert_eq!(
+                termination_fingerprint_token_for_host(Some(WINDOWS_STATUS_FFFFFFFF), None, host),
+                "windows:status-ffffffff"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_child_kind_identifies_the_cmd_dispatched_shim() {
+        // Windows: resolve_bin("npx") yields npx.cmd, which std::process::Command
+        // dispatches through cmd.exe — the registered child is the shim.
+        for command in [
+            r"C:\Program Files\nodejs\npx.cmd",
+            r"C:\Program Files\nodejs\NPX.CMD",
+            r"C:\tools\runner.bat",
+        ] {
+            assert_eq!(
+                classify_watcher_child_kind(command),
+                WatcherChildKind::CmdShim,
+                "{command} was not read as a cmd shim"
+            );
+        }
+
+        for command in [
+            "/opt/homebrew/bin/npx",
+            "/usr/local/bin/node",
+            r"C:\Program Files\nodejs\node.exe",
+        ] {
+            assert_eq!(
+                classify_watcher_child_kind(command),
+                WatcherChildKind::DirectExecutable,
+                "{command} was not read as a direct executable"
+            );
+        }
+    }
+
+    /// The RSS label must never claim the sample is the Node runner's: on both
+    /// lanes the registered child only launches the runner.
+    #[test]
+    fn rss_scope_never_claims_the_runner() {
+        assert_eq!(WatcherChildKind::CmdShim.rss_scope(), "cmd_shim");
+        assert_eq!(WatcherChildKind::DirectExecutable.rss_scope(), "launcher");
+        assert_eq!(WatcherChildKind::CmdShim.class_name(), "cmd_shim");
+        assert_eq!(
+            WatcherChildKind::DirectExecutable.class_name(),
+            "direct_executable"
+        );
+        for kind in [
+            WatcherChildKind::CmdShim,
+            WatcherChildKind::DirectExecutable,
+        ] {
+            assert_ne!(kind.rss_scope(), "runner");
+        }
     }
 
     #[test]

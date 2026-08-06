@@ -28,13 +28,18 @@ use hq_desktop_core::daemon::{
     derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
+use hq_desktop_core::runner_target::{
+    not_executable_diagnosis, probe_runner_target, repair_runner_target,
+    runner_target_spawn_decision, RunnerTargetDecision, RunnerTargetState,
+};
 use hq_desktop_core::sync_outcome::{
-    classify_runner_fatal_class, classify_windows_exit_status, current_termination_host,
-    describe_exit, is_windows_console_control_exit, normalized_abort_description,
-    should_capture_watcher_exit, spawn_failure_capture_policy, spawn_failure_fingerprint_token,
-    termination_fingerprint_token, termination_fingerprint_token_for_host,
-    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
-    windows_exit_status_hex, windows_fault_symbol, SpawnFailureCapturePolicy, TerminationHost,
+    classify_runner_fatal_class, classify_watcher_child_kind, classify_windows_exit_status,
+    current_termination_host, describe_exit, is_windows_console_control_exit,
+    normalized_abort_description, should_capture_watcher_exit, spawn_failure_capture_policy,
+    spawn_failure_fingerprint_token, termination_fingerprint_token,
+    termination_fingerprint_token_for_host, watcher_exit_capture_policy,
+    watcher_exit_capture_policy_with_attribution, windows_exit_status_hex, windows_fault_symbol,
+    windows_terminator_attribution_applies, SpawnFailureCapturePolicy, TerminationHost,
     WatcherExitCapturePolicy, WindowsTerminatorAttribution, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 
@@ -596,6 +601,20 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
 
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
+    // Runner-target preflight (HQ-DESKTOP-4K). The materialization above proves
+    // npx and `node` run under the pinned package — a different payload than the
+    // runner shim this is about to spawn. A cached shim whose target has lost
+    // its executable bit passes that gate and then exits 126 at uptime 0s on
+    // every respawn, forever. Repair it once; refuse honestly if it is still
+    // not executable, rather than hot-looping a watcher that cannot start.
+    if let Some(msg) = runner_target_preflight_bail(&spawn_args.cmd) {
+        log("daemon", &format!("runner target preflight failed: {msg}"));
+        note_environment_preflight_failure();
+        release_daemon_guard();
+        set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
+        return Err(msg);
+    }
+
     log("daemon", "spawn: hq-sync-runner --watch");
     // Stamp the spawn so the Exit handler can tell a fast crash-loop failure
     // from a watcher that ran healthily and then died (HQ-SYNC-4).
@@ -681,6 +700,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         cancelled,
                         &watcher_phase,
                         current_windows_terminator_attribution(&app, code, signal),
+                        exit_runner_target_provenance(code, &watcher_command),
                     );
                     let last_stderr = process_last_stderr
                         .lock()
@@ -803,6 +823,7 @@ struct WatcherExitCaptureContext {
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    runner_target: Option<RunnerTargetProvenance>,
 }
 
 #[derive(Debug, Clone)]
@@ -867,6 +888,7 @@ fn watcher_exit_capture_context(
     cancelled: bool,
     phase_context: &Mutex<WatcherPhaseContext>,
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    runner_target: Option<RunnerTargetProvenance>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -893,7 +915,28 @@ fn watcher_exit_capture_context(
         )
         .to_string(),
         windows_terminator,
+        runner_target,
     }
+}
+
+/// Probe the runner target the watcher just failed to execute.
+///
+/// Runs only for the exec-layer exits (126/127) whose diagnosis it answers, and
+/// only when the spawn actually went through the npx cache — a
+/// `HQ_CLOUD_LOCAL_RUNNER` override resolves a different target this module does
+/// not own. Best effort by construction: `probe_runner_target` degrades to
+/// `Unreadable`, which reproduces the pre-existing `"unknown"` provenance.
+fn exit_runner_target_provenance(
+    code: Option<i32>,
+    watcher_command: &str,
+) -> Option<RunnerTargetProvenance> {
+    if !matches!(code, Some(126 | 127)) || runner_exec_resolution(watcher_command) != "npx_cache" {
+        return None;
+    }
+    Some(RunnerTargetProvenance {
+        state: probe_runner_target(),
+        repair_attempted: took_runner_target_repair_attempt(),
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -902,7 +945,7 @@ fn current_windows_terminator_attribution(
     code: Option<i32>,
     signal: Option<i32>,
 ) -> Option<WindowsTerminatorAttribution> {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
+    if !windows_terminator_attribution_applies(code, signal) {
         return None;
     }
     Some(
@@ -1230,20 +1273,42 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(operations) = &context.runner_error_ops {
         tags.push(("runner_error_ops", operations.clone()));
     }
-    if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none() {
+    if windows_terminator_attribution_applies(code, signal) {
         if let Some(attribution) = context.windows_terminator {
             tags.push(("windows_terminator", attribution.class_name().to_string()));
         }
     }
 
+    let child_kind = classify_watcher_child_kind(watcher_command);
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    // Which process the status and the working set above actually describe.
+    extras.push((
+        "watcher_child_kind",
+        sentry::protocol::Value::String(child_kind.class_name().to_string()),
+    ));
+    extras.push((
+        "rss_scope",
+        sentry::protocol::Value::String(child_kind.rss_scope().to_string()),
+    ));
+    // The message prints the global crash-loop streak, but a rate-limited
+    // policy gates on its own failure-class streak. Record the streak that
+    // actually drove this decision so "#6" is interpretable against the
+    // exec-not-runnable threshold of 4.
+    if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        extras.push((
+            "exec_not_runnable_streak",
+            sentry::protocol::Value::Number(policy_consecutive.into()),
+        ));
+    }
     if normalized_abort.is_some() {
         extras.push((
             "termination_status_raw",
             sentry::protocol::Value::String(raw_fingerprint_token),
         ));
     }
-    if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command) {
+    if let Some(exec_extras) =
+        runner_exec_provenance_extras(code, watcher_command, context.runner_target)
+    {
         extras.extend(exec_extras);
     }
     if is_unrecognized_watcher_exit(code, signal) {
@@ -1314,17 +1379,33 @@ fn watcher_exit_context_extras(
     ]
 }
 
+/// What the pre-spawn/at-exit probe established about the target the watcher
+/// just failed to execute, plus whether a bounded repair had been attempted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RunnerTargetProvenance {
+    state: RunnerTargetState,
+    repair_attempted: bool,
+}
+
 /// The selected spawn command determines the fixed-vocabulary resolution
-/// token. Exit status alone cannot tell whether a local-runner override or an
-/// npx cache target existed or was executable, so those facts are explicitly
-/// recorded as unknown rather than inferred from 126/127.
+/// token. Exit status alone still cannot tell whether the target existed or was
+/// executable — but a direct probe of that target can, and `provenance` carries
+/// its closed-vocabulary result. Without a probe the pre-existing `"unknown"`
+/// vocabulary is preserved verbatim.
 fn runner_exec_provenance_extras(
     code: Option<i32>,
     watcher_command: &str,
+    provenance: Option<RunnerTargetProvenance>,
 ) -> Option<Vec<(&'static str, sentry::protocol::Value)>> {
     if !matches!(code, Some(126 | 127)) {
         return None;
     }
+    let exists = provenance
+        .map(|probe| probe.state.exists_token())
+        .unwrap_or("unknown");
+    let executable = provenance
+        .map(|probe| probe.state.executable_token())
+        .unwrap_or("unknown");
     Some(vec![
         (
             "runner_exec_resolution",
@@ -1332,11 +1413,17 @@ fn runner_exec_provenance_extras(
         ),
         (
             "runner_exec_target_exists",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(exists.to_string()),
         ),
         (
             "runner_exec_target_executable",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(executable.to_string()),
+        ),
+        (
+            "runner_target_repair_attempted",
+            sentry::protocol::Value::Bool(
+                provenance.map(|probe| probe.repair_attempted).unwrap_or(false),
+            ),
         ),
     ])
 }
@@ -1545,6 +1632,10 @@ fn should_reset_after_recovery(spawn_elapsed: Option<Duration>, window: Duration
 /// handler, and the supervisor.
 #[derive(Default)]
 struct WatcherCrashState {
+    /// Whether this spawn attempt already spent its single bounded
+    /// runner-target repair. Read back at the capture seam so a 126 that still
+    /// escapes says whether a repair had been tried.
+    runner_target_repair_attempted: bool,
     /// Consecutive fast failures (crash-loop length). Reset once a watcher
     /// survives `FAST_FAIL_WINDOW`.
     consecutive: u32,
@@ -1656,6 +1747,103 @@ fn note_environment_preflight_failure() {
     st.backoff_until = Some(
         Instant::now() + respawn_backoff(st.consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
     );
+}
+
+/// Record whether this spawn attempt spent its single runner-target repair.
+/// Set once per attempt, so a later 126 reports this attempt's fact rather than
+/// an earlier one's.
+fn set_runner_target_repair_attempted(attempted: bool) {
+    crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .runner_target_repair_attempted = attempted;
+}
+
+fn took_runner_target_repair_attempt() -> bool {
+    crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .runner_target_repair_attempted
+}
+
+/// Run the pre-spawn runner-target gate.
+///
+/// `materialize_hq_cloud_cache` validates a *different* payload than the one the
+/// watcher spawns — it proves npx and `node` run under the pinned package, never
+/// that `node_modules/.bin/<RUNNER_BIN>` is executable. A cached target that has
+/// lost its executable bit therefore passes that preflight and the watcher can
+/// only exit 126 at uptime 0s, forever. This gate probes the real target,
+/// attempts exactly one bounded repair, and refuses the spawn only when the
+/// target is still positively not executable afterwards.
+///
+/// Returns the user-actionable local diagnosis when the spawn must be refused.
+/// Every ambiguous probe result returns `None`, i.e. spawn exactly as before.
+fn runner_target_preflight_bail(watcher_command: &str) -> Option<String> {
+    set_runner_target_repair_attempted(false);
+    if runner_exec_resolution(watcher_command) != "npx_cache" {
+        return None;
+    }
+
+    let outcome = runner_target_gate_outcome(probe_runner_target, || {
+        // One attempt per spawn attempt, under the same advisory lock window
+        // `materialize_hq_cloud_cache` uses, so it cannot race a concurrent HQ
+        // materialization of the same cache entry.
+        let repair = hq_desktop_core::prewarm::with_materialization_lock(repair_runner_target);
+        log(
+            "daemon",
+            &format!("runner target not executable — repair attempt: {repair:?}, re-probing"),
+        );
+    });
+
+    set_runner_target_repair_attempted(outcome.repair_attempted);
+    if outcome.refuse {
+        return Some(not_executable_diagnosis());
+    }
+    if outcome.state != RunnerTargetState::Runnable {
+        log(
+            "daemon",
+            &format!(
+                "runner target probe: {} — spawning anyway",
+                outcome.state.class_name()
+            ),
+        );
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RunnerTargetGateOutcome {
+    state: RunnerTargetState,
+    repair_attempted: bool,
+    refuse: bool,
+}
+
+/// Pure probe → repair-at-most-once → re-probe → decide sequence.
+///
+/// Extracted from the IO so the decision table is testable without a real npx
+/// cache or an ambient env mutation. `repair` is invoked at most once, and only
+/// for a positively identified `NotExecutable` target.
+fn runner_target_gate_outcome(
+    mut probe: impl FnMut() -> RunnerTargetState,
+    repair: impl FnOnce(),
+) -> RunnerTargetGateOutcome {
+    let mut state = probe();
+    let mut repair_attempted = false;
+
+    if runner_target_spawn_decision(state, repair_attempted)
+        == RunnerTargetDecision::RepairThenReprobe
+    {
+        repair();
+        repair_attempted = true;
+        state = probe();
+    }
+
+    RunnerTargetGateOutcome {
+        state,
+        repair_attempted,
+        refuse: runner_target_spawn_decision(state, repair_attempted)
+            == RunnerTargetDecision::RefuseSpawn,
+    }
 }
 
 /// Record the latest RSS (KB) sampled from the live watcher (supervisor tick).
@@ -2604,6 +2792,22 @@ mod tests {
                 }
             })
             .unwrap_or_else(|| panic!("missing number extra {key}"))
+    }
+
+    fn recorded_bool_extra(capture: &RecordedCapture, key: &str) -> bool {
+        capture
+            .extras
+            .iter()
+            .find_map(|(name, value)| {
+                if name != key {
+                    return None;
+                }
+                match value {
+                    sentry::protocol::Value::Bool(value) => Some(*value),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| panic!("missing bool extra {key}"))
     }
 
     fn recorded_tag<'a>(capture: &'a RecordedCapture, key: &str) -> &'a str {
@@ -3859,6 +4063,7 @@ mod tests {
         let npx = runner_exec_provenance_extras(
             Some(126),
             r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+            None,
         )
         .expect("exec exit gets provenance");
         assert!(npx.iter().any(|(key, value)| {
@@ -3869,17 +4074,318 @@ mod tests {
             !((*key == "runner_exec_target_exists" || *key == "runner_exec_target_executable")
                 && matches!(value, sentry::protocol::Value::Bool(_)))
         }));
+        // Without a probe the pre-existing "unknown" vocabulary is preserved
+        // verbatim: exit status alone still proves nothing about the target.
         assert!(npx.iter().any(|(key, value)| {
             *key == "runner_exec_target_exists"
                 && value == &sentry::protocol::Value::String("unknown".to_string())
         }));
 
-        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node")
+        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node", None)
             .expect("exec exit gets provenance");
         assert!(local.iter().any(|(key, value)| {
             *key == "runner_exec_resolution"
                 && value == &sentry::protocol::Value::String("local_runner".to_string())
         }));
+    }
+
+    /// HQ-DESKTOP-4K: the one capture that escapes the rate limiter must be able
+    /// to distinguish a missing target from a non-executable one. Before the
+    /// probe both facts were hardcoded to "unknown" by construction.
+    #[test]
+    fn probed_runner_target_replaces_unknown_provenance_on_a_126_capture() {
+        let private_path = "/Users/ada/.npm/_npx/f72697f8e89f117e/node_modules/.bin/hq-sync-runner";
+        let raw_stderr = format!("sh: {private_path}: Permission denied");
+        let context = WatcherExitCaptureContext {
+            runner_target: Some(RunnerTargetProvenance {
+                state: RunnerTargetState::NotExecutable,
+                repair_attempted: true,
+            }),
+            ..Default::default()
+        };
+
+        let mut effects = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut effects,
+            Some(126),
+            None,
+            6,
+            4,
+            WatcherExitCapturePolicy::CaptureRateLimited,
+            "npx",
+            Some(&raw_stderr),
+            TerminationHost::Posix,
+            &context,
+        );
+        let event = effects.captures.first().expect("exit 126 captures");
+
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_target_exists"),
+            "true"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_target_executable"),
+            "false"
+        );
+        assert!(recorded_bool_extra(event, "runner_target_repair_attempted"));
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_resolution"),
+            "npx_cache"
+        );
+
+        // A probed target must be distinguishable from an absent one.
+        let missing_context = WatcherExitCaptureContext {
+            runner_target: Some(RunnerTargetProvenance {
+                state: RunnerTargetState::Missing,
+                repair_attempted: false,
+            }),
+            ..Default::default()
+        };
+        let mut missing = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut missing,
+            Some(127),
+            None,
+            4,
+            4,
+            WatcherExitCapturePolicy::CaptureRateLimited,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &missing_context,
+        );
+        let missing_event = missing.captures.first().expect("exit 127 captures");
+        assert_eq!(
+            recorded_string_extra(missing_event, "runner_exec_target_exists"),
+            "false"
+        );
+        assert!(!recorded_bool_extra(
+            missing_event,
+            "runner_target_repair_attempted"
+        ));
+
+        // Grouping continuity and the no-raw-content boundary are unchanged.
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:126",
+                "none"
+            ]
+        );
+        let serialized = serde_json::to_string(&event.extras).expect("serialize extras");
+        assert!(!serialized.contains(private_path));
+    }
+
+    /// HQ-DESKTOP-4M: `0xFFFFFFFF` is the status whose own doc comment demands
+    /// diagnostics before triage can infer a cause, yet the terminator tag was
+    /// gated to `0x40010004` — so the observer's evidence was discarded for
+    /// exactly the status that needed it.
+    #[test]
+    fn indeterminate_windows_status_carries_terminator_attribution() {
+        const INDETERMINATE: i32 = 0xFFFF_FFFFu32 as i32;
+
+        for attribution in [
+            WindowsTerminatorAttribution::SessionEndObserved,
+            WindowsTerminatorAttribution::Unattributed,
+            WindowsTerminatorAttribution::ObserverUnavailable,
+            WindowsTerminatorAttribution::ObserverFailed,
+        ] {
+            let context = WatcherExitCaptureContext {
+                windows_terminator: Some(attribution),
+                runner_phase: "scan".to_string(),
+                ..Default::default()
+            };
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(INDETERMINATE),
+                None,
+                false,
+                false,
+                r"C:\Program Files\nodejs\npx.cmd",
+                None,
+                TerminationHost::Windows,
+                &context,
+            );
+
+            let event = effects
+                .captures
+                .first()
+                .unwrap_or_else(|| panic!("{attribution:?} must still be captured, never silenced"));
+            assert_eq!(
+                recorded_tag(event, "windows_terminator"),
+                attribution.class_name()
+            );
+            // The pre-existing Windows diagnostics stay intact.
+            assert_eq!(
+                recorded_tag(event, "windows_exit_status"),
+                "0xFFFFFFFF"
+            );
+            assert_eq!(
+                recorded_tag(event, "windows_exit_class"),
+                "indeterminate_status"
+            );
+            assert_eq!(
+                event.fingerprint,
+                vec![
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:status-ffffffff",
+                    "none"
+                ]
+            );
+        }
+
+        // Attribution adds a tag; it never converts a capture into a breadcrumb.
+        // Only 0x40010004 + SessionEndObserved keeps its shipped suppression.
+        let suppressed = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
+            ..Default::default()
+        };
+        let mut session_end = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut session_end,
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            r"C:\Program Files\nodejs\npx.cmd",
+            None,
+            TerminationHost::Windows,
+            &suppressed,
+        );
+        assert!(session_end.captures.is_empty());
+    }
+
+    /// The message prints the global streak, but the rate limiter gates on the
+    /// exec-not-runnable streak. The reported "#6" capture fired at policy
+    /// streak 4 — two unrelated fast exits preceded four consecutive 126s.
+    #[test]
+    fn capture_records_the_streak_that_drove_the_rate_limited_decision() {
+        let mut effects = RecordingWatcherEffects::default();
+        let context = WatcherExitCaptureContext::default();
+
+        // Two unrelated fast exits, then the four 126s that reach the threshold.
+        for code in [221, 221, 126, 126, 126, 126] {
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(code),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                TerminationHost::Posix,
+                &context,
+            );
+        }
+
+        let event = effects
+            .captures
+            .last()
+            .expect("the fourth exec-not-runnable failure captures");
+        assert!(
+            event.message.contains("consecutive failure #6"),
+            "expected the observed global streak, got: {}",
+            event.message
+        );
+        assert_eq!(
+            recorded_number_extra(event, "exec_not_runnable_streak"),
+            4,
+            "the capture must name the streak the rate limiter evaluated"
+        );
+        assert_eq!(
+            effects.captures.len(),
+            3,
+            "only the two 221 milestones and the fourth 126 may capture"
+        );
+
+        // A non-rate-limited policy has no separate streak to disambiguate.
+        let unrecognized = effects
+            .captures
+            .first()
+            .expect("the first 221 captures at milestone #1");
+        assert!(unrecognized
+            .extras
+            .iter()
+            .all(|(key, _)| *key != "exec_not_runnable_streak"));
+    }
+
+    /// The daemon-seam gate: a not-executable target is repaired once, and only
+    /// a target that is STILL not executable refuses the spawn. At base this
+    /// watcher was spawned unconditionally and could only exit 126 forever.
+    #[test]
+    fn runner_target_gate_repairs_once_then_refuses_only_a_still_broken_target() {
+        // Self-heal: the repair works, the watcher spawns.
+        let mut probes = vec![RunnerTargetState::Runnable, RunnerTargetState::NotExecutable];
+        let mut repairs = 0;
+        let healed = runner_target_gate_outcome(|| probes.pop().expect("probe"), || repairs += 1);
+        assert_eq!(repairs, 1, "exactly one bounded repair attempt");
+        assert!(!healed.refuse, "a healed target must spawn");
+        assert!(healed.repair_attempted);
+        assert_eq!(healed.state, RunnerTargetState::Runnable);
+
+        // Unrepairable: refuse rather than hot-loop a watcher that cannot start.
+        let mut repairs = 0;
+        let refused = runner_target_gate_outcome(
+            || RunnerTargetState::NotExecutable,
+            || repairs += 1,
+        );
+        assert_eq!(repairs, 1, "the repair is never retried within one attempt");
+        assert!(refused.refuse);
+        assert!(refused.repair_attempted);
+
+        // Healthy and ambiguous results never repair and never refuse.
+        for state in [
+            RunnerTargetState::Runnable,
+            RunnerTargetState::Missing,
+            RunnerTargetState::Unreadable,
+        ] {
+            let mut repairs = 0;
+            let outcome = runner_target_gate_outcome(|| state, || repairs += 1);
+            assert_eq!(repairs, 0, "{state:?} must not trigger a repair");
+            assert!(!outcome.refuse, "{state:?} must keep the existing spawn path");
+            assert!(!outcome.repair_attempted);
+        }
+    }
+
+    /// A cmd.exe-dispatched shim's 8MB working set must never again be
+    /// presentable as the Node runner's footprint.
+    #[test]
+    fn capture_labels_which_process_the_status_and_working_set_describe() {
+        let table = [
+            (r"C:\Program Files\nodejs\npx.cmd", "cmd_shim", "cmd_shim"),
+            ("/opt/homebrew/bin/npx", "direct_executable", "launcher"),
+        ];
+
+        for (watcher_command, expected_kind, expected_scope) in table {
+            let mut effects = RecordingWatcherEffects::default();
+            record_unexpected_watcher_exit(
+                &mut effects,
+                Some(0xFFFF_FFFFu32 as i32),
+                None,
+                1,
+                1,
+                WatcherExitCapturePolicy::Capture,
+                watcher_command,
+                None,
+                TerminationHost::Windows,
+                &WatcherExitCaptureContext::default(),
+            );
+            let event = effects.captures.first().expect("captures");
+            assert_eq!(
+                recorded_string_extra(event, "watcher_child_kind"),
+                expected_kind
+            );
+            assert_eq!(recorded_string_extra(event, "rss_scope"), expected_scope);
+            assert_ne!(
+                recorded_string_extra(event, "rss_scope"),
+                "runner",
+                "the sampled process is never the runner itself"
+            );
+        }
     }
 
     #[test]
