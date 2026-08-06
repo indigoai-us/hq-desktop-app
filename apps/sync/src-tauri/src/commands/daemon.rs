@@ -28,13 +28,15 @@ use hq_desktop_core::daemon::{
     derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
+use hq_desktop_core::runner_target::RunnerTargetState;
 use hq_desktop_core::sync_outcome::{
-    classify_runner_fatal_class, classify_windows_exit_status, current_termination_host,
-    describe_exit, is_windows_console_control_exit, normalized_abort_description,
-    should_capture_watcher_exit, spawn_failure_capture_policy, spawn_failure_fingerprint_token,
-    termination_fingerprint_token, termination_fingerprint_token_for_host,
-    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
-    windows_exit_status_hex, windows_fault_symbol, SpawnFailureCapturePolicy, TerminationHost,
+    classify_runner_fatal_class, classify_watcher_child_kind, classify_windows_exit_status,
+    current_termination_host, describe_exit, is_windows_console_control_exit,
+    normalized_abort_description, should_capture_watcher_exit, spawn_failure_capture_policy,
+    spawn_failure_fingerprint_token, termination_fingerprint_token,
+    termination_fingerprint_token_for_host, watcher_exit_capture_policy,
+    watcher_exit_capture_policy_with_attribution, windows_exit_status_hex, windows_fault_symbol,
+    windows_terminator_attribution_applies, SpawnFailureCapturePolicy, TerminationHost,
     WatcherExitCapturePolicy, WindowsTerminatorAttribution, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 
@@ -90,6 +92,27 @@ static SUPERVISOR_RESPAWN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// cancellation. It remains set until the next spawn, so an exit diagnostic can
 /// distinguish a watchdog-initiated teardown from an external termination.
 static HEARTBEAT_STALL_TERMINATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Whether the pre-spawn gate repaired the cached runner target before the
+/// current generation started. Recorded at spawn because the repair happened
+/// there; an exit-time re-probe cannot tell whether the state it sees is the
+/// original one or the repaired one.
+static RUNNER_TARGET_REPAIR_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+fn note_runner_target_repair_attempted(attempted: bool) {
+    RUNNER_TARGET_REPAIR_ATTEMPTED.store(attempted, Ordering::Release);
+}
+
+fn runner_target_repair_attempted() -> bool {
+    RUNNER_TARGET_REPAIR_ATTEMPTED.load(Ordering::Acquire)
+}
+
+/// Probe the runner target only for the exec-layer exits whose provenance is in
+/// question. Diagnostics must never touch the filesystem on the ordinary path,
+/// and must never influence whether a crash is captured.
+fn current_runner_exec_target_state(code: Option<i32>) -> Option<RunnerTargetState> {
+    matches!(code, Some(126 | 127)).then(hq_desktop_core::runner_target::probe_runner_target)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Watch-mode ndjson handler
@@ -594,6 +617,46 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         return Err(msg);
     }
 
+    // The materialization preflight above validates a *different* payload than
+    // the one spawned below: it runs `node -e "process.exit(0)"` under the
+    // package, never `node_modules/.bin/hq-sync-runner`. A cached runner target
+    // that exists but has lost its executable bit therefore passed preflight,
+    // and the watcher was spawned into `sh: …/hq-sync-runner: Permission denied`
+    // (exit 126, uptime 0s) that the supervisor respawned forever
+    // (HQ-DESKTOP-4K). Probe the target the watcher actually execs, self-heal
+    // once, and refuse honestly rather than hot-loop. Every ambiguous probe
+    // result falls through to the spawn, so this can never stop a healthy
+    // machine's auto-sync.
+    let runner_target = hq_desktop_core::runner_target::ensure_runner_target_runnable();
+    note_runner_target_repair_attempted(runner_target.repair.attempted());
+    if runner_target.repair.attempted() {
+        log(
+            "daemon",
+            &format!(
+                "runner target repair: state={} repair={}",
+                runner_target.state.class_name(),
+                runner_target.repair.class_name()
+            ),
+        );
+    }
+    if runner_target.refuses_spawn() {
+        let msg = hq_desktop_core::runner_target::runner_target_diagnosis(runner_target.state);
+        log(
+            "daemon",
+            &format!(
+                "runner target preflight refused spawn: state={} repair={}",
+                runner_target.state.class_name(),
+                runner_target.repair.class_name()
+            ),
+        );
+        // Environmental and user-actionable: back off like the npx-cache
+        // preflight above and create no Sentry event. No watcher was spawned.
+        note_environment_preflight_failure();
+        release_daemon_guard();
+        set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
+        return Err(msg);
+    }
+
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
     log("daemon", "spawn: hq-sync-runner --watch");
@@ -681,6 +744,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         cancelled,
                         &watcher_phase,
                         current_windows_terminator_attribution(&app, code, signal),
+                        current_runner_exec_target_state(code),
                     );
                     let last_stderr = process_last_stderr
                         .lock()
@@ -803,6 +867,9 @@ struct WatcherExitCaptureContext {
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    /// Probed only for 126/127, where the exec layer — not the runner — failed.
+    runner_exec_target: Option<RunnerTargetState>,
+    runner_target_repair_attempted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -867,6 +934,7 @@ fn watcher_exit_capture_context(
     cancelled: bool,
     phase_context: &Mutex<WatcherPhaseContext>,
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    runner_exec_target: Option<RunnerTargetState>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -893,6 +961,8 @@ fn watcher_exit_capture_context(
         )
         .to_string(),
         windows_terminator,
+        runner_exec_target,
+        runner_target_repair_attempted: runner_target_repair_attempted(),
     }
 }
 
@@ -902,7 +972,7 @@ fn current_windows_terminator_attribution(
     code: Option<i32>,
     signal: Option<i32>,
 ) -> Option<WindowsTerminatorAttribution> {
-    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
+    if !windows_terminator_attribution_applies(code, signal) {
         return None;
     }
     Some(
@@ -1230,20 +1300,39 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(operations) = &context.runner_error_ops {
         tags.push(("runner_error_ops", operations.clone()));
     }
-    if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none() {
+    // Attribution is additive: it may only add a tag. The capture decision was
+    // already made above by `watcher_exit_capture_policy_with_attribution`,
+    // which still downgrades only DBG_TERMINATE_PROCESS — so widening this gate
+    // to 0xFFFFFFFF cannot silence an alert (HQ-DESKTOP-4M).
+    if windows_terminator_attribution_applies(code, signal) {
         if let Some(attribution) = context.windows_terminator {
             tags.push(("windows_terminator", attribution.class_name().to_string()));
         }
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    extras.extend(watcher_child_scope_extras(watcher_command));
+    if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        // The message prints the *global* streak, but this policy's gate is
+        // driven by the exec-not-runnable streak. Emitting both makes a message
+        // reading "#6" interpretable against the threshold of 4.
+        extras.push((
+            "exec_not_runnable_streak",
+            sentry::protocol::Value::Number(policy_consecutive.into()),
+        ));
+    }
     if normalized_abort.is_some() {
         extras.push((
             "termination_status_raw",
             sentry::protocol::Value::String(raw_fingerprint_token),
         ));
     }
-    if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command) {
+    if let Some(exec_extras) = runner_exec_provenance_extras(
+        code,
+        watcher_command,
+        context.runner_exec_target,
+        context.runner_target_repair_attempted,
+    ) {
         extras.extend(exec_extras);
     }
     if is_unrecognized_watcher_exit(code, signal) {
@@ -1314,17 +1403,43 @@ fn watcher_exit_context_extras(
     ]
 }
 
+/// Describe which process the reported exit status and RSS sample belong to.
+///
+/// On Windows the registered/waited child is `cmd.exe` dispatching `npx.cmd`,
+/// not the Node runner, so an 8MB working set is the shim's — labelling the
+/// sample stops it being read as the runner's footprint (HQ-DESKTOP-4M).
+fn watcher_child_scope_extras(
+    watcher_command: &str,
+) -> Vec<(&'static str, sentry::protocol::Value)> {
+    let child_kind = classify_watcher_child_kind(watcher_command);
+    vec![
+        (
+            "watcher_child_kind",
+            sentry::protocol::Value::String(child_kind.class_name().to_string()),
+        ),
+        (
+            "rss_scope",
+            sentry::protocol::Value::String(child_kind.rss_scope().to_string()),
+        ),
+    ]
+}
+
 /// The selected spawn command determines the fixed-vocabulary resolution
 /// token. Exit status alone cannot tell whether a local-runner override or an
-/// npx cache target existed or was executable, so those facts are explicitly
-/// recorded as unknown rather than inferred from 126/127.
+/// npx cache target existed or was executable — so the target is probed
+/// directly (HQ-DESKTOP-4K). An unprobeable target keeps the pre-existing
+/// `"unknown"` vocabulary rather than inventing a new token, and the probe
+/// never decides whether the exit is captured.
 fn runner_exec_provenance_extras(
     code: Option<i32>,
     watcher_command: &str,
+    target: Option<RunnerTargetState>,
+    repair_attempted: bool,
 ) -> Option<Vec<(&'static str, sentry::protocol::Value)>> {
     if !matches!(code, Some(126 | 127)) {
         return None;
     }
+    let target = target.unwrap_or(RunnerTargetState::Unresolved);
     Some(vec![
         (
             "runner_exec_resolution",
@@ -1332,11 +1447,15 @@ fn runner_exec_provenance_extras(
         ),
         (
             "runner_exec_target_exists",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(target.exists_token().to_string()),
         ),
         (
             "runner_exec_target_executable",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(target.executable_token().to_string()),
+        ),
+        (
+            "runner_target_repair_attempted",
+            sentry::protocol::Value::String(repair_attempted.to_string()),
         ),
     ])
 }
@@ -2713,6 +2832,302 @@ mod tests {
                 && *category == DaemonFailureCategory::Crash));
     }
 
+    /// HQ-DESKTOP-4K: the one capture that escapes the rate limiter used to
+    /// carry the literal string `"unknown"` for both provenance facts, so
+    /// triage could not tell a missing target from a non-executable one. It
+    /// must now carry what the probe actually found.
+    #[test]
+    fn exec_layer_exit_reports_the_probed_runner_target() {
+        let table = [
+            (RunnerTargetState::NotExecutable, "true", "false"),
+            (RunnerTargetState::Missing, "false", "false"),
+            (RunnerTargetState::Runnable, "true", "true"),
+            (RunnerTargetState::Unreadable, "unknown", "unknown"),
+            (RunnerTargetState::Unresolved, "unknown", "unknown"),
+        ];
+        for (state, exists, executable) in table {
+            for code in [126, 127] {
+                let context = WatcherExitCaptureContext {
+                    runner_exec_target: Some(state),
+                    runner_target_repair_attempted: true,
+                    ..Default::default()
+                };
+                let mut effects = RecordingWatcherEffects::default();
+                // Four consecutive exec-not-runnable exits reach the milestone.
+                for _ in 0..4 {
+                    handle_watcher_exit_with_effects(
+                        &mut effects,
+                        Some(code),
+                        None,
+                        false,
+                        false,
+                        "/opt/homebrew/bin/npx",
+                        None,
+                        TerminationHost::Posix,
+                        &context,
+                    );
+                }
+                let capture = effects
+                    .captures
+                    .last()
+                    .unwrap_or_else(|| panic!("code={code} state={state:?} must capture"));
+                assert_eq!(
+                    recorded_string_extra(capture, "runner_exec_target_exists"),
+                    exists,
+                    "code={code} state={state:?}",
+                );
+                assert_eq!(
+                    recorded_string_extra(capture, "runner_exec_target_executable"),
+                    executable,
+                    "code={code} state={state:?}",
+                );
+                assert_eq!(
+                    recorded_string_extra(capture, "runner_target_repair_attempted"),
+                    "true",
+                );
+                assert_eq!(
+                    recorded_string_extra(capture, "runner_exec_resolution"),
+                    "npx_cache",
+                );
+            }
+        }
+    }
+
+    /// An unprobeable target keeps the pre-existing vocabulary rather than
+    /// inventing a new token, and the probe never changes capture behaviour.
+    #[test]
+    fn unprobeable_runner_target_still_reports_unknown_provenance() {
+        let mut effects = RecordingWatcherEffects::default();
+        for _ in 0..4 {
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(126),
+                None,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                None,
+                TerminationHost::Posix,
+                &WatcherExitCaptureContext::default(),
+            );
+        }
+        let capture = effects.captures.last().expect("captures at the milestone");
+        assert_eq!(
+            recorded_string_extra(capture, "runner_exec_target_exists"),
+            "unknown"
+        );
+        assert_eq!(
+            recorded_string_extra(capture, "runner_exec_target_executable"),
+            "unknown"
+        );
+        assert_eq!(
+            recorded_string_extra(capture, "runner_target_repair_attempted"),
+            "false"
+        );
+        assert_eq!(
+            capture.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:126", "none"],
+            "grouping continuity for HQ-DESKTOP-4K",
+        );
+    }
+
+    /// HQ-DESKTOP-4K's message printed the global streak (`#6`) while the gate
+    /// that let it through evaluated the exec-not-runnable streak (`4`). Emit
+    /// the streak that actually drove the decision so the message is
+    /// interpretable, reproducing the observed divergence exactly.
+    #[test]
+    fn exec_not_runnable_capture_reports_the_streak_that_drove_the_gate() {
+        let mut effects = RecordingWatcherEffects::default();
+        // Two unrelated fast exits advance only the global counter…
+        for _ in 0..2 {
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(221),
+                None,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                None,
+                TerminationHost::Posix,
+                &WatcherExitCaptureContext::default(),
+            );
+        }
+        // …then four consecutive 126s drive the exec-not-runnable gate.
+        for _ in 0..4 {
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(126),
+                None,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                None,
+                TerminationHost::Posix,
+                &WatcherExitCaptureContext::default(),
+            );
+        }
+
+        let capture = effects.captures.last().expect("the milestone captures");
+        assert!(
+            capture.message.contains("consecutive failure #6"),
+            "expected the observed global streak, got {}",
+            capture.message,
+        );
+        assert_eq!(
+            recorded_number_extra(capture, "exec_not_runnable_streak"),
+            4,
+            "the capture must expose the streak the CaptureRateLimited gate used",
+        );
+    }
+
+    /// The exec-not-runnable streak extra belongs only to the policy that uses
+    /// it; an ordinary crash must not gain a misleading field.
+    #[test]
+    fn ordinary_crash_captures_carry_no_exec_not_runnable_streak() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(221),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        let capture = effects.captures.first().expect("an unknown code captures");
+        assert!(!capture
+            .extras
+            .iter()
+            .any(|(key, _)| key == "exec_not_runnable_streak"));
+    }
+
+    /// HQ-DESKTOP-4M: a `0xFFFFFFFF` exit reached Sentry with no terminator
+    /// tag even when the session-end observer held a fresh affirmation, because
+    /// the tag was gated to `DBG_TERMINATE_PROCESS`.
+    #[test]
+    fn indeterminate_windows_status_carries_its_terminator_attribution() {
+        for attribution in [
+            WindowsTerminatorAttribution::SessionEndObserved,
+            WindowsTerminatorAttribution::Unattributed,
+            WindowsTerminatorAttribution::ObserverUnavailable,
+            WindowsTerminatorAttribution::ObserverFailed,
+        ] {
+            let context = WatcherExitCaptureContext {
+                windows_terminator: Some(attribution),
+                ..Default::default()
+            };
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(-1),
+                None,
+                false,
+                false,
+                r"C:\Program Files\nodejs\npx.cmd",
+                None,
+                TerminationHost::Windows,
+                &context,
+            );
+
+            let capture = effects
+                .captures
+                .first()
+                .unwrap_or_else(|| panic!("{attribution:?} must still capture, never suppress"));
+            assert_eq!(
+                recorded_tag(capture, "windows_terminator"),
+                attribution.class_name(),
+            );
+            // Attribution is additive: the existing diagnostics and grouping
+            // must be untouched.
+            assert_eq!(recorded_tag(capture, "windows_exit_status"), "0xFFFFFFFF");
+            assert_eq!(
+                recorded_tag(capture, "windows_exit_class"),
+                "indeterminate_status"
+            );
+            assert_eq!(
+                capture.fingerprint,
+                vec![
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:status-ffffffff",
+                    "none"
+                ],
+                "grouping continuity for HQ-DESKTOP-4M",
+            );
+            assert!(
+                effects
+                    .lifecycle
+                    .iter()
+                    .all(|(_, category)| *category == DaemonFailureCategory::Crash),
+                "an indeterminate status must never be downgraded to a benign exit",
+            );
+        }
+    }
+
+    /// The session-terminate lane owned by HQ-DESKTOP-4A must keep behaving
+    /// exactly as it does today.
+    #[test]
+    fn session_terminate_suppression_is_unchanged_by_the_widened_gate() {
+        let context = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            r"C:\Program Files\nodejs\npx.cmd",
+            None,
+            TerminationHost::Windows,
+            &context,
+        );
+        assert!(
+            effects.captures.is_empty(),
+            "an affirmed session end stays local-log-only",
+        );
+    }
+
+    /// HQ-DESKTOP-4M reported a flat 8MB working set on every event because the
+    /// registered/waited child was the `npx.cmd` shim, not the Node runner. The
+    /// capture must say which process the status and sample belong to.
+    #[test]
+    fn captures_label_the_watcher_child_and_its_rss_scope() {
+        for (command, child_kind, rss_scope) in [
+            (r"C:\Program Files\nodejs\npx.cmd", "cmd_shim", "shim"),
+            ("/opt/homebrew/bin/npx", "direct_executable", "runner"),
+            ("/usr/local/bin/node", "direct_executable", "runner"),
+        ] {
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(221),
+                None,
+                false,
+                false,
+                command,
+                None,
+                current_termination_host(),
+                &WatcherExitCaptureContext::default(),
+            );
+            let capture = effects.captures.first().expect("an unknown code captures");
+            assert_eq!(
+                recorded_string_extra(capture, "watcher_child_kind"),
+                child_kind,
+                "{command}",
+            );
+            assert_eq!(
+                recorded_string_extra(capture, "rss_scope"),
+                rss_scope,
+                "{command}",
+            );
+        }
+    }
+
     #[test]
     fn unknown_exit_handler_exposes_only_fixed_vocabulary_diagnostics() {
         let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
@@ -3203,6 +3618,8 @@ mod tests {
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             windows_terminator: None,
+            runner_exec_target: None,
+            runner_target_repair_attempted: false,
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3345,6 +3762,8 @@ mod tests {
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             windows_terminator: None,
+            runner_exec_target: None,
+            runner_target_repair_attempted: false,
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3587,24 +4006,32 @@ mod tests {
             .all(|(name, _)| *name != "windows_terminator"));
     }
 
+    /// An affirmed attribution may never suppress an exit shape it does not
+    /// own, and the `windows_terminator` tag may only appear on the two Windows
+    /// statuses that carry no provenance of their own: `DBG_TERMINATE_PROCESS`
+    /// and `0xFFFFFFFF` (widened for HQ-DESKTOP-4M). Everything else must stay
+    /// untagged, so attribution cannot leak onto an exit that already explains
+    /// itself.
     #[test]
-    fn affirmed_attribution_does_not_suppress_or_tag_any_other_exit_shape() {
+    fn affirmed_attribution_never_suppresses_and_tags_only_unattributable_statuses() {
         let context = WatcherExitCaptureContext {
             windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
             ..Default::default()
         };
         let cases = [
-            (Some(1), None, false),
-            (Some(2), None, false),
-            (Some(126), None, false),
-            (Some(127), None, false),
-            (Some(221), None, true),
-            (Some(0xC000_0409u32 as i32), None, true),
-            (Some(-1), None, true),
-            (Some(WINDOWS_SESSION_TERMINATE_EXIT), Some(9), true),
+            (Some(1), None, false, false),
+            (Some(2), None, false, false),
+            (Some(126), None, false, false),
+            (Some(127), None, false, false),
+            (Some(221), None, true, false),
+            (Some(0xC000_0409u32 as i32), None, true, false),
+            // 0xFFFFFFFF is captured *and* now carries its attribution.
+            (Some(-1), None, true, true),
+            // A signal means a POSIX host: no Windows attribution applies.
+            (Some(WINDOWS_SESSION_TERMINATE_EXIT), Some(9), true, false),
         ];
 
-        for (code, signal, should_capture) in cases {
+        for (code, signal, should_capture, should_tag) in cases {
             let mut effects = RecordingWatcherEffects::default();
             handle_watcher_exit_with_effects(
                 &mut effects,
@@ -3624,13 +4051,11 @@ mod tests {
                 "code={code:?} signal={signal:?}"
             );
             for capture in &effects.captures {
-                assert!(
-                    capture
-                        .tags
-                        .iter()
-                        .all(|(name, _)| name != "windows_terminator"),
-                    "code={code:?} signal={signal:?}"
-                );
+                let tagged = capture
+                    .tags
+                    .iter()
+                    .any(|(name, _)| name == "windows_terminator");
+                assert_eq!(tagged, should_tag, "code={code:?} signal={signal:?}");
             }
             if matches!(code, Some(1 | 2)) {
                 assert!(effects.logs.iter().any(|(_, message)| {
@@ -3859,6 +4284,8 @@ mod tests {
         let npx = runner_exec_provenance_extras(
             Some(126),
             r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+            None,
+            false,
         )
         .expect("exec exit gets provenance");
         assert!(npx.iter().any(|(key, value)| {
@@ -3869,17 +4296,44 @@ mod tests {
             !((*key == "runner_exec_target_exists" || *key == "runner_exec_target_executable")
                 && matches!(value, sentry::protocol::Value::Bool(_)))
         }));
+        // The exit status alone still infers nothing: with no probe result the
+        // pre-existing "unknown" vocabulary is retained.
         assert!(npx.iter().any(|(key, value)| {
             *key == "runner_exec_target_exists"
                 && value == &sentry::protocol::Value::String("unknown".to_string())
         }));
 
-        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node")
+        // A probe result — never the exit status — is what turns those facts
+        // into real values (HQ-DESKTOP-4K).
+        let probed = runner_exec_provenance_extras(
+            Some(126),
+            r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+            Some(RunnerTargetState::NotExecutable),
+            true,
+        )
+        .expect("exec exit gets provenance");
+        assert!(probed.iter().any(|(key, value)| {
+            *key == "runner_exec_target_exists"
+                && value == &sentry::protocol::Value::String("true".to_string())
+        }));
+        assert!(probed.iter().any(|(key, value)| {
+            *key == "runner_exec_target_executable"
+                && value == &sentry::protocol::Value::String("false".to_string())
+        }));
+        assert!(probed.iter().any(|(key, value)| {
+            *key == "runner_target_repair_attempted"
+                && value == &sentry::protocol::Value::String("true".to_string())
+        }));
+
+        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node", None, false)
             .expect("exec exit gets provenance");
         assert!(local.iter().any(|(key, value)| {
             *key == "runner_exec_resolution"
                 && value == &sentry::protocol::Value::String("local_runner".to_string())
         }));
+
+        // Non-exec exits still carry no provenance at all.
+        assert!(runner_exec_provenance_extras(Some(221), "/opt/dev/node", None, false).is_none());
     }
 
     #[test]
