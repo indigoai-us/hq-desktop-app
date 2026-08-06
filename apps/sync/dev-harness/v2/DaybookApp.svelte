@@ -1065,8 +1065,9 @@
   /* Status tags: light tint fill + light border, toned ink. */
   .pill.inst { color: var(--ok-ink); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
   .pill.upd { color: var(--warn-ink); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
-  /* Get = standard primary small. */
-  .pill.get { font-family: var(--font-ui); font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 6px; padding: 3px 10px; }
+  /* Get = standard primary small (hover dims like every primary). */
+  .pill.get { font-family: var(--font-ui); font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: opacity 0.15s; }
+  .pill.get:hover { opacity: 0.88; }
 
   /* ═══════════ Sync ═══════════ */
   .syncview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-width: 760px; }
