@@ -3618,6 +3618,8 @@ mod tests {
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             windows_terminator: None,
+            runner_exec_target: None,
+            runner_target_repair_attempted: false,
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3760,6 +3762,8 @@ mod tests {
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             windows_terminator: None,
+            runner_exec_target: None,
+            runner_target_repair_attempted: false,
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -4274,6 +4278,8 @@ mod tests {
         let npx = runner_exec_provenance_extras(
             Some(126),
             r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+            None,
+            false,
         )
         .expect("exec exit gets provenance");
         assert!(npx.iter().any(|(key, value)| {
@@ -4284,17 +4290,44 @@ mod tests {
             !((*key == "runner_exec_target_exists" || *key == "runner_exec_target_executable")
                 && matches!(value, sentry::protocol::Value::Bool(_)))
         }));
+        // The exit status alone still infers nothing: with no probe result the
+        // pre-existing "unknown" vocabulary is retained.
         assert!(npx.iter().any(|(key, value)| {
             *key == "runner_exec_target_exists"
                 && value == &sentry::protocol::Value::String("unknown".to_string())
         }));
 
-        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node")
+        // A probe result — never the exit status — is what turns those facts
+        // into real values (HQ-DESKTOP-4K).
+        let probed = runner_exec_provenance_extras(
+            Some(126),
+            r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+            Some(RunnerTargetState::NotExecutable),
+            true,
+        )
+        .expect("exec exit gets provenance");
+        assert!(probed.iter().any(|(key, value)| {
+            *key == "runner_exec_target_exists"
+                && value == &sentry::protocol::Value::String("true".to_string())
+        }));
+        assert!(probed.iter().any(|(key, value)| {
+            *key == "runner_exec_target_executable"
+                && value == &sentry::protocol::Value::String("false".to_string())
+        }));
+        assert!(probed.iter().any(|(key, value)| {
+            *key == "runner_target_repair_attempted"
+                && value == &sentry::protocol::Value::String("true".to_string())
+        }));
+
+        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node", None, false)
             .expect("exec exit gets provenance");
         assert!(local.iter().any(|(key, value)| {
             *key == "runner_exec_resolution"
                 && value == &sentry::protocol::Value::String("local_runner".to_string())
         }));
+
+        // Non-exec exits still carry no provenance at all.
+        assert!(runner_exec_provenance_extras(Some(221), "/opt/dev/node", None, false).is_none());
     }
 
     #[test]
