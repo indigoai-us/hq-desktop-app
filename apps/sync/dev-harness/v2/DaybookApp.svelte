@@ -916,7 +916,8 @@
   .row.unread .name { font-weight: 500; color: var(--t1); }
   /* Company tag on rows while the daybook aggregates all companies. */
   .row-co { flex-shrink: 0; font-size: 9px; letter-spacing: 0.06em; color: var(--t3); }
-  .badge { margin-left: auto; flex-shrink: 0; font-size: 10px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 8px; padding: 1px 6px; }
+  /* Single digits render as a perfect 16px circle; longer counts grow into a pill. */
+  .badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 16px; height: 16px; margin-left: auto; flex-shrink: 0; font-size: 10px; font-weight: 500; line-height: 1; color: var(--badge-fg); background: var(--ice-ink); border-radius: 999px; padding: 0 5px; }
   .pulse { margin-left: auto; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--ice-ink); }
   .hist { display: flex; align-items: center; gap: 8px; padding: 8px; margin-top: 8px; color: var(--t2); font-weight: 500; font-size: 12px; border-radius: 8px; width: 100%; }
   .hist:hover { background: var(--hover); }
