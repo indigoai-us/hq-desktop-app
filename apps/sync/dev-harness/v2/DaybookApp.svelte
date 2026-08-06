@@ -727,7 +727,7 @@
         <button class="sub-item" onclick={() => nav('marketplace')}>engineering<span class="p-meta mono">v2.1</span></button>
         <button class="sub-item" onclick={() => nav('marketplace')}>design-styles<span class="p-meta mono new">v3.0 · NEW</span></button>
         <button class="sub-item" onclick={() => nav('marketplace')}>parker<span class="p-meta mono">v1.4</span></button>
-        <button class="sub-item accent strong" onclick={() => nav('marketplace')}>Open marketplace <ArrowRight size={11} weight="bold" /></button>
+        <button class="sub-item muted" onclick={() => nav('marketplace')}>Open marketplace <ArrowRight size={11} /></button>
       {/if}
     </div>
   </div>
@@ -1059,7 +1059,11 @@
   .panel.open { display: flex; }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
-  .filter-panel { top: 96px; left: 250px; width: 230px; }
+  /* Compact menu: tight rows, narrow check column, small width. */
+  .filter-panel { top: 96px; left: 250px; width: 185px; min-width: 0; padding: 6px; gap: 0; }
+  .filter-panel .p-item { padding: 5px 8px; gap: 7px; font-size: 12px; }
+  .filter-panel .p-item .pi { width: 13px; }
+  .filter-panel .p-sec { padding: 5px 8px 2px; }
   .user-panel { bottom: 56px; left: 14px; width: 220px; }
   .p-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--t1); width: 100%; }
   .p-item:hover { background: var(--hover); }
@@ -1088,8 +1092,11 @@
   .packs-toggle { padding: 8px 10px; }
   .packs-toggle:hover { background: transparent; }
   .packs-title { font-weight: 500; color: var(--t1); }
-  .sub-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 34px; font-size: 12px; color: var(--t1); width: 100%; border-radius: 6px; }
+  /* Side gutter keeps the sub-row hover pill inset from the box edges. */
+  .sub-item { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 4px 8px 4px 28px; font-size: 12px; color: var(--t1); width: calc(100% - 12px); border-radius: 6px; }
   .sub-item:hover { background: var(--hover); }
+  .sub-item.muted { color: var(--t3); }
+  .sub-item.muted:hover { color: var(--t1); }
   .accent { color: var(--ice-ink); }
   .strong { font-weight: 500; }
   .progress { flex: 1; height: 4px; border-radius: 2px; background: var(--line2); overflow: hidden; display: flex; }
