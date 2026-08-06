@@ -305,17 +305,17 @@
   let openPanel = $state<string | null>(null);
   let packsOpen = $state(false);
   let sortMode = $state<'chrono' | 'type'>('chrono');
-  let filterTypes = $state<Record<string, boolean>>({ project: true, channel: true, dm: true, group: true });
+  let filterTypes = $state<Record<string, boolean>>({ project: true, dm: true, group: true });
   const FILTER_KINDS: [string, string][] = [
     ['project', 'Project channels'],
-    ['channel', 'Channels'],
     ['dm', 'DMs'],
     ['group', 'Groups'],
   ];
-  /** A group message is a DM with more than one peer. */
+  /** A group message is a DM with more than one peer; every # channel —
+   *  project-backed or not — filters as one kind. */
   function rowKind(c: Channel): string {
     if (c.type === 'dm') return c.sub.includes('group') ? 'group' : 'dm';
-    return c.type;
+    return 'project';
   }
   let search = $state('');
   let moreCompanies = $state(false);
