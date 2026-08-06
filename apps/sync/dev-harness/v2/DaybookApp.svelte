@@ -24,6 +24,8 @@
     CaretUp,
     ChatCircle,
     Check,
+    CheckCircle,
+    Circle,
     FileText,
     FunnelSimple,
     GearSix,
@@ -327,6 +329,50 @@
   /** Collapsed strip shows this many company pills; the rest fold into +N. */
   const COLLAPSED_COMPANIES = 2;
   let composerText = $state('');
+
+  /* ── Story detail ── */
+  type Story = { title: string; sub: string; cls: string; col: string };
+  let openStory = $state<Story | null>(null);
+  /** Per-story detail; unknown stories fall back to a generic shape. */
+  const STORY_DETAIL: Record<string, { who: string; desc: string; acs: [string, boolean][]; events: [string, string, string][] }> = {
+    'US-002': {
+      who: 'Desktop Agent',
+      desc: 'Group the daybook sidebar by day so the most recent conversations sit on top, with older days folding away as they age.',
+      acs: [
+        ['Rows group under TODAY / YESTERDAY / weekday headers', true],
+        ['Groups merge across companies when scope is All', true],
+        ['Days older than a week collapse into Last week', false],
+        ['Pinned rows stay above every day group', false],
+      ],
+      events: [
+        ['Desktop Agent', 'started this run', '9:14 AM'],
+        ['Desktop Agent', 'pushed 4 commits to feat/unified-shell', '9:22 AM'],
+        ['Bryan', 'left a comment', '9:26 AM'],
+      ],
+    },
+    'US-005': {
+      who: 'Corey',
+      desc: 'Fold Sync, Library, and Packs into a single Core dropdown so the title bar keeps one system-level entry point.',
+      acs: [
+        ['Core menu opens from the title bar', true],
+        ['Packs expand inline inside the menu', true],
+        ['Menu rows share one condensed row standard', false],
+      ],
+      events: [
+        ['Corey', 'moved this to design review', '8:40 AM'],
+        ['Corey', 'attached concept-a-daybook.png', '8:41 AM'],
+      ],
+    },
+  };
+  const GENERIC_DETAIL = {
+    who: 'Unassigned',
+    desc: 'No description yet — add one from the story panel or the CLI.',
+    acs: [['Acceptance criteria not written yet', false]] as [string, boolean][],
+    events: [['Build Agent', 'created this story', 'Aug 1']] as [string, string, string][],
+  };
+  const storyId = $derived(openStory ? openStory.title.split(' · ')[0] : '');
+  const storyName = $derived(openStory ? openStory.title.split(' · ').slice(1).join(' · ') : '');
+  const storyDetail = $derived(STORY_DETAIL[storyId] ?? GENERIC_DETAIL);
 
   /* ── Notifications ── */
   type Notif = {
@@ -681,13 +727,52 @@
           </div>
           <div class="content">
             {#if tab === 'board'}
-              {#if chan.board}
+              {#if openStory}
+                <div class="story-detail">
+                  <div class="sd-head">
+                    <button class="back-btn" onclick={() => (openStory = null)}><ArrowLeft size={12} weight="bold" /> Board</button>
+                    <span class="sd-id mono">{storyId}</span>
+                    <span class="sd-title">{storyName}</span>
+                    <span class="pill push-right" class:inst={openStory.cls === 'ok'} class:upd={openStory.cls === 'warn'}>{openStory.sub}</span>
+                  </div>
+
+                  <p class="sd-desc">{storyDetail.desc}</p>
+
+                  <div class="sd-meta">
+                    {#each [['Column', openStory.col], ['Assignee', storyDetail.who], ['Project', chan.title.replace('# ', '')], ['Branch', 'feat/unified-shell']] as [k, v] (k)}
+                      <div class="sd-kv"><span class="sd-k mono">{k}</span><span class="sd-v">{v}</span></div>
+                    {/each}
+                  </div>
+
+                  <div class="grp"><span class="t mono">ACCEPTANCE CRITERIA</span><span class="d mono">{storyDetail.acs.filter(([, done]) => done).length}/{storyDetail.acs.length}</span></div>
+                  {#each storyDetail.acs as [text, done] (text)}
+                    <div class="ac-row" class:done>
+                      <span class="ac-mark">{#if done}<CheckCircle size={15} weight="fill" />{:else}<Circle size={15} />{/if}</span>
+                      <span class="ac-text">{text}</span>
+                    </div>
+                  {/each}
+
+                  <div class="grp"><span class="t mono">ACTIVITY</span></div>
+                  {#each storyDetail.events as [who, what, when] (what)}
+                    <div class="feed-event sd-event">
+                      <span class="fe-ic"><User size={11} /></span>
+                      <span class="fe-text"><span class="fe-who">{who}</span> {what}</span>
+                      <span class="fe-when mono">{when}</span>
+                    </div>
+                  {/each}
+
+                  <div class="sd-actions">
+                    <button class="chip" onclick={() => toast('Story would open in the project channel')}>Open in channel</button>
+                    <button class="chip g" onclick={() => toast('Diff would open')}>View diff</button>
+                  </div>
+                </div>
+              {:else if chan.board}
                 <div class="board">
                   {#each [['IN PROGRESS', chan.board.inprog], ['REVIEW', chan.board.review], ['DONE', chan.board.done]] as [name, items] (name)}
                     <div class="col">
                       <span class="colh mono">{name} · {(items as string[][]).length}</span>
                       {#each items as [t, s, cls] (t)}
-                        <button class="story" class:dim={name === 'DONE'} onclick={() => toast('Story detail would open')}>
+                        <button class="story" class:dim={name === 'DONE'} onclick={() => (openStory = { title: t, sub: s, cls, col: name as string })}>
                           <span class="st">{t}</span>
                           <span class="ss mono" class:ok={cls === 'ok'} class:warn={cls === 'warn'}>{s}</span>
                         </button>
@@ -1548,6 +1633,27 @@
   .plat-row { display: flex; gap: 6px; }
   .okc { font-size: 10px; color: var(--ok-ink); }
   .set-row .sd.mono { font-size: 11px; }
+
+  /* ── Story detail ── */
+  .story-detail { flex: 1; padding: 20px 24px 24px; overflow: auto; display: flex; flex-direction: column; }
+  .sd-head { display: flex; align-items: center; gap: 10px; padding-bottom: 14px; }
+  .sd-id { font-size: 11px; color: var(--t3); }
+  .sd-title { font-size: 15px; font-weight: 600; color: var(--t1); }
+  .sd-desc { margin: 0; font-size: 13px; line-height: 20px; color: var(--t2); }
+  /* Meta reads as a quiet key/value strip, not another card stack. */
+  .sd-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 20px; margin-top: 16px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
+  .sd-kv { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .sd-k { font-size: 9px; letter-spacing: 0.1em; color: var(--t3); text-transform: uppercase; }
+  .sd-v { font-size: 12px; color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .story-detail .grp { padding: 18px 2px 6px; }
+  .ac-row { display: flex; align-items: center; gap: 10px; padding: 7px 2px; }
+  .ac-mark { display: flex; align-items: center; color: var(--t3); }
+  .ac-row.done .ac-mark { color: var(--ok-ink); }
+  .ac-text { font-size: 13px; color: var(--t2); }
+  .ac-row.done .ac-text { color: var(--t3); text-decoration: line-through; }
+  .sd-event { margin: 0; padding: 3px 0; }
+  .sd-event .fe-ic { width: 20px; }
+  .sd-actions { display: flex; gap: 8px; margin-top: 22px; }
 
   /* ── Notifications ── */
   /* Naked icon button for the title bar; a dot marks unread. */
