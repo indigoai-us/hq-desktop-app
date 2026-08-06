@@ -160,14 +160,29 @@ fn npx_materialization_error(code: Option<i32>, stderr: &str) -> String {
     }
 }
 
+/// Run `body` while holding the shared npx-cache materialization lock.
+///
+/// Exposed so the runner-target repair in [`crate::runner_target`] mutates the
+/// same shared `_npx` tree under the same cross-process advisory lock, instead
+/// of racing a concurrent materialization from another HQ window. Callers must
+/// not nest: the lock is per-open-file-description, so a nested acquire would
+/// block against itself until the bounded wait expires.
+pub fn with_materialization_lock<T>(body: impl FnOnce() -> T) -> Result<T, String> {
+    let lock_path = materialization_lock_path()?;
+    let _lock = acquire_materialization_lock_in(&lock_path, MATERIALIZATION_LOCK_WAIT)?;
+    Ok(body())
+}
+
 /// Materialize the exact `hq-cloud` npx package under a cross-process lock.
 ///
 /// Foreground sync and the watch daemon call this before launching their real
 /// runner, while [`spawn_prewarm`] calls it in the background at startup. The
 /// lock guards only the short npx no-op, never the runner itself.
 pub fn materialize_hq_cloud_cache() -> Result<(), String> {
-    let lock_path = materialization_lock_path()?;
-    let _lock = acquire_materialization_lock_in(&lock_path, MATERIALIZATION_LOCK_WAIT)?;
+    with_materialization_lock(run_materialization_payload)?
+}
+
+fn run_materialization_payload() -> Result<(), String> {
     let npx = paths::resolve_bin("npx");
     let package_spec = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
     let path = paths::child_path();

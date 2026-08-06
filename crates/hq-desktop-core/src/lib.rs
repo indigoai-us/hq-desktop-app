@@ -41,6 +41,7 @@ pub mod recall_sdk;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod run_cli_provision;
+pub mod runner_target;
 pub mod scope_gate;
 pub mod sessions;
 pub mod settings;
