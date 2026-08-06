@@ -263,8 +263,8 @@
     ['design-styles', 'Brand packs and design tokens bound to deploys.', 'upd', 'v3.0 UPDATE'],
     ['parker', 'Creative iteration engine for short-form ads.', 'inst', 'v1.4 INSTALLED'],
     ['slack-bot', 'Run HQ agents inside your Slack workspace.', 'inst', 'v1.0 INSTALLED'],
-    ['accounting', 'Books, categorization, and monthly close helpers.', 'get', 'GET'],
-    ['secure-sidecar', 'Scoped secret access for untrusted workloads.', 'get', 'GET'],
+    ['accounting', 'Books, categorization, and monthly close helpers.', 'get', 'Get'],
+    ['secure-sidecar', 'Scoped secret access for untrusted workloads.', 'get', 'Get'],
   ];
 
   /* ═══════════ State ═══════════ */
@@ -1045,9 +1045,11 @@
   .pack .pd { font-size: 12px; color: var(--t2); line-height: 17px; flex: 1; }
   .pack .pf { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
   .pill { font-size: 10px; font-weight: 500; border-radius: 6px; padding: 2px 8px; }
-  .pill.inst { color: var(--ok-ink); border: 1px solid var(--ok-ink); }
-  .pill.get { color: var(--badge-fg); background: var(--ice-ink); }
-  .pill.upd { color: var(--warn-ink); border: 1px solid var(--warn-ink); }
+  /* Status tags: light tint fill + light border, toned ink. */
+  .pill.inst { color: var(--ok-ink); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .pill.upd { color: var(--warn-ink); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  /* Get = standard primary small. */
+  .pill.get { font-family: var(--font-ui); font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 6px; padding: 3px 10px; }
 
   /* ═══════════ Sync ═══════════ */
   .syncview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-width: 760px; }
