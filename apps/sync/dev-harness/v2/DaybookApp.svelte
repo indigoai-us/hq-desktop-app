@@ -609,7 +609,12 @@
             {/each}
           </div>
           <div class="lib-main">
-            <div class="lib-head"><input placeholder={`Search ${company.label}'s library — files, skills, workers…`} /></div>
+            <div class="lib-head">
+              <div class="search">
+                <span class="lead"><MagnifyingGlass size={13} /></span>
+                <input placeholder={`Search ${company.label}'s library — files, skills, workers…`} />
+              </div>
+            </div>
             <div class="listview">
               {#each LIBRARY.items[libCat] ?? [] as [i, n, m] (n)}
                 {@const Glyph = GLYPHS[i] ?? FileText}
@@ -698,7 +703,12 @@
           <span class="chan-title">All history</span>
           <span class="chan-sub">{histLabel} · every conversation, ever</span>
         </div>
-        <div class="lib-head hist-head"><input placeholder={`Search all of ${histLabel}'s history…`} /></div>
+        <div class="lib-head hist-head">
+          <div class="search">
+            <span class="lead"><MagnifyingGlass size={13} /></span>
+            <input placeholder={`Search all of ${histLabel}'s history…`} />
+          </div>
+        </div>
         <div class="listview">
           {#each scopeKeys as k (k)}
             {#each Object.entries(DATA[k].channels) as [id, c] (`${k}:${id}`)}
@@ -1020,7 +1030,14 @@
   .story.dim { opacity: 0.65; }
 
   /* ═══════════ Lists / library / market ═══════════ */
-  .listview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+  /* 16px pad + 4px always-reserved scrollbar gutter = the heads' 20px inset. */
+  /* No scrollbar-width here — it would override the 4px webkit bar and widen
+     the reserved gutter, breaking the shared 20px right edge. */
+  .listview { flex: 1; padding: 20px 16px 20px 20px; display: flex; flex-direction: column; gap: 8px; overflow: auto; scrollbar-gutter: stable; }
+  .listview::-webkit-scrollbar { width: 4px; }
+  .listview::-webkit-scrollbar-track { background: transparent; }
+  .listview::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+  .listview::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .lrow { display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; width: 100%; transition: background 0.12s, border-color 0.12s; }
   .lrow:hover { background: var(--btn-bg); border-color: var(--line2); }
   .lrow .fn { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1033,10 +1050,10 @@
   .lib-cat.on { background: var(--sel); color: var(--t1); font-weight: 500; }
   .lib-cat .c { margin-left: auto; font-size: 10px; color: var(--t3); }
   .lib-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* Right padding = listview's 16px + the 4px reserved scrollbar gutter, so
+     the search bar and the rows share one right edge. */
   .lib-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; }
   .lib-head.hist-head { padding: 16px 20px 0; }
-  .lib-head input { flex: 1; background: var(--raised); border: 1px solid var(--line2); border-radius: 8px; padding: 8px 12px; color: var(--t1); font: 400 12px var(--font-ui); outline: none; }
-  .lib-head input::placeholder { color: var(--t3); }
 
   .market { flex: 1; padding: 20px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; align-content: start; }
   .pack { display: flex; flex-direction: column; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
@@ -1063,7 +1080,7 @@
   .push-right { margin-left: auto; }
   .conflict { display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--warn) 8%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-radius: 10px; padding: 10px 14px; transition: opacity 0.2s; }
   .conflict.resolved { opacity: 0.4; pointer-events: none; }
-  .conflict-path { font-size: 12px; color: var(--t2); flex: 1; }
+  .conflict-path { font-size: 12px; color: var(--warn-ink); flex: 1; }
 
   /* ═══════════ Settings ═══════════ */
   .settings { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 10px; overflow: auto; max-width: 640px; }
