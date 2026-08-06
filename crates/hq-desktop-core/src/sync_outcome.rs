@@ -607,6 +607,44 @@ pub const WINDOWS_CONTROL_C_EXIT: i32 = -1073741510;
 /// namespace prevents another per-decimal Sentry issue.
 pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;
 
+/// Fixed-vocabulary attribution for the external Windows terminator status.
+///
+/// This remains typed until the app-facing Sentry boundary so policy decisions
+/// cannot accidentally be driven by an arbitrary string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsTerminatorAttribution {
+    SessionEndObserved,
+    Unattributed,
+    ObserverUnavailable,
+    ObserverFailed,
+}
+
+impl WindowsTerminatorAttribution {
+    /// Stable, content-safe token for logs and Sentry tags.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::SessionEndObserved => "session_end_observed",
+            Self::Unattributed => "unattributed",
+            Self::ObserverUnavailable => "observer_unavailable",
+            Self::ObserverFailed => "observer_failed",
+        }
+    }
+}
+
+/// A committed Windows session-end indication is relevant only while it is
+/// contemporaneous with the watcher exit. The strict comparison below makes
+/// exactly 20 seconds fail closed.
+pub const SESSION_END_AFFIRMATION_TTL_MS: u64 = 20_000;
+
+/// Whether a recorded committed session end is fresh enough to attribute a
+/// watcher `DBG_TERMINATE_PROCESS` exit to Windows teardown.
+pub fn session_end_affirms(affirmed_end_ms: Option<u64>, now_ms: u64) -> bool {
+    matches!(
+        affirmed_end_ms,
+        Some(stamp) if now_ms.saturating_sub(stamp) < SESSION_END_AFFIRMATION_TTL_MS
+    )
+}
+
 /// The raw Windows status `0xFFFFFFFF` represented as Rust's signed process
 /// exit code. A process can produce this value itself, and `TerminateProcess`
 /// lets its caller choose the exit code, so the status does not establish who
@@ -842,6 +880,24 @@ pub fn watcher_exit_capture_policy(
         // Unknown codes (including the observed 221) remain alertable until
         // their producer is identified; never guess a benign classification.
         _ => WatcherExitCapturePolicy::Capture,
+    }
+}
+
+/// Extend the existing watcher-exit policy with an affirmative-only session
+/// attribution. Every missing, failed, or stale attribution delegates to the
+/// established policy verbatim, so the observer can never hide an alert.
+pub fn watcher_exit_capture_policy_with_attribution(
+    code: Option<i32>,
+    signal: Option<i32>,
+    attribution: Option<WindowsTerminatorAttribution>,
+) -> WatcherExitCapturePolicy {
+    if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
+        && signal.is_none()
+        && attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
+    {
+        WatcherExitCapturePolicy::LocalLogOnly
+    } else {
+        watcher_exit_capture_policy(code, signal)
     }
 }
 
@@ -2608,6 +2664,58 @@ mod tests {
                 expected,
                 "code={code:?} signal={signal:?}"
             );
+        }
+    }
+
+    #[test]
+    fn session_end_affirmation_ttl_has_a_strict_twenty_second_boundary() {
+        assert_eq!(SESSION_END_AFFIRMATION_TTL_MS, 20_000);
+        assert!(session_end_affirms(Some(0), 19_999));
+        assert!(!session_end_affirms(Some(0), 20_000));
+        assert!(!session_end_affirms(Some(0), 20_001));
+        assert!(!session_end_affirms(None, 0));
+    }
+
+    #[test]
+    fn session_end_attribution_suppresses_only_the_affirmed_session_terminate_shape() {
+        let attributions = [
+            None,
+            Some(WindowsTerminatorAttribution::SessionEndObserved),
+            Some(WindowsTerminatorAttribution::Unattributed),
+            Some(WindowsTerminatorAttribution::ObserverUnavailable),
+            Some(WindowsTerminatorAttribution::ObserverFailed),
+        ];
+        let codes = [
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            Some(0xC000_0409u32 as i32),
+            Some(-1),
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(126),
+            Some(127),
+            Some(221),
+        ];
+
+        for attribution in attributions {
+            for code in codes {
+                for signal in [None, Some(9)] {
+                    let actual =
+                        watcher_exit_capture_policy_with_attribution(code, signal, attribution);
+                    let expected = if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
+                        && signal.is_none()
+                        && attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
+                    {
+                        WatcherExitCapturePolicy::LocalLogOnly
+                    } else {
+                        watcher_exit_capture_policy(code, signal)
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "code={code:?} signal={signal:?} attribution={attribution:?}"
+                    );
+                }
+            }
         }
     }
 
