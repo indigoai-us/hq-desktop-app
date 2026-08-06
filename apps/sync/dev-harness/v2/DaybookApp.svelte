@@ -1128,7 +1128,8 @@
   .progress { flex: 1; height: 4px; border-radius: 2px; background: var(--line2); overflow: hidden; display: flex; }
   .progress-fill { background: var(--ice-ink); }
   .avstack { display: flex; }
-  .avstack span { width: 22px; height: 22px; border-radius: 50%; background: var(--btn-bg); border: none; display: flex; align-items: center; justify-content: center; font: 600 9px var(--font-ui); color: var(--t1); }
+  /* Same fills as the thread avatars (line2 for humans, ice tile for AI). */
+  .avstack span { width: 22px; height: 22px; border-radius: 50%; background: var(--line2); border: none; display: flex; align-items: center; justify-content: center; font: 600 9px var(--font-ui); color: var(--t1); }
   .avstack span + span { margin-left: -5px; }
   .avstack .ai { background: var(--ice-tile); color: var(--ice-ink); font-size: 7px; font-weight: 600; }
 
