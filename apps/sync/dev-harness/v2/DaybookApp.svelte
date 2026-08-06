@@ -502,16 +502,16 @@
             <span class="chan-sub">{chan.sub}</span>
             {#if chan.type === 'project'}
               <div class="head-right">
-                {#if chan.status}
-                  <button class="status-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('status'); }}>
-                    <span class="dot" class:w={chan.status.dot === 'w'}></span>{chan.status.label} <span class="caret"><CaretDown size={10} weight="bold" /></span>
-                  </button>
-                {/if}
                 <div class="tabs">
                   {#each ['chat', 'board', 'files'] as t (t)}
                     <button class="tab" class:on={tab === t} onclick={() => (tab = t as typeof tab)}>{t[0].toUpperCase() + t.slice(1)}</button>
                   {/each}
                 </div>
+                {#if chan.status}
+                  <button class="status-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('status'); }}>
+                    <span class="dot" class:w={chan.status.dot === 'w'}></span>{chan.status.label} <span class="caret"><CaretDown size={10} weight="bold" /></span>
+                  </button>
+                {/if}
               </div>
             {/if}
           </div>
@@ -882,7 +882,7 @@
   .co-chip { display: inline-flex; border-radius: 999px; }
   .co-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--btn-bg); border: 1px solid transparent; font: 600 10px var(--font-ui); color: var(--t2); box-sizing: border-box; transition: border-color 0.12s; }
   .co-chip:hover .co-ava { border-color: var(--line2); color: var(--t1); }
-  .co-chip.active .co-ava { border-color: var(--border-active); color: var(--t1); }
+  .co-chip.active .co-ava { background: var(--ice-tile); border-color: var(--ice-ink); color: var(--ice-ink); }
   .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; }
   .co-chip.more:hover .co-ava { color: var(--t1); border-color: var(--border-active); }
 
@@ -951,7 +951,9 @@
   .msg { display: flex; gap: 12px; }
   .msg-body { min-width: 0; flex: 1; }
   .pav { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; background: var(--line2); display: flex; align-items: center; justify-content: center; font: 600 12px var(--font-ui); }
-  .pav.ai { background: var(--ice-tile); border: 1px solid var(--ice-ink); font-size: 10px; font-weight: 600; color: var(--ice-ink); }
+  /* Agent avatar: blue tint distinguishes it from humans; no ring, so it
+     doesn't read as a selected control. */
+  .pav.ai { background: var(--ice-tile); border: none; font-size: 10px; font-weight: 600; color: var(--ice-ink); }
   .who { font-weight: 600; font-size: 13px; }
   .who.ai { color: var(--ice-ink); }
   .when { font-size: 11px; color: var(--t3); margin-left: 8px; }
@@ -1078,8 +1080,11 @@
   .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 6px 10px 2px; }
   /* No horizontal padding on the box — the toggle's own 10px inset lines its
      icon/text up with the plain p-item rows above. */
-  .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 4px 0; margin-top: 4px; }
+  .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 4px 0; margin-top: 4px; transition: background 0.12s; }
+  /* Hovering the toggle brightens the box itself — no nested hover pill. */
+  .packs-box:has(.packs-toggle:hover) { background: var(--btn-bg); }
   .packs-toggle { padding: 8px 10px; }
+  .packs-toggle:hover { background: transparent; }
   .packs-title { font-weight: 500; color: var(--t1); }
   .sub-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 34px; font-size: 12px; color: var(--t1); width: 100%; border-radius: 6px; }
   .sub-item:hover { background: var(--hover); }
