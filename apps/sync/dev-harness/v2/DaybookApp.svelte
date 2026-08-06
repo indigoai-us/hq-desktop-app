@@ -930,7 +930,8 @@
   .chan-title { font-weight: 600; font-size: 15px; white-space: nowrap; }
   .chan-sub { font-size: 12px; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tabs { display: flex; gap: 2px; margin-left: 24px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
-  .tab { font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 12px; border-radius: 6px; }
+  .tab { font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 12px; border-radius: 6px; transition: color 0.12s; }
+  .tab:hover { color: var(--t1); }
   .tab.on { color: var(--t1); background: var(--sel); }
   .status-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
   .status-btn:hover { border-color: var(--line2); color: var(--t1); }
