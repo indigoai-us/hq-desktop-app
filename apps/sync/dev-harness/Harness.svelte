@@ -553,13 +553,18 @@
   }
 
 
-  /* V2 concept window: darker, colder glass than the v1 material. */
+  /* V2 concept window: darker, colder glass than the v1 material. No
+     window-level backdrop blur — nested backdrop-filters don't compose in
+     Chromium, and the in-app frosted dropdowns need theirs to sample the
+     window content. The near-opaque fill keeps the glass read. */
   .mac-window.v2-window {
-    background: rgba(250, 250, 252, 0.78);
+    background: rgba(250, 250, 252, 0.88);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   :global(html[data-force-theme='dark']) .mac-window.v2-window {
-    background: rgba(14, 14, 18, 0.82);
+    background: rgba(14, 14, 18, 0.9);
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.12),
       0 16px 48px rgba(0, 0, 0, 0.55);

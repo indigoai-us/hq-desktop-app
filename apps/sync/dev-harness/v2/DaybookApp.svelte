@@ -21,9 +21,9 @@
     BookOpen,
     CaretDown,
     CaretRight,
+    CaretUp,
     ChatCircle,
     Check,
-    DotsThree,
     FileText,
     FunnelSimple,
     GearSix,
@@ -268,7 +268,10 @@
   ];
 
   /* ═══════════ State ═══════════ */
-  let co = $state('indigo');
+  /** Company scope for the daybook list: 'all' aggregates every company. */
+  let coFilter = $state<'all' | string>('all');
+  /** Company owning the open channel (rows carry their company). */
+  let activeCo = $state('indigo');
   let view = $state<'channel' | 'library' | 'marketplace' | 'sync' | 'settings' | 'history'>('channel');
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
@@ -278,8 +281,12 @@
   let sortMode = $state<'chrono' | 'type'>('chrono');
   let filterTypes = $state<Record<string, boolean>>({ project: true, channel: true, dm: true });
   let search = $state('');
-  let railExpanded = $state(false);
-  let railTimer: ReturnType<typeof setTimeout> | undefined;
+  let moreCompanies = $state(false);
+  const EXTRA_COMPANIES: [string, string][] = [
+    ['LR', 'LiveRecover'],
+    ['KW', 'Keptwork'],
+    ['HM', 'Holler Mgmt'],
+  ];
   let composerText = $state('');
   let settingsToggles = $state([true, true, true, false, false]);
   let resolvedConflict = $state(false);
@@ -295,22 +302,45 @@
     toastTimer = setTimeout(() => (toastShown = false), 2200);
   }
 
-  const company = $derived(DATA[co]);
+  const company = $derived(DATA[activeCo]);
   const chan = $derived(company.channels[channelId] as Channel | undefined);
   const filterActive = $derived(Object.values(filterTypes).some((v) => !v));
+  /** Companies in the current daybook scope. */
+  const scopeKeys = $derived(coFilter === 'all' ? Object.keys(DATA) : [coFilter]);
 
-  function switchCompany(key: string) {
-    co = key;
-    channelId = DATA[key].pinned[0];
-    view = 'channel';
-    tab = 'chat';
-    openPanel = null;
+  type SideRow = { co: string; id: string };
+  const sidePinned = $derived(
+    scopeKeys.flatMap((k) => DATA[k].pinned.map((id) => ({ co: k, id }) as SideRow)),
+  );
+  /** Merge day groups across companies by date, newest first. */
+  const MONTHS: Record<string, number> = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
+  function dateRank(date: string): number {
+    const [m, d] = date.split(' ');
+    return (MONTHS[m] ?? 0) * 100 + (Number.parseInt(d, 10) || 0);
   }
-  function selectChannel(id: string) {
+  const sideDays = $derived.by(() => {
+    const byDate = new Map<string, { label: string; date: string; items: SideRow[] }>();
+    for (const k of scopeKeys) {
+      for (const d of DATA[k].days) {
+        const cur = byDate.get(d.date) ?? { label: d.label, date: d.date, items: [] };
+        // Relative labels win over weekday names for the same date.
+        if ((d.label === 'TODAY' || d.label === 'YESTERDAY') && cur.label !== 'TODAY') cur.label = d.label;
+        cur.items.push(...d.items.map((id) => ({ co: k, id }) as SideRow));
+        byDate.set(d.date, cur);
+      }
+    }
+    return [...byDate.values()].sort((a, b) => dateRank(b.date) - dateRank(a.date));
+  });
+
+  function toggleCompany(key: string) {
+    coFilter = coFilter === key ? 'all' : key;
+  }
+  function selectChannel(coKey: string, id: string) {
     view = 'channel';
+    activeCo = coKey;
     channelId = id;
     tab = 'chat';
-    const c = DATA[co].channels[id];
+    const c = DATA[coKey].channels[id];
     if (c) delete c.unread;
     openPanel = null;
   }
@@ -321,8 +351,8 @@
   function togglePanel(id: string) {
     openPanel = openPanel === id ? null : id;
   }
-  function rowVisible(id: string): boolean {
-    const c = DATA[co].channels[id];
+  function rowVisible(coKey: string, id: string): boolean {
+    const c = DATA[coKey].channels[id];
     if (!c) return false;
     if (!filterTypes[c.type]) return false;
     if (search && !c.title.toLowerCase().includes(search.toLowerCase())) return false;
@@ -372,27 +402,6 @@
   </div>
 
   <div class="body">
-    <!-- Company rail -->
-    <div
-      class="rail"
-      class:expanded={railExpanded}
-      role="navigation"
-      aria-label="Companies"
-      onmouseenter={() => { clearTimeout(railTimer); railExpanded = true; }}
-      onmouseleave={() => { railTimer = setTimeout(() => (railExpanded = false), 150); }}
-    >
-      {#each Object.entries(DATA) as [key, c] (key)}
-        <button class="rail-item" class:active={key === co} onclick={() => switchCompany(key)}>
-          <span class="avatar">{c.short}</span>
-          <span class="rail-label">{c.label}</span>
-        </button>
-      {/each}
-      <button class="rail-item rail-more" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('moreCos'); }}>
-        <span class="avatar"><DotsThree size={18} weight="bold" /></span>
-        <span class="rail-label">More companies</span>
-      </button>
-    </div>
-
     <!-- Daybook sidebar -->
     <div class="sidebar">
       <div class="search-row">
@@ -412,29 +421,66 @@
           <FunnelSimple size={14} />
         </button>
       </div>
+
+      <!-- Company scope strip: everything by default, click a circle to
+           filter, hover stretches the pill to the full name. -->
+      <div class="co-strip" role="group" aria-label="Filter by company">
+        {#each Object.entries(DATA) as [key, c] (key)}
+          <button
+            class="co-chip"
+            class:active={coFilter === key}
+            aria-pressed={coFilter === key}
+            title={c.label}
+            onclick={() => toggleCompany(key)}
+          >
+            <span class="co-ava">{c.short}</span>
+            <span class="co-name">{c.label}</span>
+          </button>
+        {/each}
+        {#if moreCompanies}
+          {#each EXTRA_COMPANIES as [short, label] (short)}
+            <button class="co-chip" title={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
+              <span class="co-ava">{short}</span>
+              <span class="co-name">{label}</span>
+            </button>
+          {/each}
+        {/if}
+        <button
+          class="co-chip more"
+          aria-expanded={moreCompanies}
+          title={moreCompanies ? 'Show less' : 'All companies'}
+          onclick={() => (moreCompanies = !moreCompanies)}
+        >
+          <span class="co-ava">{#if moreCompanies}<CaretUp size={12} weight="bold" />{:else}+{EXTRA_COMPANIES.length}{/if}</span>
+          <span class="co-name">{moreCompanies ? 'Show less' : 'More companies'}</span>
+        </button>
+      </div>
+
       <div class="side-scroll">
-        <div class="grp"><span class="t mono">PINNED</span></div>
-        {#each company.pinned as id (id)}
-          {@const c = company.channels[id]}
-          {#if c && rowVisible(id)}
-            <button class="row" class:sel={view === 'channel' && channelId === id} class:unread={!!c.unread} onclick={() => selectChannel(id)}>
+        {#snippet sideRow(r: SideRow)}
+          {@const c = DATA[r.co].channels[r.id]}
+          {#if c && rowVisible(r.co, r.id)}
+            <button
+              class="row"
+              class:sel={view === 'channel' && activeCo === r.co && channelId === r.id}
+              class:unread={!!c.unread}
+              onclick={() => selectChannel(r.co, r.id)}
+            >
               {#if c.type === 'dm'}<span class="av">{c.av ?? c.title[0]}</span>{:else}<span class="ico"><Hash size={13} /></span>{/if}
               <span class="name">{c.title.replace('# ', '')}</span>
+              {#if coFilter === 'all'}<span class="row-co mono">{DATA[r.co].short}</span>{/if}
               {#if c.unread}<span class="badge mono">{c.unread}</span>{:else if c.live}<span class="pulse"></span>{/if}
             </button>
           {/if}
+        {/snippet}
+        <div class="grp"><span class="t mono">PINNED</span></div>
+        {#each sidePinned as r (`${r.co}:${r.id}`)}
+          {@render sideRow(r)}
         {/each}
-        {#each company.days as d (d.label)}
+        {#each sideDays as d (d.date)}
           <div class="grp"><span class="t mono">{d.label}</span><span class="d mono">{d.date}</span></div>
-          {#each d.items as id (id)}
-            {@const c = company.channels[id]}
-            {#if c && rowVisible(id)}
-              <button class="row" class:sel={view === 'channel' && channelId === id} class:unread={!!c.unread} onclick={() => selectChannel(id)}>
-                {#if c.type === 'dm'}<span class="av">{c.av ?? c.title[0]}</span>{:else}<span class="ico"><Hash size={13} /></span>{/if}
-                <span class="name">{c.title.replace('# ', '')}</span>
-                {#if c.unread}<span class="badge mono">{c.unread}</span>{:else if c.live}<span class="pulse"></span>{/if}
-              </button>
-            {/if}
+          {#each d.items as r (`${r.co}:${r.id}`)}
+            {@render sideRow(r)}
           {/each}
         {/each}
         <button class="grp fold" onclick={() => toast('Last week would expand — 6 quiet conversations')}>
@@ -644,17 +690,20 @@
           </div>
         </div>
       {:else if view === 'history'}
+        {@const histLabel = coFilter === 'all' ? 'All companies' : DATA[coFilter].label}
         <div class="chan-head">
           <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">All history</span>
-          <span class="chan-sub">{company.label} · every conversation, ever</span>
+          <span class="chan-sub">{histLabel} · every conversation, ever</span>
         </div>
-        <div class="lib-head hist-head"><input placeholder={`Search all of ${company.label}'s history…`} /></div>
+        <div class="lib-head hist-head"><input placeholder={`Search all of ${histLabel}'s history…`} /></div>
         <div class="listview">
-          {#each Object.entries(company.channels) as [id, c] (id)}
-            <button class="lrow" onclick={() => selectChannel(id)}>
-              <span class="lrow-ic">{#if c.type === 'dm'}<ChatCircle size={15} />{:else}<Hash size={15} />{/if}</span><span class="fn">{c.title.replace('# ', '')}</span><span class="fm mono">{c.type.toUpperCase()}</span>
-            </button>
+          {#each scopeKeys as k (k)}
+            {#each Object.entries(DATA[k].channels) as [id, c] (`${k}:${id}`)}
+              <button class="lrow" onclick={() => selectChannel(k, id)}>
+                <span class="lrow-ic">{#if c.type === 'dm'}<ChatCircle size={15} />{:else}<Hash size={15} />{/if}</span><span class="fn">{c.title.replace('# ', '')}</span><span class="fm mono">{coFilter === 'all' ? `${DATA[k].short} · ` : ''}{c.type.toUpperCase()}</span>
+              </button>
+            {/each}
           {/each}
         </div>
       {/if}
@@ -725,14 +774,6 @@
     <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
   </div>
 
-  <!-- More companies -->
-  <div class="panel more-panel" class:open={openPanel === 'moreCos'}>
-    <div class="p-sec mono">ALL COMPANIES</div>
-    <button class="p-item" onclick={() => toast('LiveRecover would load (not in prototype data)')}><span class="pi mono">LR</span>LiveRecover</button>
-    <button class="p-item" onclick={() => toast('Keptwork would load (not in prototype data)')}><span class="pi mono">KW</span>Keptwork</button>
-    <button class="p-item accent" onclick={() => toast('Company switcher would open — 33 companies')}>See all 33 <ArrowRight size={11} weight="bold" /></button>
-  </div>
-
   <div class="toast" class:show={toastShown}>{toastMsg}</div>
 </div>
 
@@ -741,14 +782,13 @@
   .v2 {
     /* surfaces sit over the harness window glass, so they stay translucent */
     --window: transparent;
-    --rail-bg: rgba(0, 0, 0, 0.28);
     --side-bg: rgba(0, 0, 0, 0.12);
     --ground: rgba(255, 255, 255, 0.02);
     --raised: rgba(255, 255, 255, 0.05);
     --btn-bg: rgba(255, 255, 255, 0.07);
     --elevated: #1e1e24;
     --panel-bg: rgba(255, 255, 255, 0.1);
-    --panel-border: rgba(255, 255, 255, 0.16);
+    --panel-border: rgba(255, 255, 255, 0.09);
     --border-active: rgba(255, 255, 255, 0.3);
     --line: rgba(255, 255, 255, 0.07);
     --line2: rgba(255, 255, 255, 0.11);
@@ -780,14 +820,13 @@
   }
 
   .v2[data-theme='light'] {
-    --rail-bg: rgba(255, 255, 255, 0.32);
     --side-bg: rgba(255, 255, 255, 0.18);
     --ground: rgba(255, 255, 255, 0.35);
     --raised: rgba(0, 0, 0, 0.035);
     --btn-bg: rgba(0, 0, 0, 0.045);
     --elevated: #ffffff;
     --panel-bg: rgba(255, 255, 255, 0.78);
-    --panel-border: rgba(0, 0, 0, 0.1);
+    --panel-border: rgba(0, 0, 0, 0.06);
     --border-active: rgba(0, 0, 0, 0.3);
     --line: rgba(0, 0, 0, 0.08);
     --line2: rgba(0, 0, 0, 0.12);
@@ -837,18 +876,17 @@
 
   .body { flex: 1; display: flex; min-height: 0; }
 
-  /* ═══════════ Company rail ═══════════ */
-  .rail { width: 56px; flex-shrink: 0; background: var(--rail-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 10px; transition: width 0.18s ease; overflow: hidden; }
-  .rail.expanded { width: 180px; align-items: stretch; padding: 14px 10px; }
-  .rail-item { display: flex; align-items: center; gap: 10px; border-radius: 10px; justify-content: center; }
-  .rail.expanded .rail-item { justify-content: flex-start; padding: 4px 6px; }
-  .rail.expanded .rail-item:hover { background: var(--hover); }
-  .avatar { width: 34px; height: 34px; flex-shrink: 0; border-radius: 50%; background: var(--raised); display: flex; align-items: center; justify-content: center; font: 600 11px var(--font-ui); color: var(--t2); }
-  .rail-item.active .avatar { background: var(--ice-tile); border: 1.5px solid var(--ice-ink); color: var(--ice-ink); }
-  .rail-label { display: none; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
-  .rail.expanded .rail-label { display: block; }
-  .rail-item.active .rail-label { color: var(--t1); }
-  .rail-more .avatar { border: 1px dashed var(--line2); color: var(--t3); background: transparent; }
+  /* ═══════════ Company strip (under the search bar) ═══════════ */
+  .co-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .co-chip { display: inline-flex; align-items: center; border-radius: 999px; background: transparent; overflow: hidden; }
+  .co-chip:hover { background: var(--hover); }
+  .co-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--btn-bg); border: 1.5px solid transparent; font: 600 10px var(--font-ui); color: var(--t2); box-sizing: border-box; }
+  .co-chip.active .co-ava { background: var(--ice-tile); border-color: var(--ice-ink); color: var(--ice-ink); }
+  /* Hover stretches the circle into a pill with the full name. */
+  .co-name { max-width: 0; padding: 0; overflow: hidden; opacity: 0; white-space: nowrap; font-size: 12px; font-weight: 500; color: var(--t2); transition: max-width 0.18s ease, opacity 0.15s ease, padding 0.18s ease; }
+  .co-chip:hover .co-name, .co-chip:focus-visible .co-name { max-width: 140px; padding: 0 10px 0 7px; opacity: 1; }
+  .co-chip.active .co-name { color: var(--t1); }
+  .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; }
 
   /* ═══════════ Sidebar ═══════════ */
   .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; min-height: 0; }
@@ -876,8 +914,10 @@
   .row.sel { background: var(--sel); }
   .row .ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; color: var(--t3); }
   .row .av { width: 16px; height: 16px; flex-shrink: 0; border-radius: 50%; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
-  .row .name { font-size: 13px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .name { flex: 1; min-width: 0; font-size: 13px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
   .row.unread .name { font-weight: 500; color: var(--t1); }
+  /* Company tag on rows while the daybook aggregates all companies. */
+  .row-co { flex-shrink: 0; font-size: 9px; letter-spacing: 0.06em; color: var(--t3); }
   .badge { margin-left: auto; flex-shrink: 0; font-size: 10px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 8px; padding: 1px 6px; }
   .pulse { margin-left: auto; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--ice-ink); }
   .hist { display: flex; align-items: center; gap: 8px; padding: 8px; margin-top: 8px; color: var(--t2); font-weight: 500; font-size: 12px; border-radius: 8px; width: 100%; }
@@ -1009,8 +1049,7 @@
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
   .filter-panel { top: 96px; left: 250px; width: 230px; }
-  .user-panel { bottom: 56px; left: 70px; width: 220px; }
-  .more-panel { top: 220px; left: 64px; width: 230px; }
+  .user-panel { bottom: 56px; left: 14px; width: 220px; }
   .p-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--t1); width: 100%; }
   .p-item:hover { background: var(--hover); }
   .p-item.static { cursor: default; }
@@ -1022,14 +1061,14 @@
   .p-dim { color: var(--t2); font-size: 12px; }
   .p-meta { margin-left: auto; font-size: 10px; color: var(--t3); }
   .p-meta.new { color: var(--ice-ink); }
-  .p-card { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
+  .p-card { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: none; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
   .p-line { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--t2); }
   .p-line.head { font-size: 13px; color: var(--t1); font-weight: 500; }
   .p-line .v { font-size: 10px; color: var(--t1); }
   .p-line .okc { font-size: 10px; color: var(--ok-ink); }
   .upd-btn { margin-left: auto; font-size: 10px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 5px; padding: 2px 8px; }
   .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 6px 10px 2px; }
-  .packs-box { background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 6px; margin-top: 4px; }
+  .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 6px; margin-top: 4px; }
   .packs-toggle { padding: 6px 8px; }
   .packs-title { font-weight: 500; color: var(--t1); }
   .sub-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 34px; font-size: 12px; color: var(--t1); width: 100%; border-radius: 6px; }
