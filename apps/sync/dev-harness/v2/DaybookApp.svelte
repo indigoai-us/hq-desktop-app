@@ -1141,7 +1141,7 @@
   /* Side gutter keeps the sub-row hover pill inset from the box edges. */
   .sub-item { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 4px 8px 4px 28px; font-size: 12px; color: var(--t1); width: calc(100% - 12px); border-radius: 6px; }
   .sub-item:hover { background: var(--hover); }
-  .sub-item.muted { color: var(--t3); }
+  .sub-item.muted { color: color-mix(in srgb, var(--t1) 75%, transparent); }
   .sub-item.muted:hover { color: var(--t1); }
   .accent { color: var(--ice-ink); }
   .strong { font-weight: 500; }
