@@ -747,6 +747,8 @@
     --raised: rgba(255, 255, 255, 0.05);
     --btn-bg: rgba(255, 255, 255, 0.07);
     --elevated: #1e1e24;
+    --panel-bg: rgba(255, 255, 255, 0.1);
+    --panel-border: rgba(255, 255, 255, 0.16);
     --line: rgba(255, 255, 255, 0.07);
     --line2: rgba(255, 255, 255, 0.11);
     --t1: #f4f4f6;
@@ -783,6 +785,8 @@
     --raised: rgba(0, 0, 0, 0.035);
     --btn-bg: rgba(0, 0, 0, 0.045);
     --elevated: #ffffff;
+    --panel-bg: rgba(255, 255, 255, 0.78);
+    --panel-border: rgba(0, 0, 0, 0.1);
     --line: rgba(0, 0, 0, 0.08);
     --line2: rgba(0, 0, 0, 0.12);
     --t1: #1d1d1f;
@@ -992,7 +996,8 @@
   .toggle.on::after { left: 14px; }
 
   /* ═══════════ Panels ═══════════ */
-  .panel { position: absolute; background: var(--elevated); border: 1px solid var(--line2); border-radius: 12px; padding: 10px; box-shadow: var(--panel-shadow); display: none; flex-direction: column; gap: 2px; z-index: 50; min-width: 270px; }
+  /* Dropdowns float as frosted glass: translucent white over a backdrop blur. */
+  .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px; box-shadow: var(--panel-shadow); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); display: none; flex-direction: column; gap: 2px; z-index: 50; min-width: 270px; }
   .panel.open { display: flex; }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
@@ -1031,7 +1036,7 @@
   .avstack span + span { margin-left: -7px; }
   .avstack .ai { background: var(--ice-tile); color: var(--ice-ink); font-size: 7px; font-weight: 600; }
 
-  .toast { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--elevated); border: 1px solid var(--line2); border-radius: 10px; padding: 9px 16px; font-size: 12px; color: var(--t1); opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 99; white-space: nowrap; }
+  .toast { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 16px; font-size: 12px; color: var(--t1); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 99; white-space: nowrap; }
   .toast.show { opacity: 1; }
   .empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--t3); font-size: 13px; }
 </style>
