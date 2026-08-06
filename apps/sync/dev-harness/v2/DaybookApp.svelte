@@ -1037,19 +1037,20 @@
             <div class="set-row">
               <div class="co-row-id">
                 <span class="co-row-ava">{short}</span>
-                <div>
-                  <div class="sn">{label}</div>
-                  <div class="sd">{CO_ROLES[key] ?? 'Member'} · {coSync[key] ? 'Syncing to this Mac' : 'Not syncing here'}</div>
-                </div>
+                <span class="sn">{label}</span>
+                <span class="pill role">{CO_ROLES[key] ?? 'Member'}</span>
               </div>
-              <button
-                class="toggle push-right"
-                class:on={coSync[key]}
-                role="switch"
-                aria-checked={coSync[key]}
-                aria-label={`Sync ${label}`}
-                onclick={() => { coSync[key] = !coSync[key]; toast(coSync[key] ? `${label} will sync here` : `${label} stopped syncing here`); }}
-              ></button>
+              <div class="co-row-sync push-right">
+                <span class="sync-label" class:on={coSync[key]}>{coSync[key] ? 'Synced' : 'Local'}</span>
+                <button
+                  class="toggle"
+                  class:on={coSync[key]}
+                  role="switch"
+                  aria-checked={coSync[key]}
+                  aria-label={`Sync ${label}`}
+                  onclick={() => { coSync[key] = !coSync[key]; toast(coSync[key] ? `${label} will sync here` : `${label} stopped syncing here`); }}
+                ></button>
+              </div>
             </div>
           {/each}
 
@@ -1599,6 +1600,11 @@
   .prof-static { font-size: 12px; color: var(--t2); }
   .co-row-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); }
+  .pill.role { border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: transparent; color: var(--t3); }
+  /* Sync state reads as a word next to its switch. */
+  .co-row-sync { display: flex; align-items: center; gap: 10px; }
+  .sync-label { font-size: 12px; color: var(--t3); min-width: 44px; text-align: right; }
+  .sync-label.on { color: var(--ok-ink); }
 
   .toggle { margin-left: auto; width: 28px; height: 16px; border-radius: 999px; background: var(--line2); position: relative; flex-shrink: 0; transition: background 0.15s; }
   .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: left 0.15s; }
