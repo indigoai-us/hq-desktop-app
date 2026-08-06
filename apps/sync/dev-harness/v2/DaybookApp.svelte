@@ -450,6 +450,16 @@
       <!-- Company scope strip: everything by default, click a circle to
            filter, hover stretches the pill to the full name. -->
       <div class="co-strip" role="group" aria-label="Filter by company">
+        <button
+          class="co-chip"
+          class:active={coFilter === 'all'}
+          aria-pressed={coFilter === 'all'}
+          data-tip="Everything"
+          aria-label="All companies"
+          onclick={() => (coFilter = 'all')}
+        >
+          <span class="co-ava">All</span>
+        </button>
         {#each Object.entries(DATA) as [key, c] (key)}
           <button
             class="co-chip"
@@ -960,10 +970,10 @@
   /* Chips follow the secondary-button states: fill at rest, border on hover,
      brighter border + primary ink when selected. */
   .co-chip { display: inline-flex; border-radius: 999px; }
-  .co-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--btn-bg); border: 1px solid transparent; font: 600 10px var(--font-ui); color: var(--t2); box-sizing: border-box; transition: border-color 0.12s; }
+  .co-ava { display: flex; align-items: center; justify-content: center; height: 24px; padding: 0 10px; flex-shrink: 0; border-radius: 999px; background: var(--btn-bg); border: 1px solid transparent; font: 600 10px var(--font-ui); letter-spacing: 0.04em; color: var(--t2); box-sizing: border-box; transition: border-color 0.12s; }
   .co-chip:hover .co-ava { border-color: var(--line2); color: var(--t1); }
   .co-chip.active .co-ava { background: var(--ice-tile); border-color: var(--ice-ink); color: var(--ice-ink); }
-  .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; }
+  .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; padding: 0 8px; }
   .co-chip.more:hover .co-ava { color: var(--t1); border-color: var(--border-active); }
 
   /* ═══════════ Sidebar ═══════════ */
