@@ -989,7 +989,7 @@
   .side-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
   .side-scroll::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .grp { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; width: 100%; }
-  .grp .t { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--t2); }
+  .grp .t { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--t2); gap: 6px; }
   .grp .t.dim { color: var(--t3); }
   .grp .d { font-size: 10px; color: var(--t3); }
   .grp.fold:hover .t { color: var(--t1); }
@@ -1086,7 +1086,7 @@
   .chip.g { color: var(--t2); background: transparent; border-color: var(--line2); }
   .chip.g:hover { background: var(--hover); color: var(--t1); border-color: var(--line2); }
   /* Two-row composer: input on top, action bar (attach · emoji … send) below. */
-  .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 12px 10px 8px 14px; transition: border-color 0.12s; }
+  .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 12px 8px 8px 14px; transition: border-color 0.12s; }
   .composer:focus-within { border-color: var(--border-active); }
   /* Nudge the text to sit on the icon glyphs' optical left edge. */
   .composer input { width: 100%; min-width: 0; margin-left: -3px; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
@@ -1183,7 +1183,7 @@
 
   /* ═══════════ Panels ═══════════ */
   /* Dropdowns float as frosted glass: translucent white over a backdrop blur. */
-  .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px; box-shadow: var(--panel-shadow); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); display: none; flex-direction: column; gap: 2px; z-index: 50; min-width: 270px; }
+  .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 6px; box-shadow: var(--panel-shadow); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); display: none; flex-direction: column; gap: 0; z-index: 50; min-width: 270px; }
   .panel.open { display: flex; }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
@@ -1199,11 +1199,12 @@
   .user-panel { bottom: 56px; left: 10px; width: 260px; min-width: 0; padding: 6px; gap: 0; }
   .user-panel .p-item { padding: 6px 8px; gap: 8px; font-size: 12px; }
   .user-panel .p-item .pi { width: 14px; }
-  .p-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--t1); width: 100%; }
+  /* One condensed row standard across every dropdown. */
+  .p-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 12px; color: var(--t1); width: 100%; }
   .p-item:hover { background: var(--hover); }
   .p-item.static { cursor: default; }
   .p-item.static:hover { background: none; }
-  .p-item .pi { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; color: var(--t2); }
+  .p-item .pi { display: inline-flex; align-items: center; justify-content: center; width: 14px; flex-shrink: 0; color: var(--t2); }
   .p-item.kv { font-size: 11px; }
   .p-item .k { color: var(--t2); width: 52px; flex-shrink: 0; }
   .p-item .val { font-size: 11px; color: var(--t1); }
@@ -1217,17 +1218,17 @@
   .p-line .okc { font-size: 10px; color: var(--ok-ink); }
   .upd-btn { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border: none; border-radius: 6px; padding: 3px 10px; }
   .upd-btn:hover { opacity: 0.88; }
-  .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 6px 10px 2px; }
+  .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 5px 8px 2px; }
   /* No horizontal padding on the box — the toggle's own 10px inset lines its
      icon/text up with the plain p-item rows above. */
   .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 4px 0; margin-top: 4px; transition: background 0.12s; }
   /* Hovering the toggle brightens the box itself — no nested hover pill. */
   .packs-box:has(.packs-toggle:hover) { background: var(--btn-bg); }
-  .packs-toggle { padding: 8px 10px; }
+  .packs-toggle { padding: 8px; }
   .packs-toggle:hover { background: transparent; }
   .packs-title { font-weight: 500; color: var(--t1); }
   /* Side gutter keeps the sub-row hover pill inset from the box edges. */
-  .sub-item { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 4px 8px 4px 28px; font-size: 12px; color: var(--t1); width: calc(100% - 12px); border-radius: 6px; }
+  .sub-item { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 4px 8px 4px 24px; font-size: 12px; color: var(--t1); width: calc(100% - 12px); border-radius: 6px; }
   .sub-item:hover { background: var(--hover); }
   .sub-item.muted { color: color-mix(in srgb, var(--t1) 75%, transparent); }
   .sub-item.muted:hover { color: var(--t1); }
