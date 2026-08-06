@@ -327,9 +327,42 @@
   /** Collapsed strip shows this many company pills; the rest fold into +N. */
   const COLLAPSED_COMPANIES = 2;
   let composerText = $state('');
-  /** Settings → Default company picker. */
+
+  /* ── Settings (split view) — desktop-app concerns only; everything else
+     lives in HQ Console. Mirrors the production settings inventory. ── */
+  const SETTINGS_TABS: [string, string][] = [
+    ['general', 'General'],
+    ['sync', 'Sync'],
+    ['notifications', 'Notifications'],
+    ['appearance', 'Appearance'],
+    ['meetings', 'Meetings'],
+    ['updates', 'Updates'],
+  ];
+  let settingsTab = $state('general');
+  let prefs = $state<Record<string, boolean>>({
+    login: true,
+    dock: true,
+    menubar: true,
+    widget: true,
+    syncOnLaunch: false,
+    autoSync: true,
+    instantSync: true,
+    personalVault: true,
+    agentDone: true,
+    syncNotifs: true,
+    shareNotifs: true,
+    dmNotifs: true,
+    quietHours: false,
+    sounds: false,
+    meetingDetect: true,
+    autoUpdates: true,
+  });
   let defaultCo = $state('indigo');
-  let settingsToggles = $state([true, true, true, false, false]);
+  let recordCo = $state('indigo');
+  let themeChoice = $state<'system' | 'light' | 'dark'>('system');
+  let uiSize = $state<'compact' | 'default' | 'large'>('default');
+  let windowOpacity = $state(80);
+  let meetPlatforms = $state<Record<string, boolean>>({ Zoom: true, 'Google Meet': true, Teams: false });
   let resolvedConflict = $state(false);
   let feedEl = $state<HTMLElement | null>(null);
 
@@ -753,44 +786,122 @@
           <span class="chan-title">Settings</span>
           <span class="chan-sub">yours — moved here from the Core menu</span>
         </div>
-        <div class="settings">
-          {#each [
-            ['Launch at login', 'Start HQ when you sign in to your Mac'],
-            ['Menubar quick access', 'Keep the compact popover in the menu bar'],
-            ['Notify on agent completion', 'Ping when a run finishes or needs review'],
-            ['Quiet hours', 'Mute non-urgent notifications 6 PM – 8 AM'],
-            ['Sound effects', 'Subtle sends & completion sounds'],
-          ] as [n, d], i (n)}
-            <div class="set-row">
-              <div><div class="sn">{n}</div><div class="sd">{d}</div></div>
-              <button
-                class="toggle"
-                class:on={settingsToggles[i]}
-                role="switch"
-                aria-checked={settingsToggles[i]}
-                aria-label={n}
-                onclick={() => (settingsToggles[i] = !settingsToggles[i])}
-              ></button>
-            </div>
-          {/each}
+        {#snippet setToggle(key: string, name: string, desc: string)}
           <div class="set-row">
-            <div><div class="sn">Default company</div><div class="sd">Which company loads on launch</div></div>
+            <div><div class="sn">{name}</div><div class="sd">{desc}</div></div>
+            <button
+              class="toggle"
+              class:on={prefs[key]}
+              role="switch"
+              aria-checked={prefs[key]}
+              aria-label={name}
+              onclick={() => (prefs[key] = !prefs[key])}
+            ></button>
+          </div>
+        {/snippet}
+        {#snippet companySelect(panelId: string, value: string, name: string, desc: string, pick: (k: string) => void)}
+          <div class="set-row">
+            <div><div class="sn">{name}</div><div class="sd">{desc}</div></div>
             <div class="co-select-wrap push-right">
-              <button class="co-select" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('coPicker'); }}>
-                <span class="co-select-ava">{DATA[defaultCo].short}</span>{DATA[defaultCo].label}
+              <button class="co-select" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel(panelId); }}>
+                <span class="co-select-ava">{DATA[value].short}</span>{DATA[value].label}
                 <span class="caret"><CaretDown size={10} weight="bold" /></span>
               </button>
-              <div class="panel co-picker-panel" class:open={openPanel === 'coPicker'}>
+              <div class="panel co-picker-panel" class:open={openPanel === panelId}>
                 {#each Object.entries(DATA) as [key, c] (key)}
-                  <button
-                    class="p-item"
-                    onclick={() => { defaultCo = key; openPanel = null; toast(`${c.label} loads on launch now`); }}
-                  >
+                  <button class="p-item" onclick={() => { pick(key); openPanel = null; }}>
                     <span class="pi"><span class="co-select-ava">{c.short}</span></span>{c.label}
-                    <span class="p-meta">{#if defaultCo === key}<Check size={12} weight="bold" />{/if}</span>
+                    <span class="p-check">{#if value === key}<Check size={12} weight="bold" />{/if}</span>
                   </button>
                 {/each}
               </div>
+            </div>
+          </div>
+        {/snippet}
+        <div class="library">
+          <div class="lib-nav">
+            {#each SETTINGS_TABS as [k, label] (k)}
+              <button class="lib-cat" class:on={settingsTab === k} onclick={() => (settingsTab = k)}>{label}</button>
+            {/each}
+          </div>
+          <div class="lib-main">
+            <div class="settings">
+              {#if settingsTab === 'general'}
+                {@render setToggle('login', 'Launch at login', 'Start HQ when you sign in to your Mac')}
+                {@render setToggle('dock', 'Show in Dock', 'Keep HQ in the Dock and ⌘-Tab switcher')}
+                {@render setToggle('menubar', 'Menubar quick access', 'Keep the compact popover in the menu bar')}
+                {@render setToggle('widget', 'Desktop widget', 'Float the mini notifications widget on your desktop')}
+                {@render companySelect('coPicker', defaultCo, 'Default company', 'Which company loads on launch', (k) => { defaultCo = k; toast(`${DATA[k].label} loads on launch now`); })}
+              {:else if settingsTab === 'sync'}
+                <div class="set-row">
+                  <div><div class="sn">HQ folder</div><div class="sd mono">~/Documents/HQ</div></div>
+                  <button class="chip push-right" onclick={() => toast('Folder picker would open')}>Change…</button>
+                </div>
+                {@render setToggle('syncOnLaunch', 'Sync on launch', 'Run a sync when the app starts')}
+                {@render setToggle('autoSync', 'Auto-sync', 'Sync every few minutes in the background')}
+                {@render setToggle('instantSync', 'Instant sync', 'Push local edits within seconds')}
+                {@render setToggle('personalVault', 'Sync personal vault', 'Include personal HQ files in the fanout')}
+              {:else if settingsTab === 'notifications'}
+                {@render setToggle('agentDone', 'Agent completion', 'Ping when a run finishes or needs review')}
+                {@render setToggle('syncNotifs', 'Sync notifications', 'Notify when sync needs attention')}
+                {@render setToggle('shareNotifs', 'Share notifications', 'Show file-share activity from teammates')}
+                {@render setToggle('dmNotifs', 'DM notifications', 'Show direct messages as they arrive')}
+                {@render setToggle('quietHours', 'Quiet hours', 'Mute non-urgent notifications 6 PM – 8 AM')}
+                {@render setToggle('sounds', 'Sound effects', 'Subtle sends & completion sounds')}
+                <div class="set-row">
+                  <div><div class="sn">System permission</div><div class="sd">Not enabled yet — allow HQ to post alerts</div></div>
+                  <button class="upd-btn push-right" onclick={() => toast('macOS would ask for notification permission')}>Enable</button>
+                </div>
+              {:else if settingsTab === 'appearance'}
+                <div class="set-row">
+                  <div><div class="sn">Theme</div><div class="sd">Follow the system or pick one</div></div>
+                  <div class="tabs push-right">
+                    {#each [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']] as [k, label] (k)}
+                      <button class="tab" class:on={themeChoice === k} onclick={() => (themeChoice = k as typeof themeChoice)}>{label}</button>
+                    {/each}
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><div class="sn">Window opacity</div><div class="sd">How much desktop shows through the glass</div></div>
+                  <div class="range-wrap push-right">
+                    <input type="range" min="50" max="100" bind:value={windowOpacity} aria-label="Window opacity" />
+                    <span class="mono range-val">{windowOpacity}%</span>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><div class="sn">Interface size</div><div class="sd">Density of text and controls</div></div>
+                  <div class="tabs push-right">
+                    {#each [['compact', 'Compact'], ['default', 'Default'], ['large', 'Large']] as [k, label] (k)}
+                      <button class="tab" class:on={uiSize === k} onclick={() => (uiSize = k as typeof uiSize)}>{label}</button>
+                    {/each}
+                  </div>
+                </div>
+              {:else if settingsTab === 'meetings'}
+                {@render setToggle('meetingDetect', 'Meeting detection', 'Detect active meeting apps and surface recording actions')}
+                <div class="set-row">
+                  <div><div class="sn">Platforms</div><div class="sd">Which meeting apps are watched</div></div>
+                  <div class="plat-row push-right">
+                    {#each Object.keys(meetPlatforms) as p (p)}
+                      <button class="chip" class:g={!meetPlatforms[p]} aria-pressed={meetPlatforms[p]} onclick={() => (meetPlatforms[p] = !meetPlatforms[p])}>{p}</button>
+                    {/each}
+                  </div>
+                </div>
+                {@render companySelect('recPicker', recordCo, 'Recording company', 'Attribution for new recordings — changeable per recording', (k) => { recordCo = k; toast(`New recordings attribute to ${DATA[k].label}`); })}
+              {:else if settingsTab === 'updates'}
+                {@render setToggle('autoUpdates', 'Automatic updates', 'Install app, HQ Core, and CLI updates in the background')}
+                <div class="set-row">
+                  <div><div class="sn">Desktop app</div><div class="sd mono">v0.10.41</div></div>
+                  <button class="upd-btn push-right" onclick={() => toast('Update would download & install v0.10.43')}>Update</button>
+                </div>
+                <div class="set-row">
+                  <div><div class="sn">HQ Core</div><div class="sd mono">v0.10.43</div></div>
+                  <span class="mono okc push-right">Up to date</span>
+                </div>
+                <div class="set-row">
+                  <div><div class="sn">HQ CLI</div><div class="sd mono">v5.31.0</div></div>
+                  <span class="mono okc push-right">Up to date</span>
+                </div>
+              {/if}
             </div>
           </div>
         </div>
@@ -829,7 +940,7 @@
     </div>
     <button class="p-item" onclick={() => nav('sync')}><span class="pi"><ArrowsDownUp size={14} /></span>Sync &amp; conflicts</button>
     <button class="p-item" onclick={() => nav('library')}><span class="pi"><Books size={14} /></span>Library — explore your HQ</button>
-    <div class="packs-box">
+    <div class="packs-box" class:open={packsOpen}>
       <button class="p-item packs-toggle" onclick={(e) => { e.stopPropagation(); packsOpen = !packsOpen; }}>
         <span class="pi"><Package size={14} /></span><span class="packs-title">Packs</span>
         <span class="p-meta mono">4 INSTALLED {#if packsOpen}<CaretDown size={8} weight="bold" />{:else}<CaretRight size={8} weight="bold" />{/if}</span>
@@ -1233,6 +1344,15 @@
   .set-row { display: flex; align-items: center; gap: 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
   .set-row .sn { font-weight: 500; font-size: 13px; }
   .set-row .sd { font-size: 11px; color: var(--t3); margin-top: 2px; }
+  /* Settings controls beyond toggles: opacity slider, platform chips,
+     inline "Up to date" status. */
+  .range-wrap { display: flex; align-items: center; gap: 10px; }
+  .range-wrap input[type='range'] { width: 140px; accent-color: var(--ice-ink); }
+  .range-val { font-size: 10px; color: var(--t3); min-width: 32px; text-align: right; }
+  .plat-row { display: flex; gap: 6px; }
+  .okc { font-size: 10px; color: var(--ok-ink); }
+  .set-row .sd.mono { font-size: 11px; }
+
   .toggle { margin-left: auto; width: 28px; height: 16px; border-radius: 999px; background: var(--line2); position: relative; flex-shrink: 0; transition: background 0.15s; }
   .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: left 0.15s; }
   .toggle.on { background: var(--ok); }
@@ -1280,11 +1400,13 @@
   .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 5px 8px 2px; }
   /* No horizontal padding on the box — the toggle's own 10px inset lines its
      icon/text up with the plain p-item rows above. */
-  .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 4px 0; margin-top: 4px; transition: background 0.12s; }
-  /* Hovering the toggle brightens the box itself — no nested hover pill. */
-  .packs-box:has(.packs-toggle:hover) { background: var(--btn-bg); }
-  .packs-toggle { padding: 8px; }
-  .packs-toggle:hover { background: transparent; }
+  /* Collapsed, Packs is a plain menu row; expanding gives it the boxed
+     sub-list chrome. Hovering the open box brightens the whole box. */
+  .packs-box { border: none; border-radius: 10px; transition: background 0.12s; }
+  .packs-box.open { background: var(--raised); padding: 4px 0; margin-top: 4px; }
+  .packs-box.open .packs-toggle { padding: 8px; }
+  .packs-box.open .packs-toggle:hover { background: transparent; }
+  .packs-box.open:has(.packs-toggle:hover) { background: var(--btn-bg); }
   .packs-title { font-weight: 500; color: var(--t1); }
   /* Side gutter keeps the sub-row hover pill inset from the box edges. */
   .sub-item { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 4px 8px 4px 24px; font-size: 12px; color: var(--t1); width: calc(100% - 12px); border-radius: 6px; }
