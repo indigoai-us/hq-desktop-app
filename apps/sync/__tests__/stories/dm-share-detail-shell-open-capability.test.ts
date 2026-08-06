@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -163,6 +163,39 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
 
     const mail = renderMessageBodyMarkdown('<someone@example.com>');
     expect(mail).toMatch(/<a\s[^>]*href="mailto:someone@example\.com"[^>]*target="_blank"/);
+  });
+
+  it('confines the DM-markdown render surface to Conversation + ThreadPanel, and ThreadPanel to the granted messages window', () => {
+    // The grant set above is only complete while these are the sole renderers.
+    // If a future component starts rendering DM markdown — or mounts
+    // <ThreadPanel/> into a window that is not `messages` — this fails, forcing
+    // the author to confront the ACL instead of shipping the same denial into a
+    // new window.
+    const srcRoot = root('src');
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((name) => {
+        const full = `${dir}/${name}`;
+        if (statSync(full).isDirectory()) return walk(full);
+        return [full];
+      });
+    const sources = walk(srcRoot)
+      .filter((file) => !file.endsWith('.test.ts') && !file.endsWith('.test.mts'))
+      .map((file) => [file.slice(srcRoot.length + 1), readFileSync(file, 'utf8')] as const);
+
+    const renderers = sources
+      .filter(([relative, body]) => relative !== 'lib/messageMarkdown.ts' && body.includes('renderMessageBodyMarkdown'))
+      .map(([relative]) => relative)
+      .sort();
+    expect(renderers).toEqual([
+      'components/messaging/Conversation.svelte',
+      'components/messaging/ThreadPanel.svelte',
+    ]);
+
+    const threadPanelMounts = sources
+      .filter(([relative, body]) => relative.endsWith('.svelte') && /<ThreadPanel[\s/>]/.test(body))
+      .map(([relative]) => relative)
+      .sort();
+    expect(threadPanelMounts).toEqual(['components/messaging/MessagesShell.svelte']);
   });
 
   it('builds both windows under the labels the capabilities grant', () => {
