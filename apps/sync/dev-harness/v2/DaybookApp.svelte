@@ -541,7 +541,7 @@
                   bind:value={composerText}
                   onkeydown={(e) => { if (e.key === 'Enter') sendMessage(); }}
                 />
-                <button class="send mono" onclick={sendMessage}>SEND</button>
+                <button class="send" onclick={sendMessage}>Send</button>
               </div>
             {/if}
           </div>
@@ -820,8 +820,9 @@
   .l-r { background: #ff5f57; } .l-y { background: #febc2e; } .l-g { background: #28c840; }
   .brand { font-weight: 600; margin-left: 8px; }
   .date { font-size: 10px; letter-spacing: 0.08em; color: var(--t3); font-weight: 400; }
-  .core-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-weight: 500; font-size: 12px; color: var(--t2); }
-  .core-btn:hover { background: var(--hover); color: var(--t1); }
+  /* Standard secondary button: borderless fill at rest, border on hover. */
+  .core-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--raised); border: 1px solid transparent; border-radius: 8px; padding: 5px 10px; font-weight: 500; font-size: 12px; color: var(--t2); }
+  .core-btn:hover { border-color: var(--line2); color: var(--t1); }
   .caret { color: var(--t3); font-size: 10px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; flex-shrink: 0; }
   .dot.w { background: var(--warn); }
@@ -882,8 +883,8 @@
   .tabs { display: flex; gap: 2px; margin-left: 24px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
   .tab { font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 12px; border-radius: 6px; }
   .tab.on { color: var(--t1); background: var(--sel); }
-  .status-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--raised); border: 1px solid var(--line2); border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
-  .status-btn:hover { background: var(--hover); color: var(--t1); }
+  .status-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--raised); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
+  .status-btn:hover { border-color: var(--line2); color: var(--t1); }
   .back-btn { display: flex; align-items: center; gap: 6px; font-weight: 500; font-size: 12px; color: var(--t2); border: 1px solid var(--line2); border-radius: 8px; padding: 5px 10px; }
   .back-btn:hover { background: var(--hover); color: var(--t1); }
 
@@ -917,7 +918,8 @@
   .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 12px 14px; }
   .composer input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
   .composer input::placeholder { color: var(--t3); }
-  .send { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 6px; padding: 4px 12px; }
+  /* Standard-size primary button; text matches the secondary buttons. */
+  .send { flex-shrink: 0; font-size: 12px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 8px; padding: 5px 12px; }
   .send:hover { opacity: 0.88; }
 
   /* ═══════════ Board ═══════════ */
