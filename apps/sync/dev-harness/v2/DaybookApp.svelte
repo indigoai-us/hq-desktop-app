@@ -715,7 +715,7 @@
     <div class="p-card">
       <div class="p-line head"><span class="dot"></span> Sync healthy <span class="p-meta mono">2M AGO</span></div>
       <div class="p-line">HQ core <span class="v mono">v0.10.43</span> <span class="okc mono">NO DRIFT</span></div>
-      <div class="p-line">Desktop app <span class="v mono">v0.10.41</span> <button class="upd-btn mono" onclick={() => toast('Update would download & install v0.10.43')}>UPDATE</button></div>
+      <div class="p-line">Desktop app <span class="v mono">v0.10.41</span> <button class="upd-btn" onclick={() => toast('Update would download & install v0.10.43')}>Update</button></div>
     </div>
     <button class="p-item" onclick={() => nav('sync')}><span class="pi"><ArrowsDownUp size={14} /></span>Sync &amp; conflicts</button>
     <button class="p-item" onclick={() => nav('library')}><span class="pi"><Books size={14} /></span>Library — explore your HQ</button>
@@ -965,9 +965,16 @@
   .card .cs.tiny { font-size: 10px; }
   .card.filecard { align-self: flex-start; flex-direction: row; align-items: center; gap: 8px; padding: 8px 12px; }
   .actions { display: flex; gap: 8px; margin-top: 4px; }
-  .chip { font-weight: 500; font-size: 11px; color: var(--ice-ink); border: 1px solid var(--ice-ink); border-radius: 6px; padding: 3px 10px; }
-  .chip.g { color: var(--t2); border-color: var(--line2); }
-  .chip:hover { background: var(--hover); }
+  /* ── Small button standard ──
+     secondary small (.chip): standard secondary, smaller — fill, no border,
+       border on hover, brighter border on press.
+     tertiary small (.chip.g): border, no fill; slight fill on hover.
+     primary small (.upd-btn): standard primary, smaller. */
+  .chip { font-weight: 500; font-size: 11px; color: var(--t1); background: var(--btn-bg); border: 1px solid transparent; border-radius: 6px; padding: 3px 10px; }
+  .chip:hover { border-color: var(--line2); }
+  .chip:active { border-color: var(--border-active); }
+  .chip.g { color: var(--t2); background: transparent; border-color: var(--line2); }
+  .chip.g:hover { background: var(--hover); color: var(--t1); border-color: var(--line2); }
   /* Tight gutter: the Send button sets the height, 6px of air around it. */
   .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 6px 6px 6px 14px; }
   .composer input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
@@ -1066,7 +1073,8 @@
   .p-line.head { font-size: 13px; color: var(--t1); font-weight: 500; }
   .p-line .v { font-size: 10px; color: var(--t1); }
   .p-line .okc { font-size: 10px; color: var(--ok-ink); }
-  .upd-btn { margin-left: auto; font-size: 10px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 5px; padding: 2px 8px; }
+  .upd-btn { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border: none; border-radius: 6px; padding: 3px 10px; }
+  .upd-btn:hover { opacity: 0.88; }
   .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 6px 10px 2px; }
   .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 6px; margin-top: 4px; }
   .packs-toggle { padding: 6px 8px; }
