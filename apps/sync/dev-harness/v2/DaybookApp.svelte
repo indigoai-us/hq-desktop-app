@@ -1011,18 +1011,18 @@
   .board { flex: 1; display: flex; gap: 14px; padding: 20px; overflow: auto; }
   .col { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
   .colh { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--t2); }
-  .story { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px; width: 100%; }
-  .story:hover { border-color: var(--ice-ink); }
+  .story { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px; width: 100%; transition: background 0.12s, border-color 0.12s; }
+  .story:hover { background: var(--btn-bg); border-color: var(--line2); }
   .story .st { font-weight: 500; font-size: 13px; }
-  .story .ss { font-size: 11px; color: var(--t2); }
+  .story .ss { font-size: 10px; color: var(--t2); }
   .story .ss.ok { color: var(--ok-ink); }
   .story .ss.warn { color: var(--warn-ink); }
   .story.dim { opacity: 0.65; }
 
   /* ═══════════ Lists / library / market ═══════════ */
   .listview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
-  .lrow { display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; width: 100%; }
-  .lrow:hover { border-color: var(--ice-ink); }
+  .lrow { display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; width: 100%; transition: background 0.12s, border-color 0.12s; }
+  .lrow:hover { background: var(--btn-bg); border-color: var(--line2); }
   .lrow .fn { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lrow .fm { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--t3); }
 
@@ -1040,7 +1040,7 @@
 
   .market { flex: 1; padding: 20px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; align-content: start; }
   .pack { display: flex; flex-direction: column; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
-  .pack:hover { border-color: var(--ice-ink); }
+  .pack:hover { background: var(--btn-bg); border-color: var(--line2); }
   .pack .pn { font-weight: 600; font-size: 14px; }
   .pack .pd { font-size: 12px; color: var(--t2); line-height: 17px; flex: 1; }
   .pack .pf { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
