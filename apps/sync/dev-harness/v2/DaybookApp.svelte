@@ -1094,8 +1094,10 @@
   /* ═══════════ Lists / library / market ═══════════ */
   /* 16px pad + 4px always-reserved scrollbar gutter = the heads' 20px inset. */
   /* No scrollbar-width here — it would override the 4px webkit bar and widen
-     the reserved gutter, breaking the shared 20px right edge. */
-  .listview { flex: 1; padding: 20px 16px 20px 20px; display: flex; flex-direction: column; gap: 8px; overflow: auto; scrollbar-gutter: stable; }
+     the reserved gutter. 8px margin + 4px gutter + 8px padding keeps the rows
+     on the heads' 20px edge while the bar floats 8px off the pane edge,
+     matching the side pane's scrollbar. */
+  .listview { flex: 1; margin-right: 8px; padding: 20px 8px 20px 20px; display: flex; flex-direction: column; gap: 8px; overflow: auto; scrollbar-gutter: stable; }
   .listview::-webkit-scrollbar { width: 4px; }
   .listview::-webkit-scrollbar-track { background: transparent; }
   .listview::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
