@@ -36,7 +36,7 @@
 //! below make the existing behaviour safe; whether the push itself should
 //! exist is an owner decision tracked separately.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
@@ -44,8 +44,9 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::SecondsFormat;
+use chrono::{DateTime, SecondsFormat, Utc};
 use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::logfile::log;
@@ -76,31 +77,83 @@ static LAST_MIRROR_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// A still-broken working tree must remain visible to triage, but reporting it
 /// every mirror pass turns one actionable condition into an event flood. This
-/// keeps a repeated refusal to one banner every six hours per deleted-path set.
+/// keeps a sustained refusal to one banner every six hours **per HQ root**.
 const REFUSAL_COOLDOWN: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// A changing deletion set is a new condition, but it can churn while a tree
-/// is failing. Limit those new keys too so Sentry never receives one event per
-/// mirror pass.
-const REFUSAL_MIN_SPACING: Duration = Duration::from_secs(5 * 60);
+/// How many refusing passes an episode needs before it earns a Sentry event.
+///
+/// A single refusing pass is the dominant field shape and the least actionable:
+/// the mirror samples the tree mid-sync, between a delete and its restore, and
+/// the next pass is clean. [`MIN_MIRROR_INTERVAL`] already spaces passes at
+/// least 60s apart, so a condition that is actually real is confirmed within
+/// about a minute. Every refusal — confirmed or not — is still logged in full
+/// on the machine it happened on; only the Sentry channel waits.
+const REFUSAL_CONFIRM_OCCURRENCES: usize = 2;
 
-/// Mutable state for outbound bulk-delete-refusal reporting. It is intentionally
-/// in-memory: an app restart should re-arm the first banner without adding file
-/// I/O or another failure mode to the detached mirror thread.
-#[derive(Default)]
-struct RefusalReportState {
-    last_report_at: Option<Instant>,
-    reported_at_by_key: HashMap<String, Instant>,
-    refusals_since_last_report: usize,
+/// An episode with no refusing pass for this long is over — its root either
+/// recovered without the mirror observing it, or stopped being mirrored at all.
+///
+/// Deliberately longer than [`REFUSAL_COOLDOWN`]: a live episode refuses about
+/// once a minute, so this only ever collects abandoned entries, and the slack
+/// guarantees an episode can never be dropped at the very moment its cooldown
+/// re-arms (which would silently restart its confirmation gate instead).
+const REFUSAL_EPISODE_IDLE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// Ceiling on the depth-1 prefix histogram carried by a report, so a
+/// pathologically wide tree cannot inflate the payload.
+const REFUSAL_PREFIX_CAP: usize = 10;
+
+/// Deletions sitting directly at the repository root have no directory prefix.
+/// They are counted under this sentinel rather than under their own file name,
+/// which would be exactly the user data the payload must not carry.
+const ROOT_PREFIX_LABEL: &str = "<root>";
+
+/// One contiguous run of refusing mirror passes for a single HQ root.
+///
+/// The deletion digest is episode **data**, never part of the suppression key.
+/// Keying suppression on the digest (the first fix) meant a churning tree minted
+/// a never-before-seen key almost every pass — and a new key only had to clear a
+/// five-minute floor, so the flood came back one event per five minutes.
+#[derive(Debug, Clone)]
+struct RefusalEpisode {
+    opened_at: Instant,
+    last_refusal_at: Instant,
+    occurrences: usize,
+    distinct_sets: usize,
+    last_digest: String,
+    suppressed_since_report: usize,
+    reported_at: Option<Instant>,
 }
 
-/// Timestamps for each recently-reported condition plus the latest report,
-/// which imposes the cross-key spacing floor. Entries expire with the cooldown
-/// so a long-running app cannot grow this in-memory state without bound.
-/// Recover a poisoned lock so this observability path can never wedge the
-/// detached mirror thread.
-static LAST_REFUSAL_REPORT: LazyLock<Mutex<RefusalReportState>> =
-    LazyLock::new(|| Mutex::new(RefusalReportState::default()));
+/// Open refusal episodes, one per HQ root. A root that has not refused for a
+/// full cooldown has its entry dropped, so a long-lived app cannot grow this
+/// without bound. Recover a poisoned lock so this observability path can never
+/// wedge the detached mirror thread.
+static REFUSAL_EPISODES: LazyLock<Mutex<HashMap<String, RefusalEpisode>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Name of the per-root episode record. It lives inside the *resolved git
+/// directory*, beside this module's own `hq-sync-mirror.lock` — so `git add -A`
+/// can never see it, and it can never feed back into the very deletion
+/// accounting it describes.
+const REFUSAL_STATE_FILE: &str = "hq-sync-mirror-refusal.json";
+
+/// The slice of refusal state that has to outlive the process.
+///
+/// The first fix kept all of it in memory, on the reasoning that "an app restart
+/// should re-arm the first banner". On a fleet that shipped twelve releases in
+/// four days, that meant every auto-update re-armed every wedged install — which
+/// is what kept reopening the issue. Reversing that choice is the point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedRefusalState {
+    /// Wall clock, RFC3339: the cooldown anchor that survives a restart.
+    last_reported_at: String,
+    /// Snapshot of the episode that produced that report. Forensic only — it
+    /// never feeds the suppression decision.
+    episode_opened_at: String,
+    occurrences: usize,
+    distinct_sets: usize,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bulk-delete circuit breaker (ported from hq-cloud `share.ts`)
@@ -174,6 +227,45 @@ fn is_bulk_override_set() -> bool {
 struct StagedDeletions {
     count: usize,
     digest: String,
+    /// Depth-1 prefixes of the missing paths, most-frequent first and capped at
+    /// [`REFUSAL_PREFIX_CAP`].
+    prefixes: Vec<(String, usize)>,
+    /// How many distinct prefixes existed *before* the cap, so a truncated
+    /// histogram can never be misread as a complete one.
+    prefix_groups: usize,
+}
+
+/// Bound on a single rendered prefix, so one absurdly long directory name
+/// cannot dominate the payload.
+const PREFIX_LABEL_MAX_CHARS: usize = 64;
+
+/// Depth-1 path prefixes of a NUL-terminated Git path record set, ranked
+/// most-frequent first and capped. Returns `(ranked, distinct_before_cap)`.
+///
+/// Depth 1 **only**, deliberately: `companies/<slug>/<file>` renders as
+/// `companies`, so the payload carries the *shape* of the loss — which subtree
+/// went missing — without carrying a company slug, a file name, or any path
+/// separator. That is the distinction three triage rounds have lacked, at the
+/// only granularity that is safe to ship.
+fn deletion_prefixes(records: &[u8]) -> (Vec<(String, usize)>, usize) {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for path in records.split(|byte| *byte == 0).filter(|p| !p.is_empty()) {
+        // Git spells the separator `/` in its own output on every platform.
+        let label = match path.iter().position(|byte| *byte == b'/') {
+            Some(0) | None => ROOT_PREFIX_LABEL.to_string(),
+            Some(index) => String::from_utf8_lossy(&path[..index])
+                .chars()
+                .take(PREFIX_LABEL_MAX_CHARS)
+                .collect(),
+        };
+        *counts.entry(label).or_insert(0) += 1;
+    }
+    let distinct = counts.len();
+    let mut ranked: Vec<(String, usize)> = counts.into_iter().collect();
+    // Count descending, then name ascending, so the payload is deterministic.
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(REFUSAL_PREFIX_CAP);
+    (ranked, distinct)
 }
 
 /// Hash NUL-terminated Git path records after sorting their raw bytes. Git
@@ -194,22 +286,192 @@ fn deletion_set_digest(records: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Pure refusal-report decision. A first condition is always reported, an
-/// unchanged condition re-arms after [`REFUSAL_COOLDOWN`], and a never-before-
-/// reported path set re-arms after the shorter [`REFUSAL_MIN_SPACING`] floor.
-fn should_report_refusal(
-    last_for_key: Option<Instant>,
-    last_report_at: Option<Instant>,
-    now: Instant,
+/// What a refusal should do about the Sentry channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefusalReportAction {
+    /// Too few refusing passes so far — this still looks like a transient
+    /// mid-sync sample, so it stays in the local log only.
+    AwaitConfirmation,
+    /// Confirmed, but this root is inside its cooldown.
+    Suppress,
+    /// The first report of this episode.
+    ReportFirstConfirmed,
+    /// A sustained episode whose cooldown has now expired.
+    ReportCooldownRearm,
+}
+
+impl RefusalReportAction {
+    fn emits(self) -> bool {
+        matches!(
+            self,
+            RefusalReportAction::ReportFirstConfirmed | RefusalReportAction::ReportCooldownRearm
+        )
+    }
+
+    /// Tag value, so triage can tell a fresh condition from a still-wedged one.
+    fn source(self) -> &'static str {
+        match self {
+            RefusalReportAction::ReportCooldownRearm => "cooldown-rearm",
+            _ => "first-confirmed",
+        }
+    }
+}
+
+/// Pure refusal-report decision, over one HQ root's episode.
+///
+/// `since_last_report` is the elapsed time since the *later* of this root's two
+/// report anchors — the in-process monotonic one and the persisted wall-clock
+/// one — so neither an app restart nor a wall clock that moved can shorten the
+/// cooldown. Note what is deliberately absent: the deletion digest. A refusing
+/// tree churns, and keying on the churn is what produced the flood.
+fn decide_refusal_report(
+    occurrences: usize,
+    already_reported_in_episode: bool,
+    since_last_report: Option<Duration>,
+    confirm_after: usize,
     cooldown: Duration,
-    min_spacing: Duration,
-) -> bool {
-    match last_for_key {
-        Some(last_at) => now.duration_since(last_at) >= cooldown,
-        None => match last_report_at {
-            None => true,
-            Some(last_at) => now.duration_since(last_at) >= min_spacing,
-        },
+) -> RefusalReportAction {
+    if occurrences < confirm_after {
+        return RefusalReportAction::AwaitConfirmation;
+    }
+    match since_last_report {
+        None => RefusalReportAction::ReportFirstConfirmed,
+        Some(elapsed) if elapsed >= cooldown => {
+            if already_reported_in_episode {
+                RefusalReportAction::ReportCooldownRearm
+            } else {
+                RefusalReportAction::ReportFirstConfirmed
+            }
+        }
+        Some(_) => RefusalReportAction::Suppress,
+    }
+}
+
+/// Elapsed wall-clock time since a persisted stamp.
+///
+/// `None` for a stamp dated in the future — a clock that moved backwards, a
+/// timezone/DST jump, or a copied `.git` must **re-arm** the banner rather than
+/// latch it silent. Re-arming costs one extra event; latching loses the signal.
+fn elapsed_since_wall(reported_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<Duration> {
+    now.signed_duration_since(reported_at).to_std().ok()
+}
+
+/// The later of two report anchors is the *smaller* elapsed time. Expressed
+/// this way because a monotonic `Instant` and a wall-clock `DateTime` cannot be
+/// compared directly — only their distances from "now" can.
+fn later_report_elapsed(
+    in_memory: Option<Duration>,
+    persisted: Option<Duration>,
+) -> Option<Duration> {
+    match (in_memory, persisted) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
+}
+
+fn refusal_state_path(git_dir: &Path) -> PathBuf {
+    git_dir.join(REFUSAL_STATE_FILE)
+}
+
+/// Wall-clock stamp of this root's last report, or `None` when there is no
+/// usable one.
+///
+/// Missing, unreadable, unparsable and future-dated records all resolve to
+/// `None` — i.e. treat the cooldown as re-armed. Every failure is logged and
+/// swallowed: the mirror must never fail or stall because an observability file
+/// went bad.
+fn read_persisted_report_at(git_dir: &Path, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let path = refusal_state_path(git_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            if err.kind() != ErrorKind::NotFound {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "could not read {}: {err} — treating the refusal cooldown as re-armed",
+                        path.display()
+                    ),
+                );
+            }
+            return None;
+        }
+    };
+    let parsed: PersistedRefusalState = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{} is not readable refusal state ({err}) — treating the cooldown as re-armed",
+                    path.display()
+                ),
+            );
+            return None;
+        }
+    };
+    let reported_at = match DateTime::parse_from_rfc3339(&parsed.last_reported_at) {
+        Ok(at) => at.with_timezone(&Utc),
+        Err(err) => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{} carries an unparsable timestamp {:?} ({err}) — treating the cooldown as \
+                     re-armed",
+                    path.display(),
+                    parsed.last_reported_at
+                ),
+            );
+            return None;
+        }
+    };
+    // A stamp from the future means the clock moved backwards, a DST/timezone
+    // jump, or a copied `.git`. Re-arm rather than latch silent for what could
+    // be years.
+    if elapsed_since_wall(reported_at, now).is_none() {
+        log(
+            LOG_TAG,
+            &format!(
+                "{} is dated in the future ({}) — treating the cooldown as re-armed",
+                path.display(),
+                parsed.last_reported_at
+            ),
+        );
+        return None;
+    }
+    Some(reported_at)
+}
+
+/// Persist this root's report anchor via a same-directory temp file plus an
+/// atomic rename, so a crash or a second process can never observe a torn
+/// record. Callers hold the cross-process mirror lock, which is what makes the
+/// fixed temp file name safe.
+///
+/// Best-effort throughout: failing to persist costs exactly one re-armed banner.
+fn write_persisted_report_at(git_dir: &Path, state: &PersistedRefusalState) {
+    let path = refusal_state_path(git_dir);
+    let temp = git_dir.join(format!("{REFUSAL_STATE_FILE}.tmp"));
+    let encoded = match serde_json::to_string(state) {
+        Ok(encoded) => encoded,
+        Err(err) => {
+            log(LOG_TAG, &format!("could not encode refusal state: {err}"));
+            return;
+        }
+    };
+    if let Err(err) = fs::write(&temp, encoded) {
+        log(
+            LOG_TAG,
+            &format!("could not stage {}: {err}", temp.display()),
+        );
+        return;
+    }
+    if let Err(err) = fs::rename(&temp, &path) {
+        log(
+            LOG_TAG,
+            &format!("could not publish {}: {err}", path.display()),
+        );
+        let _ = fs::remove_file(&temp);
     }
 }
 
@@ -673,6 +935,9 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     match staged.status.code() {
         Some(0) => {
             log(LOG_TAG, &format!("{hq_folder}: nothing to commit"));
+            // A clean pass ends any refusal episode: the condition was
+            // transient, so the next one deserves its own confirmation.
+            note_mirror_recovered(hq_folder);
             return Ok(());
         }
         Some(1) => {} // staged changes — proceed to commit
@@ -685,7 +950,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
         None => return Err("git diff --cached killed by signal".to_string()),
     }
 
-    if guard_bulk_deletions(hq_folder)? == BulkDeleteVerdict::Refuse {
+    if guard_bulk_deletions(hq_folder, git_dir)? == BulkDeleteVerdict::Refuse {
         return Ok(());
     }
 
@@ -694,6 +959,8 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     let msg = format!("hq-sync: {now_iso}");
     run_git(hq_folder, &["commit", "-m", &msg], GIT_INDEX_TIMEOUT)?;
     log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
+    // The mirror committed, so this root is healthy again.
+    note_mirror_recovered(hq_folder);
 
     // No upstream → skip push. Covers detached HEAD, never-pushed branches,
     // and one-off forks. User runs `git push -u` once; later syncs push.
@@ -716,7 +983,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
 /// refusal the index is reset so nothing is left half-staged for the next
 /// writer, and the reason is logged loudly plus reported to Sentry — a guard
 /// that refuses silently only moves the mystery.
-fn guard_bulk_deletions(hq_folder: &str) -> Result<BulkDeleteVerdict, String> {
+fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkDeleteVerdict, String> {
     let deletions = count_staged_deletions(hq_folder)?;
     if deletions.count == 0 {
         return Ok(BulkDeleteVerdict::Allow);
@@ -752,7 +1019,13 @@ fn guard_bulk_deletions(hq_folder: &str) -> Result<BulkDeleteVerdict, String> {
         BULK_ASYMMETRY_MIN_ABS,
     );
     log(LOG_TAG, &reason);
-    report_bulk_refusal(hq_folder, &deletions.digest, deletions.count, tracked);
+    report_bulk_refusal(&RefusalReport {
+        hq_folder,
+        git_dir,
+        deletions: &deletions,
+        tracked,
+        has_upstream: repo_has_upstream(hq_folder),
+    });
 
     // Unstage everything so the refused deletions aren't left sitting in the
     // index for the next writer (ours or the autocommit hook) to commit. This
@@ -766,80 +1039,186 @@ fn guard_bulk_deletions(hq_folder: &str) -> Result<BulkDeleteVerdict, String> {
     Ok(BulkDeleteVerdict::Refuse)
 }
 
-/// One banner-grade signal per distinct refusal. B1 was found by reading `git
-/// log` after the fact; a refusal nobody hears about repeats that, but an
-/// unchanged refusal must not capture a new Sentry event once per mirror pass.
-fn report_bulk_refusal(hq_folder: &str, deletion_digest: &str, deletions: usize, tracked: usize) {
-    report_bulk_refusal_at(
-        hq_folder,
-        deletion_digest,
-        deletions,
-        tracked,
-        Instant::now(),
-    );
+/// Everything one refusing pass knows about itself. Grouped so the reporter's
+/// signature stays readable as the evidence set grows.
+struct RefusalReport<'a> {
+    hq_folder: &'a str,
+    /// Resolved git directory — where this root's episode record lives.
+    git_dir: &'a Path,
+    deletions: &'a StagedDeletions,
+    tracked: usize,
+    has_upstream: bool,
 }
 
+/// What the reporter decided, lifted out of the state lock so no Sentry work
+/// happens while the episode map is held.
+struct RefusalOutcome {
+    action: RefusalReportAction,
+    occurrences: usize,
+    distinct_sets: usize,
+    suppressed_since_report: usize,
+    episode_age: Duration,
+    since_last_report: Option<Duration>,
+    episode_opened_at_wall: DateTime<Utc>,
+}
+
+/// One banner-grade signal per HQ root per [`REFUSAL_COOLDOWN`]. B1 was found by
+/// reading `git log` after the fact, so a refusal nobody hears about repeats
+/// that — but a *sustained* refusal must not capture a new event per mirror
+/// pass, per churned deletion set, or per app restart.
+fn report_bulk_refusal(report: &RefusalReport<'_>) {
+    report_bulk_refusal_at(report, Instant::now(), Utc::now());
+}
+
+/// Returns whether an event was captured. Both clocks are injected so the gate
+/// is testable across a six-hour cooldown without waiting six hours.
 fn report_bulk_refusal_at(
-    hq_folder: &str,
-    deletion_digest: &str,
-    deletions: usize,
-    tracked: usize,
+    report: &RefusalReport<'_>,
     now: Instant,
-) {
-    // The separator cannot occur in a filesystem path. Including the folder
-    // means two independent HQ roots with the same missing paths each retain
-    // their own first-warning signal.
-    let key = format!("{hq_folder}\0{deletion_digest}");
-    let (should_report, refusals_since_last_report, last_report_age) = {
-        let mut state = LAST_REFUSAL_REPORT
+    wall_now: DateTime<Utc>,
+) -> bool {
+    // Read the persisted anchor before taking the lock: it is file I/O, and the
+    // episode map must never be held across it.
+    let persisted_report_at = read_persisted_report_at(report.git_dir, wall_now);
+
+    let outcome = {
+        let mut episodes = REFUSAL_EPISODES
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        state
-            .reported_at_by_key
-            .retain(|_, reported_at| now.duration_since(*reported_at) < REFUSAL_COOLDOWN);
-        let last_for_key = state.reported_at_by_key.get(&key).copied();
-        if should_report_refusal(
-            last_for_key,
-            state.last_report_at,
-            now,
+        // Collect abandoned episodes so a long-lived app cannot grow this map.
+        episodes.retain(|_, episode| {
+            now.duration_since(episode.last_refusal_at) < REFUSAL_EPISODE_IDLE_TTL
+        });
+
+        let episode = episodes
+            .entry(report.hq_folder.to_string())
+            .or_insert_with(|| RefusalEpisode {
+                opened_at: now,
+                last_refusal_at: now,
+                occurrences: 0,
+                distinct_sets: 0,
+                last_digest: String::new(),
+                suppressed_since_report: 0,
+                reported_at: None,
+            });
+
+        episode.last_refusal_at = now;
+        episode.occurrences += 1;
+        // A changed path set is recorded as evidence about this episode — it is
+        // explicitly *not* a new condition deserving its own banner.
+        if episode.distinct_sets == 0 || episode.last_digest != report.deletions.digest {
+            episode.distinct_sets += 1;
+            episode.last_digest.clone_from(&report.deletions.digest);
+        }
+
+        let since_last_report = later_report_elapsed(
+            episode.reported_at.map(|at| now.duration_since(at)),
+            persisted_report_at.and_then(|at| elapsed_since_wall(at, wall_now)),
+        );
+        let action = decide_refusal_report(
+            episode.occurrences,
+            episode.reported_at.is_some(),
+            since_last_report,
+            REFUSAL_CONFIRM_OCCURRENCES,
             REFUSAL_COOLDOWN,
-            REFUSAL_MIN_SPACING,
-        ) {
-            let suppressed = state.refusals_since_last_report;
-            state.reported_at_by_key.insert(key, now);
-            state.last_report_at = Some(now);
-            state.refusals_since_last_report = 0;
-            (true, suppressed, None)
+        );
+
+        let episode_age = now.duration_since(episode.opened_at);
+        let suppressed_since_report = if action.emits() {
+            let suppressed = episode.suppressed_since_report;
+            episode.reported_at = Some(now);
+            episode.suppressed_since_report = 0;
+            suppressed
         } else {
-            state.refusals_since_last_report += 1;
-            let age = state
-                .last_report_at
-                .map(|last_at| now.duration_since(last_at).as_secs())
-                .unwrap_or(0);
-            (false, state.refusals_since_last_report, Some(age))
+            episode.suppressed_since_report += 1;
+            episode.suppressed_since_report
+        };
+
+        RefusalOutcome {
+            action,
+            occurrences: episode.occurrences,
+            distinct_sets: episode.distinct_sets,
+            suppressed_since_report,
+            episode_age,
+            since_last_report,
+            // The wall-clock instant this episode opened, reconstructed from its
+            // monotonic age. Persisted as forensic context only.
+            episode_opened_at_wall: wall_now
+                - chrono::Duration::from_std(episode_age)
+                    .unwrap_or_else(|_| chrono::Duration::zero()),
         }
     };
 
-    if !should_report {
-        log(
-            LOG_TAG,
-            &format!(
-                "{hq_folder}: refusal already reported {}s ago; suppressing duplicate \
-                 Sentry event ({refusals_since_last_report} refusals since last report)",
-                last_report_age.unwrap_or(0)
+    let hq_folder = report.hq_folder;
+    if !outcome.action.emits() {
+        match outcome.action {
+            RefusalReportAction::AwaitConfirmation => log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: refusal not yet confirmed (pass {} of {REFUSAL_CONFIRM_OCCURRENCES}); \
+                     holding the Sentry banner in case the next pass is clean",
+                    outcome.occurrences
+                ),
             ),
-        );
-        return;
+            _ => log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: refusal already reported {}s ago; suppressing duplicate Sentry \
+                     event ({} refusals since last report, {} distinct deletion set(s) this episode)",
+                    outcome
+                        .since_last_report
+                        .map(|elapsed| elapsed.as_secs())
+                        .unwrap_or(0),
+                    outcome.suppressed_since_report,
+                    outcome.distinct_sets
+                ),
+            ),
+        }
+        return false;
     }
+
+    let deletion_set_stable = outcome.distinct_sets <= 1;
+    let prefixes: serde_json::Map<String, serde_json::Value> = report
+        .deletions
+        .prefixes
+        .iter()
+        .map(|(prefix, count)| (prefix.clone(), serde_json::Value::from(*count)))
+        .collect();
 
     sentry::with_scope(
         |scope| {
             scope.set_tag("git_mirror_kind", "bulk-delete-refused");
-            scope.set_tag("deletions", deletions.to_string());
-            scope.set_tag("tracked", tracked.to_string());
+            scope.set_tag("deletions", report.deletions.count.to_string());
+            scope.set_tag("tracked", report.tracked.to_string());
             scope.set_tag(
                 "refusals_since_last_report",
-                refusals_since_last_report.to_string(),
+                outcome.suppressed_since_report.to_string(),
+            );
+            // Is the same part of the tree missing every pass? A stable set on a
+            // hours-old episode is a wedged mirror and a real deletion; an
+            // unstable set on a young episode is a mid-sync sample.
+            scope.set_tag("deletion_set_stable", deletion_set_stable.to_string());
+            scope.set_tag("distinct_deletion_sets", outcome.distinct_sets.to_string());
+            scope.set_tag("episode_occurrences", outcome.occurrences.to_string());
+            scope.set_tag(
+                "episode_age_secs",
+                outcome.episode_age.as_secs().to_string(),
+            );
+            scope.set_tag(
+                "since_last_report_secs",
+                outcome
+                    .since_last_report
+                    .map(|elapsed| elapsed.as_secs().to_string())
+                    .unwrap_or_else(|| "never".to_string()),
+            );
+            scope.set_tag("report_source", outcome.action.source());
+            // A refusing root with no upstream is only losing local history; one
+            // with an upstream has silently stopped publishing.
+            scope.set_tag("has_upstream", report.has_upstream.to_string());
+            scope.set_extra("deletion_prefixes", serde_json::Value::Object(prefixes));
+            scope.set_extra(
+                "deletion_prefix_groups",
+                serde_json::Value::from(report.deletions.prefix_groups),
             );
         },
         || {
@@ -849,6 +1228,56 @@ fn report_bulk_refusal_at(
             );
         },
     );
+
+    write_persisted_report_at(
+        report.git_dir,
+        &PersistedRefusalState {
+            last_reported_at: wall_now.to_rfc3339_opts(SecondsFormat::Secs, true),
+            episode_opened_at: outcome
+                .episode_opened_at_wall
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
+            occurrences: outcome.occurrences,
+            distinct_sets: outcome.distinct_sets,
+        },
+    );
+    true
+}
+
+/// Close this root's refusal episode.
+///
+/// Called from every non-refusing exit of [`run_mirror`], so an episode spans a
+/// contiguous run of refusing passes and a healthy tree resets the lane. The
+/// *persisted* cooldown anchor is deliberately left in place: a tree that flaps
+/// between refusing and healthy must not earn a fresh banner on every flap.
+fn note_mirror_recovered(hq_folder: &str) {
+    let mut episodes = REFUSAL_EPISODES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(episode) = episodes.remove(hq_folder) {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: mirror recovered — closing refusal episode after {} refusing pass(es) \
+                 across {} distinct deletion set(s)",
+                episode.occurrences, episode.distinct_sets
+            ),
+        );
+    }
+}
+
+/// Whether the current branch has a tracked upstream.
+///
+/// Unlike the commit path's check, a failure here resolves to `false` rather
+/// than aborting: this only annotates a report, and an observability probe must
+/// never turn into a mirror failure.
+fn repo_has_upstream(hq_folder: &str) -> bool {
+    git_output(
+        hq_folder,
+        &["rev-parse", "--abbrev-ref", "@{u}"],
+        GIT_INDEX_TIMEOUT,
+    )
+    .map(|out| out.status.success())
+    .unwrap_or(false)
 }
 
 /// Staged deletions, rename-aware. `-M` matters: a large directory move is
@@ -872,9 +1301,12 @@ fn count_staged_deletions(hq_folder: &str) -> Result<StagedDeletions, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+    let (prefixes, prefix_groups) = deletion_prefixes(&out.stdout);
     Ok(StagedDeletions {
         count: count_nul_terminated(&out.stdout),
         digest: deletion_set_digest(&out.stdout),
+        prefixes,
+        prefix_groups,
     })
 }
 
@@ -1031,10 +1463,63 @@ mod tests {
         *PROBE_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = value;
     }
 
+    /// Drop every in-memory episode. Also stands in for an app relaunch: the
+    /// process-local state is gone, whatever is on disk is not.
     fn reset_refusal_report_state() {
-        *LAST_REFUSAL_REPORT
+        REFUSAL_EPISODES
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = RefusalReportState::default();
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+
+    /// A deletion set with the shape the reporter needs, without a git repo.
+    fn staged(digest: &str, count: usize, records: &[u8]) -> StagedDeletions {
+        let (prefixes, prefix_groups) = deletion_prefixes(records);
+        StagedDeletions {
+            count,
+            digest: digest.to_string(),
+            prefixes,
+            prefix_groups,
+        }
+    }
+
+    /// Drive one refusing pass through the reporter at an injected instant.
+    /// `wall_now` only matters where a persisted stamp is in play.
+    fn refuse_at(
+        hq_folder: &str,
+        git_dir: &Path,
+        deletions: &StagedDeletions,
+        tracked: usize,
+        now: Instant,
+        wall_now: DateTime<Utc>,
+    ) -> bool {
+        report_bulk_refusal_at(
+            &RefusalReport {
+                hq_folder,
+                git_dir,
+                deletions,
+                tracked,
+                has_upstream: true,
+            },
+            now,
+            wall_now,
+        )
+    }
+
+    /// A scratch git dir for the persisted episode record. The reporter only
+    /// ever reads and writes a file there, so a plain directory is enough.
+    /// `name` keeps two roots in one test genuinely independent — sharing a git
+    /// dir would (correctly) mean sharing a cooldown.
+    fn scratch_git_dir(tmp: &TempDir, name: &str) -> PathBuf {
+        let dir = tmp.path().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn epoch() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-06T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     #[test]
@@ -1056,44 +1541,126 @@ mod tests {
         }
     }
 
+    /// Replaces the r1 predicate test. That predicate re-armed on a
+    /// never-before-seen deletion digest after only `REFUSAL_MIN_SPACING`, which
+    /// is the escape hatch the production flood came through; the digest is no
+    /// longer an input at all.
     #[test]
-    fn refusal_report_predicate_preserves_first_and_new_conditions() {
-        let now = Instant::now();
-        assert!(should_report_refusal(
+    fn refusal_gate_confirms_first_then_holds_one_banner_per_cooldown() {
+        let confirm = REFUSAL_CONFIRM_OCCURRENCES;
+        let cooldown = REFUSAL_COOLDOWN;
+
+        // A single refusing pass is a candidate, not a signal.
+        assert_eq!(
+            decide_refusal_report(1, false, None, confirm, cooldown),
+            RefusalReportAction::AwaitConfirmation
+        );
+        // The second confirms it.
+        assert_eq!(
+            decide_refusal_report(2, false, None, confirm, cooldown),
+            RefusalReportAction::ReportFirstConfirmed
+        );
+        // Everything after it, however long the episode runs, is suppressed…
+        assert_eq!(
+            decide_refusal_report(3, true, Some(Duration::from_secs(1)), confirm, cooldown),
+            RefusalReportAction::Suppress
+        );
+        assert_eq!(
+            decide_refusal_report(
+                9_999,
+                true,
+                Some(cooldown - Duration::from_secs(1)),
+                confirm,
+                cooldown
+            ),
+            RefusalReportAction::Suppress
+        );
+        // …until the cooldown expires, which re-arms exactly one banner.
+        assert_eq!(
+            decide_refusal_report(9_999, true, Some(cooldown), confirm, cooldown),
+            RefusalReportAction::ReportCooldownRearm
+        );
+        // A fresh episode whose root reported recently (a restart, or a tree
+        // that flapped) still waits out that root's cooldown.
+        assert_eq!(
+            decide_refusal_report(2, false, Some(Duration::from_secs(30)), confirm, cooldown),
+            RefusalReportAction::Suppress
+        );
+        assert_eq!(
+            decide_refusal_report(2, false, Some(cooldown), confirm, cooldown),
+            RefusalReportAction::ReportFirstConfirmed
+        );
+    }
+
+    #[test]
+    fn cooldown_anchors_to_the_more_recent_of_the_two_clocks() {
+        let five_min = Duration::from_secs(300);
+        let one_hour = Duration::from_secs(3_600);
+
+        assert_eq!(later_report_elapsed(None, None), None);
+        assert_eq!(later_report_elapsed(Some(five_min), None), Some(five_min));
+        assert_eq!(later_report_elapsed(None, Some(one_hour)), Some(one_hour));
+        // Smaller elapsed == later report: a restart cannot shorten a cooldown
+        // by presenting an empty in-memory anchor, and a stale persisted anchor
+        // cannot extend one past a live in-process report.
+        assert_eq!(
+            later_report_elapsed(Some(one_hour), Some(five_min)),
+            Some(five_min)
+        );
+        assert_eq!(
+            later_report_elapsed(Some(five_min), Some(one_hour)),
+            Some(five_min)
+        );
+    }
+
+    #[test]
+    fn a_future_dated_stamp_rearms_rather_than_latching_silent() {
+        let now = epoch();
+        assert_eq!(
+            elapsed_since_wall(now - chrono::Duration::seconds(90), now),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(elapsed_since_wall(now, now), Some(Duration::ZERO));
+        // A clock that moved backwards, a DST jump, or a copied `.git`.
+        assert_eq!(
+            elapsed_since_wall(now + chrono::Duration::hours(9), now),
             None,
-            None,
-            now,
-            REFUSAL_COOLDOWN,
-            REFUSAL_MIN_SPACING,
-        ));
-        assert!(!should_report_refusal(
-            Some(now),
-            Some(now),
-            now + Duration::from_secs(1),
-            REFUSAL_COOLDOWN,
-            REFUSAL_MIN_SPACING,
-        ));
-        assert!(should_report_refusal(
-            Some(now),
-            Some(now),
-            now + REFUSAL_COOLDOWN,
-            REFUSAL_COOLDOWN,
-            REFUSAL_MIN_SPACING,
-        ));
-        assert!(!should_report_refusal(
-            None,
-            Some(now),
-            now + Duration::from_secs(1),
-            REFUSAL_COOLDOWN,
-            REFUSAL_MIN_SPACING,
-        ));
-        assert!(should_report_refusal(
-            None,
-            Some(now),
-            now + REFUSAL_MIN_SPACING,
-            REFUSAL_COOLDOWN,
-            REFUSAL_MIN_SPACING,
-        ));
+            "a stamp from the future must be treated as absent"
+        );
+    }
+
+    #[test]
+    fn deletion_prefixes_are_depth_one_ranked_and_capped() {
+        let mut records = Vec::new();
+        for i in 0..5 {
+            records.extend_from_slice(format!("companies/acme-corp/notes/{i}.md\0").as_bytes());
+        }
+        records.extend_from_slice(b"repos/private/thing/src/main.rs\0");
+        records.extend_from_slice(b"repos/public/other/lib.rs\0");
+        records.extend_from_slice(b"README.md\0");
+
+        let (ranked, distinct) = deletion_prefixes(&records);
+        assert_eq!(distinct, 3);
+        assert_eq!(
+            ranked,
+            vec![
+                ("companies".to_string(), 5),
+                ("repos".to_string(), 2),
+                (ROOT_PREFIX_LABEL.to_string(), 1),
+            ],
+            "depth-1 segments only, most-frequent first; a root-level file must \
+             never render as its own name"
+        );
+
+        // Wider than the cap: the histogram truncates but the distinct count
+        // still tells the truth about how much was dropped.
+        let mut wide = Vec::new();
+        for i in 0..25 {
+            wide.extend_from_slice(format!("dir-{i:02}/file.md\0").as_bytes());
+        }
+        let (capped, wide_distinct) = deletion_prefixes(&wide);
+        assert_eq!(capped.len(), REFUSAL_PREFIX_CAP);
+        assert_eq!(wide_distinct, 25);
     }
 
     // ── B1: bulk-delete breaker ──────────────────────────────────────────
@@ -1179,75 +1746,468 @@ mod tests {
         let reordered = deletion_set_digest(b"nested/beta.md\0alpha.md\0");
         let changed = deletion_set_digest(b"alpha.md\0nested/gamma.md\0");
 
+        // The digest is now episode *evidence* (it drives `distinct_deletion_
+        // sets` / `deletion_set_stable`), not a suppression key — so it must
+        // still identify a path set exactly, and still ignore git's ordering.
         assert_eq!(
             first, reordered,
-            "git output ordering must not re-arm Sentry"
+            "git output ordering must not read as a changed condition"
         );
         assert_ne!(
             first, changed,
-            "a changed deleted-path set must re-arm Sentry"
+            "a changed deleted-path set must be visible as churn"
         );
     }
 
     #[test]
-    fn reported_refusal_carries_the_suppressed_occurrence_count() {
+    fn confirmed_episode_reports_exactly_once_then_suppresses() {
         let _serial = serial();
         reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 50, b"companies/acme/a.md\0");
         let start = Instant::now();
+        let wall = epoch();
 
         let events = sentry::test::with_captured_events(|| {
-            report_bulk_refusal_at("/hq", "set-a", 50, 100, start);
-            for seconds in 1..=4 {
-                report_bulk_refusal_at(
+            for pass in 0..6u64 {
+                refuse_at(
                     "/hq",
-                    "set-a",
-                    50,
+                    &git_dir,
+                    &set,
                     100,
-                    start + Duration::from_secs(seconds),
+                    start + Duration::from_secs(pass * 60),
+                    wall + chrono::Duration::seconds((pass * 60) as i64),
                 );
             }
-            report_bulk_refusal_at("/hq", "set-a", 50, 100, start + REFUSAL_COOLDOWN);
         });
         reset_refusal_report_state();
 
         assert_eq!(
             events.len(),
-            2,
-            "first refusal and cooled-down repeat report"
+            1,
+            "a sustained episode is one banner, however many passes it runs for"
+        );
+        assert_eq!(
+            events[0].tags.get("report_source").map(String::as_str),
+            Some("first-confirmed")
+        );
+        assert_eq!(
+            events[0]
+                .tags
+                .get("episode_occurrences")
+                .map(String::as_str),
+            Some("2"),
+            "the banner fires on the confirming pass, not the first sample"
         );
         assert_eq!(
             events[0]
                 .tags
                 .get("refusals_since_last_report")
                 .map(String::as_str),
-            Some("0")
-        );
-        assert_eq!(
-            events[1]
-                .tags
-                .get("refusals_since_last_report")
-                .map(String::as_str),
-            Some("4")
+            Some("1"),
+            "the unconfirmed first pass is counted as suppressed, not lost"
         );
     }
 
     #[test]
-    fn alternating_deletion_sets_keep_each_key_in_its_own_cooldown() {
+    fn a_sustained_episode_rearms_one_banner_per_cooldown() {
         let _serial = serial();
         reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 50, b"companies/acme/a.md\0");
         let start = Instant::now();
+        let wall = epoch();
 
         let events = sentry::test::with_captured_events(|| {
-            report_bulk_refusal_at("/hq", "set-a", 50, 100, start);
-            report_bulk_refusal_at("/hq", "set-b", 51, 100, start + REFUSAL_MIN_SPACING);
-            report_bulk_refusal_at("/hq", "set-a", 50, 100, start + REFUSAL_MIN_SPACING * 2);
+            refuse_at("/hq", &git_dir, &set, 100, start, wall);
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                100,
+                start + Duration::from_secs(60),
+                wall + chrono::Duration::seconds(60),
+            );
+            // Still wedged six hours later.
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                100,
+                start + Duration::from_secs(60) + REFUSAL_COOLDOWN,
+                wall + chrono::Duration::seconds(60) + chrono::Duration::hours(6),
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(events.len(), 2, "one banner per cooldown, not none");
+        assert_eq!(
+            events[1].tags.get("report_source").map(String::as_str),
+            Some("cooldown-rearm")
+        );
+        assert_eq!(
+            events[1]
+                .tags
+                .get("since_last_report_secs")
+                .map(String::as_str),
+            Some(REFUSAL_COOLDOWN.as_secs().to_string().as_str())
+        );
+    }
+
+    /// Replaces the r1 test `alternating_deletion_sets_keep_each_key_in_its_own_
+    /// cooldown`, which asserted the defect: that a changed path set re-arms
+    /// after five minutes. This is the exact CAIO-PC-NAVE / hq-sync-win@0.10.58
+    /// shape — one install, one process, three refusals 7m36s and 5m25s apart
+    /// with the missing-path set changing every pass.
+    #[test]
+    fn churning_deletion_sets_are_recorded_as_data_not_a_new_banner() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let start = Instant::now();
+        let wall = epoch();
+
+        let events = sentry::test::with_captured_events(|| {
+            for (offset, digest, count) in [
+                (0u64, "set-a", 576usize),
+                (456, "set-b", 1531),
+                (781, "set-c", 916),
+            ] {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &staged(digest, count, b"companies/acme/a.md\0"),
+                    4274,
+                    start + Duration::from_secs(offset),
+                    wall + chrono::Duration::seconds(offset as i64),
+                );
+            }
         });
         reset_refusal_report_state();
 
         assert_eq!(
             events.len(),
-            2,
-            "returning to an earlier path set must honor that set's six-hour cooldown"
+            1,
+            "one HQ root with one open condition is one banner, however much the \
+             deletion set churns"
+        );
+        assert_eq!(
+            events[0]
+                .tags
+                .get("distinct_deletion_sets")
+                .map(String::as_str),
+            Some("2"),
+            "the churn is preserved as evidence on the surviving event"
+        );
+        assert_eq!(
+            events[0]
+                .tags
+                .get("deletion_set_stable")
+                .map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn restart_does_not_rearm_the_banner_within_the_cooldown() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+
+        let events = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 100, start, wall);
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                100,
+                start + Duration::from_secs(60),
+                wall + chrono::Duration::seconds(60),
+            );
+
+            // An auto-update relaunch: the process-local episode is gone, the
+            // broken tree and the persisted anchor on disk are not.
+            reset_refusal_report_state();
+            for pass in 1..=2i64 {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    100,
+                    start + Duration::from_secs(120 + pass as u64 * 60),
+                    wall + chrono::Duration::seconds(120 + pass * 60),
+                );
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "a relaunch must not re-arm the banner for a condition already reported"
+        );
+    }
+
+    #[test]
+    fn a_restart_past_the_cooldown_does_rearm() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+
+        let events = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 100, start, wall);
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                100,
+                start + Duration::from_secs(60),
+                wall + chrono::Duration::seconds(60),
+            );
+
+            // Relaunched a day later, still wedged. Suppression must not latch
+            // forever — the persisted anchor is now older than the cooldown.
+            reset_refusal_report_state();
+            let later = wall + chrono::Duration::hours(24);
+            refuse_at("/hq", &git_dir, &set, 100, start, later);
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                100,
+                start + Duration::from_secs(60),
+                later + chrono::Duration::seconds(60),
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(events.len(), 2, "an aged persisted anchor must re-arm");
+        assert_eq!(
+            events[1].tags.get("report_source").map(String::as_str),
+            Some("first-confirmed"),
+            "the relaunched process has no in-memory report of its own"
+        );
+    }
+
+    #[test]
+    fn corrupt_absent_or_future_dated_state_rearms_and_never_panics() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 50, b"companies/acme/a.md\0");
+        let wall = epoch();
+        let path = refusal_state_path(&git_dir);
+
+        // Absent, unparsable JSON, valid JSON with a junk timestamp, and a
+        // stamp dated in the future must all behave identically: re-arm.
+        let states: [Option<&str>; 4] = [
+            None,
+            Some("{not json at all"),
+            Some(
+                r#"{"last_reported_at":"whenever","episode_opened_at":"","occurrences":1,"distinct_sets":1}"#,
+            ),
+            Some(
+                r#"{"last_reported_at":"2126-08-06T10:00:00Z","episode_opened_at":"2126-08-06T10:00:00Z","occurrences":1,"distinct_sets":1}"#,
+            ),
+        ];
+
+        for (index, contents) in states.into_iter().enumerate() {
+            reset_refusal_report_state();
+            match contents {
+                Some(raw) => fs::write(&path, raw).unwrap(),
+                None => {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+            // A bad record must not be read as "already reported".
+            assert_eq!(
+                read_persisted_report_at(&git_dir, wall),
+                None,
+                "case {index}"
+            );
+
+            let events = sentry::test::with_captured_events(|| {
+                let start = Instant::now();
+                refuse_at("/hq", &git_dir, &set, 100, start, wall);
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    100,
+                    start + Duration::from_secs(60),
+                    wall + chrono::Duration::seconds(60),
+                );
+            });
+            assert_eq!(
+                events.len(),
+                1,
+                "case {index} must re-arm exactly one banner"
+            );
+            // …and the reporter must have replaced the bad record with a good one.
+            assert!(
+                read_persisted_report_at(&git_dir, wall + chrono::Duration::seconds(60)).is_some(),
+                "case {index} must have replaced the bad record with a usable one"
+            );
+        }
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn report_carries_stability_and_prefix_evidence() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        let start = Instant::now();
+        let wall = epoch();
+        let records = b"companies/acme/a.md\0companies/acme/b.md\0repos/private/x/c.rs\0";
+
+        // A stable episode: the same subtree missing on every pass.
+        reset_refusal_report_state();
+        let stable_dir = scratch_git_dir(&tmp, "stable-git-dir");
+        let stable = sentry::test::with_captured_events(|| {
+            for pass in 0..3u64 {
+                refuse_at(
+                    "/hq/stable",
+                    &stable_dir,
+                    &staged("set-a", 162, records),
+                    1356,
+                    start + Duration::from_secs(pass * 60),
+                    wall + chrono::Duration::seconds((pass * 60) as i64),
+                );
+            }
+        });
+
+        assert_eq!(stable.len(), 1);
+        let event = &stable[0];
+        for tag in [
+            "deletion_set_stable",
+            "distinct_deletion_sets",
+            "episode_occurrences",
+            "episode_age_secs",
+            "since_last_report_secs",
+            "report_source",
+            "has_upstream",
+        ] {
+            assert!(
+                event.tags.contains_key(tag),
+                "a captured refusal must carry the {tag} evidence tag"
+            );
+        }
+        assert_eq!(
+            event.tags.get("deletion_set_stable").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            event.tags.get("distinct_deletion_sets").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            event.tags.get("episode_age_secs").map(String::as_str),
+            Some("60"),
+            "the banner fires on the confirming pass, one minute into the episode"
+        );
+        assert_eq!(
+            event.tags.get("since_last_report_secs").map(String::as_str),
+            Some("never")
+        );
+        assert_eq!(
+            event.tags.get("has_upstream").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            event.extra.get("deletion_prefixes"),
+            Some(&serde_json::json!({"companies": 2, "repos": 1})),
+            "the histogram names subtrees, and only subtrees"
+        );
+        assert_eq!(
+            event.extra.get("deletion_prefix_groups"),
+            Some(&serde_json::json!(2))
+        );
+
+        // A churning episode on a different root, for contrast.
+        reset_refusal_report_state();
+        let churn_dir = scratch_git_dir(&tmp, "churn-git-dir");
+        let churning = sentry::test::with_captured_events(|| {
+            for (pass, digest) in ["set-a", "set-b", "set-c"].into_iter().enumerate() {
+                refuse_at(
+                    "/hq/churn",
+                    &churn_dir,
+                    &staged(digest, 162, records),
+                    1356,
+                    start + Duration::from_secs(pass as u64 * 60),
+                    wall + chrono::Duration::seconds(pass as i64 * 60),
+                );
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(churning.len(), 1);
+        assert_eq!(
+            churning[0]
+                .tags
+                .get("deletion_set_stable")
+                .map(String::as_str),
+            Some("false"),
+            "a set that changed between passes reads as a mid-sync sample"
+        );
+    }
+
+    #[test]
+    fn prefix_histogram_is_depth_one_and_leaks_nothing_deeper() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let start = Instant::now();
+        let wall = epoch();
+        let records =
+            b"companies/acme-corp/knowledge/salaries.md\0companies/acme-corp/x.md\0secret-notes.md\0";
+
+        let events = sentry::test::with_captured_events(|| {
+            for pass in 0..2u64 {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &staged("set-a", 3, records),
+                    30,
+                    start + Duration::from_secs(pass * 60),
+                    wall + chrono::Duration::seconds((pass * 60) as i64),
+                );
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(events.len(), 1);
+        let encoded = serde_json::to_string(&events[0]).expect("event serializes");
+        for forbidden in [
+            "acme-corp",    // a company slug
+            "salaries",     // a file name
+            "secret-notes", // a root-level file name
+            "knowledge",    // a depth-2 segment
+            "companies/",   // any separator below depth 1
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "the payload must not carry {forbidden:?}; got {encoded}"
+            );
+        }
+        assert!(
+            encoded.contains("companies"),
+            "the depth-1 shape of the loss must survive"
+        );
+        assert!(
+            encoded.contains(ROOT_PREFIX_LABEL),
+            "root-level deletions must be counted under the sentinel"
         );
     }
 
@@ -1380,6 +2340,15 @@ mod tests {
     fn delete_files(dir: &Path, range: std::ops::Range<usize>) {
         for i in range {
             fs::remove_file(dir.join(format!("file-{i:04}.md"))).unwrap();
+        }
+    }
+
+    /// Put back exactly what [`delete_files`] removed, byte for byte, so the
+    /// working tree matches HEAD again — a restore finishing, or the other half
+    /// of the mid-sync sample.
+    fn restore_files(dir: &Path, range: std::ops::Range<usize>) {
+        for i in range {
+            fs::write(dir.join(format!("file-{i:04}.md")), format!("content {i}")).unwrap();
         }
     }
 
@@ -1602,9 +2571,235 @@ mod tests {
                 .tags
                 .get("refusals_since_last_report")
                 .map(String::as_str),
-            Some("0"),
-            "the first captured event precedes the four later suppressions"
+            Some("1"),
+            "the banner fires on the confirming pass, so pass one is counted as \
+             suppressed rather than lost"
         );
+        assert_eq!(
+            event.tags.get("deletion_set_stable").map(String::as_str),
+            Some("true"),
+            "the same 50 files were missing on every pass"
+        );
+    }
+
+    /// The gold-standard regression: this compiles and FAILS at the r1 base
+    /// (which captures one event on the very first refusing pass), and passes
+    /// here. A refusal that heals on the next pass is the dominant field shape
+    /// and the least actionable one.
+    #[test]
+    fn single_pass_transient_refusal_is_not_reported() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..50);
+
+        let events = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            restore_files(tmp.path(), 0..50);
+            run_mirror_at(tmp.path()).expect("mirror ok");
+        });
+
+        assert_eq!(
+            events.len(),
+            0,
+            "a refusal that heals on the very next pass must not reach Sentry"
+        );
+        assert!(
+            !refusal_state_path(&git_dir_of(tmp.path())).exists(),
+            "an unreported episode must not persist a cooldown anchor"
+        );
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "the restored tree matches HEAD, so there is nothing to commit"
+        );
+        // The episode must be closed, not merely quiet.
+        assert!(!REFUSAL_EPISODES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(tmp.path().to_str().unwrap()));
+        reset_refusal_report_state();
+    }
+
+    /// The field shape, end to end through real git children: the
+    /// Jets-Mac-mini.local event (162 of 1356 tracked = 11.9%) followed by a
+    /// churned second pass — a different 162 files missing, as CAIO-PC-NAVE saw.
+    #[test]
+    fn run_mirror_on_real_repo_with_field_shaped_bulk_delete() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 1_356);
+        let before = rev_count(tmp.path());
+
+        let events = sentry::test::with_captured_events(|| {
+            delete_files(tmp.path(), 0..162);
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            assert!(index_is_clean(tmp.path()), "refusal must reset the index");
+
+            // A different 162 files missing on the next pass: the deletion set
+            // churns, which at r1 minted a brand-new suppression key.
+            restore_files(tmp.path(), 0..162);
+            delete_files(tmp.path(), 500..662);
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "nothing may be committed or pushed while the breaker refuses"
+        );
+        assert!(index_is_clean(tmp.path()), "refusal must reset the index");
+        assert_eq!(
+            events.len(),
+            1,
+            "two refusing passes with different missing files are one condition"
+        );
+        let event = &events[0];
+        assert_eq!(event.tags.get("deletions").map(String::as_str), Some("162"));
+        assert_eq!(event.tags.get("tracked").map(String::as_str), Some("1356"));
+        assert_eq!(
+            event.tags.get("deletion_set_stable").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            event.tags.get("distinct_deletion_sets").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            event.tags.get("has_upstream").map(String::as_str),
+            Some("false"),
+            "this scratch repo has no upstream, so it is only losing local history"
+        );
+        // Every deleted path here sits at the repository root.
+        assert_eq!(
+            event.extra.get("deletion_prefixes"),
+            Some(&serde_json::json!({ ROOT_PREFIX_LABEL: 162 }))
+        );
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn recovery_closes_the_episode_and_a_fresh_one_still_honors_the_cooldown() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+
+        let events = sentry::test::with_captured_events(|| {
+            // Episode one: confirmed, reported.
+            delete_files(tmp.path(), 0..50);
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+
+            // The tree heals and the mirror commits an unrelated change.
+            restore_files(tmp.path(), 0..50);
+            fs::write(tmp.path().join("new.md"), "content").unwrap();
+            run_mirror_at(tmp.path()).expect("mirror ok");
+
+            // Episode two, inside the cooldown.
+            delete_files(tmp.path(), 0..50);
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "exactly the one healthy pass may commit"
+        );
+        assert_eq!(
+            events.len(),
+            1,
+            "closing and reopening an episode must not re-arm the banner inside \
+             the per-root cooldown"
+        );
+    }
+
+    #[test]
+    fn episode_state_file_is_invisible_to_the_mirror() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        delete_files(tmp.path(), 0..50);
+
+        sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+
+        let state_file = refusal_state_path(&git_dir_of(tmp.path()));
+        assert!(
+            state_file.is_file(),
+            "a confirmed report must persist its cooldown anchor"
+        );
+        // It lives inside the git dir, so git cannot see it — which is what
+        // keeps it from feeding back into the deletion accounting it describes.
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        let staged_paths = git(
+            tmp.path(),
+            &["diff", "--cached", "--name-only", "--diff-filter=A", "-z"],
+        );
+        let staged_paths = String::from_utf8_lossy(&staged_paths.stdout);
+        assert!(
+            !staged_paths.contains(REFUSAL_STATE_FILE),
+            "the episode record must never be staged, got {staged_paths:?}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&git(tmp.path(), &["status", "--porcelain"]).stdout)
+                .contains(REFUSAL_STATE_FILE),
+            "the episode record must never appear in git status"
+        );
+        reset_refusal_report_state();
+    }
+
+    #[test]
+    fn episode_state_is_anchored_per_linked_worktree() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let main = TempDir::new().unwrap();
+        let trees = TempDir::new().unwrap();
+        seed_repo(main.path(), 100);
+        let wt = trees.path().join("wt");
+        assert!(git(
+            main.path(),
+            &["worktree", "add", "-q", wt.to_str().unwrap()]
+        )
+        .status
+        .success());
+        assert!(wt.join(".git").is_file(), "expected a linked worktree");
+
+        delete_files(&wt, 0..50);
+        sentry::test::with_captured_events(|| {
+            run_mirror_at(&wt).expect("a refusal is not an error");
+            run_mirror_at(&wt).expect("a refusal is not an error");
+        });
+
+        let worktree_state = refusal_state_path(&git_dir_of(&wt));
+        assert!(
+            worktree_state.is_file(),
+            "the episode record must land in the per-worktree git dir"
+        );
+        assert!(
+            !refusal_state_path(&git_dir_of(main.path())).exists(),
+            "a linked worktree must not write into the parent .git"
+        );
+        reset_refusal_report_state();
     }
 
     #[test]
