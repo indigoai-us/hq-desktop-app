@@ -501,16 +501,18 @@
             <span class="chan-title">{chan.title}</span>
             <span class="chan-sub">{chan.sub}</span>
             {#if chan.type === 'project'}
-              <div class="tabs">
-                {#each ['chat', 'board', 'files'] as t (t)}
-                  <button class="tab" class:on={tab === t} onclick={() => (tab = t as typeof tab)}>{t[0].toUpperCase() + t.slice(1)}</button>
-                {/each}
+              <div class="head-right">
+                {#if chan.status}
+                  <button class="status-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('status'); }}>
+                    <span class="dot" class:w={chan.status.dot === 'w'}></span>{chan.status.label} <span class="caret"><CaretDown size={10} weight="bold" /></span>
+                  </button>
+                {/if}
+                <div class="tabs">
+                  {#each ['chat', 'board', 'files'] as t (t)}
+                    <button class="tab" class:on={tab === t} onclick={() => (tab = t as typeof tab)}>{t[0].toUpperCase() + t.slice(1)}</button>
+                  {/each}
+                </div>
               </div>
-              {#if chan.status}
-                <button class="status-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('status'); }}>
-                  <span class="dot" class:w={chan.status.dot === 'w'}></span>{chan.status.label} <span class="caret"><CaretDown size={10} weight="bold" /></span>
-                </button>
-              {/if}
             {/if}
           </div>
           <div class="content">
@@ -929,11 +931,12 @@
   .chan-head { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
   .chan-title { font-weight: 600; font-size: 15px; white-space: nowrap; }
   .chan-sub { font-size: 12px; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tabs { display: flex; gap: 2px; margin-left: 24px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .head-right { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+  .tabs { display: flex; gap: 2px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
   .tab { font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 12px; border-radius: 6px; transition: color 0.12s; }
   .tab:hover { color: var(--t1); }
   .tab.on { color: var(--t1); background: var(--sel); }
-  .status-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
+  .status-btn { display: flex; align-items: center; gap: 6px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
   .status-btn:hover { border-color: var(--line2); color: var(--t1); }
   .back-btn { display: flex; align-items: center; gap: 6px; font-weight: 500; font-size: 12px; color: var(--t2); border: 1px solid var(--line2); border-radius: 8px; padding: 5px 10px; }
   .back-btn:hover { background: var(--hover); color: var(--t1); }
