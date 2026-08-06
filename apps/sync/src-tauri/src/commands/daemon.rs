@@ -4006,24 +4006,32 @@ mod tests {
             .all(|(name, _)| *name != "windows_terminator"));
     }
 
+    /// An affirmed attribution may never suppress an exit shape it does not
+    /// own, and the `windows_terminator` tag may only appear on the two Windows
+    /// statuses that carry no provenance of their own: `DBG_TERMINATE_PROCESS`
+    /// and `0xFFFFFFFF` (widened for HQ-DESKTOP-4M). Everything else must stay
+    /// untagged, so attribution cannot leak onto an exit that already explains
+    /// itself.
     #[test]
-    fn affirmed_attribution_does_not_suppress_or_tag_any_other_exit_shape() {
+    fn affirmed_attribution_never_suppresses_and_tags_only_unattributable_statuses() {
         let context = WatcherExitCaptureContext {
             windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
             ..Default::default()
         };
         let cases = [
-            (Some(1), None, false),
-            (Some(2), None, false),
-            (Some(126), None, false),
-            (Some(127), None, false),
-            (Some(221), None, true),
-            (Some(0xC000_0409u32 as i32), None, true),
-            (Some(-1), None, true),
-            (Some(WINDOWS_SESSION_TERMINATE_EXIT), Some(9), true),
+            (Some(1), None, false, false),
+            (Some(2), None, false, false),
+            (Some(126), None, false, false),
+            (Some(127), None, false, false),
+            (Some(221), None, true, false),
+            (Some(0xC000_0409u32 as i32), None, true, false),
+            // 0xFFFFFFFF is captured *and* now carries its attribution.
+            (Some(-1), None, true, true),
+            // A signal means a POSIX host: no Windows attribution applies.
+            (Some(WINDOWS_SESSION_TERMINATE_EXIT), Some(9), true, false),
         ];
 
-        for (code, signal, should_capture) in cases {
+        for (code, signal, should_capture, should_tag) in cases {
             let mut effects = RecordingWatcherEffects::default();
             handle_watcher_exit_with_effects(
                 &mut effects,
@@ -4043,13 +4051,11 @@ mod tests {
                 "code={code:?} signal={signal:?}"
             );
             for capture in &effects.captures {
-                assert!(
-                    capture
-                        .tags
-                        .iter()
-                        .all(|(name, _)| name != "windows_terminator"),
-                    "code={code:?} signal={signal:?}"
-                );
+                let tagged = capture
+                    .tags
+                    .iter()
+                    .any(|(name, _)| name == "windows_terminator");
+                assert_eq!(tagged, should_tag, "code={code:?} signal={signal:?}");
             }
             if matches!(code, Some(1 | 2)) {
                 assert!(effects.logs.iter().any(|(_, message)| {
