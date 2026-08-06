@@ -915,7 +915,8 @@
   .chip { font-weight: 500; font-size: 11px; color: var(--ice-ink); border: 1px solid var(--ice-ink); border-radius: 6px; padding: 3px 10px; }
   .chip.g { color: var(--t2); border-color: var(--line2); }
   .chip:hover { background: var(--hover); }
-  .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 12px 14px; }
+  /* Tight gutter: the Send button sets the height, 6px of air around it. */
+  .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 6px 6px 6px 14px; }
   .composer input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
   .composer input::placeholder { color: var(--t3); }
   /* Standard-size primary button; text matches the secondary buttons. */
