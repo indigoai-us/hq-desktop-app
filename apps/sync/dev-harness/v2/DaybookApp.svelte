@@ -288,6 +288,8 @@
     ['HM', 'Holler Mgmt'],
   ];
   let composerText = $state('');
+  /** Settings → Default company picker. */
+  let defaultCo = $state('indigo');
   let settingsToggles = $state([true, true, true, false, false]);
   let resolvedConflict = $state(false);
   let feedEl = $state<HTMLElement | null>(null);
@@ -693,7 +695,23 @@
           {/each}
           <div class="set-row">
             <div><div class="sn">Default company</div><div class="sd">Which company loads on launch</div></div>
-            <span class="mono accent push-right co-picker">INDIGO <CaretDown size={9} weight="bold" /></span>
+            <div class="co-select-wrap push-right">
+              <button class="co-select" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('coPicker'); }}>
+                <span class="co-select-ava">{DATA[defaultCo].short}</span>{DATA[defaultCo].label}
+                <span class="caret"><CaretDown size={10} weight="bold" /></span>
+              </button>
+              <div class="panel co-picker-panel" class:open={openPanel === 'coPicker'}>
+                {#each Object.entries(DATA) as [key, c] (key)}
+                  <button
+                    class="p-item"
+                    onclick={() => { defaultCo = key; openPanel = null; toast(`${c.label} loads on launch now`); }}
+                  >
+                    <span class="pi"><span class="co-select-ava">{c.short}</span></span>{c.label}
+                    <span class="p-meta">{#if defaultCo === key}<Check size={12} weight="bold" />{/if}</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
           </div>
         </div>
       {:else if view === 'history'}
@@ -870,7 +888,17 @@
   .lrow-ic { display: inline-flex; align-items: center; color: var(--t2); }
   .conflict-ic { display: inline-flex; align-items: center; color: var(--warn-ink); }
   .sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 5px; }
-  .grp .t, .p-meta, .accent, .co-picker { display: inline-flex; align-items: center; gap: 4px; }
+  .grp .t, .p-meta, .accent { display: inline-flex; align-items: center; gap: 4px; }
+
+  /* Settings company selector: secondary-style select with a company tile. */
+  .co-select { display: inline-flex; align-items: center; gap: 7px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 4px 10px 4px 5px; font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
+  .co-select:hover { border-color: var(--line2); }
+  .co-select:active { border-color: var(--border-active); }
+  .co-select-ava { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--line2); font: 600 8px var(--font-ui); color: var(--t2); }
+  .co-select-wrap { position: relative; }
+  .co-picker-panel { bottom: calc(100% + 6px); right: 0; width: 210px; min-width: 0; padding: 6px; gap: 0; }
+  .co-picker-panel .p-item { padding: 5px 8px; gap: 8px; font-size: 12px; }
+  .co-picker-panel .p-item .pi { width: 18px; }
   /* :where keeps the reset at class-level specificity so component button
      styles below (.chip, .send, .core-btn, …) win on source order. */
   .v2 :where(button) { background: none; border: none; color: inherit; font: inherit; cursor: pointer; text-align: left; padding: 0; }
@@ -1052,8 +1080,9 @@
   .lib-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   /* Right padding = listview's 16px + the 4px reserved scrollbar gutter, so
      the search bar and the rows share one right edge. */
-  .lib-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; }
-  .lib-head.hist-head { padding: 16px 20px 0; }
+  .lib-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 4px; }
+  /* A search head above a list pulls the list closer (12px total gap). */
+  .lib-main .listview, .lib-head + .listview { padding-top: 8px; }
 
   .market { flex: 1; padding: 20px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; align-content: start; }
   .pack { display: flex; flex-direction: column; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
@@ -1065,9 +1094,10 @@
   /* Status tags: light tint fill + light border, toned ink. */
   .pill.inst { color: var(--ok-ink); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
   .pill.upd { color: var(--warn-ink); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
-  /* Get = standard primary small (hover dims like every primary). */
-  .pill.get { font-family: var(--font-ui); font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: opacity 0.15s; }
-  .pill.get:hover { opacity: 0.88; }
+  /* Get = standard secondary small. */
+  .pill.get { font-family: var(--font-ui); font-size: 11px; font-weight: 500; color: var(--t1); background: var(--btn-bg); border: 1px solid transparent; border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: border-color 0.12s; }
+  .pill.get:hover { border-color: var(--line2); }
+  .pill.get:active { border-color: var(--border-active); }
 
   /* ═══════════ Sync ═══════════ */
   .syncview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-width: 760px; }
