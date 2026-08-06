@@ -395,12 +395,21 @@
 
     <!-- Daybook sidebar -->
     <div class="sidebar">
-      <div class="search">
-        <span class="lead"><MagnifyingGlass size={13} /></span>
-        <input id="v2-search" placeholder="Search or jump to…" bind:value={search} />
-        <span class="kbd mono">⌘K</span>
-        <button class="filter-btn mono" class:on={filterActive} data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}>
-          <FunnelSimple size={11} weight="bold" /> FILTER
+      <div class="search-row">
+        <div class="search">
+          <span class="lead"><MagnifyingGlass size={13} /></span>
+          <input id="v2-search" placeholder="Search or jump to…" bind:value={search} />
+          <span class="kbd mono">⌘K</span>
+        </div>
+        <button
+          class="filter-btn"
+          class:on={filterActive}
+          aria-label="Filter conversations"
+          title="Filter"
+          data-panel-trigger
+          onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}
+        >
+          <FunnelSimple size={14} />
         </button>
       </div>
       <div class="side-scroll">
@@ -834,12 +843,14 @@
 
   /* ═══════════ Sidebar ═══════════ */
   .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; min-height: 0; }
-  .search { display: flex; align-items: center; gap: 8px; background: var(--raised); border: 1px solid var(--line2); border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; }
+  .search-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 10px; }
+  .search { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; background: var(--raised); border: 1px solid var(--line2); border-radius: 8px; padding: 7px 10px; }
   .search input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 12px var(--font-ui); }
   .search input::placeholder { color: var(--t3); }
   .kbd { font-size: 10px; color: var(--t3); }
-  .filter-btn { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border: 1px solid var(--line2); border-radius: 6px; padding: 2px 7px; font-size: 10px; font-weight: 500; color: var(--t2); }
-  .filter-btn:hover, .filter-btn.on { color: var(--ice-ink); border-color: var(--ice-ink); }
+  .filter-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; border: 1px solid var(--line2); border-radius: 8px; background: var(--raised); color: var(--t2); }
+  .filter-btn:hover { color: var(--t1); background: var(--hover); }
+  .filter-btn.on { color: var(--ice-ink); border-color: var(--ice-ink); }
   .side-scroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
   .grp { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; width: 100%; }
   .grp .t { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--t2); }
