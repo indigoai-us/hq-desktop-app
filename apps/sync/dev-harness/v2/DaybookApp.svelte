@@ -487,6 +487,7 @@
         </button>
         <button class="hist" onclick={() => nav('history')}><MagnifyingGlass size={14} /><span>Show all history…</span></button>
       </div>
+      <div class="footer-divider" aria-hidden="true"></div>
       <button class="footer" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('user'); }}>
         <span class="fav">C</span>
         <span class="footer-name">Corey</span>
@@ -906,7 +907,13 @@
   .filter-btn:hover { color: var(--t1); border-color: var(--line2); }
   .filter-btn:active { border-color: var(--border-active); }
   .filter-btn.on { color: var(--ice-ink); border-color: var(--ice-ink); }
-  .side-scroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+  /* Thin, light scrollbar tucked against the pane edge (content keeps its
+     gutter via the offsetting padding). */
+  .side-scroll { flex: 1; overflow-y: auto; min-height: 0; margin-right: -8px; padding-right: 8px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .side-scroll::-webkit-scrollbar { width: 4px; }
+  .side-scroll::-webkit-scrollbar-track { background: transparent; }
+  .side-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+  .side-scroll::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .grp { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; width: 100%; }
   .grp .t { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--t2); }
   .grp .t.dim { color: var(--t3); }
@@ -927,8 +934,12 @@
   .pulse { margin-left: auto; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--ice-ink); }
   .hist { display: flex; align-items: center; gap: 8px; padding: 8px; margin-top: 8px; color: var(--t2); font-weight: 500; font-size: 12px; border-radius: 8px; width: 100%; }
   .hist:hover { background: var(--hover); }
-  .footer { display: flex; align-items: center; gap: 8px; padding: 10px 8px 4px; border-top: 1px solid var(--line); margin-top: 8px; width: 100%; }
-  .footer:hover { background: var(--hover); border-radius: 8px; }
+  .footer-divider { height: 1px; margin-top: 8px; background: var(--line); flex-shrink: 0; }
+  /* Hover reads as a clean rounded pill under the divider, secondary-style. */
+  .footer { display: flex; align-items: center; gap: 8px; padding: 8px; margin-top: 6px; width: 100%; border-radius: 8px; transition: background 0.12s; }
+  .footer:hover { background: var(--hover); }
+  .footer:hover .footer-name { color: var(--t1); }
+  .footer:hover .caret { color: var(--t2); }
   .footer .fav { width: 22px; height: 22px; border-radius: 50%; background: var(--line2); font: 600 10px var(--font-ui); color: var(--t1); display: flex; align-items: center; justify-content: center; }
   .footer-name { font-weight: 500; font-size: 12px; color: var(--t2); }
   .synced { margin-left: auto; font-size: 10px; color: var(--ok-ink); }
@@ -951,7 +962,11 @@
   .content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
   /* ═══════════ Feed ═══════════ */
-  .feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 24px 24px 12px; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+  .feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 24px 24px 12px; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .feed::-webkit-scrollbar { width: 4px; }
+  .feed::-webkit-scrollbar-track { background: transparent; }
+  .feed::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+  .feed::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .daysep { display: flex; align-items: center; gap: 12px; }
   .daysep hr { flex: 1; border: none; height: 1px; background: var(--line); margin: 0; }
   .daysep span { font-size: 10px; font-weight: 500; letter-spacing: 0.08em; color: var(--t3); }
@@ -1064,15 +1079,18 @@
   .panel.open { display: flex; }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
-  /* Condensed key-value rows: Branch / Repo / Preview sit tight. */
-  .status-panel .p-item.kv { padding: 3px 10px; }
+  /* Condensed key-value rows: Branch / Repo / Preview. */
+  .status-panel .p-item.kv { padding: 5px 10px; }
   .status-panel .p-item.static { cursor: default; }
   /* Compact menu: tight rows, narrow check column, small width. */
   .filter-panel { top: 96px; left: 250px; width: 185px; min-width: 0; padding: 6px; gap: 0; }
   .filter-panel .p-item { padding: 5px 8px; gap: 7px; font-size: 12px; }
   .filter-panel .p-item .pi { width: 13px; }
   .filter-panel .p-sec { padding: 5px 8px 2px; }
-  .user-panel { bottom: 56px; left: 14px; width: 220px; }
+  /* Stays inside the side pane; condensed like the filter menu. */
+  .user-panel { bottom: 56px; left: 10px; width: 260px; min-width: 0; padding: 6px; gap: 0; }
+  .user-panel .p-item { padding: 6px 8px; gap: 8px; font-size: 12px; }
+  .user-panel .p-item .pi { width: 14px; }
   .p-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--t1); width: 100%; }
   .p-item:hover { background: var(--hover); }
   .p-item.static { cursor: default; }
@@ -1110,8 +1128,8 @@
   .progress { flex: 1; height: 4px; border-radius: 2px; background: var(--line2); overflow: hidden; display: flex; }
   .progress-fill { background: var(--ice-ink); }
   .avstack { display: flex; }
-  .avstack span { width: 22px; height: 22px; border-radius: 50%; background: var(--btn-bg); border: 2px solid var(--panel-edge); display: flex; align-items: center; justify-content: center; font: 600 9px var(--font-ui); color: var(--t1); box-sizing: content-box; }
-  .avstack span + span { margin-left: -6px; }
+  .avstack span { width: 22px; height: 22px; border-radius: 50%; background: var(--btn-bg); border: none; display: flex; align-items: center; justify-content: center; font: 600 9px var(--font-ui); color: var(--t1); }
+  .avstack span + span { margin-left: -5px; }
   .avstack .ai { background: var(--ice-tile); color: var(--ice-ink); font-size: 7px; font-weight: 600; }
 
   /* House tooltip: replaces native title bubbles on hover targets. */
