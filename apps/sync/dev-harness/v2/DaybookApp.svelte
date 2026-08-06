@@ -112,7 +112,7 @@
           type: 'project', title: '# hq-desktop', sub: 'Indigo · project channel', unread: 4,
           status: { dot: 'ok', label: 'Agent running' },
           feed: [
-            { sep: 'TODAY · 9:12 AM' },
+            { sep: 'TODAY' },
             { who: 'Bryan', av: 'B', when: '9:12 AM', text: 'Sidebar concepts look right — can we see the day groups collapse after a week?' },
             { event: { who: 'Desktop Agent', what: 'started run US-004 · day-group collapse', when: '9:14 AM', kind: 'run' } },
             { who: 'Desktop Agent', ai: true, when: 'RUN COMPLETE · 9:31 AM', card: { t: 'Story US-004 shipped — day-group collapse behavior', s: 'Groups older than 7 days fold into a single "Last week" row. 12 tests added, preview deployed.', actions: ['Open preview', 'View diff'] } },
@@ -154,7 +154,7 @@
         'gtm-standup': {
           type: 'channel', title: '# gtm-standup', sub: 'Indigo · channel',
           feed: [
-            { sep: 'TODAY · 8:30 AM' },
+            { sep: 'TODAY' },
             { who: 'Standup Agent', ai: true, when: '8:30 AM', card: { t: 'Standup recap — Aug 4', s: '4 deliverables in motion, 1 blocker on the pricing page copy.', actions: ['Open brief'] } },
             { who: 'Bryan', av: 'B', when: '8:41 AM', text: 'Pricing blocker is on me — copy review by noon.' },
           ],
@@ -162,7 +162,7 @@
         bryan: {
           type: 'dm', title: 'Bryan', sub: 'direct message', unread: 2, av: 'B',
           feed: [
-            { sep: 'TODAY · 9:12 AM' },
+            { sep: 'TODAY' },
             { who: 'Bryan', av: 'B', when: '9:12 AM', text: 'Sidebar concepts look right — can we see the day groups collapse after a week?' },
             { who: 'Bryan', av: 'B', when: '9:13 AM', text: 'Also — demo with the Nestlé team moved to Thursday.' },
           ],
@@ -1050,7 +1050,8 @@
   .fe-ic { display: flex; align-items: center; justify-content: center; width: 32px; flex-shrink: 0; color: var(--t3); opacity: 0.7; }
   .fe-text { flex: 1; font-size: 11px; color: var(--t3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fe-who { font-weight: 500; }
-  .fe-when { flex-shrink: 0; margin-left: auto; font-size: 10px; color: var(--t3); }
+  .fe-when { flex-shrink: 0; margin-left: auto; font-size: 10px; color: var(--t3); opacity: 0; transition: opacity 0.12s; }
+  .feed-event:hover .fe-when { opacity: 1; }
 
   .msg { display: flex; gap: 12px; }
   .msg-body { min-width: 0; flex: 1; }
@@ -1061,8 +1062,9 @@
   .msg-head { display: flex; align-items: baseline; gap: 8px; }
   .who { font-weight: 600; font-size: 13px; }
   .who.ai { color: var(--ice-ink); }
-  /* All timestamps ride the right edge in Geist Mono. */
-  .when { font-family: var(--font-mono); font-size: 10px; color: var(--t3); margin-left: auto; flex-shrink: 0; }
+  /* Timestamps ride the right edge in Geist Mono, revealed on row hover. */
+  .when { font-family: var(--font-mono); font-size: 10px; color: var(--t3); margin-left: auto; flex-shrink: 0; opacity: 0; transition: opacity 0.12s; }
+  .msg:hover .when { opacity: 1; }
   .body-txt { font-size: 13px; color: var(--t2); line-height: 19px; margin-top: 3px; }
   .v2[data-theme='dark'] .body-txt { color: #c6c6cc; }
   .card { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 6px; }
@@ -1087,7 +1089,9 @@
   .composer:focus-within { border-color: var(--border-active); }
   .composer input { width: 100%; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
   .composer input::placeholder { color: var(--t3); }
-  .composer-bar { display: flex; align-items: center; gap: 2px; }
+  /* Pull the bar left of the text inset: button boxes get an 8px edge gutter
+     (matching the bottom), which lands the glyphs on the text's 14px line. */
+  .composer-bar { display: flex; align-items: center; gap: 2px; margin-left: -6px; }
   .cmp-ic { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--t3); transition: color 0.12s, background 0.12s; }
   .cmp-ic:hover { color: var(--t1); background: var(--hover); }
   /* Send: primary small icon button. */
