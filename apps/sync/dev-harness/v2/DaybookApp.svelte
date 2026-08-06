@@ -391,6 +391,15 @@
   });
   let defaultCo = $state('indigo');
   let recordCo = $state('indigo');
+  /** Your role in each company (Profile → Companies). */
+  const CO_ROLES: Record<string, string> = {
+    indigo: 'Owner',
+    sender: 'Member',
+    personal: 'Owner',
+    LiveRecover: 'Member',
+    Keptwork: 'Member',
+    'Holler Mgmt': 'Owner',
+  };
   /** Per-company sync switches (Profile → Companies). */
   let coSync = $state<Record<string, boolean>>({
     indigo: true,
@@ -1014,10 +1023,6 @@
             <div class="prof-id">
               <div class="prof-name">Corey Epstein</div>
               <div class="prof-mail">corey@getindigo.ai</div>
-              <div class="prof-tags">
-                <span class="pill inst">Owner · Indigo</span>
-                <span class="pill">6 companies</span>
-              </div>
             </div>
             <button class="chip push-right" onclick={() => toast('Photo picker would open')}>Change photo</button>
           </div>
@@ -1027,15 +1032,6 @@
             <div><div class="sn">Display name</div><div class="sd">Shown on your messages and runs</div></div>
             <input class="prof-input push-right" value="Corey Epstein" aria-label="Display name" />
           </div>
-          <div class="set-row">
-            <div><div class="sn">Title</div><div class="sd">Optional — helps teammates place you</div></div>
-            <input class="prof-input push-right" value="Founder" aria-label="Title" />
-          </div>
-          <div class="set-row">
-            <div><div class="sn">Local time</div><div class="sd">Teammates see this next to your name</div></div>
-            <span class="prof-static push-right">Los Angeles · 11:24 AM</span>
-          </div>
-
           <div class="prof-sec mono">COMPANIES</div>
           {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label, c.short] as [string, string, string]), ...EXTRA_COMPANIES.map(([short, label]) => [label, label, short] as [string, string, string])] as [key, label, short] (key)}
             <div class="set-row">
@@ -1043,7 +1039,7 @@
                 <span class="co-row-ava">{short}</span>
                 <div>
                   <div class="sn">{label}</div>
-                  <div class="sd">{coSync[key] ? 'Syncing to this Mac' : 'Not syncing here'}</div>
+                  <div class="sd">{CO_ROLES[key] ?? 'Member'} · {coSync[key] ? 'Syncing to this Mac' : 'Not syncing here'}</div>
                 </div>
               </div>
               <button
@@ -1594,7 +1590,7 @@
   .prof-mail { font-size: 12px; color: var(--t3); }
   .prof-tags { display: flex; gap: 6px; margin-top: 4px; }
   .prof-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 10px 2px 0; }
-  .prof-input { width: 200px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 10px; color: var(--t1); font: 500 12px var(--font-ui); outline: none; transition: border-color 0.12s; }
+  .prof-input { width: 280px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 8px 12px; color: var(--t1); font: 500 13px var(--font-ui); outline: none; transition: border-color 0.12s; }
   .prof-input:hover { border-color: var(--line2); }
   .prof-input:focus { border-color: var(--border-active); }
   .prof-static { font-size: 12px; color: var(--t2); }
