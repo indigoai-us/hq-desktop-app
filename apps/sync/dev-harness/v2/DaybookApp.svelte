@@ -535,7 +535,7 @@
     <span class="brand">HQ</span>
     <span class="date mono">{todayLabel}</span>
     <button
-      class="bar-ic tip-right"
+      class="bar-ic"
       class:has-unread={unreadNotifs > 0}
       aria-label={unreadNotifs > 0 ? `Notifications, ${unreadNotifs} unread` : 'Notifications'}
       data-tip="Notifications"
@@ -982,7 +982,7 @@
                 <button class="tab" class:on={notifFilter === k} onclick={() => (notifFilter = k as typeof notifFilter)}>{label}</button>
               {/each}
             </div>
-            <button class="chip g" disabled={unreadNotifs === 0} onclick={readAll}>Mark all read</button>
+            <button class="btn-tertiary" disabled={unreadNotifs === 0} onclick={readAll}>Mark all read</button>
           </div>
         </div>
         <div class="notif-list">
@@ -1560,10 +1560,6 @@
   .bar-ic.has-unread::before { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice-ink); z-index: 1; }
   /* The bell takes over auto-margin duty from Core; 12px flex gap + 4px = 16. */
   .titlebar .bar-ic + .core-btn { margin-left: 4px; }
-  /* Right-anchored variant for tooltips near the window's right edge. Must
-     mirror the base rule's shape — a nested :global() only landed some of the
-     declarations, leaving left/transform fighting right (zero-width box). */
-  .v2 :global([data-tip].tip-right::after) { left: auto; right: 0; transform: none; }
 
   .notif-list { flex: 1; padding: 12px 20px 20px; display: flex; flex-direction: column; overflow: auto; }
   .notif-list .grp { padding: 14px 2px 4px; }
@@ -1581,6 +1577,11 @@
   .n-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: transparent; }
   .notif.unread .n-line { color: var(--t1); }
   .notif.unread .n-dot { background: var(--ice-ink); }
+  /* Standard tertiary button — matches the segmented control's height. */
+  .btn-tertiary { display: inline-flex; align-items: center; height: 31px; padding: 0 12px; border: 1px solid var(--line2); border-radius: 8px; background: transparent; font-size: 12px; font-weight: 500; color: var(--t2); transition: background 0.12s, color 0.12s; }
+  .btn-tertiary:hover:not(:disabled) { background: var(--hover); color: var(--t1); }
+  .btn-tertiary:disabled { opacity: 0.45; cursor: default; }
+
   .chip:disabled { opacity: 0.45; cursor: default; }
   .chip:disabled:hover { background: transparent; border-color: var(--line2); color: var(--t2); }
 
