@@ -391,6 +391,15 @@
   });
   let defaultCo = $state('indigo');
   let recordCo = $state('indigo');
+  /** Per-company sync switches (Profile → Companies). */
+  let coSync = $state<Record<string, boolean>>({
+    indigo: true,
+    sender: true,
+    personal: true,
+    LiveRecover: true,
+    Keptwork: false,
+    'Holler Mgmt': false,
+  });
   let themeChoice = $state<'system' | 'light' | 'dark'>('system');
   let uiSize = $state<'compact' | 'default' | 'large'>('default');
   let windowOpacity = $state(80);
@@ -1027,6 +1036,27 @@
             <span class="prof-static push-right">Los Angeles · 11:24 AM</span>
           </div>
 
+          <div class="prof-sec mono">COMPANIES</div>
+          {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label, c.short] as [string, string, string]), ...EXTRA_COMPANIES.map(([short, label]) => [label, label, short] as [string, string, string])] as [key, label, short] (key)}
+            <div class="set-row">
+              <div class="co-row-id">
+                <span class="co-row-ava">{short}</span>
+                <div>
+                  <div class="sn">{label}</div>
+                  <div class="sd">{coSync[key] ? 'Syncing to this Mac' : 'Not syncing here'}</div>
+                </div>
+              </div>
+              <button
+                class="toggle push-right"
+                class:on={coSync[key]}
+                role="switch"
+                aria-checked={coSync[key]}
+                aria-label={`Sync ${label}`}
+                onclick={() => { coSync[key] = !coSync[key]; toast(coSync[key] ? `${label} will sync here` : `${label} stopped syncing here`); }}
+              ></button>
+            </div>
+          {/each}
+
           <div class="prof-sec mono">ACCOUNT</div>
           <div class="set-row">
             <div><div class="sn">Email</div><div class="sd mono">corey@getindigo.ai</div></div>
@@ -1530,9 +1560,12 @@
   /* Naked icon button for the title bar; a dot marks unread. */
   .bar-ic { position: relative; display: grid; place-items: center; width: 28px; height: 28px; margin-left: auto; border-radius: 8px; color: var(--t2); transition: color 0.12s, background 0.12s; }
   .bar-ic:hover { color: var(--t1); background: var(--hover); }
-  .bar-ic.has-unread::after { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice-ink); }
-  /* The bell takes over auto-margin duty from Core. */
-  .titlebar .bar-ic + .core-btn { margin-left: 6px; }
+  /* ::before, not ::after — ::after belongs to the shared tooltip. */
+  .bar-ic.has-unread::before { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice-ink); z-index: 1; }
+  /* The bell takes over auto-margin duty from Core; 12px flex gap + 4px = 16. */
+  .titlebar .bar-ic + .core-btn { margin-left: 4px; }
+  /* Title bar sits at the window's right edge — anchor tooltips right. */
+  .titlebar :global([data-tip]::after) { left: auto; right: 0; transform: none; }
 
   .notif-list { flex: 1; padding: 12px 20px 20px; display: flex; flex-direction: column; overflow: auto; }
   .notif-list .grp { padding: 14px 2px 4px; }
@@ -1565,6 +1598,8 @@
   .prof-input:hover { border-color: var(--line2); }
   .prof-input:focus { border-color: var(--border-active); }
   .prof-static { font-size: 12px; color: var(--t2); }
+  .co-row-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); }
 
   .toggle { margin-left: auto; width: 28px; height: 16px; border-radius: 999px; background: var(--line2); position: relative; flex-shrink: 0; transition: background 0.15s; }
   .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: left 0.15s; }
