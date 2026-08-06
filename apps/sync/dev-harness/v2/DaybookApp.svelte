@@ -302,7 +302,18 @@
   let openPanel = $state<string | null>(null);
   let packsOpen = $state(false);
   let sortMode = $state<'chrono' | 'type'>('chrono');
-  let filterTypes = $state<Record<string, boolean>>({ project: true, channel: true, dm: true });
+  let filterTypes = $state<Record<string, boolean>>({ project: true, channel: true, dm: true, group: true });
+  const FILTER_KINDS: [string, string][] = [
+    ['project', 'Project channels'],
+    ['channel', 'Channels'],
+    ['dm', 'DMs'],
+    ['group', 'Groups'],
+  ];
+  /** A group message is a DM with more than one peer. */
+  function rowKind(c: Channel): string {
+    if (c.type === 'dm') return c.sub.includes('group') ? 'group' : 'dm';
+    return c.type;
+  }
   let search = $state('');
   let moreCompanies = $state(false);
   const EXTRA_COMPANIES: [string, string][] = [
@@ -310,6 +321,8 @@
     ['KW', 'Keptwork'],
     ['HM', 'Holler Mgmt'],
   ];
+  /** Collapsed strip shows this many company pills; the rest fold into +N. */
+  const COLLAPSED_COMPANIES = 2;
   let composerText = $state('');
   /** Settings → Default company picker. */
   let defaultCo = $state('indigo');
@@ -360,6 +373,20 @@
   function toggleCompany(key: string) {
     coFilter = coFilter === key ? 'all' : key;
   }
+  // Collapsed: the first N companies, plus the selected one if it fell outside.
+  const stripCompanies = $derived.by(() => {
+    const all = Object.entries(DATA);
+    if (moreCompanies) return all;
+    const shown = all.slice(0, COLLAPSED_COMPANIES);
+    if (coFilter !== 'all' && !shown.some(([k]) => k === coFilter)) {
+      const active = all.find(([k]) => k === coFilter);
+      if (active) shown.push(active);
+    }
+    return shown;
+  });
+  const hiddenCompanyCount = $derived(
+    Object.keys(DATA).length + EXTRA_COMPANIES.length - stripCompanies.length,
+  );
   function selectChannel(coKey: string, id: string) {
     view = 'channel';
     activeCo = coKey;
@@ -379,7 +406,7 @@
   function rowVisible(coKey: string, id: string): boolean {
     const c = DATA[coKey].channels[id];
     if (!c) return false;
-    if (!filterTypes[c.type]) return false;
+    if (!filterTypes[rowKind(c)]) return false;
     if (search && !c.title.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   }
@@ -449,36 +476,38 @@
 
       <!-- Company scope strip: everything by default, click a circle to
            filter, hover stretches the pill to the full name. -->
-      <div class="co-strip" role="group" aria-label="Filter by company">
-        <button
-          class="co-chip"
-          class:active={coFilter === 'all'}
-          aria-pressed={coFilter === 'all'}
-          data-tip="All companies"
-          aria-label="All companies"
-          onclick={() => (coFilter = 'all')}
-        >
-          <span class="co-ava">All</span>
-        </button>
-        {#each Object.entries(DATA) as [key, c] (key)}
+      <div class="co-strip" class:expanded={moreCompanies} role="group" aria-label="Filter by company">
+        <div class="co-scroll">
           <button
             class="co-chip"
-            class:active={coFilter === key}
-            aria-pressed={coFilter === key}
-            data-tip={c.label}
-            aria-label={c.label}
-            onclick={() => toggleCompany(key)}
+            class:active={coFilter === 'all'}
+            aria-pressed={coFilter === 'all'}
+            data-tip="All companies"
+            aria-label="All companies"
+            onclick={() => (coFilter = 'all')}
           >
-            <span class="co-ava">{c.short}</span>
+            <span class="co-ava">All</span>
           </button>
-        {/each}
-        {#if moreCompanies}
-          {#each EXTRA_COMPANIES as [short, label] (short)}
-            <button class="co-chip" data-tip={label} aria-label={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
-              <span class="co-ava">{short}</span>
+          {#each stripCompanies as [key, c] (key)}
+            <button
+              class="co-chip"
+              class:active={coFilter === key}
+              aria-pressed={coFilter === key}
+              data-tip={c.label}
+              aria-label={c.label}
+              onclick={() => toggleCompany(key)}
+            >
+              <span class="co-ava">{c.label}</span>
             </button>
           {/each}
-        {/if}
+          {#if moreCompanies}
+            {#each EXTRA_COMPANIES as [short, label] (short)}
+              <button class="co-chip" data-tip={label} aria-label={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
+                <span class="co-ava">{label}</span>
+              </button>
+            {/each}
+          {/if}
+        </div>
         <button
           class="co-chip more"
           aria-expanded={moreCompanies}
@@ -486,7 +515,7 @@
           aria-label={moreCompanies ? 'Show less' : 'More companies'}
           onclick={() => (moreCompanies = !moreCompanies)}
         >
-          <span class="co-ava">{#if moreCompanies}<CaretUp size={12} weight="bold" />{:else}+{EXTRA_COMPANIES.length}{/if}</span>
+          <span class="co-ava">{#if moreCompanies}<CaretUp size={12} weight="bold" />{:else}+{hiddenCompanyCount}{/if}</span>
         </button>
       </div>
 
@@ -777,7 +806,7 @@
           {#each scopeKeys as k (k)}
             {#each Object.entries(DATA[k].channels) as [id, c] (`${k}:${id}`)}
               <button class="lrow" onclick={() => selectChannel(k, id)}>
-                <span class="lrow-ic">{#if c.type === 'dm'}<ChatCircle size={15} />{:else}<Hash size={15} />{/if}</span><span class="fn">{c.title.replace('# ', '')}</span><span class="fm mono">{coFilter === 'all' ? `${DATA[k].short} · ` : ''}{c.type.toUpperCase()}</span>
+                <span class="lrow-ic">{#if c.type === 'dm'}<ChatCircle size={15} />{:else}<Hash size={15} />{/if}</span><span class="fn">{c.title.replace('# ', '')}</span><span class="fm mono">{coFilter === 'all' ? `${DATA[k].short} · ` : ''}{rowKind(c).toUpperCase()}</span>
               </button>
             {/each}
           {/each}
@@ -831,13 +860,13 @@
     <div class="p-sec mono">SORT</div>
     {#each [['chrono', 'Chronological'], ['type', 'By type']] as [k, label] (k)}
       <button class="p-item" onclick={(e) => { e.stopPropagation(); sortMode = k as typeof sortMode; toast(k === 'type' ? 'Sorted by type' : 'Sorted chronologically'); }}>
-        <span class="pi">{#if sortMode === k}<Check size={12} weight="bold" />{/if}</span>{label}
+        {label}<span class="p-check">{#if sortMode === k}<Check size={12} weight="bold" />{/if}</span>
       </button>
     {/each}
     <div class="p-sec mono">SHOW</div>
-    {#each [['project', 'Projects'], ['channel', 'Channels'], ['dm', 'DMs & groups']] as [k, label] (k)}
+    {#each FILTER_KINDS as [k, label] (k)}
       <button class="p-item" onclick={(e) => { e.stopPropagation(); filterTypes[k] = !filterTypes[k]; }}>
-        <span class="pi">{#if filterTypes[k]}<Check size={12} weight="bold" />{/if}</span>{label}
+        {label}<span class="p-check">{#if filterTypes[k]}<Check size={12} weight="bold" />{/if}</span>
       </button>
     {/each}
   </div>
@@ -966,11 +995,14 @@
   .body { flex: 1; display: flex; min-height: 0; }
 
   /* ═══════════ Company strip (under the search bar) ═══════════ */
-  .co-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+  /* Collapsed: one row of whole pills + a pinned +N chip. Expanded: pills
+     wrap into as many rows as they need. */
+  .co-strip { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 6px; }
+  .co-scroll { display: flex; flex-wrap: wrap; min-width: 0; gap: 6px; }
   /* Chips follow the secondary-button states: fill at rest, border on hover,
      brighter border + primary ink when selected. */
-  .co-chip { display: inline-flex; border-radius: 999px; }
-  .co-ava { display: flex; align-items: center; justify-content: center; height: 24px; padding: 0 10px; flex-shrink: 0; border-radius: 999px; background: var(--btn-bg); border: 1px solid transparent; font: 600 10px var(--font-ui); letter-spacing: 0.04em; color: var(--t2); box-sizing: border-box; transition: border-color 0.12s; }
+  .co-chip { display: inline-flex; flex-shrink: 0; border-radius: 999px; }
+  .co-ava { display: flex; align-items: center; justify-content: center; height: 24px; padding: 0 10px; flex-shrink: 0; border-radius: 999px; background: var(--btn-bg); border: 1px solid transparent; font: 500 11px var(--font-ui); color: var(--t2); white-space: nowrap; box-sizing: border-box; transition: border-color 0.12s; }
   .co-chip:hover .co-ava { border-color: var(--line2); color: var(--t1); }
   .co-chip.active .co-ava { background: var(--ice-tile); border-color: color-mix(in srgb, var(--ice-ink) 35%, transparent); color: var(--ice-ink); }
   .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; padding: 0 8px; }
@@ -1209,11 +1241,11 @@
   /* Condensed key-value rows: Branch / Repo / Preview. */
   .status-panel .p-item.kv { padding: 5px 10px; }
   .status-panel .p-item.static { cursor: default; }
-  /* Compact menu: tight rows, narrow check column, small width. */
+  /* Compact menu: tight rows, check column on the right. */
   .filter-panel { top: 96px; left: 250px; width: 185px; min-width: 0; padding: 6px; gap: 0; }
   .filter-panel .p-item { padding: 5px 8px; gap: 7px; font-size: 12px; }
-  .filter-panel .p-item .pi { width: 13px; }
   .filter-panel .p-sec { padding: 5px 8px 2px; }
+  .p-check { display: inline-flex; align-items: center; justify-content: flex-end; width: 13px; margin-left: auto; flex-shrink: 0; color: var(--t2); }
   /* Stays inside the side pane; condensed like the filter menu. */
   .user-panel { bottom: 56px; left: 10px; width: 260px; min-width: 0; padding: 6px; gap: 0; }
   .user-panel .p-item { padding: 6px 8px; gap: 8px; font-size: 12px; }
@@ -1230,7 +1262,9 @@
   .p-dim { color: var(--t2); font-size: 12px; }
   .p-meta { margin-left: auto; font-size: 10px; color: var(--t3); }
   .p-meta.new { color: var(--ice-ink); }
-  .p-card { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: none; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
+  /* Header sits apart from the detail rows; the detail rows sit tight. */
+  .p-card { display: flex; flex-direction: column; gap: 4px; background: var(--raised); border: none; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; }
+  .p-card .p-line.head { margin-bottom: 4px; }
   .p-line { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--t2); }
   .p-line.head { font-size: 13px; color: var(--t1); font-weight: 500; }
   .p-line .v { font-size: 10px; color: var(--t1); }
