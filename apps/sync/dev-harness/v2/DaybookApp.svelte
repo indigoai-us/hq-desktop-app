@@ -11,10 +11,51 @@
    *
    * Harness-only — nothing in the shipping app imports this.
    */
+  import {
+    ArrowLeft,
+    ArrowRight,
+    ArrowUpRight,
+    ArrowsDownUp,
+    Bell,
+    Books,
+    BookOpen,
+    CaretDown,
+    CaretRight,
+    ChatCircle,
+    Check,
+    DotsThree,
+    FileText,
+    FunnelSimple,
+    GearSix,
+    Hash,
+    Image,
+    Lightning,
+    MagnifyingGlass,
+    Note,
+    Package,
+    ShieldCheck,
+    SignOut,
+    UserCircle,
+    VideoCamera,
+    Warning,
+  } from 'phosphor-svelte';
+
   interface Props {
     theme?: string;
   }
   let { theme = 'dark' }: Props = $props();
+
+  /* Item-glyph vocabulary — data rows carry a semantic key, phosphor draws it. */
+  const GLYPHS: Record<string, typeof FileText> = {
+    file: FileText,
+    image: Image,
+    knowledge: BookOpen,
+    doc: Note,
+    meeting: VideoCamera,
+    policy: ShieldCheck,
+    skill: Lightning,
+    worker: UserCircle,
+  };
 
   /* ═══════════ Fixture data (from the prototype) ═══════════ */
   type FeedItem = {
@@ -73,21 +114,21 @@
             review: [['US-004 · day-group collapse', 'PR OPEN · CI GREEN', 'warn'], ['US-001 · unified shell frame', 'Marcus reviewing', '']],
             done: [['US-003 · remove messages app', 'SHIPPED', 'ok'], ['US-006 · title bar', 'SHIPPED', 'ok']],
           },
-          files: [['📄', 'library-ia-v2.md', 'SOFIA · TODAY'], ['📄', 'daybook-interaction-notes.md', 'COREY · TODAY'], ['🖼', 'concept-a-daybook.png', 'AGENT · YESTERDAY'], ['📄', 'prd-draft.json', 'AGENT · AUG 1']],
+          files: [['file', 'library-ia-v2.md', 'SOFIA · TODAY'], ['file', 'daybook-interaction-notes.md', 'COREY · TODAY'], ['image', 'concept-a-daybook.png', 'AGENT · YESTERDAY'], ['file', 'prd-draft.json', 'AGENT · AUG 1']],
         },
         'hq-sync': {
           type: 'project', title: '# hq-sync', sub: 'Indigo · project channel',
           status: { dot: 'ok', label: 'Idle' },
           feed: [{ sep: 'YESTERDAY' }, { who: 'Build Agent', ai: true, when: '5:02 PM', card: { t: 'v0.10.43 released', s: 'Menubar popover drift detection shipped to prod.', actions: ['Release notes'] } }],
           board: { inprog: [], review: [], done: [['US-011 · drift detect', 'SHIPPED', 'ok'], ['US-012 · rescue flow', 'SHIPPED', 'ok']] },
-          files: [['📄', 'release-checklist.md', 'AGENT · AUG 3']],
+          files: [['file', 'release-checklist.md', 'AGENT · AUG 3']],
         },
         'agent-orchestrator': {
           type: 'project', title: '# agent-orchestrator', sub: 'Indigo · project channel', live: true,
           status: { dot: 'ok', label: 'Agent running' },
           feed: [{ sep: 'TODAY' }, { who: 'Fleet Agent', ai: true, when: 'RUNNING · 10:14 AM', card: { t: 'Nightly triage sweep', s: '12 boxes checked, 1 flagged for storage autoscale.', actions: ['View report'] } }],
           board: { inprog: [['US-020 · box telemetry', 'AGENT · 30%', 'ok']], review: [], done: [] },
-          files: [['📄', 'triage-report-aug4.md', 'AGENT · TODAY']],
+          files: [['file', 'triage-report-aug4.md', 'AGENT · TODAY']],
         },
         'gtm-standup': {
           type: 'channel', title: '# gtm-standup', sub: 'Indigo · channel',
@@ -118,7 +159,7 @@
           status: { dot: 'ok', label: 'Idle' },
           feed: [{ sep: 'YESTERDAY' }, { who: 'Deploy Agent', ai: true, when: '5:02 PM', card: { t: 'Brief deployed', s: 'Posted to #hq-dev with the transcript-dated link.', actions: ['Open brief'] } }],
           board: { inprog: [], review: [], done: [['US-001 · recall pull', 'SHIPPED', 'ok']] },
-          files: [['📄', 'brief-2026-08-03.html', 'AGENT · AUG 3']],
+          files: [['file', 'brief-2026-08-03.html', 'AGENT · AUG 3']],
         },
         'customer-conversations': {
           type: 'channel', title: '# customer-conversations', sub: 'Indigo · channel',
@@ -133,7 +174,7 @@
             { who: 'Build Agent', ai: true, when: '11:30 AM', card: { t: 'US-010 ready for review', s: 'PR open, CI green. Waiting on you.', actions: ['Open PR'] } },
           ],
           board: { inprog: [], review: [['US-010 · enterprise tier', 'PR OPEN', 'warn']], done: [['US-009 · pricing table', 'SHIPPED', 'ok']] },
-          files: [['📄', 'pricing-matrix.xlsx', 'COREY · AUG 1']],
+          files: [['file', 'pricing-matrix.xlsx', 'COREY · AUG 1']],
         },
       },
     },
@@ -151,7 +192,7 @@
           status: { dot: 'ok', label: 'Agent running' },
           feed: [{ sep: 'TODAY' }, { who: 'Creative Agent', ai: true, when: 'RUNNING · 9:00 AM', card: { t: 'Weekly batch — 12 statics', s: '6 approved, 4 in iteration, 2 queued for review.', actions: ['Open batch'] } }],
           board: { inprog: [['CR-31 · statics batch', 'AGENT · 50%', 'ok']], review: [['CR-29 · UGC scripts', 'CLIENT REVIEW', 'warn']], done: [['CR-28 · hooks test', 'SHIPPED', 'ok']] },
-          files: [['🖼', 'batch-31-preview.png', 'AGENT · TODAY']],
+          files: [['image', 'batch-31-preview.png', 'AGENT · TODAY']],
         },
         'ramen-bae': {
           type: 'channel', title: '# ramen-bae', sub: 'Sender Agency · client channel', unread: 1,
@@ -166,7 +207,7 @@
           status: { dot: 'ok', label: 'Idle' },
           feed: [{ sep: 'MONDAY' }, { who: 'Email Agent', ai: true, when: '4:12 PM', card: { t: 'Flow refresh shipped', s: 'Welcome series v3 live for 2 brands.', actions: ['Open flows'] } }],
           board: { inprog: [], review: [], done: [['EM-14 · welcome v3', 'SHIPPED', 'ok']] },
-          files: [['📄', 'flow-map.md', 'AGENT · AUG 3']],
+          files: [['file', 'flow-map.md', 'AGENT · AUG 3']],
         },
       },
     },
@@ -184,7 +225,7 @@
           status: { dot: 'ok', label: 'Idle' },
           feed: [{ sep: 'LAST WEEK' }, { who: 'Build Agent', ai: true, when: 'JUL 29', card: { t: 'Reading stats page shipped', s: '52 books logged this year.', actions: ['Open app'] } }],
           board: { inprog: [], review: [], done: [['BT-08 · stats page', 'SHIPPED', 'ok']] },
-          files: [['📄', 'reading-list.md', 'COREY · JUL 29']],
+          files: [['file', 'reading-list.md', 'COREY · JUL 29']],
         },
         reminders: {
           type: 'channel', title: '# reminders', sub: 'Personal · channel', unread: 1,
@@ -195,7 +236,7 @@
           status: { dot: 'w', label: 'Waiting on you' },
           feed: [{ sep: 'FRIDAY' }, { who: 'Docs Agent', ai: true, when: 'JUL 31', card: { t: 'Signature needed', s: 'One document waiting in the vault.', actions: ['Open vault'] } }],
           board: { inprog: [], review: [['ED-02 · trust update', 'WAITING', 'warn']], done: [] },
-          files: [['📄', 'trust-amendment.pdf', 'AGENT · JUL 31']],
+          files: [['file', 'trust-amendment.pdf', 'AGENT · JUL 31']],
         },
       },
     },
@@ -207,13 +248,13 @@
       ['meetings', 'Meetings', 31], ['policies', 'Policies', 17], ['skills', 'Skills', 46], ['workers', 'Workers', 18],
     ] as [string, string, number][],
     items: {
-      files: [['📄', 'library-ia-v2.md', 'FILES · TODAY'], ['🖼', 'concept-a-daybook.png', 'MOCKUPS · TODAY'], ['📄', 'pricing-matrix.xlsx', 'AUG 1'], ['📄', 'brief-2026-08-03.html', 'AUG 3']],
-      knowledge: [['◈', 'design-styles pack v3', 'UPDATED 2H AGO · SOFIA'], ['◈', 'pricing objection handling', 'YESTERDAY · BRYAN'], ['◈', 'agent-box provisioning guide', 'AUG 1 · AGENT']],
-      docs: [['▤', 'library-ia-v2.md', 'SOFIA · TODAY'], ['▤', 'daybook-interaction-notes.md', 'COREY · TODAY']],
-      meetings: [['◉', 'GTM standup — Aug 4', 'RECAP + TRANSCRIPT'], ['◉', 'Nestlé demo prep — Aug 1', 'NOTES']],
-      policies: [['§', 'deploy account mapping', 'HARD'], ['§', 'tauri2 api detection', 'HARD'], ['§', 'docs sync on material change', 'HARD']],
-      skills: [['◇', '/storyboard', 'DESIGN GATE'], ['◇', '/deploy', 'SHIP ARTIFACTS'], ['◇', '/standup-brief', 'DAILY BRIEF'], ['◇', '/crm-management', 'GTM']],
-      workers: [['◆', 'paper-designer', 'DESIGN'], ['◆', 'build-agent', 'ENGINEERING'], ['◆', 'signal-agent', 'INSIGHTS']],
+      files: [['file', 'library-ia-v2.md', 'FILES · TODAY'], ['image', 'concept-a-daybook.png', 'MOCKUPS · TODAY'], ['file', 'pricing-matrix.xlsx', 'AUG 1'], ['file', 'brief-2026-08-03.html', 'AUG 3']],
+      knowledge: [['knowledge', 'design-styles pack v3', 'UPDATED 2H AGO · SOFIA'], ['knowledge', 'pricing objection handling', 'YESTERDAY · BRYAN'], ['knowledge', 'agent-box provisioning guide', 'AUG 1 · AGENT']],
+      docs: [['doc', 'library-ia-v2.md', 'SOFIA · TODAY'], ['doc', 'daybook-interaction-notes.md', 'COREY · TODAY']],
+      meetings: [['meeting', 'GTM standup — Aug 4', 'RECAP + TRANSCRIPT'], ['meeting', 'Nestlé demo prep — Aug 1', 'NOTES']],
+      policies: [['policy', 'deploy account mapping', 'HARD'], ['policy', 'tauri2 api detection', 'HARD'], ['policy', 'docs sync on material change', 'HARD']],
+      skills: [['skill', '/storyboard', 'DESIGN GATE'], ['skill', '/deploy', 'SHIP ARTIFACTS'], ['skill', '/standup-brief', 'DAILY BRIEF'], ['skill', '/crm-management', 'GTM']],
+      workers: [['worker', 'paper-designer', 'DESIGN'], ['worker', 'build-agent', 'ENGINEERING'], ['worker', 'signal-agent', 'INSIGHTS']],
     } as Record<string, string[][]>,
   };
 
@@ -326,7 +367,7 @@
     <span class="brand">HQ</span>
     <span class="date mono">{todayLabel}</span>
     <button class="core-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('core'); }}>
-      <span class="dot"></span>Core <span class="caret">▾</span>
+      <span class="dot"></span>Core <span class="caret"><CaretDown size={10} weight="bold" /></span>
     </button>
   </div>
 
@@ -347,7 +388,7 @@
         </button>
       {/each}
       <button class="rail-item rail-more" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('moreCos'); }}>
-        <span class="avatar">⋯</span>
+        <span class="avatar"><DotsThree size={18} weight="bold" /></span>
         <span class="rail-label">More companies</span>
       </button>
     </div>
@@ -355,9 +396,12 @@
     <!-- Daybook sidebar -->
     <div class="sidebar">
       <div class="search">
+        <span class="lead"><MagnifyingGlass size={13} /></span>
         <input id="v2-search" placeholder="Search or jump to…" bind:value={search} />
         <span class="kbd mono">⌘K</span>
-        <button class="filter-btn mono" class:on={filterActive} data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}>≡ FILTER</button>
+        <button class="filter-btn mono" class:on={filterActive} data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}>
+          <FunnelSimple size={11} weight="bold" /> FILTER
+        </button>
       </div>
       <div class="side-scroll">
         <div class="grp"><span class="t mono">PINNED</span></div>
@@ -365,7 +409,7 @@
           {@const c = company.channels[id]}
           {#if c && rowVisible(id)}
             <button class="row" class:sel={view === 'channel' && channelId === id} class:unread={!!c.unread} onclick={() => selectChannel(id)}>
-              {#if c.type === 'dm'}<span class="av">{c.av ?? c.title[0]}</span>{:else}<span class="ico">#</span>{/if}
+              {#if c.type === 'dm'}<span class="av">{c.av ?? c.title[0]}</span>{:else}<span class="ico"><Hash size={13} /></span>{/if}
               <span class="name">{c.title.replace('# ', '')}</span>
               {#if c.unread}<span class="badge mono">{c.unread}</span>{:else if c.live}<span class="pulse"></span>{/if}
             </button>
@@ -377,7 +421,7 @@
             {@const c = company.channels[id]}
             {#if c && rowVisible(id)}
               <button class="row" class:sel={view === 'channel' && channelId === id} class:unread={!!c.unread} onclick={() => selectChannel(id)}>
-                {#if c.type === 'dm'}<span class="av">{c.av ?? c.title[0]}</span>{:else}<span class="ico">#</span>{/if}
+                {#if c.type === 'dm'}<span class="av">{c.av ?? c.title[0]}</span>{:else}<span class="ico"><Hash size={13} /></span>{/if}
                 <span class="name">{c.title.replace('# ', '')}</span>
                 {#if c.unread}<span class="badge mono">{c.unread}</span>{:else if c.live}<span class="pulse"></span>{/if}
               </button>
@@ -385,15 +429,15 @@
           {/each}
         {/each}
         <button class="grp fold" onclick={() => toast('Last week would expand — 6 quiet conversations')}>
-          <span class="t mono dim">LAST WEEK ▸</span><span class="d mono">6 QUIET</span>
+          <span class="t mono dim">LAST WEEK <CaretRight size={8} weight="bold" /></span><span class="d mono">6 QUIET</span>
         </button>
-        <button class="hist" onclick={() => nav('history')}><span>⌕</span><span>Show all history…</span></button>
+        <button class="hist" onclick={() => nav('history')}><MagnifyingGlass size={14} /><span>Show all history…</span></button>
       </div>
       <button class="footer" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('user'); }}>
         <span class="fav">C</span>
         <span class="footer-name">Corey</span>
-        <span class="synced mono">● SYNCED</span>
-        <span class="caret">▾</span>
+        <span class="synced mono"><span class="sync-dot"></span>SYNCED</span>
+        <span class="caret"><CaretDown size={10} weight="bold" /></span>
       </button>
     </div>
 
@@ -412,7 +456,7 @@
               </div>
               {#if chan.status}
                 <button class="status-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('status'); }}>
-                  <span class="dot" class:w={chan.status.dot === 'w'}></span>{chan.status.label} <span class="caret">▾</span>
+                  <span class="dot" class:w={chan.status.dot === 'w'}></span>{chan.status.label} <span class="caret"><CaretDown size={10} weight="bold" /></span>
                 </button>
               {/if}
             {/if}
@@ -440,7 +484,8 @@
               {#if chan.files}
                 <div class="listview">
                   {#each chan.files as [i, n, m] (n)}
-                    <button class="lrow" onclick={() => toast(`${n} would open`)}><span>{i}</span><span class="fn">{n}</span><span class="fm mono">{m}</span></button>
+                    {@const Glyph = GLYPHS[i] ?? FileText}
+                    <button class="lrow" onclick={() => toast(`${n} would open`)}><span class="lrow-ic"><Glyph size={15} /></span><span class="fn">{n}</span><span class="fm mono">{m}</span></button>
                   {/each}
                 </div>
               {:else}
@@ -473,7 +518,7 @@
                         {/if}
                         {#if m.file}
                           <div class="card filecard">
-                            <span>📄</span><span class="ct small">{m.file.n}</span><span class="cs mono tiny">{m.file.m}</span>
+                            <span class="lrow-ic"><FileText size={15} /></span><span class="ct small">{m.file.n}</span><span class="cs mono tiny">{m.file.m}</span>
                           </div>
                         {/if}
                       </div>
@@ -496,7 +541,7 @@
         {/if}
       {:else if view === 'library'}
         <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}>← Back</button>
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">Library</span>
           <span class="chan-sub">{company.label} · everything in your HQ</span>
         </div>
@@ -510,14 +555,15 @@
             <div class="lib-head"><input placeholder={`Search ${company.label}'s library — files, skills, workers…`} /></div>
             <div class="listview">
               {#each LIBRARY.items[libCat] ?? [] as [i, n, m] (n)}
-                <button class="lrow" onclick={() => toast(`${n} would open`)}><span>{i}</span><span class="fn">{n}</span><span class="fm mono">{m}</span></button>
+                {@const Glyph = GLYPHS[i] ?? FileText}
+                <button class="lrow" onclick={() => toast(`${n} would open`)}><span class="lrow-ic"><Glyph size={15} /></span><span class="fn">{n}</span><span class="fm mono">{m}</span></button>
               {/each}
             </div>
           </div>
         </div>
       {:else if view === 'marketplace'}
         <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}>← Back</button>
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">Marketplace</span>
           <span class="chan-sub">packs & extensions for your HQ</span>
         </div>
@@ -531,7 +577,7 @@
         </div>
       {:else if view === 'sync'}
         <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}>← Back</button>
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">Sync & conflicts</span>
           <span class="chan-sub">cloud state for this machine</span>
         </div>
@@ -545,7 +591,7 @@
           <div class="sync-card">
             <div class="sync-line strong"><span class="dot w"></span> 1 conflict needs you</div>
             <div class="conflict" class:resolved={resolvedConflict}>
-              <span>⚠</span>
+              <span class="conflict-ic"><Warning size={15} /></span>
               <span class="conflict-path">companies/indigo/knowledge/pricing-notes.md — edited here and on cloud</span>
               <button class="chip" onclick={() => { resolvedConflict = true; toast('Keep local — conflict resolved'); }}>Keep local</button>
               <button class="chip g" onclick={() => { resolvedConflict = true; toast('Keep cloud — conflict resolved'); }}>Keep cloud</button>
@@ -559,7 +605,7 @@
         </div>
       {:else if view === 'settings'}
         <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}>← Back</button>
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">Settings</span>
           <span class="chan-sub">yours — moved here from the Core menu</span>
         </div>
@@ -585,12 +631,12 @@
           {/each}
           <div class="set-row">
             <div><div class="sn">Default company</div><div class="sd">Which company loads on launch</div></div>
-            <span class="mono accent push-right">INDIGO ▾</span>
+            <span class="mono accent push-right co-picker">INDIGO <CaretDown size={9} weight="bold" /></span>
           </div>
         </div>
       {:else if view === 'history'}
         <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}>← Back</button>
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">All history</span>
           <span class="chan-sub">{company.label} · every conversation, ever</span>
         </div>
@@ -598,7 +644,7 @@
         <div class="listview">
           {#each Object.entries(company.channels) as [id, c] (id)}
             <button class="lrow" onclick={() => selectChannel(id)}>
-              <span>{c.type === 'dm' ? '◦' : '#'}</span><span class="fn">{c.title.replace('# ', '')}</span><span class="fm mono">{c.type.toUpperCase()}</span>
+              <span class="lrow-ic">{#if c.type === 'dm'}<ChatCircle size={15} />{:else}<Hash size={15} />{/if}</span><span class="fn">{c.title.replace('# ', '')}</span><span class="fm mono">{c.type.toUpperCase()}</span>
             </button>
           {/each}
         </div>
@@ -613,17 +659,18 @@
       <div class="p-line">HQ core <span class="v mono">v0.10.43</span> <span class="okc mono">NO DRIFT</span></div>
       <div class="p-line">Desktop app <span class="v mono">v0.10.41</span> <button class="upd-btn mono" onclick={() => toast('Update would download & install v0.10.43')}>UPDATE</button></div>
     </div>
-    <button class="p-item" onclick={() => nav('sync')}><span class="pi">⇅</span>Sync &amp; conflicts</button>
-    <button class="p-item" onclick={() => nav('library')}><span class="pi">◈</span>Library — explore your HQ</button>
+    <button class="p-item" onclick={() => nav('sync')}><span class="pi"><ArrowsDownUp size={14} /></span>Sync &amp; conflicts</button>
+    <button class="p-item" onclick={() => nav('library')}><span class="pi"><Books size={14} /></span>Library — explore your HQ</button>
     <div class="packs-box">
       <button class="p-item packs-toggle" onclick={(e) => { e.stopPropagation(); packsOpen = !packsOpen; }}>
-        <span class="pi">⌂</span><span class="packs-title">Packs</span><span class="p-meta mono">4 INSTALLED {packsOpen ? '▾' : '▸'}</span>
+        <span class="pi"><Package size={14} /></span><span class="packs-title">Packs</span>
+        <span class="p-meta mono">4 INSTALLED {#if packsOpen}<CaretDown size={8} weight="bold" />{:else}<CaretRight size={8} weight="bold" />{/if}</span>
       </button>
       {#if packsOpen}
         <button class="sub-item" onclick={() => nav('marketplace')}>engineering<span class="p-meta mono">v2.1</span></button>
         <button class="sub-item" onclick={() => nav('marketplace')}>design-styles<span class="p-meta mono new">v3.0 · NEW</span></button>
         <button class="sub-item" onclick={() => nav('marketplace')}>parker<span class="p-meta mono">v1.4</span></button>
-        <button class="sub-item accent strong" onclick={() => nav('marketplace')}>Open marketplace →</button>
+        <button class="sub-item accent strong" onclick={() => nav('marketplace')}>Open marketplace <ArrowRight size={11} weight="bold" /></button>
       {/if}
     </div>
   </div>
@@ -642,7 +689,7 @@
     <div class="p-sec mono">PROJECT</div>
     <div class="p-item static kv"><span class="k">Branch</span><span class="mono val">feat/unified-shell</span></div>
     <div class="p-item static kv"><span class="k">Repo</span><span class="mono val">hq-desktop</span></div>
-    <button class="p-item kv" onclick={() => toast('Preview would open')}><span class="k">Preview</span><span class="accent strong">hq-desktop-preview ↗</span></button>
+    <button class="p-item kv" onclick={() => toast('Preview would open')}><span class="k">Preview</span><span class="accent strong preview-link">hq-desktop-preview <ArrowUpRight size={11} weight="bold" /></span></button>
   </div>
 
   <!-- Filter dropdown -->
@@ -650,23 +697,23 @@
     <div class="p-sec mono">SORT</div>
     {#each [['chrono', 'Chronological'], ['type', 'By type']] as [k, label] (k)}
       <button class="p-item" onclick={(e) => { e.stopPropagation(); sortMode = k as typeof sortMode; toast(k === 'type' ? 'Sorted by type' : 'Sorted chronologically'); }}>
-        <span class="pi">{sortMode === k ? '✓' : ''}</span>{label}
+        <span class="pi">{#if sortMode === k}<Check size={12} weight="bold" />{/if}</span>{label}
       </button>
     {/each}
     <div class="p-sec mono">SHOW</div>
     {#each [['project', 'Projects'], ['channel', 'Channels'], ['dm', 'DMs & groups']] as [k, label] (k)}
       <button class="p-item" onclick={(e) => { e.stopPropagation(); filterTypes[k] = !filterTypes[k]; }}>
-        <span class="pi">{filterTypes[k] ? '✓' : ''}</span>{label}
+        <span class="pi">{#if filterTypes[k]}<Check size={12} weight="bold" />{/if}</span>{label}
       </button>
     {/each}
   </div>
 
   <!-- User menu -->
   <div class="panel user-panel" class:open={openPanel === 'user'}>
-    <button class="p-item" onclick={() => toast('Profile would open')}><span class="pi">◉</span>Profile</button>
-    <button class="p-item" onclick={() => nav('settings')}><span class="pi">⚙</span>Settings</button>
-    <button class="p-item" onclick={() => toast('Notification preferences would open')}><span class="pi">◔</span>Notifications</button>
-    <button class="p-item" onclick={() => toast('Sign out')}><span class="pi">⏻</span>Sign out</button>
+    <button class="p-item" onclick={() => toast('Profile would open')}><span class="pi"><UserCircle size={14} /></span>Profile</button>
+    <button class="p-item" onclick={() => nav('settings')}><span class="pi"><GearSix size={14} /></span>Settings</button>
+    <button class="p-item" onclick={() => toast('Notification preferences would open')}><span class="pi"><Bell size={14} /></span>Notifications</button>
+    <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
   </div>
 
   <!-- More companies -->
@@ -674,7 +721,7 @@
     <div class="p-sec mono">ALL COMPANIES</div>
     <button class="p-item" onclick={() => toast('LiveRecover would load (not in prototype data)')}><span class="pi mono">LR</span>LiveRecover</button>
     <button class="p-item" onclick={() => toast('Keptwork would load (not in prototype data)')}><span class="pi mono">KW</span>Keptwork</button>
-    <button class="p-item accent" onclick={() => toast('Company switcher would open — 33 companies')}>See all 33 →</button>
+    <button class="p-item accent" onclick={() => toast('Company switcher would open — 33 companies')}>See all 33 <ArrowRight size={11} weight="bold" /></button>
   </div>
 
   <div class="toast" class:show={toastShown}>{toastMsg}</div>
@@ -744,6 +791,15 @@
   }
 
   .mono { font-family: var(--font-mono); }
+
+  /* Phosphor icons ride the text baseline inside labels. */
+  .v2 :global(svg) { flex-shrink: 0; }
+  .caret { display: inline-flex; align-items: center; color: var(--t3); }
+  .lead { display: inline-flex; align-items: center; color: var(--t3); }
+  .lrow-ic { display: inline-flex; align-items: center; color: var(--t2); }
+  .conflict-ic { display: inline-flex; align-items: center; color: var(--warn-ink); }
+  .sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 5px; }
+  .grp .t, .p-meta, .accent, .co-picker { display: inline-flex; align-items: center; gap: 4px; }
   /* :where keeps the reset at class-level specificity so component button
      styles below (.chip, .send, .core-btn, …) win on source order. */
   .v2 :where(button) { background: none; border: none; color: inherit; font: inherit; cursor: pointer; text-align: left; padding: 0; }
@@ -782,7 +838,7 @@
   .search input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 12px var(--font-ui); }
   .search input::placeholder { color: var(--t3); }
   .kbd { font-size: 10px; color: var(--t3); }
-  .filter-btn { flex-shrink: 0; border: 1px solid var(--line2); border-radius: 6px; padding: 2px 7px; font-size: 10px; font-weight: 500; color: var(--t2); }
+  .filter-btn { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border: 1px solid var(--line2); border-radius: 6px; padding: 2px 7px; font-size: 10px; font-weight: 500; color: var(--t2); }
   .filter-btn:hover, .filter-btn.on { color: var(--ice-ink); border-color: var(--ice-ink); }
   .side-scroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
   .grp { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; width: 100%; }
@@ -793,7 +849,7 @@
   .row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; width: 100%; }
   .row:hover { background: var(--hover); }
   .row.sel { background: var(--sel); }
-  .row .ico { width: 16px; flex-shrink: 0; font-weight: 500; font-size: 12px; color: var(--t3); text-align: center; }
+  .row .ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; color: var(--t3); }
   .row .av { width: 16px; height: 16px; flex-shrink: 0; border-radius: 50%; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
   .row .name { font-size: 13px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row.unread .name { font-weight: 500; color: var(--t1); }
@@ -931,7 +987,7 @@
   .p-item:hover { background: var(--hover); }
   .p-item.static { cursor: default; }
   .p-item.static:hover { background: none; }
-  .p-item .pi { width: 16px; flex-shrink: 0; text-align: center; color: var(--t2); font-size: 12px; }
+  .p-item .pi { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; color: var(--t2); }
   .p-item.kv { font-size: 11px; }
   .p-item .k { color: var(--t2); width: 52px; flex-shrink: 0; }
   .p-item .val { font-size: 11px; color: var(--t1); }

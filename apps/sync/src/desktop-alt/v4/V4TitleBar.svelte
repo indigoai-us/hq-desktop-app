@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SyncState } from '../lib/sync-model';
-    import CopyPromptButton from '../../components/CopyPromptButton.svelte';
+  import { MagnifyingGlass } from 'phosphor-svelte';
+  import CopyPromptButton from '../../components/CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte';
   import { getV4TitleBarModel, type V4HydrationIssue } from './model';
   import './tokens.css';
@@ -172,10 +173,7 @@
       title="Open command palette (⌘K)"
       onclick={() => oncommand?.()}
     >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.25" />
-        <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
-      </svg>
+      <MagnifyingGlass size={16} aria-hidden="true" />
     </button>
     {#if cloudOn !== null}
       <button
