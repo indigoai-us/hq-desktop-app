@@ -126,8 +126,10 @@ struct RefusalEpisode {
 }
 
 /// Open refusal episodes, one per HQ root. A root that has not refused for a
-/// full cooldown has its entry dropped, so a long-lived app cannot grow this
-/// without bound. Recover a poisoned lock so this observability path can never
+/// full [`REFUSAL_EPISODE_IDLE_TTL`] has its entry dropped, so a long-lived app
+/// cannot grow this without bound. That TTL is deliberately longer than the
+/// cooldown — pruning on the cooldown would drop an episode at the very moment
+/// it re-arms. Recover a poisoned lock so this observability path can never
 /// wedge the detached mirror thread.
 static REFUSAL_EPISODES: LazyLock<Mutex<HashMap<String, RefusalEpisode>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -1830,6 +1832,19 @@ mod tests {
                 start + Duration::from_secs(60),
                 wall + chrono::Duration::seconds(60),
             );
+            // Four more refusing passes inside the cooldown. They emit nothing,
+            // but they must be *counted* — the rearm event is the only place
+            // triage learns how wedged this root was while it stayed quiet.
+            for pass in 2..=5u64 {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    100,
+                    start + Duration::from_secs(pass * 60),
+                    wall + chrono::Duration::seconds((pass * 60) as i64),
+                );
+            }
             // Still wedged six hours later.
             refuse_at(
                 "/hq",
@@ -1853,6 +1868,27 @@ mod tests {
                 .get("since_last_report_secs")
                 .map(String::as_str),
             Some(REFUSAL_COOLDOWN.as_secs().to_string().as_str())
+        );
+        // Restores the coverage the r1 test `reported_refusal_carries_the_
+        // suppressed_occurrence_count` held before this change deleted it: the
+        // counter accumulates every suppressed pass and resets on each report.
+        // Without the reset the rearm would read 5 (the unconfirmed pass plus
+        // the four suppressed ones); without the accumulation it would read 0.
+        assert_eq!(
+            events[0]
+                .tags
+                .get("refusals_since_last_report")
+                .map(String::as_str),
+            Some("1"),
+            "the first banner carries only the unconfirmed pass it waited on"
+        );
+        assert_eq!(
+            events[1]
+                .tags
+                .get("refusals_since_last_report")
+                .map(String::as_str),
+            Some("4"),
+            "the rearm carries the passes suppressed since the previous banner"
         );
     }
 
