@@ -454,7 +454,7 @@
           class="co-chip"
           class:active={coFilter === 'all'}
           aria-pressed={coFilter === 'all'}
-          data-tip="Everything"
+          data-tip="All companies"
           aria-label="All companies"
           onclick={() => (coFilter = 'all')}
         >
@@ -972,7 +972,7 @@
   .co-chip { display: inline-flex; border-radius: 999px; }
   .co-ava { display: flex; align-items: center; justify-content: center; height: 24px; padding: 0 10px; flex-shrink: 0; border-radius: 999px; background: var(--btn-bg); border: 1px solid transparent; font: 600 10px var(--font-ui); letter-spacing: 0.04em; color: var(--t2); box-sizing: border-box; transition: border-color 0.12s; }
   .co-chip:hover .co-ava { border-color: var(--line2); color: var(--t1); }
-  .co-chip.active .co-ava { background: var(--ice-tile); border-color: var(--ice-ink); color: var(--ice-ink); }
+  .co-chip.active .co-ava { background: var(--ice-tile); border-color: color-mix(in srgb, var(--ice-ink) 35%, transparent); color: var(--ice-ink); }
   .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; padding: 0 8px; }
   .co-chip.more:hover .co-ava { color: var(--t1); border-color: var(--border-active); }
 
@@ -1015,7 +1015,16 @@
   .row-co { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 16px; height: 16px; padding: 0 6px; flex-shrink: 0; border-radius: 999px; background: var(--btn-bg); font-size: 8px; letter-spacing: 0.04em; color: var(--t3); }
   /* Single digits render as a perfect 16px circle; longer counts grow into a pill. */
   .badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 16px; height: 16px; margin-left: auto; flex-shrink: 0; font-size: 10px; font-weight: 500; line-height: 1; color: var(--badge-fg); background: var(--ice-ink); border-radius: 999px; padding: 0 5px; }
-  .pulse { margin-left: auto; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--ice-ink); }
+  /* Live dot occupies the badge's 16px box so both align down the column. */
+  .pulse { display: flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 16px; height: 16px; margin-left: auto; flex-shrink: 0; }
+  .pulse::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ice-ink); animation: pulse-blink 1.6s ease-in-out infinite; }
+  @keyframes pulse-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse::after { animation: none; }
+  }
   .hist { display: flex; align-items: center; gap: 8px; padding: 8px; margin-top: 8px; color: var(--t2); font-weight: 500; font-size: 12px; border-radius: 8px; width: 100%; }
   .hist:hover { background: var(--hover); }
   .footer-divider { height: 1px; margin-top: 8px; background: var(--line); flex-shrink: 0; }
@@ -1257,24 +1266,30 @@
   .v2 :global([data-tip]::after) {
     content: attr(data-tip);
     position: absolute;
-    top: calc(100% + 6px);
+    top: calc(100% + 5px);
     left: 50%;
     transform: translateX(-50%);
-    padding: 3px 8px;
+    padding: 3px 7px;
     border-radius: 6px;
     border: 1px solid var(--panel-border);
-    background: var(--elevated);
+    background: var(--panel-bg);
+    backdrop-filter: blur(40px) saturate(1.5);
+    -webkit-backdrop-filter: blur(40px) saturate(1.5);
     color: var(--t1);
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 400;
+    line-height: 1.4;
     white-space: nowrap;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+    box-shadow: var(--panel-shadow);
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.12s ease 0s;
     z-index: 80;
   }
   .v2 :global([data-tip]:hover::after) { opacity: 1; transition-delay: 0.35s; }
+  /* Strip chips sit against the window edge — anchor left so a centered
+     bubble can't be clipped by the pane. */
+  .co-strip :global([data-tip]::after) { left: 0; transform: none; }
 
   .toast { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 16px; font-size: 12px; color: var(--t1); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 99; white-space: nowrap; }
   .toast.show { opacity: 1; }
