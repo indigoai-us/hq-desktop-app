@@ -414,7 +414,7 @@
           class="filter-btn"
           class:on={filterActive}
           aria-label="Filter conversations"
-          title="Filter"
+          data-tip="Filter"
           data-panel-trigger
           onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}
         >
@@ -430,7 +430,8 @@
             class="co-chip"
             class:active={coFilter === key}
             aria-pressed={coFilter === key}
-            title={c.label}
+            data-tip={c.label}
+            aria-label={c.label}
             onclick={() => toggleCompany(key)}
           >
             <span class="co-ava">{c.short}</span>
@@ -438,7 +439,7 @@
         {/each}
         {#if moreCompanies}
           {#each EXTRA_COMPANIES as [short, label] (short)}
-            <button class="co-chip" title={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
+            <button class="co-chip" data-tip={label} aria-label={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
               <span class="co-ava">{short}</span>
             </button>
           {/each}
@@ -446,7 +447,8 @@
         <button
           class="co-chip more"
           aria-expanded={moreCompanies}
-          title={moreCompanies ? 'Show less' : 'All companies'}
+          data-tip={moreCompanies ? 'Show less' : 'More companies'}
+          aria-label={moreCompanies ? 'Show less' : 'More companies'}
           onclick={() => (moreCompanies = !moreCompanies)}
         >
           <span class="co-ava">{#if moreCompanies}<CaretUp size={12} weight="bold" />{:else}+{EXTRA_COMPANIES.length}{/if}</span>
@@ -788,6 +790,8 @@
     --elevated: #1e1e24;
     --panel-bg: rgba(255, 255, 255, 0.1);
     --panel-border: rgba(255, 255, 255, 0.09);
+    /* Opaque stand-in for the frosted panel surface — facepile rings. */
+    --panel-edge: #2b2b33;
     --border-active: rgba(255, 255, 255, 0.3);
     --line: rgba(255, 255, 255, 0.07);
     --line2: rgba(255, 255, 255, 0.11);
@@ -826,6 +830,7 @@
     --elevated: #ffffff;
     --panel-bg: rgba(255, 255, 255, 0.78);
     --panel-border: rgba(0, 0, 0, 0.06);
+    --panel-edge: #f0f1f4;
     --border-active: rgba(0, 0, 0, 0.3);
     --line: rgba(0, 0, 0, 0.08);
     --line2: rgba(0, 0, 0, 0.12);
@@ -1059,6 +1064,9 @@
   .panel.open { display: flex; }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
+  /* Condensed key-value rows: Branch / Repo / Preview sit tight. */
+  .status-panel .p-item.kv { padding: 3px 10px; }
+  .status-panel .p-item.static { cursor: default; }
   /* Compact menu: tight rows, narrow check column, small width. */
   .filter-panel { top: 96px; left: 250px; width: 185px; min-width: 0; padding: 6px; gap: 0; }
   .filter-panel .p-item { padding: 5px 8px; gap: 7px; font-size: 12px; }
@@ -1102,9 +1110,33 @@
   .progress { flex: 1; height: 4px; border-radius: 2px; background: var(--line2); overflow: hidden; display: flex; }
   .progress-fill { background: var(--ice-ink); }
   .avstack { display: flex; }
-  .avstack span { width: 22px; height: 22px; border-radius: 50%; background: var(--line2); border: 2px solid var(--elevated); display: flex; align-items: center; justify-content: center; font: 600 9px var(--font-ui); color: var(--t1); }
-  .avstack span + span { margin-left: -7px; }
+  .avstack span { width: 22px; height: 22px; border-radius: 50%; background: var(--btn-bg); border: 2px solid var(--panel-edge); display: flex; align-items: center; justify-content: center; font: 600 9px var(--font-ui); color: var(--t1); box-sizing: content-box; }
+  .avstack span + span { margin-left: -6px; }
   .avstack .ai { background: var(--ice-tile); color: var(--ice-ink); font-size: 7px; font-weight: 600; }
+
+  /* House tooltip: replaces native title bubbles on hover targets. */
+  .v2 :global([data-tip]) { position: relative; }
+  .v2 :global([data-tip]::after) {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--elevated);
+    color: var(--t1);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease 0s;
+    z-index: 80;
+  }
+  .v2 :global([data-tip]:hover::after) { opacity: 1; transition-delay: 0.35s; }
 
   .toast { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 16px; font-size: 12px; color: var(--t1); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 99; white-space: nowrap; }
   .toast.show { opacity: 1; }
