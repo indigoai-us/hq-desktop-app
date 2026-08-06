@@ -27,12 +27,15 @@
     FileText,
     FunnelSimple,
     GearSix,
+    GitPullRequest,
     Hash,
     Image,
     Lightning,
     MagnifyingGlass,
     Note,
     Package,
+    Robot,
+    RocketLaunch,
     ShieldCheck,
     SignOut,
     UserCircle,
@@ -67,7 +70,10 @@
     text?: string;
     card?: { t: string; s: string; actions?: string[] };
     file?: { n: string; m: string };
+    /** Inline thread event: who did what, when. */
+    event?: { who: string; what: string; when: string; kind: 'run' | 'pr' | 'file' | 'release' };
   };
+  const EVENT_ICONS = { run: Robot, pr: GitPullRequest, file: FileText, release: RocketLaunch };
   type Channel = {
     type: 'project' | 'channel' | 'dm';
     title: string;
@@ -105,9 +111,13 @@
           feed: [
             { sep: 'TODAY · 9:12 AM' },
             { who: 'Bryan', av: 'B', when: '9:12 AM', text: 'Sidebar concepts look right — can we see the day groups collapse after a week?' },
+            { event: { who: 'Desktop Agent', what: 'started run US-004 · day-group collapse', when: '9:14 AM', kind: 'run' } },
             { who: 'Desktop Agent', ai: true, when: 'RUN COMPLETE · 9:31 AM', card: { t: 'Story US-004 shipped — day-group collapse behavior', s: 'Groups older than 7 days fold into a single "Last week" row. 12 tests added, preview deployed.', actions: ['Open preview', 'View diff'] } },
+            { event: { who: 'Desktop Agent', what: 'deployed hq-desktop-preview', when: '9:32 AM', kind: 'release' } },
             { who: 'Corey', av: 'C', when: '9:34 AM', text: "Perfect. Let's fold marketplace into the Core menu next." },
+            { event: { who: 'Bryan', what: 'opened PR #214 — unified shell frame', when: '9:41 AM', kind: 'pr' } },
             { who: 'Sofia', av: 'S', when: '10:02 AM', text: 'Dropped the updated library IA in Files — company knowledge now lives one tab away instead of three menus deep.', file: { n: 'library-ia-v2.md', m: 'FILES · 4 KB' } },
+            { event: { who: 'Sofia', what: 'added library-ia-v2.md to Files', when: '10:02 AM', kind: 'file' } },
           ],
           board: {
             inprog: [['US-002 · sidebar day-grouping', 'AGENT RUNNING · 62%', 'ok'], ['US-005 · Core dropdown', 'Corey · design review', ''], ['US-007 · library overlay', 'Sofia · spec', '']],
@@ -119,14 +129,22 @@
         'hq-sync': {
           type: 'project', title: '# hq-sync', sub: 'Indigo · project channel',
           status: { dot: 'ok', label: 'Idle' },
-          feed: [{ sep: 'YESTERDAY' }, { who: 'Build Agent', ai: true, when: '5:02 PM', card: { t: 'v0.10.43 released', s: 'Menubar popover drift detection shipped to prod.', actions: ['Release notes'] } }],
+          feed: [
+            { sep: 'YESTERDAY' },
+            { event: { who: 'Build Agent', what: 'tagged v0.10.43', when: '4:55 PM', kind: 'release' } },
+            { who: 'Build Agent', ai: true, when: '5:02 PM', card: { t: 'v0.10.43 released', s: 'Menubar popover drift detection shipped to prod.', actions: ['Release notes'] } },
+          ],
           board: { inprog: [], review: [], done: [['US-011 · drift detect', 'SHIPPED', 'ok'], ['US-012 · rescue flow', 'SHIPPED', 'ok']] },
           files: [['file', 'release-checklist.md', 'AGENT · AUG 3']],
         },
         'agent-orchestrator': {
           type: 'project', title: '# agent-orchestrator', sub: 'Indigo · project channel', live: true,
           status: { dot: 'ok', label: 'Agent running' },
-          feed: [{ sep: 'TODAY' }, { who: 'Fleet Agent', ai: true, when: 'RUNNING · 10:14 AM', card: { t: 'Nightly triage sweep', s: '12 boxes checked, 1 flagged for storage autoscale.', actions: ['View report'] } }],
+          feed: [
+            { sep: 'TODAY' },
+            { event: { who: 'Fleet Agent', what: 'started the nightly triage sweep', when: '10:00 AM', kind: 'run' } },
+            { who: 'Fleet Agent', ai: true, when: 'RUNNING · 10:14 AM', card: { t: 'Nightly triage sweep', s: '12 boxes checked, 1 flagged for storage autoscale.', actions: ['View report'] } },
+          ],
           board: { inprog: [['US-020 · box telemetry', 'AGENT · 30%', 'ok']], review: [], done: [] },
           files: [['file', 'triage-report-aug4.md', 'AGENT · TODAY']],
         },
@@ -171,6 +189,7 @@
           feed: [
             { sep: 'SATURDAY' },
             { who: 'Corey', av: 'C', when: '11:02 AM', text: 'Enterprise tier features aligned across console and marketing.' },
+            { event: { who: 'Build Agent', what: 'opened PR #198 — enterprise tier', when: '11:28 AM', kind: 'pr' } },
             { who: 'Build Agent', ai: true, when: '11:30 AM', card: { t: 'US-010 ready for review', s: 'PR open, CI green. Waiting on you.', actions: ['Open PR'] } },
           ],
           board: { inprog: [], review: [['US-010 · enterprise tier', 'PR OPEN', 'warn']], done: [['US-009 · pricing table', 'SHIPPED', 'ok']] },
@@ -555,6 +574,13 @@
                 {#each chan.feed as m, i (i)}
                   {#if m.sep}
                     <div class="daysep"><hr /><span class="mono">{m.sep}</span><hr /></div>
+                  {:else if m.event}
+                    {@const EventIcon = EVENT_ICONS[m.event.kind]}
+                    <div class="feed-event">
+                      <span class="fe-ic"><EventIcon size={12} /></span>
+                      <span class="fe-text"><span class="fe-who">{m.event.who}</span> {m.event.what}</span>
+                      <span class="fe-when mono">{m.event.when}</span>
+                    </div>
                   {:else}
                     <div class="msg">
                       {#if m.ai}<div class="pav ai mono">AI</div>{:else}<div class="pav">{m.av}</div>{/if}
@@ -1008,6 +1034,14 @@
   .daysep { display: flex; align-items: center; gap: 12px; }
   .daysep hr { flex: 1; border: none; height: 1px; background: var(--line); margin: 0; }
   .daysep span { font-size: 10px; font-weight: 500; letter-spacing: 0.08em; color: var(--t3); }
+  /* Inline thread event: who did what, when — quiet single line, icon
+     centered on the avatar column. */
+  .feed-event { display: flex; align-items: center; gap: 12px; margin: -8px 0; }
+  .fe-ic { display: flex; align-items: center; justify-content: center; width: 32px; flex-shrink: 0; color: var(--t3); }
+  .fe-text { font-size: 12px; color: var(--t3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fe-who { color: var(--t2); font-weight: 500; }
+  .fe-when { flex-shrink: 0; font-size: 10px; color: var(--t3); }
+
   .msg { display: flex; gap: 12px; }
   .msg-body { min-width: 0; flex: 1; }
   .pav { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; background: var(--line2); display: flex; align-items: center; justify-content: center; font: 600 12px var(--font-ui); }
