@@ -834,7 +834,7 @@
     --t3: #a1a1a6;
     --ice: #c9d6e4;
     --ice-ink: #3e5a75;
-    --ice-tile: #e3ecf4;
+    --ice-tile: #d3e0ee;
     --badge-fg: #ffffff;
     --ok: #34c759;
     --ok-ink: #248a3d;
