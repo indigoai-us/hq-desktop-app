@@ -577,9 +577,8 @@
                   {:else if m.event}
                     {@const EventIcon = EVENT_ICONS[m.event.kind]}
                     <div class="feed-event">
-                      <span class="fe-ic"><EventIcon size={12} /></span>
-                      <span class="fe-text"><span class="fe-who">{m.event.who}</span> {m.event.what}</span>
-                      <span class="fe-when mono">{m.event.when}</span>
+                      <span class="fe-ic"><EventIcon size={11} /></span>
+                      <span class="fe-text"><span class="fe-who">{m.event.who}</span> {m.event.what} <span class="fe-when mono">· {m.event.when}</span></span>
                     </div>
                   {:else}
                     <div class="msg">
@@ -1034,13 +1033,14 @@
   .daysep { display: flex; align-items: center; gap: 12px; }
   .daysep hr { flex: 1; border: none; height: 1px; background: var(--line); margin: 0; }
   .daysep span { font-size: 10px; font-weight: 500; letter-spacing: 0.08em; color: var(--t3); }
-  /* Inline thread event: who did what, when — quiet single line, icon
-     centered on the avatar column. */
+  /* Inline thread event: one quiet 11px line — dimmed icon on the avatar
+     column, everything in the faintest ink so it reads as connective tissue,
+     not another message. */
   .feed-event { display: flex; align-items: center; gap: 12px; margin: -8px 0; }
-  .fe-ic { display: flex; align-items: center; justify-content: center; width: 32px; flex-shrink: 0; color: var(--t3); }
-  .fe-text { font-size: 12px; color: var(--t3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fe-who { color: var(--t2); font-weight: 500; }
-  .fe-when { flex-shrink: 0; font-size: 10px; color: var(--t3); }
+  .fe-ic { display: flex; align-items: center; justify-content: center; width: 32px; flex-shrink: 0; color: var(--t3); opacity: 0.7; }
+  .fe-text { font-size: 11px; color: var(--t3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fe-who { font-weight: 500; }
+  .fe-when { font-size: 10px; }
 
   .msg { display: flex; gap: 12px; }
   .msg-body { min-width: 0; flex: 1; }
