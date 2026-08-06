@@ -23,11 +23,6 @@ on:
     branches: [main]
   push:
     branches: [main]
-  # Manual trigger, so this gate can still be started when event delivery is
-  # degraded. On 2026-08-06 the Actions incident stopped `pull_request` runs from
-  # being created at all; `windows-check.yml` was recoverable because it already
-  # carried `workflow_dispatch`, and this one was not — its three required checks
-  # could not be started by any means.
   workflow_dispatch:
 
 concurrency:
