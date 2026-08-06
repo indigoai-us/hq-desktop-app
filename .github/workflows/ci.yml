@@ -23,6 +23,17 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Manual trigger, so this gate can still be started when event delivery is
+  # degraded. On 2026-08-06 the Actions incident stopped `pull_request` runs from
+  # being created at all; `windows-check.yml` was recoverable because it already
+  # carried `workflow_dispatch`, and this one was not — its three required checks
+  # could not be started by any means.
+  #
+  # GitHub only honours `workflow_dispatch` for a workflow file that exists on
+  # the default branch, so adding it on a feature branch does NOT make CI
+  # dispatchable for that branch's own pull request. This takes effect for later
+  # pull requests once it is merged to main.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
