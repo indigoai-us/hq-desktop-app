@@ -720,6 +720,75 @@ pub fn windows_exit_status_hex(code: i32) -> String {
     format!("0x{:08X}", code as u32)
 }
 
+/// Exit shapes for which a Windows session-end attribution is meaningful.
+///
+/// `DBG_TERMINATE_PROCESS` was the original case. `0xFFFFFFFF` is added because
+/// it is precisely the status whose own doc comment demands diagnostics before
+/// triage can infer a cause: withholding a session-end affirmation from it
+/// discards evidence the observer already holds.
+///
+/// This widens *attribution only*. Capture policy is unchanged — see
+/// [`watcher_exit_capture_policy_with_attribution`], which still downgrades
+/// only `DBG_TERMINATE_PROCESS` — so an attribution can add a tag but can never
+/// silence an alert.
+pub fn windows_terminator_attribution_applies(code: Option<i32>, signal: Option<i32>) -> bool {
+    signal.is_none()
+        && matches!(
+            code,
+            Some(WINDOWS_SESSION_TERMINATE_EXIT) | Some(WINDOWS_STATUS_FFFFFFFF)
+        )
+}
+
+/// Which process the app actually registered, waited on, and RSS-sampled.
+///
+/// On Windows `resolve_bin("npx")` yields `npx.cmd` (Node ships no `npx.exe`)
+/// and `std::process::Command` dispatches `.cmd` programs through `cmd.exe`, so
+/// the waited child is the shim rather than the Node runner. The reported exit
+/// status and working set therefore describe the shim — which is why every
+/// HQ-DESKTOP-4M event reported a flat 8MB, far below any Node baseline. The
+/// capture must say so rather than let an 8MB shim footprint be read as the
+/// runner's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherChildKind {
+    /// A `.cmd`/`.bat` shim dispatched through `cmd.exe`.
+    CmdShim,
+    /// A directly executed program (`node`, `npx` on POSIX, `npx.exe`).
+    DirectExecutable,
+}
+
+impl WatcherChildKind {
+    /// Stable, fixed-vocabulary token safe for a Sentry extra.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::CmdShim => "cmd_shim",
+            Self::DirectExecutable => "direct_executable",
+        }
+    }
+
+    /// Which process an RSS sample of the registered child describes.
+    pub fn rss_scope(self) -> &'static str {
+        match self {
+            Self::CmdShim => "shim",
+            Self::DirectExecutable => "runner",
+        }
+    }
+}
+
+/// Classify the watcher child from the resolved command. Extension-only, so it
+/// needs no syscall and stays pure and testable on every platform.
+pub fn classify_watcher_child_kind(watcher_command: &str) -> WatcherChildKind {
+    let extension = watcher_command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("cmd") | Some("bat") => WatcherChildKind::CmdShim,
+        _ => WatcherChildKind::DirectExecutable,
+    }
+}
+
 /// Name the small, well-known set of Windows status values observed or likely
 /// for sync-runner crashes. This is separate from WindowsTermination so adding
 /// a label cannot change its established grouping or capture semantics.
@@ -2717,6 +2786,134 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// HQ-DESKTOP-4M: widening attribution to `0xFFFFFFFF` must add a tag and
+    /// nothing else. If a later refactor lets attribution reach the suppression
+    /// branch, this fails.
+    #[test]
+    fn indeterminate_status_stays_captured_under_every_attribution() {
+        for attribution in [
+            None,
+            Some(WindowsTerminatorAttribution::SessionEndObserved),
+            Some(WindowsTerminatorAttribution::Unattributed),
+            Some(WindowsTerminatorAttribution::ObserverUnavailable),
+            Some(WindowsTerminatorAttribution::ObserverFailed),
+        ] {
+            assert_eq!(
+                watcher_exit_capture_policy_with_attribution(
+                    Some(WINDOWS_STATUS_FFFFFFFF),
+                    None,
+                    attribution,
+                ),
+                WatcherExitCapturePolicy::Capture,
+                "attribution={attribution:?} must never downgrade an indeterminate status",
+            );
+        }
+    }
+
+    /// The gate the capture seam consults before attaching `windows_terminator`.
+    #[test]
+    fn terminator_attribution_applies_to_both_unattributable_windows_statuses() {
+        assert!(windows_terminator_attribution_applies(
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            None
+        ));
+        assert!(windows_terminator_attribution_applies(
+            Some(WINDOWS_STATUS_FFFFFFFF),
+            None
+        ));
+        // A signal means a POSIX host; attribution is not meaningful there.
+        assert!(!windows_terminator_attribution_applies(
+            Some(WINDOWS_STATUS_FFFFFFFF),
+            Some(9)
+        ));
+        // Exits that already carry their own provenance are untouched.
+        for code in [
+            None,
+            Some(0),
+            Some(1),
+            Some(126),
+            Some(127),
+            Some(221),
+            Some(WINDOWS_CONTROL_C_EXIT),
+            Some(0xC000_0409u32 as i32),
+        ] {
+            assert!(
+                !windows_terminator_attribution_applies(code, None),
+                "code={code:?}",
+            );
+        }
+    }
+
+    /// HQ-DESKTOP-4M reported a flat 8MB working set on every event because the
+    /// sampled process was the `npx.cmd` shim, not the Node runner.
+    #[test]
+    fn watcher_child_kind_labels_the_cmd_shim_and_its_rss_scope() {
+        for command in [
+            "C:\\Program Files\\nodejs\\npx.cmd",
+            "C:\\Program Files\\nodejs\\NPX.CMD",
+            "C:\\tools\\thing.bat",
+        ] {
+            let kind = classify_watcher_child_kind(command);
+            assert_eq!(kind, WatcherChildKind::CmdShim, "{command}");
+            assert_eq!(kind.class_name(), "cmd_shim");
+            assert_eq!(kind.rss_scope(), "shim");
+        }
+
+        for command in [
+            "/opt/homebrew/bin/npx",
+            "/usr/local/bin/node",
+            "C:\\Program Files\\nodejs\\node.exe",
+            "npx",
+            "",
+        ] {
+            let kind = classify_watcher_child_kind(command);
+            assert_eq!(kind, WatcherChildKind::DirectExecutable, "{command}");
+            assert_eq!(kind.class_name(), "direct_executable");
+            assert_eq!(kind.rss_scope(), "runner");
+        }
+    }
+
+    /// A directory component that looks like an extension must not decide the
+    /// classification — only the final path segment does.
+    #[test]
+    fn watcher_child_kind_ignores_directory_components() {
+        assert_eq!(
+            classify_watcher_child_kind("/opt/some.cmd/bin/npx"),
+            WatcherChildKind::DirectExecutable,
+        );
+        assert_eq!(
+            classify_watcher_child_kind("C:\\some.bat\\npx.cmd"),
+            WatcherChildKind::CmdShim,
+        );
+    }
+
+    /// Sentry grouping continuity: both issues in this cluster must keep the
+    /// fingerprint tokens their existing history is grouped under.
+    #[test]
+    fn cluster_fingerprint_tokens_stay_stable() {
+        assert_eq!(termination_fingerprint_token(Some(126), None), "exit:126");
+        assert_eq!(
+            termination_fingerprint_token_for_host(Some(126), None, TerminationHost::Posix),
+            "exit:126",
+        );
+        assert_eq!(
+            termination_fingerprint_token_for_host(
+                Some(WINDOWS_STATUS_FFFFFFFF),
+                None,
+                TerminationHost::Windows,
+            ),
+            "windows:status-ffffffff",
+        );
+        assert_eq!(
+            classify_windows_exit_status(WINDOWS_STATUS_FFFFFFFF).class_name(),
+            "indeterminate_status",
+        );
+        assert_eq!(
+            windows_exit_status_hex(WINDOWS_STATUS_FFFFFFFF),
+            "0xFFFFFFFF"
+        );
     }
 
     #[test]
