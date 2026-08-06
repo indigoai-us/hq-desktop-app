@@ -40,6 +40,7 @@
     PaperPlaneRight,
     PushPin,
     User,
+    X,
     RocketLaunch,
     ShieldCheck,
     Smiley,
@@ -48,6 +49,7 @@
     VideoCamera,
     Warning,
   } from 'phosphor-svelte';
+  import { fly } from 'svelte/transition';
 
   interface Props {
     theme?: string;
@@ -727,13 +729,16 @@
           </div>
           <div class="content">
             {#if tab === 'board'}
+              <div class="board-wrap">
               {#if openStory}
-                <div class="story-detail">
+                <aside class="story-panel" transition:fly={{ x: 400, duration: 180 }}>
                   <div class="sd-head">
-                    <button class="back-btn" onclick={() => (openStory = null)}><ArrowLeft size={12} weight="bold" /> Board</button>
                     <span class="sd-id mono">{storyId}</span>
-                    <span class="sd-title">{storyName}</span>
-                    <span class="pill push-right" class:inst={openStory.cls === 'ok'} class:upd={openStory.cls === 'warn'}>{openStory.sub}</span>
+                    <button class="sd-close" aria-label="Close story" onclick={() => (openStory = null)}><X size={13} weight="bold" /></button>
+                  </div>
+                  <div class="sd-title">{storyName}</div>
+                  <div class="sd-status">
+                    <span class="pill" class:inst={openStory.cls === 'ok'} class:upd={openStory.cls === 'warn'}>{openStory.sub}</span>
                   </div>
 
                   <p class="sd-desc">{storyDetail.desc}</p>
@@ -765,8 +770,9 @@
                     <button class="chip" onclick={() => toast('Story would open in the project channel')}>Open in channel</button>
                     <button class="chip g" onclick={() => toast('Diff would open')}>View diff</button>
                   </div>
-                </div>
-              {:else if chan.board}
+                </aside>
+              {/if}
+              {#if chan.board}
                 <div class="board">
                   {#each [['IN PROGRESS', chan.board.inprog], ['REVIEW', chan.board.review], ['DONE', chan.board.done]] as [name, items] (name)}
                     <div class="col">
@@ -783,6 +789,7 @@
               {:else}
                 <div class="empty">No board — this is a plain channel.</div>
               {/if}
+              </div>
             {:else if tab === 'files'}
               {#if chan.files}
                 <div class="listview">
@@ -1634,18 +1641,38 @@
   .okc { font-size: 10px; color: var(--ok-ink); }
   .set-row .sd.mono { font-size: 11px; }
 
-  /* ── Story detail ── */
-  .story-detail { flex: 1; padding: 20px 24px 24px; overflow: auto; display: flex; flex-direction: column; }
-  .sd-head { display: flex; align-items: center; gap: 10px; padding-bottom: 14px; }
+  /* ── Story detail (right side panel; board stays visible) ── */
+  .board-wrap { position: relative; flex: 1; display: flex; min-height: 0; overflow: hidden; }
+  .story-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(400px, 62%);
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 20px 20px;
+    overflow: auto;
+    background: var(--panel-bg);
+    backdrop-filter: blur(40px) saturate(1.5);
+    -webkit-backdrop-filter: blur(40px) saturate(1.5);
+    border-left: 1px solid var(--panel-border);
+    box-shadow: -16px 0 40px rgba(0, 0, 0, 0.16);
+  }
+  .sd-head { display: flex; align-items: center; gap: 10px; }
   .sd-id { font-size: 11px; color: var(--t3); }
-  .sd-title { font-size: 15px; font-weight: 600; color: var(--t1); }
-  .sd-desc { margin: 0; font-size: 13px; line-height: 20px; color: var(--t2); }
+  .sd-close { display: grid; place-items: center; width: 24px; height: 24px; margin-left: auto; border-radius: 6px; color: var(--t3); transition: color 0.12s, background 0.12s; }
+  .sd-close:hover { color: var(--t1); background: var(--hover); }
+  .sd-title { margin-top: 6px; font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--t1); }
+  .sd-status { margin-top: 8px; }
+  .sd-desc { margin: 14px 0 0; font-size: 13px; line-height: 20px; color: var(--t2); }
   /* Meta reads as a quiet key/value strip, not another card stack. */
-  .sd-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 20px; margin-top: 16px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
+  .sd-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin-top: 16px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
   .sd-kv { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .sd-k { font-size: 9px; letter-spacing: 0.1em; color: var(--t3); text-transform: uppercase; }
   .sd-v { font-size: 12px; color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .story-detail .grp { padding: 18px 2px 6px; }
+  .story-panel .grp { padding: 18px 2px 6px; }
   .ac-row { display: flex; align-items: center; gap: 10px; padding: 7px 2px; }
   .ac-mark { display: flex; align-items: center; color: var(--t3); }
   .ac-row.done .ac-mark { color: var(--ok-ink); }
