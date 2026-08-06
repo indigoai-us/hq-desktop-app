@@ -434,14 +434,12 @@
             onclick={() => toggleCompany(key)}
           >
             <span class="co-ava">{c.short}</span>
-            <span class="co-name">{c.label}</span>
           </button>
         {/each}
         {#if moreCompanies}
           {#each EXTRA_COMPANIES as [short, label] (short)}
             <button class="co-chip" title={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
               <span class="co-ava">{short}</span>
-              <span class="co-name">{label}</span>
             </button>
           {/each}
         {/if}
@@ -452,7 +450,6 @@
           onclick={() => (moreCompanies = !moreCompanies)}
         >
           <span class="co-ava">{#if moreCompanies}<CaretUp size={12} weight="bold" />{:else}+{EXTRA_COMPANIES.length}{/if}</span>
-          <span class="co-name">{moreCompanies ? 'Show less' : 'More companies'}</span>
         </button>
       </div>
 
@@ -878,15 +875,14 @@
 
   /* ═══════════ Company strip (under the search bar) ═══════════ */
   .co-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
-  .co-chip { display: inline-flex; align-items: center; border-radius: 999px; background: transparent; overflow: hidden; }
-  .co-chip:hover { background: var(--hover); }
-  .co-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--btn-bg); border: 1.5px solid transparent; font: 600 10px var(--font-ui); color: var(--t2); box-sizing: border-box; }
-  .co-chip.active .co-ava { background: var(--ice-tile); border-color: var(--ice-ink); color: var(--ice-ink); }
-  /* Hover stretches the circle into a pill with the full name. */
-  .co-name { max-width: 0; padding: 0; overflow: hidden; opacity: 0; white-space: nowrap; font-size: 12px; font-weight: 500; color: var(--t2); transition: max-width 0.18s ease, opacity 0.15s ease, padding 0.18s ease; }
-  .co-chip:hover .co-name, .co-chip:focus-visible .co-name { max-width: 140px; padding: 0 10px 0 7px; opacity: 1; }
-  .co-chip.active .co-name { color: var(--t1); }
+  /* Chips follow the secondary-button states: fill at rest, border on hover,
+     brighter border + primary ink when selected. */
+  .co-chip { display: inline-flex; border-radius: 999px; }
+  .co-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--btn-bg); border: 1px solid transparent; font: 600 10px var(--font-ui); color: var(--t2); box-sizing: border-box; transition: border-color 0.12s; }
+  .co-chip:hover .co-ava { border-color: var(--line2); color: var(--t1); }
+  .co-chip.active .co-ava { border-color: var(--border-active); color: var(--t1); }
   .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; }
+  .co-chip.more:hover .co-ava { color: var(--t1); border-color: var(--border-active); }
 
   /* ═══════════ Sidebar ═══════════ */
   .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; min-height: 0; }
