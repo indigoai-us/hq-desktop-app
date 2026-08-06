@@ -958,8 +958,8 @@
   .pav.ai { background: var(--ice-tile); border: none; font-size: 10px; font-weight: 600; color: var(--ice-ink); }
   .who { font-weight: 600; font-size: 13px; }
   .who.ai { color: var(--ice-ink); }
-  .when { font-size: 11px; color: var(--t3); margin-left: 8px; }
-  .when.mono { font-size: 10px; }
+  /* All message timestamps share the Geist Mono metadata style. */
+  .when { font-family: var(--font-mono); font-size: 10px; color: var(--t3); margin-left: 8px; }
   .body-txt { font-size: 13px; color: var(--t2); line-height: 19px; margin-top: 3px; }
   .v2[data-theme='dark'] .body-txt { color: #c6c6cc; }
   .card { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 6px; }
