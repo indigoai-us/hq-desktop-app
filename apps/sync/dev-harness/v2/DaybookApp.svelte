@@ -36,6 +36,7 @@
     Package,
     Paperclip,
     PaperPlaneRight,
+    PushPin,
     Robot,
     RocketLaunch,
     ShieldCheck,
@@ -496,7 +497,7 @@
             </button>
           {/if}
         {/snippet}
-        <div class="grp"><span class="t mono">PINNED</span></div>
+        <div class="grp"><span class="t mono"><PushPin size={10} weight="fill" /> PINNED</span></div>
         {#each sidePinned as r (`${r.co}:${r.id}`)}
           {@render sideRow(r)}
         {/each}
@@ -1087,7 +1088,8 @@
   /* Two-row composer: input on top, action bar (attach · emoji … send) below. */
   .composer { flex-shrink: 0; margin: 12px 24px 20px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; background: var(--raised); border: 1px solid var(--line2); border-radius: 10px; padding: 12px 10px 8px 14px; transition: border-color 0.12s; }
   .composer:focus-within { border-color: var(--border-active); }
-  .composer input { width: 100%; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
+  /* Nudge the text to sit on the icon glyphs' optical left edge. */
+  .composer input { width: 100%; min-width: 0; margin-left: -3px; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
   .composer input::placeholder { color: var(--t3); }
   /* Pull the bar left of the text inset: button boxes get an 8px edge gutter
      (matching the bottom), which lands the glyphs on the text's 14px line. */
