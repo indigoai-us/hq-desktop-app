@@ -298,7 +298,7 @@
   let coFilter = $state<'all' | string>('all');
   /** Company owning the open channel (rows carry their company). */
   let activeCo = $state('indigo');
-  let view = $state<'channel' | 'library' | 'marketplace' | 'sync' | 'settings' | 'history'>('channel');
+  let view = $state<'channel' | 'library' | 'marketplace' | 'sync' | 'settings' | 'history' | 'profile'>('channel');
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
   let libCat = $state('files');
@@ -810,7 +810,7 @@
               <div class="panel co-picker-panel" class:open={openPanel === panelId}>
                 {#each Object.entries(DATA) as [key, c] (key)}
                   <button class="p-item" onclick={() => { pick(key); openPanel = null; }}>
-                    <span class="pi"><span class="co-select-ava">{c.short}</span></span>{c.label}
+                    {c.label}
                     <span class="p-check">{#if value === key}<Check size={12} weight="bold" />{/if}</span>
                   </button>
                 {/each}
@@ -864,7 +864,14 @@
                 <div class="set-row">
                   <div><div class="sn">Window opacity</div><div class="sd">How much desktop shows through the glass</div></div>
                   <div class="range-wrap push-right">
-                    <input type="range" min="50" max="100" bind:value={windowOpacity} aria-label="Window opacity" />
+                    <input
+                      type="range"
+                      min="50"
+                      max="100"
+                      bind:value={windowOpacity}
+                      style={`--fill: ${((windowOpacity - 50) / 50) * 100}%`}
+                      aria-label="Window opacity"
+                    />
                     <span class="mono range-val">{windowOpacity}%</span>
                   </div>
                 </div>
@@ -903,6 +910,59 @@
                 </div>
               {/if}
             </div>
+          </div>
+        </div>
+      {:else if view === 'profile'}
+        <div class="chan-head">
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
+          <span class="chan-title">Profile</span>
+          <span class="chan-sub">how you appear across HQ</span>
+        </div>
+        <div class="settings profile">
+          <!-- Identity card: the one place your name, handle, and avatar live. -->
+          <div class="prof-card">
+            <span class="prof-ava">C</span>
+            <div class="prof-id">
+              <div class="prof-name">Corey Epstein</div>
+              <div class="prof-mail">corey@getindigo.ai</div>
+              <div class="prof-tags">
+                <span class="pill inst">Owner · Indigo</span>
+                <span class="pill">6 companies</span>
+              </div>
+            </div>
+            <button class="chip push-right" onclick={() => toast('Photo picker would open')}>Change photo</button>
+          </div>
+
+          <div class="prof-sec mono">ABOUT YOU</div>
+          <div class="set-row">
+            <div><div class="sn">Display name</div><div class="sd">Shown on your messages and runs</div></div>
+            <input class="prof-input push-right" value="Corey Epstein" aria-label="Display name" />
+          </div>
+          <div class="set-row">
+            <div><div class="sn">Title</div><div class="sd">Optional — helps teammates place you</div></div>
+            <input class="prof-input push-right" value="Founder" aria-label="Title" />
+          </div>
+          <div class="set-row">
+            <div><div class="sn">Local time</div><div class="sd">Teammates see this next to your name</div></div>
+            <span class="prof-static push-right">Los Angeles · 11:24 AM</span>
+          </div>
+
+          <div class="prof-sec mono">ACCOUNT</div>
+          <div class="set-row">
+            <div><div class="sn">Email</div><div class="sd mono">corey@getindigo.ai</div></div>
+            <span class="mono okc push-right">Verified</span>
+          </div>
+          <div class="set-row">
+            <div><div class="sn">Signed in since</div><div class="sd">This machine — MacBook Pro</div></div>
+            <span class="prof-static push-right">Jul 12</span>
+          </div>
+          <div class="set-row">
+            <div><div class="sn">Manage account</div><div class="sd">Billing, teammates, and company settings live in HQ Console</div></div>
+            <button class="chip push-right" onclick={() => toast('HQ Console would open in your browser')}>Open console <ArrowUpRight size={11} /></button>
+          </div>
+          <div class="set-row">
+            <div><div class="sn">Sign out</div><div class="sd">Ends this session on this machine</div></div>
+            <button class="chip g push-right" onclick={() => toast('Sign out')}>Sign out</button>
           </div>
         </div>
       {:else if view === 'history'}
@@ -996,7 +1056,7 @@
 
   <!-- User menu -->
   <div class="panel user-panel" class:open={openPanel === 'user'}>
-    <button class="p-item" onclick={() => toast('Profile would open')}><span class="pi"><UserCircle size={14} /></span>Profile</button>
+    <button class="p-item" onclick={() => nav('profile')}><span class="pi"><UserCircle size={14} /></span>Profile</button>
     <button class="p-item" onclick={() => nav('settings')}><span class="pi"><GearSix size={14} /></span>Settings</button>
     <button class="p-item" onclick={() => toast('Notification preferences would open')}><span class="pi"><Bell size={14} /></span>Notifications</button>
     <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
@@ -1090,7 +1150,7 @@
 
   /* Settings company selector: secondary-style select with a company tile. */
   .co-select { display: inline-flex; align-items: center; gap: 7px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
-  .co-select:hover { border-color: var(--line2); }
+  .co-select:hover { border-color: var(--line2); background: var(--hover); }
   .co-select:active { border-color: var(--border-active); }
   .co-select-ava { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--line2); font: 600 8px var(--font-ui); color: var(--t2); }
   .co-select-wrap { position: relative; }
@@ -1347,18 +1407,59 @@
   .conflict-path { font-size: 12px; color: var(--warn-ink); flex: 1; }
 
   /* ═══════════ Settings ═══════════ */
-  .settings { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 10px; overflow: auto; max-width: 640px; }
+  .settings { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
   .set-row { display: flex; align-items: center; gap: 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
   .set-row .sn { font-weight: 500; font-size: 13px; }
   .set-row .sd { font-size: 11px; color: var(--t3); margin-top: 2px; }
   /* Settings controls beyond toggles: opacity slider, platform chips,
      inline "Up to date" status. */
+  /* macOS-style slider: thin filled track, small floating knob. */
   .range-wrap { display: flex; align-items: center; gap: 10px; }
-  .range-wrap input[type='range'] { width: 140px; accent-color: var(--ice-ink); }
+  .range-wrap input[type='range'] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 140px;
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--ice-ink) var(--fill, 60%), var(--line2) var(--fill, 60%));
+    outline: none;
+  }
+  .range-wrap input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+  }
+  .range-wrap input[type='range']::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+  }
   .range-val { font-size: 10px; color: var(--t3); min-width: 32px; text-align: right; }
   .plat-row { display: flex; gap: 6px; }
   .okc { font-size: 10px; color: var(--ok-ink); }
   .set-row .sd.mono { font-size: 11px; }
+
+  /* ── Profile ── */
+  .prof-card { display: flex; align-items: center; gap: 14px; background: var(--raised); border-radius: 10px; padding: 16px; }
+  .prof-ava { display: flex; align-items: center; justify-content: center; width: 52px; height: 52px; flex-shrink: 0; border-radius: 14px; background: var(--line2); font: 600 20px var(--font-ui); color: var(--t1); }
+  .prof-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .prof-name { font-size: 15px; font-weight: 600; color: var(--t1); }
+  .prof-mail { font-size: 12px; color: var(--t3); }
+  .prof-tags { display: flex; gap: 6px; margin-top: 4px; }
+  .prof-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 10px 2px 0; }
+  .prof-input { width: 200px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 10px; color: var(--t1); font: 500 12px var(--font-ui); outline: none; transition: border-color 0.12s; }
+  .prof-input:hover { border-color: var(--line2); }
+  .prof-input:focus { border-color: var(--border-active); }
+  .prof-static { font-size: 12px; color: var(--t2); }
 
   .toggle { margin-left: auto; width: 28px; height: 16px; border-radius: 999px; background: var(--line2); position: relative; flex-shrink: 0; transition: background 0.15s; }
   .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: left 0.15s; }
