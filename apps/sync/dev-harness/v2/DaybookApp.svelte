@@ -535,7 +535,7 @@
     <span class="brand">HQ</span>
     <span class="date mono">{todayLabel}</span>
     <button
-      class="bar-ic"
+      class="bar-ic tip-right"
       class:has-unread={unreadNotifs > 0}
       aria-label={unreadNotifs > 0 ? `Notifications, ${unreadNotifs} unread` : 'Notifications'}
       data-tip="Notifications"
@@ -1560,8 +1560,10 @@
   .bar-ic.has-unread::before { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice-ink); z-index: 1; }
   /* The bell takes over auto-margin duty from Core; 12px flex gap + 4px = 16. */
   .titlebar .bar-ic + .core-btn { margin-left: 4px; }
-  /* Title bar sits at the window's right edge — anchor tooltips right. */
-  .titlebar :global([data-tip]::after) { left: auto; right: 0; transform: none; }
+  /* Right-anchored variant for tooltips near the window's right edge. Must
+     mirror the base rule's shape — a nested :global() only landed some of the
+     declarations, leaving left/transform fighting right (zero-width box). */
+  .v2 :global([data-tip].tip-right::after) { left: auto; right: 0; transform: none; }
 
   .notif-list { flex: 1; padding: 12px 20px 20px; display: flex; flex-direction: column; overflow: auto; }
   .notif-list .grp { padding: 14px 2px 4px; }
