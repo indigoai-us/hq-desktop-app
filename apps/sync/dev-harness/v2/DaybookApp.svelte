@@ -745,7 +745,7 @@
     --side-bg: rgba(0, 0, 0, 0.12);
     --ground: rgba(255, 255, 255, 0.02);
     --raised: rgba(255, 255, 255, 0.05);
-    --btn-bg: rgba(255, 255, 255, 0.09);
+    --btn-bg: rgba(255, 255, 255, 0.07);
     --elevated: #1e1e24;
     --line: rgba(255, 255, 255, 0.07);
     --line2: rgba(255, 255, 255, 0.11);
@@ -781,7 +781,7 @@
     --side-bg: rgba(255, 255, 255, 0.18);
     --ground: rgba(255, 255, 255, 0.35);
     --raised: rgba(0, 0, 0, 0.035);
-    --btn-bg: rgba(0, 0, 0, 0.06);
+    --btn-bg: rgba(0, 0, 0, 0.045);
     --elevated: #ffffff;
     --line: rgba(0, 0, 0, 0.08);
     --line2: rgba(0, 0, 0, 0.12);
