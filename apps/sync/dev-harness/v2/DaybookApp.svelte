@@ -497,7 +497,7 @@
             </button>
           {/if}
         {/snippet}
-        <div class="grp"><span class="t mono"><PushPin size={10} weight="fill" /> PINNED</span></div>
+        <div class="grp"><span class="t mono"><PushPin size={10} /> PINNED</span></div>
         {#each sidePinned as r (`${r.co}:${r.id}`)}
           {@render sideRow(r)}
         {/each}
