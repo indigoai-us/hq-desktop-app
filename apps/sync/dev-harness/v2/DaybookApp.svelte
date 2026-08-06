@@ -613,8 +613,8 @@
                   {/each}
                 </div>
                 {#if chan.status}
-                  <button class="status-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('status'); }}>
-                    <span class="dot" class:w={chan.status.dot === 'w'}></span>{chan.status.label} <span class="caret"><CaretDown size={10} weight="bold" /></span>
+                  <button class="status-btn" aria-label="Members, agents, and project status" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('status'); }}>
+                    <User size={13} /> 7 <span class="caret"><CaretDown size={10} weight="bold" /></span>
                   </button>
                 {/if}
               </div>
@@ -804,7 +804,7 @@
             <div><div class="sn">{name}</div><div class="sd">{desc}</div></div>
             <div class="co-select-wrap push-right">
               <button class="co-select" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel(panelId); }}>
-                <span class="co-select-ava">{DATA[value].short}</span>{DATA[value].label}
+                {DATA[value].label}
                 <span class="caret"><CaretDown size={10} weight="bold" /></span>
               </button>
               <div class="panel co-picker-panel" class:open={openPanel === panelId}>
@@ -960,15 +960,22 @@
       <div class="p-line head"><span class="dot"></span> Agent running <span class="p-meta mono">US-002 · 62%</span></div>
       <div class="p-line"><span class="progress"><span class="progress-fill" style="width:62%"></span></span><span class="p-meta mono">7/12 STORIES</span></div>
     </div>
-    <div class="p-sec mono">MEMBERS &amp; AGENTS</div>
-    <div class="p-item static">
-      <span class="avstack"><span>C</span><span>B</span><span>S</span><span class="ai"><User size={12} /></span></span>
-      <span class="p-dim">5 members · 2 agents</span>
-    </div>
     <div class="p-sec mono">PROJECT</div>
     <div class="p-item static kv"><span class="k">Branch</span><span class="mono val">feat/unified-shell</span></div>
     <div class="p-item static kv"><span class="k">Repo</span><span class="mono val">hq-desktop</span></div>
     <button class="p-item kv" onclick={() => toast('Preview would open')}><span class="k">Preview</span><span class="accent strong preview-link">hq-desktop-preview <ArrowUpRight size={11} weight="bold" /></span></button>
+    <div class="p-sec mono">MEMBERS</div>
+    {#each [['C', 'Corey'], ['B', 'Bryan'], ['S', 'Sofia'], ['M', 'Marcus'], ['P', 'Priya']] as [initial, name] (name)}
+      <div class="p-item static">
+        <span class="m-ava">{initial}</span>{name}
+      </div>
+    {/each}
+    <div class="p-sec mono">AGENTS</div>
+    {#each ['Desktop Agent', 'Build Agent'] as name (name)}
+      <div class="p-item static">
+        <span class="m-ava ai"><User size={11} /></span>{name}
+      </div>
+    {/each}
   </div>
 
   <!-- Filter dropdown -->
@@ -1082,7 +1089,7 @@
   .grp .t, .p-meta, .accent { display: inline-flex; align-items: center; gap: 4px; }
 
   /* Settings company selector: secondary-style select with a company tile. */
-  .co-select { display: inline-flex; align-items: center; gap: 7px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 4px 10px 4px 5px; font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
+  .co-select { display: inline-flex; align-items: center; gap: 7px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
   .co-select:hover { border-color: var(--line2); }
   .co-select:active { border-color: var(--border-active); }
   .co-select-ava { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--line2); font: 600 8px var(--font-ui); color: var(--t2); }
@@ -1364,6 +1371,9 @@
   .panel.open { display: flex; }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
+  /* Member / agent list marks — thread-avatar shape at menu scale. */
+  .m-ava { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; border-radius: 6px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t1); }
+  .m-ava.ai { background: var(--ice-tile); color: var(--ice-ink); }
   /* Condensed key-value rows: Branch / Repo / Preview. */
   .status-panel .p-item.kv { padding: 5px 10px; }
   .status-panel .p-item.static { cursor: default; }
@@ -1397,7 +1407,8 @@
   .p-line .okc { font-size: 10px; color: var(--ok-ink); }
   .upd-btn { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border: none; border-radius: 6px; padding: 3px 10px; }
   .upd-btn:hover { opacity: 0.88; }
-  .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 5px 8px 2px; }
+  .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 12px 8px 3px; }
+  .p-sec:first-child, .p-card + .p-sec { padding-top: 5px; }
   /* No horizontal padding on the box — the toggle's own 10px inset lines its
      icon/text up with the plain p-item rows above. */
   /* Collapsed, Packs is a plain menu row; expanding gives it the boxed
@@ -1411,7 +1422,7 @@
   /* Side gutter keeps the sub-row hover pill inset from the box edges. */
   .sub-item { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 4px 8px 4px 24px; font-size: 12px; color: var(--t1); width: calc(100% - 12px); border-radius: 6px; }
   .sub-item:hover { background: var(--hover); }
-  .sub-item.muted { color: color-mix(in srgb, var(--t1) 75%, transparent); }
+  .sub-item.muted { color: color-mix(in srgb, var(--t1) 55%, transparent); }
   .sub-item.muted:hover { color: var(--t1); }
   .accent { color: var(--ice-ink); }
   .strong { font-weight: 500; }
