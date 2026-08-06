@@ -298,7 +298,7 @@
   let coFilter = $state<'all' | string>('all');
   /** Company owning the open channel (rows carry their company). */
   let activeCo = $state('indigo');
-  let view = $state<'channel' | 'library' | 'marketplace' | 'sync' | 'settings' | 'history' | 'profile'>('channel');
+  let view = $state<'channel' | 'library' | 'marketplace' | 'sync' | 'settings' | 'history' | 'profile' | 'notifications'>('channel');
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
   let libCat = $state('files');
@@ -327,6 +327,38 @@
   /** Collapsed strip shows this many company pills; the rest fold into +N. */
   const COLLAPSED_COMPANIES = 2;
   let composerText = $state('');
+
+  /* ── Notifications ── */
+  type Notif = {
+    id: string;
+    kind: 'mention' | 'run' | 'share' | 'dm' | 'review';
+    who: string;
+    av?: string;
+    ai?: boolean;
+    text: string;
+    ctx: string;
+    when: string;
+    day: string;
+    unread: boolean;
+  };
+  let notifs = $state<Notif[]>([
+    { id: 'n1', kind: 'mention', who: 'Bryan', av: 'B', text: 'mentioned you in #hq-desktop', ctx: '@corey can we see the day groups collapse after a week?', when: '9:12 AM', day: 'TODAY', unread: true },
+    { id: 'n2', kind: 'run', who: 'Desktop Agent', ai: true, text: 'finished US-004 · day-group collapse', ctx: '12 tests added, preview deployed', when: '9:31 AM', day: 'TODAY', unread: true },
+    { id: 'n3', kind: 'review', who: 'Build Agent', ai: true, text: 'needs your review on US-010', ctx: 'enterprise-pricing · PR open, CI green', when: '9:48 AM', day: 'TODAY', unread: true },
+    { id: 'n4', kind: 'share', who: 'Sofia', av: 'S', text: 'shared library-ia-v2.md', ctx: 'Indigo · Files', when: '10:02 AM', day: 'TODAY', unread: false },
+    { id: 'n5', kind: 'dm', who: 'Bryan', av: 'B', text: 'sent you a message', ctx: 'Demo with the Nestlé team moved to Thursday.', when: '9:13 AM', day: 'TODAY', unread: false },
+    { id: 'n6', kind: 'run', who: 'Fleet Agent', ai: true, text: 'flagged 1 box for storage autoscale', ctx: 'agent-orchestrator · nightly triage', when: '4:12 PM', day: 'YESTERDAY', unread: false },
+    { id: 'n7', kind: 'mention', who: 'Marcus', av: 'M', text: 'mentioned you in #standup-brief', ctx: 'Linking the library IA doc from the project channel.', when: '2:20 PM', day: 'YESTERDAY', unread: false },
+  ]);
+  const NOTIF_ICONS = { mention: ChatCircle, run: User, share: FileText, dm: ChatCircle, review: GitPullRequest };
+  let notifFilter = $state<'all' | 'unread'>('all');
+  const unreadNotifs = $derived(notifs.filter((n) => n.unread).length);
+  const shownNotifs = $derived(notifFilter === 'unread' ? notifs.filter((n) => n.unread) : notifs);
+  const notifDays = $derived([...new Set(shownNotifs.map((n) => n.day))]);
+  function readAll() {
+    notifs = notifs.map((n) => ({ ...n, unread: false }));
+    toast('All caught up');
+  }
 
   /* ── Settings (split view) — desktop-app concerns only; everything else
      lives in HQ Console. Mirrors the production settings inventory. ── */
@@ -484,6 +516,15 @@
     <div class="lights" aria-hidden="true"><span class="l-r"></span><span class="l-y"></span><span class="l-g"></span></div>
     <span class="brand">HQ</span>
     <span class="date mono">{todayLabel}</span>
+    <button
+      class="bar-ic"
+      class:has-unread={unreadNotifs > 0}
+      aria-label={unreadNotifs > 0 ? `Notifications, ${unreadNotifs} unread` : 'Notifications'}
+      data-tip="Notifications"
+      onclick={() => nav('notifications')}
+    >
+      <Bell size={15} />
+    </button>
     <button class="core-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('core'); }}>
       <span class="dot"></span>Core <span class="caret"><CaretDown size={10} weight="bold" /></span>
     </button>
@@ -912,6 +953,45 @@
             </div>
           </div>
         </div>
+      {:else if view === 'notifications'}
+        <div class="chan-head">
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
+          <span class="chan-title">Notifications</span>
+          <span class="chan-sub">{unreadNotifs > 0 ? `${unreadNotifs} unread` : 'All caught up'}</span>
+          <div class="head-right">
+            <div class="tabs">
+              {#each [['all', 'All'], ['unread', 'Unread']] as [k, label] (k)}
+                <button class="tab" class:on={notifFilter === k} onclick={() => (notifFilter = k as typeof notifFilter)}>{label}</button>
+              {/each}
+            </div>
+            <button class="chip g" disabled={unreadNotifs === 0} onclick={readAll}>Mark all read</button>
+          </div>
+        </div>
+        <div class="notif-list">
+          {#each notifDays as day (day)}
+            <div class="grp"><span class="t mono">{day}</span></div>
+            {#each shownNotifs.filter((n) => n.day === day) as n (n.id)}
+              {@const NIcon = NOTIF_ICONS[n.kind]}
+              <button
+                class="notif"
+                class:unread={n.unread}
+                onclick={() => { n.unread = false; nav('channel'); }}
+              >
+                <span class="n-ava" class:ai={n.ai}>{#if n.ai}<User size={14} />{:else}{n.av}{/if}</span>
+                <span class="n-body">
+                  <span class="n-line"><span class="n-who">{n.who}</span> {n.text}</span>
+                  <span class="n-ctx">{n.ctx}</span>
+                </span>
+                <span class="n-kind"><NIcon size={13} /></span>
+                <span class="n-when mono">{n.when}</span>
+                <span class="n-dot" aria-hidden="true"></span>
+              </button>
+            {/each}
+          {/each}
+          {#if shownNotifs.length === 0}
+            <div class="empty">Nothing unread — you're all caught up.</div>
+          {/if}
+        </div>
       {:else if view === 'profile'}
         <div class="chan-head">
           <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
@@ -1058,7 +1138,6 @@
   <div class="panel user-panel" class:open={openPanel === 'user'}>
     <button class="p-item" onclick={() => nav('profile')}><span class="pi"><UserCircle size={14} /></span>Profile</button>
     <button class="p-item" onclick={() => nav('settings')}><span class="pi"><GearSix size={14} /></span>Settings</button>
-    <button class="p-item" onclick={() => toast('Notification preferences would open')}><span class="pi"><Bell size={14} /></span>Notifications</button>
     <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
   </div>
 
@@ -1149,9 +1228,8 @@
   .grp .t, .p-meta, .accent { display: inline-flex; align-items: center; gap: 4px; }
 
   /* Settings company selector: secondary-style select with a company tile. */
-  .co-select { display: inline-flex; align-items: center; gap: 7px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
-  .co-select:hover { border-color: var(--line2); background: var(--hover); }
-  .co-select:active { border-color: var(--border-active); }
+  .co-select { display: inline-flex; align-items: center; gap: 7px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; font-size: 12px; font-weight: 500; color: var(--t1); transition: opacity 0.12s; }
+  .co-select:hover { opacity: 0.7; }
   .co-select-ava { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--line2); font: 600 8px var(--font-ui); color: var(--t2); }
   .co-select-wrap { position: relative; }
   .co-picker-panel { bottom: calc(100% + 6px); right: 0; width: 210px; min-width: 0; padding: 6px; gap: 0; }
@@ -1447,6 +1525,33 @@
   .plat-row { display: flex; gap: 6px; }
   .okc { font-size: 10px; color: var(--ok-ink); }
   .set-row .sd.mono { font-size: 11px; }
+
+  /* ── Notifications ── */
+  /* Naked icon button for the title bar; a dot marks unread. */
+  .bar-ic { position: relative; display: grid; place-items: center; width: 28px; height: 28px; margin-left: auto; border-radius: 8px; color: var(--t2); transition: color 0.12s, background 0.12s; }
+  .bar-ic:hover { color: var(--t1); background: var(--hover); }
+  .bar-ic.has-unread::after { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice-ink); }
+  /* The bell takes over auto-margin duty from Core. */
+  .titlebar .bar-ic + .core-btn { margin-left: 6px; }
+
+  .notif-list { flex: 1; padding: 12px 20px 20px; display: flex; flex-direction: column; overflow: auto; }
+  .notif-list .grp { padding: 14px 2px 4px; }
+  .notif { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid transparent; transition: background 0.12s, border-color 0.12s; }
+  .notif:hover { background: var(--btn-bg); border-color: var(--line2); }
+  .n-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px; background: var(--line2); font: 600 11px var(--font-ui); color: var(--t1); }
+  .n-ava.ai { background: var(--ice-tile); color: var(--ice-ink); }
+  .n-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; text-align: left; }
+  .n-line { font-size: 13px; color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .n-who { font-weight: 600; color: var(--t1); }
+  .n-ctx { font-size: 12px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .n-kind { display: flex; align-items: center; flex-shrink: 0; color: var(--t3); opacity: 0.7; }
+  .n-when { flex-shrink: 0; font-size: 10px; color: var(--t3); }
+  /* Unread: brighter copy plus an accent dot in a reserved column. */
+  .n-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: transparent; }
+  .notif.unread .n-line { color: var(--t1); }
+  .notif.unread .n-dot { background: var(--ice-ink); }
+  .chip:disabled { opacity: 0.45; cursor: default; }
+  .chip:disabled:hover { background: transparent; border-color: var(--line2); color: var(--t2); }
 
   /* ── Profile ── */
   .prof-card { display: flex; align-items: center; gap: 14px; background: var(--raised); border-radius: 10px; padding: 16px; }
