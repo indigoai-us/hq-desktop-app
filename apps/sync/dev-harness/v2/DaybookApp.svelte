@@ -37,7 +37,7 @@
     Paperclip,
     PaperPlaneRight,
     PushPin,
-    Robot,
+    User,
     RocketLaunch,
     ShieldCheck,
     Smiley,
@@ -77,7 +77,7 @@
     /** Inline thread event: who did what, when. */
     event?: { who: string; what: string; when: string; kind: 'run' | 'pr' | 'file' | 'release' };
   };
-  const EVENT_ICONS = { run: Robot, pr: GitPullRequest, file: FileText, release: RocketLaunch };
+  const EVENT_ICONS = { run: User, pr: GitPullRequest, file: FileText, release: RocketLaunch };
   type Channel = {
     type: 'project' | 'channel' | 'dm';
     title: string;
@@ -171,11 +171,12 @@
           ],
         },
         'sofia-marcus': {
-          type: 'dm', title: 'Sofia, Marcus', sub: 'group message', av: 'S', members: 3,
+          type: 'dm', title: 'Sofia, Marcus, Priya', sub: 'group message', av: 'S', members: 3,
           feed: [
             { sep: 'YESTERDAY' },
             { who: 'Sofia', av: 'S', when: '2:14 PM', text: 'Library IA thread resolved — doc saved to Knowledge.' },
             { who: 'Marcus', av: 'M', when: '2:20 PM', text: 'Nice. Linking it from the project channel.' },
+            { who: 'Priya', av: 'P', when: '2:26 PM', text: 'Adding it to the onboarding checklist too.' },
           ],
         },
         'standup-brief': {
@@ -551,7 +552,7 @@
           {/each}
         {/each}
         <button class="grp fold" onclick={() => toast('Last week would expand — 6 quiet conversations')}>
-          <span class="t mono dim">LAST WEEK <CaretRight size={8} weight="bold" /></span><span class="d mono">6 QUIET</span>
+          <span class="t mono dim">LAST WEEK <CaretRight size={8} weight="bold" /></span>
         </button>
         <button class="hist" onclick={() => nav('history')}><MagnifyingGlass size={14} /><span>Show all history…</span></button>
       </div>
@@ -630,7 +631,7 @@
                     </div>
                   {:else}
                     <div class="msg">
-                      {#if m.ai}<div class="pav ai mono">AI</div>{:else}<div class="pav">{m.av}</div>{/if}
+                      {#if m.ai}<div class="pav ai"><User size={16} /></div>{:else}<div class="pav">{m.av}</div>{/if}
                       <div class="msg-body">
                         <div class="msg-head">
                           <span class="who" class:ai={m.ai}>{m.who}</span>
@@ -850,7 +851,7 @@
     </div>
     <div class="p-sec mono">MEMBERS &amp; AGENTS</div>
     <div class="p-item static">
-      <span class="avstack"><span>C</span><span>B</span><span>S</span><span class="ai mono">AI</span></span>
+      <span class="avstack"><span>C</span><span>B</span><span>S</span><span class="ai"><User size={12} /></span></span>
       <span class="p-dim">5 members · 2 agents</span>
     </div>
     <div class="p-sec mono">PROJECT</div>
@@ -908,7 +909,7 @@
     --t3: #64646c;
     --ice: #c9d6e4;
     --ice-ink: #c9d6e4;
-    --ice-tile: #1e2a3a;
+    --ice-tile: #2c3d52;
     --badge-fg: #101014;
     --ok: #34c759;
     --ok-ink: #4ade80;
