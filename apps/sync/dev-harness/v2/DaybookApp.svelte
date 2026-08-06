@@ -745,6 +745,7 @@
     --side-bg: rgba(0, 0, 0, 0.12);
     --ground: rgba(255, 255, 255, 0.02);
     --raised: rgba(255, 255, 255, 0.05);
+    --btn-bg: rgba(255, 255, 255, 0.09);
     --elevated: #1e1e24;
     --line: rgba(255, 255, 255, 0.07);
     --line2: rgba(255, 255, 255, 0.11);
@@ -780,6 +781,7 @@
     --side-bg: rgba(255, 255, 255, 0.18);
     --ground: rgba(255, 255, 255, 0.35);
     --raised: rgba(0, 0, 0, 0.035);
+    --btn-bg: rgba(0, 0, 0, 0.06);
     --elevated: #ffffff;
     --line: rgba(0, 0, 0, 0.08);
     --line2: rgba(0, 0, 0, 0.12);
@@ -821,7 +823,7 @@
   .brand { font-weight: 600; margin-left: 8px; }
   .date { font-size: 10px; letter-spacing: 0.08em; color: var(--t3); font-weight: 400; }
   /* Standard secondary button: borderless fill at rest, border on hover. */
-  .core-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--raised); border: 1px solid transparent; border-radius: 8px; padding: 5px 10px; font-weight: 500; font-size: 12px; color: var(--t2); }
+  .core-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 10px; font-weight: 500; font-size: 12px; color: var(--t2); }
   .core-btn:hover { border-color: var(--line2); color: var(--t1); }
   .caret { color: var(--t3); font-size: 10px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; flex-shrink: 0; }
@@ -883,7 +885,7 @@
   .tabs { display: flex; gap: 2px; margin-left: 24px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
   .tab { font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 12px; border-radius: 6px; }
   .tab.on { color: var(--t1); background: var(--sel); }
-  .status-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--raised); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
+  .status-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
   .status-btn:hover { border-color: var(--line2); color: var(--t1); }
   .back-btn { display: flex; align-items: center; gap: 6px; font-weight: 500; font-size: 12px; color: var(--t2); border: 1px solid var(--line2); border-radius: 8px; padding: 5px 10px; }
   .back-btn:hover { background: var(--hover); color: var(--t1); }
