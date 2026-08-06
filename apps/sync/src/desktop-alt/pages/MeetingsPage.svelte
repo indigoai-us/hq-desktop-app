@@ -4,6 +4,7 @@
   import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onMount } from 'svelte';
+  import { ArrowsClockwise, Calendar } from 'phosphor-svelte';
   import {
     activeMeetings,
     recordingMemberships,
@@ -352,18 +353,10 @@
 <!-- DESKTOP meetings native: compact toolbar, Live now → Up next → bot health → agenda. -->
 <div class="meetings" class:hidden-by-gate={meetingsFeatureEnabled === false} aria-label="Meetings" data-testid="desktop-alt-meetings">
   {#snippet iconCalendar()}
-    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="18" rx="2" />
-      <path d="M16 2v4M8 2v4M3 10h18" />
-    </svg>
+    <Calendar size={13} aria-hidden="true" />
   {/snippet}
   {#snippet iconSync()}
-    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M21 12a9 9 0 0 0-15-6.7L3 8" />
-      <path d="M3 12a9 9 0 0 0 15 6.7L21 16" />
-      <path d="M3 3v5h5" />
-      <path d="M21 21v-5h-5" />
-    </svg>
+    <ArrowsClockwise size={13} aria-hidden="true" />
   {/snippet}
 
   <header class="page-header meetings-toolbar">

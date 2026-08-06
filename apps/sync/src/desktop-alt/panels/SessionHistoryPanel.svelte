@@ -22,6 +22,7 @@
    * V4 Liquid Glass tokens (no new colors/fonts/spacing).
    */
   import { onMount } from 'svelte';
+  import { Clock } from 'phosphor-svelte';
   import {
     eventNodeTone,
     filterHistory,
@@ -141,11 +142,7 @@
     <!-- Empty — history (design.md "States"). -->
     <div class="hi-empty">
       <div class="hi-empty-glyph" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-          stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 7v5l3 2" />
-        </svg>
+        <Clock size={24} />
       </div>
       <p class="hi-empty-title">No activity yet</p>
       <p class="hi-empty-help">

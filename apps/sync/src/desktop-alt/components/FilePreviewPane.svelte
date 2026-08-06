@@ -16,6 +16,7 @@
    * company membership before reading or dispatching anything.
    */
   import { invoke } from '@tauri-apps/api/core';
+  import { Copy, File, Folder } from 'phosphor-svelte';
   import { renderMarkdownDocument } from '../lib/markdown';
   import { filePreviewKind } from '../lib/file-preview-kind';
   import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte';
@@ -229,22 +230,7 @@
       >
         {#if copyingPath}
           <span class="action-spinner" aria-hidden="true"></span>
-        {:else}<svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <rect x="5.5" y="5.5" width="7" height="8" rx="1" stroke="currentColor" stroke-width="1.2" />
-          <path
-            d="M3.5 10.5V3.5a1 1 0 0 1 1-1h6"
-            stroke="currentColor"
-            stroke-width="1.2"
-            stroke-linecap="round"
-          />
-        </svg>{/if}
+        {:else}<Copy size={12} aria-hidden="true" />{/if}
         <span class="reveal-label">
           {copyingPath ? 'Copying…' : copyError ? 'Failed' : pathCopied ? 'Copied' : 'Copy path'}
         </span>
@@ -262,21 +248,7 @@
       >
         {#if revealing}
           <span class="action-spinner" aria-hidden="true"></span>
-        {:else}<svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <path
-            d="M2 4.5a1 1 0 0 1 1-1h3l1.2 1.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"
-            stroke="currentColor"
-            stroke-width="1.2"
-            stroke-linejoin="round"
-          />
-        </svg>{/if}
+        {:else}<Folder size={12} aria-hidden="true" />{/if}
         <span class="reveal-label">
           {revealing ? 'Opening…' : revealError ? 'Failed' : 'Reveal in Finder'}
         </span>
@@ -293,27 +265,7 @@
       </div>
     {:else if unsupported || mediaError}
       <div class="preview-unsupported" data-testid="file-preview-unsupported">
-        <svg
-          width="28"
-          height="28"
-          viewBox="0 0 24 24"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <path
-            d="M6 3h8l4 4v14a0 0 0 0 1 0 0H6a0 0 0 0 1 0 0V3z"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-          <path
-            d="M14 3v4h4"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <File size={28} aria-hidden="true" />
         <strong>Can&rsquo;t preview this file</strong>
         <span
           >It&rsquo;s unsupported or too large to show here. Use the actions above to open

@@ -18,6 +18,7 @@
    * only — no new colors/fonts/spacing.
    */
   import { onMount } from 'svelte';
+  import { Broadcast, HardDrives } from 'phosphor-svelte';
   import {
     groupSessions,
     isActiveForLivePanel,
@@ -205,12 +206,7 @@
          outpost section (a down/degraded outpost still renders its card). -->
     <div class="ls-empty">
       <div class="ls-empty-glyph" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-          stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M5 12a7 7 0 0 1 14 0" opacity="0.45" />
-          <path d="M2 12a10 10 0 0 1 20 0" opacity="0.2" />
-        </svg>
+        <Broadcast size={24} />
       </div>
       <p class="ls-empty-title">Nothing running right now</p>
       <p class="ls-empty-help">
@@ -238,12 +234,7 @@
           >
             <div class="ls-outpost-main">
               <span class="ls-outpost-glyph" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                  stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="3" y="4" width="18" height="7" rx="1.5" />
-                  <rect x="3" y="13" width="18" height="7" rx="1.5" />
-                  <path d="M7 7.5h.01M7 16.5h.01" />
-                </svg>
+                <HardDrives size={16} />
               </span>
               <span class="ls-outpost-name">Outpost</span>
               <span class="ls-outpost-pill">{outpostCard.stateLabel}</span>

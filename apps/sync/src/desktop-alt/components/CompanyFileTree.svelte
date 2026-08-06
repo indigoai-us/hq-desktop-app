@@ -24,6 +24,7 @@
    * Styling mirrors V4SecondarySidebar's `.v4-row` (28px fixed height, 6px
    * radius, faint hover) via V4 tokens. No purple (hard Indigo policy).
    */
+  import { CaretRight } from 'phosphor-svelte';
   import {
     dirEntryToLazyNode,
     fileTreeRowMeta,
@@ -353,9 +354,7 @@
               class:open={filtering || expanded.has(node.path)}
               class:hidden={!node.hasChildren && !node.loaded}
             >
-              <svg viewBox="0 0 12 12" width="12" height="12">
-                <path d="M4.5 2.5 L8 6 L4.5 9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+              <CaretRight size={12} weight="bold" />
             </span>
             <span class="ft-copy title-stack">
               <span class="ft-label">{node.name}</span>
