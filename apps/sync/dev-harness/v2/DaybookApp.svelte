@@ -749,6 +749,7 @@
     --elevated: #1e1e24;
     --panel-bg: rgba(255, 255, 255, 0.1);
     --panel-border: rgba(255, 255, 255, 0.16);
+    --border-active: rgba(255, 255, 255, 0.3);
     --line: rgba(255, 255, 255, 0.07);
     --line2: rgba(255, 255, 255, 0.11);
     --t1: #f4f4f6;
@@ -787,6 +788,7 @@
     --elevated: #ffffff;
     --panel-bg: rgba(255, 255, 255, 0.78);
     --panel-border: rgba(0, 0, 0, 0.1);
+    --border-active: rgba(0, 0, 0, 0.3);
     --line: rgba(0, 0, 0, 0.08);
     --line2: rgba(0, 0, 0, 0.12);
     --t1: #1d1d1f;
@@ -851,12 +853,17 @@
   /* ═══════════ Sidebar ═══════════ */
   .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; min-height: 0; }
   .search-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 10px; }
-  .search { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; background: var(--raised); border: 1px solid var(--line2); border-radius: 8px; padding: 7px 10px; }
+  /* Standard secondary surface: borderless fill, border on hover, brighter
+     border while focused/pressed. */
+  .search { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 7px 10px; }
+  .search:hover { border-color: var(--line2); }
+  .search:focus-within { border-color: var(--border-active); }
   .search input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 12px var(--font-ui); }
   .search input::placeholder { color: var(--t3); }
   .kbd { font-size: 10px; color: var(--t3); }
-  .filter-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; border: 1px solid var(--line2); border-radius: 8px; background: var(--raised); color: var(--t2); }
-  .filter-btn:hover { color: var(--t1); background: var(--hover); }
+  .filter-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; border: 1px solid transparent; border-radius: 8px; background: var(--btn-bg); color: var(--t2); }
+  .filter-btn:hover { color: var(--t1); border-color: var(--line2); }
+  .filter-btn:active { border-color: var(--border-active); }
   .filter-btn.on { color: var(--ice-ink); border-color: var(--ice-ink); }
   .side-scroll { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
   .grp { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; width: 100%; }
