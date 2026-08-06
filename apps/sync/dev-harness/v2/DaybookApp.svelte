@@ -1072,8 +1072,10 @@
   .upd-btn { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border: none; border-radius: 6px; padding: 3px 10px; }
   .upd-btn:hover { opacity: 0.88; }
   .p-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 6px 10px 2px; }
-  .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 6px; margin-top: 4px; }
-  .packs-toggle { padding: 6px 8px; }
+  /* No horizontal padding on the box — the toggle's own 10px inset lines its
+     icon/text up with the plain p-item rows above. */
+  .packs-box { background: var(--raised); border: none; border-radius: 10px; padding: 4px 0; margin-top: 4px; }
+  .packs-toggle { padding: 8px 10px; }
   .packs-title { font-weight: 500; color: var(--t1); }
   .sub-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 34px; font-size: 12px; color: var(--t1); width: 100%; border-radius: 6px; }
   .sub-item:hover { background: var(--hover); }
