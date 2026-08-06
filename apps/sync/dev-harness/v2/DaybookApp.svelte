@@ -1060,10 +1060,6 @@
             <span class="mono okc push-right">Verified</span>
           </div>
           <div class="set-row">
-            <div><div class="sn">Signed in since</div><div class="sd">This machine — MacBook Pro</div></div>
-            <span class="prof-static push-right">Jul 12</span>
-          </div>
-          <div class="set-row">
             <div><div class="sn">Manage account</div><div class="sd">Billing, teammates, and company settings live in HQ Console</div></div>
             <button class="chip push-right" onclick={() => toast('HQ Console would open in your browser')}>Open console <ArrowUpRight size={11} /></button>
           </div>
