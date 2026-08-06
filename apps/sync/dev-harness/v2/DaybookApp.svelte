@@ -85,6 +85,8 @@
     unread?: number;
     live?: boolean;
     av?: string;
+    /** Group threads carry their member count instead of an initial. */
+    members?: number;
     status?: { dot: string; label: string };
     feed: FeedItem[];
     board?: { inprog: string[][]; review: string[][]; done: string[][] };
@@ -169,7 +171,7 @@
           ],
         },
         'sofia-marcus': {
-          type: 'dm', title: 'Sofia, Marcus', sub: 'group message', av: 'S',
+          type: 'dm', title: 'Sofia, Marcus', sub: 'group message', av: 'S', members: 3,
           feed: [
             { sep: 'YESTERDAY' },
             { who: 'Sofia', av: 'S', when: '2:14 PM', text: 'Library IA thread resolved — doc saved to Knowledge.' },
@@ -529,7 +531,9 @@
               class:unread={!!c.unread}
               onclick={() => selectChannel(r.co, r.id)}
             >
-              {#if c.type === 'dm'}<span class="av">{c.av ?? c.title[0]}</span>{:else}<span class="ico"><Hash size={13} /></span>{/if}
+              {#if c.type === 'dm'}
+                <span class="av" class:group={rowKind(c) === 'group'}>{c.members ?? c.av ?? c.title[0]}</span>
+              {:else}<span class="ico"><Hash size={13} /></span>{/if}
               <span class="name">{c.title.replace('# ', '')}</span>
               {#if coFilter === 'all'}<span class="row-co mono">{DATA[r.co].short}</span>{/if}
               {#if c.unread}<span class="badge mono">{c.unread}</span>{:else if c.live}<span class="pulse"></span>{/if}
@@ -1039,7 +1043,8 @@
   .row:hover { background: var(--hover); }
   .row.sel { background: var(--sel); }
   .row .ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; color: var(--t3); }
-  .row .av { width: 16px; height: 16px; flex-shrink: 0; border-radius: 50%; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
+  /* DM + group marks echo the thread avatars: rounded squares, not circles. */
+  .row .av { width: 16px; height: 16px; flex-shrink: 0; border-radius: 5px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
   .row .name { flex: 1; min-width: 0; font-size: 13px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
   .row.unread .name { font-weight: 500; color: var(--t1); }
   /* Company tag on rows while the daybook aggregates all companies —
