@@ -7,6 +7,10 @@ use serde_json::Value;
 
 use crate::paths;
 
+/// Re-exported so probe diagnostics and their telemetry tests have a single
+/// import path for the resolver's program classification.
+pub use crate::paths::ResolvedProgramKind;
+
 /// npm package the menubar nags the user to keep current.
 pub const HQ_CLI_PACKAGE: &str = "@indigoai-us/hq-cli@latest";
 
@@ -36,11 +40,51 @@ pub enum VersionProbeOutcome {
     CanonicalizeFailed,
     PackageNotFound,
     ManifestReadOrParseFailed,
+    /// The spawn failed for a reason none of the classified variants below
+    /// cover. Kept as the residual bucket so the split is additive.
     ProcessSpawnFailed,
+    /// The program exists but is not an executable image the loader accepts —
+    /// Windows `ERROR_BAD_EXE_FORMAT` (os error 193) or Unix `ENOEXEC`. This is
+    /// what an extensionless POSIX shim resolved on Windows produces.
+    SpawnNotExecutable,
+    /// The program itself was not found at the resolved path.
+    SpawnProgramMissing,
+    /// The program exists but this process may not execute it.
+    SpawnAccessDenied,
     InterpreterNotFound,
     NonzeroExit,
     InvalidUtf8,
     EmptyOutput,
+}
+
+/// Windows `ERROR_BAD_EXE_FORMAT`: `CreateProcessW` was handed a file that is
+/// not an executable image (an extensionless POSIX shim, a `.ps1`, …).
+const ERROR_BAD_EXE_FORMAT: i32 = 193;
+/// POSIX `ENOEXEC`, the same condition on Unix.
+#[cfg(unix)]
+const ENOEXEC: i32 = 8;
+
+/// Split the spawn failure into the causes that mean different things.
+///
+/// Before this split every `Command::output()` error collapsed into
+/// `ProcessSpawnFailed`, so a field event could not distinguish "the program is
+/// absent" from "the program is present but Windows cannot execute it" from
+/// "access denied" — which is exactly the ambiguity that made the Windows
+/// resolver defect unreadable from telemetry.
+pub fn classify_spawn_error(error: &std::io::Error) -> VersionProbeOutcome {
+    match error.raw_os_error() {
+        Some(ERROR_BAD_EXE_FORMAT) => return VersionProbeOutcome::SpawnNotExecutable,
+        // Only Unix produces ENOEXEC; on Windows os error 8 is
+        // ERROR_NOT_ENOUGH_MEMORY, an unrelated condition.
+        #[cfg(unix)]
+        Some(ENOEXEC) => return VersionProbeOutcome::SpawnNotExecutable,
+        _ => {}
+    }
+    match error.kind() {
+        std::io::ErrorKind::NotFound => VersionProbeOutcome::SpawnProgramMissing,
+        std::io::ErrorKind::PermissionDenied => VersionProbeOutcome::SpawnAccessDenied,
+        _ => VersionProbeOutcome::ProcessSpawnFailed,
+    }
 }
 
 /// A closed classification of the resolved hq binary's parent layout. This is
@@ -66,6 +110,11 @@ pub struct LocalVersionProbeDiagnostics {
     pub npm_root: VersionProbeOutcome,
     pub hq_version: VersionProbeOutcome,
     pub binary_anchor_shape: BinaryAnchorShape,
+    /// What kind of program the resolver actually landed on. A resolution the
+    /// platform cannot execute (`extensionless`/`other_extension` on Windows)
+    /// is the difference between "the CLI is broken" and "every probe happened
+    /// to fail" — without it those two read identically in telemetry.
+    pub resolved_program_kind: ResolvedProgramKind,
 }
 
 impl LocalVersionProbeDiagnostics {
@@ -75,6 +124,7 @@ impl LocalVersionProbeDiagnostics {
             npm_root: VersionProbeOutcome::NotAttempted,
             hq_version: VersionProbeOutcome::NotAttempted,
             binary_anchor_shape: BinaryAnchorShape::NotAttempted,
+            resolved_program_kind: ResolvedProgramKind::NotResolved,
         }
     }
 }
@@ -232,7 +282,7 @@ fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionPr
     let mut cmd = paths::spawn_command(&bin, &[]);
     let out = match cmd.arg("--version").env("PATH", path).output() {
         Ok(output) => output,
-        Err(_) => return (None, VersionProbeOutcome::ProcessSpawnFailed),
+        Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -278,9 +328,13 @@ pub fn get_local_version() -> Option<String> {
 pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
     // Keep the resolver call order unchanged: do not look up npm when the
     // binary-anchored package probe has already succeeded.
-    let hq = paths::resolve_bin("hq");
-    if hq != "hq" {
-        let hq_path = Path::new(&hq);
+    //
+    // The resolver's classification travels with the path. A Windows
+    // resolution that exists but cannot be spawned stays `hq_installed` and
+    // still reports — it is a broken CLI, not an absent one.
+    let hq = paths::resolve_bin_with_kind("hq");
+    if hq.is_resolved() {
+        let hq_path = Path::new(&hq.path);
         let binary_anchor_shape = binary_anchor_shape(hq_path);
         let (local, binary_anchor) = version_from_hq_binary_probe(hq_path);
         if let Some(local) = local {
@@ -290,6 +344,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
                 probes: LocalVersionProbeDiagnostics {
                     binary_anchor,
                     binary_anchor_shape,
+                    resolved_program_kind: hq.kind,
                     ..LocalVersionProbeDiagnostics::not_attempted()
                 },
             };
@@ -300,6 +355,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
             Some(hq_path),
             binary_anchor,
             binary_anchor_shape,
+            hq.kind,
             npm,
             &paths::child_path(),
         );
@@ -314,6 +370,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
         None,
         VersionProbeOutcome::NotAttempted,
         BinaryAnchorShape::NotAttempted,
+        ResolvedProgramKind::NotResolved,
         npm,
         &paths::child_path(),
     )
@@ -322,6 +379,22 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
 #[cfg(test)]
 fn probe_local_version(
     hq: Option<&Path>,
+    npm: Option<&str>,
+    path: &str,
+) -> LocalVersionProbeResult {
+    // Unix resolution reports `Exe` for anything it found; see
+    // `paths::resolve_bin_with_kind`.
+    let kind = match hq {
+        Some(_) => ResolvedProgramKind::Exe,
+        None => ResolvedProgramKind::NotResolved,
+    };
+    probe_local_version_with_kind(hq, kind, npm, path)
+}
+
+#[cfg(test)]
+fn probe_local_version_with_kind(
+    hq: Option<&Path>,
+    resolved_program_kind: ResolvedProgramKind,
     npm: Option<&str>,
     path: &str,
 ) -> LocalVersionProbeResult {
@@ -339,17 +412,26 @@ fn probe_local_version(
             probes: LocalVersionProbeDiagnostics {
                 binary_anchor,
                 binary_anchor_shape,
+                resolved_program_kind,
                 ..LocalVersionProbeDiagnostics::not_attempted()
             },
         };
     }
-    probe_local_version_after_binary(hq, binary_anchor, binary_anchor_shape, npm, path)
+    probe_local_version_after_binary(
+        hq,
+        binary_anchor,
+        binary_anchor_shape,
+        resolved_program_kind,
+        npm,
+        path,
+    )
 }
 
 fn probe_local_version_after_binary(
     hq: Option<&Path>,
     binary_anchor: VersionProbeOutcome,
     binary_anchor_shape: BinaryAnchorShape,
+    resolved_program_kind: ResolvedProgramKind,
     npm: Option<&str>,
     path: &str,
 ) -> LocalVersionProbeResult {
@@ -367,6 +449,7 @@ fn probe_local_version_after_binary(
                 npm_root,
                 hq_version: VersionProbeOutcome::NotAttempted,
                 binary_anchor_shape,
+                resolved_program_kind,
             },
         };
     }
@@ -383,6 +466,7 @@ fn probe_local_version_after_binary(
             npm_root,
             hq_version,
             binary_anchor_shape,
+            resolved_program_kind,
         },
     }
 }
@@ -644,6 +728,7 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
                     "npm_root": probes.npm_root,
                     "hq_version": probes.hq_version,
                     "binary_anchor_shape": probes.binary_anchor_shape,
+                    "resolved_program_kind": probes.resolved_program_kind,
                 })
                 .into(),
             );
@@ -1548,6 +1633,67 @@ pub fn pnpm_install_argv() -> Vec<String> {
     ]
 }
 
+/// pnpm's global home for a resolved pnpm shim.
+///
+/// The shims sit either directly in the home (`<pnpm-home>\hq.cmd`) or, since
+/// pnpm 11, one level down (`<pnpm-home>\bin\hq.cmd`). Mirrors the two layouts
+/// [`is_pnpm_global_shim`] recognizes so the manifest lookup and the installer
+/// branch cannot disagree about where the install lives.
+fn pnpm_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
+    let parent = hq_bin.parent().filter(|p| !p.as_os_str().is_empty())?;
+    if parent.file_name().and_then(|name| name.to_str()) == Some("bin") {
+        if let Some(grandparent) = parent.parent() {
+            if grandparent.file_name().and_then(|name| name.to_str()) == Some("pnpm")
+                || grandparent.join("global").is_dir()
+            {
+                return Some(grandparent.to_path_buf());
+            }
+        }
+    }
+    Some(parent.to_path_buf())
+}
+
+/// package.json candidates inside pnpm's global store.
+///
+/// pnpm keeps globals under `<pnpm-home>/global/<store-version>/node_modules`
+/// — a small integer directory that changes with pnpm's store format — so the
+/// versions present are enumerated (highest first) rather than guessed. One
+/// bounded `read_dir` of a directory holding a handful of entries; a missing
+/// `global/` simply yields nothing.
+fn pnpm_store_package_json_candidates(pnpm_home: &Path) -> Vec<std::path::PathBuf> {
+    let global = pnpm_home.join("global");
+    let suffix = Path::new("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cli")
+        .join("package.json");
+
+    let mut stores: Vec<std::path::PathBuf> = std::fs::read_dir(&global)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    // Newest store format first, then by name so the order is deterministic
+    // regardless of how the filesystem enumerated the directory.
+    stores.sort_by_key(|path| {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        (std::cmp::Reverse(name.parse::<u64>().unwrap_or(0)), name)
+    });
+
+    let mut candidates: Vec<std::path::PathBuf> = stores
+        .into_iter()
+        .map(|store| store.join(&suffix))
+        .collect();
+    // Some setups keep the store flat directly under `global/`.
+    candidates.push(global.join(&suffix));
+    candidates
+}
+
 fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path::PathBuf> {
     let is_windows_npm_shim = hq_bin
         .extension()
@@ -1565,11 +1711,20 @@ fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path
         .join("@indigoai-us")
         .join("hq-cli")
         .join("package.json");
-    if is_windows_npm_shim {
+    let mut candidates = if is_windows_npm_shim {
         vec![windows, unix]
     } else {
         vec![unix, windows]
+    };
+    // A pnpm-managed install keeps its manifest in pnpm's own store, which
+    // neither npm layout above can reach. Appended (never reordered) so npm
+    // installs keep their exact existing candidate order.
+    if is_pnpm_global_shim(&hq_bin.to_string_lossy()) {
+        if let Some(pnpm_home) = pnpm_home_from_hq_bin(hq_bin) {
+            candidates.extend(pnpm_store_package_json_candidates(&pnpm_home));
+        }
     }
+    candidates
 }
 
 /// Build the argv for the global install. Factored out so the unit test
@@ -1608,7 +1763,7 @@ fn read_installed_version_probe(
     let mut cmd = paths::spawn_command(npm_bin, &[]);
     let out = match cmd.args(["root", "-g"]).env("PATH", path).output() {
         Ok(output) => output,
-        Err(_) => return (None, VersionProbeOutcome::ProcessSpawnFailed),
+        Err(error) => return (None, classify_spawn_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -3149,10 +3304,29 @@ mod tests {
     #[cfg(unix)]
     fn command_probe_diagnostics_classify_spawn_status_utf8_and_empty_output() {
         let tmp = tempfile::TempDir::new().unwrap();
+        // An absent program is now named as such rather than folded into the
+        // undifferentiated spawn-failure bucket.
         let missing = tmp.path().join("missing-hq");
         assert_eq!(
             hq_version_string_probe(&missing, "").1,
-            VersionProbeOutcome::ProcessSpawnFailed
+            VersionProbeOutcome::SpawnProgramMissing
+        );
+
+        // Present but not an executable image — the Unix ENOEXEC form of the
+        // Windows os error 193 an extensionless POSIX shim produces.
+        let not_executable = tmp.path().join("not-executable-hq");
+        write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
+        assert_eq!(
+            hq_version_string_probe(&not_executable, "").1,
+            enoexec_fixture_outcome()
+        );
+
+        // Present, but this process may not execute it.
+        let access_denied = tmp.path().join("access-denied-hq");
+        std::fs::write(&access_denied, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(
+            hq_version_string_probe(&access_denied, "").1,
+            VersionProbeOutcome::SpawnAccessDenied
         );
 
         let nonzero = tmp.path().join("nonzero-hq");
@@ -3182,7 +3356,14 @@ mod tests {
         let missing = tmp.path().join("missing-npm");
         assert_eq!(
             read_installed_version_probe(missing.to_str().unwrap(), "").1,
-            VersionProbeOutcome::ProcessSpawnFailed
+            VersionProbeOutcome::SpawnProgramMissing
+        );
+
+        let not_executable = tmp.path().join("not-executable-npm");
+        write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
+        assert_eq!(
+            read_installed_version_probe(not_executable.to_str().unwrap(), "").1,
+            enoexec_fixture_outcome()
         );
 
         let nonzero = tmp.path().join("nonzero-npm");
@@ -3361,5 +3542,287 @@ mod tests {
         let mut permissions = std::fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    /// What spawning an exec-bit file whose content is not a valid executable
+    /// image actually produces on THIS host.
+    ///
+    /// Linux answers `ENOEXEC` straight from the spawn, which is the faithful
+    /// analogue of the Windows `ERROR_BAD_EXE_FORMAT` (os error 193) the field
+    /// events come from. macOS and the BSDs do not: their libc `execvp` retries
+    /// such a file under `/bin/sh`, so the spawn SUCCEEDS and the shell exits
+    /// nonzero instead. The fixture is therefore platform-dependent; the
+    /// 193/`ENOEXEC` mapping itself is pinned platform-independently by
+    /// `classify_spawn_error_splits_the_process_spawn_failed_bucket`.
+    #[cfg(unix)]
+    fn enoexec_fixture_outcome() -> VersionProbeOutcome {
+        if cfg!(target_os = "linux") {
+            VersionProbeOutcome::SpawnNotExecutable
+        } else {
+            VersionProbeOutcome::NonzeroExit
+        }
+    }
+
+    // ── HQ-DESKTOP-3P: a Windows resolution that exists but cannot be spawned ──
+
+    /// Every spawn failure used to collapse into `ProcessSpawnFailed`, so the
+    /// field event could not say whether the program was absent, present but
+    /// not an executable image, or blocked by permissions.
+    #[test]
+    fn classify_spawn_error_splits_the_process_spawn_failed_bucket() {
+        use std::io::{Error, ErrorKind};
+
+        // Windows ERROR_BAD_EXE_FORMAT — the exact code an extensionless POSIX
+        // shim produces when CreateProcessW is handed it. Pinned on every
+        // platform so a Windows-only regression is caught by the macOS/Linux
+        // legs too.
+        assert_eq!(
+            classify_spawn_error(&Error::from_raw_os_error(193)),
+            VersionProbeOutcome::SpawnNotExecutable
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            classify_spawn_error(&Error::from_raw_os_error(8)),
+            VersionProbeOutcome::SpawnNotExecutable,
+            "ENOEXEC is the Unix form of the same condition"
+        );
+        assert_eq!(
+            classify_spawn_error(&Error::from(ErrorKind::NotFound)),
+            VersionProbeOutcome::SpawnProgramMissing
+        );
+        assert_eq!(
+            classify_spawn_error(&Error::from(ErrorKind::PermissionDenied)),
+            VersionProbeOutcome::SpawnAccessDenied
+        );
+        assert_eq!(
+            classify_spawn_error(&Error::from(ErrorKind::Interrupted)),
+            VersionProbeOutcome::ProcessSpawnFailed,
+            "unclassified spawn errors must keep the original residual bucket"
+        );
+    }
+
+    /// **The anti-silencing pin.** A resolved-but-non-spawnable `hq` is a
+    /// broken CLI, not an absent one. Dropping such a resolution back to the
+    /// bare name would flip `hq_installed` to false and silence the event, the
+    /// banner, and the regression watermark while the user's CLI stays broken.
+    #[test]
+    fn marked_non_spawnable_resolution_still_reports_and_carries_its_kind() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // A real file the loader cannot execute — the cross-platform stand-in
+        // for the extensionless POSIX shim resolved on the field host.
+        let hq = bin.join("hq");
+        std::fs::write(&hq, "#!/usr/bin/env sh\n").unwrap();
+
+        let result =
+            probe_local_version_with_kind(Some(&hq), ResolvedProgramKind::Extensionless, None, "");
+
+        assert_eq!(result.local, None);
+        assert!(result.hq_installed, "a broken CLI is still installed");
+        assert!(
+            should_report_unreadable_version(&result),
+            "silencing an installed-but-unusable CLI is prohibited"
+        );
+        assert_eq!(
+            result.probes.resolved_program_kind,
+            ResolvedProgramKind::Extensionless,
+            "the resolver classification must reach the diagnostics"
+        );
+        assert_eq!(
+            result.probes.binary_anchor_shape,
+            BinaryAnchorShape::NpmPrefix
+        );
+    }
+
+    /// The genuinely-absent CLI stays a quiet no-op — kept as its own case so
+    /// the anti-silencing pin above can never be satisfied by reporting on
+    /// everyone.
+    #[test]
+    fn absent_hq_reports_the_not_resolved_kind_and_stays_quiet() {
+        let result = probe_local_version(None, None, "");
+
+        assert!(!result.hq_installed);
+        assert!(!should_report_unreadable_version(&result));
+        assert_eq!(
+            result.probes.resolved_program_kind,
+            ResolvedProgramKind::NotResolved
+        );
+    }
+
+    /// Reproduces the exact production probe quadruple on the base commit
+    /// (`package_not_found` / `npm_prefix` / `package_not_found` /
+    /// `process_spawn_failed`) using the Unix ENOEXEC analogue of Windows os
+    /// error 193, and pins that the spawn no longer collapses into the
+    /// undifferentiated bucket.
+    ///
+    /// The base-red half is Linux-specific by necessity — see
+    /// [`enoexec_fixture_outcome`] for why macOS cannot produce the fixture —
+    /// but the three surrounding field outcomes and the reporting decision are
+    /// asserted on every Unix leg.
+    #[test]
+    #[cfg(unix)]
+    fn field_shape_spawn_failure_is_classified_as_not_executable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        let npm_root = tmp.path().join("npm-root");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&npm_root).unwrap();
+
+        // Executable bit set, but the content is not a valid executable image
+        // (no shebang, not ELF) — execve answers ENOEXEC, exactly as
+        // CreateProcessW answers ERROR_BAD_EXE_FORMAT for a POSIX shim.
+        let hq = bin.join("hq");
+        write_executable(&hq, "\u{0}\u{1}not-an-executable-image\n");
+        // npm resolves a global root that does not contain the package.
+        let npm = bin.join("npm");
+        write_executable(
+            &npm,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", npm_root.display()),
+        );
+
+        let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
+
+        assert_eq!(result.local, None);
+        assert!(result.hq_installed);
+        assert!(should_report_unreadable_version(&result));
+        // The three field-matching outcomes are unchanged…
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(
+            result.probes.binary_anchor_shape,
+            BinaryAnchorShape::NpmPrefix
+        );
+        assert_eq!(result.probes.npm_root, VersionProbeOutcome::PackageNotFound);
+        // …and the fourth now names the cause instead of the bucket. This is
+        // the assertion that runs RED on the base commit, where every spawn
+        // failure collapsed into `process_spawn_failed`.
+        assert_ne!(
+            result.probes.hq_version,
+            VersionProbeOutcome::ProcessSpawnFailed,
+            "an unexecutable program must not report as an undifferentiated spawn failure"
+        );
+        assert_eq!(result.probes.hq_version, enoexec_fixture_outcome());
+    }
+
+    /// End-to-end at the seam that owns the recovery: the selector picks the
+    /// spawnable `hq.cmd` from a later search directory over the bare shim that
+    /// used to shadow it, and that selection reads a version with no report.
+    #[test]
+    fn recovered_spawnable_selection_reads_a_version_and_stays_quiet() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let early = tmp.path().join("git-usr-bin");
+        let npm_prefix = tmp.path().join("npm-prefix");
+        let package = npm_prefix.join("node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(&early).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(early.join("hq"), "not-an-executable-image\n").unwrap();
+        std::fs::write(npm_prefix.join("hq.cmd"), "@echo off\n").unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.94.1"}"#,
+        )
+        .unwrap();
+
+        let selected = paths::select_program_in_dirs(
+            &[early.clone(), npm_prefix.clone()],
+            &[
+                "hq.exe".to_string(),
+                "hq.cmd".to_string(),
+                "hq.bat".to_string(),
+                "hq".to_string(),
+            ],
+            &|path| path.exists(),
+        )
+        .expect("the spawnable shim must be selected");
+        assert_eq!(selected.path, npm_prefix.join("hq.cmd").to_string_lossy());
+        assert_eq!(selected.kind, ResolvedProgramKind::CmdOrBat);
+
+        let result =
+            probe_local_version_with_kind(Some(Path::new(&selected.path)), selected.kind, None, "");
+
+        assert_eq!(result.local.as_deref(), Some("5.94.1"));
+        assert_eq!(result.probes.binary_anchor, VersionProbeOutcome::Succeeded);
+        assert!(
+            !should_report_unreadable_version(&result),
+            "a recovered, readable CLI must produce no event"
+        );
+    }
+
+    /// pnpm keeps its globals in its own store, which neither npm candidate
+    /// layout can reach — so a pnpm-managed Windows install read as unreadable
+    /// even though its manifest was sitting on disk.
+    #[test]
+    fn pnpm_windows_store_layouts_read_a_version_without_spawning() {
+        fn write_store(home: &Path, store_version: &str, version: &str) {
+            let package = home
+                .join("global")
+                .join(store_version)
+                .join("node_modules/@indigoai-us/hq-cli");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                format!(r#"{{"name":"@indigoai-us/hq-cli","version":"{version}"}}"#),
+            )
+            .unwrap();
+        }
+
+        // 1. Flat pnpm home: `<pnpm-home>\hq.cmd`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flat = tmp.path().join("pnpm");
+        std::fs::create_dir_all(&flat).unwrap();
+        let flat_shim = flat.join("hq.cmd");
+        std::fs::write(&flat_shim, "@echo off\n").unwrap();
+        write_store(&flat, "5", "5.90.0");
+        assert_eq!(
+            version_from_hq_binary_probe(&flat_shim),
+            (Some("5.90.0".to_string()), VersionProbeOutcome::Succeeded)
+        );
+
+        // 2. pnpm >= 11 nests the shims: `<pnpm-home>\bin\hq.cmd`.
+        let nested_home = tmp.path().join("pnpm-nested");
+        let nested_bin = nested_home.join("bin");
+        std::fs::create_dir_all(&nested_bin).unwrap();
+        write_store(&nested_home, "6", "5.91.0");
+        let nested_shim = nested_bin.join("hq.cmd");
+        std::fs::write(&nested_shim, "@echo off\n").unwrap();
+        assert_eq!(
+            version_from_hq_binary_probe(&nested_shim),
+            (Some("5.91.0".to_string()), VersionProbeOutcome::Succeeded)
+        );
+
+        // 3. Custom PNPM_HOME, identified by the `global/` store beside the
+        //    shims, and with more than one store version present the newest
+        //    format wins.
+        let custom = tmp.path().join("custom-pnpm-home");
+        std::fs::create_dir_all(&custom).unwrap();
+        write_store(&custom, "5", "5.10.0");
+        write_store(&custom, "10", "5.92.0");
+        let custom_shim = custom.join("hq.cmd");
+        std::fs::write(&custom_shim, "@echo off\n").unwrap();
+        assert_eq!(
+            version_from_hq_binary_probe(&custom_shim),
+            (Some("5.92.0".to_string()), VersionProbeOutcome::Succeeded)
+        );
+    }
+
+    /// npm layouts must keep their exact candidate order — the pnpm additions
+    /// are appended, never interleaved.
+    #[test]
+    fn npm_candidate_order_is_unchanged_by_the_pnpm_widening() {
+        let prefix = Path::new("/prefix");
+        let unix = Path::new("/prefix/lib/node_modules/@indigoai-us/hq-cli/package.json");
+        let windows = Path::new("/prefix/node_modules/@indigoai-us/hq-cli/package.json");
+
+        assert_eq!(
+            hq_cli_package_json_candidates(prefix, Path::new("/prefix/bin/hq")),
+            vec![unix.to_path_buf(), windows.to_path_buf()]
+        );
+        assert_eq!(
+            hq_cli_package_json_candidates(prefix, Path::new("/prefix/hq.cmd")),
+            vec![windows.to_path_buf(), unix.to_path_buf()]
+        );
     }
 }
