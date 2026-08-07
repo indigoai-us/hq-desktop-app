@@ -923,29 +923,62 @@ async function waitFor(
   }
 }
 
-async function powershell(
-  script: string,
+/**
+ * Run PowerShell with `shell: false`.
+ *
+ * Deliberately NOT `runCommand`, which sets `shell: true` on Windows: that
+ * routes through `cmd.exe /d /s /c "..."`, where `&`, `(`, `)` and embedded
+ * quotes in a `-Command` string are re-parsed by cmd before PowerShell ever
+ * sees them. Spawning directly hands each argument to PowerShell verbatim.
+ */
+function runPowerShell(
+  args: string[],
   timeoutMs: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return runCommand(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-Command', script],
-    { cwd: resolveSyncAppRoot(), timeoutMs },
-  );
+  return new Promise((resolve) => {
+    const child = spawn(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', ...args],
+      { cwd: resolveSyncAppRoot(), shell: false, windowsHide: true, env: process.env },
+    );
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve({ exitCode: 124, stdout, stderr: `${stderr}\n[timeout]` });
+    }, timeoutMs);
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr += String(chunk);
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ exitCode: 1, stdout, stderr: String(err) });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ exitCode: code ?? 1, stdout, stderr });
+    });
+  });
 }
 
 async function countDescendants(pid: number): Promise<number> {
-  const result = await powershell(
-    `@(Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}").Count`,
+  const result = await runPowerShell(
+    [
+      '-Command',
+      `@(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}').Count`,
+    ],
     15_000,
   );
   const parsed = Number.parseInt(result.stdout.trim(), 10);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function ownsTopLevelWindow(pid: number): Promise<boolean> {
-  const result = await powershell(
-    `@(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).Count`,
+async function isProcessAlive(pid: number): Promise<boolean> {
+  const result = await runPowerShell(
+    ['-Command', `@(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).Count`],
     15_000,
   );
   return result.stdout.trim().startsWith('1');
@@ -1006,23 +1039,53 @@ export async function driveWindowsSessionEnd(
   }
 
   try {
-    const up = await waitFor(
-      async () => exited || (await ownsTopLevelWindow(pid)),
-      { timeoutMs: startupTimeoutMs, intervalMs: 1_000 },
+    const driverScript = join(
+      resolveSyncAppRoot(),
+      'scripts',
+      'windows-session-end-drive.ps1',
     );
-    if (!up || exited) {
+
+    const alive = await waitFor(async () => exited || (await isProcessAlive(pid)), {
+      timeoutMs: startupTimeoutMs,
+      intervalMs: 1_000,
+    });
+    if (!alive || exited) {
       throw new Error(
         `app under test never reached a running state (exited=${exited}, code=${exitCode})`,
       );
     }
-    // Tauri's windows are created during setup; give the event loop a beat to
-    // own them before enumerating.
-    await sleep(3_000);
+
+    // Wait for real windows rather than sleeping a guessed interval: tao's
+    // thread-event-target window is what receives WM_ENDSESSION, and it does
+    // not exist until the event loop is up.
+    const ownsWindows = await waitFor(
+      async () => {
+        if (exited) return true;
+        const probe = await runPowerShell(
+          ['-File', driverScript, '-TargetProcessId', String(pid), '-ProbeOnly'],
+          30_000,
+        );
+        if (probe.exitCode !== 0) return false;
+        try {
+          return (JSON.parse(probe.stdout.trim()) as { windowCount: number }).windowCount > 0;
+        } catch {
+          return false;
+        }
+      },
+      { timeoutMs: startupTimeoutMs, intervalMs: 1_000 },
+    );
+    if (!ownsWindows || exited) {
+      throw new Error(
+        `app under test never owned a top-level window (exited=${exited}, code=${exitCode})`,
+      );
+    }
 
     const observedChildCountBefore = await countDescendants(pid);
 
-    const driver = await powershell(
-      `& '${join(resolveSyncAppRoot(), 'scripts', 'windows-session-end-drive.ps1')}' -TargetProcessId ${pid}`,
+    // `-File`, not `-Command`: no call operator and no quoting for PowerShell
+    // (or anything else) to re-parse.
+    const driver = await runPowerShell(
+      ['-File', driverScript, '-TargetProcessId', String(pid)],
       60_000,
     );
     if (driver.exitCode !== 0) {

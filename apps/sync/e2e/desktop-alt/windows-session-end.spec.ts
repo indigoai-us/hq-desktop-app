@@ -89,8 +89,14 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     const observed = await driveWindowsSessionEnd({ appPath: live.appPath });
 
     // The probe has to have actually landed, or nothing below means anything.
+    // WM_QUERYENDSESSION is the honest delivery check: it never terminates
+    // anything, so it succeeds on both the broken and the fixed build. The
+    // WM_ENDSESSION count deliberately is NOT asserted — on the fixed build the
+    // app exits from inside that very send, which makes SendMessageTimeout
+    // report failure for the window that took the branch. Delivery of
+    // WM_ENDSESSION is instead proved by its effect: the process exits.
     expect(observed.windowCount).toBeGreaterThan(0);
-    expect(observed.endSessionDelivered).toBeGreaterThan(0);
+    expect(observed.queryEndSessionDelivered).toBeGreaterThan(0);
 
     // The fix, stated three ways.
     expect(observed.observedDestroyedStatePanic).toBe(false);
@@ -107,7 +113,7 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     expect(observed.survivingChildCount).toBe(0);
     // eslint-disable-next-line no-console
     console.log(
-      `[session-end] windows=${observed.windowCount} children_before=${observed.observedChildCountBefore} children_after=${observed.survivingChildCount} exit=${observed.exitCode}`,
+      `[session-end] windows=${observed.windowCount} query_delivered=${observed.queryEndSessionDelivered} end_delivered=${observed.endSessionDelivered} follow_up=${observed.followUpPosted} children_before=${observed.observedChildCountBefore} children_after=${observed.survivingChildCount} exit=${observed.exitCode}`,
     );
   });
 });

@@ -33,6 +33,11 @@ param(
     [Parameter(Mandatory = $true)]
     [int] $TargetProcessId,
 
+    # Count the target's top-level windows and send nothing. Lets the harness
+    # wait for the app to actually own windows instead of sleeping a guessed
+    # interval and hoping.
+    [switch] $ProbeOnly,
+
     # Milliseconds each SendMessageTimeout may block. Session-end messages are
     # delivered synchronously, so an unbounded send would hang the harness if
     # the app wedged.
@@ -84,7 +89,9 @@ function Get-TopLevelWindowHandles {
     $handles = New-Object System.Collections.Generic.List[IntPtr]
     $callback = [HQSessionEnd.Native+EnumWindowsProc] {
         param([IntPtr] $hWnd, [IntPtr] $lParam)
-        $windowPid = 0
+        # Must be uint32: the P/Invoke signature declares `out uint`, and a
+        # [ref] to an Int32 fails to marshal.
+        $windowPid = [uint32] 0
         [void][HQSessionEnd.Native]::GetWindowThreadProcessId($hWnd, [ref] $windowPid)
         if ($windowPid -eq $OwnerProcessId) {
             $handles.Add($hWnd)
@@ -96,6 +103,17 @@ function Get-TopLevelWindowHandles {
 }
 
 $windows = Get-TopLevelWindowHandles -OwnerProcessId $TargetProcessId
+
+if ($ProbeOnly) {
+    [pscustomobject]@{
+        windowCount    = $windows.Count
+        queryDelivered = 0
+        endDelivered   = 0
+        followUpPosted = 0
+    } | ConvertTo-Json -Compress
+    exit 0
+}
+
 if ($windows.Count -eq 0) {
     # Never degrade to a no-op success: a run that could not deliver a single
     # session-end message has proven nothing about the fix.
