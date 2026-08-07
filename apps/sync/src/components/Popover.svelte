@@ -12,7 +12,7 @@
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
-  import { safeUnlisten } from '../lib/listener-registry';
+  import { safeUnlisten, subscribeWindowFocus } from '../lib/listener-registry';
   import { shouldUseNativePopoverMaterial } from '../lib/nativePopoverMaterial';
   import {
     POPOVER_MIN_HEIGHT,
@@ -428,10 +428,9 @@
 
     restartOpeningMotion();
 
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) restartOpeningMotion();
-      })
+    void subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
+      if (focused) restartOpeningMotion();
+    })
       .then((unlisten) => {
         const safe = safeUnlisten(unlisten);
         if (cancelled) safe();

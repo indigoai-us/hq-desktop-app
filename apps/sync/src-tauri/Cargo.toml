@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.75"
+version = "0.10.78"
 edition = "2021"
 
 [build-dependencies]
@@ -115,6 +115,9 @@ split-debuginfo = "packed"
 # Windows uses Win32 Job Objects instead — see the cfg(windows) block below.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal"] }
+# `waitid(WEXITED | WNOWAIT)` is bound on both Apple and Linux in the locked
+# libc version. Unlike nix's waitid wrapper, this remains available on macOS.
+libc = "0.2"
 
 # Windows platform deps, folded in from hq-sync-win (Phase 3):
 #   - Win32 Job Objects + ToolHelp: process spawn/cancel tree-kill (process.rs)

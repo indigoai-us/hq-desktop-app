@@ -1,6 +1,10 @@
-//! Pure and synchronous support for the HQ CLI update command layer.
+//! Shared support for the HQ CLI update command layer: pure decision and
+//! reporting helpers plus its async single-flight boundary.
 
+use std::future::Future;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -639,6 +643,628 @@ pub fn install_converged(after: Option<&str>, latest: &str) -> bool {
     }
 }
 
+/// Result of comparing the binary resolved before an npm install with the one
+/// resolved after it. A successful install can legitimately move resolution to
+/// a newly-installed binary, so the post-install probe is authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvergenceVerdict {
+    Converged,
+    RelocatedAndConverged,
+    NonConvergent,
+}
+
+/// Which package manager actually performed the install. Two executors reach
+/// the same convergence gate, and before this tag existed a non-convergent
+/// event could not say which one ran: the pnpm branch passed no prefix, so its
+/// events rendered the npm branch's "npm default prefix" placeholder and read
+/// as npm runs. Closed domain; never a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallExecutor {
+    Npm,
+    Pnpm,
+}
+
+impl InstallExecutor {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::Pnpm => "pnpm",
+        }
+    }
+}
+
+/// Whether the installer we ran was aimed at the executable the desktop app
+/// resolves after the install. This is deliberately derived from values the
+/// updater already has; probing `npm root -g` here would create another process
+/// boundary and could only make the convergence verdict less trustworthy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonConvergenceKind {
+    NpmTargeted,
+    /// pnpm ran against the very global bin dir that holds the resolved shim
+    /// (`PNPM_HOME` derived from that shim, its bin dir on the child PATH) and
+    /// the shim still did not move. Same class of defect as `NpmTargeted`: the
+    /// installer was pointed at the right place and the update still did not
+    /// land, so it stays loud instead of being bounded like a foreign layout.
+    PnpmTargeted,
+    ForeignManaged,
+}
+
+impl NonConvergenceKind {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NpmTargeted => "npm-targeted",
+            Self::PnpmTargeted => "pnpm-targeted",
+            Self::ForeignManaged => "foreign-managed",
+        }
+    }
+
+    /// Did we aim the installer at the binary the app resolves? Targeted
+    /// non-convergence is a genuine updater defect and is reported on every
+    /// occurrence; a foreign layout is an environment shape we cannot drive and
+    /// is bounded to one capture per episode.
+    pub fn is_installer_targeted(self) -> bool {
+        matches!(self, Self::NpmTargeted | Self::PnpmTargeted)
+    }
+}
+
+/// Classify a failed convergence without guessing a prefix. A flat pnpm/asdf
+/// directory is intentionally foreign managed for the npm executor: npm has no
+/// safe prefix to pass and may write a valid package somewhere the app will
+/// never execute. The pnpm executor is targeted exactly when we derived its
+/// global environment from the resolved shim and handed it to the child.
+pub fn non_convergence_kind(
+    executor: InstallExecutor,
+    npm_prefix_passed: Option<&str>,
+    pnpm_targeted: bool,
+    post_install_hq_bin: &str,
+) -> NonConvergenceKind {
+    match executor {
+        InstallExecutor::Pnpm => {
+            if pnpm_targeted {
+                NonConvergenceKind::PnpmTargeted
+            } else {
+                NonConvergenceKind::ForeignManaged
+            }
+        }
+        InstallExecutor::Npm => match (
+            npm_prefix_passed,
+            npm_prefix_from_hq_bin(post_install_hq_bin),
+        ) {
+            (Some(passed), Some(active_prefix)) if passed == active_prefix => {
+                NonConvergenceKind::NpmTargeted
+            }
+            _ => NonConvergenceKind::ForeignManaged,
+        },
+    }
+}
+
+/// How the pnpm home behind a resolved shim was derived. Closed domain — the
+/// value names the LAYOUT we matched, never a path. `Undetermined` means we
+/// refused to guess and spawned pnpm with the ambient environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PnpmHomeSource {
+    /// `<pnpm-home>/hq` — the pre-11 flat layout, home directory named `pnpm`.
+    FlatPnpmDir,
+    /// `<pnpm-home>/bin/hq` — the pnpm >=11 nested layout.
+    NestedBinDir,
+    /// A custom `PNPM_HOME` identified by pnpm's `global/` store beside the
+    /// shims rather than by directory name.
+    GlobalStore,
+    Undetermined,
+}
+
+impl PnpmHomeSource {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::FlatPnpmDir => "flat-pnpm-dir",
+            Self::NestedBinDir => "nested-bin-dir",
+            Self::GlobalStore => "global-store",
+            Self::Undetermined => "undetermined",
+        }
+    }
+}
+
+/// The pnpm environment a `pnpm add -g` child needs so it writes to the SAME
+/// global bin dir the app resolved `hq` from.
+///
+/// Derived strictly from the already-resolved shim path — never from a guessed
+/// default. Inventing a home would move a user's global installs to a directory
+/// they do not use, so an underivable layout yields `None` and the child is
+/// spawned exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PnpmGlobalEnv {
+    /// Value for the child's `PNPM_HOME`.
+    pub home: String,
+    /// The directory that holds the resolved shim; pnpm must land here.
+    pub global_bin_dir: String,
+    pub source: PnpmHomeSource,
+}
+
+/// Derive the pnpm home and global bin dir behind a resolved `hq` shim.
+///
+/// Mirrors the layout arms of [`is_pnpm_global_shim`] so detection and
+/// targeting can never disagree: whatever shape routed the install to pnpm is
+/// the shape whose home we hand the child.
+pub fn pnpm_global_env(hq_bin: &str) -> Option<PnpmGlobalEnv> {
+    if hq_bin.is_empty() || hq_bin == "hq" {
+        return None;
+    }
+    let path = Path::new(hq_bin);
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())?;
+    let parent_name = parent.file_name().and_then(|n| n.to_str());
+
+    // Flat: `<pnpm-home>/hq`. Home and global bin dir are the same directory.
+    if parent_name == Some("pnpm") {
+        return Some(PnpmGlobalEnv {
+            home: parent.to_string_lossy().to_string(),
+            global_bin_dir: parent.to_string_lossy().to_string(),
+            source: PnpmHomeSource::FlatPnpmDir,
+        });
+    }
+
+    // pnpm >=11 nested: `<pnpm-home>/bin/hq`. The home is the grandparent; the
+    // shims live one level down, which is exactly the directory `pnpm add -g`
+    // must write.
+    if parent_name == Some("bin") {
+        if let Some(grandparent) = parent.parent().filter(|p| !p.as_os_str().is_empty()) {
+            let grandparent_is_pnpm =
+                grandparent.file_name().and_then(|n| n.to_str()) == Some("pnpm");
+            if grandparent_is_pnpm || grandparent.join("global").is_dir() {
+                return Some(PnpmGlobalEnv {
+                    home: grandparent.to_string_lossy().to_string(),
+                    global_bin_dir: parent.to_string_lossy().to_string(),
+                    source: if grandparent_is_pnpm {
+                        PnpmHomeSource::NestedBinDir
+                    } else {
+                        PnpmHomeSource::GlobalStore
+                    },
+                });
+            }
+        }
+        return None;
+    }
+
+    // Custom PNPM_HOME: pnpm keeps its `global/` store beside the shims.
+    if parent.join("global").is_dir() {
+        return Some(PnpmGlobalEnv {
+            home: parent.to_string_lossy().to_string(),
+            global_bin_dir: parent.to_string_lossy().to_string(),
+            source: PnpmHomeSource::GlobalStore,
+        });
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+const PATH_LIST_SEPARATOR: char = ';';
+#[cfg(not(target_os = "windows"))]
+const PATH_LIST_SEPARATOR: char = ':';
+
+/// Does `path_value` (a PATH-shaped, separator-joined string) contain `dir`?
+/// Used to record whether the child pnpm could even see the global bin dir that
+/// holds the shim we expect it to replace.
+pub fn path_contains_dir(path_value: &str, dir: &str) -> bool {
+    if dir.is_empty() {
+        return false;
+    }
+    path_value
+        .split(PATH_LIST_SEPARATOR)
+        .any(|entry| !entry.is_empty() && Path::new(entry) == Path::new(dir))
+}
+
+/// The PATH handed to the pnpm child, with the resolved shim's own global bin
+/// dir in front when we could derive it.
+///
+/// `paths::child_path()` draws its user-level directories from `user_cli_dirs`,
+/// which lists only the FLAT pnpm homes. A pnpm >=11 user's real global bin dir
+/// (`<pnpm-home>/bin`) is therefore absent from the child environment, so the
+/// pnpm we spawn can resolve a different global bin dir than the one the app
+/// resolved `hq` from, install there, and exit 0 — leaving the shim on PATH
+/// untouched. Prepending the dir is scoped to this one spawn on purpose; the
+/// global search order stays owned by `paths`.
+pub fn pnpm_child_path(base_path: &str, global_bin_dir: Option<&str>) -> String {
+    match global_bin_dir {
+        Some(dir) if !dir.is_empty() && !path_contains_dir(base_path, dir) => {
+            if base_path.is_empty() {
+                dir.to_string()
+            } else {
+                format!("{dir}{PATH_LIST_SEPARATOR}{base_path}")
+            }
+        }
+        _ => base_path.to_string(),
+    }
+}
+
+/// What the pnpm child was handed and what it reported back. Every field is a
+/// closed category, a boolean, or a bounded string — this is what makes the
+/// next occurrence self-diagnosing instead of ambiguous, and it must survive
+/// the org data scrubber that reduced `npm_stderr` to `[Filtered]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PnpmRunDiagnostics {
+    pub home_source: PnpmHomeSource,
+    /// Was `PNPM_HOME` already present in the app's own environment? A
+    /// Dock-launched app inherits launchd's minimal environment and normally
+    /// has none, which is half of why the child resolved a different global
+    /// dir than the app did.
+    pub home_env_present: bool,
+    /// Did the PATH we handed the child contain the directory holding the
+    /// resolved shim?
+    pub path_has_shim_dir: bool,
+    /// Bounded exit-status rendering, e.g. `0` or `signal/none`.
+    pub exit_status: String,
+    /// Length of pnpm's combined output. The text itself is never sent — only
+    /// its size, so a talkative pnpm cannot smuggle paths into telemetry.
+    pub output_len: usize,
+}
+
+impl PnpmRunDiagnostics {
+    /// One bounded, closed summary line. Mirrors `npm_diagnostics_summary` so
+    /// both executors expose a scrubber-proof diagnostic extra.
+    pub fn summary(&self) -> String {
+        format!(
+            "home_source={} home_env_present={} path_has_shim_dir={} exit_status={} output_len={}",
+            self.home_source.telemetry_value(),
+            self.home_env_present,
+            self.path_has_shim_dir,
+            self.exit_status,
+            self.output_len,
+        )
+    }
+}
+
+/// Data needed to make the post-install effects observable at the app seam.
+/// None of these fields are sent to telemetry directly; the reporting helper
+/// below remains responsible for closed, redacted payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonConvergentReport {
+    pub executor: InstallExecutor,
+    pub kind: NonConvergenceKind,
+    pub latest: String,
+    pub local: Option<String>,
+    pub hq_bin: String,
+    /// Only ever `Some` for the npm executor. The pnpm branch passes no prefix
+    /// and must not borrow npm's placeholder wording.
+    pub npm_prefix: Option<String>,
+    /// The installer binary that ran — `npm` or `pnpm`, per `executor`.
+    pub installer_bin: String,
+    pub hq_bin_changed: bool,
+    pub pnpm: Option<PnpmRunDiagnostics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostInstallSuccess {
+    pub local: String,
+    pub latest: String,
+}
+
+/// Complete post-install decision. Keeping every user-visible consequence as
+/// data prevents an edit to the Tauri command from accidentally moving the
+/// capture ahead of the durable marker write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostInstallOutcome {
+    pub verdict: ConvergenceVerdict,
+    pub non_convergence_kind: Option<NonConvergenceKind>,
+    pub record_non_convergent: Option<String>,
+    pub clear_non_convergent: bool,
+    pub capture: Option<NonConvergentReport>,
+    pub capture_requires_durable_record: bool,
+    pub log_line: String,
+    pub result: Result<PostInstallSuccess, String>,
+}
+
+/// Injectable post-install effects shared by the app executor and telemetry
+/// artifact tests. This is the production ordering seam: foreign-managed
+/// capture cannot happen unless the marker write succeeds.
+pub struct PostInstallCoreEffects<'a> {
+    pub record: &'a dyn Fn(String) -> Result<(), String>,
+    pub clear: &'a dyn Fn(),
+    pub capture: &'a dyn Fn(NonConvergentReport),
+    pub record_failure: &'a dyn Fn(String),
+}
+
+struct AsyncSingleFlightState<T> {
+    next_generation: u64,
+    active: Option<AsyncSingleFlightActive<T>>,
+}
+
+struct AsyncSingleFlightActive<T> {
+    generation: u64,
+    receiver: tokio::sync::watch::Receiver<Option<Result<T, String>>>,
+}
+
+/// Coalesce overlapping async operations into one execution and share its
+/// result with every caller that arrived while it was in flight.
+///
+/// The worker runs independently of any one caller, so cancelling a waiting UI
+/// request cannot abandon the operation or strand later waiters. Generation
+/// identity prevents a late waiter for an older result from clearing a newer
+/// flight.
+pub struct AsyncSingleFlight<T> {
+    state: Arc<tokio::sync::Mutex<AsyncSingleFlightState<T>>>,
+}
+
+impl<T> AsyncSingleFlight<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(tokio::sync::Mutex::new(AsyncSingleFlightState {
+                next_generation: 0,
+                active: None,
+            })),
+        }
+    }
+
+    pub async fn run<F, Fut>(&self, operation: F) -> Result<T, String>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let mut receiver = {
+            let mut state = self.state.lock().await;
+            if let Some(active) = state.active.as_ref() {
+                active.receiver.clone()
+            } else {
+                state.next_generation = state.next_generation.wrapping_add(1);
+                let generation = state.next_generation;
+                let (sender, receiver) = tokio::sync::watch::channel(None);
+                state.active = Some(AsyncSingleFlightActive {
+                    generation,
+                    receiver: receiver.clone(),
+                });
+
+                let shared_state = Arc::clone(&self.state);
+                let worker = tokio::spawn(operation());
+                tokio::spawn(async move {
+                    let result = match worker.await {
+                        Ok(result) => result,
+                        Err(error) => Err(format!("shared async operation failed: {error}")),
+                    };
+                    // Retain the result even if every original caller was
+                    // cancelled; a waiter that joined this generation can
+                    // still observe the completed operation.
+                    sender.send_replace(Some(result));
+
+                    let mut state = shared_state.lock().await;
+                    if state
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.generation == generation)
+                    {
+                        state.active = None;
+                    }
+                });
+                receiver
+            }
+        };
+
+        loop {
+            if let Some(result) = receiver.borrow().clone() {
+                return result;
+            }
+            if receiver.changed().await.is_err() {
+                return Err("shared async operation ended without a result".to_string());
+            }
+        }
+    }
+}
+
+impl<T> Default for AsyncSingleFlight<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Decide whether an npm install reached the CLI the desktop app resolves
+/// afterwards. `before` is diagnostic context only: it distinguishes the
+/// expected shim-to-npm relocation from an ordinary in-place update, while the
+/// decision to block remains bound exclusively to the post-install binary.
+pub fn convergence_verdict(
+    before: Option<&str>,
+    after: Option<&str>,
+    before_bin: &str,
+    after_bin: &str,
+    latest: &str,
+) -> ConvergenceVerdict {
+    if !install_converged(after, latest) {
+        return ConvergenceVerdict::NonConvergent;
+    }
+
+    if before_bin != after_bin && !install_converged(before, latest) {
+        ConvergenceVerdict::RelocatedAndConverged
+    } else {
+        ConvergenceVerdict::Converged
+    }
+}
+
+/// Everything the post-install decision needs, for either executor. A struct
+/// rather than a positional argument list because both executors now share the
+/// seam and a silently-swapped `&str` would mislabel a real user's telemetry.
+#[derive(Debug, Clone)]
+pub struct PostInstallContext<'a> {
+    pub executor: InstallExecutor,
+    pub before_bin: &'a str,
+    pub after_bin: &'a str,
+    pub before_version: Option<&'a str>,
+    pub after_version: Option<&'a str>,
+    pub latest: &'a str,
+    /// npm executor only; the pnpm branch always passes `None`.
+    pub npm_prefix_passed: Option<&'a str>,
+    /// The installer binary that ran.
+    pub installer_bin: &'a str,
+    pub already_blocked: bool,
+    /// pnpm executor only. `Some` means pnpm ran; the diagnostics describe what
+    /// environment it was handed and what it reported back.
+    pub pnpm: Option<PnpmRunDiagnostics>,
+}
+
+impl<'a> PostInstallContext<'a> {
+    /// Convenience constructor for the npm executor, which carries no pnpm
+    /// diagnostics and is by far the most common call shape in tests.
+    pub fn npm(
+        before_bin: &'a str,
+        after_bin: &'a str,
+        before_version: Option<&'a str>,
+        after_version: Option<&'a str>,
+        latest: &'a str,
+        npm_prefix_passed: Option<&'a str>,
+        npm_bin: &'a str,
+        already_blocked: bool,
+    ) -> Self {
+        Self {
+            executor: InstallExecutor::Npm,
+            before_bin,
+            after_bin,
+            before_version,
+            after_version,
+            latest,
+            npm_prefix_passed,
+            installer_bin: npm_bin,
+            already_blocked,
+            pnpm: None,
+        }
+    }
+}
+
+/// Decide the observable outcome of an install after re-resolving `hq`.
+/// The caller performs the returned effects in order. In particular, a
+/// foreign-managed non-convergence may be captured only after `record` reports
+/// a durable marker write; an unreadable or unwritable marker must fail closed
+/// instead of turning every six-hour retry into a new first episode.
+pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
+    let PostInstallContext {
+        executor,
+        before_bin,
+        after_bin,
+        before_version,
+        after_version,
+        latest,
+        npm_prefix_passed,
+        installer_bin,
+        already_blocked,
+        pnpm,
+    } = ctx;
+    let (executor, before_bin, after_bin, latest, installer_bin, already_blocked) = (
+        *executor,
+        *before_bin,
+        *after_bin,
+        *latest,
+        *installer_bin,
+        *already_blocked,
+    );
+    let (before_version, after_version, npm_prefix_passed) =
+        (*before_version, *after_version, *npm_prefix_passed);
+    let verdict = convergence_verdict(before_version, after_version, before_bin, after_bin, latest);
+    if matches!(
+        verdict,
+        ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
+    ) {
+        // `convergence_verdict` can return a successful verdict only with a
+        // version that passed `install_converged`; keep this total anyway so a
+        // future edit cannot turn a user command into an `expect` panic.
+        if let Some(local) = after_version {
+            return PostInstallOutcome {
+                verdict,
+                non_convergence_kind: None,
+                record_non_convergent: None,
+                clear_non_convergent: true,
+                capture: None,
+                capture_requires_durable_record: false,
+                log_line: format!("install succeeded: local={local} latest={latest}"),
+                result: Ok(PostInstallSuccess {
+                    local: local.to_string(),
+                    latest: latest.to_string(),
+                }),
+            };
+        }
+    }
+
+    // pnpm counts as targeted only when we actually derived its home from the
+    // resolved shim AND the child could see that shim's directory. Either half
+    // missing means the child may have written a different global dir, which is
+    // the foreign-managed shape.
+    let pnpm_targeted = pnpm.as_ref().is_some_and(|diagnostics| {
+        diagnostics.home_source != PnpmHomeSource::Undetermined && diagnostics.path_has_shim_dir
+    });
+    let kind = non_convergence_kind(executor, npm_prefix_passed, pnpm_targeted, after_bin);
+    let hq_display = if after_bin == "hq" { "PATH" } else { after_bin };
+    let detail = non_convergent_detail(executor, hq_display, after_version, latest);
+    let capture_requires_durable_record = !kind.is_installer_targeted();
+    // A targeted install remains a real updater defect and must remain loud
+    // even when an earlier marker exists. Foreign-managed layouts get one
+    // capture only on a newly durable episode.
+    let should_capture = kind.is_installer_targeted() || !already_blocked;
+    let report = should_capture.then(|| NonConvergentReport {
+        executor,
+        kind,
+        latest: latest.to_string(),
+        local: after_version.map(str::to_owned),
+        hq_bin: hq_display.to_string(),
+        npm_prefix: npm_prefix_passed.map(str::to_owned),
+        installer_bin: installer_bin.to_string(),
+        hq_bin_changed: before_bin != after_bin,
+        pnpm: pnpm.clone(),
+    });
+    let record_non_convergent =
+        (!already_blocked || kind.is_installer_targeted()).then(|| latest.to_string());
+
+    PostInstallOutcome {
+        verdict: ConvergenceVerdict::NonConvergent,
+        non_convergence_kind: Some(kind),
+        record_non_convergent,
+        clear_non_convergent: false,
+        capture: report,
+        capture_requires_durable_record,
+        log_line: format!(
+            "{} completed, but the active HQ CLI is still {} (expected v{latest}); hq={hq_display}",
+            executor.telemetry_value(),
+            after_version
+                .map(|version| format!("v{version}"))
+                .unwrap_or_else(|| "unreadable".to_string())
+        ),
+        result: Err(detail),
+    }
+}
+
+/// Apply the filesystem and telemetry effects selected by
+/// [`decide_post_install`]. Keeping this executor in the core crate lets the
+/// artifact harness prove the same fail-closed ordering used by the Tauri
+/// command instead of reimplementing it in a test.
+pub fn apply_post_install_effects(
+    outcome: &PostInstallOutcome,
+    effects: &PostInstallCoreEffects<'_>,
+) -> Result<PostInstallSuccess, String> {
+    let marker_persisted = match outcome.record_non_convergent.as_deref() {
+        Some(version) => match (effects.record)(version.to_string()) {
+            Ok(()) => true,
+            Err(error) => {
+                (effects.record_failure)(format!(
+                    "could not record non-convergent version {version}: {error}"
+                ));
+                false
+            }
+        },
+        None => true,
+    };
+
+    if outcome.clear_non_convergent {
+        (effects.clear)();
+    }
+
+    if let Some(report) = outcome.capture.as_ref() {
+        if !outcome.capture_requires_durable_record || marker_persisted {
+            (effects.capture)(report.clone());
+        }
+    }
+
+    outcome.result.clone()
+}
+
 /// Should the background loop auto-install `latest`?
 ///
 /// `false` once an install of that exact version has already completed without
@@ -647,8 +1273,12 @@ pub fn install_converged(after: Option<&str>, latest: &str) -> bool {
 /// newer `latest` clears the block on its own (the environment may have been
 /// fixed in between), and the user-initiated "Update" button never consults
 /// this — an explicit click should always be allowed to try again.
+pub fn non_convergent_episode_blocked(non_convergent: Option<&str>, latest: &str) -> bool {
+    non_convergent == Some(latest)
+}
+
 pub fn should_auto_install(latest: &str, non_convergent: Option<&str>) -> bool {
-    non_convergent != Some(latest)
+    !non_convergent_episode_blocked(non_convergent, latest)
 }
 
 /// Stable marker on the non-convergent error string. The UI keys off it to tell
@@ -663,15 +1293,33 @@ pub const NON_CONVERGENT_ERROR_PREFIX: &str = "hq-cli-update/non-convergent: ";
 /// converging. It has to name the specific binary that did not move: a machine
 /// in this state usually has two or three `hq` copies, and knowing *which* one
 /// the app resolves is the entire remedy.
-pub fn non_convergent_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
+pub fn non_convergent_detail(
+    executor: InstallExecutor,
+    hq_bin: &str,
+    local: Option<&str>,
+    latest: &str,
+) -> String {
     let current = local.unwrap_or("an unreadable version");
-    format!(
-        "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} installed successfully, but the app still \
-         resolves hq {current} at {hq_bin}. That copy is managed outside npm's global prefix \
-         (pnpm, Homebrew, or an earlier entry on PATH), so an npm install cannot replace it. \
-         Update it with the tool that installed it, or remove it so the npm-managed copy \
-         takes over."
-    )
+    match executor {
+        InstallExecutor::Npm => format!(
+            "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} installed successfully, but the app still \
+             resolves hq {current} at {hq_bin}. That copy is managed outside npm's global prefix \
+             (pnpm, Homebrew, or an earlier entry on PATH), so an npm install cannot replace it. \
+             Update it with the tool that installed it, or remove it so the npm-managed copy \
+             takes over."
+        ),
+        // "Update it with the tool that installed it" is a dead end here: we
+        // just ran that tool. Point the user at the one thing that explains a
+        // clean `pnpm add -g` that does not move the shim — pnpm writing a
+        // different global bin dir than the one this binary sits in.
+        InstallExecutor::Pnpm => format!(
+            "{NON_CONVERGENT_ERROR_PREFIX}pnpm reported that hq {latest} installed, but the app \
+             still resolves hq {current} at {hq_bin}. pnpm most likely wrote to a different \
+             global bin directory than the one holding that copy. Run \
+             `pnpm add -g @indigoai-us/hq-cli@latest` yourself and compare `pnpm bin -g` with \
+             the path above, or remove that copy so a fresh install takes over."
+        ),
+    }
 }
 
 /// Capture the non-convergent-install signal. This is a distinct class from
@@ -680,17 +1328,33 @@ pub fn non_convergent_detail(hq_bin: &str, local: Option<&str>, latest: &str) ->
 /// prod install for weeks, reinstalling on every cycle while the detected
 /// version stayed frozen, so it stays at Warning level with its own fingerprint
 /// rather than folding into the install-failure bucket.
-pub fn report_non_convergent_install(
-    latest: &str,
-    local: Option<&str>,
-    hq_bin: &str,
-    prefix: Option<&str>,
-) {
+pub fn report_non_convergent_install(report: &NonConvergentReport) {
+    let executor = report.executor;
+    let hq_bin = report.hq_bin.as_str();
+    let prefix = report.npm_prefix.as_deref();
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-non-convergent");
-            scope.set_tag("latest", latest);
-            scope.set_tag("local", local.unwrap_or("unreadable"));
+            // Which package manager ran. Without this the two executors were
+            // indistinguishable in Sentry and a pnpm run read as an npm run
+            // against npm's default prefix.
+            scope.set_tag("install_executor", executor.telemetry_value());
+            scope.set_tag("non_convergence_kind", report.kind.telemetry_value());
+            scope.set_tag("latest", report.latest.as_str());
+            scope.set_tag("local", report.local.as_deref().unwrap_or("unreadable"));
+            scope.set_tag("hq_bin_source", bin_resolution_source(hq_bin));
+            scope.set_tag(
+                "installer_bin_source",
+                bin_resolution_source(&report.installer_bin),
+            );
+            scope.set_tag(
+                "hq_bin_changed",
+                if report.hq_bin_changed {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
             scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
             // Home-redacted: the install LAYOUT is the diagnostic
             // (`~/Library/pnpm/hq` says everything); the account name in front
@@ -698,10 +1362,50 @@ pub fn report_non_convergent_install(
             // filters by key name, so ordinary string extras like these reach
             // Sentry verbatim unless redacted here.
             scope.set_extra("hq_bin", redact_home(hq_bin).into());
-            scope.set_extra(
-                "npm_prefix",
-                redact_home(prefix.unwrap_or("npm default prefix")).into(),
-            );
+
+            match executor {
+                InstallExecutor::Npm => {
+                    // npm-only shape. `prefix_known=false` renders as the
+                    // "npm default prefix" placeholder, which is meaningful
+                    // for npm and meaningless for pnpm.
+                    scope.set_tag(
+                        "npm_bin_source",
+                        bin_resolution_source(&report.installer_bin),
+                    );
+                    scope.set_tag(
+                        "prefix_known",
+                        if prefix.is_some() { "true" } else { "false" },
+                    );
+                    scope.set_extra(
+                        "npm_prefix",
+                        redact_home(prefix.unwrap_or("npm default prefix")).into(),
+                    );
+                }
+                InstallExecutor::Pnpm => {
+                    // No `npm_prefix` extra at all: pnpm never passes one, and
+                    // emitting npm's placeholder here is what made the live
+                    // 0.10.69 events read as npm default-prefix runs.
+                    let diagnostics = report.pnpm.as_ref();
+                    scope.set_tag(
+                        "pnpm_home_source",
+                        diagnostics
+                            .map(|d| d.home_source)
+                            .unwrap_or(PnpmHomeSource::Undetermined)
+                            .telemetry_value(),
+                    );
+                    scope.set_tag(
+                        "pnpm_home_env_present",
+                        bool_tag(diagnostics.is_some_and(|d| d.home_env_present)),
+                    );
+                    scope.set_tag(
+                        "pnpm_path_has_shim_dir",
+                        bool_tag(diagnostics.is_some_and(|d| d.path_has_shim_dir)),
+                    );
+                    if let Some(diagnostics) = diagnostics {
+                        scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());
+                    }
+                }
+            }
         },
         || {
             sentry::capture_message(
@@ -710,6 +1414,99 @@ pub fn report_non_convergent_install(
             );
         },
     );
+}
+
+fn bool_tag(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+// A persistence failure may recur at the background check cadence. Keep the
+// compensating diagnostic bounded by process lifetime so it cannot recreate the
+// quota problem the durable-marker gate removes.
+static MARKER_UNPERSISTED_CAPTURED: AtomicBool = AtomicBool::new(false);
+
+/// Report that the sticky non-convergence marker could not be written. The
+/// payload intentionally carries only closed categories, never a filesystem
+/// path or raw I/O error, and is emitted at most once per app process.
+pub fn report_non_convergent_marker_unpersisted() {
+    if MARKER_UNPERSISTED_CAPTURED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "non-convergent-marker-unpersisted");
+            scope.set_tag("marker_store", "menubar-json");
+            scope.set_tag("marker_error_class", "persistence");
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "non-convergent-marker-unpersisted",
+            ]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] could not persist non-convergent update marker",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
+/// Test support for the process-lifetime capture bound. This is deliberately
+/// hidden rather than public API for callers.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn reset_non_convergent_marker_unpersisted_capture_for_tests() {
+    MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
+}
+
+/// Reduce a resolved executable to a closed, path-free source category for
+/// telemetry. On Unix, an absolute path outside the deterministic directories
+/// can only have come from the login-shell fallback; Windows `where.exe`
+/// results remain deliberately `unknown` rather than inferring a source.
+pub fn bin_resolution_source(bin: &str) -> &'static str {
+    if bin.is_empty() || bin == "hq" || bin == "npm" {
+        return "unknown";
+    }
+
+    let path = Path::new(bin);
+    if paths::managed_toolchain_roots()
+        .iter()
+        .any(|root| path.starts_with(root))
+    {
+        return "managed-toolchain";
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(home) = paths::home_dir() {
+            if path.starts_with(home.join(".npm-global").join("bin")) {
+                return "npm-global";
+            }
+            if path.starts_with(home.join("Library").join("pnpm"))
+                || path.starts_with(home.join(".local").join("share").join("pnpm"))
+            {
+                return "pnpm";
+            }
+        }
+        if path.starts_with("/opt/homebrew/bin") {
+            return "homebrew";
+        }
+        if path.starts_with("/usr/local/bin") {
+            return "usr-local";
+        }
+        if path.is_absolute() {
+            return "login-shell";
+        }
+    }
+
+    "unknown"
 }
 
 /// Capture a Sentry event when `hq` is installed but every version probe
@@ -975,19 +1772,21 @@ fn npm_syscall(detail: &str) -> &'static str {
 /// Every field here is either a closed enumeration, a boolean, or a number.
 fn npm_diagnostics_summary(
     exit_code: &str,
+    npm_errno: &str,
     detail: &str,
     path_shape: NpmPathShape,
     prefix_known: bool,
     eacces: bool,
 ) -> String {
     format!(
-        "error_code={} syscall={} path_shape={} prefix_known={} eacces={} exit_code={} stderr_len={}",
+        "error_code={} syscall={} path_shape={} prefix_known={} eacces={} exit_code={} errno={} stderr_len={}",
         npm_error_code(detail),
         npm_syscall(detail),
         path_shape.tag_value(),
         prefix_known,
         eacces,
         exit_code,
+        npm_errno,
         detail.len(),
     )
 }
@@ -1118,6 +1917,60 @@ pub fn is_global_prefix_permission_failure(_exit_code: Option<i32>, detail: &str
         )
 }
 
+/// npm forwards negative libuv errnos through `process.exit`, and POSIX keeps
+/// only the low eight bits of that status. Decode only the statuses that can
+/// represent a negative errno and return an allow-listed name, never a raw
+/// number. Windows preserves its native process codes and intentionally has no
+/// POSIX errno interpretation here.
+pub fn npm_errno_from_exit_status(exit_code: Option<i32>) -> &'static str {
+    let Some(status) = exit_code else {
+        return "unknown";
+    };
+    if !(129..=255).contains(&status) {
+        return "unknown";
+    }
+    let errno = 256 - status;
+
+    #[cfg(target_os = "macos")]
+    match errno {
+        libc::EACCES => "EACCES",
+        libc::EPIPE => "EPIPE",
+        libc::ENETDOWN => "ENETDOWN",
+        libc::ENETRESET => "ENETRESET",
+        libc::ECONNRESET => "ECONNRESET",
+        libc::ETIMEDOUT => "ETIMEDOUT",
+        libc::ECONNREFUSED => "ECONNREFUSED",
+        libc::EHOSTUNREACH => "EHOSTUNREACH",
+        _ => "unknown",
+    }
+
+    #[cfg(target_os = "linux")]
+    match errno {
+        libc::EACCES => "EACCES",
+        libc::EPIPE => "EPIPE",
+        libc::ENETDOWN => "ENETDOWN",
+        libc::ENETRESET => "ENETRESET",
+        libc::ECONNRESET => "ECONNRESET",
+        libc::ETIMEDOUT => "ETIMEDOUT",
+        libc::ECONNREFUSED => "ECONNREFUSED",
+        libc::EHOSTUNREACH => "EHOSTUNREACH",
+        _ => "unknown",
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = errno;
+        "unknown"
+    }
+}
+
+fn has_npm_lifecycle_failure_marker(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("npm error command failed")
+        || detail.contains("elifecycle")
+        || detail.contains("npm error command sh -c")
+}
+
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
 /// Rust exposes the DWORD as a signed `i32`, hence these otherwise-surprising
 /// negative values. They are both normal user-machine interruptions for an
@@ -1211,7 +2064,9 @@ pub fn classify_install_failure_with_final_attempt(
         InstallFailureKind::ExpectedWindowsAbort
     } else if is_windows_locked_binary_failure(exit_code, detail) {
         InstallFailureKind::ExpectedWindowsLockedBinary
-    } else if is_expected_transient_registry_failure(detail) {
+    } else if !has_npm_lifecycle_failure_marker(detail)
+        && is_expected_transient_registry_failure(detail)
+    {
         InstallFailureKind::ExpectedTransientRegistry
     } else if final_attempt_forced && is_npm_bin_collision(detail, prefix) {
         InstallFailureKind::ExpectedBinCollision
@@ -1447,8 +2302,10 @@ pub fn report_install_failure_with_final_attempt(
     let npm_error_code = npm_error_code(detail);
     let npm_lifecycle = npm_lifecycle_failure(detail);
     let npm_stderr_len = detail.len().to_string();
+    let npm_errno = npm_errno_from_exit_status(exit_code);
     let npm_diagnostics = npm_diagnostics_summary(
         exit_str.as_str(),
+        npm_errno,
         detail,
         npm_path_shape,
         npm_prefix_known,
@@ -1491,6 +2348,7 @@ pub fn report_install_failure_with_final_attempt(
                 if npm_prefix_known { "true" } else { "false" },
             );
             scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
+            scope.set_tag("npm_errno", npm_errno);
             // Group on the failure's bounded signature, never on npm's exit
             // status — see `install_failure_signature`.
             let fingerprint = [
@@ -1978,6 +2836,300 @@ mod tests {
         ));
     }
 
+    /// The misroute that #353 closed, stated as an invariant rather than a
+    /// history lesson: for every pnpm layout, `npm_prefix_from_hq_bin` would
+    /// have handed npm a prefix inside pnpm's own home, so `is_pnpm_global_shim`
+    /// is the only thing standing between a pnpm ≥11 user and era 1 all over
+    /// again. If detection ever regresses, this fails loudly.
+    #[test]
+    fn nested_pnpm_shim_must_route_to_pnpm_not_to_an_npm_prefix_inside_the_pnpm_home() {
+        for hq_bin in [
+            "/Users/test/Library/pnpm/bin/hq",
+            "/home/test/.local/share/pnpm/bin/hq",
+        ] {
+            assert!(
+                is_pnpm_global_shim(hq_bin),
+                "{hq_bin} must route to the pnpm executor"
+            );
+            // The npm branch would have aimed npm at `<pnpm-home>`, writing
+            // `<pnpm-home>/{bin,lib}` and never moving the shim.
+            assert!(
+                npm_prefix_from_hq_bin(hq_bin).is_some(),
+                "{hq_bin} reads as an npm prefix — detection is load-bearing"
+            );
+            // And the pnpm executor targets the directory the shim is in.
+            let env = pnpm_global_env(hq_bin).expect("derivable pnpm env");
+            assert_eq!(
+                env.global_bin_dir,
+                Path::new(hq_bin).parent().unwrap().to_string_lossy()
+            );
+        }
+    }
+
+    /// The pnpm home must come from the resolved shim, never from a guessed
+    /// default: aiming `pnpm add -g` at a directory the user does not use would
+    /// trade a silent non-convergence for a stray global install.
+    #[test]
+    fn pnpm_global_env_is_derived_from_the_resolved_shim_layout() {
+        let flat = pnpm_global_env("/Users/test/Library/pnpm/hq").expect("flat layout");
+        assert_eq!(flat.home, "/Users/test/Library/pnpm");
+        assert_eq!(flat.global_bin_dir, "/Users/test/Library/pnpm");
+        assert_eq!(flat.source, PnpmHomeSource::FlatPnpmDir);
+
+        let nested = pnpm_global_env("/Users/test/Library/pnpm/bin/hq").expect("nested layout");
+        assert_eq!(nested.home, "/Users/test/Library/pnpm");
+        assert_eq!(nested.global_bin_dir, "/Users/test/Library/pnpm/bin");
+        assert_eq!(nested.source, PnpmHomeSource::NestedBinDir);
+
+        let linux = pnpm_global_env("/home/test/.local/share/pnpm/bin/hq").expect("linux nested");
+        assert_eq!(linux.home, "/home/test/.local/share/pnpm");
+        assert_eq!(linux.global_bin_dir, "/home/test/.local/share/pnpm/bin");
+
+        // Custom PNPM_HOME, flat: identified by the `global/` store beside the
+        // shims rather than by directory name.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("my-tools");
+        std::fs::create_dir_all(home.join("global")).unwrap();
+        let shim = home.join("hq");
+        std::fs::write(&shim, "#!/bin/sh\n").unwrap();
+        let custom = pnpm_global_env(shim.to_str().unwrap()).expect("custom flat home");
+        assert_eq!(custom.home, home.to_string_lossy());
+        assert_eq!(custom.source, PnpmHomeSource::GlobalStore);
+
+        // Custom PNPM_HOME with the v11 nesting.
+        let tmp_v11 = tempfile::TempDir::new().unwrap();
+        let home_v11 = tmp_v11.path().join("my-tools");
+        std::fs::create_dir_all(home_v11.join("global")).unwrap();
+        std::fs::create_dir_all(home_v11.join("bin")).unwrap();
+        let shim_v11 = home_v11.join("bin").join("hq");
+        std::fs::write(&shim_v11, "#!/bin/sh\n").unwrap();
+        let custom_v11 = pnpm_global_env(shim_v11.to_str().unwrap()).expect("custom nested home");
+        assert_eq!(custom_v11.home, home_v11.to_string_lossy());
+        assert_eq!(
+            custom_v11.global_bin_dir,
+            home_v11.join("bin").to_string_lossy()
+        );
+        assert_eq!(custom_v11.source, PnpmHomeSource::GlobalStore);
+    }
+
+    /// When the home cannot be derived with confidence we must invent nothing —
+    /// the child is spawned exactly as before, which is the conservative rule
+    /// `npm_prefix_from_hq_bin` already applies for flat shim dirs.
+    #[test]
+    fn pnpm_global_env_is_none_when_the_layout_does_not_prove_a_home() {
+        for hq_bin in [
+            "hq",
+            "",
+            "/opt/homebrew/bin/hq",
+            "/Users/test/.npm-global/bin/hq",
+            "/Users/test/.asdf/shims/hq",
+            "/usr/local/bin/hq",
+        ] {
+            assert_eq!(
+                pnpm_global_env(hq_bin),
+                None,
+                "{hq_bin} must not yield an invented pnpm home"
+            );
+        }
+    }
+
+    #[test]
+    fn pnpm_child_path_prepends_the_shim_dir_only_when_it_is_missing() {
+        let sep = PATH_LIST_SEPARATOR;
+        let base = format!("/usr/local/bin{sep}/usr/bin");
+        // The era-2 candidate cause: `<pnpm-home>/bin` is absent from
+        // `child_path()`, so the child pnpm resolves a different global dir.
+        assert_eq!(
+            pnpm_child_path(&base, Some("/Users/t/Library/pnpm/bin")),
+            format!("/Users/t/Library/pnpm/bin{sep}{base}")
+        );
+        // Already present: no duplicate entry, no reordering.
+        let with_dir = format!("/Users/t/Library/pnpm{sep}{base}");
+        assert_eq!(
+            pnpm_child_path(&with_dir, Some("/Users/t/Library/pnpm")),
+            with_dir
+        );
+        // Underivable home: hand the child exactly what it had before.
+        assert_eq!(pnpm_child_path(&base, None), base);
+        assert_eq!(pnpm_child_path(&base, Some("")), base);
+        assert!(path_contains_dir(&with_dir, "/Users/t/Library/pnpm"));
+        assert!(!path_contains_dir(&base, "/Users/t/Library/pnpm"));
+        assert!(!path_contains_dir(&base, ""));
+    }
+
+    /// Era 2 of HQ-DESKTOP-46. pnpm ran, exited 0, and the shim did not move.
+    /// With pnpm aimed at that shim's own home this is a genuine updater
+    /// defect, so it must stay as loud as an npm-targeted non-convergence
+    /// rather than being bounded like a foreign layout — and it must say
+    /// "pnpm", not borrow npm's wording.
+    #[test]
+    fn targeted_pnpm_non_convergence_is_its_own_loud_class() {
+        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
+        let pnpm = PnpmRunDiagnostics {
+            home_source: PnpmHomeSource::NestedBinDir,
+            home_env_present: false,
+            path_has_shim_dir: true,
+            exit_status: "0".to_string(),
+            output_len: 42,
+        };
+        // `already_blocked = true`: a targeted defect stays loud across
+        // episodes exactly like `NpmTargeted`.
+        let outcome = decide_post_install(&PostInstallContext {
+            executor: InstallExecutor::Pnpm,
+            before_bin: hq_bin,
+            after_bin: hq_bin,
+            before_version: None,
+            after_version: Some("5.93.0"),
+            latest: "5.94.1",
+            npm_prefix_passed: None,
+            installer_bin: "/opt/homebrew/bin/pnpm",
+            already_blocked: true,
+            pnpm: Some(pnpm.clone()),
+        });
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::PnpmTargeted)
+        );
+        assert!(!outcome.capture_requires_durable_record);
+        let report = outcome.capture.as_ref().expect("targeted runs stay loud");
+        assert_eq!(report.executor, InstallExecutor::Pnpm);
+        assert_eq!(report.installer_bin, "/opt/homebrew/bin/pnpm");
+        assert_eq!(report.npm_prefix, None, "pnpm passes no npm prefix");
+        assert_eq!(report.pnpm.as_ref(), Some(&pnpm));
+        assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.94.1"));
+        assert!(outcome.log_line.starts_with("pnpm completed,"));
+    }
+
+    /// Either half of "targeted" missing — no derivable home, or a child PATH
+    /// that never contained the shim's directory — means pnpm may have written
+    /// somewhere else, which is the foreign-managed shape.
+    #[test]
+    fn untargeted_pnpm_non_convergence_is_foreign_managed_and_bounded() {
+        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
+        for (home_source, path_has_shim_dir) in [
+            (PnpmHomeSource::Undetermined, false),
+            (PnpmHomeSource::NestedBinDir, false),
+        ] {
+            let outcome = decide_post_install(&PostInstallContext {
+                executor: InstallExecutor::Pnpm,
+                before_bin: hq_bin,
+                after_bin: hq_bin,
+                before_version: None,
+                after_version: Some("5.93.0"),
+                latest: "5.94.1",
+                npm_prefix_passed: None,
+                installer_bin: "/opt/homebrew/bin/pnpm",
+                already_blocked: false,
+                pnpm: Some(PnpmRunDiagnostics {
+                    home_source,
+                    home_env_present: false,
+                    path_has_shim_dir,
+                    exit_status: "0".to_string(),
+                    output_len: 0,
+                }),
+            });
+            assert_eq!(
+                outcome.non_convergence_kind,
+                Some(NonConvergenceKind::ForeignManaged),
+                "home_source={home_source:?} path_has_shim_dir={path_has_shim_dir}"
+            );
+            assert!(outcome.capture_requires_durable_record);
+        }
+    }
+
+    /// Every foreign-managed layout in the 31-event history classifies the same
+    /// way, so a fix validated against the one observed pnpm ≥11 machine cannot
+    /// silently special-case it.
+    #[test]
+    fn non_convergence_classification_covers_every_observed_layout() {
+        for hq_bin in [
+            "/Users/t/Library/pnpm/hq",
+            "/Users/t/Library/pnpm/bin/hq",
+            "/home/t/.local/share/pnpm/hq",
+            "/Users/t/.asdf/shims/hq",
+            "/Users/t/Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq",
+        ] {
+            // npm with no prefix passed is foreign-managed for every one of
+            // them: npm has nowhere safe to aim.
+            assert_eq!(
+                non_convergence_kind(InstallExecutor::Npm, None, false, hq_bin),
+                NonConvergenceKind::ForeignManaged,
+                "npm/{hq_bin}"
+            );
+            // pnpm is targeted only when we actually aimed it.
+            assert_eq!(
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin),
+                NonConvergenceKind::PnpmTargeted,
+                "pnpm-targeted/{hq_bin}"
+            );
+            assert_eq!(
+                non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin),
+                NonConvergenceKind::ForeignManaged,
+                "pnpm-untargeted/{hq_bin}"
+            );
+        }
+        // An npm prefix that matches the post-install binary's own prefix is
+        // the one genuinely npm-targeted shape.
+        assert_eq!(
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some("/Users/t/.npm-global"),
+                false,
+                "/Users/t/.npm-global/bin/hq"
+            ),
+            NonConvergenceKind::NpmTargeted
+        );
+    }
+
+    /// The npm remedy ("update it with the tool that installed it") is a dead
+    /// end when the app just ran that tool. The pnpm message must differ while
+    /// keeping the marker the Settings UI keys on to displace the generic
+    /// copy-the-command text.
+    #[test]
+    fn pnpm_non_convergent_detail_has_its_own_remedy_and_keeps_the_ui_marker() {
+        let hq_bin = "~/Library/pnpm/bin/hq";
+        let pnpm_detail =
+            non_convergent_detail(InstallExecutor::Pnpm, hq_bin, Some("5.93.0"), "5.94.1");
+        assert!(pnpm_detail.starts_with(NON_CONVERGENT_ERROR_PREFIX));
+        assert!(pnpm_detail.contains(hq_bin));
+        assert!(pnpm_detail.contains("5.93.0") && pnpm_detail.contains("5.94.1"));
+        assert!(
+            !pnpm_detail.contains("Update it with the tool that installed it"),
+            "the npm remedy is a dead end for a run pnpm itself performed"
+        );
+        assert!(pnpm_detail.contains("pnpm bin -g"));
+
+        let npm_detail =
+            non_convergent_detail(InstallExecutor::Npm, hq_bin, Some("5.93.0"), "5.94.1");
+        assert!(npm_detail.starts_with(NON_CONVERGENT_ERROR_PREFIX));
+        assert_ne!(npm_detail, pnpm_detail);
+
+        // An unreadable local version must still produce a usable sentence.
+        let unreadable = non_convergent_detail(InstallExecutor::Pnpm, hq_bin, None, "5.94.1");
+        assert!(unreadable.contains("an unreadable version"));
+    }
+
+    /// The bounded pnpm summary is the extra that has to survive the org
+    /// scrubber which reduced `npm_stderr` to `[Filtered]`. It carries closed
+    /// categories, booleans and lengths — never pnpm's output itself.
+    #[test]
+    fn pnpm_diagnostics_summary_is_closed_and_carries_no_output_text() {
+        let summary = PnpmRunDiagnostics {
+            home_source: PnpmHomeSource::NestedBinDir,
+            home_env_present: true,
+            path_has_shim_dir: false,
+            exit_status: "0".to_string(),
+            output_len: 1024,
+        }
+        .summary();
+        assert_eq!(
+            summary,
+            "home_source=nested-bin-dir home_env_present=true path_has_shim_dir=false \
+             exit_status=0 output_len=1024"
+        );
+        assert!(!summary.contains('/'));
+    }
+
     /// Lock the pnpm argv shape the same way `install_argv` is locked: a typo
     /// (dropping `-g`, wrong package) must fail a unit test, not a user.
     #[test]
@@ -2004,6 +3156,58 @@ mod tests {
         assert!(!install_converged(None, "5.79.0"));
     }
 
+    #[test]
+    fn post_install_relocation_counts_as_converged() {
+        assert_eq!(
+            convergence_verdict(
+                Some("5.77.14"),
+                Some("5.83.0"),
+                "/Users/test/.asdf/shims/hq",
+                "/opt/homebrew/bin/hq",
+                "5.83.0",
+            ),
+            ConvergenceVerdict::RelocatedAndConverged
+        );
+    }
+
+    #[test]
+    fn genuinely_stale_post_install_resolution_still_blocks() {
+        assert_eq!(
+            convergence_verdict(
+                Some("5.77.14"),
+                Some("5.77.14"),
+                "/Users/test/.asdf/shims/hq",
+                "/Users/test/.asdf/shims/hq",
+                "5.83.0",
+            ),
+            ConvergenceVerdict::NonConvergent
+        );
+        assert!(!should_auto_install("5.83.0", Some("5.83.0")));
+    }
+
+    #[test]
+    fn bin_resolution_source_is_closed_and_path_free() {
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(bin_resolution_source("/opt/homebrew/bin/hq"), "homebrew");
+            assert_eq!(bin_resolution_source("/usr/local/bin/npm"), "usr-local");
+            assert_eq!(
+                bin_resolution_source("/Users/test/.asdf/shims/hq"),
+                "login-shell"
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(bin_resolution_source("/opt/homebrew/bin/hq"), "unknown");
+            assert_eq!(bin_resolution_source("/usr/local/bin/npm"), "unknown");
+            assert_eq!(
+                bin_resolution_source("/Users/test/.asdf/shims/hq"),
+                "unknown"
+            );
+        }
+        assert_eq!(bin_resolution_source("hq"), "unknown");
+    }
+
     /// Without this gate the background loop reinstalls the same version 15s
     /// after every launch and every 6h forever — the observable "stuck" symptom.
     #[test]
@@ -2024,7 +3228,12 @@ mod tests {
     /// copy-the-install-command action that would just repeat the failure.
     #[test]
     fn non_convergent_detail_names_the_binary_that_did_not_move() {
-        let detail = non_convergent_detail("/Users/test/Library/pnpm/hq", Some("5.38.2"), "5.79.0");
+        let detail = non_convergent_detail(
+            InstallExecutor::Npm,
+            "/Users/test/Library/pnpm/hq",
+            Some("5.38.2"),
+            "5.79.0",
+        );
         assert!(
             detail.starts_with(NON_CONVERGENT_ERROR_PREFIX),
             "UI keys off this marker; got {detail}"
@@ -2647,6 +3856,196 @@ mod tests {
         assert_eq!(
             install_failure_report(Some(1), detail, Some("/usr/local")),
             Some("[hq-cli-update] install failed (EACCES:unknown:npm-cache)".to_string()),
+        );
+    }
+
+    #[test]
+    fn npm_permission_tags_classify_cache_prefix_and_other_without_paths() {
+        let cache_detail = "npm error code EACCES\nnpm error path /Users/me/.npm/_cacache/tmp";
+        let prefix_detail =
+            "npm error code EACCES\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
+        let other_detail = "npm error code EACCES\nnpm error path /tmp/unrelated-file";
+
+        assert!(is_npm_permission_failure(cache_detail));
+        assert_eq!(npm_failure_site(cache_detail, Some("/usr/local")), "cache");
+        assert_eq!(
+            npm_failure_site(prefix_detail, Some("/usr/local")),
+            "prefix"
+        );
+        assert_eq!(npm_failure_site(other_detail, Some("/usr/local")), "other");
+        assert_eq!(
+            npm_failure_site("npm error network ETIMEDOUT", None),
+            "other"
+        );
+    }
+
+    #[test]
+    fn npm_error_code_tags_are_allow_listed_and_path_free() {
+        assert_eq!(
+            npm_error_code("npm error code EACCES\nnpm error path /Users/alice/.npm/_cacache"),
+            "EACCES"
+        );
+        assert_eq!(
+            npm_error_code("npm error code ETARGET\nnpm error notarget No matching version found"),
+            "ETARGET"
+        );
+        assert_eq!(npm_error_code("npm ERR! code ECONNRESET"), "ECONNRESET");
+        assert_eq!(
+            npm_error_code("application output: npm error code ETARGET"),
+            "none"
+        );
+        assert_eq!(
+            npm_error_code("npm error code ../../Users/alice/.npm/_cacache"),
+            "unrecognized"
+        );
+        assert_eq!(
+            npm_error_code("npm error path /Users/alice/.npm/_cacache"),
+            "none"
+        );
+    }
+
+    #[test]
+    fn unix_exit_status_decodes_libuv_errno() {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert_eq!(npm_errno_from_exit_status(Some(243)), "EACCES");
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        assert_eq!(npm_errno_from_exit_status(Some(243)), "unknown");
+        assert_eq!(npm_errno_from_exit_status(Some(128)), "unknown");
+        assert_eq!(npm_errno_from_exit_status(Some(1)), "unknown");
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(npm_errno_from_exit_status(Some(202)), "ECONNRESET");
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(npm_errno_from_exit_status(Some(152)), "ECONNRESET");
+    }
+
+    #[test]
+    fn transient_errno_exit_without_stderr_stays_unexpected() {
+        #[cfg(target_os = "macos")]
+        let econnreset_exit = 202;
+        #[cfg(target_os = "linux")]
+        let econnreset_exit = 152;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let econnreset_exit = 202;
+
+        assert_eq!(
+            classify_install_failure(Some(econnreset_exit), "", None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(econnreset_exit), "", None).is_some());
+    }
+
+    #[test]
+    fn lifecycle_exit_colliding_with_errno_stays_loud() {
+        #[cfg(target_os = "macos")]
+        let econnreset_exit = 202;
+        #[cfg(target_os = "linux")]
+        let econnreset_exit = 152;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let econnreset_exit = 202;
+
+        let detail = "npm error command failed\nnpm error command sh -c node postinstall.js";
+        assert_eq!(
+            classify_install_failure(Some(econnreset_exit), detail, None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(econnreset_exit), detail, None).is_some());
+    }
+
+    #[test]
+    fn lifecycle_failure_with_named_transient_code_stays_loud() {
+        #[cfg(target_os = "macos")]
+        let econnreset_exit = 202;
+        #[cfg(target_os = "linux")]
+        let econnreset_exit = 152;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let econnreset_exit = 202;
+
+        let detail = "npm error code ECONNRESET\n\
+            npm error command failed\n\
+            npm error command sh -c node postinstall.js";
+        assert_eq!(
+            classify_install_failure(Some(econnreset_exit), detail, None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(econnreset_exit), detail, None).is_some());
+    }
+
+    #[test]
+    fn bare_eacces_exit_is_not_suppressed_by_the_errno_route() {
+        assert_eq!(
+            classify_install_failure(Some(243), "", None),
+            InstallFailureKind::Unexpected
+        );
+        assert!(install_failure_report(Some(243), "", None).is_some());
+    }
+
+    #[test]
+    fn transient_registry_failures_are_suppressed_but_keep_actionable_ui_text() {
+        const ETARGET_STDERR: &str = "npm error code ETARGET\n\
+            npm error notarget No matching version found for @aws-sdk/core@^3.977.4";
+        const ECONNRESET_STDERR: &str = "npm error code ECONNRESET\n\
+            npm error network request to https://registry.npmjs.org failed";
+
+        for detail in [ETARGET_STDERR, ECONNRESET_STDERR] {
+            assert_eq!(
+                classify_install_failure(Some(1), detail, Some("/usr/local")),
+                InstallFailureKind::ExpectedTransientRegistry,
+                "{detail}"
+            );
+            assert_eq!(
+                install_failure_report(Some(1), detail, Some("/usr/local")),
+                None,
+                "{detail}"
+            );
+            let fallback = install_failure_detail(Some(1), detail, Some("/usr/local"));
+            assert!(fallback.contains("temporarily unavailable or was mid-publish"));
+            assert!(fallback.contains("retry automatically"));
+        }
+    }
+
+    #[test]
+    fn lifecycle_output_with_transient_tokens_stays_unexpected_and_loud() {
+        let detail = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c node postinstall.js\n\
+            application output: ETARGET ECONNRESET npm error network";
+
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+        // The title carries the bounded grouping signature, not npm's exit
+        // status (main's `install_failure_signature`); the point of this test is
+        // that a lifecycle failure wearing transient tokens stays Unexpected
+        // and still reports.
+        assert_eq!(
+            install_failure_report(Some(1), detail, Some("/usr/local")),
+            Some("[hq-cli-update] install failed (none:unknown:none)".to_string())
+        );
+    }
+
+    #[test]
+    fn existing_failure_buckets_take_priority_over_transient_markers() {
+        let prefix_permission_with_network_text = "npm error code EACCES\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us\n\
+            npm error network ETIMEDOUT";
+        assert_eq!(
+            classify_install_failure(
+                Some(1),
+                prefix_permission_with_network_text,
+                Some("/usr/local")
+            ),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+
+        let windows_eperm_with_network_text = "npm error code EPERM\n\
+            npm error errno -4048\n\
+            npm error network ECONNRESET";
+        assert_eq!(
+            classify_install_failure(Some(1), windows_eperm_with_network_text, None),
+            InstallFailureKind::ExpectedWindowsLockedBinary
         );
     }
 
@@ -3346,6 +4745,200 @@ mod tests {
         assert_eq!(
             hq_version_string_probe(&empty, "").1,
             VersionProbeOutcome::EmptyOutput
+        );
+    }
+
+    #[test]
+    fn post_install_foreign_managed_repeat_is_suppressed_but_remains_actionable() {
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/Library/pnpm/hq",
+            "/Users/t/Library/pnpm/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            "5.84.0",
+            None,
+            "/opt/homebrew/bin/npm",
+            true,
+        ));
+        assert_eq!(outcome.verdict, ConvergenceVerdict::NonConvergent);
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert!(outcome.record_non_convergent.is_none());
+        assert!(outcome.capture.is_none());
+        assert!(outcome.capture_requires_durable_record);
+        assert!(
+            matches!(outcome.result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX))
+        );
+    }
+
+    #[test]
+    fn non_convergent_episode_block_requires_the_exact_latest_version() {
+        assert!(non_convergent_episode_blocked(Some("5.84.0"), "5.84.0"));
+        assert!(!non_convergent_episode_blocked(Some("5.83.0"), "5.84.0"));
+        assert!(!non_convergent_episode_blocked(None, "5.84.0"));
+    }
+
+    #[test]
+    fn post_install_version_rollover_starts_and_closes_a_new_episode() {
+        let latest = "5.84.0";
+        let old_marker = Some("5.83.0");
+        let first_episode_blocked = non_convergent_episode_blocked(old_marker, latest);
+        assert!(!first_episode_blocked);
+
+        let first = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/Library/pnpm/hq",
+            "/Users/t/Library/pnpm/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            latest,
+            None,
+            "/opt/homebrew/bin/npm",
+            first_episode_blocked,
+        ));
+        assert_eq!(first.record_non_convergent.as_deref(), Some(latest));
+        assert!(first.capture.is_some());
+        assert!(first.capture_requires_durable_record);
+
+        let durable_marker = first.record_non_convergent.as_deref();
+        let repeat_episode_blocked = non_convergent_episode_blocked(durable_marker, latest);
+        assert!(repeat_episode_blocked);
+
+        let repeat = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/Library/pnpm/hq",
+            "/Users/t/Library/pnpm/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            latest,
+            None,
+            "/opt/homebrew/bin/npm",
+            repeat_episode_blocked,
+        ));
+        assert!(repeat.record_non_convergent.is_none());
+        assert!(repeat.capture.is_none());
+        assert!(repeat.capture_requires_durable_record);
+    }
+
+    #[tokio::test]
+    async fn overlapping_first_episode_installs_share_one_claim_and_capture() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        use std::sync::Arc;
+        use tokio::sync::Notify;
+
+        let flight = AsyncSingleFlight::<PostInstallSuccess>::new();
+        let installs = Arc::new(AtomicUsize::new(0));
+        let records = Arc::new(AtomicUsize::new(0));
+        let captures = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        let make_operation = || {
+            let installs = Arc::clone(&installs);
+            let records = Arc::clone(&records);
+            let captures = Arc::clone(&captures);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            move || async move {
+                installs.fetch_add(1, AtomicOrdering::SeqCst);
+                entered.notify_one();
+                release.notified().await;
+                let outcome = decide_post_install(&PostInstallContext::npm(
+                    "/Users/t/Library/pnpm/hq",
+                    "/Users/t/Library/pnpm/hq",
+                    Some("5.77.14"),
+                    Some("5.77.14"),
+                    "5.84.0",
+                    None,
+                    "/opt/homebrew/bin/npm",
+                    false,
+                ));
+                let record = |_version: String| {
+                    records.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(())
+                };
+                let clear = || panic!("non-convergence must not clear the marker");
+                let capture = |_report| {
+                    captures.fetch_add(1, AtomicOrdering::SeqCst);
+                };
+                let record_failure = |_error| panic!("the marker write must succeed");
+                apply_post_install_effects(
+                    &outcome,
+                    &PostInstallCoreEffects {
+                        record: &record,
+                        clear: &clear,
+                        capture: &capture,
+                        record_failure: &record_failure,
+                    },
+                )
+            }
+        };
+        let first = flight.run(make_operation());
+        let second = flight.run(make_operation());
+        let release_when_overlapped = async {
+            entered.notified().await;
+            tokio::task::yield_now().await;
+            release.notify_waiters();
+        };
+
+        let (first_result, second_result, ()) =
+            tokio::join!(first, second, release_when_overlapped);
+        assert!(matches!(
+            first_result,
+            Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)
+        ));
+        assert_eq!(first_result.err(), second_result.err());
+        assert_eq!(installs.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(records.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(captures.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn post_install_first_foreign_managed_episode_requires_a_durable_record() {
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/.asdf/shims/hq",
+            "/Users/t/.asdf/shims/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            "5.84.0",
+            None,
+            "/opt/homebrew/bin/npm",
+            false,
+        ));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.84.0"));
+        assert!(outcome.capture.is_some());
+        assert!(outcome.capture_requires_durable_record);
+    }
+
+    #[test]
+    fn post_install_npm_targeted_non_convergence_stays_loud() {
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/.npm-global/bin/hq",
+            "/Users/t/.npm-global/bin/hq",
+            Some("5.77.14"),
+            Some("5.77.14"),
+            "5.84.0",
+            Some("/Users/t/.npm-global"),
+            "/opt/homebrew/bin/npm",
+            true,
+        ));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::NpmTargeted)
+        );
+        assert!(outcome.capture.is_some());
+        assert!(!outcome.capture_requires_durable_record);
+    }
+
+    #[test]
+    fn post_install_exit_202_stays_unexpected_without_corrobating_stderr() {
+        assert_eq!(
+            classify_install_failure(Some(202), "", None),
+            InstallFailureKind::Unexpected
         );
     }
 
