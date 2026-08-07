@@ -81,8 +81,13 @@ fn assert_fails_closed_with_one_marker_event(events: &[sentry::protocol::Event<'
     }
 }
 
+/// Both executors are asserted in ONE test on purpose. The capture bound this
+/// file exercises is a process-lifetime `AtomicBool`, so two `#[test]` fns
+/// would run on parallel threads and race each other's reset — which is exactly
+/// how a green Linux run turned red on macOS. Phases run in sequence instead.
 #[test]
 fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
+    // npm executor, foreign-managed layout.
     reset_non_convergent_marker_unpersisted_capture_for_tests();
     let events = drive_failed_marker_writes(
         &PostInstallContext::npm(
@@ -99,19 +104,11 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
     );
     assert_fails_closed_with_one_marker_event(&events);
 
-    reset_non_convergent_marker_unpersisted_capture_for_tests();
-    let after_reset = captured_events(report_non_convergent_marker_unpersisted);
-    assert_eq!(after_reset.len(), 1, "the test-only reset must re-arm once");
-    reset_non_convergent_marker_unpersisted_capture_for_tests();
-}
-
-/// The pnpm executor now shares the npm executor's fail-closed ordering. Before
-/// this, the pnpm branch called `record_non_convergent_version` and
-/// `report_non_convergent_install` unconditionally, so an unwritable config
-/// directory produced a capture with no durable marker behind it — and turned
-/// every six-hour retry into another apparent first episode.
-#[test]
-fn pnpm_foreign_managed_marker_failure_also_fails_closed() {
+    // The pnpm executor now shares that fail-closed ordering. Before this, the
+    // pnpm branch called `record_non_convergent_version` and
+    // `report_non_convergent_install` unconditionally, so an unwritable config
+    // directory produced a capture with no durable marker behind it — and
+    // turned every six-hour retry into another apparent first episode.
     reset_non_convergent_marker_unpersisted_capture_for_tests();
     let hq_bin = "/Users/reviewer/.asdf/shims/hq";
     let events = drive_failed_marker_writes(
@@ -138,5 +135,9 @@ fn pnpm_foreign_managed_marker_failure_also_fails_closed() {
         5,
     );
     assert_fails_closed_with_one_marker_event(&events);
+
+    reset_non_convergent_marker_unpersisted_capture_for_tests();
+    let after_reset = captured_events(report_non_convergent_marker_unpersisted);
+    assert_eq!(after_reset.len(), 1, "the test-only reset must re-arm once");
     reset_non_convergent_marker_unpersisted_capture_for_tests();
 }
