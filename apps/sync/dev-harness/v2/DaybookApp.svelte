@@ -1658,7 +1658,7 @@
   .pill.get:active { border-color: var(--border-active); }
 
   /* ═══════════ Sync ═══════════ */
-  .syncview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-width: 760px; }
+  .syncview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
   .sync-card { display: flex; flex-direction: column; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .sync-line { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--t2); }
   .v2[data-theme='dark'] .sync-line { color: #c6c6cc; }
