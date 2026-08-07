@@ -98,6 +98,25 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
 
     const observed = await driveWindowsSessionEnd({ appPath: live.appPath });
 
+    // Report BEFORE asserting. A failed assertion aborts the test, so
+    // diagnostics printed after it never reach the log — which turns a red run
+    // into a guessing game about what was actually observed.
+    const diagnostics = [
+      `windows=${observed.windowCount}`,
+      `query_delivered=${observed.queryEndSessionDelivered}`,
+      `end_delivered=${observed.endSessionDelivered}`,
+      `follow_up=${observed.followUpPosted}`,
+      `exit=${observed.exitCode}`,
+      `exited_in_deadline=${observed.exitedWithinDeadline}`,
+      `destroyed_panic=${observed.observedDestroyedStatePanic}`,
+      `abort_marker=${observed.observedAbortMarker}`,
+      `children_before=${observed.observedChildCountBefore}[${observed.observedChildNamesBefore.join(' ')}]`,
+      `children_after=${observed.survivingChildCount}[${observed.survivingChildNames.join(' ')}]`,
+      `app_spawned_after=${observed.survivingAppSpawnedChildCount}`,
+    ].join(' ');
+    // eslint-disable-next-line no-console
+    console.log(`[session-end] ${diagnostics}`);
+
     // The probe has to have actually landed, or nothing below means anything.
     // WM_QUERYENDSESSION is the honest delivery check: it never terminates
     // anything, so it succeeds on both the broken and the fixed build. The
@@ -126,10 +145,9 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     // Counting them would make this assert something this fix does not claim.
     // Both numbers and the process names are logged, so a run where the app
     // spawned nothing is visible as such instead of reading as proof.
-    expect(observed.survivingAppSpawnedChildCount).toBe(0);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[session-end] windows=${observed.windowCount} query_delivered=${observed.queryEndSessionDelivered} end_delivered=${observed.endSessionDelivered} follow_up=${observed.followUpPosted} exit=${observed.exitCode} children_before=${observed.observedChildCountBefore} [${observed.observedChildNamesBefore.join(' ')}] children_after=${observed.survivingChildCount} [${observed.survivingChildNames.join(' ')}] app_spawned_after=${observed.survivingAppSpawnedChildCount}`,
-    );
+    expect(
+      observed.survivingAppSpawnedChildCount,
+      `app-spawned children survived the session end — survivors: [${observed.survivingChildNames.join(' ')}]; ${diagnostics}`,
+    ).toBe(0);
   });
 });
