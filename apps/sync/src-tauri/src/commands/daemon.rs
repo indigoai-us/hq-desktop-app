@@ -4,6 +4,7 @@
 //! Behind `AUTOSTART_DAEMON` feature flag in ~/.hq/menubar.json (default false).
 //! Svelte UI does NOT expose these V1 — invocable only via Tauri devtools.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -31,6 +32,7 @@ use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_class, classify_windows_exit_status, current_termination_host,
     describe_exit, is_windows_console_control_exit, normalized_abort_description,
+    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape,
     should_capture_watcher_exit, spawn_failure_capture_policy, spawn_failure_fingerprint_token,
     termination_fingerprint_token, termination_fingerprint_token_for_host,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
@@ -80,6 +82,21 @@ const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 /// old unbounded guard produced (HQ-DESKTOP: respawn stuck on "Daemon is already
 /// starting"). Recovery lands within one guard deadline instead of never.
 const DAEMON_START_DEADLINE: Duration = Duration::from_secs(2 * 60);
+const WATCHER_STDERR_TAIL_CAP: usize = 8;
+
+/// Retain the exact bounded, ordered stderr tail that the watcher exit path
+/// normalizes. This is intentionally the only mutation seam for watcher stderr
+/// retention, so production and regression coverage cannot diverge into a
+/// last-line-only path.
+fn record_watcher_stderr_tail(stderr_tail: &Mutex<VecDeque<String>>, line: &str) {
+    let mut tail = stderr_tail
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if tail.len() == WATCHER_STDERR_TAIL_CAP {
+        tail.pop_front();
+    }
+    tail.push_back(line.to_string());
+}
 
 /// True only while the supervisor is issuing a respawn request. Capturing the
 /// value at process exit makes the ordering explicit instead of inferring it
@@ -90,6 +107,64 @@ static SUPERVISOR_RESPAWN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// cancellation. It remains set until the next spawn, so an exit diagnostic can
 /// distinguish a watchdog-initiated teardown from an external termination.
 static HEARTBEAT_STALL_TERMINATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatcherLaunchOrigin {
+    Renderer,
+    AppLaunch,
+    SupervisorRespawn,
+}
+
+impl WatcherLaunchOrigin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Renderer => "renderer",
+            Self::AppLaunch => "app_launch",
+            Self::SupervisorRespawn => "supervisor_respawn",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WatcherGeneration {
+    id: u64,
+    launch_origin: WatcherLaunchOrigin,
+}
+
+static WATCHER_GENERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static WATCHER_GENERATION: OnceLock<Mutex<Option<WatcherGeneration>>> = OnceLock::new();
+
+fn watcher_generation_state() -> &'static Mutex<Option<WatcherGeneration>> {
+    WATCHER_GENERATION.get_or_init(|| Mutex::new(None))
+}
+
+/// The only production factory for watcher generations. The returned value is
+/// copied into the process closure, so exit attribution always comes from the
+/// generation that died rather than a global sampled later.
+fn begin_watcher_generation(origin: WatcherLaunchOrigin) -> WatcherGeneration {
+    let generation = WatcherGeneration {
+        id: WATCHER_GENERATION_SEQUENCE
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1),
+        launch_origin: origin,
+    };
+    *watcher_generation_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(generation);
+    generation
+}
+
+fn finish_watcher_generation(generation: &WatcherGeneration) {
+    let mut current = watcher_generation_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if current
+        .as_ref()
+        .is_some_and(|current| current.id == generation.id)
+    {
+        *current = None;
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Watch-mode ndjson handler
@@ -109,8 +184,8 @@ static HEARTBEAT_STALL_TERMINATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false
 /// Failing to parse a line is non-fatal: blank lines arrive at runner
 /// teardown, and any unknown variant the runner adds in the future
 /// should not kill the watcher.
-fn handle_watch_stdout_line(
-    app: &AppHandle,
+fn handle_watch_stdout_line<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     hq_folder: &str,
     totals: &Mutex<RunTotals>,
     phase_context: &Mutex<WatcherPhaseContext>,
@@ -510,7 +585,24 @@ fn force_clear_daemon_guard_impl(daemon_alive_recheck: bool) {
 ///
 /// Returns the handle string on success.
 #[tauri::command]
-pub fn start_daemon(app: AppHandle) -> Result<String, String> {
+pub fn start_daemon<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    start_daemon_with_origin(app, WatcherLaunchOrigin::Renderer)
+}
+
+pub fn start_daemon_for_app_launch<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    start_daemon_with_origin(app, WatcherLaunchOrigin::AppLaunch)
+}
+
+fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<String, String> {
+    start_daemon_with_origin(app, WatcherLaunchOrigin::SupervisorRespawn)
+}
+
+fn start_daemon_with_origin<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    launch_origin: WatcherLaunchOrigin,
+) -> Result<String, String> {
     if !try_register_handle(DAEMON_HANDLE) {
         return Err("Daemon is already starting".to_string());
     }
@@ -519,6 +611,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     // generation lets this start's exit clear only its own stamp, never a
     // respawn's fresher one.
     let guard_generation = mark_daemon_guard_acquired();
+    let watcher_generation = begin_watcher_generation(launch_origin);
     set_lifecycle_state(WatchDaemonState::Starting, DaemonFailureCategory::None);
 
     // A signed-out watcher can only emit auth-error and exit 0. Refuse that
@@ -609,16 +702,18 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     let hq_folder = hq_folder_path.clone();
     let last_heartbeat = Arc::new(Mutex::new(Instant::now()));
     let daemon_finished = Arc::new(AtomicBool::new(false));
-    // Kept separately from Sentry breadcrumbs so an unknown exit can carry a
-    // precise final diagnostic even when the ambient scope changes first.
-    let last_stderr = Arc::new(Mutex::new(None::<String>));
+    // Bounded and generation-local. Raw lines remain process-local; only the
+    // fixed-vocabulary stack shape derived at exit can leave the process.
+    let stderr_tail = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(
+        WATCHER_STDERR_TAIL_CAP,
+    )));
     let watcher_command = spawn_args.cmd.clone();
     start_daemon_heartbeat_watchdog(last_heartbeat.clone(), daemon_finished.clone());
 
     thread::spawn(move || {
         let process_heartbeat = last_heartbeat.clone();
         let process_finished = daemon_finished.clone();
-        let process_last_stderr = last_stderr.clone();
+        let process_stderr_tail = stderr_tail.clone();
         let process_watcher_phase = watcher_phase.clone();
         let result = run_process_impl(DAEMON_HANDLE, &spawn_args, move |event| {
             // Surface stderr and non-success exits unconditionally — they
@@ -644,9 +739,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 }
                 ProcessEvent::Stderr(line) => {
                     log("daemon.stderr", &line);
-                    *process_last_stderr
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(line.clone());
+                    record_watcher_stderr_tail(&process_stderr_tail, &line);
                     // Raw stderr can contain user paths and messages. Keep it
                     // in the local log; the capture path receives only the
                     // fixed-vocabulary rollup recorded from parsed errors.
@@ -676,23 +769,28 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // re-spawn), and rate-limit a crash-loop to ~log2(N) events
                     // instead of one per 30s respawn (HQ-SYNC-4 / HQ-SYNC-5).
                     let cancelled = is_cancelled(DAEMON_HANDLE);
+                    let stderr_tail = process_stderr_tail
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
                     let exit_context = watcher_exit_capture_context(
                         &totals,
                         cancelled,
                         &watcher_phase,
+                        &watcher_generation,
+                        &stderr_tail,
                         current_windows_terminator_attribution(&app, code, signal),
                     );
-                    let last_stderr = process_last_stderr
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clone();
+                    let last_stderr = stderr_tail.last().map(String::as_str);
                     handle_watcher_exit(
                         code,
                         signal,
                         success,
                         cancelled,
                         &watcher_command,
-                        last_stderr.as_deref(),
+                        last_stderr,
                         &exit_context,
                     );
                 }
@@ -787,7 +885,7 @@ fn is_unrecognized_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool 
             .unwrap_or(true)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct WatcherExitCaptureContext {
     lifecycle_state: String,
     app_quit_in_progress: bool,
@@ -802,7 +900,38 @@ struct WatcherExitCaptureContext {
     runner_error_companies: u32,
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
+    watcher_launch_origin: String,
+    runner_stack_shape: String,
+    runner_stack_signature: String,
+    runner_stack_depth: u8,
+    runner_stack_redacted_frames: u8,
     windows_terminator: Option<WindowsTerminatorAttribution>,
+}
+
+impl Default for WatcherExitCaptureContext {
+    fn default() -> Self {
+        Self {
+            lifecycle_state: "unknown".to_string(),
+            app_quit_in_progress: false,
+            supervisor_respawn_in_flight: false,
+            heartbeat_stall_termination_in_flight: false,
+            cancelled: false,
+            fatal_runner_signature_seen: false,
+            runner_fatal_class: "none".to_string(),
+            runner_error_rollup: None,
+            runner_error_class: "none",
+            runner_error_ops: None,
+            runner_error_companies: 0,
+            runner_phase: "unknown".to_string(),
+            runner_phase_elapsed_bucket: "under_1m".to_string(),
+            watcher_launch_origin: "renderer".to_string(),
+            runner_stack_shape: "all_redacted".to_string(),
+            runner_stack_signature: "unknown".to_string(),
+            runner_stack_depth: 0,
+            runner_stack_redacted_frames: 0,
+            windows_terminator: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -820,35 +949,8 @@ impl Default for WatcherPhaseContext {
     }
 }
 
-/// Bucket elapsed work time rather than attaching a timestamp or raw duration.
-fn runner_phase_elapsed_bucket(elapsed: Duration) -> &'static str {
-    match elapsed.as_secs() {
-        0..=59 => "under_1m",
-        60..=299 => "1m_to_5m",
-        300..=1799 => "5m_to_30m",
-        1800..=7199 => "30m_to_2h",
-        _ => "over_2h",
-    }
-}
-
-/// Derive the coarse phase only from events emitted by this watcher. The
-/// on-disk progress snapshot is shared with Sync Now and CLI syncs, so it
-/// cannot safely attribute work to this process.
-fn watcher_phase_from_event(event: &SyncEvent) -> Option<&'static str> {
-    match event {
-        SyncEvent::FanoutPlan(_) | SyncEvent::Plan(_) => Some("scan"),
-        SyncEvent::Progress(progress) => Some(match progress.direction.as_deref() {
-            Some("up") => "push",
-            Some("down") => "pull",
-            _ => "unknown",
-        }),
-        SyncEvent::AllComplete(_) => Some("idle"),
-        _ => None,
-    }
-}
-
 fn observe_watcher_phase_from_event(phase_context: &Mutex<WatcherPhaseContext>, event: &SyncEvent) {
-    let Some(phase) = watcher_phase_from_event(event) else {
+    let Some(phase) = runner_phase_from_event(event) else {
         return;
     };
     let now = Instant::now();
@@ -866,6 +968,8 @@ fn watcher_exit_capture_context(
     totals: &Mutex<RunTotals>,
     cancelled: bool,
     phase_context: &Mutex<WatcherPhaseContext>,
+    generation: &WatcherGeneration,
+    stderr_tail: &[String],
     windows_terminator: Option<WindowsTerminatorAttribution>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
@@ -874,6 +978,8 @@ fn watcher_exit_capture_context(
     let phase_context = phase_context
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let stack = runner_stack_shape(stderr_tail);
+    finish_watcher_generation(generation);
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
         app_quit_in_progress: app_exit_requested(),
@@ -892,13 +998,18 @@ fn watcher_exit_capture_context(
             phase_context.observed_at.elapsed(),
         )
         .to_string(),
+        watcher_launch_origin: generation.launch_origin.as_str().to_string(),
+        runner_stack_shape: stack.shape,
+        runner_stack_signature: stack.signature,
+        runner_stack_depth: stack.depth,
+        runner_stack_redacted_frames: stack.redacted_frames,
         windows_terminator,
     }
 }
 
 #[cfg(target_os = "windows")]
-fn current_windows_terminator_attribution(
-    app: &AppHandle,
+fn current_windows_terminator_attribution<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     code: Option<i32>,
     signal: Option<i32>,
 ) -> Option<WindowsTerminatorAttribution> {
@@ -913,8 +1024,8 @@ fn current_windows_terminator_attribution(
 }
 
 #[cfg(not(target_os = "windows"))]
-fn current_windows_terminator_attribution(
-    _app: &AppHandle,
+fn current_windows_terminator_attribution<R: tauri::Runtime>(
+    _app: &AppHandle<R>,
     _code: Option<i32>,
     _signal: Option<i32>,
 ) -> Option<WindowsTerminatorAttribution> {
@@ -1214,7 +1325,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         last_stderr_class.unwrap_or_else(|| context.runner_fatal_class.clone());
     let runner_fatal_class_seen = runner_fatal_class != "none";
 
-    let mut tags = vec![("runner_fatal_class", runner_fatal_class)];
+    let mut tags = vec![
+        ("runner_fatal_class", runner_fatal_class),
+        ("sync_route", "watcher".to_string()),
+        ("runner_stack_shape", context.runner_stack_shape.clone()),
+        (
+            "runner_stack_signature",
+            context.runner_stack_signature.clone(),
+        ),
+    ];
     if let (Some(code), Some(termination)) = (code, windows_termination) {
         tags.push(("windows_exit_status", windows_exit_status_hex(code)));
         tags.push(("windows_exit_class", termination.class_name().to_string()));
@@ -1310,6 +1429,18 @@ fn watcher_exit_context_extras(
         (
             "runner_phase_elapsed_bucket",
             sentry::protocol::Value::String(context.runner_phase_elapsed_bucket.clone()),
+        ),
+        (
+            "watcher_launch_origin",
+            sentry::protocol::Value::String(context.watcher_launch_origin.clone()),
+        ),
+        (
+            "runner_stack_depth",
+            serde_json::json!(context.runner_stack_depth),
+        ),
+        (
+            "runner_stack_redacted_frames",
+            serde_json::json!(context.runner_stack_redacted_frames),
         ),
     ]
 }
@@ -1881,7 +2012,7 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                         "watch daemon down but auto-sync is on — respawning",
                     );
                     SUPERVISOR_RESPAWN_IN_FLIGHT.store(true, Ordering::Release);
-                    let respawn = start_daemon(handle.clone());
+                    let respawn = start_daemon_for_supervisor_respawn(handle.clone());
                     SUPERVISOR_RESPAWN_IN_FLIGHT.store(false, Ordering::Release);
                     match respawn {
                         Ok(_) => log("daemon.supervisor", "respawned watch daemon"),
@@ -2019,6 +2150,9 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::process::{deregister_process, try_register_handle};
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
+    use tempfile::TempDir;
 
     static REAL_WATCHER_EXIT_HANDLE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -3205,7 +3339,7 @@ mod tests {
             runner_error_companies: 2,
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
-            windows_terminator: None,
+            ..Default::default()
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3347,7 +3481,7 @@ mod tests {
             runner_error_companies: 1,
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
-            windows_terminator: None,
+            ..Default::default()
         };
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -3828,9 +3962,9 @@ mod tests {
             r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"sideways"}"#,
         )
         .expect("progress event");
-        assert_eq!(watcher_phase_from_event(&push), Some("push"));
-        assert_eq!(watcher_phase_from_event(&pull), Some("pull"));
-        assert_eq!(watcher_phase_from_event(&unknown), Some("unknown"));
+        assert_eq!(runner_phase_from_event(&push), Some("push"));
+        assert_eq!(runner_phase_from_event(&pull), Some("pull"));
+        assert_eq!(runner_phase_from_event(&unknown), Some("unknown"));
 
         let context = Mutex::new(WatcherPhaseContext::default());
         observe_watcher_phase_from_event(&context, &pull);
@@ -4074,6 +4208,367 @@ mod tests {
         assert_eq!(
             full,
             " [uptime=1m30s; last_rss=182MB (sampled 12s before exit)]"
+        );
+    }
+
+    fn assert_signed_out_entry_point_records_origin(
+        name: &str,
+        expected_origin: WatcherLaunchOrigin,
+        start: impl FnOnce(AppHandle<tauri::test::MockRuntime>) -> Result<String, String>,
+    ) {
+        let app = tauri::test::mock_app();
+        let result = start(app.handle().clone());
+        assert_eq!(
+            result,
+            Err(crate::commands::cognito::REAUTH_MESSAGE.to_string()),
+            "{name} must stop at the signed-out preflight"
+        );
+
+        let generation = watcher_generation_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("the production entry point must publish a generation");
+        assert_eq!(generation.launch_origin, expected_origin, "{name}");
+        assert!(
+            try_register_handle(DAEMON_HANDLE),
+            "{name} must release the daemon guard after refusing signed-out startup"
+        );
+        deregister_process(DAEMON_HANDLE);
+        finish_watcher_generation(&generation);
+    }
+
+    #[test]
+    fn production_watcher_entry_points_publish_their_own_origins_before_signed_out_preflight() {
+        // The production entry points acquire DAEMON_HANDLE before reaching
+        // the signed-out preflight. Share the guard-test lock with the
+        // existing lifecycle tests so cargo's parallel runner cannot observe
+        // that short-lived handle ownership as a spurious double start.
+        let _guard = GUARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_home = TempDir::new().expect("temporary signed-out home");
+        std::fs::create_dir_all(temp_home.path().join(".hq")).expect("create .hq directory");
+        let _home = scoped_home(temp_home.path());
+        *watcher_generation_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        deregister_process(DAEMON_HANDLE);
+
+        assert_signed_out_entry_point_records_origin(
+            "renderer",
+            WatcherLaunchOrigin::Renderer,
+            start_daemon,
+        );
+        assert_signed_out_entry_point_records_origin(
+            "app launch",
+            WatcherLaunchOrigin::AppLaunch,
+            start_daemon_for_app_launch,
+        );
+        assert_signed_out_entry_point_records_origin(
+            "supervisor respawn",
+            WatcherLaunchOrigin::SupervisorRespawn,
+            start_daemon_for_supervisor_respawn,
+        );
+    }
+
+    #[test]
+    fn watcher_generation_origin_is_durable_after_transient_flags_clear() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = begin_watcher_generation(WatcherLaunchOrigin::SupervisorRespawn);
+        // A later generation may become globally current before this one exits;
+        // attribution must still come from the generation captured by its
+        // process closure, never from process-global state sampled at exit.
+        let _newer_generation = begin_watcher_generation(WatcherLaunchOrigin::AppLaunch);
+        SUPERVISOR_RESPAWN_IN_FLIGHT.store(false, Ordering::Release);
+        HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
+        let context = watcher_exit_capture_context(
+            &Mutex::new(RunTotals::default()),
+            false,
+            &Mutex::new(WatcherPhaseContext::default()),
+            &generation,
+            &[],
+            None,
+        );
+
+        assert_eq!(context.watcher_launch_origin, "supervisor_respawn");
+        assert!(!context.supervisor_respawn_in_flight);
+    }
+
+    #[test]
+    fn watcher_capture_normalizes_the_dying_generations_full_stderr_tail() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = begin_watcher_generation(WatcherLaunchOrigin::AppLaunch);
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(WATCHER_STDERR_TAIL_CAP));
+        for line in [
+            "at node:internal/modules/cjs/loader:1218:14",
+            "at C:\\Users\\Ada\\private-company\\secret-plan.md:10:2",
+            "at node:fs:242:9",
+            "private application frame",
+        ] {
+            record_watcher_stderr_tail(&stderr_tail, line);
+        }
+        let tail = stderr_tail
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let context = watcher_exit_capture_context(
+            &totals,
+            false,
+            &Mutex::new(WatcherPhaseContext::default()),
+            &generation,
+            &tail,
+            None,
+        );
+        let mut effects = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut effects,
+            Some(221),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            tail.last().map(String::as_str),
+            current_termination_host(),
+            &context,
+        );
+
+        let event = effects.captures.first().expect("watcher capture");
+        assert_eq!(recorded_tag(event, "sync_route"), "watcher");
+        assert_eq!(
+            recorded_tag(event, "runner_stack_shape"),
+            "node_cjs_loader>app>node_fs>app"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "watcher_launch_origin"),
+            "app_launch"
+        );
+        assert_eq!(
+            event
+                .extras
+                .iter()
+                .find(|(key, _)| key == "runner_stack_depth")
+                .map(|(_, value)| value),
+            Some(&serde_json::json!(4))
+        );
+        assert_eq!(
+            event
+                .extras
+                .iter()
+                .find(|(key, _)| key == "runner_stack_redacted_frames")
+                .map(|(_, value)| value),
+            Some(&serde_json::json!(2))
+        );
+        let serialized = serde_json::to_string(&event.extras).expect("serialize extras");
+        assert!(!serialized.contains("private-company"));
+        assert!(!serialized.contains("secret-plan"));
+    }
+
+    /// The exact Sentry status behind HQ-DESKTOP-3S (raw `Some(-1073740791)`)
+    /// and HQ-DESKTOP-4C (decoded `0xC0000409 (fault)`): one NTSTATUS split
+    /// across two issues by a message-format change.
+    const WINDOWS_FASTFAIL_EXIT: i32 = 0xC000_0409u32 as i32;
+
+    /// Drive the production capture seam with the observed Windows fast-fail so
+    /// the attribution the live HQ-DESKTOP-4C event lacked is pinned end to end:
+    /// which entry point started the dying generation, which route it ran, and
+    /// what the runner's stderr looked like at the moment it aborted. The
+    /// pre-existing Windows classification, phase and fingerprint must survive
+    /// untouched — this lane only ever adds information.
+    #[test]
+    fn windows_fastfail_watcher_capture_attributes_route_origin_and_multiline_stack() {
+        assert_eq!(
+            WINDOWS_FASTFAIL_EXIT, -1_073_740_791,
+            "the decoded status and the raw code in the cluster are one value"
+        );
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = begin_watcher_generation(WatcherLaunchOrigin::SupervisorRespawn);
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(WATCHER_STDERR_TAIL_CAP));
+        // A real Node fatal-error abort is a banner plus frames. Only the last
+        // line reached the classifier before this lane, which is why the live
+        // event reported runner_fatal_class=none with no fault-site detail.
+        for line in [
+            "<--- Last few GCs --->",
+            "FATAL ERROR: Ineffective mark-compacts near heap limit \
+             Allocation failed - JavaScript heap out of memory",
+            "at Module._compile (node:internal/modules/cjs/loader:1356:14)",
+            "at node:fs:242:9",
+        ] {
+            record_watcher_stderr_tail(&stderr_tail, line);
+        }
+        let tail = stderr_tail
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let phase_context = Mutex::new(WatcherPhaseContext {
+            phase: "scan",
+            observed_at: Instant::now(),
+        });
+        let context = watcher_exit_capture_context(
+            &Mutex::new(RunTotals::default()),
+            false,
+            &phase_context,
+            &generation,
+            &tail,
+            None,
+        );
+
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(WINDOWS_FASTFAIL_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            tail.last().map(String::as_str),
+            TerminationHost::Windows,
+            &context,
+        );
+
+        let event = effects
+            .captures
+            .first()
+            .expect("a Windows fast-fail watcher exit must still be captured");
+
+        // New attribution: the four channels the live event was missing.
+        assert_eq!(recorded_tag(event, "sync_route"), "watcher");
+        assert_eq!(
+            recorded_string_extra(event, "watcher_launch_origin"),
+            "supervisor_respawn",
+            "the origin must come from the generation that actually died"
+        );
+        assert_eq!(
+            recorded_tag(event, "runner_stack_shape"),
+            "app>app>node_cjs_loader>node_fs",
+            "the whole bounded tail is normalized, not just its last line"
+        );
+        let signature = recorded_tag(event, "runner_stack_signature");
+        assert_ne!(signature, "unknown");
+        assert_eq!(signature.len(), 16);
+        assert!(signature.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(recorded_number_extra(event, "runner_stack_depth"), 4);
+        assert_eq!(
+            recorded_number_extra(event, "runner_stack_redacted_frames"),
+            2
+        );
+
+        // Preserved: everything the capture already carried on main.
+        assert_eq!(recorded_tag(event, "windows_exit_status"), "0xC0000409");
+        assert_eq!(recorded_tag(event, "windows_exit_class"), "fault");
+        assert_eq!(
+            recorded_tag(event, "windows_fault_symbol"),
+            "STATUS_STACK_BUFFER_OVERRUN"
+        );
+        assert_eq!(recorded_string_extra(event, "runner_phase"), "scan");
+        assert_eq!(
+            recorded_string_extra(event, "runner_phase_elapsed_bucket"),
+            "under_1m"
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none",
+            ],
+            "grouping continuity: neither cluster issue may regroup"
+        );
+        assert!(event
+            .message
+            .contains("with Windows status 0xC0000409 (fault)"));
+
+        // Egress safety: the banner and its frames stay process-local.
+        let serialized = format!(
+            "{}{}{}",
+            event.message,
+            serde_json::to_string(&event.tags).expect("serialize tags"),
+            serde_json::to_string(&event.extras).expect("serialize extras"),
+        );
+        for forbidden in [
+            "JavaScript heap out of memory",
+            "Module._compile",
+            "node:internal/modules/cjs/loader",
+            "Last few GCs",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "raw stderr must never reach the capture: {forbidden}"
+            );
+        }
+    }
+
+    /// A Windows `__fastfail` can terminate the runner before anything is
+    /// flushed. That is itself a discriminating datum, so the degraded stack
+    /// must be reported honestly rather than fabricated — and route, origin and
+    /// phase must still land, because they do not depend on stderr at all.
+    #[test]
+    fn windows_fastfail_watcher_capture_reports_a_silent_stderr_tail_honestly() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = begin_watcher_generation(WatcherLaunchOrigin::Renderer);
+        let context = watcher_exit_capture_context(
+            &Mutex::new(RunTotals::default()),
+            false,
+            &Mutex::new(WatcherPhaseContext {
+                phase: "idle",
+                observed_at: Instant::now(),
+            }),
+            &generation,
+            &[],
+            None,
+        );
+
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(WINDOWS_FASTFAIL_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Windows,
+            &context,
+        );
+
+        let event = effects
+            .captures
+            .first()
+            .expect("a silent Windows fast-fail must still be captured");
+        assert_eq!(recorded_tag(event, "runner_stack_shape"), "all_redacted");
+        assert_eq!(recorded_tag(event, "runner_stack_signature"), "unknown");
+        assert_eq!(recorded_number_extra(event, "runner_stack_depth"), 0);
+        assert_eq!(
+            recorded_number_extra(event, "runner_stack_redacted_frames"),
+            0
+        );
+        assert_eq!(recorded_tag(event, "sync_route"), "watcher");
+        assert_eq!(
+            recorded_string_extra(event, "watcher_launch_origin"),
+            "renderer"
+        );
+        assert_eq!(recorded_string_extra(event, "runner_phase"), "idle");
+        assert_eq!(recorded_tag(event, "windows_exit_status"), "0xC0000409");
+        assert_eq!(
+            recorded_tag(event, "windows_fault_symbol"),
+            "STATUS_STACK_BUFFER_OVERRUN"
         );
     }
 }
