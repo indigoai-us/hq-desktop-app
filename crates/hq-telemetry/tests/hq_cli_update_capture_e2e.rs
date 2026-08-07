@@ -138,7 +138,13 @@ fn assert_non_convergent_event(
     expected_hq_bin: &str,
     expected_prefix: &str,
 ) {
-    assert_non_convergent_shape(event, "npm", expected_kind, expected_hq_source, expected_hq_bin);
+    assert_non_convergent_shape(
+        event,
+        "npm",
+        expected_kind,
+        expected_hq_source,
+        expected_hq_bin,
+    );
     let expected_npm_source = if cfg!(target_os = "windows") {
         "unknown"
     } else {
@@ -420,10 +426,7 @@ fn undetermined_pnpm_home_is_reported_as_foreign_managed_and_stays_bounded() {
         "~/.asdf/shims/hq",
     );
     assert_eq!(
-        events[0]
-            .tags
-            .get("pnpm_home_source")
-            .map(String::as_str),
+        events[0].tags.get("pnpm_home_source").map(String::as_str),
         Some("undetermined")
     );
 

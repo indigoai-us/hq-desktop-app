@@ -224,11 +224,12 @@ describe('master automatic-updates switch', () => {
     // The three live 2026-08-06 events could not be attributed: same
     // fingerprint, no executor tag, and an `npm_prefix` extra that was actively
     // wrong for a pnpm run.
-    expect(cliUpdateCore).toContain('scope.set_tag("install_executor", executor.telemetry_value());');
-    expect(cliUpdateCore).toContain('scope.set_tag("pnpm_home_source"');
-    expect(cliUpdateCore).toContain('scope.set_tag("pnpm_home_env_present"');
-    expect(cliUpdateCore).toContain('scope.set_tag("pnpm_path_has_shim_dir"');
-    expect(cliUpdateCore).toContain('scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());');
+    const core = normalize(cliUpdateCore);
+    expect(core).toContain('scope.set_tag("install_executor", executor.telemetry_value());');
+    expect(core).toContain('scope.set_tag( "pnpm_home_source",');
+    expect(core).toContain('scope.set_tag( "pnpm_home_env_present",');
+    expect(core).toContain('scope.set_tag( "pnpm_path_has_shim_dir",');
+    expect(core).toContain('scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());');
     // The grouping must NOT split: a new tag that forked the fingerprint would
     // make the issue look resolved while the same defect kept occurring.
     expect(cliUpdateCore).toContain(
@@ -292,6 +293,9 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
     expect(cliUpdateCore).toContain('scope.set_tag("npm_errno"');
     expect(cliUpdateCore).toContain('scope.set_tag("hq_bin_source"');
-    expect(cliUpdateCore).toContain('scope.set_tag("npm_bin_source"');
+    // Both the npm-only source tag and the executor-neutral one carry closed
+    // categories from `bin_resolution_source`, never the resolved path.
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
   });
 });

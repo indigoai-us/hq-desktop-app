@@ -76,16 +76,15 @@ pub use hq_desktop_core::hq_cli_update::{
     is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, npm_install_attempt_summary, npm_prefix_from_hq_bin,
     path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv, read_installed_version,
-    redact_home, redact_home_in, report_install_failure,
-    report_install_failure_with_final_attempt, report_non_convergent_install,
-    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_unreadable_version, resolved_hq_version, should_auto_install,
-    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
-    version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallExecutor, InstallFailureKind,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PostInstallContext,
-    PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome, DISMISSED_VERSION_KEY,
-    HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    redact_home, redact_home_in, report_install_failure, report_install_failure_with_final_attempt,
+    report_non_convergent_install, report_non_convergent_marker_unpersisted,
+    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallExecutor,
+    InstallFailureKind, LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind,
+    NonConvergentReport, NpmLatest, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
+    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
+    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -418,20 +417,6 @@ fn log_npm_install_attempt_ledger(ledger: &[NpmInstallAttempt]) {
     );
 }
 
-fn verify_active_cli_version(local: Option<String>, latest: &str) -> Result<String, String> {
-    match local {
-        Some(local) if install_converged(Some(&local), latest) => Ok(local),
-        Some(local) => Err(format!(
-            "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
-             The update was not applied to the CLI on PATH."
-        )),
-        None => Err(format!(
-            "npm completed, but the active HQ CLI version could not be verified \
-             (expected v{latest})."
-        )),
-    }
-}
-
 /// Build the npm child with the exact PATH and app-owned cache the updater
 /// needs. Keeping this at the process boundary means every retry inherits the
 /// same cache instead of falling back to a potentially root-owned `~/.npm`.
@@ -727,6 +712,11 @@ async fn install_hq_cli_update_via_pnpm(
         executor: InstallExecutor::Pnpm,
         before_bin: hq,
         after_bin: &post_install_hq,
+        // Diagnostic only on the npm path, where it separates an expected
+        // shim-to-npm relocation from an in-place update. pnpm never relocates
+        // resolution away from its own global dir, so skipping the extra
+        // pre-install probe changes no decision — the post-install reading
+        // remains the sole authority for blocking.
         before_version: None,
         after_version: resolved.as_deref(),
         latest,

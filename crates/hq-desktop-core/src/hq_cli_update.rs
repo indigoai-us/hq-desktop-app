@@ -1265,7 +1265,11 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
             );
             scope.set_tag(
                 "hq_bin_changed",
-                if report.hq_bin_changed { "true" } else { "false" },
+                if report.hq_bin_changed {
+                    "true"
+                } else {
+                    "false"
+                },
             );
             scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
             // Home-redacted: the install LAYOUT is the diagnostic
@@ -1280,7 +1284,10 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                     // npm-only shape. `prefix_known=false` renders as the
                     // "npm default prefix" placeholder, which is meaningful
                     // for npm and meaningless for pnpm.
-                    scope.set_tag("npm_bin_source", bin_resolution_source(&report.installer_bin));
+                    scope.set_tag(
+                        "npm_bin_source",
+                        bin_resolution_source(&report.installer_bin),
+                    );
                     scope.set_tag(
                         "prefix_known",
                         if prefix.is_some() { "true" } else { "false" },
