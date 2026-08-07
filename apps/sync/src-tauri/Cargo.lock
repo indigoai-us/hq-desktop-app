@@ -2749,6 +2749,7 @@ dependencies = [
  "hq-platform",
  "hq-telemetry",
  "ignore",
+ "libc",
  "mac-notification-sys",
  "nix 0.29.0",
  "objc2",
