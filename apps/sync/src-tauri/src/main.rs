@@ -965,7 +965,7 @@ fn main() {
                 std::thread::spawn(move || {
                     // Small delay to let the app fully initialize
                     std::thread::sleep(std::time::Duration::from_secs(2));
-                    let _ = commands::daemon::start_daemon(handle);
+                    let _ = commands::daemon::start_daemon_for_app_launch(handle);
                 });
             }
 

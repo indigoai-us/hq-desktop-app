@@ -1372,6 +1372,8 @@ exit 0
             npm_root: hq_desktop_core::hq_cli_update::VersionProbeOutcome::NonzeroExit,
             hq_version: hq_desktop_core::hq_cli_update::VersionProbeOutcome::InvalidUtf8,
             binary_anchor_shape: hq_desktop_core::hq_cli_update::BinaryAnchorShape::FlatGlobalBin,
+            resolved_program_kind:
+                hq_desktop_core::hq_cli_update::ResolvedProgramKind::Extensionless,
         };
         let events = sentry::test::with_captured_events(|| {
             sentry::configure_scope(|scope| {
@@ -1399,6 +1401,9 @@ exit 0
                 "npm_root": "nonzero_exit",
                 "hq_version": "invalid_utf8",
                 "binary_anchor_shape": "flat_global_bin",
+                // A resolution Windows cannot execute survives scrubbing as a
+                // closed enum value — never as the offending path.
+                "resolved_program_kind": "extensionless",
             })
         );
         assert_eq!(event.extra["token"], serde_json::json!("[Filtered]"));
