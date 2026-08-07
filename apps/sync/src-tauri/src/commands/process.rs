@@ -2570,21 +2570,34 @@ mod registry_exit_order_tests {
     fn escalation_sigkill_keeps_cancelled_observable_in_exit_callback() {
         let handle = format!("sigkill-cancel-observable-{}", Uuid::new_v4());
         pre_register_handle(&handle);
+        // `echo ready` runs only after `trap` returns, so receiving it proves
+        // the child is genuinely ignoring SIGTERM. A registered pid does not:
+        // the child is registered the moment it is spawned, which is before
+        // `sh` has interpreted its first command. Cancelling on that weaker
+        // signal races the trap installation, and a SIGTERM that wins reaps the
+        // child at signal 15 — the escalation to SIGKILL this test exists to
+        // pin then never happens.
         let spawn = SpawnArgs {
             cmd: "sh".to_string(),
             args: vec![
                 "-c".to_string(),
-                "trap '' TERM; while :; do sleep 1; done".to_string(),
+                "trap '' TERM; echo ready; while :; do sleep 1; done".to_string(),
             ],
             cwd: None,
             env: None,
         };
+        let (ready_tx, ready_rx) = mpsc::channel();
         let (exit_tx, exit_rx) = mpsc::channel();
         let runner_handle = handle.clone();
         let runner = thread::spawn(move || {
             let callback_handle = runner_handle.clone();
-            run_process_impl(&runner_handle, &spawn, move |event| {
-                if let ProcessEvent::Exit { signal, .. } = event {
+            run_process_impl(&runner_handle, &spawn, move |event| match event {
+                ProcessEvent::Stdout(line) if line == "ready" => {
+                    ready_tx
+                        .send(())
+                        .expect("test readiness receiver must remain alive");
+                }
+                ProcessEvent::Exit { signal, .. } => {
                     let observed = (
                         is_registered(&callback_handle),
                         is_cancelled(&callback_handle),
@@ -2593,17 +2606,17 @@ mod registry_exit_order_tests {
                         .send((observed, signal))
                         .expect("test receiver must remain alive");
                 }
+                _ => {}
             })
         });
 
-        let start = std::time::Instant::now();
-        while lookup_pid(&handle).is_none() {
-            assert!(
-                start.elapsed() < Duration::from_secs(2),
-                "runner did not register its child within the bounded test window"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the child must install its SIGTERM trap before cancellation");
+        assert!(
+            lookup_pid(&handle).is_some(),
+            "a child that has reported readiness must still be registered"
+        );
 
         assert!(
             cancel_process_impl(&handle, Duration::from_millis(100)),
