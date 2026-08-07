@@ -1219,6 +1219,17 @@ fn main() {
                             observer.shutdown(std::time::Duration::from_millis(500));
                         }
 
+                        // Ownership report, emitted while the registry still
+                        // holds the children about to be terminated. Env-gated
+                        // (`HQ_SYNC_SESSION_END_OWNED_PIDS`), so this is inert
+                        // in every shipped build; the live session-end proof
+                        // points it at a temp file. Its existence is what tells
+                        // that proof this teardown actually ran, and the pids
+                        // it lists are what the proof then requires to be dead
+                        // — the app declares what it owns instead of the test
+                        // guessing from process names.
+                        commands::process::report_session_end_owned_pids();
+
                         commands::process::terminate_all_for_exit(
                             std::time::Duration::from_millis(500),
                         );

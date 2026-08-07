@@ -65,6 +65,8 @@ interface BoundaryContract {
   startMarker: string;
   endMarker: string;
   afterMarkers?: string[];
+  /** Markers the hook must precede — order matters, not just presence. */
+  beforeMarkers?: string[];
 }
 
 const boundaryContracts: BoundaryContract[] = [
@@ -198,6 +200,20 @@ const boundaryContracts: BoundaryContract[] = [
     afterMarkers: ["NativePanicSeam::AppSessionEndExit"],
   },
   {
+    // The ownership report is what the live artifact proof asserts against:
+    // the file's existence proves this arm ran, and the pids it names are what
+    // the proof then requires to be dead. It has to be emitted BEFORE the
+    // children are terminated — afterwards the registry has emptied and the
+    // report would truthfully name nothing, turning the proof vacuous while
+    // still reading green.
+    label: "session-end owned-pid report",
+    file: "main",
+    hook: "commands::process::report_session_end_owned_pids();",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+    beforeMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
     label: "session-end bounded sentry flush",
     file: "main",
     hook: "hq_telemetry::flush_within(",
@@ -269,6 +285,10 @@ function orderError(contract: BoundaryContract, marker: string): string {
   return `${contract.label} must remain after ${marker} in its production boundary`;
 }
 
+function precedenceError(contract: BoundaryContract, marker: string): string {
+  return `${contract.label} must remain before ${marker} in its production boundary`;
+}
+
 function productionBoundaryErrors(sources: ProductionSources): string[] {
   return boundaryContracts.flatMap((contract) => {
     const source = sources[contract.file];
@@ -291,6 +311,12 @@ function productionBoundaryErrors(sources: ProductionSources): string[] {
         const markerIndex = boundary.indexOf(marker);
         if (markerIndex === -1 || hookIndex <= markerIndex) {
           errors.push(orderError(contract, marker));
+        }
+      }
+      for (const marker of contract.beforeMarkers ?? []) {
+        const markerIndex = boundary.indexOf(marker);
+        if (markerIndex === -1 || hookIndex >= markerIndex) {
+          errors.push(precedenceError(contract, marker));
         }
       }
     }
@@ -397,6 +423,42 @@ describe("native panic seam wiring", () => {
     // covered by the macOS Rust job).
     expect(main).toContain(
       '#[cfg(any(target_os = "windows", test))]\nfn handle_run_event_exit<S, T>',
+    );
+  });
+
+  // Deletion is not the only way to break the ownership report. Emitting it
+  // AFTER `terminate_all_for_exit` leaves every existing check green — the file
+  // is still written, the arm still runs — while the report truthfully names an
+  // already-empty registry, so the live proof would assert that zero pids are
+  // dead and pass without proving anything.
+  it("rejects reordering the session-end owned-pid report after the teardown", () => {
+    const sources = currentSources();
+    const contract = boundaryContracts.find(
+      (candidate) => candidate.label === "session-end owned-pid report",
+    );
+    if (!contract) {
+      throw new Error("the session-end owned-pid report contract is missing");
+    }
+
+    expect(countOccurrences(main, contract.hook)).toBe(1);
+    expect(countOccurrences(main, "hq_telemetry::flush_within(")).toBe(1);
+
+    // Move the report past the teardown, to just before the bounded flush.
+    const reordered = main
+      .replace(`${contract.hook}\n`, "")
+      .replace(
+        "hq_telemetry::flush_within(",
+        `${contract.hook}\n                        hq_telemetry::flush_within(`,
+      );
+
+    const errors = productionBoundaryErrors(
+      withSource(sources, "main", reordered),
+    );
+
+    // Still present exactly once — so this fails on ORDER, not on absence.
+    expect(errors).not.toContain(boundaryError(contract, 0));
+    expect(errors).toContain(
+      precedenceError(contract, "commands::process::terminate_all_for_exit("),
     );
   });
 

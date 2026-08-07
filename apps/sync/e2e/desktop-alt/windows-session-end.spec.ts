@@ -31,6 +31,7 @@ import {
   driveWindowsSessionEnd,
   findAbortMarker,
   isAppSpawnedChild,
+  parseSessionEndOwnershipReport,
   resolveSessionEndLiveMode,
 } from './windows-reliability-harness';
 
@@ -63,13 +64,48 @@ describe('Windows session-end exit decision (HQ-DESKTOP-44)', () => {
     expect(decision.terminateProcess).toBe(false);
   });
 
-  it('scopes the teardown claim to children the app actually spawned', () => {
-    // What `terminate_all_for_exit` owns.
+  it('labels WebView2 helpers apart from the rest of the process tree', () => {
+    // Diagnostics only — this classifier no longer gates anything. It labels
+    // the "before"/"after" child lists so a red run reads clearly.
     expect(isAppSpawnedChild('hq.exe')).toBe(true);
     expect(isAppSpawnedChild('node.exe')).toBe(true);
-    // What it has never owned: WebView2 manages its own process tree.
+    // WebView2 manages its own process tree and tears it down asynchronously.
     expect(isAppSpawnedChild('msedgewebview2.exe')).toBe(false);
     expect(isAppSpawnedChild('MSEdgeWebView2.exe')).toBe(false);
+  });
+
+  it('reads the app’s ownership report, and refuses to guess when it cannot', () => {
+    // The happy path: exactly what `registered_pids()` held.
+    expect(
+      parseSessionEndOwnershipReport(
+        '{"pids":[{"handle":"hq-sync","pid":4321},{"handle":"hq-sync-daemon","pid":8765}]}',
+      ),
+    ).toEqual([
+      { handle: 'hq-sync', pid: 4321 },
+      { handle: 'hq-sync-daemon', pid: 8765 },
+    ]);
+
+    // An empty registry is a legitimate outcome and stays legible as `owned=0`.
+    // It is NOT an error — the file's existence is the teardown proof, and the
+    // count is reported so nobody mistakes zero for evidence.
+    expect(parseSessionEndOwnershipReport('{"pids":[]}')).toEqual([]);
+
+    // No file at all means the Windows `RunEvent::Exit` teardown never ran.
+    // That is the regression this proof exists to catch, so it must throw
+    // rather than degrade into an empty list.
+    expect(() => parseSessionEndOwnershipReport(null)).toThrow(/teardown did not run/);
+
+    // Anything unparseable or off-shape fails closed too.
+    expect(() => parseSessionEndOwnershipReport('not json')).toThrow(/not valid JSON/);
+    expect(() => parseSessionEndOwnershipReport('{"pids":"none"}')).toThrow(
+      /no "pids" array/,
+    );
+    expect(() => parseSessionEndOwnershipReport('{"pids":[{"pid":1}]}')).toThrow(
+      /malformed/,
+    );
+    expect(() =>
+      parseSessionEndOwnershipReport('{"pids":[{"handle":"hq-sync","pid":"4321"}]}'),
+    ).toThrow(/malformed/);
   });
 
   it('recognises the fatal tao panic and abort shapes', () => {
@@ -113,6 +149,10 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
       `children_before=${observed.observedChildCountBefore}[${observed.observedChildNamesBefore.join(' ')}]`,
       `children_after=${observed.survivingChildCount}[${observed.survivingChildNames.join(' ')}]`,
       `app_spawned_after=${observed.survivingAppSpawnedChildCount}`,
+      `owned_report=${observed.ownedPidsReportPresent}`,
+      `owned=${observed.ownedPidCount}`,
+      `owned_alive=${observed.survivingOwnedPidCount}`,
+      `owned_report_error=${observed.ownedPidsReportError ?? 'none'}`,
     ].join(' ');
     // eslint-disable-next-line no-console
     console.log(`[session-end] ${diagnostics}`);
@@ -138,16 +178,33 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     // sync daemon, the recall sidecar — each in its own process group, so the
     // OS does not reap them) were never terminated.
     //
-    // Scoped to app-spawned children on purpose. WebView2's helper processes
-    // are OS-level children of the app too, but the app never spawned them
-    // through `commands/process.rs`, `terminate_all_for_exit` has never owned
-    // them, and the WebView2 host tears down its own tree asynchronously.
-    // Counting them would make this assert something this fix does not claim.
-    // Both numbers and the process names are logged, so a run where the app
-    // spawned nothing is visible as such instead of reading as proof.
+    // Gated on OWNERSHIP, which the app declares itself, not on process names.
+    // Two reasons a name-based scope cannot work here:
+    //
+    //  - It over-claims. `resolve_bin("npx")` picks up `npx.cmd`, and Rust
+    //    batch-dispatches a `.cmd` through `cmd.exe`, so an npx child of the app
+    //    shows up in `Win32_Process` as a plain `cmd.exe`. Those particular
+    //    children come from `materialize_hq_cloud_cache`, which runs a bare
+    //    `std::process::Command` and is never entered in the process registry —
+    //    so `terminate_all_for_exit` has never owned them, and an ordinary tray
+    //    Quit orphans them identically. Pre-existing, and out of scope for a
+    //    fatal-panic fix (recorded in the PR body, not hidden).
+    //  - It is unsound after the fact. Re-querying `ParentProcessId=<app pid>`
+    //    once the app has exited asks about whatever now holds that number.
+    //
+    // The report's EXISTENCE is the primary gate and does not depend on the
+    // count: it is written from inside the Windows `RunEvent::Exit` teardown,
+    // so deleting that arm, its cfg gate, or the teardown call fails this spec
+    // even on a runner where the app owned nothing. `owned=` is logged
+    // explicitly so an empty registry reads as `owned=0` rather than as proof.
+    expect(observed.ownedPidsReportError, diagnostics).toBeNull();
     expect(
-      observed.survivingAppSpawnedChildCount,
-      `app-spawned children survived the session end — survivors: [${observed.survivingChildNames.join(' ')}]; ${diagnostics}`,
+      observed.ownedPidsReportPresent,
+      `the app wrote no session-end ownership report — its Windows RunEvent::Exit teardown did not run; ${diagnostics}`,
+    ).toBe(true);
+    expect(
+      observed.survivingOwnedPidCount,
+      `children the app declared it owns survived the session end; ${diagnostics}`,
     ).toBe(0);
   });
 });

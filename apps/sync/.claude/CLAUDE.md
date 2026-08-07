@@ -334,10 +334,25 @@ Rules for anyone touching this area:
 - Everything in the session-end teardown runs inside a Windows window
   procedure. Keep every step individually capped, and keep it panic-free — a
   panic there aborts the process just as the original bug did.
+- **Do not** reorder the ownership report after `terminate_all_for_exit`.
+  Immediately before terminating, the session-end branch writes
+  `registered_pids()` to the path named by `HQ_SYNC_SESSION_END_OWNED_PIDS`
+  (unset in every shipped build, so the path is inert in production). The live
+  proof asserts against that report: its existence proves the branch ran, and
+  the pids it names must all be dead. Emitted after the teardown it would
+  truthfully name an empty registry and the proof would pass vacuously —
+  `scripts/native-seam-wiring.test.ts` pins the ordering.
+- **Do not** scope the surviving-child claim by process name. OS-level
+  parentage is not ownership in either direction: `resolve_bin("npx")` picks up
+  `npx.cmd`, which Rust batch-dispatches through `cmd.exe`, so an app-spawned
+  npx child appears as a plain `cmd.exe` — and those particular children come
+  from `materialize_hq_cloud_cache`, which uses a bare `std::process::Command`,
+  is never entered in the process registry, and is therefore orphaned by an
+  ordinary tray Quit too. Ownership comes from the app's own report.
 - The wiring is pinned by `scripts/native-seam-wiring.test.ts` (mutation-checked
-  against deletion and same-file relocation) and proved end-to-end by
-  `e2e/desktop-alt/windows-session-end.spec.ts`, which drives the real message
-  sequence at a real binary in the `windows-check` workflow.
+  against deletion, same-file relocation, and reordering) and proved end-to-end
+  by `e2e/desktop-alt/windows-session-end.spec.ts`, which drives the real
+  message sequence at a real binary in the `windows-check` workflow.
 
 ## Gotchas
 

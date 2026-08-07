@@ -17,8 +17,9 @@
  * command arguments that may carry secrets. Only counts, enums, and role labels.
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -993,12 +994,28 @@ export interface SessionEndLiveObservation {
   observedDestroyedStatePanic: boolean;
   /** True when any panic/abort marker appeared in captured output. */
   observedAbortMarker: boolean;
-  /** Every OS-level descendant still present after the app exited. */
+  /**
+   * The app's OWN declaration of what `terminate_all_for_exit` owns, written
+   * from inside the Windows session-end teardown. `false` means the teardown
+   * never ran — which is the failure this proof exists to catch.
+   */
+  ownedPidsReportPresent: boolean;
+  /** Why the report could not be read/parsed, or null when it was fine. */
+  ownedPidsReportError: string | null;
+  /** How many children the app said it owned. 0 is legitimate and visible. */
+  ownedPidCount: number;
+  /** Owned pids still alive after the bounded deadline — must be 0. */
+  survivingOwnedPidCount: number;
+  /**
+   * Of the descendants observed BEFORE the session end, how many are still
+   * alive afterwards (matched on pid AND creation time, so a reused pid cannot
+   * masquerade as a survivor). Diagnostics only — see `ownedPidCount` for the
+   * assertion.
+   */
   survivingChildCount: number;
   /**
-   * Surviving descendants that the app actually spawned itself — the `--watch`
-   * sync daemon and the recall sidecar, i.e. the ones `terminate_all_for_exit`
-   * owns. This is the number the teardown claim is about.
+   * Surviving descendants that are not WebView2 helpers. Diagnostics only:
+   * OS-level parentage is not ownership, so this number cannot be the gate.
    */
   survivingAppSpawnedChildCount: number;
   /** Total descendants before the session end — 0 makes the above vacuous. */
@@ -1012,14 +1029,81 @@ export interface SessionEndLiveObservation {
  * WebView2 helper processes are children of the app at the OS level, but the
  * app never spawned them through `commands/process.rs` and
  * `terminate_all_for_exit` has never owned them — the WebView2 host manages its
- * own process tree and tears it down asynchronously after its host exits. They
- * are counted and reported, but excluded from the teardown assertion so it
- * measures the claim actually being made.
+ * own process tree and tears it down asynchronously after its host exits.
+ *
+ * This classifier is DIAGNOSTIC ONLY. It is deliberately not the teardown gate:
+ * image names cannot tell ownership apart from parentage in either direction.
+ * `hq_desktop_core::paths::resolve_bin("npx")` resolves to `npx.cmd`, which Rust
+ * batch-dispatches through `cmd.exe`, so an app-spawned npx child appears in
+ * `Win32_Process` as plain `cmd.exe` — indistinguishable by name from anything
+ * else, and in fact not owned by `terminate_all_for_exit` at all (see
+ * `materialize_hq_cloud_cache`, which uses a bare `std::process::Command` and is
+ * never entered in the process registry). Ownership comes from the app's own
+ * report instead; this only labels what the diagnostics print.
  */
 const WEBVIEW2_HELPER_PROCESS = /^msedgewebview2/i;
 
 export function isAppSpawnedChild(processName: string): boolean {
   return !WEBVIEW2_HELPER_PROCESS.test(processName);
+}
+
+/** One child of the app under test, identified so a reused pid cannot alias it. */
+export interface ObservedChildProcess {
+  pid: number;
+  /** Fixed image name only — never a command line. */
+  name: string;
+  /** Win32 file time of process creation; pins identity against pid reuse. */
+  creationTicks: string;
+}
+
+/** A pid the app declared it owns, as written by the session-end teardown. */
+export interface OwnedProcessEntry {
+  handle: string;
+  pid: number;
+}
+
+/**
+ * Parse the ownership report the app writes at
+ * `HQ_SYNC_SESSION_END_OWNED_PIDS`.
+ *
+ * Throws on anything it cannot vouch for — a missing file, unparseable JSON, or
+ * the wrong shape. An unreadable report must never soften into "nothing to
+ * check": the whole point is that a teardown which did not run leaves no file,
+ * and that has to read as failure rather than as an empty success.
+ */
+export function parseSessionEndOwnershipReport(
+  raw: string | null,
+): OwnedProcessEntry[] {
+  if (raw === null) {
+    throw new Error(
+      'the app wrote no session-end ownership report — the Windows RunEvent::Exit teardown did not run',
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `session-end ownership report is not valid JSON: ${(error as Error).message}`,
+    );
+  }
+
+  const pids = (parsed as { pids?: unknown } | null)?.pids;
+  if (!Array.isArray(pids)) {
+    throw new Error('session-end ownership report has no "pids" array');
+  }
+
+  return pids.map((entry, index) => {
+    const handle = (entry as { handle?: unknown })?.handle;
+    const pid = (entry as { pid?: unknown })?.pid;
+    if (typeof handle !== 'string' || typeof pid !== 'number' || !Number.isInteger(pid)) {
+      throw new Error(
+        `session-end ownership report entry ${index} is malformed (expected {handle: string, pid: integer})`,
+      );
+    }
+    return { handle, pid };
+  });
 }
 
 /** The exact panic tao raises from `move_state_to` once the runner is destroyed. */
@@ -1137,20 +1221,32 @@ function runPowerShell(
   });
 }
 
-/** Process names only — never command lines, which can carry secrets. */
-async function descendantNames(pid: number): Promise<string[]> {
+/**
+ * Snapshot the app's children as `{pid, name, creationTicks}`.
+ *
+ * Process names and integers only — never command lines, which can carry
+ * secrets. The creation time is what makes a later liveness check honest: once
+ * the app exits, its pid is free for reuse, so re-running
+ * `ParentProcessId=<pid>` afterwards identifies the children of whatever
+ * inherited the number, not of the app under test.
+ */
+async function descendantProcesses(pid: number): Promise<ObservedChildProcess[]> {
   const result = await runPowerShell(
     [
       '-Command',
-      `@(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | Select-Object -ExpandProperty Name) -join ','`,
+      `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | ForEach-Object { "$($_.ProcessId)|$($_.Name)|$($_.CreationDate.ToFileTimeUtc())" }`,
     ],
     15_000,
   );
   return result.stdout
-    .trim()
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean);
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [rawPid, name, creationTicks] = line.split('|');
+      return { pid: Number(rawPid), name: name ?? '', creationTicks: creationTicks ?? '' };
+    })
+    .filter((child) => Number.isInteger(child.pid) && child.name !== '');
 }
 
 async function isProcessAlive(pid: number): Promise<boolean> {
@@ -1161,12 +1257,58 @@ async function isProcessAlive(pid: number): Promise<boolean> {
   return result.stdout.trim().startsWith('1');
 }
 
+/** Creation time of a live pid, or null when nothing is running under it. */
+async function processCreationTicks(pid: number): Promise<string | null> {
+  const result = await runPowerShell(
+    [
+      '-Command',
+      `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction SilentlyContinue; if ($p) { $p.CreationDate.ToFileTimeUtc() }`,
+    ],
+    15_000,
+  );
+  const ticks = result.stdout.trim();
+  return ticks === '' ? null : ticks;
+}
+
+/** The subset of `children` still running as the SAME process we recorded. */
+async function stillRunning(
+  children: ObservedChildProcess[],
+): Promise<ObservedChildProcess[]> {
+  const alive: ObservedChildProcess[] = [];
+  for (const child of children) {
+    if ((await processCreationTicks(child.pid)) === child.creationTicks) {
+      alive.push(child);
+    }
+  }
+  return alive;
+}
+
+/**
+ * Owned pids still alive.
+ *
+ * The app's report carries pid but no creation time, so this fails CLOSED: a
+ * recycled pid reads as "still alive" and the proof goes red rather than
+ * quietly passing. That is the right direction for an assertion whose claim is
+ * that these processes are gone.
+ */
+async function livingOwnedPids(owned: OwnedProcessEntry[]): Promise<number[]> {
+  const alive: number[] = [];
+  for (const entry of owned) {
+    if (await isProcessAlive(entry.pid)) {
+      alive.push(entry.pid);
+    }
+  }
+  return alive;
+}
+
 export interface DriveSessionEndOptions {
   appPath: string;
   /** How long the app gets to come up and own windows. */
   startupTimeoutMs?: number;
   /** How long the app gets to exit after the session end is driven. */
   exitTimeoutMs?: number;
+  /** Override the ownership-report destination (tests; defaults to a temp file). */
+  ownedPidsReportPath?: string;
 }
 
 /**
@@ -1188,11 +1330,19 @@ export async function driveWindowsSessionEnd(
   const startupTimeoutMs = options.startupTimeoutMs ?? 60_000;
   const exitTimeoutMs = options.exitTimeoutMs ?? 30_000;
 
+  // Where the app is told to declare what its teardown owns. Unique per run,
+  // and absent until the session-end arm writes it — so "no file" is a real
+  // signal, not leftover state.
+  const ownedPidsReportPath =
+    options.ownedPidsReportPath ??
+    join(tmpdir(), `hq-session-end-owned-${process.pid}-${Date.now()}.json`);
+  rmSync(ownedPidsReportPath, { force: true });
+
   const child = spawn(options.appPath, [], {
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
-    env: process.env,
+    env: { ...process.env, HQ_SYNC_SESSION_END_OWNED_PIDS: ownedPidsReportPath },
   });
 
   let captured = '';
@@ -1257,7 +1407,7 @@ export async function driveWindowsSessionEnd(
       );
     }
 
-    const observedChildNamesBefore = await descendantNames(pid);
+    const observedChildrenBefore = await descendantProcesses(pid);
 
     // `-File`, not `-Command`: no call operator and no quoting for PowerShell
     // (or anything else) to re-parse.
@@ -1282,18 +1432,38 @@ export async function driveWindowsSessionEnd(
       intervalMs: 250,
     });
 
+    // What the app itself says it owned, read back from the teardown's own
+    // report. A missing file means the Windows `RunEvent::Exit` arm never ran;
+    // that is recorded rather than thrown so the caller can print the full
+    // diagnostics before it asserts.
+    let ownedPids: OwnedProcessEntry[] = [];
+    let ownedPidsReportError: string | null = null;
+    const ownedPidsReportPresent = existsSync(ownedPidsReportPath);
+    try {
+      ownedPids = parseSessionEndOwnershipReport(
+        ownedPidsReportPresent ? readFileSync(ownedPidsReportPath, 'utf8') : null,
+      );
+    } catch (error) {
+      ownedPidsReportError = (error as Error).message;
+    }
+
     // Child termination is asynchronous — `terminate_all_for_exit` signals and
     // then waits out its own grace period, and the OS reaps after that. Poll to
     // a bounded deadline rather than reading once and racing it. A genuinely
     // orphaned child stays orphaned and still fails.
-    let survivingChildNames = await descendantNames(pid);
+    let livingOwned = await livingOwnedPids(ownedPids);
     await waitFor(
       async () => {
-        survivingChildNames = await descendantNames(pid);
-        return survivingChildNames.filter(isAppSpawnedChild).length === 0;
+        livingOwned = await livingOwnedPids(ownedPids);
+        return livingOwned.length === 0;
       },
       { timeoutMs: 15_000, intervalMs: 1_000 },
     );
+
+    // Diagnostics: of the children seen before the session end, which are the
+    // SAME processes still running now. Matched on creation time, because the
+    // app's pid is reusable the moment it exits.
+    const survivingChildren = await stillRunning(observedChildrenBefore);
 
     return {
       windowCount: driven.windowCount,
@@ -1304,16 +1474,22 @@ export async function driveWindowsSessionEnd(
       exitedWithinDeadline,
       observedDestroyedStatePanic: captured.includes(DESTROYED_STATE_PANIC),
       observedAbortMarker: findAbortMarker(captured) !== null,
-      survivingChildCount: survivingChildNames.length,
-      survivingAppSpawnedChildCount:
-        survivingChildNames.filter(isAppSpawnedChild).length,
-      observedChildCountBefore: observedChildNamesBefore.length,
-      observedChildNamesBefore,
-      survivingChildNames,
+      ownedPidsReportPresent,
+      ownedPidsReportError,
+      ownedPidCount: ownedPids.length,
+      survivingOwnedPidCount: livingOwned.length,
+      survivingChildCount: survivingChildren.length,
+      survivingAppSpawnedChildCount: survivingChildren.filter((survivor) =>
+        isAppSpawnedChild(survivor.name),
+      ).length,
+      observedChildCountBefore: observedChildrenBefore.length,
+      observedChildNamesBefore: observedChildrenBefore.map((seen) => seen.name),
+      survivingChildNames: survivingChildren.map((survivor) => survivor.name),
     };
   } finally {
     if (!exited) {
       child.kill();
     }
+    rmSync(ownedPidsReportPath, { force: true });
   }
 }
