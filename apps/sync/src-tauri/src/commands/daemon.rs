@@ -717,6 +717,20 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     // — leaving `env node` to find an ancient one on PATH — started a watcher
     // that could only fail later. Fail honestly up front instead.
     if let Some(bail) = crate::commands::sync::preflight_node_bail() {
+        if bail.failure == PreflightFailure::NodeUnprovisioned {
+            // This command is synchronous, so do not hold its singleton guard
+            // across a network install. The supervisor will retry on its next
+            // cadence after the shared repair slot completes.
+            release_daemon_guard(daemon_generation, guard_generation);
+            set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
+            let provisioning_app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let outcome =
+                    crate::commands::sync::provision_unprovisioned_node(&provisioning_app).await;
+                report_provisioning_outcome(outcome);
+            });
+            return Err(bail.message);
+        }
         report_preflight_bail(bail.failure, &bail.message);
         release_daemon_guard(daemon_generation, guard_generation);
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
@@ -1719,7 +1733,33 @@ fn runner_preflight_capture_policy(failure: PreflightFailure) -> RunnerPreflight
         PreflightFailure::RunnerUnresolvable | PreflightFailure::NodeTooOld => {
             RunnerPreflightCapturePolicy::LocalLogOnly
         }
-        PreflightFailure::ManagedNodeMissing => RunnerPreflightCapturePolicy::CaptureRateLimited,
+        PreflightFailure::ManagedNodeMissing | PreflightFailure::NodeUnprovisioned => {
+            RunnerPreflightCapturePolicy::CaptureRateLimited
+        }
+    }
+}
+
+/// Whether a finished provisioning attempt is worth reporting as a preflight
+/// failure at all.
+///
+/// A *successful* self-heal is the fix working, not a fault. Reporting it would
+/// send `sentry::Level::Error` to #hq-alerts and — worse — advance the
+/// consecutive-preflight-failure counter that `should_capture_crash` uses, so
+/// every machine HQ repaired would inflate the rate limiter for machines it
+/// could not. Success is local-log only; only an HQ-repairable state that HQ
+/// actually failed to repair may page, and only rate-limited.
+fn provisioning_bail_to_report(outcome: Result<(), String>) -> Option<String> {
+    outcome.err()
+}
+
+/// Log a finished managed-Node provisioning attempt, alerting only on failure.
+fn report_provisioning_outcome(outcome: Result<(), String>) {
+    match provisioning_bail_to_report(outcome) {
+        None => log(
+            "daemon",
+            "managed Node provisioned — auto-sync will retry on the next supervisor cadence",
+        ),
+        Some(reason) => report_preflight_bail(PreflightFailure::NodeUnprovisioned, &reason),
     }
 }
 
@@ -4679,9 +4719,9 @@ mod tests {
     // background sync for days and paged nobody.
 
     #[test]
-    fn the_users_own_environment_stays_local_log_only() {
-        // Auto-sync retries every 30s, so anything the user must fix would
-        // alert at failure 1, 2, 4, 8, … forever. Neither of these is ours.
+    fn each_preflight_failure_has_an_explicit_capture_policy() {
+        // Auto-sync retries every 30s, so user-owned configuration stays
+        // local-only. Both HQ-owned repair states are rate-limited captures.
         for failure in [
             PreflightFailure::RunnerUnresolvable,
             PreflightFailure::NodeTooOld,
@@ -4692,14 +4732,40 @@ mod tests {
                 "{failure:?} is the user's environment — it must not page anyone"
             );
         }
+        for failure in [
+            PreflightFailure::ManagedNodeMissing,
+            PreflightFailure::NodeUnprovisioned,
+        ] {
+            assert_eq!(
+                runner_preflight_capture_policy(failure),
+                RunnerPreflightCapturePolicy::CaptureRateLimited,
+                "{failure:?} is repairable by HQ and must reach #hq-alerts"
+            );
+        }
     }
 
     #[test]
-    fn a_broken_hq_runtime_alerts() {
+    fn a_successful_self_provision_is_not_a_preflight_failure() {
+        // The whole point of this lane is that HQ repairs the machine itself.
+        // Reporting the repair would page #hq-alerts at Level::Error on the
+        // *fix* working, and would advance the consecutive-failure counter
+        // `should_capture_crash` rate-limits on — so a fleet HQ successfully
+        // healed would suppress the alerts for machines it could not heal.
+        assert_eq!(provisioning_bail_to_report(Ok(())), None);
+    }
+
+    #[test]
+    fn a_failed_self_provision_still_reports_its_reason() {
+        // A machine HQ cannot repair (offline, MDM-locked, no disk) is the one
+        // state that must still surface — carrying why, not a generic bail.
         assert_eq!(
-            runner_preflight_capture_policy(PreflightFailure::ManagedNodeMissing),
+            provisioning_bail_to_report(Err("download timed out".to_string())),
+            Some("download timed out".to_string()),
+        );
+        // …and it routes through the rate-limited policy, never local-only.
+        assert_eq!(
+            runner_preflight_capture_policy(PreflightFailure::NodeUnprovisioned),
             RunnerPreflightCapturePolicy::CaptureRateLimited,
-            "HQ's own Node going missing is our defect and must reach #hq-alerts"
         );
     }
 

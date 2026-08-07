@@ -954,11 +954,40 @@ pub fn node_dist_arch_for(arch: &str) -> Option<&'static str> {
 }
 
 #[cfg(not(windows))]
-fn managed_node_url_for(arch: &str) -> Option<String> {
+fn managed_node_url_for_base(arch: &str, dist_base: &str) -> Option<String> {
     let node_arch = node_dist_arch_for(arch)?;
     Some(format!(
-        "https://nodejs.org/dist/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-{node_arch}.tar.gz"
+        "{}/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-{node_arch}.tar.gz",
+        dist_base.trim_end_matches('/')
     ))
+}
+
+/// Where the managed Node tarball is fetched from.
+///
+/// `HQ_NODE_DIST_URL` exists so a test build can serve the pinned tarball from
+/// loopback instead of reaching nodejs.org. It is honoured ONLY in debug
+/// builds: in a shipped app it would let anyone who can set the process
+/// environment choose the download origin, and defence-in-depth is cheaper than
+/// relying solely on the checksum gate below to catch that. The gate still runs
+/// unconditionally either way — `install_node_macos` refuses any arch without a
+/// pinned SHA-256 and verifies the download against it before activation — so a
+/// redirected origin can still only ever deliver the exact pinned build.
+#[cfg(not(windows))]
+fn managed_node_dist_base() -> String {
+    const DEFAULT: &str = "https://nodejs.org/dist";
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("HQ_NODE_DIST_URL").unwrap_or_else(|_| DEFAULT.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        DEFAULT.to_string()
+    }
+}
+
+#[cfg(not(windows))]
+fn managed_node_url_for(arch: &str) -> Option<String> {
+    managed_node_url_for_base(arch, &managed_node_dist_base())
 }
 
 #[cfg(not(windows))]
@@ -991,7 +1020,7 @@ fn managed_git_sha256_for(arch: &str) -> Option<&'static str> {
 }
 
 #[cfg(not(windows))]
-fn home_dir_or_err(app: &AppHandle, tool: &str) -> Result<PathBuf, String> {
+fn home_dir_or_err<R: tauri::Runtime>(app: &AppHandle<R>, tool: &str) -> Result<PathBuf, String> {
     dirs::home_dir().ok_or_else(|| {
         let msg = format!("[{tool}] could not resolve home directory");
         emit_preflight_line(app, &msg);
@@ -1410,7 +1439,11 @@ pub fn cancel_install(handle: String) -> bool {
 ///
 /// Returns `Ok(handle)` on success or `Err(message)` on failure.
 #[cfg(not(windows))]
-async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<String, String> {
+async fn run_streaming<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+) -> Result<String, String> {
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
@@ -1682,7 +1715,7 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
 /// surface their own progress, so this is `#[cfg(not(windows))]` to avoid a
 /// dead-code warning on Windows.
 #[cfg(not(windows))]
-fn emit_preflight_line(app: &AppHandle, msg: &str) {
+fn emit_preflight_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
@@ -1767,7 +1800,7 @@ pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
 /// a system package manager, so we download the official darwin tarball into:
 /// `~/Library/Application Support/Indigo HQ/toolchain/node`.
 #[cfg(not(windows))]
-async fn install_node_macos(app: AppHandle) -> Result<String, String> {
+async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
     let home = home_dir_or_err(&app, "node")?;
     let toolchain_dir = managed_toolchain_dir_in(&home);
     let node_dir = managed_node_dir_in(&home);
@@ -2309,7 +2342,7 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn install_node(app: AppHandle) -> Result<String, String> {
+pub async fn install_node<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
     #[cfg(not(windows))]
     {
         install_node_macos(app).await
@@ -2941,7 +2974,11 @@ fn detect_package_manager() -> PackageManager {
 }
 
 #[cfg(windows)]
-async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<String, String> {
+async fn run_streaming<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+) -> Result<String, String> {
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
@@ -3228,7 +3265,7 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
 }
 
 #[cfg(windows)]
-fn emit_progress(app: &AppHandle, msg: &str) {
+fn emit_progress<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
@@ -3263,7 +3300,7 @@ async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-async fn install_node_windows(app: AppHandle) -> Result<String, String> {
+async fn install_node_windows<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
     // Node is a hard prerequisite for qmd and hq-cli, so its installer must be
     // deterministic. Package-manager exit codes do not prove that node/npm/npx
     // landed or are runnable in this process (and managed enterprise machines
@@ -3418,7 +3455,7 @@ fn ensure_node_version(node_exe: &Path, expected_version: &str) -> Result<(), St
 }
 
 #[cfg(windows)]
-async fn install_managed_node(app: &AppHandle) -> Result<String, String> {
+async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<String, String> {
     let arch = managed_node_arch().ok_or_else(|| {
         format!(
             "Unsupported architecture for managed Node fallback: {}",
@@ -4325,7 +4362,7 @@ fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepI
     }
 }
 
-fn emit_install_line(app: &AppHandle, msg: &str) {
+fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
@@ -4337,7 +4374,7 @@ fn emit_install_line(app: &AppHandle, msg: &str) {
     );
 }
 
-fn emit_install_handle_started(app: &AppHandle, handle: &str) {
+fn emit_install_handle_started<R: tauri::Runtime>(app: &AppHandle<R>, handle: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
@@ -4571,6 +4608,86 @@ mod install_deps_planner_tests {
             waves,
             vec![vec!["node", "yq", "git"], vec!["qmd", "hq-cli"]]
         );
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod managed_node_url_tests {
+    use super::*;
+
+    #[test]
+    fn node_distribution_override_keeps_the_pinned_artifact_path() {
+        let url = managed_node_url_for_base("aarch64", "http://127.0.0.1:8123/node-dist/")
+            .expect("supported architecture");
+        assert_eq!(
+            url,
+            format!(
+                "http://127.0.0.1:8123/node-dist/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-arm64.tar.gz"
+            )
+        );
+    }
+
+    #[test]
+    fn node_distribution_override_does_not_make_unknown_arches_installable() {
+        assert!(managed_node_url_for_base("mips64", "http://127.0.0.1:8123").is_none());
+    }
+
+    /// The invariant that makes the override safe: there is no arch, and no
+    /// distribution base, for which HQ can produce a download URL but has no
+    /// pinned checksum to verify it against. `install_node_macos` reads both
+    /// from these two functions and refuses when either is `None`, so keeping
+    /// their supported sets identical is what makes "no code path may install
+    /// an unverified Node" structurally true rather than merely reviewed.
+    #[test]
+    fn every_installable_arch_has_a_pinned_checksum_whatever_the_dist_base_is() {
+        for arch in ["aarch64", "x86_64", "mips64", "riscv64", "armv7"] {
+            for base in [
+                "https://nodejs.org/dist",
+                "http://127.0.0.1:8123/node-dist/",
+                "https://an-attacker.example/dist",
+            ] {
+                assert_eq!(
+                    managed_node_url_for_base(arch, base).is_some(),
+                    managed_node_sha256_for(arch).is_some(),
+                    "{arch} via {base}: a downloadable arch with no pinned SHA-256 \
+                     would install an unverified Node"
+                );
+            }
+        }
+    }
+
+    /// Two properties of the override, asserted in one test because both
+    /// mutate the same process-global variable and `cargo test` runs test
+    /// functions in parallel threads.
+    ///
+    ///   1. A shipped build ignores the environment entirely.
+    ///   2. The pinned checksum is a property of the artifact, never of where
+    ///      it came from — redirecting the origin cannot select a weaker (or
+    ///      absent) expected hash.
+    #[test]
+    fn the_distribution_override_is_debug_only_and_never_moves_the_checksum() {
+        let pinned_arm64 = managed_node_sha256_for("aarch64");
+        let pinned_x64 = managed_node_sha256_for("x86_64");
+        assert!(pinned_arm64.is_some() && pinned_x64.is_some());
+
+        std::env::set_var("HQ_NODE_DIST_URL", "https://an-attacker.example/dist");
+        let base = managed_node_dist_base();
+        let sha_arm64_with_override = managed_node_sha256_for("aarch64");
+        let sha_x64_with_override = managed_node_sha256_for("x86_64");
+        std::env::remove_var("HQ_NODE_DIST_URL");
+
+        if cfg!(debug_assertions) {
+            assert_eq!(base, "https://an-attacker.example/dist");
+        } else {
+            assert_eq!(
+                base, "https://nodejs.org/dist",
+                "a release build must ignore the environment override entirely"
+            );
+        }
+
+        assert_eq!(sha_arm64_with_override, pinned_arm64);
+        assert_eq!(sha_x64_with_override, pinned_x64);
+        assert_eq!(managed_node_sha256_for("aarch64"), pinned_arm64);
     }
 }
 
