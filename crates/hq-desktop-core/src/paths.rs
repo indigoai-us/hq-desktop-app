@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::Serialize;
+
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn no_window(cmd: &mut Command) {
@@ -149,17 +151,23 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// surfaces as a sync error the UI can show. We don't invent a path that
 /// doesn't exist.
 pub fn resolve_bin(name: &str) -> String {
+    resolve_bin_with_kind(name).path
+}
+
+/// [`resolve_bin`] plus the classification of what it landed on.
+///
+/// Callers that only need a program to spawn keep using `resolve_bin`. Callers
+/// that must tell "found a working program" from "found a file Windows cannot
+/// execute" from "found nothing" read the [`ResolvedProgramKind`] — the
+/// version probes need exactly that distinction to report an installed-but-
+/// unreadable CLI honestly instead of reporting it as absent.
+pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
     #[cfg(target_os = "windows")]
     {
         let candidates = candidate_filenames(name);
 
-        for dir in extended_search_dirs() {
-            for candidate in &candidates {
-                let full = dir.join(candidate);
-                if full.exists() {
-                    return full.to_string_lossy().to_string();
-                }
-            }
+        if let Some(found) = select_program_on_disk(&extended_search_dirs(), &candidates) {
+            return found;
         }
 
         let mut where_cmd = Command::new("where.exe");
@@ -173,19 +181,25 @@ pub fn resolve_bin(name: &str) -> String {
                     .map(|l| l.trim())
                     .filter(|l| !l.is_empty() && Path::new(l).exists())
                     .collect();
-                if let Some(best) = pick_spawnable_path(&matches) {
-                    return best.to_string();
+                if let Some(best) = pick_spawnable_program(&matches) {
+                    return best;
                 }
             }
         }
 
-        name.to_string()
+        ResolvedProgram::not_resolved(name)
     }
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Unix has no extension-based spawnability contract: a file the
+        // resolver found is a program the loader will attempt. Report it as
+        // `Exe` so the closed diagnostics stay meaningful cross-platform.
         if let Some(path) = resolve_bin_in_dirs(home_dir().as_deref(), name) {
-            return path;
+            return ResolvedProgram {
+                path,
+                kind: ResolvedProgramKind::Exe,
+            };
         }
 
         // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
@@ -199,14 +213,17 @@ pub fn resolve_bin(name: &str) -> String {
             if output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() && Path::new(&path).exists() {
-                    return path;
+                    return ResolvedProgram {
+                        path,
+                        kind: ResolvedProgramKind::Exe,
+                    };
                 }
             }
         }
 
         // Fall back to bare name — Command::new will then produce os error 2
         // with the binary name still recognizable in the error message.
-        name.to_string()
+        ResolvedProgram::not_resolved(name)
     }
 }
 
@@ -324,22 +341,159 @@ fn extended_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-#[cfg(target_os = "windows")]
-fn pick_spawnable_path<'a>(paths: &[&'a str]) -> Option<&'a str> {
-    paths
-        .iter()
-        .find(|p| {
-            let ext = Path::new(p)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase());
-            matches!(ext.as_deref(), Some("exe") | Some("cmd") | Some("bat"))
-        })
-        .or_else(|| paths.first())
-        .copied()
+/// A closed classification of the program a resolution landed on.
+///
+/// Windows is the platform this distinguishes: `CreateProcessW` accepts a
+/// native `.exe` image and Rust's batch-aware dispatch handles `.cmd`/`.bat`,
+/// but an *extensionless* POSIX shim (or a `.ps1`) is rejected with
+/// `ERROR_BAD_EXE_FORMAT` — os error 193 — even though the file exists. The
+/// enum is deliberately cfg-independent so diagnostics carrying it compile and
+/// serialize identically on every platform; the non-Windows resolvers report
+/// [`ResolvedProgramKind::Exe`] for anything they found (a Unix executable has
+/// no extension contract) and [`ResolvedProgramKind::NotResolved`] otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedProgramKind {
+    Exe,
+    CmdOrBat,
+    Extensionless,
+    OtherExtension,
+    NotResolved,
 }
 
-fn candidate_filenames(name: &str) -> Vec<String> {
+impl ResolvedProgramKind {
+    /// Whether the Windows loader can execute this program directly.
+    pub fn is_spawnable(self) -> bool {
+        matches!(self, Self::Exe | Self::CmdOrBat)
+    }
+}
+
+/// A resolved program plus the classification of what kind of file it is.
+///
+/// A non-spawnable resolution is deliberately *retained and marked*, never
+/// discarded: dropping it back to the bare name would tell every caller the
+/// CLI is absent, which silences the installed-but-unusable signal while the
+/// user's CLI stays broken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProgram {
+    pub path: String,
+    pub kind: ResolvedProgramKind,
+}
+
+impl ResolvedProgram {
+    /// The unresolved marker: the bare name, exactly what `resolve_bin` has
+    /// always returned when nothing was found, so `Command::new` still errors
+    /// with the binary name recognizable in the message.
+    pub fn not_resolved(name: &str) -> Self {
+        Self {
+            path: name.to_string(),
+            kind: ResolvedProgramKind::NotResolved,
+        }
+    }
+
+    /// Whether the resolver found a real file (as opposed to falling back to
+    /// the bare name).
+    pub fn is_resolved(&self) -> bool {
+        self.kind != ResolvedProgramKind::NotResolved
+    }
+
+    /// Whether the resolved program can actually be spawned on this platform.
+    pub fn is_spawnable(&self) -> bool {
+        self.kind.is_spawnable()
+    }
+}
+
+/// Classify a candidate filename or full path by its extension.
+///
+/// Pure and platform-independent so the Windows selection rules are executable
+/// (and testable) on every CI leg.
+pub fn program_kind(candidate: &str) -> ResolvedProgramKind {
+    match Path::new(candidate)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        None => ResolvedProgramKind::Extensionless,
+        Some("exe") => ResolvedProgramKind::Exe,
+        Some("cmd") | Some("bat") => ResolvedProgramKind::CmdOrBat,
+        Some(_) => ResolvedProgramKind::OtherExtension,
+    }
+}
+
+/// Whether a candidate filename names a program Windows can execute directly.
+pub fn is_spawnable_program(candidate: &str) -> bool {
+    program_kind(candidate).is_spawnable()
+}
+
+/// Ordered selection over (search directories × candidate filenames) with an
+/// injectable existence check.
+///
+/// **Two passes, deliberately.** The first pass walks every directory in order
+/// considering only *spawnable* candidates; the second repeats the walk for the
+/// remaining ones. So a spawnable match in ANY search directory outranks a
+/// non-spawnable match in an earlier directory — the shadowing that let a bare
+/// extensionless POSIX shim in, say, `C:\Program Files\Git\usr\bin` hide the
+/// real `hq.cmd` in `%APPDATA%\npm` and make every spawn fail with os error
+/// 193. Within each pass, directory precedence and candidate order are
+/// preserved exactly as before.
+///
+/// When only non-spawnable candidates exist the FIRST of them is still
+/// returned, marked with its kind. Returning `None` there would collapse
+/// resolution to the bare name and mis-report a broken-but-present CLI as
+/// absent.
+pub fn select_program_in_dirs(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    exists: &dyn Fn(&Path) -> bool,
+) -> Option<ResolvedProgram> {
+    for spawnable_pass in [true, false] {
+        for dir in dirs {
+            for candidate in candidates {
+                if is_spawnable_program(candidate) != spawnable_pass {
+                    continue;
+                }
+                let full = dir.join(candidate);
+                if exists(&full) {
+                    return Some(ResolvedProgram {
+                        path: full.to_string_lossy().to_string(),
+                        kind: program_kind(candidate),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// [`select_program_in_dirs`] against the real filesystem.
+///
+/// Kept cfg-independent on purpose: this is the exact call the Windows arm of
+/// [`resolve_bin_with_kind`] makes, so the macOS and Linux CI legs compile and
+/// exercise it too instead of leaving the whole sweep provable only on Windows.
+pub fn select_program_on_disk(dirs: &[PathBuf], candidates: &[String]) -> Option<ResolvedProgram> {
+    select_program_in_dirs(dirs, candidates, &|path: &Path| path.exists())
+}
+
+/// Pick the best program out of an ordered `where.exe` match list.
+///
+/// Keeps the long-standing preference (first `.exe`/`.cmd`/`.bat`, else the
+/// first match) and only adds the classification. The fall-back-to-first is
+/// load-bearing and pinned by test: `where.exe` can list an extensionless
+/// POSIX script first, and the caller still needs a determinate program to
+/// report against rather than a silent "not installed".
+pub fn pick_spawnable_program(paths: &[&str]) -> Option<ResolvedProgram> {
+    paths
+        .iter()
+        .find(|path| is_spawnable_program(path))
+        .or_else(|| paths.first())
+        .map(|path| ResolvedProgram {
+            path: (*path).to_string(),
+            kind: program_kind(path),
+        })
+}
+
+pub fn candidate_filenames(name: &str) -> Vec<String> {
     if name.ends_with(EXE_EXT) || name.ends_with(".cmd") || name.ends_with(".bat") {
         return vec![name.to_string()];
     }
@@ -691,6 +845,272 @@ mod tests {
         assert_eq!(result, "hq-sync-nonexistent-xyz-123");
     }
 
+    // ── Windows program selection (pure; runs on every CI leg, and matches the
+    // `paths::tests::test_windows` substring filter windows-check.yml uses) ──
+
+    /// Windows candidate order for an extensionless request, mirroring
+    /// `candidate_filenames` on that platform.
+    fn windows_candidates(name: &str) -> Vec<String> {
+        vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            format!("{name}.bat"),
+            name.to_string(),
+        ]
+    }
+
+    /// Existence oracle over an explicit `(directory, filename)` set. Built by
+    /// joining rather than by literal strings so the pure selection tests read
+    /// identically on every platform's path separator.
+    fn present(entries: &[(&PathBuf, &str)]) -> impl Fn(&Path) -> bool {
+        let present: Vec<PathBuf> = entries.iter().map(|(dir, file)| dir.join(file)).collect();
+        move |path: &Path| present.iter().any(|candidate| candidate == path)
+    }
+
+    /// The Windows search order this project actually ships, named so the
+    /// selection tests describe the field layout rather than a toy one.
+    fn windows_dirs() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        (
+            PathBuf::from("C:").join("toolchain").join("npm-prefix"),
+            PathBuf::from("C:")
+                .join("Users")
+                .join("dev")
+                .join(".hq")
+                .join("bin"),
+            PathBuf::from("C:")
+                .join("Program Files")
+                .join("Git")
+                .join("usr")
+                .join("bin"),
+            PathBuf::from("C:")
+                .join("Users")
+                .join("dev")
+                .join("AppData")
+                .join("Roaming")
+                .join("npm"),
+        )
+    }
+
+    #[test]
+    fn test_windows_spawnable_predicate_accepts_only_executable_image_forms() {
+        for spawnable in ["hq.exe", "hq.EXE", "hq.cmd", "hq.Cmd", "hq.bat", "hq.BAT"] {
+            assert!(
+                is_spawnable_program(spawnable),
+                "{spawnable} must be treated as spawnable"
+            );
+        }
+        for rejected in ["hq", "hq.ps1", "hq.js", "hq.sh", "hq.py"] {
+            assert!(
+                !is_spawnable_program(rejected),
+                "{rejected} is not an executable image CreateProcess accepts"
+            );
+        }
+        assert_eq!(program_kind("hq.exe"), ResolvedProgramKind::Exe);
+        assert_eq!(program_kind("hq.cmd"), ResolvedProgramKind::CmdOrBat);
+        assert_eq!(program_kind("hq.bat"), ResolvedProgramKind::CmdOrBat);
+        assert_eq!(program_kind("hq"), ResolvedProgramKind::Extensionless);
+        assert_eq!(program_kind("hq.ps1"), ResolvedProgramKind::OtherExtension);
+        // A dot in a *directory* must not be read as the program's extension.
+        assert_eq!(
+            program_kind(r"C:\Program Files\Git\usr\bin\hq"),
+            ResolvedProgramKind::Extensionless
+        );
+    }
+
+    #[test]
+    fn test_windows_selection_prefers_a_spawnable_match_in_a_later_directory() {
+        // The field shape: a bare POSIX shim sits in an EARLY search directory
+        // and the real npm shim in a LATER one. First-exists returned the bare
+        // shim, whose spawn dies with os error 193.
+        let (_, hq_bin, git_usr_bin, appdata_npm) = windows_dirs();
+        let dirs = vec![hq_bin, git_usr_bin.clone(), appdata_npm.clone()];
+        let selected = select_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&git_usr_bin, "hq"), (&appdata_npm, "hq.cmd")]),
+        )
+        .expect("a spawnable candidate exists");
+
+        assert_eq!(
+            selected,
+            ResolvedProgram {
+                path: appdata_npm.join("hq.cmd").to_string_lossy().to_string(),
+                kind: ResolvedProgramKind::CmdOrBat,
+            },
+            "a spawnable candidate in any directory must beat a non-spawnable earlier hit"
+        );
+    }
+
+    #[test]
+    fn test_windows_selection_preserves_directory_and_candidate_precedence() {
+        let (npm_prefix, _, _, appdata_npm) = windows_dirs();
+        let dirs = vec![npm_prefix.clone(), appdata_npm.clone()];
+
+        // Directory precedence among spawnable candidates is unchanged.
+        let selected = select_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&npm_prefix, "hq.cmd"), (&appdata_npm, "hq.cmd")]),
+        )
+        .unwrap();
+        assert_eq!(selected.path, npm_prefix.join("hq.cmd").to_string_lossy());
+
+        // Candidate order within a directory is unchanged: .exe still wins.
+        let selected = select_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[
+                (&npm_prefix, "hq.exe"),
+                (&npm_prefix, "hq.cmd"),
+                (&npm_prefix, "hq.bat"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(selected.path, npm_prefix.join("hq.exe").to_string_lossy());
+        assert_eq!(selected.kind, ResolvedProgramKind::Exe);
+    }
+
+    #[test]
+    fn test_windows_selection_marks_a_non_spawnable_hit_rather_than_dropping_it() {
+        // No spawnable candidate exists ANYWHERE. Collapsing to `None` here
+        // would resolve to the bare name, flip `hq_installed` to false, and
+        // silence the installed-but-unreadable report while the CLI stays
+        // broken. The hit must survive, marked.
+        let (_, hq_bin, git_usr_bin, _) = windows_dirs();
+        let dirs = vec![hq_bin.clone(), git_usr_bin.clone()];
+        let selected = select_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&hq_bin, "hq"), (&git_usr_bin, "hq")]),
+        )
+        .expect("a non-spawnable hit must still resolve");
+
+        assert_eq!(selected.path, hq_bin.join("hq").to_string_lossy());
+        assert_eq!(selected.kind, ResolvedProgramKind::Extensionless);
+        assert!(!selected.is_spawnable());
+        assert!(selected.is_resolved());
+
+        // Nothing anywhere stays unresolved.
+        assert_eq!(
+            select_program_in_dirs(&dirs, &windows_candidates("hq"), &present(&[])),
+            None
+        );
+    }
+
+    /// The same sweep the Windows resolver runs, against a real temp tree —
+    /// so the on-disk call path is compiled and executed on every CI leg, not
+    /// only on windows-latest.
+    #[test]
+    fn test_windows_on_disk_sweep_recovers_the_spawnable_shim() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let early = tmp.path().join("git-usr-bin");
+        let later = tmp.path().join("appdata-npm");
+        std::fs::create_dir_all(&early).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(early.join("hq"), "posix shim\n").unwrap();
+        std::fs::write(later.join("hq.cmd"), "@echo off\n").unwrap();
+
+        let dirs = vec![early.clone(), later.clone()];
+        let selected = select_program_on_disk(&dirs, &windows_candidates("hq")).unwrap();
+        assert_eq!(selected.path, later.join("hq.cmd").to_string_lossy());
+        assert_eq!(selected.kind, ResolvedProgramKind::CmdOrBat);
+
+        // Remove the spawnable shim: the bare one is still resolved, marked.
+        std::fs::remove_file(later.join("hq.cmd")).unwrap();
+        let selected = select_program_on_disk(&dirs, &windows_candidates("hq")).unwrap();
+        assert_eq!(selected.path, early.join("hq").to_string_lossy());
+        assert_eq!(selected.kind, ResolvedProgramKind::Extensionless);
+
+        // Remove it too: nothing resolves.
+        std::fs::remove_file(early.join("hq")).unwrap();
+        assert_eq!(
+            select_program_on_disk(&dirs, &windows_candidates("hq")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_windows_where_exe_fallback_to_first_is_classified_not_dropped() {
+        // `where.exe` can list an extensionless POSIX script first (the
+        // 2026-06-09 npx regression). The preference still picks the spawnable
+        // entry when one exists…
+        let picked = pick_spawnable_program(&[
+            r"C:\Program Files\Git\usr\bin\npx",
+            r"C:\Program Files\nodejs\npx.cmd",
+        ])
+        .unwrap();
+        assert_eq!(picked.path, r"C:\Program Files\nodejs\npx.cmd");
+        assert_eq!(picked.kind, ResolvedProgramKind::CmdOrBat);
+
+        // …and when none does, the first match is still returned, marked —
+        // never dropped to "not installed".
+        let picked =
+            pick_spawnable_program(&[r"C:\Program Files\Git\usr\bin\hq", r"C:\Users\dev\hq.ps1"])
+                .unwrap();
+        assert_eq!(picked.path, r"C:\Program Files\Git\usr\bin\hq");
+        assert_eq!(picked.kind, ResolvedProgramKind::Extensionless);
+
+        assert_eq!(pick_spawnable_program(&[]), None);
+    }
+
+    #[test]
+    fn test_windows_selection_keeps_other_binaries_on_their_existing_precedence() {
+        // resolve_bin is shared by every Windows lookup (node, npm, npx, git,
+        // gh, the recall sidecar). Prefer-spawnable must not reorder callers
+        // that already resolve to a spawnable program.
+        let node_dir = PathBuf::from("C:").join("toolchain").join("node");
+        let (npm_prefix, _, _, appdata_npm) = windows_dirs();
+        let dirs = vec![node_dir.clone(), npm_prefix.clone(), appdata_npm.clone()];
+        for (name, files, expected_dir, expected_file) in [
+            (
+                "node",
+                vec![(&node_dir, "node.exe"), (&appdata_npm, "node.exe")],
+                &node_dir,
+                "node.exe",
+            ),
+            (
+                "npm",
+                vec![(&npm_prefix, "npm.cmd"), (&appdata_npm, "npm.cmd")],
+                &npm_prefix,
+                "npm.cmd",
+            ),
+            (
+                "npx",
+                vec![(&appdata_npm, "npx.cmd")],
+                &appdata_npm,
+                "npx.cmd",
+            ),
+            ("git", vec![(&node_dir, "git.exe")], &node_dir, "git.exe"),
+        ] {
+            let selected =
+                select_program_in_dirs(&dirs, &windows_candidates(name), &present(&files)).unwrap();
+            assert_eq!(
+                selected.path,
+                expected_dir.join(expected_file).to_string_lossy(),
+                "{name} precedence changed"
+            );
+            assert!(selected.is_spawnable());
+        }
+    }
+
+    #[test]
+    fn test_windows_resolve_bin_with_kind_reports_the_unresolved_marker() {
+        let resolved = resolve_bin_with_kind("hq-sync-nonexistent-xyz-123");
+        assert_eq!(resolved.path, "hq-sync-nonexistent-xyz-123");
+        assert_eq!(resolved.kind, ResolvedProgramKind::NotResolved);
+        assert!(!resolved.is_resolved());
+        assert!(!resolved.is_spawnable());
+        assert_eq!(
+            resolved,
+            ResolvedProgram::not_resolved("hq-sync-nonexistent-xyz-123")
+        );
+        // The bare-name fallback `resolve_bin` has always returned is intact.
+        assert_eq!(
+            resolve_bin("hq-sync-nonexistent-xyz-123"),
+            "hq-sync-nonexistent-xyz-123"
+        );
+    }
+
     #[test]
     fn test_create_no_window_constant_matches_windows_api() {
         assert_eq!(CREATE_NO_WINDOW, 0x0800_0000);
@@ -786,9 +1206,9 @@ mod tests {
         let git_cmd = dirs
             .iter()
             .position(|dir| dir == &toolchain.join("git").join("cmd"));
-        let git_mingw = dirs.iter().position(|dir| {
-            dir == &toolchain.join("git").join("mingw64").join("bin")
-        });
+        let git_mingw = dirs
+            .iter()
+            .position(|dir| dir == &toolchain.join("git").join("mingw64").join("bin"));
 
         assert!(
             matches!((node, npm, wrappers), (Some(n), Some(p), Some(w)) if n < p && p < w),
