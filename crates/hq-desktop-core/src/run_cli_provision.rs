@@ -237,6 +237,32 @@ pub fn report_unexplained_spawn_for_test(
     report_unexplained_spawn(slug, invocation.telemetry_kind(), &error, diagnosis);
 }
 
+/// Test-only seam over the WHOLE spawn-failure decision — classification and
+/// the capture-or-suppress choice together.
+///
+/// `report_unexplained_spawn_for_test` above only exercises the reporting half,
+/// so it cannot prove the *absence* of an event. This one takes the same
+/// arguments the production spawn arm builds (`invocation_kind` /
+/// `sentry_invocation_label` derived from the same `HqInvocation`) and calls
+/// the same private function, so an envelope test asserting "zero events for a
+/// proven missing runtime" is measuring production behaviour rather than a
+/// re-implementation of it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn finish_spawn_failure_for_test(
+    slug: &str,
+    invocation: &HqInvocation,
+    spawn_error: &std::io::Error,
+    diagnosis: RuntimeDiagnosisInput,
+) -> CliProvisionError {
+    finish_spawn_failure(
+        slug,
+        invocation.telemetry_kind(),
+        &invocation.sentry_label(),
+        spawn_error,
+        diagnosis,
+    )
+}
+
 fn finish_spawn_failure(
     slug: &str,
     invocation_kind: &str,
