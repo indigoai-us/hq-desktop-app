@@ -2673,6 +2673,19 @@ mod tests {
         );
     }
 
+    /// Serial number for the handles minted by [`run_real_watcher_exit`].
+    ///
+    /// The process registry is global and `cargo test` runs these cases on
+    /// parallel threads, so a handle derived only from the exit code is shared
+    /// by every caller of that helper — and `real_child_exit_statuses_…` and
+    /// `real_child_crash_flood_…` both spawn exit code 221. When they overlap,
+    /// the second spawn resolves the first's live registration through
+    /// `generation_for_handle`, fails its ownership check against a PID it does
+    /// not own, and returns `OwnershipLost`. The handle identity is incidental
+    /// to what these tests assert, so mint a fresh one per invocation.
+    #[cfg(unix)]
+    static NEXT_REAL_EXIT_HANDLE: AtomicU64 = AtomicU64::new(0);
+
     #[cfg(unix)]
     fn run_real_watcher_exit(code: i32) -> (Option<i32>, Option<i32>, bool) {
         use hq_desktop_core::process_types::SpawnArgs;
@@ -2683,7 +2696,8 @@ mod tests {
             cwd: None,
             env: None,
         };
-        let handle = format!("watcher-policy-real-exit-{code}");
+        let serial = NEXT_REAL_EXIT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        let handle = format!("watcher-policy-real-exit-{code}-{serial}");
         let mut terminal = None;
         run_process_impl(&handle, &spawn, |event| {
             if let ProcessEvent::Exit {
