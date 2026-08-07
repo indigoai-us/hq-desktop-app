@@ -843,10 +843,33 @@ export interface SessionEndLiveObservation {
   observedDestroyedStatePanic: boolean;
   /** True when any panic/abort marker appeared in captured output. */
   observedAbortMarker: boolean;
-  /** Descendant processes the app still owned after it exited. */
+  /** Every OS-level descendant still present after the app exited. */
   survivingChildCount: number;
-  /** Descendants observed before the session end — 0 makes the above vacuous. */
+  /**
+   * Surviving descendants that the app actually spawned itself — the `--watch`
+   * sync daemon and the recall sidecar, i.e. the ones `terminate_all_for_exit`
+   * owns. This is the number the teardown claim is about.
+   */
+  survivingAppSpawnedChildCount: number;
+  /** Total descendants before the session end — 0 makes the above vacuous. */
   observedChildCountBefore: number;
+  /** Fixed process names only: no paths, arguments, or user identifiers. */
+  observedChildNamesBefore: string[];
+  survivingChildNames: string[];
+}
+
+/**
+ * WebView2 helper processes are children of the app at the OS level, but the
+ * app never spawned them through `commands/process.rs` and
+ * `terminate_all_for_exit` has never owned them — the WebView2 host manages its
+ * own process tree and tears it down asynchronously after its host exits. They
+ * are counted and reported, but excluded from the teardown assertion so it
+ * measures the claim actually being made.
+ */
+const WEBVIEW2_HELPER_PROCESS = /^msedgewebview2/i;
+
+export function isAppSpawnedChild(processName: string): boolean {
+  return !WEBVIEW2_HELPER_PROCESS.test(processName);
 }
 
 /** The exact panic tao raises from `move_state_to` once the runner is destroyed. */
@@ -964,16 +987,20 @@ function runPowerShell(
   });
 }
 
-async function countDescendants(pid: number): Promise<number> {
+/** Process names only — never command lines, which can carry secrets. */
+async function descendantNames(pid: number): Promise<string[]> {
   const result = await runPowerShell(
     [
       '-Command',
-      `@(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}').Count`,
+      `@(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | Select-Object -ExpandProperty Name) -join ','`,
     ],
     15_000,
   );
-  const parsed = Number.parseInt(result.stdout.trim(), 10);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return result.stdout
+    .trim()
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
 }
 
 async function isProcessAlive(pid: number): Promise<boolean> {
@@ -1080,7 +1107,7 @@ export async function driveWindowsSessionEnd(
       );
     }
 
-    const observedChildCountBefore = await countDescendants(pid);
+    const observedChildNamesBefore = await descendantNames(pid);
 
     // `-File`, not `-Command`: no call operator and no quoting for PowerShell
     // (or anything else) to re-parse.
@@ -1105,7 +1132,18 @@ export async function driveWindowsSessionEnd(
       intervalMs: 250,
     });
 
-    const survivingChildCount = await countDescendants(pid);
+    // Child termination is asynchronous — `terminate_all_for_exit` signals and
+    // then waits out its own grace period, and the OS reaps after that. Poll to
+    // a bounded deadline rather than reading once and racing it. A genuinely
+    // orphaned child stays orphaned and still fails.
+    let survivingChildNames = await descendantNames(pid);
+    await waitFor(
+      async () => {
+        survivingChildNames = await descendantNames(pid);
+        return survivingChildNames.filter(isAppSpawnedChild).length === 0;
+      },
+      { timeoutMs: 15_000, intervalMs: 1_000 },
+    );
 
     return {
       windowCount: driven.windowCount,
@@ -1116,8 +1154,12 @@ export async function driveWindowsSessionEnd(
       exitedWithinDeadline,
       observedDestroyedStatePanic: captured.includes(DESTROYED_STATE_PANIC),
       observedAbortMarker: findAbortMarker(captured) !== null,
-      survivingChildCount,
-      observedChildCountBefore,
+      survivingChildCount: survivingChildNames.length,
+      survivingAppSpawnedChildCount:
+        survivingChildNames.filter(isAppSpawnedChild).length,
+      observedChildCountBefore: observedChildNamesBefore.length,
+      observedChildNamesBefore,
+      survivingChildNames,
     };
   } finally {
     if (!exited) {

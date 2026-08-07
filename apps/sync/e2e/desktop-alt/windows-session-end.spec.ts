@@ -30,6 +30,7 @@ import {
   decideSessionEndExit,
   driveWindowsSessionEnd,
   findAbortMarker,
+  isAppSpawnedChild,
   resolveSessionEndLiveMode,
 } from './windows-reliability-harness';
 
@@ -60,6 +61,15 @@ describe('Windows session-end exit decision (HQ-DESKTOP-44)', () => {
     // duplicate the teardown or skip the cleanup.
     expect(decision.runTeardown).toBe(false);
     expect(decision.terminateProcess).toBe(false);
+  });
+
+  it('scopes the teardown claim to children the app actually spawned', () => {
+    // What `terminate_all_for_exit` owns.
+    expect(isAppSpawnedChild('hq.exe')).toBe(true);
+    expect(isAppSpawnedChild('node.exe')).toBe(true);
+    // What it has never owned: WebView2 manages its own process tree.
+    expect(isAppSpawnedChild('msedgewebview2.exe')).toBe(false);
+    expect(isAppSpawnedChild('MSEdgeWebView2.exe')).toBe(false);
   });
 
   it('recognises the fatal tao panic and abort shapes', () => {
@@ -105,15 +115,21 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     expect(observed.exitCode).toBe(0);
 
     // The second, quieter half of the defect: because `ExitRequested` never
-    // fires at session end, spawned children (the `--watch` sync daemon, the
-    // recall sidecar — both spawned with their own process group, so the OS
-    // does not reap them) were never terminated. Zero survivors is only
-    // meaningful when there was something to survive, so the before-count
-    // travels with the assertion rather than being assumed.
-    expect(observed.survivingChildCount).toBe(0);
+    // fires at session end, the children the app spawned itself (the `--watch`
+    // sync daemon, the recall sidecar — each in its own process group, so the
+    // OS does not reap them) were never terminated.
+    //
+    // Scoped to app-spawned children on purpose. WebView2's helper processes
+    // are OS-level children of the app too, but the app never spawned them
+    // through `commands/process.rs`, `terminate_all_for_exit` has never owned
+    // them, and the WebView2 host tears down its own tree asynchronously.
+    // Counting them would make this assert something this fix does not claim.
+    // Both numbers and the process names are logged, so a run where the app
+    // spawned nothing is visible as such instead of reading as proof.
+    expect(observed.survivingAppSpawnedChildCount).toBe(0);
     // eslint-disable-next-line no-console
     console.log(
-      `[session-end] windows=${observed.windowCount} query_delivered=${observed.queryEndSessionDelivered} end_delivered=${observed.endSessionDelivered} follow_up=${observed.followUpPosted} children_before=${observed.observedChildCountBefore} children_after=${observed.survivingChildCount} exit=${observed.exitCode}`,
+      `[session-end] windows=${observed.windowCount} query_delivered=${observed.queryEndSessionDelivered} end_delivered=${observed.endSessionDelivered} follow_up=${observed.followUpPosted} exit=${observed.exitCode} children_before=${observed.observedChildCountBefore} [${observed.observedChildNamesBefore.join(' ')}] children_after=${observed.survivingChildCount} [${observed.survivingChildNames.join(' ')}] app_spawned_after=${observed.survivingAppSpawnedChildCount}`,
     );
   });
 });
