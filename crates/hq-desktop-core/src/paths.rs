@@ -315,10 +315,14 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
 fn user_cli_dirs(home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(".npm-global").join("bin"),
-        // pnpm's default global executable directory on macOS.
+        // pnpm's default global executable directory on macOS (pnpm ≤10 puts
+        // shims directly in PNPM_HOME; pnpm ≥11 nests them in a `bin` subdir).
         home.join("Library").join("pnpm"),
-        // pnpm's default global executable directory on Linux.
+        home.join("Library").join("pnpm").join("bin"),
+        // pnpm's default global executable directory on Linux (same ≤10 flat
+        // vs ≥11 nested layout).
         home.join(".local").join("share").join("pnpm"),
+        home.join(".local").join("share").join("pnpm").join("bin"),
     ]
 }
 
@@ -452,6 +456,10 @@ fn extended_search_dirs() -> Vec<PathBuf> {
     }
 
     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+        // pnpm's per-user global prefix on Windows (pnpm ≤10 puts shims
+        // directly in PNPM_HOME; pnpm ≥11 nests them in a `bin` subdir).
+        dirs.push(PathBuf::from(&local_app).join("pnpm"));
+        dirs.push(PathBuf::from(&local_app).join("pnpm").join("bin"));
         dirs.push(
             PathBuf::from(local_app)
                 .join("Microsoft")
@@ -1362,6 +1370,22 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_search_dirs_include_pnpm_global_prefixes() {
+        let local_app = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .expect("Windows test environment must define LOCALAPPDATA");
+        let dirs = extended_search_dirs();
+        for expected in [local_app.join("pnpm"), local_app.join("pnpm").join("bin")] {
+            assert!(
+                dirs.iter().any(|dir| dir == &expected),
+                "Windows resolver must search the pnpm global prefix: {}",
+                expected.display()
+            );
+        }
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_resolve_bin_in_dirs_prefers_managed_toolchain_over_user_npm_global() {
@@ -1405,8 +1429,45 @@ mod tests {
             vec![
                 PathBuf::from("/Users/testuser/.npm-global/bin"),
                 PathBuf::from("/Users/testuser/Library/pnpm"),
+                PathBuf::from("/Users/testuser/Library/pnpm/bin"),
                 PathBuf::from("/Users/testuser/.local/share/pnpm"),
+                PathBuf::from("/Users/testuser/.local/share/pnpm/bin"),
             ]
+        );
+    }
+
+    // REGRESSION (2026-08-05): pnpm 11 moved global shims from PNPM_HOME to
+    // PNPM_HOME/bin, so `~/Library/pnpm/bin/hq` was invisible to detection and
+    // Settings reported "HQ CLI: Not installed". The login-shell fallback
+    // missed it too — pnpm setup writes PATH into .zshrc, which `zsh -lc`
+    // does not source.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_pnpm_v11_nested_bin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let expected = tmp.path().join("Library/pnpm/bin").join(name);
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_linux_pnpm_v11_nested_bin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let expected = tmp.path().join(".local/share/pnpm/bin").join(name);
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
         );
     }
 
