@@ -4362,7 +4362,7 @@ fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepI
     }
 }
 
-fn emit_install_line(app: &AppHandle, msg: &str) {
+fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
@@ -4374,7 +4374,7 @@ fn emit_install_line(app: &AppHandle, msg: &str) {
     );
 }
 
-fn emit_install_handle_started(app: &AppHandle, handle: &str) {
+fn emit_install_handle_started<R: tauri::Runtime>(app: &AppHandle<R>, handle: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
