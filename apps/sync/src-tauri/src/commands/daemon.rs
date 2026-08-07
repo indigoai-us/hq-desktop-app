@@ -721,7 +721,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
             // This command is synchronous, so do not hold its singleton guard
             // across a network install. The supervisor will retry on its next
             // cadence after the shared repair slot completes.
-            release_daemon_guard();
+            release_daemon_guard(daemon_generation, guard_generation);
             set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
             let provisioning_app = app.clone();
             tauri::async_runtime::spawn(async move {

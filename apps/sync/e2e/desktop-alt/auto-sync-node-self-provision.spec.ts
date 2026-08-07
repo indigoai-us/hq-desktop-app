@@ -81,11 +81,12 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
     );
     expect(arm).toBeTruthy();
     // Guard released and lifecycle parked in Backoff/Preflight BEFORE the
-    // spawn, so the supervisor's next cadence can retry.
-    expect(arm.indexOf('release_daemon_guard();')).toBeGreaterThan(-1);
-    expect(arm.indexOf('release_daemon_guard();')).toBeLessThan(
-      arm.indexOf('tauri::async_runtime::spawn'),
-    );
+    // spawn, so the supervisor's next cadence can retry. Matched without its
+    // arguments: HQ-DESKTOP-3J made the release generation-scoped, and what
+    // this locks is the ordering, not the parameter list.
+    const released = arm.indexOf('release_daemon_guard(');
+    expect(released).toBeGreaterThan(-1);
+    expect(released).toBeLessThan(arm.indexOf('tauri::async_runtime::spawn'));
     expect(arm).toContain(
       'set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight)',
     );
