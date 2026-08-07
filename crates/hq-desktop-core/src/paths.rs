@@ -1,7 +1,15 @@
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Serialize;
+/// Why the managed-toolchain root could not be determined.
+///
+/// The token is deliberately closed vocabulary: it can be included in
+/// diagnostic telemetry without exposing a user path or environment value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootDiscoveryError {
+    pub reason: &'static str,
+}
 
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -84,6 +92,63 @@ pub fn managed_toolchain_roots() -> Vec<PathBuf> {
     }
 }
 
+/// Every managed-toolchain root, or an explicit reason why HQ could not look.
+///
+/// Callers that make an ownership decision must use this fallible form:
+/// inability to resolve HOME/LOCALAPPDATA is not evidence that HQ never
+/// provisioned a runtime.  The historical infallible wrapper remains above so
+/// existing preflight behavior stays unchanged. In particular, that wrapper
+/// retains its historical handling of malformed environment values while this
+/// ownership-sensitive path fails closed.
+pub fn managed_toolchain_roots_checked() -> Result<Vec<PathBuf>, RootDiscoveryError> {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+
+    #[cfg(not(target_os = "windows"))]
+    let base = match std::env::var_os("HOME") {
+        Some(home) => Some(PathBuf::from(home)),
+        None => dirs::home_dir(),
+    };
+
+    managed_toolchain_roots_from_base(base)
+}
+
+/// Platform-routed root construction from an already-discovered base path.
+///
+/// Keeping discovery separate from construction gives tests a deterministic
+/// way to prove that an unresolved HOME/LOCALAPPDATA remains an error without
+/// mutating process-global environment variables.
+pub(crate) fn managed_toolchain_roots_from_base(
+    base: Option<PathBuf>,
+) -> Result<Vec<PathBuf>, RootDiscoveryError> {
+    let base = base.ok_or(RootDiscoveryError {
+        reason: "base-dir-unresolved",
+    })?;
+    if base.as_os_str().is_empty() {
+        return Err(RootDiscoveryError {
+            reason: "base-dir-empty",
+        });
+    }
+    if !base.is_absolute() {
+        return Err(RootDiscoveryError {
+            reason: "base-dir-relative",
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Ok(vec![
+            base.join("IndigoHQ").join("toolchain"),
+            base.join("Indigo HQ").join("toolchain"),
+        ])
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(vec![managed_toolchain_dir(&base)])
+    }
+}
+
 /// Directory the managed Node install occupies under a toolchain root.
 ///
 /// This — not the toolchain root — is HQ's Node-specific footprint. The root
@@ -109,6 +174,21 @@ pub fn managed_node_executable_in(root: &Path) -> PathBuf {
     #[cfg(not(target_os = "windows"))]
     {
         node_dir.join("bin").join("node")
+    }
+}
+
+/// Absolute path of the managed `npx` shim next to HQ's managed Node runtime.
+pub fn managed_npx_executable_in(root: &Path) -> PathBuf {
+    let node_dir = managed_node_dir_in(root);
+
+    #[cfg(target_os = "windows")]
+    {
+        node_dir.join("npx.cmd")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        node_dir.join("bin").join("npx")
     }
 }
 
@@ -240,6 +320,56 @@ fn user_cli_dirs(home: &Path) -> Vec<PathBuf> {
         // pnpm's default global executable directory on Linux.
         home.join(".local").join("share").join("pnpm"),
     ]
+}
+
+/// Explicit user-owned roots used to classify a failed program path for
+/// bounded telemetry. Invalid environment paths are excluded rather than
+/// interpreted relative to the desktop process's working directory.
+pub(crate) fn user_program_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .filter(|root| root.is_absolute())
+            .map(|root| vec![root.join("npm")])
+            .unwrap_or_default()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        home_dir()
+            .filter(|home| home.is_absolute())
+            .map(|home| user_cli_dirs(&home))
+            .unwrap_or_default()
+    }
+}
+
+/// Explicit system-owned roots used to classify a failed program path for
+/// bounded telemetry. These are the same stable install locations searched
+/// by the resolver, without inherited-PATH or shell-derived directories.
+pub(crate) fn system_program_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from)
+            .filter(|root| root.is_absolute())
+            .map(|root| root.join("nodejs"))
+            .collect()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        [
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+        ]
+        .into_iter()
+        .collect()
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1124,6 +1254,18 @@ mod tests {
             .get_envs()
             .find_map(|(key, value)| (key == "GIT_OPTIONAL_LOCKS").then_some(value));
         assert_eq!(locks, Some(Some(std::ffi::OsStr::new("0"))));
+    }
+
+    #[test]
+    fn managed_toolchain_base_must_be_nonempty_and_absolute() {
+        for (base, expected_reason) in [
+            (PathBuf::new(), "base-dir-empty"),
+            (PathBuf::from("relative/home"), "base-dir-relative"),
+        ] {
+            let error = managed_toolchain_roots_from_base(Some(base))
+                .expect_err("an ambiguous platform base must not prove absence");
+            assert_eq!(error.reason, expected_reason);
+        }
     }
 
     #[cfg(all(test, target_os = "windows"))]

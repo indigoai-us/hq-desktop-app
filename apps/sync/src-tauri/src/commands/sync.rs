@@ -1398,7 +1398,13 @@ pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
 }
 
 /// Outcome of an attempt to reinstall HQ's managed Node.
-enum ToolchainRepair {
+///
+/// `pub(crate)` because the Connect path (`commands::workspaces`) reuses the
+/// same repair rather than adding a second installer: a machine with no Node
+/// runtime breaks sync and Connect identically, and HQ ships its own Node, so
+/// both lanes should repair before asking the user to install anything.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ToolchainRepair {
     Repaired,
     Failed(String),
     /// Suppressed by the cooldown — a previous attempt was too recent.
@@ -1431,7 +1437,7 @@ fn claim_repair_slot(cooldown: Duration) -> bool {
 /// extracts to a staging directory, verifies the version, and only then
 /// activates by atomic replacement — so a failed attempt leaves the machine in
 /// the (already broken) state it was in rather than a half-install.
-async fn repair_managed_node(app: &AppHandle) -> ToolchainRepair {
+pub(crate) async fn repair_managed_node(app: &AppHandle) -> ToolchainRepair {
     if !claim_repair_slot(TOOLCHAIN_REPAIR_COOLDOWN) {
         log(
             "sync",

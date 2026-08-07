@@ -40,7 +40,14 @@ export type LocalEnvKind =
   | 'npm-cache-permission'
   | 'disk-full'
   | 'npm-registry-unreachable'
-  | 'npm-registry-timeout';
+  | 'npm-registry-timeout'
+  | 'node-missing'
+  | 'npx-unavailable';
+
+const RUNTIME_LOCAL_ENV_DETAILS: Partial<Record<LocalEnvKind, string>> = {
+  'node-missing': 'Install Node.js and reopen HQ Sync, then retry Connect.',
+  'npx-unavailable': 'Repair or reinstall Node.js and reopen HQ Sync, then retry Connect.',
+};
 
 export interface Issue {
   kind: IssueKind;
@@ -424,6 +431,28 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
           "4. If transient, just retry Connect from my menubar. If persistent, walk me through `npm config set fetch-retry-maxtimeout` or a proxy unset.",
         ].filter(Boolean).join('\n');
 
+      case 'node-missing':
+        return [
+          header,
+          detailLine,
+          '',
+          "Node.js and npx are not installed or are unavailable to the HQ menubar. Please attempt the fix:",
+          "1. Check whether `node --version` and `npx --version` work in Terminal.",
+          "2. If either command is missing, install the current Node.js LTS release from https://nodejs.org/ (or my approved package manager) and reopen HQ Sync so it inherits the updated PATH.",
+          "3. Confirm both commands work, then re-trigger Connect from my menubar.",
+        ].filter(Boolean).join('\n');
+
+      case 'npx-unavailable':
+        return [
+          header,
+          detailLine,
+          '',
+          "Node.js is available but its `npx` command is not. Please attempt the fix:",
+          "1. Run `node --version`, `npm --version`, and `npx --version` and report which command fails.",
+          "2. Repair or reinstall the current Node.js LTS distribution using my approved package manager; npx is supplied with npm and should be restored by a complete installation.",
+          "3. Reopen HQ Sync and re-trigger Connect after `npx --version` succeeds.",
+        ].filter(Boolean).join('\n');
+
       default:
         // Unknown kind — keep the prompt useful even if Rust shipped a new
         // kind ahead of the TS catalogue.
@@ -461,9 +490,15 @@ export function parseLocalEnvFailure(
     'disk-full',
     'npm-registry-unreachable',
     'npm-registry-timeout',
+    'node-missing',
+    'npx-unavailable',
   ]);
   if (!known.has(kind)) return null;
-  return { kind, detail };
+  // These two kinds are deliberately local-log-only. Normalize their detail
+  // at the frontend boundary as defense in depth, so an older backend cannot
+  // carry a private resolved path into UI state, a repair prompt, or a later
+  // browser-console breadcrumb.
+  return { kind, detail: RUNTIME_LOCAL_ENV_DETAILS[kind] ?? detail };
 }
 
 export function buildPrompt(issue: Issue): string {
