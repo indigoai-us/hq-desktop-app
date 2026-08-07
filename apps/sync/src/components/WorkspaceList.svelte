@@ -74,6 +74,10 @@
         return 'npm registry unreachable';
       case 'npm-registry-timeout':
         return 'npm registry timed out';
+      case 'node-missing':
+        return 'Install Node.js';
+      case 'npx-unavailable':
+        return 'Restore npx';
       default:
         return 'Local environment failure';
     }
@@ -163,18 +167,31 @@
       onrefresh?.();
     } catch (err) {
       const msg = String(err);
-      console.error('connect_workspace_to_cloud failed:', msg);
+      const localEnv = parseLocalEnvFailure(msg);
       // Belt-and-suspenders capture: the backend already reports CLI failures
       // via run_cli_provision::report_provision_error and validation failures
       // via workspaces::capture_connect_error, but capturing here too means
       // any frontend-only failure mode (Tauri invoke serialization, IPC
       // disconnect, plugin error) still reaches Sentry. Tagged distinctly so
       // we can filter without losing the backend events.
-      Sentry.captureException(err instanceof Error ? err : new Error(msg), {
-        tags: { slug, action: 'connect', source: 'frontend' },
-        extra: { msg },
-      });
-      connectState = { ...connectState, [slug]: msg };
+      // These two kinds have already passed the backend's ownership-aware
+      // runtime diagnosis. They are expected first-run setup states with an
+      // actionable repair button below, so emitting a paired frontend event
+      // would turn a user-owned missing Node/npx into Sentry noise. The four
+      // older local-env kinds deliberately retain their existing capture.
+      const expectedRuntimeGap =
+        localEnv?.kind === 'node-missing' || localEnv?.kind === 'npx-unavailable';
+      if (!expectedRuntimeGap) {
+        console.error('connect_workspace_to_cloud failed:', msg);
+        Sentry.captureException(err instanceof Error ? err : new Error(msg), {
+          tags: { slug, action: 'connect', source: 'frontend' },
+          extra: { msg },
+        });
+      }
+      const stateMessage = expectedRuntimeGap
+        ? `local environment failure (${localEnv.kind}): ${localEnv.detail}`
+        : msg;
+      connectState = { ...connectState, [slug]: stateMessage };
     }
   }
 </script>
@@ -218,6 +235,9 @@
          caused Svelte 5 to silently drop the duplicate, hiding the manifest's
          personal company entry from the UI (v0.1.23 regression). -->
     {#each sortedWorkspaces as w (`${w.kind}:${w.slug}`)}
+      {@const connectValue = connectState[w.slug]}
+      {@const connectError = typeof connectValue === 'string' ? connectValue : null}
+      {@const localEnv = connectError ? parseLocalEnvFailure(connectError) : null}
       <li
         class="workspace-row"
         class:local-only={w.state === 'local-only'}
@@ -266,7 +286,32 @@
               </span>
             {/if}
           </div>
-          {#if w.state === 'broken'}
+          {#if (w.state === 'local-only' || w.state === 'broken') && localEnv}
+            <!-- A Connect-time local-environment failure takes precedence over
+                 the row's prior manifest state. This keeps the two expected
+                 runtime gaps coupled to an actionable repair affordance even
+                 when the workspace was already marked broken. -->
+            <span class="row-meta-line">
+              <span class="row-meta row-meta-error" title={connectError ?? ''}>
+                {localEnvLabel(localEnv.kind)} — click "Fix in Claude Code"
+              </span>
+              {#if hqFolderPath}
+                <OpenInClaudeCodeButton
+                  variant="compact"
+                  label="Fix in Claude Code"
+                  folder={hqFolderPath}
+                  issue={{
+                    kind: 'local-env-failure',
+                    payload: {
+                      slug: w.slug,
+                      kind: localEnv.kind,
+                      detail: localEnv.detail,
+                    },
+                  }}
+                />
+              {/if}
+            </span>
+          {:else if w.state === 'broken'}
             <span class="row-meta-line">
               <span
                 class="row-meta row-meta-error"
@@ -292,37 +337,11 @@
             </span>
           {:else if w.state === 'cloud-only'}
             <span class="row-meta">Not yet on this machine</span>
-          {:else if w.state === 'local-only' && typeof connectState[w.slug] === 'string'}
-            {@const errMsg = connectState[w.slug] as string}
-            {@const localEnv = parseLocalEnvFailure(errMsg)}
+          {:else if w.state === 'local-only' && connectError}
             <span class="row-meta-line">
-              <span class="row-meta row-meta-error" title={errMsg}>
-                {#if localEnv}
-                  {localEnvLabel(localEnv.kind)} — click "Fix in Claude Code"
-                {:else}
-                  Connect failed — click to retry
-                {/if}
+              <span class="row-meta row-meta-error" title={connectError}>
+                Connect failed — click to retry
               </span>
-              {#if localEnv && hqFolderPath}
-                <!-- Action-button row for local-environment failures: the
-                     issue isn't a vault outage but a fixable user-laptop
-                     problem (npm cache EACCES is the canonical case). Open
-                     a prefilled Claude Code session and let the agent walk
-                     the user through `chown` / disk / registry remediation. -->
-                <OpenInClaudeCodeButton
-                  variant="compact"
-                  label="Fix in Claude Code"
-                  folder={hqFolderPath}
-                  issue={{
-                    kind: 'local-env-failure',
-                    payload: {
-                      slug: w.slug,
-                      kind: localEnv.kind,
-                      detail: localEnv.detail,
-                    },
-                  }}
-                />
-              {/if}
             </span>
           {:else if w.state === 'personal' && !w.cloudUid}
             <span class="row-meta">Cloud unreachable</span>

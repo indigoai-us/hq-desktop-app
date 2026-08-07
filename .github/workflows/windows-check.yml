@@ -110,6 +110,32 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
 
+      - name: Runtime diagnosis tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runtime_diagnosis::tests
+
+      - name: Provision telemetry envelope tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::run_cli_provision::tests
+
+      # The missing-Node capture proof asserts envelope COUNTS through the real
+      # `hq_telemetry::before_send` pipeline — including that a proven
+      # user-owned runtime gap emits none. Windows resolves `npx.cmd` through a
+      # different branch of `paths::resolve_bin` than macOS, so the provenance
+      # and bare-name checks that scope the downgrade have to be exercised on
+      # the msvc target too rather than inferred from the macOS run.
+      - name: Missing-Node capture envelope tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test provision_missing_node_capture_e2e
+
+      # The Connect self-repair policy decides whether HQ downloads a Node
+      # runtime. Its bound (one repair, one retry) is what stops a machine that
+      # cannot install Node from looping on the download, so it is verified on
+      # every target the app ships to.
+      - name: Connect managed-Node self-repair tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::workspaces::node_self_repair_tests
+
       # The bulk-delete refusal gate persists its per-root cooldown anchor with
       # `fs::write` of a temp file plus `fs::rename` over an existing
       # destination inside the `.git` directory. Rename-over-existing is the one

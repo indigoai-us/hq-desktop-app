@@ -111,6 +111,24 @@ impl HqInvocation {
         }
     }
 
+    /// Closed-cardinality invocation tag for telemetry. The human-readable
+    /// label above may contain a user's absolute path and is log-only.
+    pub fn telemetry_kind(&self) -> &'static str {
+        match self {
+            HqInvocation::Local(_) => "local",
+            HqInvocation::Npx => "npx",
+        }
+    }
+
+    /// Path-free label for captured spawn messages. Keep the useful package
+    /// range for npx while replacing a local absolute path with its kind.
+    pub fn sentry_label(&self) -> String {
+        match self {
+            HqInvocation::Local(_) => self.telemetry_kind().to_string(),
+            HqInvocation::Npx => self.label(),
+        }
+    }
+
     /// Acquire the process-wide npx serial lock for the duration of an npx
     /// self-heal run, so concurrent `npx --package=…` installs can't race the
     /// shared `~/.npm/_npx/` cache (HQ-SYNC-6). Returns `Some(guard)` for the
@@ -299,9 +317,13 @@ mod tests {
     fn label_contains_useful_info() {
         let local = HqInvocation::Local("/opt/homebrew/bin/hq".to_string());
         assert!(local.label().contains("/opt/homebrew/bin/hq"));
+        assert_eq!(local.telemetry_kind(), "local");
+        assert_eq!(local.sentry_label(), "local");
         let npx = HqInvocation::Npx;
         assert!(npx.label().contains("npx"));
         assert!(npx.label().contains("@indigoai-us/hq-cli"));
+        assert_eq!(npx.telemetry_kind(), "npx");
+        assert_eq!(npx.sentry_label(), npx.label());
     }
 
     // HQ-SYNC-6: npx self-heal runs must serialize (they share the ~/.npm/_npx
