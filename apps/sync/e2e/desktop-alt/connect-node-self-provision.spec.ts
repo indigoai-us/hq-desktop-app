@@ -41,7 +41,12 @@ describe('Connect self-provisions HQ-managed Node before blaming the user (HQ-DE
     // already carries the repair cooldown. Connect consumes it; it does not
     // reimplement the download, and it does not reach into install_deps
     // directly (which would bypass that cooldown).
-    expect(syncRs).toContain('pub(crate) async fn repair_managed_node(app: &AppHandle)');
+    // Runtime-generic since HQ-SYNC-BA: the auto-sync watcher reaches this
+    // through `start_daemon_with_origin<R>`, while Connect still passes its
+    // concrete AppHandle. The shared installer + cooldown are the point.
+    expect(syncRs).toContain(
+      'pub(crate) async fn repair_managed_node<R: tauri::Runtime>(app: &AppHandle<R>)',
+    );
     expect(workspacesRs).toContain('repair_managed_node');
     expect(workspacesRs).not.toContain('install_deps::install_node');
     expect(workspacesRs).not.toContain('managed_node_url_for');

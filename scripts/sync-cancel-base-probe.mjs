@@ -39,16 +39,18 @@ const baseProbe = String.raw`
 /// legacy Windows Job Object cancellation path and confirms that its code-1
 /// exit is still classified as a capture before this PR's new decision seam.
 ///
-/// It also pins the two base defects this PR's new regressions guard, so each
-/// of those regressions has its own red half rather than riding on the
-/// classifier proof:
-///   1. With no Job Object attached, base's Windows cancellation arm performs
-///      no termination at all and still reports success — the child survives
-///      its own cancellation. The candidate's pid-tree fallback is therefore
-///      genuinely new behaviour that needs its own gate.
-///   2. Base teardown is keyed on the public handle alone, with no ownership
-///      token, so a stale owner — exactly what a delayed escalation thread is —
-///      evicts a replacement that has since acquired the same handle.
+/// It also pins the base defect the new pid-tree regressions guard, so that
+/// regression has its own red half rather than riding on the classifier proof:
+/// with no Job Object attached, base's Windows cancellation arm performs no
+/// termination at all and still reports success — the child survives its own
+/// cancellation. The candidate's pid-tree fallback is therefore genuinely new
+/// behaviour that needs its own gate.
+///
+/// The cross-generation escalation hazard is deliberately NOT probed here. It
+/// was fixed on main before this merge base: the SIGKILL escalation resolves
+/// through dispatch_signal_checked, which is generation-scoped, so there is no
+/// red half to reproduce. The candidate's real-child A/B regression guards that
+/// property against a future regression instead of proving a new fix.
 pub fn run_sync_cancel_base_probe() -> Result<serde_json::Value, String> {
     let handle = format!("sync-cancel-base-probe-{}", Uuid::new_v4());
     pre_register_handle(&handle);
@@ -110,26 +112,11 @@ pub fn run_sync_cancel_base_probe() -> Result<serde_json::Value, String> {
     let _ = unattached.wait();
     deregister_process(&unattached_handle);
 
-    // Base defect 2: teardown carries only the public handle, so a stale owner
-    // removes whichever registration currently holds that handle.
-    let shared_handle = format!("sync-cancel-base-generation-{}", Uuid::new_v4());
-    if !try_register_handle(&shared_handle) {
-        return Err("base probe could not acquire its first handle owner".to_string());
-    }
-    deregister_process(&shared_handle);
-    if !try_register_handle(&shared_handle) {
-        return Err("base probe replacement could not acquire the handle".to_string());
-    }
-    deregister_process(&shared_handle);
-    let replacement_evicted = !is_registered(&shared_handle);
-    deregister_process(&shared_handle);
-
     Ok(serde_json::json!({
         "exit_code": exit_code,
         "decision": decision,
         "unattached_cancel_reported": unattached_cancel_reported,
         "unattached_terminated": unattached_terminated,
-        "replacement_evicted": replacement_evicted,
     }))
 }
 `;
@@ -203,7 +190,6 @@ try {
     ["the reported code-1 exit is still captured", probe.exit_code === 1 && probe.decision === "capture"],
     ["an unattached cancellation still reports success", probe.unattached_cancel_reported === true],
     ["an unattached cancellation terminates nothing", probe.unattached_terminated === false],
-    ["a stale handle owner evicts its replacement", probe.replacement_evicted === true],
   ];
   const missing = baseDefects.filter(([, held]) => !held).map(([name]) => name);
   if (missing.length > 0) {

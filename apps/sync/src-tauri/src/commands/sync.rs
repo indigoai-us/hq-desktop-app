@@ -1293,10 +1293,12 @@ fn node_version_command() -> std::process::Command {
 /// Execute a runtime preflight with enough breadcrumbs to diagnose GUI PATH
 /// drift without exposing the full environment. Paths and version output are
 /// safe operational metadata; tokens and command environments are never logged.
-fn run_runner_probe(
-    label: &str,
-    mut command: std::process::Command,
-) -> Option<std::process::Output> {
+enum RunnerProbe {
+    Output(std::process::Output),
+    SpawnError(std::io::ErrorKind),
+}
+
+fn run_runner_probe(label: &str, mut command: std::process::Command) -> RunnerProbe {
     let program = command.get_program().to_string_lossy().to_string();
     match command.output() {
         Ok(output) => {
@@ -1309,7 +1311,7 @@ fn run_runner_probe(
                     output.status.code(),
                 ),
             );
-            Some(output)
+            RunnerProbe::Output(output)
         }
         Err(error) => {
             log(
@@ -1319,8 +1321,29 @@ fn run_runner_probe(
                     error.kind(),
                 ),
             );
-            None
+            RunnerProbe::SpawnError(error.kind())
         }
+    }
+}
+
+/// Resolution result for a preflight command. `Indeterminate` is deliberately
+/// fail-open: only a conventional command-not-found result proves that the
+/// runtime is absent rather than merely unavailable to this probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerResolution {
+    Resolved,
+    Missing,
+    Indeterminate,
+}
+
+fn runner_probe_resolution(probe: RunnerProbe) -> RunnerResolution {
+    match probe {
+        RunnerProbe::Output(output) if output.status.success() => RunnerResolution::Resolved,
+        RunnerProbe::Output(output) if output.status.code() == Some(127) => {
+            RunnerResolution::Missing
+        }
+        RunnerProbe::SpawnError(std::io::ErrorKind::NotFound) => RunnerResolution::Missing,
+        RunnerProbe::Output(_) | RunnerProbe::SpawnError(_) => RunnerResolution::Indeterminate,
     }
 }
 
@@ -1331,12 +1354,14 @@ fn run_runner_probe(
 /// Resolves Node exactly as the runner's `#!/usr/bin/env node` shebang does
 /// (`env node` against the same `child_path()` we hand the spawned `npx`), which
 /// matters under nvm where that can differ from `resolve_bin("node")`.
-fn probe_node_major() -> Option<u32> {
-    let output = run_runner_probe("node-version", node_version_command())?;
-    if !output.status.success() {
-        return None;
+fn probe_node_major() -> (Option<u32>, RunnerResolution) {
+    match run_runner_probe("node-version", node_version_command()) {
+        RunnerProbe::Output(output) if output.status.success() => (
+            parse_node_major(&String::from_utf8_lossy(&output.stdout)),
+            RunnerResolution::Resolved,
+        ),
+        probe => (None, runner_probe_resolution(probe)),
     }
-    parse_node_major(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Which Node actually answered. `env node` reports `/usr/bin/env` as the
@@ -1344,7 +1369,11 @@ fn probe_node_major() -> Option<u32> {
 /// to name the binary in an error message. Run only on the failing path, where
 /// one more spawn costs nothing.
 fn probe_node_exec_path() -> Option<String> {
-    let output = run_runner_probe("node-exec-path", node_command(&["-p", "process.execPath"]))?;
+    let RunnerProbe::Output(output) =
+        run_runner_probe("node-exec-path", node_command(&["-p", "process.execPath"]))
+    else {
+        return None;
+    };
     if !output.status.success() {
         return None;
     }
@@ -1365,6 +1394,10 @@ pub(crate) enum NodePreflight {
         found_major: Option<u32>,
         found_path: Option<String>,
     },
+    /// Neither HQ nor the machine has a Node runtime. HQ ships one, so this
+    /// is a provisioning gap that it can repair rather than a terminal
+    /// instruction to install Node manually.
+    NodeUnprovisioned,
     /// HQ never managed a Node here and the machine's own Node is too old.
     TooOld { major: u32, path: Option<String> },
 }
@@ -1379,6 +1412,8 @@ fn classify_node_preflight(
     toolchain: &ManagedToolchain,
     probed_major: Option<u32>,
     probed_path: Option<String>,
+    node_resolution: RunnerResolution,
+    npx_resolution: RunnerResolution,
 ) -> NodePreflight {
     if probed_major.is_some_and(|major| !is_node_too_old(major)) {
         return NodePreflight::Usable;
@@ -1394,13 +1429,23 @@ fn classify_node_preflight(
             found_major: probed_major,
             found_path: probed_path,
         },
-        // No Node answered and none was HQ's to provide: the resolution
-        // preflight owns that message, so fail OPEN here.
         None => match probed_major {
             Some(major) => NodePreflight::TooOld {
                 major,
                 path: probed_path,
             },
+            // The only time we provision instead of failing open: HQ has
+            // never installed a runtime and `env node` positively found none.
+            // A usable Node always returned above, so this cannot shadow a
+            // healthy system installation.
+            None if node_resolution == RunnerResolution::Missing
+                && npx_resolution == RunnerResolution::Missing
+                && matches!(toolchain, ManagedToolchain::NotProvisioned) =>
+            {
+                NodePreflight::NodeUnprovisioned
+            }
+            // Keep unknown/probe-failure states fail-open. The runner
+            // resolution preflight owns the user-facing message for these.
             None => NodePreflight::Usable,
         },
     }
@@ -1408,16 +1453,25 @@ fn classify_node_preflight(
 
 /// Probe the runner's Node and classify it against the managed toolchain.
 fn preflight_node() -> NodePreflight {
-    let probed_major = probe_node_major();
+    let (probed_major, node_resolution) = probe_node_major();
     // Only worth a second spawn on the failing path, and only when something
     // actually answered.
     let probed_path = probed_major
         .filter(|major| is_node_too_old(*major))
         .and_then(|_| probe_node_exec_path());
+    // Preserve the modern-Node fast path: a working system Node continues
+    // without an extra probe or any attempt to provision HQ's runtime.
+    let npx_resolution = if probed_major.is_some_and(|major| !is_node_too_old(major)) {
+        RunnerResolution::Resolved
+    } else {
+        probe_npx_resolution()
+    };
     classify_node_preflight(
         &hq_desktop_core::toolchain::classify(),
         probed_major,
         probed_path,
+        node_resolution,
+        npx_resolution,
     )
 }
 
@@ -1427,6 +1481,8 @@ fn preflight_node() -> NodePreflight {
 pub(crate) enum PreflightFailure {
     /// HQ's own Node runtime vanished — HQ's defect, and repairable by HQ.
     ManagedNodeMissing,
+    /// Neither HQ nor the machine has a runtime. HQ can provision this state.
+    NodeUnprovisioned,
     /// The machine's Node is below the floor and HQ never managed one here.
     NodeTooOld,
     /// Neither node nor npx resolves at all — a machine setup gap.
@@ -1455,6 +1511,10 @@ impl NodePreflight {
                 ),
                 failure: PreflightFailure::ManagedNodeMissing,
             }),
+            NodePreflight::NodeUnprovisioned => Some(PreflightBail {
+                message: node_unprovisioned_message(),
+                failure: PreflightFailure::NodeUnprovisioned,
+            }),
             NodePreflight::TooOld { major, path } => Some(PreflightBail {
                 message: node_too_old_message(major, path.as_deref()),
                 failure: PreflightFailure::NodeTooOld,
@@ -1463,8 +1523,9 @@ impl NodePreflight {
     }
 }
 
-/// Node-runtime preflight for callers that cannot repair (the daemon). Returns
-/// the bail to surface, or `None` when the runner's Node is fine.
+/// Node-runtime preflight for the daemon. Returns the named condition so the
+/// daemon can schedule non-blocking provisioning when HQ has never installed
+/// its runtime, or `None` when the runner's Node is fine.
 pub(crate) fn preflight_node_bail() -> Option<PreflightBail> {
     preflight_node().into_bail()
 }
@@ -1474,6 +1535,13 @@ pub(crate) fn preflight_node_bail() -> Option<PreflightBail> {
 fn runner_unresolvable_message() -> String {
     "HQ Sync can't start the sync engine — Node.js wasn't found on this computer. \
      Install Node 20 or newer (https://nodejs.org), then reopen HQ Sync."
+        .to_string()
+}
+
+/// Message for the only no-Node state HQ can repair automatically.
+fn node_unprovisioned_message() -> String {
+    "HQ Sync is installing its managed Node.js runtime before sync can start. \
+     Auto-sync will retry when provisioning finishes."
         .to_string()
 }
 
@@ -1488,25 +1556,39 @@ fn runner_unresolvable_reason(node_resolves: bool, npx_resolves: bool) -> Option
     }
 }
 
+/// Check whether `npx` resolves on the exact child PATH the runner receives.
+/// It is kept separate from the Node version probe because a missing Node
+/// version is only a provisioning diagnosis when npx is absent too.
+fn probe_npx_resolution() -> RunnerResolution {
+    let npx_bin = paths::resolve_bin("npx");
+    let mut npx_command = paths::spawn_command(&npx_bin, &["--version"]);
+    npx_command.env("PATH", paths::child_path());
+    runner_probe_resolution(run_runner_probe("npx-resolution", npx_command))
+}
+
 /// Best-effort runner-resolution preflight. Returns `Some(message)` only when
 /// the runner's interpreter is *positively* unresolvable (probed and missing);
 /// fails OPEN otherwise. `pub(crate)` so the daemon watcher path can reuse it.
 pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
-    let node_resolves = run_runner_probe("node-resolution", node_version_command())
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let node_resolves =
+        runner_probe_resolution(run_runner_probe("node-resolution", node_version_command()));
+    let npx_resolves = probe_npx_resolution();
 
-    let npx_bin = paths::resolve_bin("npx");
-    let mut npx_command = paths::spawn_command(&npx_bin, &["--version"]);
-    npx_command.env("PATH", paths::child_path());
-    let npx_resolves = run_runner_probe("npx-resolution", npx_command)
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let (
+        RunnerResolution::Resolved | RunnerResolution::Missing,
+        RunnerResolution::Resolved | RunnerResolution::Missing,
+    ) = (node_resolves, npx_resolves)
+    else {
+        return None;
+    };
 
-    runner_unresolvable_reason(node_resolves, npx_resolves)
+    runner_unresolvable_reason(
+        node_resolves == RunnerResolution::Resolved,
+        npx_resolves == RunnerResolution::Resolved,
+    )
 }
 
-/// Outcome of an attempt to reinstall HQ's managed Node.
+/// Outcome of an attempt to provision HQ's managed Node.
 ///
 /// `pub(crate)` because the Connect path (`commands::workspaces`) reuses the
 /// same repair rather than adding a second installer: a machine with no Node
@@ -1540,31 +1622,74 @@ fn claim_repair_slot(cooldown: Duration) -> bool {
     true
 }
 
-/// Reinstall HQ's managed Node.
+/// Provision HQ's managed Node.
 ///
 /// This is the same installer onboarding runs: it checksums the download,
 /// extracts to a staging directory, verifies the version, and only then
 /// activates by atomic replacement — so a failed attempt leaves the machine in
 /// the (already broken) state it was in rather than a half-install.
-pub(crate) async fn repair_managed_node(app: &AppHandle) -> ToolchainRepair {
+///
+/// Generic over the Tauri runtime because the auto-sync watcher reaches this
+/// through `start_daemon_with_origin<R>`, while Connect and Sync Now hold a
+/// concrete `AppHandle`. Generifying is source-compatible for those callers.
+pub(crate) async fn repair_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> ToolchainRepair {
     if !claim_repair_slot(TOOLCHAIN_REPAIR_COOLDOWN) {
         log(
             "sync",
-            "managed Node reinstall skipped — attempted too recently",
+            "managed Node provisioning skipped — attempted too recently",
         );
         return ToolchainRepair::Skipped;
     }
-    log("sync", "managed Node runtime missing — reinstalling");
+    log("sync", "managed Node runtime unavailable — provisioning");
     match crate::commands::install_deps::install_node(app.clone()).await {
         Ok(detail) => {
-            log("sync", &format!("managed Node reinstall: {detail}"));
+            log("sync", &format!("managed Node provisioning: {detail}"));
             ToolchainRepair::Repaired
         }
         Err(e) => {
-            log("sync", &format!("managed Node reinstall failed: {e}"));
+            log("sync", &format!("managed Node provisioning failed: {e}"));
             ToolchainRepair::Failed(e)
         }
     }
+}
+
+/// Provision a Node runtime for the daemon without blocking its command path.
+/// The shared repair slot prevents the 30-second supervisor cadence from
+/// issuing repeated downloads. A successful install must still pass the same
+/// preflight the runner will use before the next supervisor cycle can spawn.
+pub(crate) async fn provision_unprovisioned_node<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
+    let repair = repair_managed_node(app).await;
+    // Only re-probe when something was actually installed: the preflight costs
+    // two spawns and cannot have changed for Skipped or Failed.
+    let usable_after =
+        repair == ToolchainRepair::Repaired && matches!(preflight_node(), NodePreflight::Usable);
+    provision_outcome(repair, usable_after)
+}
+
+/// Pure mapping from a repair attempt to the daemon-facing outcome, extracted
+/// so every arm is unit-testable without an `AppHandle` or a real download.
+///
+/// Every failure arm must stay actionable *and* must never hand the work back
+/// to the user: this whole path exists because HQ can install the runtime
+/// itself, so "install Node 20 yourself" is exactly the message it replaces.
+fn provision_outcome(repair: ToolchainRepair, usable_after: bool) -> Result<(), String> {
+    match repair {
+        ToolchainRepair::Repaired if usable_after => Ok(()),
+        ToolchainRepair::Repaired => Err(
+            "HQ installed its Node runtime, but it still is not usable by the sync engine"
+                .to_string(),
+        ),
+        ToolchainRepair::Skipped => Err(
+            "HQ skipped Node provisioning because an attempt was already made recently".to_string(),
+        ),
+        ToolchainRepair::Failed(reason) => Err(unprovisioned_node_repair_failed_message(&reason)),
+    }
+}
+
+fn unprovisioned_node_repair_failed_message(reason: &str) -> String {
+    format!("HQ tried to install its Node runtime and could not: {reason}")
 }
 
 /// Spawn `hq-sync-runner` for all companies or one company as a child process.
@@ -1658,6 +1783,18 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 return Err(message);
             }
             log("sync", "managed Node runtime repaired — continuing");
+        }
+        NodePreflight::NodeUnprovisioned => {
+            log(
+                "sync",
+                "no Node runtime found — provisioning HQ managed Node",
+            );
+            if let Err(message) = provision_unprovisioned_node(&app).await {
+                log("sync", &format!("BAIL: {message}"));
+                deregister_process(SYNC_HANDLE);
+                return Err(message);
+            }
+            log("sync", "managed Node runtime provisioned — continuing");
         }
         NodePreflight::TooOld { major, path } => {
             log("sync", &format!("BAIL: node too old (v{major})"));
@@ -3286,6 +3423,20 @@ mod tests {
         assert!(runner_unresolvable_reason(false, false).is_some());
     }
 
+    #[test]
+    fn probe_errors_are_indeterminate_not_missing() {
+        assert_eq!(
+            runner_probe_resolution(RunnerProbe::SpawnError(std::io::ErrorKind::NotFound)),
+            RunnerResolution::Missing
+        );
+        assert_eq!(
+            runner_probe_resolution(RunnerProbe::SpawnError(
+                std::io::ErrorKind::PermissionDenied
+            )),
+            RunnerResolution::Indeterminate
+        );
+    }
+
     // ── Managed Node runtime (HQ-DESKTOP-B3) ─────────────────────────────
 
     fn provisioned_but_empty() -> ManagedToolchain {
@@ -3308,7 +3459,13 @@ mod tests {
             },
         ] {
             assert_eq!(
-                classify_node_preflight(&toolchain, Some(22), None),
+                classify_node_preflight(
+                    &toolchain,
+                    Some(22),
+                    None,
+                    RunnerResolution::Resolved,
+                    RunnerResolution::Resolved,
+                ),
                 NodePreflight::Usable,
                 "{toolchain:?} with Node 22 must proceed"
             );
@@ -3316,11 +3473,48 @@ mod tests {
     }
 
     #[test]
-    fn an_unprobeable_node_with_no_managed_runtime_is_usable() {
-        // Nothing answered and HQ never promised one — "we don't know" is the
-        // resolution preflight's message to give, not a bail from here.
+    fn no_node_anywhere_is_a_repairable_provisioning_gap() {
+        // This is the exact previous dead end: there is no managed runtime and
+        // neither Node nor npx resolves, so the generic runner message must
+        // not send the user to install Node themselves.
         assert_eq!(
-            classify_node_preflight(&ManagedToolchain::NotProvisioned, None, None),
+            classify_node_preflight(
+                &ManagedToolchain::NotProvisioned,
+                None,
+                None,
+                RunnerResolution::Missing,
+                RunnerResolution::Missing,
+            ),
+            NodePreflight::NodeUnprovisioned
+        );
+    }
+
+    #[test]
+    fn npx_without_a_resolvable_node_stays_in_runner_resolution() {
+        // Provisioning requires a positive no-node-and-no-npx diagnosis. Do
+        // not change the existing ambiguous runner-resolution path.
+        assert_eq!(
+            classify_node_preflight(
+                &ManagedToolchain::NotProvisioned,
+                None,
+                None,
+                RunnerResolution::Missing,
+                RunnerResolution::Resolved,
+            ),
+            NodePreflight::Usable
+        );
+    }
+
+    #[test]
+    fn indeterminate_probe_results_stay_fail_open() {
+        assert_eq!(
+            classify_node_preflight(
+                &ManagedToolchain::NotProvisioned,
+                None,
+                None,
+                RunnerResolution::Indeterminate,
+                RunnerResolution::Missing,
+            ),
             NodePreflight::Usable
         );
     }
@@ -3332,7 +3526,13 @@ mod tests {
         // Reading that as usable would skip the repair entirely and leave the
         // resolution preflight telling the user to install a Node that HQ was
         // supposed to have provided.
-        let preflight = classify_node_preflight(&provisioned_but_empty(), None, None);
+        let preflight = classify_node_preflight(
+            &provisioned_but_empty(),
+            None,
+            None,
+            RunnerResolution::Missing,
+            RunnerResolution::Missing,
+        );
         assert_eq!(
             preflight,
             NodePreflight::ManagedNodeMissing {
@@ -3372,6 +3572,8 @@ mod tests {
             &provisioned_but_empty(),
             Some(8),
             Some("/usr/local/bin/node".to_string()),
+            RunnerResolution::Resolved,
+            RunnerResolution::Resolved,
         );
         let NodePreflight::ManagedNodeMissing {
             expected_node,
@@ -3402,7 +3604,13 @@ mod tests {
     #[test]
     fn an_old_node_without_a_managed_toolchain_is_the_users_to_fix() {
         assert_eq!(
-            classify_node_preflight(&ManagedToolchain::NotProvisioned, Some(8), None),
+            classify_node_preflight(
+                &ManagedToolchain::NotProvisioned,
+                Some(8),
+                None,
+                RunnerResolution::Resolved,
+                RunnerResolution::Resolved,
+            ),
             NodePreflight::TooOld {
                 major: 8,
                 path: None
@@ -3426,21 +3634,113 @@ mod tests {
     }
 
     #[test]
+    fn failed_first_time_provisioning_is_honest_and_not_manual_install_guidance() {
+        let msg = unprovisioned_node_repair_failed_message("checksum verification failed");
+        assert!(msg.contains("tried to install its Node runtime"), "{msg}");
+        assert!(msg.contains("checksum verification failed"), "{msg}");
+        assert!(
+            !msg.contains("Install Node 20"),
+            "a failed HQ install must not shift work back to the user: {msg}"
+        );
+    }
+
+    #[test]
+    fn every_provisioning_outcome_is_distinct_and_never_blames_the_user() {
+        assert_eq!(provision_outcome(ToolchainRepair::Repaired, true), Ok(()));
+
+        let installed_but_unusable = provision_outcome(ToolchainRepair::Repaired, false)
+            .expect_err("an install that did not take must not report success");
+        let skipped = provision_outcome(ToolchainRepair::Skipped, false)
+            .expect_err("a cooldown-suppressed attempt is not a success");
+        let failed = provision_outcome(ToolchainRepair::Failed("no space left".into()), false)
+            .expect_err("a failed install is not a success");
+
+        assert!(
+            installed_but_unusable.contains("not usable"),
+            "{installed_but_unusable}"
+        );
+        assert!(skipped.contains("already made recently"), "{skipped}");
+        assert!(failed.contains("no space left"), "{failed}");
+
+        // Distinct, so the captured Sentry message says which arm happened.
+        assert_ne!(installed_but_unusable, skipped);
+        assert_ne!(skipped, failed);
+        assert_ne!(installed_but_unusable, failed);
+
+        // This lane exists precisely because HQ can install Node itself.
+        for msg in [&installed_but_unusable, &skipped, &failed] {
+            assert!(
+                !msg.contains("Install Node 20") && !msg.contains("nodejs.org"),
+                "a state HQ owns must never send the user to install Node: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repair_that_did_not_run_is_never_reported_as_provisioned() {
+        // `usable_after` is only meaningful for Repaired. Even if a stale probe
+        // said the runtime was fine, Skipped/Failed must not resolve to Ok — a
+        // watcher spawned on that basis would crash-loop instead of backing off.
+        assert!(provision_outcome(ToolchainRepair::Skipped, true).is_err());
+        assert!(provision_outcome(ToolchainRepair::Failed("boom".into()), true).is_err());
+    }
+
+    #[test]
+    fn the_shared_cooldown_bounds_a_machine_that_cannot_install() {
+        // The supervisor retries every 30s. Without the shared slot, a machine
+        // that can never install (offline, MDM-locked, no disk) would download
+        // on a loop. Claiming twice in a row must yield exactly one attempt.
+        let cooldown = TOOLCHAIN_REPAIR_COOLDOWN;
+        assert!(claim_repair_slot(cooldown), "first attempt takes the slot");
+        assert!(
+            !claim_repair_slot(cooldown),
+            "a second attempt inside the cooldown must not issue another download"
+        );
+        // Zero cooldown proves the gate is the elapsed time, not a one-shot latch.
+        assert!(claim_repair_slot(Duration::from_secs(0)));
+    }
+
+    #[test]
     fn each_bail_carries_the_failure_that_decides_whether_to_alert() {
         assert!(NodePreflight::Usable.into_bail().is_none());
         assert_eq!(
-            classify_node_preflight(&provisioned_but_empty(), Some(8), None)
-                .into_bail()
-                .unwrap()
-                .failure,
+            classify_node_preflight(
+                &provisioned_but_empty(),
+                Some(8),
+                None,
+                RunnerResolution::Resolved,
+                RunnerResolution::Resolved,
+            )
+            .into_bail()
+            .unwrap()
+            .failure,
             PreflightFailure::ManagedNodeMissing
         );
         assert_eq!(
-            classify_node_preflight(&ManagedToolchain::NotProvisioned, Some(8), None)
-                .into_bail()
-                .unwrap()
-                .failure,
+            classify_node_preflight(
+                &ManagedToolchain::NotProvisioned,
+                Some(8),
+                None,
+                RunnerResolution::Resolved,
+                RunnerResolution::Resolved,
+            )
+            .into_bail()
+            .unwrap()
+            .failure,
             PreflightFailure::NodeTooOld
+        );
+        assert_eq!(
+            classify_node_preflight(
+                &ManagedToolchain::NotProvisioned,
+                None,
+                None,
+                RunnerResolution::Missing,
+                RunnerResolution::Missing,
+            )
+            .into_bail()
+            .unwrap()
+            .failure,
+            PreflightFailure::NodeUnprovisioned
         );
     }
 
