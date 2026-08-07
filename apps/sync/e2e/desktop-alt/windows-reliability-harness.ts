@@ -154,6 +154,23 @@ const RUNNER_FRAME_TABLE = new Map<string, string>([
   ['std::panicking', 'rust_std_panicking'],
 ]);
 
+/**
+ * Mirror of the native `parenthesized_runtime_frame_token` fallback. A typical
+ * named V8 frame puts its runtime location after the function name — inside the
+ * final parentheses — so whole-token matching on split candidates alone would
+ * redact it to `app`. Keeping this in step with the core normalizer is the
+ * point of the artifact contract.
+ */
+function fixtureParenthesizedFrameToken(line: string): string | undefined {
+  const trimmed = line.trim();
+  if (!trimmed.slice(0, 3).toLowerCase().startsWith('at ')) return undefined;
+  const open = trimmed.lastIndexOf('(');
+  const close = trimmed.lastIndexOf(')');
+  if (open < 0 || close < 0 || open >= close) return undefined;
+  const candidate = trimmed.slice(open + 1, close).trim();
+  return RUNNER_FRAME_TABLE.get(candidate.replace(/:\d+:\d+$/, '').toLowerCase());
+}
+
 function fixtureRunnerStackShape(stderr: string[]): {
   shape: string;
   signature: string;
@@ -178,6 +195,10 @@ function fixtureRunnerStackShape(stderr: string[]): {
         return RUNNER_FRAME_TABLE.get(candidate.replace(/:\d+:\d+$/, '').toLowerCase());
       })
       .filter((token): token is string => Boolean(token));
+    if (tokens.length === 0) {
+      const parenthesized = fixtureParenthesizedFrameToken(line);
+      if (parenthesized) tokens.push(parenthesized);
+    }
     if (tokens.length === 0) {
       frames.push('app');
       redactedFrames += 1;

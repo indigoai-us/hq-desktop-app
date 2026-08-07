@@ -265,6 +265,74 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     }
   });
 
+  it('pins the 0xC0000409 watcher fast-fail as an attributed artifact contract', async () => {
+    // The exact status behind HQ-DESKTOP-3S (raw -1073740791) and
+    // HQ-DESKTOP-4C (decoded 0xC0000409). The live event carried the Windows
+    // classification but no route, no launch origin and no stack shape, so
+    // triage could not tell which entry point started the dying generation.
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+
+    const fastFail = harness.simulateRunnerTerminationDiagnostics({
+      route: 'watcher',
+      origin: 'supervisor_respawn',
+      phase: 'scan',
+      exitCode: 0xc0000409,
+      stderr: [
+        '<--- Last few GCs --->',
+        'FATAL ERROR: Ineffective mark-compacts near heap limit '
+          + 'Allocation failed - JavaScript heap out of memory',
+        'at Module._compile (node:internal/modules/cjs/loader:1356:14)',
+        'at node:fs:242:9',
+      ],
+    });
+
+    // Preserved classification.
+    expect(fastFail.windowsExitStatus).toBe('0xC0000409');
+    expect(fastFail.windowsFaultSymbol).toBe('STATUS_STACK_BUFFER_OVERRUN');
+    expect(fastFail.phase).toBe('scan');
+    expect(fastFail.elapsedPhaseBucket).toBe('under_1m');
+
+    // New attribution — same vocabulary the native capture seam emits.
+    expect(fastFail.route).toBe('watcher');
+    expect(fastFail.launchOrigin).toBe('supervisor_respawn');
+    expect(fastFail.stackShape).toBe('app>app>node_cjs_loader>node_fs');
+    expect(fastFail.stackDepth).toBe(4);
+    expect(fastFail.redactedFrames).toBe(2);
+    expect(fastFail.stackSignature).not.toBe('unknown');
+    expect(fastFail.stackSignature).toMatch(/^[0-9a-f]{16}$/);
+
+    // A silent __fastfail flushes nothing. That is a discriminating datum, so
+    // the degraded stack is reported honestly while route and origin still land.
+    const silent = harness.simulateRunnerTerminationDiagnostics({
+      route: 'watcher',
+      origin: 'renderer',
+      phase: 'idle',
+      exitCode: 0xc0000409,
+      stderr: [],
+    });
+    expect(silent.stackShape).toBe('all_redacted');
+    expect(silent.stackSignature).toBe('unknown');
+    expect(silent.stackDepth).toBe(0);
+    expect(silent.redactedFrames).toBe(0);
+    expect(silent.route).toBe('watcher');
+    expect(silent.launchOrigin).toBe('renderer');
+
+    for (const diagnostic of [fastFail, silent]) {
+      assertContentSafeDiagnostics(diagnostic);
+      const serialized = JSON.stringify(diagnostic);
+      for (const forbidden of [
+        'JavaScript heap out of memory',
+        'Module._compile',
+        'node:internal/modules/cjs/loader',
+        'Last few GCs',
+        'hq-sync-runner',
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+    }
+  });
+
   it('keeps native route, origin, phase, and stack vocabularies wired to production callers', () => {
     const core = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
     const daemon = readRepoFile('src-tauri/src/commands/daemon.rs');
@@ -282,6 +350,9 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     for (const origin of ['renderer', 'app_launch', 'supervisor_respawn']) {
       expect(daemon).toContain(`"${origin}"`);
     }
+    // The fixture harness mirrors this fallback; if production drops it, the
+    // artifact contract above would silently stop describing real captures.
+    expect(core).toContain('fn parenthesized_runtime_frame_token');
     expect(main).toContain('start_daemon_for_app_launch(handle)');
     expect(daemon).toContain('start_daemon_for_supervisor_respawn(handle.clone())');
   });

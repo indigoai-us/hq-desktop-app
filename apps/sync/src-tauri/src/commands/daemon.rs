@@ -4370,4 +4370,202 @@ mod tests {
         assert!(!serialized.contains("private-company"));
         assert!(!serialized.contains("secret-plan"));
     }
+
+    /// The exact Sentry status behind HQ-DESKTOP-3S (raw `Some(-1073740791)`)
+    /// and HQ-DESKTOP-4C (decoded `0xC0000409 (fault)`): one NTSTATUS split
+    /// across two issues by a message-format change.
+    const WINDOWS_FASTFAIL_EXIT: i32 = 0xC000_0409u32 as i32;
+
+    /// Drive the production capture seam with the observed Windows fast-fail so
+    /// the attribution the live HQ-DESKTOP-4C event lacked is pinned end to end:
+    /// which entry point started the dying generation, which route it ran, and
+    /// what the runner's stderr looked like at the moment it aborted. The
+    /// pre-existing Windows classification, phase and fingerprint must survive
+    /// untouched — this lane only ever adds information.
+    #[test]
+    fn windows_fastfail_watcher_capture_attributes_route_origin_and_multiline_stack() {
+        assert_eq!(
+            WINDOWS_FASTFAIL_EXIT, -1_073_740_791,
+            "the decoded status and the raw code in the cluster are one value"
+        );
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = begin_watcher_generation(WatcherLaunchOrigin::SupervisorRespawn);
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(WATCHER_STDERR_TAIL_CAP));
+        // A real Node fatal-error abort is a banner plus frames. Only the last
+        // line reached the classifier before this lane, which is why the live
+        // event reported runner_fatal_class=none with no fault-site detail.
+        for line in [
+            "<--- Last few GCs --->",
+            "FATAL ERROR: Ineffective mark-compacts near heap limit \
+             Allocation failed - JavaScript heap out of memory",
+            "at Module._compile (node:internal/modules/cjs/loader:1356:14)",
+            "at node:fs:242:9",
+        ] {
+            record_watcher_stderr_tail(&stderr_tail, line);
+        }
+        let tail = stderr_tail
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let phase_context = Mutex::new(WatcherPhaseContext {
+            phase: "scan",
+            observed_at: Instant::now(),
+        });
+        let context = watcher_exit_capture_context(
+            &Mutex::new(RunTotals::default()),
+            false,
+            &phase_context,
+            &generation,
+            &tail,
+            None,
+        );
+
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(WINDOWS_FASTFAIL_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            tail.last().map(String::as_str),
+            TerminationHost::Windows,
+            &context,
+        );
+
+        let event = effects
+            .captures
+            .first()
+            .expect("a Windows fast-fail watcher exit must still be captured");
+
+        // New attribution: the four channels the live event was missing.
+        assert_eq!(recorded_tag(event, "sync_route"), "watcher");
+        assert_eq!(
+            recorded_string_extra(event, "watcher_launch_origin"),
+            "supervisor_respawn",
+            "the origin must come from the generation that actually died"
+        );
+        assert_eq!(
+            recorded_tag(event, "runner_stack_shape"),
+            "app>app>node_cjs_loader>node_fs",
+            "the whole bounded tail is normalized, not just its last line"
+        );
+        let signature = recorded_tag(event, "runner_stack_signature");
+        assert_ne!(signature, "unknown");
+        assert_eq!(signature.len(), 16);
+        assert!(signature.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(recorded_number_extra(event, "runner_stack_depth"), 4);
+        assert_eq!(
+            recorded_number_extra(event, "runner_stack_redacted_frames"),
+            2
+        );
+
+        // Preserved: everything the capture already carried on main.
+        assert_eq!(recorded_tag(event, "windows_exit_status"), "0xC0000409");
+        assert_eq!(recorded_tag(event, "windows_exit_class"), "fault");
+        assert_eq!(
+            recorded_tag(event, "windows_fault_symbol"),
+            "STATUS_STACK_BUFFER_OVERRUN"
+        );
+        assert_eq!(recorded_string_extra(event, "runner_phase"), "scan");
+        assert_eq!(
+            recorded_string_extra(event, "runner_phase_elapsed_bucket"),
+            "under_1m"
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none",
+            ],
+            "grouping continuity: neither cluster issue may regroup"
+        );
+        assert!(event
+            .message
+            .contains("with Windows status 0xC0000409 (fault)"));
+
+        // Egress safety: the banner and its frames stay process-local.
+        let serialized = format!(
+            "{}{}{}",
+            event.message,
+            serde_json::to_string(&event.tags).expect("serialize tags"),
+            serde_json::to_string(&event.extras).expect("serialize extras"),
+        );
+        for forbidden in [
+            "JavaScript heap out of memory",
+            "Module._compile",
+            "node:internal/modules/cjs/loader",
+            "Last few GCs",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "raw stderr must never reach the capture: {forbidden}"
+            );
+        }
+    }
+
+    /// A Windows `__fastfail` can terminate the runner before anything is
+    /// flushed. That is itself a discriminating datum, so the degraded stack
+    /// must be reported honestly rather than fabricated — and route, origin and
+    /// phase must still land, because they do not depend on stderr at all.
+    #[test]
+    fn windows_fastfail_watcher_capture_reports_a_silent_stderr_tail_honestly() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = begin_watcher_generation(WatcherLaunchOrigin::Renderer);
+        let context = watcher_exit_capture_context(
+            &Mutex::new(RunTotals::default()),
+            false,
+            &Mutex::new(WatcherPhaseContext {
+                phase: "idle",
+                observed_at: Instant::now(),
+            }),
+            &generation,
+            &[],
+            None,
+        );
+
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(WINDOWS_FASTFAIL_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Windows,
+            &context,
+        );
+
+        let event = effects
+            .captures
+            .first()
+            .expect("a silent Windows fast-fail must still be captured");
+        assert_eq!(recorded_tag(event, "runner_stack_shape"), "all_redacted");
+        assert_eq!(recorded_tag(event, "runner_stack_signature"), "unknown");
+        assert_eq!(recorded_number_extra(event, "runner_stack_depth"), 0);
+        assert_eq!(
+            recorded_number_extra(event, "runner_stack_redacted_frames"),
+            0
+        );
+        assert_eq!(recorded_tag(event, "sync_route"), "watcher");
+        assert_eq!(
+            recorded_string_extra(event, "watcher_launch_origin"),
+            "renderer"
+        );
+        assert_eq!(recorded_string_extra(event, "runner_phase"), "idle");
+        assert_eq!(recorded_tag(event, "windows_exit_status"), "0xC0000409");
+        assert_eq!(
+            recorded_tag(event, "windows_fault_symbol"),
+            "STATUS_STACK_BUFFER_OVERRUN"
+        );
+    }
 }
