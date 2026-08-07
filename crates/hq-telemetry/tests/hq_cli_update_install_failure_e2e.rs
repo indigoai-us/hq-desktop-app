@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_install_failure_with_final_attempt,
-    report_npm_cache_setup_failure,
+    report_non_convergent_install, report_npm_cache_setup_failure, InstallExecutor,
+    NonConvergenceKind, NonConvergentReport,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -108,6 +109,10 @@ fn assert_unexpected_install_event(
         Some(expected_stderr_len)
     );
     assert_eq!(
+        event.tags.get("npm_errno").map(String::as_str),
+        Some("unknown")
+    );
+    assert_eq!(
         event.tags.get("npm_lifecycle_failed").map(String::as_str),
         Some(if expected_lifecycle_package.is_some() {
             "true"
@@ -123,7 +128,7 @@ fn assert_unexpected_install_event(
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(
             format!(
-                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 stderr_len={expected_stderr_len}"
+                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len}"
             )
             .into()
         ))
@@ -437,6 +442,129 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
         &events[0],
         &["/Users/", "reviewer", "ETARGET", "ECONNRESET", "npm error"],
     );
+}
+
+#[test]
+fn errno_backed_exit_without_npm_evidence_stays_captured_for_diagnosis() {
+    #[cfg(target_os = "macos")]
+    let econnreset_exit = 202;
+    #[cfg(target_os = "linux")]
+    let econnreset_exit = 152;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let econnreset_exit = 202;
+
+    let events = captured_events(|| report_install_failure(Some(econnreset_exit), "", None));
+    assert_eq!(
+        events.len(),
+        1,
+        "an unexplained errno-backed exit was incorrectly suppressed"
+    );
+
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Error);
+    // Grouping stays on the bounded failure signature. The decoded errno is a
+    // tag, deliberately NOT a fingerprint component: the same registry reset
+    // arriving as a different libuv status must not open a new Sentry issue.
+    assert_eq!(
+        fingerprint(event),
+        vec![
+            "hq-cli-update".to_string(),
+            "install-failed".to_string(),
+            "unexpected".to_string(),
+            "none:unknown:none".to_string(),
+        ]
+    );
+    // HQ-DESKTOP-45 verbatim: exit 202, eacces=false, install_failure_kind
+    // "unexpected", and an `npm_stderr` the org scrubber replaced with
+    // [Filtered]. The decoded errno is the one diagnostic that reaches Sentry
+    // through a channel the scrubber does not touch, and it must not be used to
+    // downgrade or suppress the event — the assertions above keep it Error.
+    for (tag, expected) in [
+        ("hq_cli_update_kind", "install-failed"),
+        ("install_failure_kind", "unexpected"),
+        ("exit_code", econnreset_exit.to_string().as_str()),
+        ("eacces", "false"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    assert_eq!(
+        event.tags.get("npm_errno").map(String::as_str),
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            Some("ECONNRESET")
+        } else {
+            Some("unknown")
+        }
+    );
+    assert!(
+        event
+            .extra
+            .get("npm_diagnostics")
+            .and_then(|value| value.as_str())
+            .is_some_and(|summary| summary.contains("errno=")),
+        "the fixed diagnostics summary must carry the closed errno value"
+    );
+    assert_path_safe(event, &["/Users/", "reviewer", "npm error"]);
+}
+
+#[test]
+fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let hq_bin = home.join(".asdf/shims/hq").to_string_lossy().to_string();
+    let home = home.to_string_lossy().to_string();
+
+    let events = captured_events(|| {
+        report_non_convergent_install(&NonConvergentReport {
+            executor: InstallExecutor::Npm,
+            kind: NonConvergenceKind::ForeignManaged,
+            latest: "5.83.0".to_string(),
+            local: Some("5.77.14".to_string()),
+            hq_bin: hq_bin.clone(),
+            npm_prefix: None,
+            installer_bin: "/opt/homebrew/bin/npm".to_string(),
+            hq_bin_changed: true,
+            pnpm: None,
+        })
+    });
+    assert_eq!(events.len(), 1);
+
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    let (hq_source, npm_source) = if cfg!(target_os = "windows") {
+        ("unknown", "unknown")
+    } else {
+        ("login-shell", "homebrew")
+    };
+    for (tag, expected) in [
+        ("install_executor", "npm"),
+        ("hq_bin_source", hq_source),
+        ("npm_bin_source", npm_source),
+        ("installer_bin_source", npm_source),
+        ("hq_bin_changed", "true"),
+        ("prefix_known", "false"),
+        ("non_convergence_kind", "foreign-managed"),
+    ] {
+        assert_eq!(event.tags.get(tag).map(String::as_str), Some(expected));
+    }
+    assert_eq!(
+        event.extra.get("hq_bin").and_then(|value| value.as_str()),
+        Some("~/.asdf/shims/hq")
+    );
+    assert_eq!(
+        event
+            .extra
+            .get("npm_prefix")
+            .and_then(|value| value.as_str()),
+        Some("npm default prefix")
+    );
+    assert_path_safe(event, &[home.as_str(), "/Users/"]);
 }
 
 #[test]
