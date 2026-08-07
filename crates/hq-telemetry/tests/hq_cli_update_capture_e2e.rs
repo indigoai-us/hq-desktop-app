@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_unreadable_version, BinaryAnchorShape,
-    LocalVersionProbeDiagnostics, VersionProbeOutcome,
+    LocalVersionProbeDiagnostics, ResolvedProgramKind, VersionProbeOutcome,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -38,6 +38,7 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
         npm_root: VersionProbeOutcome::NonzeroExit,
         hq_version: VersionProbeOutcome::InterpreterNotFound,
         binary_anchor_shape: BinaryAnchorShape::FlatGlobalBin,
+        resolved_program_kind: ResolvedProgramKind::Exe,
     };
 
     let events = captured_events(|| report_unreadable_version("5.88.3", &probes));
@@ -73,6 +74,7 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
                 "npm_root": "nonzero_exit",
                 "hq_version": "interpreter_not_found",
                 "binary_anchor_shape": "flat_global_bin",
+                "resolved_program_kind": "exe",
             })
             .as_object()
             .unwrap()
@@ -90,6 +92,98 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
         }),
         "unreadable-version diagnostics must remain closed enum values: {:?}",
         event.extra
+    );
+}
+
+/// HQ-DESKTOP-3P: replay the exact production probe quadruple the Windows field
+/// events carried and prove the widened payload names the resolver's program
+/// classification. `resolved_program_kind` is absent from the emitted extras on
+/// the base commit, so this fails there and passes on the candidate.
+#[test]
+fn production_field_quadruple_capture_carries_the_resolved_program_kind() {
+    let probes = LocalVersionProbeDiagnostics {
+        binary_anchor: VersionProbeOutcome::PackageNotFound,
+        npm_root: VersionProbeOutcome::PackageNotFound,
+        hq_version: VersionProbeOutcome::SpawnNotExecutable,
+        binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+        resolved_program_kind: ResolvedProgramKind::Extensionless,
+    };
+
+    let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+
+    let Some(Value::Object(recorded)) = event.extra.get("hq_cli_version_probes") else {
+        panic!(
+            "the probe diagnostics extra must be an object: {:?}",
+            event.extra
+        );
+    };
+    assert_eq!(
+        recorded.get("resolved_program_kind"),
+        Some(&Value::String("extensionless".into())),
+        "a resolution Windows cannot execute must be named in the event"
+    );
+    assert_eq!(
+        recorded.get("hq_version"),
+        Some(&Value::String("spawn_not_executable".into())),
+        "the split spawn classes must survive serialization"
+    );
+
+    // Grouping and message are untouched, so HQ-DESKTOP-3P does not split.
+    assert_eq!(
+        event
+            .fingerprint
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>(),
+        ["{{ default }}"]
+    );
+    assert_eq!(
+        event.message.as_deref(),
+        Some(
+            "[hq-cli-update] hq is installed but its version could not be read \
+             (binary-anchor, npm root, and hq --version all failed)"
+        )
+    );
+
+    // Still path-free: no filesystem path, home directory, account name, or
+    // command output may ride along with the widened payload.
+    let serialized = serde_json::to_string(&event).unwrap();
+    for leak in ["/Users/", "C:\\\\", "\\\\Users", "AppData", "fixture"] {
+        assert!(
+            !serialized.contains(leak),
+            "unreadable-version telemetry must stay path-free, found {leak}: {serialized}"
+        );
+    }
+}
+
+/// The anti-silencing counterpart, end to end: a marked-non-spawnable
+/// resolution with every probe failed must still emit EXACTLY ONE
+/// version-unreadable event. The signal is what tells the team a user's CLI is
+/// installed but unusable; dropping the resolution to "not installed" would
+/// make this zero.
+#[test]
+fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
+    let probes = LocalVersionProbeDiagnostics {
+        binary_anchor: VersionProbeOutcome::PackageNotFound,
+        npm_root: VersionProbeOutcome::PackageNotFound,
+        hq_version: VersionProbeOutcome::SpawnNotExecutable,
+        binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+        resolved_program_kind: ResolvedProgramKind::Extensionless,
+    };
+
+    let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
+
+    assert_eq!(
+        events.len(),
+        1,
+        "an installed-but-unusable CLI must keep producing its warning"
+    );
+    assert_eq!(events[0].level, sentry::Level::Warning);
+    assert_eq!(
+        events[0].tags.get("hq_cli_update_kind").map(String::as_str),
+        Some("version-unreadable")
     );
 }
 
