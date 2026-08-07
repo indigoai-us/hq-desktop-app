@@ -48,6 +48,15 @@ pub enum NativePanicSeam {
     WindowForceForeground = 7,
     SingleInstanceSurfaceExisting = 8,
     AppExitRequested = 9,
+    /// The Windows session-end branch of `RunEvent::Exit` was taken: no
+    /// `ExitRequested` had been seen, so the exit is OS-forced rather than
+    /// user-initiated.
+    AppSessionEndExit = 10,
+    /// The independent Windows session-end observer *also* affirmed a session
+    /// end at that instant. Recorded alongside — never instead of —
+    /// `AppSessionEndExit`, so a residual report shows whether the two signals
+    /// agreed.
+    AppSessionEndObserved = 11,
 }
 
 impl NativePanicSeam {
@@ -62,6 +71,8 @@ impl NativePanicSeam {
             7 => Some(Self::WindowForceForeground),
             8 => Some(Self::SingleInstanceSurfaceExisting),
             9 => Some(Self::AppExitRequested),
+            10 => Some(Self::AppSessionEndExit),
+            11 => Some(Self::AppSessionEndObserved),
             _ => None,
         }
     }
@@ -77,6 +88,8 @@ impl NativePanicSeam {
             Self::WindowForceForeground => "window-focus.force-foreground",
             Self::SingleInstanceSurfaceExisting => "single-instance.surface-existing",
             Self::AppExitRequested => "app.exit-requested",
+            Self::AppSessionEndExit => "app.session-end-exit",
+            Self::AppSessionEndObserved => "app.session-end-observed",
         }
     }
 }
@@ -111,6 +124,32 @@ pub fn record_native_panic_seam(seam: NativePanicSeam) {
 /// post-exit event-loop activity in a future native-panic report.
 pub fn set_native_panic_phase(phase: NativePanicPhase) {
     NATIVE_PANIC_PHASE.store(phase as u8, Ordering::Relaxed);
+}
+
+/// Flush pending Sentry envelopes, giving up after `deadline`.
+///
+/// The normal flush is the `ClientInitGuard`'s `Drop`, which never runs when a
+/// process calls `std::process::exit`. The Windows session-end exit path does
+/// exactly that — deliberately, to stop tao's message pump before it can
+/// dispatch into a destroyed event-loop runner — so it needs an explicit,
+/// *bounded* flush instead.
+///
+/// It is called from inside a Windows window procedure while the OS is already
+/// tearing the desktop session down, so two properties matter more than
+/// delivery: it must never block past `deadline` (Windows force-kills at
+/// `WaitToKillAppTimeout`, 5s by default), and it must never panic (a panic
+/// escaping an `extern "system"` callback aborts the process). A dropped
+/// report is an acceptable outcome; a missed teardown or an abort is not.
+///
+/// Returns `true` when there was nothing to flush or the flush completed
+/// inside `deadline`, `false` when it timed out.
+pub fn flush_within(deadline: std::time::Duration) -> bool {
+    match sentry::Hub::current().client() {
+        // No client: Sentry is disabled (empty DSN on dev/PR CI) and there is
+        // nothing queued, so this is a success, not a timeout.
+        None => true,
+        Some(client) => client.flush(Some(deadline)),
+    }
 }
 
 fn current_native_panic_phase() -> NativePanicPhase {
@@ -796,6 +835,25 @@ mod tests {
         );
 
         reset_native_panic_context_for_test();
+    }
+
+    // The Windows session-end exit arm calls this from inside a window
+    // procedure, where a block past the deadline is a force-kill and a panic is
+    // a process abort. Both properties are asserted, not assumed.
+    #[test]
+    fn test_flush_within_returns_inside_deadline_with_no_client_configured() {
+        let deadline = std::time::Duration::from_millis(250);
+        let started = std::time::Instant::now();
+
+        // No `ClientInitGuard` is bound on this thread's hub, which is exactly
+        // the shape of a build with an empty DSN.
+        assert!(sentry::Hub::current().client().is_none());
+        assert!(super::flush_within(deadline));
+
+        assert!(
+            started.elapsed() < deadline * 4,
+            "flush_within must not block past its deadline"
+        );
     }
 
     #[test]

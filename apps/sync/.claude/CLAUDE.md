@@ -280,6 +280,65 @@ The two harness modes run disjoint spec sets, enforced in `e2e/desktop-alt/vites
 - **Live** (`HQ_SYNC_DESKTOP_ALT_LIVE=1`, the two Windows jobs in windows-check.yml) runs only `live-preauth.spec.ts`. A CI runner has no Cognito session and must not be given a fake one, so the live smoke asserts signed-out reality against a real binary: the app boots, the popover paints its sign-in surface with zero console errors, and `open_desktop_alt_window` is refused by `feature_gate::desktop_features_enabled` with `desktop-alt requires a signed-in user`. It shares ONE WebDriver session across the file (`beforeAll`) because `tauri_plugin_single_instance` folds a second launch into the running process, leaving later sessions attached to a webview with no Tauri bridge.
 - Live mode on Windows additionally requires the app to be built `--features e2e-automation` (see `src-tauri/src/util/webview2_automation.rs`); without it msedgedriver's `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` never reaches the WebView2 browser process and session creation dies with `DevToolsActivePort file doesn't exist`.
 
+## Exit Lifecycle — and why Windows session end is not `ExitRequested`
+
+There are **two** exit paths, and they are not interchangeable. Assuming
+otherwise is what caused HQ-DESKTOP-44, a fatal fleet-wide native panic.
+
+| Path | What fires | What runs |
+|---|---|---|
+| App-initiated quit (tray Quit, `quit_app`, Cmd-Q, last window closed) | `RunEvent::ExitRequested`, then `RunEvent::Exit` | the `ExitRequested` teardown, then tauri's `cleanup_before_exit()`, then tao's own `process::exit(exit_code)` |
+| Windows session end (shutdown / logoff / forced restart) | `RunEvent::Exit` **only** | the Windows-gated session-end branch in the `Exit` arm |
+
+`RunEvent::ExitRequested` is raised by `tauri-runtime-wry` in exactly two
+places: when the last window is destroyed, and on `Message::RequestExit` (what
+`AppHandle::exit` sends). Windows `WM_ENDSESSION` produces neither. So
+`ExitRequested` is the chokepoint for every *app-initiated* quit, and for
+nothing else — the comment in `main.rs` that once called it "the single
+chokepoint for every quit path" was wrong for OS shutdown, and its consequence
+was that at session end the app ran no teardown at all.
+
+The failure was worse than a skipped teardown. tao handles `WM_ENDSESSION` by
+calling `event_loop_runner.loop_destroyed()`, which moves the runner to
+`RunnerState::Destroyed` and returns, leaving tao's own
+`GetMessageW`/`DispatchMessageW` pump running. Every subsequent
+`poll`/`send_event`/`main_events_cleared`/`redraw_events_cleared` routes through
+`move_state_to`, whose final arm is
+`(Destroyed, _) => panic!("cannot move state from Destroyed")` — and that panic
+unwinds out of an `unsafe extern "system"` window procedure installed with
+`SetWindowSubclass`, which aborts the process. tao's `catch_unwind` wraps only
+`call_event_handler`, not `move_state_to`, so nothing catches it. The same
+defect is present in tao 0.34.8 and 0.35.3, so a dependency bump is not a
+remedy.
+
+The remedy is app-level and lives at the only seam available:
+`handle_run_event_exit` in `main.rs`. tao dispatches `Event::LoopDestroyed`
+synchronously from inside the `WM_ENDSESSION` handler, `tauri-runtime-wry` maps
+it to `RunEvent::Exit`, and tauri invokes the application callback *before*
+`cleanup_before_exit()` — so no pump iteration intervenes between that callback
+and the fatal dispatch. On the session-end branch the app runs the bounded
+teardown (session-end observer shutdown, `terminate_all_for_exit`, then a capped
+Sentry flush — children before flush, ~1.75s total against Windows' 5s default
+`WaitToKillAppTimeout`) and then exits, denying the pump another iteration.
+
+Rules for anyone touching this area:
+
+- **Do not** move the session-end fast exit off its `#[cfg(target_os = "windows")]`
+  gate. On macOS and Linux it would skip `cleanup_before_exit()`, which tears
+  down the tray icon and hides windows.
+- **Do not** make the app-initiated branch exit the process. That path must stay
+  exactly as it is, or tray and window resources leak on every quit.
+- **Do not** use `APP_EXIT_REQUESTED` as the discriminator. It is set inside
+  `terminate_all_for_exit`, which *both* paths call. The discriminator is
+  `APP_INITIATED_EXIT`, written only by the `ExitRequested` arm.
+- Everything in the session-end teardown runs inside a Windows window
+  procedure. Keep every step individually capped, and keep it panic-free — a
+  panic there aborts the process just as the original bug did.
+- The wiring is pinned by `scripts/native-seam-wiring.test.ts` (mutation-checked
+  against deletion and same-file relocation) and proved end-to-end by
+  `e2e/desktop-alt/windows-session-end.spec.ts`, which drives the real message
+  sequence at a real binary in the `windows-check` workflow.
+
 ## Gotchas
 
 - `tauri_plugin_updater::Update` is not `Clone` -- must call `updater.check()` again in `install_update`. This is a plugin constraint, not redundant.

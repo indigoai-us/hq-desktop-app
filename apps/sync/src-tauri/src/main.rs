@@ -206,6 +206,63 @@ where
     }
 }
 
+/// Decide what `tauri::RunEvent::Exit` must do, given whether the app itself
+/// asked to quit.
+///
+/// This is the fix for HQ-DESKTOP-44, the fatal native panic
+/// `cannot move state from Destroyed`. The mechanism, read out of the pinned
+/// dependency sources:
+///
+/// 1. At Windows session end (shutdown / logoff / forced restart) the OS sends
+///    `WM_ENDSESSION(TRUE)`. tao handles it in `thread_event_target_callback`
+///    by calling `event_loop_runner.loop_destroyed()`
+///    (`tao/src/platform_impl/windows/event_loop.rs`), which moves the runner
+///    to `RunnerState::Destroyed` and returns 0 — leaving tao's own
+///    `GetMessageW`/`DispatchMessageW` pump still running.
+/// 2. `move_state_to` (`.../event_loop/runner.rs`) replaces the state *first*,
+///    so on return the runner is latched in `Destroyed`. Its final match arm is
+///    `(Destroyed, _) => panic!("cannot move state from Destroyed")`, and every
+///    later `poll` / `send_event` / `main_events_cleared` /
+///    `redraw_events_cleared` routes through it.
+/// 3. So the next dispatched message panics, and it panics inside an
+///    `unsafe extern "system"` window procedure installed with
+///    `SetWindowSubclass`. tao's `catch_unwind` wraps only `call_event_handler`,
+///    not `move_state_to`, so that unwind aborts the process.
+///
+/// The one app-controlled instant in that window is this callback: tao's
+/// `(_, Destroyed)` arms dispatch `Event::LoopDestroyed` synchronously from
+/// inside the `WM_ENDSESSION` handler, tauri-runtime-wry maps it to
+/// `RunEvent::Exit`, and tauri invokes the application callback *before*
+/// `cleanup_before_exit()` (`tauri/src/app.rs`). No pump iteration intervenes,
+/// so exiting here is guaranteed to beat the fatal dispatch.
+///
+/// `app_initiated` is the discriminator, and it is sound in both directions:
+/// tauri-runtime-wry emits `RunEvent::ExitRequested` only when the last window
+/// is destroyed or on `Message::RequestExit` (which `AppHandle::exit` sends),
+/// and never for `WM_ENDSESSION`. A user quit therefore always sets the flag
+/// first; an OS session end never does.
+///
+/// Kept free of Tauri and Windows types on purpose so both branches are unit
+/// testable on any host, with no app instance and no real session end.
+#[cfg(any(target_os = "windows", test))]
+fn handle_run_event_exit<S, T>(app_initiated: bool, session_end_teardown: S, terminate: T)
+where
+    S: FnOnce(),
+    T: FnOnce(),
+{
+    if app_initiated {
+        // A user-initiated quit already ran its teardown in the
+        // `ExitRequested` arm, and tauri runs `cleanup_before_exit()` (tray
+        // teardown, window hiding) the moment this callback returns, followed
+        // by tao's own `process::exit(exit_code)`. Exiting here would skip that
+        // cleanup, so this path must stay exactly as it was.
+        return;
+    }
+
+    session_end_teardown();
+    terminate();
+}
+
 fn main() {
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
@@ -1093,9 +1150,18 @@ fn main() {
             // recall sidecar, …). Each was spawned with `.process_group(0)`, so
             // the OS does NOT reap it when the app exits — without this they
             // reparent to PID 1 and keep running against a now-stale engine.
-            // ExitRequested is the single chokepoint for every quit path (tray
-            // Quit, `quit_app`, Cmd-Q), all of which call `app.exit(0)`.
+            //
+            // ExitRequested is the chokepoint for every APP-initiated quit
+            // (tray Quit, `quit_app`, Cmd-Q, last window closed), all of which
+            // reach `app.exit(0)`. It is NOT the chokepoint for a Windows
+            // session end: tauri-runtime-wry raises ExitRequested only on the
+            // last window's `Destroyed` event or on `Message::RequestExit`, and
+            // `WM_ENDSESSION` produces neither. That path is handled in the
+            // `RunEvent::Exit` arm below — see `handle_run_event_exit`.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                // Latch first, so the `Exit` arm that follows can tell an
+                // app-initiated quit from an OS-forced session end.
+                commands::process::note_app_initiated_exit();
                 hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Exiting);
                 hq_telemetry::record_native_panic_seam(
                     hq_telemetry::NativePanicSeam::AppExitRequested,
@@ -1111,6 +1177,59 @@ fn main() {
 
             if matches!(&event, tauri::RunEvent::Exit) {
                 hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Destroyed);
+
+                // Windows only, and only when no ExitRequested preceded this:
+                // the OS is ending the desktop session, tao's event-loop runner
+                // is already latched in `Destroyed`, and the very next message
+                // its still-live pump dispatches would panic out of an
+                // `extern "system"` window procedure and abort the process.
+                // Run the teardown that ExitRequested would have run, then
+                // leave before the pump gets another iteration.
+                //
+                // Every step is individually capped and the total is ~1.75s
+                // against Windows' 5s default `WaitToKillAppTimeout`. Children
+                // are terminated BEFORE the Sentry flush: at shutdown the
+                // network may already be down, and an orphaned sync daemon is a
+                // worse outcome than a dropped report.
+                #[cfg(target_os = "windows")]
+                handle_run_event_exit(
+                    commands::process::app_initiated_exit(),
+                    || {
+                        use commands::session_end_observer::SessionEndObserverHandle;
+                        use hq_desktop_core::sync_outcome::WindowsTerminatorAttribution;
+
+                        hq_telemetry::record_native_panic_seam(
+                            hq_telemetry::NativePanicSeam::AppSessionEndExit,
+                        );
+
+                        // Corroborating signal, read BEFORE the observer is shut
+                        // down (shutdown moves its readiness out of the
+                        // affirming states). Recorded alongside — never instead
+                        // of — the branch marker, so a residual report shows
+                        // whether the two independent signals agreed.
+                        if let Some(observer) = _app_handle.try_state::<SessionEndObserverHandle>()
+                        {
+                            if observer.tracker().attribution_now()
+                                == WindowsTerminatorAttribution::SessionEndObserved
+                            {
+                                hq_telemetry::record_native_panic_seam(
+                                    hq_telemetry::NativePanicSeam::AppSessionEndObserved,
+                                );
+                            }
+                            observer.shutdown(std::time::Duration::from_millis(500));
+                        }
+
+                        commands::process::terminate_all_for_exit(
+                            std::time::Duration::from_millis(500),
+                        );
+
+                        // Leaving the process here skips the
+                        // `ClientInitGuard` drop that normally flushes Sentry,
+                        // so flush by hand under a hard cap.
+                        hq_telemetry::flush_within(std::time::Duration::from_millis(750));
+                    },
+                    || std::process::exit(0),
+                );
             }
 
             // Dock-icon click on the already-running app. Without this the
@@ -1145,7 +1264,7 @@ fn main() {
 mod native_panic_tests {
     use super::*;
     use sentry::protocol::Event;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     fn recorded_native_seams() -> Vec<String> {
         hq_telemetry::before_send(Event::default())
@@ -1190,6 +1309,40 @@ mod native_panic_tests {
         assert_eq!(
             recorded_native_seams(),
             with_appended_seam(after_close, "tray.blur-hide")
+        );
+    }
+
+    /// HQ-DESKTOP-44 regression. Fails on the pre-fix tree, where main.rs has
+    /// no `RunEvent::Exit` arm at all: an OS-forced exit ran neither callback,
+    /// so tao's still-live pump reached a `Destroyed` runner and aborted.
+    #[test]
+    fn run_event_exit_tears_down_and_leaves_only_when_the_os_forced_the_exit() {
+        // OS-forced Windows session end: `WM_ENDSESSION` never produces
+        // `ExitRequested`, so the flag is still false. Both callbacks must run,
+        // teardown strictly first — children have to be reaped before the
+        // process leaves.
+        let calls = RefCell::new(Vec::<&'static str>::new());
+        handle_run_event_exit(
+            false,
+            || calls.borrow_mut().push("teardown"),
+            || calls.borrow_mut().push("terminate"),
+        );
+        assert_eq!(*calls.borrow(), vec!["teardown", "terminate"]);
+
+        // User-initiated quit (tray Quit / `quit_app` / Cmd-Q / last window
+        // closed). `ExitRequested` already ran this teardown, and tauri's
+        // `cleanup_before_exit()` plus tao's own `process::exit(exit_code)`
+        // follow this callback — terminating here would skip both, taking the
+        // tray icon and window resources down with it.
+        let calls = RefCell::new(Vec::<&'static str>::new());
+        handle_run_event_exit(
+            true,
+            || calls.borrow_mut().push("teardown"),
+            || calls.borrow_mut().push("terminate"),
+        );
+        assert!(
+            calls.borrow().is_empty(),
+            "the app-initiated quit path must stay behaviourally unchanged"
         );
     }
 }

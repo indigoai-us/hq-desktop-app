@@ -126,6 +126,31 @@ pub fn app_exit_requested() -> bool {
     APP_EXIT_REQUESTED.load(Ordering::Acquire)
 }
 
+/// Raised only by the app's `RunEvent::ExitRequested` arm, i.e. only when the
+/// *app* asked to quit (tray Quit, `quit_app`, Cmd-Q, last window closed).
+///
+/// This is deliberately NOT `APP_EXIT_REQUESTED`: that flag is set inside
+/// `terminate_all_for_exit`, which the Windows session-end path also calls, so
+/// it cannot tell the two exits apart. This one can, because
+/// `RunEvent::ExitRequested` is never emitted for a Windows `WM_ENDSESSION`
+/// (tauri-runtime-wry raises it only when the last window is destroyed or on
+/// `Message::RequestExit`) — so `RunEvent::Exit` with this flag still false
+/// means the OS is ending the desktop session.
+static APP_INITIATED_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// Latch the app-initiated quit. One-way: an exit is never un-requested.
+pub fn note_app_initiated_exit() {
+    APP_INITIATED_EXIT.store(true, Ordering::Release);
+}
+
+/// Read by the Windows-only `RunEvent::Exit` arm (and by this crate's tests on
+/// every host); gated so a macOS/Linux release build does not carry it as dead
+/// code.
+#[cfg(any(target_os = "windows", test))]
+pub fn app_initiated_exit() -> bool {
+    APP_INITIATED_EXIT.load(Ordering::Acquire)
+}
+
 fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
@@ -793,6 +818,11 @@ pub fn terminate_pids_for_exit(pids: &[(String, u32)], _grace: Duration) {
 /// `RunEvent::ExitRequested` handler so closing HQ Sync (tray Quit, `quit_app`,
 /// or Cmd-Q) reliably stops the `--watch` sync daemon and any sidecar instead
 /// of orphaning them.
+///
+/// Windows session end (`WM_ENDSESSION`) never produces `ExitRequested`, so the
+/// session-end branch of `RunEvent::Exit` calls this too. Idempotent by
+/// construction: the registry empties as children are reaped, so a second call
+/// on a path that already ran is a no-op.
 pub fn terminate_all_for_exit(grace: Duration) {
     APP_EXIT_REQUESTED.store(true, Ordering::Release);
     terminate_pids_for_exit(&registered_pids(), grace);
@@ -1138,6 +1168,35 @@ mod process_error_tests {
         );
         assert_eq!(token, "not-found");
         assert!(!token.contains(tmp.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[cfg(test)]
+mod app_initiated_exit_tests {
+    use super::*;
+
+    /// The Windows session-end fix hangs off exactly one bit: was this exit
+    /// asked for by the app, or forced by the OS? This is the ONLY test in the
+    /// crate that writes `APP_INITIATED_EXIT`, and it asserts the unset state
+    /// before it writes — so the latch is proven to start false and to be
+    /// observable afterwards regardless of how the harness interleaves tests.
+    #[test]
+    fn app_initiated_exit_latches_once_the_exit_requested_arm_notes_it() {
+        assert!(
+            !app_initiated_exit(),
+            "a process that never reached ExitRequested must read as OS-forced"
+        );
+
+        note_app_initiated_exit();
+
+        assert!(
+            app_initiated_exit(),
+            "the Exit arm must observe the flag the ExitRequested arm set"
+        );
+
+        // One-way: re-noting cannot clear it.
+        note_app_initiated_exit();
+        assert!(app_initiated_exit());
     }
 }
 

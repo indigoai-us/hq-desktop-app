@@ -783,3 +783,282 @@ function runCommand(
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// Windows session end (HQ-DESKTOP-44)
+// ---------------------------------------------------------------------------
+
+/**
+ * The decision the app makes when tao delivers `RunEvent::Exit`.
+ *
+ * Mirrors `handle_run_event_exit` in `apps/sync/src-tauri/src/main.rs`. This is
+ * the scripted half of the coverage: macOS CI cannot drive a Windows session
+ * end, but it can still hold the decision itself to account, so an inverted
+ * branch fails somewhere other than only on a Windows runner.
+ */
+export interface SessionEndExitDecision {
+  /** Run the bounded observer-shutdown + child-termination + flush teardown. */
+  runTeardown: boolean;
+  /** Leave the process before tao's pump can dispatch into a destroyed runner. */
+  terminateProcess: boolean;
+  /** Why — fixed vocabulary, never free text from the environment. */
+  reason: 'os-session-end' | 'app-initiated-quit';
+}
+
+/**
+ * `appInitiated` is true exactly when `RunEvent::ExitRequested` already fired,
+ * which tauri-runtime-wry raises only for an app-driven quit (last window
+ * destroyed, or `Message::RequestExit` from `AppHandle::exit`). Windows
+ * `WM_ENDSESSION` raises neither, so a false flag at `Exit` means the OS is
+ * ending the desktop session.
+ */
+export function decideSessionEndExit(appInitiated: boolean): SessionEndExitDecision {
+  if (appInitiated) {
+    // tauri's `cleanup_before_exit()` and tao's own `process::exit` follow the
+    // callback; short-circuiting here would skip tray/window teardown.
+    return {
+      runTeardown: false,
+      terminateProcess: false,
+      reason: 'app-initiated-quit',
+    };
+  }
+  return {
+    runTeardown: true,
+    terminateProcess: true,
+    reason: 'os-session-end',
+  };
+}
+
+/** Content-safe outcome of a live session-end drive — counts and enums only. */
+export interface SessionEndLiveObservation {
+  /** Top-level windows the app owned when the session end was driven. */
+  windowCount: number;
+  queryEndSessionDelivered: number;
+  endSessionDelivered: number;
+  followUpPosted: number;
+  /** Process exit code, or null when it never exited inside the deadline. */
+  exitCode: number | null;
+  exitedWithinDeadline: boolean;
+  /** True when the fatal tao panic text appeared in captured output. */
+  observedDestroyedStatePanic: boolean;
+  /** True when any panic/abort marker appeared in captured output. */
+  observedAbortMarker: boolean;
+  /** Descendant processes the app still owned after it exited. */
+  survivingChildCount: number;
+  /** Descendants observed before the session end — 0 makes the above vacuous. */
+  observedChildCountBefore: number;
+}
+
+/** The exact panic tao raises from `move_state_to` once the runner is destroyed. */
+export const DESTROYED_STATE_PANIC = 'cannot move state from Destroyed';
+
+const ABORT_MARKERS = [
+  DESTROYED_STATE_PANIC,
+  'panicked at',
+  'STATUS_STACK_BUFFER_OVERRUN',
+  '0xc0000409',
+];
+
+export function findAbortMarker(output: string): string | null {
+  const haystack = output.toLowerCase();
+  return (
+    ABORT_MARKERS.find((marker) => haystack.includes(marker.toLowerCase())) ??
+    null
+  );
+}
+
+export interface SessionEndLiveMode {
+  enabled: boolean;
+  appPath: string | null;
+  /** Present when live was requested but cannot run — callers must FAIL, not skip. */
+  blockedReason?: string;
+}
+
+/**
+ * Resolve live session-end mode.
+ *
+ * Deliberately tri-state rather than a boolean: "requested but unrunnable" must
+ * be distinguishable from "not requested", because a silently skipped
+ * artifact proof reads exactly like a passing one.
+ */
+export function resolveSessionEndLiveMode(): SessionEndLiveMode {
+  const requested = process.env.HQ_SYNC_WINDOWS_SESSION_END_LIVE === '1';
+  if (!requested) {
+    return { enabled: false, appPath: null };
+  }
+  if (process.platform !== 'win32') {
+    return {
+      enabled: false,
+      appPath: null,
+      blockedReason:
+        'HQ_SYNC_WINDOWS_SESSION_END_LIVE=1 requires a Windows host to send WM_ENDSESSION',
+    };
+  }
+  const resolution = resolveLiveAppPath();
+  if (!resolution.appPath) {
+    return {
+      enabled: false,
+      appPath: null,
+      blockedReason:
+        resolution.reason ?? 'no built .exe configured for live session-end mode',
+    };
+  }
+  return { enabled: true, appPath: resolution.appPath };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Bounded poll: every wait in this harness carries an explicit deadline. */
+async function waitFor(
+  predicate: () => Promise<boolean>,
+  { timeoutMs, intervalMs }: { timeoutMs: number; intervalMs: number },
+): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    if (await predicate()) return true;
+    if (Date.now() >= until) return false;
+    await sleep(intervalMs);
+  }
+}
+
+async function powershell(
+  script: string,
+  timeoutMs: number,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return runCommand(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    { cwd: resolveSyncAppRoot(), timeoutMs },
+  );
+}
+
+async function countDescendants(pid: number): Promise<number> {
+  const result = await powershell(
+    `@(Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}").Count`,
+    15_000,
+  );
+  const parsed = Number.parseInt(result.stdout.trim(), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function ownsTopLevelWindow(pid: number): Promise<boolean> {
+  const result = await powershell(
+    `@(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).Count`,
+    15_000,
+  );
+  return result.stdout.trim().startsWith('1');
+}
+
+export interface DriveSessionEndOptions {
+  appPath: string;
+  /** How long the app gets to come up and own windows. */
+  startupTimeoutMs?: number;
+  /** How long the app gets to exit after the session end is driven. */
+  exitTimeoutMs?: number;
+}
+
+/**
+ * Launch the real binary, drive a Windows session end at it, and observe how it
+ * leaves.
+ *
+ * On the pre-fix build tao latches its runner in `Destroyed` and the follow-up
+ * message aborts the process — a non-zero exit plus the panic text. On the
+ * fixed build the app runs its teardown and exits 0 from inside the
+ * `WM_ENDSESSION` handler, before the pump gets another iteration.
+ */
+export async function driveWindowsSessionEnd(
+  options: DriveSessionEndOptions,
+): Promise<SessionEndLiveObservation> {
+  if (process.platform !== 'win32') {
+    throw new Error('driveWindowsSessionEnd requires a Windows host');
+  }
+
+  const startupTimeoutMs = options.startupTimeoutMs ?? 60_000;
+  const exitTimeoutMs = options.exitTimeoutMs ?? 30_000;
+
+  const child = spawn(options.appPath, [], {
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: process.env,
+  });
+
+  let captured = '';
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    captured += String(chunk);
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    captured += String(chunk);
+  });
+
+  let exitCode: number | null = null;
+  let exited = false;
+  child.on('exit', (code) => {
+    exited = true;
+    exitCode = code;
+  });
+
+  const pid = child.pid;
+  if (pid === undefined) {
+    throw new Error('failed to launch the app under test: no pid');
+  }
+
+  try {
+    const up = await waitFor(
+      async () => exited || (await ownsTopLevelWindow(pid)),
+      { timeoutMs: startupTimeoutMs, intervalMs: 1_000 },
+    );
+    if (!up || exited) {
+      throw new Error(
+        `app under test never reached a running state (exited=${exited}, code=${exitCode})`,
+      );
+    }
+    // Tauri's windows are created during setup; give the event loop a beat to
+    // own them before enumerating.
+    await sleep(3_000);
+
+    const observedChildCountBefore = await countDescendants(pid);
+
+    const driver = await powershell(
+      `& '${join(resolveSyncAppRoot(), 'scripts', 'windows-session-end-drive.ps1')}' -TargetProcessId ${pid}`,
+      60_000,
+    );
+    if (driver.exitCode !== 0) {
+      throw new Error(
+        `session-end driver failed (exit ${driver.exitCode}): ${driver.stderr.trim()}`,
+      );
+    }
+    const driven = JSON.parse(driver.stdout.trim()) as {
+      windowCount: number;
+      queryDelivered: number;
+      endDelivered: number;
+      followUpPosted: number;
+    };
+
+    const exitedWithinDeadline = await waitFor(async () => exited, {
+      timeoutMs: exitTimeoutMs,
+      intervalMs: 250,
+    });
+
+    const survivingChildCount = await countDescendants(pid);
+
+    return {
+      windowCount: driven.windowCount,
+      queryEndSessionDelivered: driven.queryDelivered,
+      endSessionDelivered: driven.endDelivered,
+      followUpPosted: driven.followUpPosted,
+      exitCode,
+      exitedWithinDeadline,
+      observedDestroyedStatePanic: captured.includes(DESTROYED_STATE_PANIC),
+      observedAbortMarker: findAbortMarker(captured) !== null,
+      survivingChildCount,
+      observedChildCountBefore,
+    };
+  } finally {
+    if (!exited) {
+      child.kill();
+    }
+  }
+}

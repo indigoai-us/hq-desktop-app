@@ -153,6 +153,68 @@ const boundaryContracts: BoundaryContract[] = [
     startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
     endMarker: "// Dock-icon click on the already-running app.",
   },
+  // ── HQ-DESKTOP-44: Windows session-end exit ──────────────────────────────
+  // `WM_ENDSESSION` leaves tao's runner latched in `Destroyed` with its
+  // message pump still live, so the next dispatched message panics out of an
+  // `extern "system"` window procedure and aborts. `RunEvent::Exit` is the one
+  // app-controlled instant before that dispatch. Each link below is pinned
+  // individually so deleting any one of them — the decision input, the
+  // teardown markers, the bounded flush, or the exit itself — fails loudly
+  // rather than silently restoring the crash.
+  // The decision function's own signature is NOT a hook here: it is this
+  // contract's start marker, and the mutation pass would then delete the very
+  // anchor the next contract resolves against. Its presence and its cfg gate
+  // are pinned by "confines the session-end process exit to the Windows build"
+  // instead, and `sourceBetween` already throws if the marker goes missing.
+  {
+    label: "session-end exit branch guard",
+    file: "main",
+    hook: "if app_initiated {",
+    startMarker: "fn handle_run_event_exit<S, T>",
+    endMarker: "fn main() {",
+  },
+  {
+    label: "session-end exit decision input",
+    file: "main",
+    hook: "commands::process::app_initiated_exit(),",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+  },
+  {
+    label: "session-end exit seam",
+    file: "main",
+    hook: "NativePanicSeam::AppSessionEndExit",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+  },
+  {
+    label: "session-end observer corroboration seam",
+    file: "main",
+    hook: "NativePanicSeam::AppSessionEndObserved",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+    // Read while the observer can still affirm: `shutdown` moves its readiness
+    // to `Stopped`, which `attribution_now` reports as `ObserverFailed`.
+    afterMarkers: ["NativePanicSeam::AppSessionEndExit"],
+  },
+  {
+    label: "session-end bounded sentry flush",
+    file: "main",
+    hook: "hq_telemetry::flush_within(",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+    // Children first: at shutdown the network may already be gone, and an
+    // orphaned sync daemon is worse than a dropped report.
+    afterMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
+    label: "session-end process exit",
+    file: "main",
+    hook: "|| std::process::exit(0),",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+    afterMarkers: ["hq_telemetry::flush_within("],
+  },
   {
     label: "tray-left-click seam",
     file: "tray",
@@ -279,6 +341,8 @@ describe("native panic seam wiring", () => {
             "WindowThemeChanged",
             "SingleInstanceSurfaceExisting",
             "AppExitRequested",
+            "AppSessionEndExit",
+            "AppSessionEndObserved",
           ],
         ],
       ],
@@ -306,6 +370,34 @@ describe("native panic seam wiring", () => {
 
   it("binds every seam and lifecycle phase to its production boundary", () => {
     expect(productionBoundaryErrors(currentSources())).toEqual([]);
+  });
+
+  // The session-end fast exit is a Windows-only remedy for a Windows-only tao
+  // defect. On macOS and Linux it would be a regression: it skips tauri's
+  // `cleanup_before_exit()`, which tears down the tray icon and hides windows.
+  it("confines the session-end process exit to the Windows build", () => {
+    const exitArm = sourceBetween(
+      main,
+      "if matches!(&event, tauri::RunEvent::Exit) {",
+      "// Dock-icon click on the already-running app.",
+    );
+
+    expect(
+      /#\[cfg\(target_os = "windows"\)\]\s*handle_run_event_exit\(/.test(exitArm),
+      "the RunEvent::Exit fast path must be gated to the Windows build",
+    ).toBe(true);
+
+    // The only process exit anywhere in main.rs is that gated one — nothing
+    // else in the app may short-circuit tauri's teardown.
+    expect(countOccurrences(main, "std::process::exit")).toBe(1);
+    expect(countOccurrences(exitArm, "std::process::exit")).toBe(1);
+
+    // The decision function itself must stay compiled out of a non-Windows
+    // release build (it remains available under `test` so both branches are
+    // covered by the macOS Rust job).
+    expect(main).toContain(
+      '#[cfg(any(target_os = "windows", test))]\nfn handle_run_event_exit<S, T>',
+    );
   });
 
   it("rejects deletion and same-file relocation at every production boundary", () => {
