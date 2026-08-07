@@ -55,7 +55,8 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::commands::personal::PERSONAL_VAULT_JOURNAL_SLUG;
-use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
+use crate::commands::run_cli_provision::{CliProvisionError, CliProvisionResult};
+use crate::commands::sync::{repair_managed_node, resolve_jwt, resolve_vault_api_url, ToolchainRepair};
 use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
 use crate::util::logfile::log;
 
@@ -297,6 +298,16 @@ where
         let role = membership_for_slug.and_then(|m| m.role.clone());
         let invited_by = membership_for_slug.and_then(|m| m.invited_by.clone());
         let invited_at = membership_for_slug.and_then(|m| m.invited_at.clone());
+        // White-label brand rides the membership enrichment (US-005). Absent
+        // entitlement or brand → HQ defaults; never an error.
+        let branding_enabled = membership_for_slug
+            .map(|m| m.branding_enabled)
+            .unwrap_or(false);
+        let brand = if branding_enabled {
+            membership_for_slug.and_then(|m| m.brand.clone())
+        } else {
+            None
+        };
 
         let (state, cloud_uid, bucket_name, broken_reason) = match (&entry.cloud_uid, cloud_entity_for_slug, cloud_reachable) {
             // Manifest says connected, cloud confirms (UIDs match) → Synced.
@@ -366,6 +377,8 @@ where
                 broken_reason,
                 invited_by,
                 invited_at,
+                branding_enabled,
+                brand,
             },
         );
     }
@@ -399,6 +412,12 @@ where
                     .and_then(|e| e.display_name.clone())
             })
             .unwrap_or_else(|| humanize_slug(&entity.slug));
+        let branding_enabled = mem.branding_enabled;
+        let brand = if branding_enabled {
+            mem.brand.clone()
+        } else {
+            None
+        };
         by_slug.insert(
             entity.slug.clone(),
             Workspace {
@@ -417,6 +436,8 @@ where
                 broken_reason: None,
                 invited_by: mem.invited_by.clone(),
                 invited_at: mem.invited_at.clone(),
+                branding_enabled,
+                brand,
             },
         );
     }
@@ -454,6 +475,9 @@ where
         broken_reason: None,
         invited_by: None,
         invited_at: None,
+        // Personal vault never carries tenant branding.
+        branding_enabled: false,
+        brand: None,
     });
 
     ordered.extend(by_slug.into_values());
@@ -538,6 +562,9 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                 company_name: None,
                 invited_by: inv.invited_by.clone(),
                 invited_at: inv.invited_at.clone(),
+                // Synthesized pending-invite rows never carry branding.
+                branding_enabled: false,
+                brand: None,
             });
         }
 
@@ -804,6 +831,83 @@ fn capture_connect_error(slug: &str, reason: &str, message: &str) {
     );
 }
 
+// ── Managed-Node self-repair on the Connect path ──────────────────────────────
+
+/// The one provision failure HQ can repair by itself.
+///
+/// `runtime_diagnosis::diagnose` only emits `"node-missing"` when the machine
+/// is *proven* to have no Node at all — managed runtime `NotProvisioned` plus
+/// both the `node` and `npx` probes returning `NotFound`. That is exactly the
+/// state HQ's own bundled installer exists to fix, so it is the only error
+/// worth re-attempting. Every other variant (including `"npx-unavailable"`,
+/// where a user-owned Node exists but its `npx` shim is broken) is left alone:
+/// reinstalling HQ's managed Node would not repair someone else's install.
+fn is_self_repairable_node_gap(err: &CliProvisionError) -> bool {
+    matches!(err, CliProvisionError::LocalEnv { kind, .. } if *kind == "node-missing")
+}
+
+/// Whether a repair outcome earns the single retry.
+///
+/// `Failed` and `Skipped` deliberately do not retry — re-spawning against the
+/// same missing runtime would just reproduce the identical failure one screen
+/// later, and `Skipped` means the cooldown already refused this machine.
+fn repair_earns_retry(repair: &ToolchainRepair) -> bool {
+    matches!(repair, ToolchainRepair::Repaired)
+}
+
+/// Run a provision, and if it fails only because the machine has no Node,
+/// install HQ's managed Node once and retry exactly once.
+///
+/// Generic over the two effects so the policy is testable without an
+/// `AppHandle` or a real download. The invariant this encodes: **at most one
+/// repair attempt and one re-spawn per Connect click**. A machine that cannot
+/// install Node must terminate in the `node-missing` local-env error — which
+/// still renders the "Install Node.js" / "Fix in Claude Code" affordance —
+/// rather than looping on the download.
+async fn provision_with_node_self_repair<P, PFut, R, RFut>(
+    slug: &str,
+    provision: P,
+    repair: R,
+) -> Result<CliProvisionResult, CliProvisionError>
+where
+    P: Fn() -> PFut,
+    PFut: std::future::Future<Output = Result<CliProvisionResult, CliProvisionError>>,
+    R: FnOnce() -> RFut,
+    RFut: std::future::Future<Output = ToolchainRepair>,
+{
+    let first = provision().await;
+    let Err(err) = first else {
+        return first;
+    };
+    if !is_self_repairable_node_gap(&err) {
+        return Err(err);
+    }
+
+    log(
+        "workspaces",
+        &format!("connect '{slug}': no Node runtime — installing HQ's managed Node before retry"),
+    );
+    let repair_outcome = repair().await;
+    if !repair_earns_retry(&repair_outcome) {
+        log(
+            "workspaces",
+            &format!(
+                "connect '{slug}': managed Node repair did not complete ({repair_outcome:?}) — surfacing the setup gap"
+            ),
+        );
+        // Surface the ORIGINAL diagnosis, not the repair's own error. The
+        // frontend parses this Display string to pick the repair affordance,
+        // and the honest user-facing state is still "no Node runtime".
+        return Err(err);
+    }
+
+    log(
+        "workspaces",
+        &format!("connect '{slug}': managed Node installed — retrying provision once"),
+    );
+    provision().await
+}
+
 // ── Tauri command: connect_workspace_to_cloud ─────────────────────────────────
 
 /// Provision a cloud bucket for the given local company `slug` by delegating
@@ -827,8 +931,16 @@ fn capture_connect_error(slug: &str, reason: &str, message: &str) {
 /// `vault_client.rs` entity functions (`find_entity_by_slug`, `create_entity`,
 /// `provision_bucket`) are intentionally NOT used here anymore; they remain
 /// for membership lookups, telemetry, and STS vending elsewhere in the app.
+///
+/// `app` is injected by Tauri from the command signature — the frontend's
+/// `invoke('connect_workspace_to_cloud', { slug })` payload is unchanged. It is
+/// needed only to reach `sync::repair_managed_node`, which installs HQ's own
+/// Node when the provision fails purely because the machine has none.
 #[tauri::command]
-pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
+pub async fn connect_workspace_to_cloud(
+    app: tauri::AppHandle,
+    slug: String,
+) -> Result<(), String> {
     log("workspaces", &format!("connect: slug='{slug}' start"));
     if slug.is_empty() {
         let err = "slug is required".to_string();
@@ -894,10 +1006,16 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
         ),
     );
 
-    match crate::commands::run_cli_provision::run_cli_provision(
+    match provision_with_node_self_repair(
         &slug,
-        Some(&display_name),
-        &hq_root,
+        || {
+            crate::commands::run_cli_provision::run_cli_provision(
+                &slug,
+                Some(&display_name),
+                &hq_root,
+            )
+        },
+        || repair_managed_node(&app),
     )
     .await
     {
@@ -923,6 +1041,218 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod node_self_repair_tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::commands::run_cli_provision::CliInitialSync;
+
+    fn ok_result() -> CliProvisionResult {
+        CliProvisionResult {
+            ok: true,
+            company_slug: "acme".into(),
+            cloud_uid: "co_1".into(),
+            bucket_name: "hq-vault-co-1".into(),
+            vault_api_url: "https://vault.example".into(),
+            kms_key_id: None,
+            created_entity: true,
+            manifest_patched: true,
+            config_written: true,
+            initial_sync: CliInitialSync {
+                ok: None,
+                files_uploaded: None,
+                bytes_uploaded: None,
+                error: None,
+                skipped: Some(true),
+            },
+        }
+    }
+
+    fn node_missing() -> CliProvisionError {
+        CliProvisionError::LocalEnv {
+            kind: "node-missing",
+            detail: "Install Node.js and reopen HQ Sync, then retry Connect.".into(),
+        }
+    }
+
+    /// Drive the policy with counted effects.
+    ///
+    /// `provision_outcomes` is consumed one entry per attempt, so a test that
+    /// declares two outcomes and observes only one attempt proves the retry did
+    /// not fire (and vice versa).
+    async fn run(
+        provision_outcomes: Vec<Result<CliProvisionResult, CliProvisionError>>,
+        repair: ToolchainRepair,
+    ) -> (
+        Result<CliProvisionResult, CliProvisionError>,
+        usize,
+        usize,
+    ) {
+        let mut queue = provision_outcomes.into_iter();
+        let attempts = Cell::new(0usize);
+        let repairs = Cell::new(0usize);
+        let queue = std::cell::RefCell::new(&mut queue);
+
+        let out = provision_with_node_self_repair(
+            "acme",
+            || {
+                attempts.set(attempts.get() + 1);
+                let next = queue
+                    .borrow_mut()
+                    .next()
+                    .expect("provision called more times than the test allowed");
+                async move { next }
+            },
+            || {
+                repairs.set(repairs.get() + 1);
+                async move { repair }
+            },
+        )
+        .await;
+
+        (out, attempts.get(), repairs.get())
+    }
+
+    #[tokio::test]
+    async fn a_successful_provision_never_touches_the_installer() {
+        let (out, attempts, repairs) = run(vec![Ok(ok_result())], ToolchainRepair::Repaired).await;
+        assert!(out.is_ok());
+        assert_eq!(attempts, 1);
+        assert_eq!(repairs, 0, "a working machine must not download Node");
+    }
+
+    /// The reported HQ-DESKTOP-49 machine: no Node at all. HQ installs its own
+    /// and the retry completes the Connect the user asked for.
+    #[tokio::test]
+    async fn node_missing_installs_managed_node_then_retries_exactly_once() {
+        let (out, attempts, repairs) =
+            run(vec![Err(node_missing()), Ok(ok_result())], ToolchainRepair::Repaired).await;
+        assert!(out.is_ok(), "the retry after a successful repair must land");
+        assert_eq!(attempts, 2, "exactly one re-spawn");
+        assert_eq!(repairs, 1, "exactly one repair attempt");
+    }
+
+    /// One repair, one retry — and if that retry still fails, it terminates.
+    /// This is the bound that stops a machine which cannot install Node from
+    /// turning one Connect click into a download loop.
+    #[tokio::test]
+    async fn a_failing_retry_is_not_repaired_again() {
+        let (out, attempts, repairs) = run(
+            vec![Err(node_missing()), Err(node_missing())],
+            ToolchainRepair::Repaired,
+        )
+        .await;
+        assert!(matches!(
+            out,
+            Err(CliProvisionError::LocalEnv { kind: "node-missing", .. })
+        ));
+        assert_eq!(attempts, 2);
+        assert_eq!(repairs, 1, "the repair is attempted at most once per Connect");
+    }
+
+    #[tokio::test]
+    async fn a_failed_repair_surfaces_the_node_missing_gap_without_retrying() {
+        let (out, attempts, repairs) = run(
+            vec![Err(node_missing())],
+            ToolchainRepair::Failed("download timed out".into()),
+        )
+        .await;
+        let err = out.expect_err("a machine with no Node cannot connect");
+        // The user-facing string keeps the IPC prefix the frontend parses, so
+        // the row still renders "Install Node.js" + "Fix in Claude Code".
+        assert_eq!(
+            err.to_string(),
+            "local environment failure (node-missing): \
+             Install Node.js and reopen HQ Sync, then retry Connect."
+        );
+        assert_eq!(attempts, 1, "no retry against a still-missing runtime");
+        assert_eq!(repairs, 1);
+    }
+
+    /// `Skipped` means the cooldown refused this machine — the honest outcome
+    /// is the same terminal, actionable error, not a second download.
+    #[tokio::test]
+    async fn a_cooldown_skipped_repair_surfaces_the_gap_without_retrying() {
+        let (out, attempts, repairs) =
+            run(vec![Err(node_missing())], ToolchainRepair::Skipped).await;
+        assert!(matches!(
+            out,
+            Err(CliProvisionError::LocalEnv { kind: "node-missing", .. })
+        ));
+        assert_eq!(attempts, 1);
+        assert_eq!(repairs, 1);
+    }
+
+    /// `npx-unavailable` means the machine HAS a Node the user owns whose npx
+    /// shim is broken. Reinstalling HQ's managed Node would not repair it, so
+    /// the installer must stay out of that path.
+    #[tokio::test]
+    async fn npx_unavailable_is_not_self_repairable() {
+        let (out, attempts, repairs) = run(
+            vec![Err(CliProvisionError::LocalEnv {
+                kind: "npx-unavailable",
+                detail: "Repair or reinstall Node.js and reopen HQ Sync, then retry Connect."
+                    .into(),
+            })],
+            ToolchainRepair::Repaired,
+        )
+        .await;
+        assert!(matches!(
+            out,
+            Err(CliProvisionError::LocalEnv { kind: "npx-unavailable", .. })
+        ));
+        assert_eq!(attempts, 1);
+        assert_eq!(repairs, 0);
+    }
+
+    /// Every other failure mode is untouched — a vault outage or a bad slug
+    /// must never trigger a Node download.
+    #[tokio::test]
+    async fn unrelated_failures_never_trigger_a_node_install() {
+        for err in [
+            CliProvisionError::Network("503 from vault".into()),
+            CliProvisionError::Validation("bad slug".into()),
+            CliProvisionError::Spawn("npx: No such file or directory (os error 2)".into()),
+            CliProvisionError::Other("exit 0 but no cloud_uid".into()),
+            CliProvisionError::LocalEnv {
+                kind: "npm-cache-permission",
+                detail: "npm cache is not writable".into(),
+            },
+            CliProvisionError::LocalEnv {
+                kind: "disk-full",
+                detail: "no space left on device".into(),
+            },
+            CliProvisionError::LocalEnv {
+                kind: "npm-registry-unreachable",
+                detail: "registry.npmjs.org unreachable".into(),
+            },
+            CliProvisionError::LocalEnv {
+                kind: "npm-registry-timeout",
+                detail: "registry request timed out".into(),
+            },
+        ] {
+            let expected = err.to_string();
+            let (out, attempts, repairs) = run(vec![Err(err)], ToolchainRepair::Repaired).await;
+            assert_eq!(out.expect_err("still an error").to_string(), expected);
+            assert_eq!(attempts, 1, "no retry for {expected}");
+            assert_eq!(repairs, 0, "no Node download for {expected}");
+        }
+    }
+
+    #[test]
+    fn only_a_proven_missing_runtime_is_self_repairable() {
+        assert!(is_self_repairable_node_gap(&node_missing()));
+        assert!(!is_self_repairable_node_gap(&CliProvisionError::LocalEnv {
+            kind: "npx-unavailable",
+            detail: "x".into(),
+        }));
+        assert!(repair_earns_retry(&ToolchainRepair::Repaired));
+        assert!(!repair_earns_retry(&ToolchainRepair::Skipped));
+        assert!(!repair_earns_retry(&ToolchainRepair::Failed("x".into())));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -971,6 +1301,8 @@ mod tests {
             company_name: None,
             invited_by: Some(person_uid.into()),
             invited_at: Some("2026-03-01T00:00:00Z".into()),
+            branding_enabled: false,
+            brand: None,
         }
     }
 

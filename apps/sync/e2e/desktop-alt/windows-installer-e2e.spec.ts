@@ -18,6 +18,13 @@ const dependencyInstaller = readFileSync(
 const ciOverlay = JSON.parse(
   readFileSync(appUrl('src-tauri/tauri.windows.ci.conf.json'), 'utf8'),
 );
+const windowsConf = JSON.parse(
+  readFileSync(appUrl('src-tauri/tauri.windows.conf.json'), 'utf8'),
+);
+const installerHooks = readFileSync(
+  appUrl('src-tauri/windows/installer-hooks.nsh'),
+  'utf8',
+);
 
 describe('Windows production installer E2E', () => {
   it('builds MSI and NSIS packages with the release and MSI version overlays', () => {
@@ -42,6 +49,30 @@ describe('Windows production installer E2E', () => {
     expect(installerHarness).toContain('-Filter "hq-sync-menubar.exe"');
     expect(installerHarness).toContain('if ($machine -ne 0x8664)');
     expect(installerHarness).toContain('NSIS uninstaller exited with code');
+  });
+
+  it('stops HQ processes before install and uninstall so locked files never break setup', () => {
+    // 2026-08-02 field failure: NSIS died with "Error opening file for
+    // writing" on hq-sync-menubar.exe because HQ processes still ran from the
+    // install directory. The hooks must ship in the Windows bundle config and
+    // fire on BOTH install and uninstall so a fresh setup self-heals over a
+    // corrupted prior install.
+    expect(windowsConf.bundle?.windows?.nsis?.installerHooks).toBe(
+      './windows/installer-hooks.nsh',
+    );
+    expect(installerHooks).toContain('NSIS_HOOK_PREINSTALL');
+    expect(installerHooks).toContain('NSIS_HOOK_PREUNINSTALL');
+    expect(installerHooks).toContain('HQ_STOP_INSTALL_DIR_PROCESSES');
+    // No tree kill (/T) on the app: when the in-app updater launches the
+    // installer, the installer is a descendant of hq-sync-menubar.exe and a
+    // tree kill would terminate the installer itself mid-update.
+    expect(installerHooks).toContain('taskkill /F /IM "hq-sync-menubar.exe"');
+    expect(installerHooks).not.toContain('/T /IM "hq-sync-menubar.exe"');
+    expect(installerHooks).toContain('taskkill /F /T /IM "recall-desktop-sdk.exe"');
+    // The generic sweep is path-scoped to the install directory. A blanket
+    // image-name kill of node.exe would murder unrelated user processes.
+    expect(installerHooks).toContain('-like \\"$INSTDIR\\*\\"');
+    expect(installerHooks).not.toMatch(/\/IM\s+"?node\.exe/);
   });
 
   it('provisions Node from HQ\'s verified per-user toolchain on Windows', () => {

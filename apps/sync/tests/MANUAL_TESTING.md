@@ -245,7 +245,14 @@ pkill -f "hq-sync-menubar" || true
 
 - [ ] 7. Force a system-prefix install (point the resolver at a `/usr/local`-style npm the user can't write). With auto-update on, the auto-install fails `EACCES`; log shows `auto-update failed, banner remains: …`; the clickable banner stays up.
 - [ ] 8. Confirm a scrubbed Sentry event was captured (`hq_cli_update_kind=install-failed`, `eacces=true`) — no tokens or home paths in the payload.
-- [ ] 9. Uninstall `hq` entirely → no banner and no Sentry nag (the "user simply has no CLI" case stays quiet). Re-install a stale build but make every version probe fail → log shows the check ran and a Sentry `version-unreadable` event is captured for triage.
+- [ ] 9. Uninstall `hq` entirely. The app shows no CLI-update banner and sends no `version-unreadable` Sentry event.
+
+**Unreadable-version Sentry envelope (HQ-DESKTOP-3P):**
+
+- [ ] 10. On a macOS runner, set `HQ_SYNC_SENTRY_DSN` to a local envelope collector and use an isolated test home. Put executable `hq` and `npm` wrappers in the managed-toolchain search path: `hq` must sit outside an `@indigoai-us/hq-cli` package and exit nonzero for `--version`; `npm root -g` must also exit nonzero. Launch the packaged HQ.app for at most 30 seconds.
+- [ ] 11. The collector receives the existing Warning-level `version-unreadable` event. Its tags remain `hq_cli_update_kind=version-unreadable` and `latest=<registry version>`. The `hq_cli_version_probes` extra has `binary_anchor=package_not_found`, `npm_root=nonzero_exit`, and `hq_version=nonzero_exit`; it contains no test-home path, wrapper output, username, token, or other secret.
+- [ ] 12. Remove both wrappers and launch once more. The collector receives no `version-unreadable` event and the app shows no CLI-update banner.
+- [ ] 13. Replace the wrappers with a valid managed-toolchain `@indigoai-us/hq-cli` package and symlinked `hq`. The app reads the package version without sending the warning.
 
 **Expected outcome:** The banner appears whenever an update exists, independent of npm prefix and event timing; the CLI auto-updates by default with a working off-switch; failures fall back to a clickable banner and are captured in Sentry for immediate triage.
 

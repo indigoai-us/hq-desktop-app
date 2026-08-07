@@ -19,6 +19,7 @@ const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
 const appUpdater = read('src-tauri/src/updater.rs');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+const ciWorkflow = read('../../.github/workflows/ci.yml');
 const settingsRs = read('src-tauri/src/commands/settings.rs');
 
 describe('master automatic-updates switch', () => {
@@ -57,6 +58,29 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain('should_raise_transient_update_surface');
   });
 
+  it('Windows never installs updates silently in the background (2026-08-02 field failure)', () => {
+    // NSIS cannot overwrite files held open by the running app/sidecar, so a
+    // silent background install on Windows can destroy the installation.
+    // Background discovery must route through the platform gate and Windows
+    // must announce instead of install.
+    expect(appUpdater).toContain('fn silent_install_supported()');
+    expect(appUpdater).toContain('!cfg!(target_os = "windows")');
+    expect(appUpdater).toContain('silent_install_supported(),');
+    expect(appUpdater).toContain(
+      'match (automatic_updates && silent_install_supported, sync_in_progress)',
+    );
+    // The hard version gate is a second background install path and must
+    // respect the same platform gate: on Windows the blocking modal stays up
+    // and the user installs through the guarded manual flow.
+    const versionGate = read('src-tauri/src/commands/version_gate.rs');
+    expect(versionGate).toContain(
+      'if !crate::updater::silent_install_supported() {',
+    );
+    expect(versionGate).toContain(
+      'blocking modal stays up for manual install',
+    );
+  });
+
   it('App keeps the shared preference hydrated for Core updates', () => {
     const a = normalize(app);
     // Reads the pref (default on) + refreshes it on focus.
@@ -81,6 +105,21 @@ describe('master automatic-updates switch', () => {
     expect(settingsRs).toContain('auto_update: Some(prefs.auto_update.unwrap_or(true))');
   });
 
+  it('the CLI installer coalesces overlapping backend requests before episode ownership', () => {
+    const commandStart = cliUpdate.indexOf('pub async fn install_hq_cli_update(');
+    const onceStart = cliUpdate.indexOf('async fn install_hq_cli_update_once(');
+    const command = cliUpdate.slice(commandStart, onceStart);
+    const oneShot = cliUpdate.slice(onceStart);
+
+    expect(cliUpdateCore).toContain('pub struct AsyncSingleFlight');
+    expect(normalize(command)).toContain(
+      '.run(move || install_hq_cli_update_once(app)) .await',
+    );
+    expect(command).not.toContain('non_convergent_cli_version()');
+    expect(oneShot).toContain('let non_convergent_version = non_convergent_cli_version();');
+    expect(oneShot).toContain('run_npm_install_with_retries(&npm');
+  });
+
   it('the CLI auto-installer cannot loop on an install that never converges', () => {
     // A prod app spent weeks reinstalling the same CLI version on every launch
     // and every 6h check: npm exited 0 into a prefix nothing read, so the
@@ -90,29 +129,37 @@ describe('master automatic-updates switch', () => {
     // 1. A zero exit is not success — the version must reach `latest`, decided
     //    by a single predicate (`install_converged`) rather than a second
     //    hand-rolled comparison that could drift from it.
-    expect(cliUpdate).toContain('verify_active_cli_version(resolved.clone(), &latest)');
-    expect(cliUpdate).toContain('install_converged(Some(&local), latest)');
+    expect(cliUpdateCore).toContain('pub fn decide_post_install(');
+    expect(cliUpdate).toContain('let outcome = decide_post_install(');
+    expect(cliUpdate).toContain('apply_post_install(outcome, &effects)');
     // The old code fabricated `latest` as the local version when detection came
     // back empty, which is precisely what made a failed install read as a win.
     expect(cliUpdate).not.toContain('.or_else(|| Some(latest.clone()))');
 
-    // 2. A non-convergent install is recorded and reported, not swallowed.
-    expect(cliUpdate).toContain('record_non_convergent_version(&latest);');
-    expect(cliUpdate).toContain('report_non_convergent_install(');
+    // 2. A non-convergent install is recorded before it may be reported. The
+    //    executor owns this ordering, so a failed marker write fails closed.
+    expect(cliUpdate).toContain('struct PostInstallEffects');
+    expect(cliUpdateCore).toContain('capture_requires_durable_record');
+    expect(cliUpdate).toContain('report_non_convergent_marker_unpersisted()');
+    expect(cliUpdateCore).toContain('NonConvergenceKind::ForeignManaged');
     // 3. ...and the background loop consults that record before reinstalling.
     expect(normalize(cliUpdate)).toContain(
       'if should_auto_install( &info.latest, non_convergent_cli_version().as_deref(), )',
     );
     // A convergent install must clear the block so a later version is never
     // gated by a condition the user has since fixed.
-    expect(cliUpdate).toContain('clear_non_convergent_version();');
+    expect(cliUpdate).toContain('let clear = || clear_non_convergent_version();');
 
     // 4. Convergence is judged on the binary the app EXECUTES. Using
     //    `get_local_version` here would accept its `npm root -g` fallback —
     //    which, for the very pnpm/Homebrew layouts this guards, reports the copy
     //    npm just wrote while the resolved executable is untouched. That trades
     //    a loud reinstall loop for a silent "up to date" lie.
-    expect(cliUpdate).toContain('resolved_hq_version(&hq)');
+    const installCall = 'run_npm_install_with_retries(&npm';
+    const afterInstall = cliUpdate.slice(cliUpdate.indexOf(installCall));
+    expect(afterInstall).toContain('let post_install_hq = paths::resolve_bin("hq");');
+    expect(afterInstall).toContain('resolved_hq_version(&hq)');
+    expect(afterInstall).toContain('before_version.as_deref()');
     // The gate must be fed the execution-bound probe, never `get_local_version`'s
     // `npm root -g` fallback — that reading moves to `latest` for exactly the
     // pnpm/Homebrew layouts this guards, while the resolved binary stays stale.
@@ -120,8 +167,95 @@ describe('master automatic-updates switch', () => {
 
     // 5. The target is pinned BEFORE npm runs, so a release published mid-install
     //    cannot get recorded as non-convergent without ever being attempted.
-    const beforeInstall = cliUpdate.slice(0, cliUpdate.indexOf('run_npm_install(&npm, &path, base_args.clone())'));
+    const retryInstall = cliUpdate.indexOf(installCall);
+    expect(retryInstall).toBeGreaterThan(-1);
+    const beforeInstall = cliUpdate.slice(0, retryInstall);
     expect(beforeInstall).toContain('let latest = fetch_latest().await?;');
+    expect(beforeInstall).toContain('let non_convergent_version = non_convergent_cli_version();');
+    expect(normalize(beforeInstall)).toContain(
+      'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);',
+    );
+    // A marker for version A must not suppress the first durable episode for
+    // newly-published version B. The shared predicate is the exact-version
+    // source of truth for both the background gate and the install command.
+    expect(cliUpdateCore).toContain('pub fn non_convergent_episode_blocked(');
+    expect(cliUpdate).toContain('non_convergent_episode_blocked(');
+  });
+
+  it('the pnpm executor shares the npm executor’s convergence contract', () => {
+    // HQ-DESKTOP-46 era 2: on hq-sync 0.10.69 the pnpm branch exited 0 without
+    // moving ~/Library/pnpm/bin/hq, and it reached the reporter through its own
+    // legacy call — no durable-marker gate, no episode bounding, and hardcoding
+    // `prefix = None` into an npm-shaped payload so the event rendered as an
+    // npm default-prefix run. Both executors now go through one seam.
+    const pnpmStart = cliUpdate.indexOf('async fn install_hq_cli_update_via_pnpm(');
+    expect(pnpmStart).toBeGreaterThan(-1);
+    const pnpmBranch = cliUpdate.slice(
+      pnpmStart,
+      cliUpdate.indexOf('fn apply_post_install_with_app('),
+    );
+    // Routed through the shared decision + effects seam...
+    expect(pnpmBranch).toContain('decide_post_install(&PostInstallContext {');
+    expect(pnpmBranch).toContain('executor: InstallExecutor::Pnpm,');
+    expect(pnpmBranch).toContain('apply_post_install_with_app(app, &outcome)');
+    // ...not the legacy unconditional record-then-report pair it used before.
+    expect(pnpmBranch).not.toContain('record_non_convergent_version(latest)');
+    expect(pnpmBranch).not.toContain('report_non_convergent_install(');
+    // Episode bounding is sampled before EITHER executor spawns.
+    expect(normalize(cliUpdate)).toContain(
+      'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest); return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;',
+    );
+    // Convergence is judged by re-resolving the binary the app executes, the
+    // same rule the npm branch follows — not by trusting pnpm's zero exit.
+    expect(pnpmBranch).toContain('let post_install_hq = paths::resolve_bin("hq");');
+
+    // The candidate cause: `child_path()` never contains `<pnpm-home>/bin`, so
+    // the spawned pnpm could resolve a different global dir than the app did.
+    expect(pnpmBranch).toContain('let pnpm_env = pnpm_global_env(hq);');
+    expect(pnpmBranch).toContain('cmd.env("PNPM_HOME", home);');
+    expect(pnpmBranch).toContain('pnpm_child_path(');
+    expect(cliUpdateCore).toContain('pub fn pnpm_global_env(');
+    // Derivation stays anchored to the resolved shim — an underivable layout
+    // must spawn pnpm exactly as before rather than inventing a home.
+    expect(cliUpdateCore).toContain('PnpmHomeSource::Undetermined');
+  });
+
+  it('a non-convergent capture names which package manager ran', () => {
+    // The three live 2026-08-06 events could not be attributed: same
+    // fingerprint, no executor tag, and an `npm_prefix` extra that was actively
+    // wrong for a pnpm run.
+    const core = normalize(cliUpdateCore);
+    expect(core).toContain('scope.set_tag("install_executor", executor.telemetry_value());');
+    expect(core).toContain('scope.set_tag( "pnpm_home_source",');
+    expect(core).toContain('scope.set_tag( "pnpm_home_env_present",');
+    expect(core).toContain('scope.set_tag( "pnpm_path_has_shim_dir",');
+    expect(core).toContain('scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());');
+    // The grouping must NOT split: a new tag that forked the fingerprint would
+    // make the issue look resolved while the same defect kept occurring.
+    expect(cliUpdateCore).toContain(
+      'scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));',
+    );
+  });
+
+  it('Rust CI cannot repair a stale lockfile before checking it', () => {
+    expect(ciWorkflow).toContain('cargo test --workspace --locked');
+    expect(ciWorkflow).toMatch(/working-directory: apps\/sync\/src-tauri\s+run: cargo test --locked/);
+  });
+
+  it('the CLI installer keeps its bounded retry ladder and final-attempt context', () => {
+    // The live install path must go through the four-attempt bounded ladder,
+    // rather than bypassing its causal `--force` bookkeeping. That context is
+    // what lets the core classifier distinguish a collision that survived npm's
+    // remedy from an initial EEXIST that is still unexpected and loud.
+    expect(cliUpdate).toContain('const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;');
+    expect(cliUpdate).toContain('run_npm_install_with_retries(');
+    expect(cliUpdate).toContain('"cleanup-forced-bin-collision"');
+    expect(cliUpdate).toContain('let final_attempt_forced = ledger.last().is_some_and');
+    expect(cliUpdate).toContain('classify_install_failure_with_final_attempt(');
+    expect(cliUpdate).toContain('report_install_failure_with_final_attempt(');
+    expect(normalize(cliUpdateCore)).toContain(
+      'scope.set_tag( "npm_final_attempt_forced",',
+    );
   });
 
   it('the non-convergent remedy reaches the user instead of the generic retry copy', () => {
@@ -135,14 +269,33 @@ describe('master automatic-updates switch', () => {
     expect(settings).toContain('{#if (!hqCliVersion || hqCliUpdateError) && !hqCliNonConvergent}');
     // The marker the UI keys off must match the constant the Rust side emits.
     expect(cliUpdate).toContain('NON_CONVERGENT_ERROR_PREFIX');
+    // Both executors emit that marker, but the pnpm remedy differs: telling a
+    // user to "update it with the tool that installed it" is a dead end when
+    // the app just ran that tool and pnpm still did not converge.
+    expect(cliUpdateCore).toContain('InstallExecutor::Pnpm => format!(');
+    expect(cliUpdateCore).toContain('pnpm bin -g');
   });
 
-  it('CLI updater telemetry carries the install layout, never the account name', () => {
+  it('CLI updater telemetry carries only path-free install diagnostics', () => {
     // `before_send` scrubs by KEY name only, so these ordinary string extras
     // would otherwise ship `/Users/<name>/…` to Sentry verbatim.
     expect(cliUpdateCore).toContain('scope.set_extra("hq_bin", redact_home(hq_bin).into());');
     expect(cliUpdateCore).toContain('redact_home(prefix.unwrap_or("npm default prefix"))');
-    // npm stderr quotes absolute paths in its EACCES/ENOTEMPTY messages too.
-    expect(cliUpdateCore).toContain('scope.set_extra("npm_stderr", redact_home(detail).into());');
+    // npm stderr can contain paths, usernames, and lifecycle output. Keep it in
+    // the local log and send only the allow-listed classifications to Sentry.
+    expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_failure_site"');
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_error_code"');
+    // npm stderr is arbitrary free text. Sentry's default scrubber can erase
+    // it wholesale, so captures carry only the fixed, path-free summary.
+    expect(cliUpdateCore).toContain('fn npm_diagnostics_summary(');
+    expect(cliUpdateCore).toContain('scope.set_extra("npm_diagnostics", npm_diagnostics.into());');
+    expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_errno"');
+    expect(cliUpdateCore).toContain('scope.set_tag("hq_bin_source"');
+    // Both the npm-only source tag and the executor-neutral one carry closed
+    // categories from `bin_resolution_source`, never the resolved path.
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
   });
 });

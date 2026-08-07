@@ -28,7 +28,8 @@ describe('channel conversation lifecycle and hierarchy', () => {
       )?.[1] ?? '';
     expect(loadCatch).not.toContain('messages = []');
     expect(source).toContain('let disposed = false');
-    expect(source).toContain('if (disposed) unlisten()');
+    expect(source).toContain('if (disposed) safe()');
+    expect(source).toContain('const safe = safeUnlisten(unlisten)');
     expect(source).toContain('disposed = true');
   });
 

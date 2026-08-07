@@ -12,7 +12,7 @@
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
-  import { safeUnlisten } from '../lib/listener-registry';
+  import { safeUnlisten, subscribeWindowFocus } from '../lib/listener-registry';
   import { shouldUseNativePopoverMaterial } from '../lib/nativePopoverMaterial';
   import {
     POPOVER_MIN_HEIGHT,
@@ -23,6 +23,8 @@
   } from '../lib/popover-window-size';
   import type { ConflictFile } from '../stores/conflicts';
   import type { NativeNotificationRecovery } from '../lib/nativeNotificationRecovery';
+  import BrandLogoSlot from '../lib/BrandLogoSlot.svelte';
+  import type { CachedBrand } from '../lib/brand';
 
   interface Config {
     configured: boolean;
@@ -48,6 +50,12 @@
     cloudReachable?: boolean;
     cloudError?: string | null;
     manifestError?: string | null;
+    /**
+     * Resolved white-label brand (US-005). Null/undefined → default HQ
+     * appearance with no powered-by lockup. Parent applies CSS tokens; this
+     * prop drives the logo slot only.
+     */
+    brand?: CachedBrand | null;
     errorMessage?: string;
     errorCompany?: string;
     conflicts?: ConflictFile[];
@@ -94,6 +102,8 @@
     cloudReachable = true,
     cloudError = null,
     manifestError = null,
+    /** Active white-label brand (US-005); null → HQ defaults, no lockup. */
+    brand = null,
     errorMessage = '',
     errorCompany = '',
     conflicts = [],
@@ -418,10 +428,9 @@
 
     restartOpeningMotion();
 
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) restartOpeningMotion();
-      })
+    void subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
+      if (focused) restartOpeningMotion();
+    })
       .then((unlisten) => {
         const safe = safeUnlisten(unlisten);
         if (cancelled) safe();
@@ -460,6 +469,19 @@
   <div class="mbpop-content" bind:this={popoverContentEl}>
   <div class="mbp-main">
     <div class="mbp-main-content" bind:this={popoverMainContentEl}>
+    {#if brand?.brandingEnabled}
+      <!-- White-label logo slot (US-005): tenant logo + powered-by lockup.
+           Rendered only when branding is entitled — the unbranded popover keeps
+           the logo-free mbpop chrome. -->
+      <div class="mbp-brand" data-testid="popover-brand-slot">
+        <BrandLogoSlot
+          brand={brand}
+          brandingEnabled={brand?.brandingEnabled ?? false}
+          size="popover"
+          companyName={brand?.companySlug ?? null}
+        />
+      </div>
+    {/if}
     <div
       class="mbp-status"
       class:syncing={syncState === 'syncing'}
@@ -884,6 +906,16 @@
       opacity: 1;
       transform: translateY(0) scale(1);
     }
+  }
+
+  .mbp-brand {
+    /* White-label logo slot row (US-005). Sits above the status row; only
+       rendered when branding is entitled. */
+    display: flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 10px 16px 0 16px;
+    color: var(--popover-text-heading, #ffffff);
   }
 
   @media (prefers-reduced-motion: reduce) {

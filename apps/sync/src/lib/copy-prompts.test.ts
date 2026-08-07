@@ -210,6 +210,26 @@ describe('buildPrompt', () => {
       expect(out).toMatch(/status\.npmjs\.org|proxy/);
     });
 
+    it('node-missing tells the user to install Node before retrying Connect', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'node-missing', detail: 'node and npx were not found' },
+      });
+      expect(out).toContain('node-missing');
+      expect(out).toMatch(/install.*Node|Node.*install/i);
+      expect(out).toMatch(/attempt the fix/i);
+    });
+
+    it('npx-unavailable tells the user how to restore the Node npm tools', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'npx-unavailable', detail: 'npx was not found' },
+      });
+      expect(out).toContain('npx-unavailable');
+      expect(out).toMatch(/npx|npm/i);
+      expect(out).toMatch(/attempt the fix/i);
+    });
+
     it('falls back gracefully when kind is unknown', () => {
       const out = buildPrompt({
         kind: 'local-env-failure',
@@ -245,14 +265,35 @@ describe('parseLocalEnvFailure (IPC contract)', () => {
       'disk-full',
       'npm-registry-unreachable',
       'npm-registry-timeout',
+      'node-missing',
+      'npx-unavailable',
     ];
     for (const k of kinds) {
       const parsed = parseLocalEnvFailure(`local environment failure (${k}): detail text`);
       expect(parsed).not.toBeNull();
       expect(parsed?.kind).toBe(k);
-      expect(parsed?.detail).toBe('detail text');
+      if (k === 'node-missing') {
+        expect(parsed?.detail).toBe('Install Node.js and reopen HQ Sync, then retry Connect.');
+      } else if (k === 'npx-unavailable') {
+        expect(parsed?.detail).toBe(
+          'Repair or reinstall Node.js and reopen HQ Sync, then retry Connect.',
+        );
+      } else {
+        expect(parsed?.detail).toBe('detail text');
+      }
     }
   });
+
+  it.each(['node-missing', 'npx-unavailable'])(
+    'drops private backend detail for %s before it reaches frontend consumers',
+    (kind) => {
+      const privatePath = '/Users/Ada/Library/Application Support/Indigo HQ/toolchain/node/bin/node';
+      const parsed = parseLocalEnvFailure(
+        `local environment failure (${kind}): ${privatePath}`,
+      );
+      expect(parsed?.detail).not.toContain(privatePath);
+    },
+  );
 
   it('returns null for vault errors so they route to the generic branch', () => {
     expect(

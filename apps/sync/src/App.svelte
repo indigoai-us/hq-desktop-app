@@ -25,7 +25,7 @@
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
-  import { ListenerRegistry } from './lib/listener-registry';
+  import { ListenerRegistry, subscribeWindowFocus } from './lib/listener-registry';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import type { Channel } from './lib/channels';
   import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
@@ -41,6 +41,13 @@
     surfaceNativeNotificationRetry,
     type NativeNotificationRecovery,
   } from './lib/nativeNotificationRecovery';
+  import {
+    applyBrandToDocument,
+    cacheLogoAssets,
+    readBrandCache,
+    syncBrandFromWorkspaces,
+    type CachedBrand,
+  } from './lib/brand';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { emitDesktopTelemetry } from './lib/desktop-telemetry';
@@ -480,6 +487,16 @@
   // independently — a broken manifest doesn't prevent us from talking to the
   // cloud, and an unreachable cloud doesn't make the manifest unreadable.
   let workspacesManifestError = $state<string | null>(null);
+  // White-label brand (US-005). Seeded from localStorage so offline launches
+  // keep the last entitled branding; refreshed from workspaces memberships.
+  let brand = $state<CachedBrand | null>(null);
+  {
+    const seed = readBrandCache();
+    if (seed) {
+      brand = seed;
+      applyBrandToDocument(seed);
+    }
+  }
 
   // Updater state — populated by the `update:available` event from the Rust
   // background checker (launch+10s, then every 6h). Non-null means the user
@@ -842,6 +859,19 @@
       workspacesCloudReachable = result.cloudReachable;
       workspacesError = result.error;
       workspacesManifestError = result.manifestError;
+      // Brand rides the membership enrichment already on each workspace row —
+      // no extra endpoint. Cloud-unreachable keeps the offline cache.
+      const nextBrand = syncBrandFromWorkspaces(result.workspaces, {
+        cloudReachable: result.cloudReachable,
+      });
+      brand = nextBrand;
+      applyBrandToDocument(nextBrand);
+      if (nextBrand) {
+        void cacheLogoAssets(nextBrand).then((withAssets) => {
+          brand = withAssets;
+          applyBrandToDocument(withAssets);
+        });
+      }
     } catch (err) {
       // Hard failure (e.g. couldn't resolve hq_root). Keep prior workspaces
       // visible if we had any, but flag the error so the UI can soften.
@@ -849,6 +879,10 @@
       workspacesCloudReachable = false;
       workspacesError = String(err);
       // Don't null out `workspaces` — last-good is better than empty.
+      // Offline: keep cached branding if we have it.
+      const cached = readBrandCache();
+      brand = cached;
+      applyBrandToDocument(cached);
     }
   }
 
@@ -1235,7 +1269,7 @@
     // sync — a brand-new company added between syncs would stay invisible
     // until the next sync click.
     unlisteners.push(
-      await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      await subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
         if (focused) {
           // Refresh the open-set on every popover open (fire-and-forget):
           //  - workspaces, so a company added between syncs appears
@@ -2427,6 +2461,7 @@
       cloudReachable={workspacesCloudReachable}
       cloudError={workspacesError}
       manifestError={workspacesManifestError}
+      {brand}
       errorMessage={syncErrorMessage}
       errorCompany={syncErrorCompany}
       {conflicts}

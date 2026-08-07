@@ -10,6 +10,7 @@ use std::io::{self, BufRead, BufReader};
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -115,6 +116,15 @@ struct ProcessEntry {
 }
 
 static PROCESS_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, ProcessEntry>>>> = OnceLock::new();
+
+/// Raised at the single application-exit choke point before child teardown.
+/// The daemon reads this as exit evidence; it does not alter cancellation or
+/// crash classification.
+static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn app_exit_requested() -> bool {
+    APP_EXIT_REQUESTED.load(Ordering::Acquire)
+}
 
 fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
@@ -428,14 +438,17 @@ where
     }
 
     let wait_result = child.wait();
-    deregister_process(handle);
 
     if let Some((stream, source)) = first_stream_err {
-        on_event_mut(ProcessEvent::Exit {
-            code: None,
-            signal: None,
-            success: false,
-        });
+        emit_exit_then_deregister(
+            handle,
+            &mut on_event_mut,
+            ProcessEvent::Exit {
+                code: None,
+                signal: None,
+                success: false,
+            },
+        );
         return Err(ProcessError::Stream { stream, source });
     }
 
@@ -444,21 +457,41 @@ where
         Err(source) => {
             // The child did start, so callers must route this through their
             // termination path rather than mislabel it as a spawn failure.
-            on_event_mut(ProcessEvent::Exit {
-                code: None,
-                signal: None,
-                success: false,
-            });
+            emit_exit_then_deregister(
+                handle,
+                &mut on_event_mut,
+                ProcessEvent::Exit {
+                    code: None,
+                    signal: None,
+                    success: false,
+                },
+            );
             return Err(ProcessError::Wait { source });
         }
     };
-    on_event_mut(ProcessEvent::Exit {
-        code: status.code(),
-        signal: exit_signal(&status),
-        success: status.success(),
-    });
+    emit_exit_then_deregister(
+        handle,
+        &mut on_event_mut,
+        ProcessEvent::Exit {
+            code: status.code(),
+            signal: exit_signal(&status),
+            success: status.success(),
+        },
+    );
 
     Ok(())
+}
+
+/// Keep the registry entry alive through the terminal callback so consumers
+/// can observe whether cancellation was requested for this exact process
+/// generation. The child has already been reaped, and registry cleanup happens
+/// immediately after the callback returns.
+fn emit_exit_then_deregister<F>(handle: &str, on_event: &mut F, event: ProcessEvent)
+where
+    F: FnMut(ProcessEvent),
+{
+    on_event(event);
+    deregister_process(handle);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -609,14 +642,17 @@ where
     }
 
     let wait_result = child.wait();
-    deregister_process(handle);
 
     if let Some((stream, source)) = first_stream_err {
-        on_event_mut(ProcessEvent::Exit {
-            code: None,
-            signal: None,
-            success: false,
-        });
+        emit_exit_then_deregister(
+            handle,
+            &mut on_event_mut,
+            ProcessEvent::Exit {
+                code: None,
+                signal: None,
+                success: false,
+            },
+        );
         return Err(ProcessError::Stream { stream, source });
     }
 
@@ -625,19 +661,27 @@ where
         Err(source) => {
             // Keep the post-spawn failure on the terminal-event path so a
             // caller cannot emit a second, misleading "failed to spawn" alert.
-            on_event_mut(ProcessEvent::Exit {
-                code: None,
-                signal: None,
-                success: false,
-            });
+            emit_exit_then_deregister(
+                handle,
+                &mut on_event_mut,
+                ProcessEvent::Exit {
+                    code: None,
+                    signal: None,
+                    success: false,
+                },
+            );
             return Err(ProcessError::Wait { source });
         }
     };
-    on_event_mut(ProcessEvent::Exit {
-        code: status.code(),
-        signal: exit_signal(&status),
-        success: status.success(),
-    });
+    emit_exit_then_deregister(
+        handle,
+        &mut on_event_mut,
+        ProcessEvent::Exit {
+            code: status.code(),
+            signal: exit_signal(&status),
+            success: status.success(),
+        },
+    );
 
     Ok(())
 }
@@ -750,6 +794,7 @@ pub fn terminate_pids_for_exit(pids: &[(String, u32)], _grace: Duration) {
 /// or Cmd-Q) reliably stops the `--watch` sync daemon and any sidecar instead
 /// of orphaning them.
 pub fn terminate_all_for_exit(grace: Duration) {
+    APP_EXIT_REQUESTED.store(true, Ordering::Release);
     terminate_pids_for_exit(&registered_pids(), grace);
 }
 
@@ -834,6 +879,10 @@ pub fn cancel_process(handle: String) -> bool {
 #[cfg(all(test, target_os = "windows"))]
 mod windows_spawn_tests {
     use super::*;
+    use hq_desktop_core::sync_outcome::{
+        classify_windows_exit_status, is_windows_console_control_exit,
+        termination_fingerprint_token, WindowsTermination, WINDOWS_CONTROL_C_EXIT,
+    };
 
     #[test]
     fn batch_launcher_preserves_metacharacter_arguments() {
@@ -861,6 +910,137 @@ mod windows_spawn_tests {
             .map(|line| line.trim_matches('"').to_string())
             .collect();
         assert_eq!(lines, vec![hq_path, package]);
+    }
+
+    #[test]
+    fn production_runner_reports_windows_console_control_exit_status() {
+        // An independent literal pins the status Windows reports. Do not derive
+        // this expectation from the production constant: that would let an
+        // accidental change to the classifier's constant pass unnoticed.
+        const EXPECTED_WINDOWS_CONTROL_C_EXIT: i32 = -1073741510;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("control-c-exit.cmd");
+        // CI cannot reliably inject a real console control event into a hidden
+        // child. `exit /b` gives cmd.exe the same documented status through the
+        // production batch dispatcher, CREATE_NO_WINDOW spawn path, and Job
+        // Object setup without skipping the process-status observation seam.
+        std::fs::write(
+            &script,
+            format!("@echo off\r\nexit /b {EXPECTED_WINDOWS_CONTROL_C_EXIT}\r\n"),
+        )
+        .expect("write batch fixture");
+
+        let spawn = SpawnArgs {
+            cmd: script.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: None,
+            env: None,
+        };
+        let mut exits = Vec::new();
+        run_process_impl("windows-control-c-exit-test", &spawn, |event| {
+            if let ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } = event
+            {
+                exits.push((code, signal, success));
+            }
+        })
+        .expect("batch fixture should run through production process runner");
+
+        assert_eq!(exits.len(), 1, "the child must emit exactly one exit event");
+        let (code, signal, success) = exits[0];
+        assert_eq!(
+            (code, signal, success),
+            (Some(EXPECTED_WINDOWS_CONTROL_C_EXIT), None, false),
+            "Windows must report STATUS_CONTROL_C_EXIT as the signed exit code"
+        );
+        assert_eq!(WINDOWS_CONTROL_C_EXIT, EXPECTED_WINDOWS_CONTROL_C_EXIT);
+        assert!(
+            is_windows_console_control_exit(code, signal),
+            "the production classifier must suppress the status observed through the real runner"
+        );
+    }
+
+    #[test]
+    fn production_runner_reports_indeterminate_windows_status() {
+        // This is the exact raw status from HQ-DESKTOP-42, kept independent of
+        // the production constant so a future classifier edit cannot make the
+        // black-box expectation self-fulfilling. The fixture deliberately
+        // produces the value itself, proving the raw status cannot identify an
+        // external terminator without separate provenance.
+        const EXPECTED_INDETERMINATE_STATUS: i32 = -1;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("indeterminate-status.cmd");
+        std::fs::write(
+            &script,
+            format!("@echo off\r\nexit /b {EXPECTED_INDETERMINATE_STATUS}\r\n"),
+        )
+        .expect("write batch fixture");
+
+        let spawn = SpawnArgs {
+            cmd: script.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: None,
+            env: None,
+        };
+        let mut exits = Vec::new();
+        run_process_impl("windows-indeterminate-status-test", &spawn, |event| {
+            if let ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } = event
+            {
+                exits.push((code, signal, success));
+            }
+        })
+        .expect("batch fixture should run through production process runner");
+
+        assert_eq!(
+            exits,
+            vec![(Some(EXPECTED_INDETERMINATE_STATUS), None, false)]
+        );
+        let (code, signal, _) = exits[0];
+        assert_eq!(
+            classify_windows_exit_status(code.expect("Windows exit code")),
+            WindowsTermination::IndeterminateStatus
+        );
+        assert_eq!(
+            termination_fingerprint_token(code, signal),
+            "windows:status-ffffffff"
+        );
+    }
+}
+
+#[cfg(test)]
+mod registry_exit_order_tests {
+    use super::*;
+
+    #[test]
+    fn exit_callback_observes_cancelled_registry_entry_until_it_returns() {
+        let handle = format!("exit-order-test-{}", Uuid::new_v4());
+        pre_register_handle(&handle);
+        assert!(mark_cancelled(&handle));
+
+        let mut observed = None;
+        emit_exit_then_deregister(
+            &handle,
+            &mut |event| {
+                assert!(matches!(event, ProcessEvent::Exit { .. }));
+                observed = Some((is_registered(&handle), is_cancelled(&handle)));
+            },
+            ProcessEvent::Exit {
+                code: Some(-1),
+                signal: None,
+                success: false,
+            },
+        );
+
+        assert_eq!(observed, Some((true, true)));
+        assert!(!is_registered(&handle));
+        assert!(!is_cancelled(&handle));
     }
 }
 

@@ -1,6 +1,9 @@
+use std::collections::HashSet;
 use std::io::ErrorKind;
+use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
+use sha2::{Digest, Sha256};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-run aggregated counters
@@ -50,6 +53,25 @@ pub struct RunTotals {
     /// would otherwise look like an unexplained crash. It is an environment
     /// fault the user fixes by updating Node, not a defect.
     pub saw_node_too_old: bool,
+    /// Set when stderr carries a signature that says the runner itself died
+    /// before it could report a normal protocol outcome. This is diagnostic
+    /// only: it never changes alerting, but lets the next watcher-exit event
+    /// distinguish an indeterminate termination from a fatal runner failure.
+    pub saw_fatal_runner_signature: bool,
+    /// Content-safe counts of runner error classes seen in this pass. The
+    /// watcher attaches only this fixed-vocabulary rollup to a termination
+    /// capture; paths and raw messages remain local breadcrumbs.
+    pub runner_error_rollup: RunnerErrorRollup,
+    /// Content-safe runner operation counts for termination diagnostics. Like
+    /// the class rollup, every rendered token is selected in code.
+    pub runner_error_ops: RunnerErrorOpRollup,
+    /// Raw company names remain process-local only so this can report the
+    /// distinct blast radius as a number without ever sending a name.
+    runner_error_companies: HashSet<String>,
+    /// The last recognised runner-fatal signature in this pass. This is a
+    /// content-safe enum token used only as evidence on a termination event;
+    /// it must never affect the capture or suppression decision.
+    pub runner_fatal_class: RunnerFatalClass,
 }
 
 impl RunTotals {
@@ -87,9 +109,20 @@ impl RunTotals {
     /// to the "unexplained crash" branch and alerts — the HQ-SYNC-WEB-6 flood.
     pub fn record_error(&mut self, err: &SyncErrorEvent) {
         self.saw_error = true;
+        self.runner_error_rollup.record(&err.message);
+        self.runner_error_ops.record(&err.message);
+        if let Some(company) = err.company.as_deref() {
+            self.runner_error_companies.insert(company.to_string());
+        }
         if is_alertable_error(err) {
             self.saw_alertable_error = true;
         }
+    }
+
+    /// The distinct count is safe telemetry; company names never leave this
+    /// process or this private deduplication set.
+    pub fn runner_error_company_count(&self) -> u32 {
+        u32::try_from(self.runner_error_companies.len()).unwrap_or(u32::MAX)
     }
 
     pub fn record_auth_error(&mut self) {
@@ -104,6 +137,592 @@ impl RunTotals {
         if is_node_too_old_signature(line) {
             self.saw_node_too_old = true;
         }
+        if is_fatal_runner_signature(line) {
+            self.saw_fatal_runner_signature = true;
+        }
+        let class = classify_runner_fatal_class(line);
+        if class != RunnerFatalClass::None {
+            self.runner_fatal_class = class;
+        }
+    }
+}
+
+/// Coarse runner work phase shared by manual and watcher telemetry.
+///
+/// The value is derived only from protocol events emitted by the process being
+/// observed. Callers must not consult the shared on-disk progress snapshot,
+/// because another route may have written it.
+pub fn runner_phase_from_event(event: &SyncEvent) -> Option<&'static str> {
+    match event {
+        SyncEvent::FanoutPlan(_) | SyncEvent::Plan(_) => Some("scan"),
+        SyncEvent::Progress(progress) => Some(match progress.direction.as_deref() {
+            Some("up") => "push",
+            Some("down") => "pull",
+            _ => "unknown",
+        }),
+        SyncEvent::AllComplete(_) => Some("idle"),
+        _ => None,
+    }
+}
+
+/// Fixed elapsed-time vocabulary shared by both runner routes.
+pub fn runner_phase_elapsed_bucket(elapsed: Duration) -> &'static str {
+    match elapsed.as_secs() {
+        0..=59 => "under_1m",
+        60..=299 => "1m_to_5m",
+        300..=1799 => "5m_to_30m",
+        1800..=7199 => "30m_to_2h",
+        _ => "over_2h",
+    }
+}
+
+/// Fixed stack-shape tokens that are safe to leave the process boundary.
+pub const RUNNER_STACK_TOKENS: &[&str] = &[
+    "app",
+    "libuv_handle",
+    "libuv_win_async",
+    "libuv_unix_core",
+    "node_task_queues",
+    "node_cjs_loader",
+    "node_esm_loader",
+    "node_timers",
+    "node_child_process",
+    "node_events",
+    "node_fs",
+    "node_stream",
+    "rust_core_panicking",
+    "rust_std_panicking",
+];
+
+const RUNTIME_FRAME_TABLE: &[(&str, &str)] = &[
+    ("uv_handle", "libuv_handle"),
+    (r"src\win\async.c", "libuv_win_async"),
+    ("src/win/async.c", "libuv_win_async"),
+    ("src/unix/core.c", "libuv_unix_core"),
+    ("node:internal/process/task_queues", "node_task_queues"),
+    ("node:internal/modules/cjs/loader", "node_cjs_loader"),
+    ("node:internal/modules/esm/loader", "node_esm_loader"),
+    ("node:internal/timers", "node_timers"),
+    ("node:internal/child_process", "node_child_process"),
+    ("node:events", "node_events"),
+    ("node:fs", "node_fs"),
+    ("node:stream", "node_stream"),
+    ("core::panicking", "rust_core_panicking"),
+    ("std::panicking", "rust_std_panicking"),
+];
+
+const RUNNER_STACK_FRAME_CAP: usize = 8;
+
+/// Lossy, fixed-vocabulary runtime-frame shape.
+///
+/// This is deliberately not a stack identity: distinct application stacks
+/// whose recognised runtime frames match collide by design. Exact whole-token
+/// equality here is a new, stricter discipline; `classify_runner_fatal_class`
+/// is not precedent because it intentionally uses substring containment. The
+/// only inherited safety property is that outputs are fixed tokens and never
+/// copy input bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerStackShape {
+    pub shape: String,
+    pub depth: u8,
+    pub redacted_frames: u8,
+    pub signature: String,
+}
+
+fn strip_frame_location(candidate: &str) -> &str {
+    let Some((before_column, column)) = candidate.rsplit_once(':') else {
+        return candidate;
+    };
+    if column.is_empty() || !column.bytes().all(|byte| byte.is_ascii_digit()) {
+        return candidate;
+    }
+    let Some((frame, line)) = before_column.rsplit_once(':') else {
+        return candidate;
+    };
+    if line.is_empty() || !line.bytes().all(|byte| byte.is_ascii_digit()) {
+        return candidate;
+    }
+    frame
+}
+
+fn runtime_frame_token(candidate: &str) -> Option<&'static str> {
+    let candidate = strip_frame_location(candidate);
+    RUNTIME_FRAME_TABLE
+        .iter()
+        .find(|(marker, _)| candidate.eq_ignore_ascii_case(marker))
+        .map(|(_, token)| *token)
+}
+
+fn parenthesized_runtime_frame_token(line: &str) -> Option<&'static str> {
+    let line = line.trim();
+    if !line
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("at "))
+    {
+        return None;
+    }
+    let open = line.rfind('(')?;
+    let close = line.rfind(')')?;
+    (open < close)
+        .then(|| runtime_frame_token(line[open + 1..close].trim()))
+        .flatten()
+}
+
+/// Normalize the dying process's ordered, bounded stderr tail without letting
+/// any raw line, path, symbol, or line number escape.
+pub fn runner_stack_shape(tail: &[String]) -> RunnerStackShape {
+    let mut frames = Vec::with_capacity(tail.len().min(RUNNER_STACK_FRAME_CAP));
+    let mut redacted_frames = 0_u8;
+    let mut recognised = false;
+
+    for line in tail.iter().take(RUNNER_STACK_FRAME_CAP) {
+        let candidates = line
+            .split(|character: char| {
+                character.is_ascii_whitespace() || matches!(character, '(' | ')' | ',')
+            })
+            .filter(|candidate| !candidate.is_empty())
+            .collect::<Vec<_>>();
+        let mut tokens = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                let is_frame_position = index == 0
+                    || candidates[index - 1].eq_ignore_ascii_case("at")
+                    || candidates[index - 1].eq_ignore_ascii_case("file")
+                    || (index >= 2
+                        && candidates[index - 2].eq_ignore_ascii_case("at")
+                        && candidates[index - 1].eq_ignore_ascii_case("async"));
+                is_frame_position
+                    .then(|| runtime_frame_token(candidate))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        if tokens.is_empty() {
+            if let Some(token) = parenthesized_runtime_frame_token(line) {
+                tokens.push(token);
+            }
+        }
+        if tokens.is_empty() {
+            frames.push("app");
+            redacted_frames = redacted_frames.saturating_add(1);
+        } else {
+            recognised = true;
+            for token in tokens {
+                if frames.len() == RUNNER_STACK_FRAME_CAP {
+                    break;
+                }
+                frames.push(token);
+            }
+        }
+        if frames.len() == RUNNER_STACK_FRAME_CAP {
+            break;
+        }
+    }
+
+    let depth = frames.len() as u8;
+    if !recognised {
+        return RunnerStackShape {
+            shape: "all_redacted".to_string(),
+            depth,
+            redacted_frames: depth,
+            signature: "unknown".to_string(),
+        };
+    }
+
+    let shape = frames.join(">");
+    let digest = format!("{:x}", Sha256::digest(shape.as_bytes()));
+    RunnerStackShape {
+        shape,
+        depth,
+        redacted_frames,
+        signature: digest[..16].to_string(),
+    }
+}
+
+/// Fixed, content-safe classes for runner error rollups. These values are safe
+/// for Sentry tags because they are selected from code, never copied from a
+/// runner message, path, argv, or file content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorClass {
+    Eperm,
+    Eacces,
+    Enospc,
+    Ebusy,
+    Network,
+    Auth,
+    Other,
+}
+
+impl RunnerErrorClass {
+    fn tag_name(self) -> &'static str {
+        match self {
+            Self::Eperm => "EPERM",
+            Self::Eacces => "EACCES",
+            Self::Enospc => "ENOSPC",
+            Self::Ebusy => "EBUSY",
+            Self::Network => "NETWORK",
+            Self::Auth => "AUTH",
+            Self::Other => "OTHER",
+        }
+    }
+
+    fn fingerprint_token(self) -> &'static str {
+        match self {
+            Self::Eperm => "eperm",
+            Self::Eacces => "eacces",
+            Self::Enospc => "enospc",
+            Self::Ebusy => "ebusy",
+            Self::Network => "network",
+            Self::Auth => "auth",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Map an untrusted runner error message to a fixed telemetry class. This
+/// function deliberately returns no message text, so its output is safe to
+/// attach to Sentry as a tag.
+pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
+    let msg = message.to_lowercase();
+    if msg.contains("eperm") {
+        RunnerErrorClass::Eperm
+    } else if msg.contains("eacces") {
+        RunnerErrorClass::Eacces
+    } else if msg.contains("enospc") {
+        RunnerErrorClass::Enospc
+    } else if msg.contains("ebusy") {
+        RunnerErrorClass::Ebusy
+    } else if is_transient_network_error(&msg) {
+        RunnerErrorClass::Network
+    } else if ["auth", "unauthorized", "forbidden", "cognito", "token"]
+        .iter()
+        .any(|marker| msg.contains(marker))
+    {
+        RunnerErrorClass::Auth
+    } else {
+        RunnerErrorClass::Other
+    }
+}
+
+/// Fixed, content-safe Node filesystem operation tokens. Every value is
+/// chosen from this declaration and never copied from runner output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorOp {
+    Rename,
+    Unlink,
+    Open,
+    Mkdir,
+    Rmdir,
+    Symlink,
+    Readlink,
+    Stat,
+    Lstat,
+    Chmod,
+    Copyfile,
+    Utimes,
+    Scandir,
+    Read,
+    Write,
+    Access,
+    Other,
+}
+
+impl RunnerErrorOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rename => "rename",
+            Self::Unlink => "unlink",
+            Self::Open => "open",
+            Self::Mkdir => "mkdir",
+            Self::Rmdir => "rmdir",
+            Self::Symlink => "symlink",
+            Self::Readlink => "readlink",
+            Self::Stat => "stat",
+            Self::Lstat => "lstat",
+            Self::Chmod => "chmod",
+            Self::Copyfile => "copyfile",
+            Self::Utimes => "utimes",
+            Self::Scandir => "scandir",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Access => "access",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classify the operation portion of a Node errno message such as
+/// "EPERM: operation not permitted, rename <path>". The message is inspected
+/// only to choose a closed-vocabulary value and is never retained here.
+pub fn classify_runner_error_op(message: &str) -> RunnerErrorOp {
+    let normalized = message.to_ascii_lowercase();
+    for segment in normalized.split(',').skip(1) {
+        let operation = segment
+            .trim_start()
+            .split(|character: char| character.is_whitespace() || character == ':')
+            .next()
+            .unwrap_or_default();
+        let class = match operation {
+            "rename" => RunnerErrorOp::Rename,
+            "unlink" => RunnerErrorOp::Unlink,
+            "open" => RunnerErrorOp::Open,
+            "mkdir" => RunnerErrorOp::Mkdir,
+            "rmdir" => RunnerErrorOp::Rmdir,
+            "symlink" => RunnerErrorOp::Symlink,
+            "readlink" => RunnerErrorOp::Readlink,
+            "stat" => RunnerErrorOp::Stat,
+            "lstat" => RunnerErrorOp::Lstat,
+            "chmod" => RunnerErrorOp::Chmod,
+            "copyfile" => RunnerErrorOp::Copyfile,
+            "utimes" => RunnerErrorOp::Utimes,
+            "scandir" => RunnerErrorOp::Scandir,
+            "read" => RunnerErrorOp::Read,
+            "write" => RunnerErrorOp::Write,
+            "access" => RunnerErrorOp::Access,
+            _ => continue,
+        };
+        return class;
+    }
+    RunnerErrorOp::Other
+}
+
+/// Stable, content-safe cause tokens for a runner that terminates before it
+/// can emit a normal protocol result. They are intentionally more specific
+/// than [`is_fatal_runner_signature`], but reporting-only: no caller may use
+/// them to alter capture, suppression, restart, or fingerprint behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RunnerFatalClass {
+    LibuvAssert,
+    NodeCheckAbort,
+    NodeFatal,
+    HeapOom,
+    RustPanic,
+    ExecPermissionDenied,
+    ExecNotFound,
+    NodeTooOld,
+    #[default]
+    None,
+}
+
+impl RunnerFatalClass {
+    /// Fixed vocabulary safe for Sentry tags and breadcrumbs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LibuvAssert => "libuv_assert",
+            Self::NodeCheckAbort => "node_check_abort",
+            Self::NodeFatal => "node_fatal",
+            Self::HeapOom => "heap_oom",
+            Self::RustPanic => "rust_panic",
+            Self::ExecPermissionDenied => "exec_permission_denied",
+            Self::ExecNotFound => "exec_not_found",
+            Self::NodeTooOld => "node_too_old",
+            Self::None => "none",
+        }
+    }
+
+    pub fn seen(self) -> bool {
+        self != Self::None
+    }
+}
+
+/// Classify untrusted runner stderr without retaining any of it. The libuv
+/// match deliberately requires both an assertion marker and a libuv-specific
+/// source/handle marker so ordinary application assertions remain `none`.
+pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
+    let left_trimmed = line.trim_start();
+    let msg = line.to_ascii_lowercase();
+    if is_node_too_old_signature(&msg) {
+        RunnerFatalClass::NodeTooOld
+    } else if msg.contains("assertion failed")
+        && (msg.contains("libuv")
+            || msg.contains("uv_handle")
+            || msg.contains("src\\win\\async.c")
+            || msg.contains("src/win/async.c"))
+    {
+        RunnerFatalClass::LibuvAssert
+    } else if left_trimmed.starts_with('#') && msg.contains("assertion failed:") {
+        RunnerFatalClass::NodeCheckAbort
+    } else if msg.contains("javascript heap out of memory") {
+        RunnerFatalClass::HeapOom
+    } else if msg.contains("panicked at") {
+        RunnerFatalClass::RustPanic
+    } else if ["fatal error", "uncaught exception", "unhandledrejection"]
+        .iter()
+        .any(|marker| msg.contains(marker))
+    {
+        RunnerFatalClass::NodeFatal
+    } else if is_runner_exec_shell_failure(&msg, "permission denied") {
+        RunnerFatalClass::ExecPermissionDenied
+    } else if is_runner_exec_shell_failure(&msg, "no such file or directory")
+        || is_runner_exec_shell_failure(&msg, "command not found")
+    {
+        RunnerFatalClass::ExecNotFound
+    } else {
+        RunnerFatalClass::None
+    }
+}
+
+/// Shell launch diagnostics have a small, stable shape. Requiring that shape
+/// keeps ordinary runner file errors (which also contain EACCES or ENOENT) out
+/// of the executable-launch classes. The source line remains local; this only
+/// decides which fixed token, if any, may be reported.
+fn is_runner_exec_shell_failure(message: &str, marker: &str) -> bool {
+    let shell_prefix = ["sh: ", "bash: ", "zsh: ", "fish: "]
+        .iter()
+        .any(|prefix| message.starts_with(prefix));
+    let npx_runner_target = message.contains("/.npm/_npx/")
+        || message.contains("node_modules/.bin/hq-sync-runner")
+        || message.contains("hq-sync-runner:");
+    message.contains(marker) && (shell_prefix || npx_runner_target)
+}
+
+/// Saturating per-pass counts that render as a compact, fixed-vocabulary Sentry
+/// tag such as `EPERM:412,OTHER:1`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorRollup {
+    eperm: u32,
+    eacces: u32,
+    enospc: u32,
+    ebusy: u32,
+    network: u32,
+    auth: u32,
+    other: u32,
+}
+
+impl RunnerErrorRollup {
+    fn record(&mut self, message: &str) {
+        let count = match classify_runner_error_class(message) {
+            RunnerErrorClass::Eperm => &mut self.eperm,
+            RunnerErrorClass::Eacces => &mut self.eacces,
+            RunnerErrorClass::Enospc => &mut self.enospc,
+            RunnerErrorClass::Ebusy => &mut self.ebusy,
+            RunnerErrorClass::Network => &mut self.network,
+            RunnerErrorClass::Auth => &mut self.auth,
+            RunnerErrorClass::Other => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// Render only fixed class names and decimal counts. `None` means this
+    /// watcher pass saw no runner error records, so no tag should be sent.
+    pub fn tag_value(&self) -> Option<String> {
+        let counts = [
+            (RunnerErrorClass::Eperm, self.eperm),
+            (RunnerErrorClass::Eacces, self.eacces),
+            (RunnerErrorClass::Enospc, self.enospc),
+            (RunnerErrorClass::Ebusy, self.ebusy),
+            (RunnerErrorClass::Network, self.network),
+            (RunnerErrorClass::Auth, self.auth),
+            (RunnerErrorClass::Other, self.other),
+        ];
+        let rendered: Vec<_> = counts
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(class, count)| format!("{}:{count}", class.tag_name()))
+            .collect();
+        (!rendered.is_empty()).then(|| rendered.join(","))
+    }
+
+    /// Choose a stable, content-safe group token for a runner termination.
+    /// Higher counts win; equal counts deliberately preserve the fixed enum
+    /// declaration order so the same multiset cannot make grouping flap.
+    pub fn fingerprint_token(&self) -> &'static str {
+        let counts = [
+            (RunnerErrorClass::Eperm, self.eperm),
+            (RunnerErrorClass::Eacces, self.eacces),
+            (RunnerErrorClass::Enospc, self.enospc),
+            (RunnerErrorClass::Ebusy, self.ebusy),
+            (RunnerErrorClass::Network, self.network),
+            (RunnerErrorClass::Auth, self.auth),
+            (RunnerErrorClass::Other, self.other),
+        ];
+        let mut dominant = None;
+        let mut dominant_count = 0;
+        for (class, count) in counts {
+            if count > dominant_count {
+                dominant = Some(class);
+                dominant_count = count;
+            }
+        }
+        dominant
+            .map(RunnerErrorClass::fingerprint_token)
+            .unwrap_or("none")
+    }
+}
+
+/// Saturating per-pass counts of the closed Node operation vocabulary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorOpRollup {
+    rename: u32,
+    unlink: u32,
+    open: u32,
+    mkdir: u32,
+    rmdir: u32,
+    symlink: u32,
+    readlink: u32,
+    stat: u32,
+    lstat: u32,
+    chmod: u32,
+    copyfile: u32,
+    utimes: u32,
+    scandir: u32,
+    read: u32,
+    write: u32,
+    access: u32,
+    other: u32,
+}
+
+impl RunnerErrorOpRollup {
+    fn record(&mut self, message: &str) {
+        let count = match classify_runner_error_op(message) {
+            RunnerErrorOp::Rename => &mut self.rename,
+            RunnerErrorOp::Unlink => &mut self.unlink,
+            RunnerErrorOp::Open => &mut self.open,
+            RunnerErrorOp::Mkdir => &mut self.mkdir,
+            RunnerErrorOp::Rmdir => &mut self.rmdir,
+            RunnerErrorOp::Symlink => &mut self.symlink,
+            RunnerErrorOp::Readlink => &mut self.readlink,
+            RunnerErrorOp::Stat => &mut self.stat,
+            RunnerErrorOp::Lstat => &mut self.lstat,
+            RunnerErrorOp::Chmod => &mut self.chmod,
+            RunnerErrorOp::Copyfile => &mut self.copyfile,
+            RunnerErrorOp::Utimes => &mut self.utimes,
+            RunnerErrorOp::Scandir => &mut self.scandir,
+            RunnerErrorOp::Read => &mut self.read,
+            RunnerErrorOp::Write => &mut self.write,
+            RunnerErrorOp::Access => &mut self.access,
+            RunnerErrorOp::Other => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// Render only fixed operation names and decimal counts for a Sentry tag.
+    pub fn tag_value(&self) -> Option<String> {
+        let counts = [
+            (RunnerErrorOp::Rename, self.rename),
+            (RunnerErrorOp::Unlink, self.unlink),
+            (RunnerErrorOp::Open, self.open),
+            (RunnerErrorOp::Mkdir, self.mkdir),
+            (RunnerErrorOp::Rmdir, self.rmdir),
+            (RunnerErrorOp::Symlink, self.symlink),
+            (RunnerErrorOp::Readlink, self.readlink),
+            (RunnerErrorOp::Stat, self.stat),
+            (RunnerErrorOp::Lstat, self.lstat),
+            (RunnerErrorOp::Chmod, self.chmod),
+            (RunnerErrorOp::Copyfile, self.copyfile),
+            (RunnerErrorOp::Utimes, self.utimes),
+            (RunnerErrorOp::Scandir, self.scandir),
+            (RunnerErrorOp::Read, self.read),
+            (RunnerErrorOp::Write, self.write),
+            (RunnerErrorOp::Access, self.access),
+            (RunnerErrorOp::Other, self.other),
+        ];
+        let rendered: Vec<_> = counts
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(operation, count)| format!("{}:{count}", operation.as_str()))
+            .collect();
+        (!rendered.is_empty()).then(|| rendered.join(","))
     }
 }
 
@@ -125,6 +744,12 @@ pub fn should_synthesize_all_complete(
 /// never escalate it to a Sentry alert. See `should_alert_on_nonzero_exit`.
 pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 
+/// Exit code returned by hq-cloud's `TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`
+/// retry contract. hq-cloud uses it at the auth-refresh return site, both
+/// discovery return sites, and the fanout tail; the desktop must end the
+/// current UI run without escalating a self-healing retry to Sentry.
+pub const RUNNER_TRANSIENT_RETRY_EXIT: i32 = 75;
+
 /// POSIX SIGTERM. When the runner exits killed by this signal it was OUR
 /// cancellation: `cancel_process_impl` sends SIGTERM (escalating to SIGKILL
 /// only if the runner ignores it) on every expected cancel — the Stop button,
@@ -132,6 +757,182 @@ pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 /// An expected cancellation must never escalate to a Sentry alert (HQ-SYNC-WEB-H:
 /// 23 "killed by SIGTERM (cancelled)" events). See `should_alert_on_nonzero_exit`.
 pub const SIGTERM_SIGNAL: i32 = 15;
+
+/// POSIX SIGABRT. A native abort is reported as this signal by Unix process
+/// status APIs, including the macOS watcher event that motivated the merged
+/// auto-sync watcher termination group.
+pub const SIGABRT_SIGNAL: i32 = 6;
+
+/// Node on Windows reports an abort as this process exit code rather than a
+/// Unix signal. The observed Windows watcher event used this convention, so it
+/// is normalized with POSIX SIGABRT only when the host is explicitly Windows.
+pub const NODE_WINDOWS_ABORT_EXIT: i32 = 134;
+
+/// Host semantics used to interpret a watcher process termination. The host is
+/// an explicit input so tests can exercise both wire encodings on every CI
+/// platform instead of silently relying on the build machine's operating
+/// system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminationHost {
+    Posix,
+    Windows,
+}
+
+/// Select the production host interpretation. This is intentionally the only
+/// cfg-derived part of watcher termination normalization.
+pub fn current_termination_host() -> TerminationHost {
+    if cfg!(target_os = "windows") {
+        TerminationHost::Windows
+    } else {
+        TerminationHost::Posix
+    }
+}
+
+/// Windows `STATUS_CONTROL_C_EXIT` (`0xC000013A`) represented as the signed
+/// process exit code Rust reports. Windows gives this status to a console
+/// process when its default console-control handler ends it, including a
+/// Ctrl+C/Ctrl+Break, console close, logoff, or shutdown. It is the Windows
+/// counterpart to the POSIX SIGTERM teardown carve-out, not a general NTSTATUS
+/// classifier: real Windows fault statuses must remain alertable.
+pub const WINDOWS_CONTROL_C_EXIT: i32 = -1073741510;
+
+/// Windows `DBG_TERMINATE_PROCESS` (`0x40010004`). This is a control/status
+/// result, not a conventional runner `exit(N)`, so keeping it in the Windows
+/// namespace prevents another per-decimal Sentry issue.
+pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;
+
+/// Fixed-vocabulary attribution for the external Windows terminator status.
+///
+/// This remains typed until the app-facing Sentry boundary so policy decisions
+/// cannot accidentally be driven by an arbitrary string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsTerminatorAttribution {
+    SessionEndObserved,
+    Unattributed,
+    ObserverUnavailable,
+    ObserverFailed,
+}
+
+impl WindowsTerminatorAttribution {
+    /// Stable, content-safe token for logs and Sentry tags.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::SessionEndObserved => "session_end_observed",
+            Self::Unattributed => "unattributed",
+            Self::ObserverUnavailable => "observer_unavailable",
+            Self::ObserverFailed => "observer_failed",
+        }
+    }
+}
+
+/// A committed Windows session-end indication is relevant only while it is
+/// contemporaneous with the watcher exit. The strict comparison below makes
+/// exactly 20 seconds fail closed.
+pub const SESSION_END_AFFIRMATION_TTL_MS: u64 = 20_000;
+
+/// Whether a recorded committed session end is fresh enough to attribute a
+/// watcher `DBG_TERMINATE_PROCESS` exit to Windows teardown.
+pub fn session_end_affirms(affirmed_end_ms: Option<u64>, now_ms: u64) -> bool {
+    matches!(
+        affirmed_end_ms,
+        Some(stamp) if now_ms.saturating_sub(stamp) < SESSION_END_AFFIRMATION_TTL_MS
+    )
+}
+
+/// The raw Windows status `0xFFFFFFFF` represented as Rust's signed process
+/// exit code. A process can produce this value itself, and `TerminateProcess`
+/// lets its caller choose the exit code, so the status does not establish who
+/// or what ended the process. It is intentionally *not* benign: the watcher
+/// capture must carry lifecycle and runner diagnostics before triage can infer
+/// a cause.
+pub const WINDOWS_STATUS_FFFFFFFF: i32 = -1;
+
+/// A content-safe classification of a raw Windows process status. This remains
+/// pure and deliberately has no `target_os` gate: test jobs on every platform
+/// must pin the Windows wire values even though only Windows emits them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsTermination {
+    ConsoleControl,
+    SessionTerminate,
+    IndeterminateStatus,
+    Fault(u32),
+    Ordinary(i32),
+}
+
+impl WindowsTermination {
+    /// Stable, fixed-vocabulary name safe for a Sentry tag.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::ConsoleControl => "console_control",
+            Self::SessionTerminate => "session_terminate",
+            Self::IndeterminateStatus => "indeterminate_status",
+            Self::Fault(_) => "fault",
+            Self::Ordinary(_) => "ordinary",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::ConsoleControl => "console control",
+            Self::SessionTerminate => "session terminate",
+            Self::IndeterminateStatus => "origin unknown",
+            Self::Fault(_) => "fault",
+            Self::Ordinary(_) => "ordinary exit",
+        }
+    }
+
+    /// True only for an exit shape that is recognizably a Windows status. A
+    /// small conventional code (1, 2, 17, …) is portable and must retain its
+    /// existing POSIX-shaped fingerprint.
+    pub fn is_windows_status(self) -> bool {
+        !matches!(self, Self::Ordinary(_))
+    }
+}
+
+/// Classify a raw signed exit code by its Windows bit pattern. The order is
+/// intentional: `0xFFFFFFFF` has the high fault bits set, but it carries no
+/// termination provenance and must retain its own neutral diagnostic class.
+pub fn classify_windows_exit_status(code: i32) -> WindowsTermination {
+    let raw = code as u32;
+    if code == WINDOWS_CONTROL_C_EXIT {
+        WindowsTermination::ConsoleControl
+    } else if code == WINDOWS_SESSION_TERMINATE_EXIT {
+        WindowsTermination::SessionTerminate
+    } else if code == WINDOWS_STATUS_FFFFFFFF {
+        WindowsTermination::IndeterminateStatus
+    } else if raw & 0xC000_0000 == 0xC000_0000 {
+        WindowsTermination::Fault(raw)
+    } else {
+        WindowsTermination::Ordinary(code)
+    }
+}
+
+/// Canonical uppercase eight-digit status rendering for a Windows raw exit.
+/// It preserves the unsigned bit pattern instead of leaking Rust's signed
+/// representation (for example `-1` becomes `0xFFFFFFFF`).
+pub fn windows_exit_status_hex(code: i32) -> String {
+    format!("0x{:08X}", code as u32)
+}
+
+/// Name the small, well-known set of Windows status values observed or likely
+/// for sync-runner crashes. This is separate from WindowsTermination so adding
+/// a label cannot change its established grouping or capture semantics.
+pub fn windows_fault_symbol(code: i32) -> Option<&'static str> {
+    match code as u32 {
+        0xC000_0409 => Some("STATUS_STACK_BUFFER_OVERRUN"),
+        0xC000_0005 => Some("ACCESS_VIOLATION"),
+        0xC000_013A => Some("CONTROL_C_EXIT"),
+        0x8000_0003 => Some("BREAKPOINT"),
+        _ => None,
+    }
+}
+
+/// Returns whether a process ended with the exact Windows console-control
+/// teardown status. Requiring an ordinary exit code and no Unix signal keeps
+/// malformed dual-status events and every other Windows fault code loud.
+pub fn is_windows_console_control_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    code == Some(WINDOWS_CONTROL_C_EXIT) && signal.is_none()
+}
 
 /// Stable, structured Sentry fingerprint component for a runner termination.
 ///
@@ -143,10 +944,48 @@ pub const SIGTERM_SIGNAL: i32 = 15;
 /// silently preferring one field and merging it with a valid termination.
 pub fn termination_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> String {
     match (code, signal) {
-        (Some(code), None) => format!("exit:{code}"),
+        (Some(code), None) => match classify_windows_exit_status(code) {
+            WindowsTermination::ConsoleControl => "windows:console-control".to_string(),
+            WindowsTermination::SessionTerminate => "windows:session-terminate".to_string(),
+            WindowsTermination::IndeterminateStatus => "windows:status-ffffffff".to_string(),
+            WindowsTermination::Fault(raw) => format!("windows:fault:0x{raw:08X}"),
+            WindowsTermination::Ordinary(code) => format!("exit:{code}"),
+        },
         (None, Some(signal)) => format!("signal:{signal}"),
         (Some(code), Some(signal)) => format!("invalid:exit:{code}+signal:{signal}"),
         (None, None) => "unknown".to_string(),
+    }
+}
+
+/// Return the stable watcher-facing description for the two observed abort
+/// encodings. A bare exit 134 is only a Node abort on Windows; retaining the
+/// explicit host input prevents POSIX shell-wrapped exit codes from regrouping.
+pub fn normalized_abort_description(
+    code: Option<i32>,
+    signal: Option<i32>,
+    host: TerminationHost,
+) -> Option<&'static str> {
+    match (code, signal, host) {
+        (None, Some(SIGABRT_SIGNAL), _) => Some("aborted with SIGABRT"),
+        (Some(NODE_WINDOWS_ABORT_EXIT), None, TerminationHost::Windows) => {
+            Some("aborted (Node abort exit code 134)")
+        }
+        _ => None,
+    }
+}
+
+/// Stable watcher-only fingerprint component that joins Node's Windows abort
+/// exit convention with POSIX SIGABRT while leaving every other raw termination
+/// token unchanged. The base helper remains the manual-sync wire contract.
+pub fn termination_fingerprint_token_for_host(
+    code: Option<i32>,
+    signal: Option<i32>,
+    host: TerminationHost,
+) -> String {
+    if normalized_abort_description(code, signal, host).is_some() {
+        "abort:sigabrt".to_string()
+    } else {
+        termination_fingerprint_token(code, signal)
     }
 }
 
@@ -157,6 +996,14 @@ pub fn termination_fingerprint_token(code: Option<i32>, signal: Option<i32>) -> 
 /// was OOM-killed vs crashed vs cancelled.
 pub fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     if let Some(c) = code {
+        let termination = classify_windows_exit_status(c);
+        if termination.is_windows_status() {
+            return format!(
+                "with Windows status {} ({})",
+                windows_exit_status_hex(c),
+                termination.description()
+            );
+        }
         return format!("with code {}", c);
     }
     match signal {
@@ -227,6 +1074,24 @@ pub fn watcher_exit_capture_policy(
         // Unknown codes (including the observed 221) remain alertable until
         // their producer is identified; never guess a benign classification.
         _ => WatcherExitCapturePolicy::Capture,
+    }
+}
+
+/// Extend the existing watcher-exit policy with an affirmative-only session
+/// attribution. Every missing, failed, or stale attribution delegates to the
+/// established policy verbatim, so the observer can never hide an alert.
+pub fn watcher_exit_capture_policy_with_attribution(
+    code: Option<i32>,
+    signal: Option<i32>,
+    attribution: Option<WindowsTerminatorAttribution>,
+) -> WatcherExitCapturePolicy {
+    if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
+        && signal.is_none()
+        && attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
+    {
+        WatcherExitCapturePolicy::LocalLogOnly
+    } else {
+        watcher_exit_capture_policy(code, signal)
     }
 }
 
@@ -382,6 +1247,22 @@ pub fn is_node_too_old_signature(line: &str) -> bool {
         || (msg.contains("ebadengine") && msg.contains("node"))
 }
 
+/// Conservative raw-stderr markers that indicate the runner itself failed
+/// before it could provide a normal protocol result. This is evidence only;
+/// it never changes the capture/suppression decision.
+pub fn is_fatal_runner_signature(line: &str) -> bool {
+    let msg = line.to_lowercase();
+    is_node_too_old_signature(&msg)
+        || [
+            "fatal error",
+            "uncaught exception",
+            "unhandledrejection",
+            "panicked at",
+        ]
+        .iter()
+        .any(|marker| msg.contains(marker))
+}
+
 /// Returns `true` when a runner error should raise a Sentry alert if it drives a
 /// non-zero runner exit. Applies to errors of ANY level — company-level
 /// (`path == "(company)"`) and per-file alike — because `hq-cloud`'s fanout
@@ -407,11 +1288,11 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
         || is_expected_acl_scope_skip(&err.message))
 }
 
-/// Pure policy: should a *non-zero* runner exit raise a Sentry alert?
+/// Pure policy: how should a *non-zero* runner exit finish?
 ///
 /// Extracted from the `ProcessEvent::Exit` handler so the decision is
-/// unit-testable without a live `AppHandle`. Returns `false` (suppress) for the
-/// non-actionable exits this issue was drowning in, `true` (alert) otherwise:
+/// unit-testable without a live `AppHandle`. It preserves the existing
+/// alert-versus-suppression semantics while distinguishing terminal UI effects:
 ///
 ///   - exit 17 (`OPERATION_LOCKED`): another sync holds the lock — a normal
 ///     concurrent-sync race, never a failure.
@@ -421,16 +1302,68 @@ pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 ///   - a Node-too-old startup crash (`saw_node_too_old`): the runner could not
 ///     start under the user's Node version, so this is an environment fault
 ///     surfaced to the UI rather than an alertable product defect.
+///   - exit 75 (`TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`): the runner reports
+///     a retryable network outcome, so the current UI run must end without a
+///     capture.
 ///
 /// An *unexplained* non-zero exit — no error event seen at all, e.g. the runner
 /// panicked or was OOM-killed before emitting protocol — still alerts,
 /// preserving the original "bailed before emitting a useful stream" signal.
 ///
-/// A SIGTERM kill is the one signal that is NEVER a defect: it is our own
-/// `cancel_process_impl` ending the run (Stop / timeout / quit / supersede), so
-/// it is suppressed regardless of any in-flight company errors. Other signals
-/// stay loud — SIGSEGV/SIGBUS/SIGABRT are crashes, and SIGKILL is OOM or a
-/// force-quit worth seeing; only the cooperative SIGTERM is "expected".
+/// A SIGTERM kill is never a defect: it is our own `cancel_process_impl` ending
+/// the run (Stop / timeout / quit / supersede). The exact Windows
+/// `STATUS_CONTROL_C_EXIT` is likewise an OS console-control teardown. Both
+/// are suppressed regardless of any in-flight company errors. Other signals
+/// and Windows fault statuses stay loud — SIGSEGV/SIGBUS/SIGABRT are crashes,
+/// SIGKILL is OOM or a force-quit worth seeing, and only the one documented
+/// Windows status is expected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerExitDisposition {
+    /// Capture the termination and emit the existing runner-error event.
+    Alert,
+    /// Surface the actionable Node upgrade message without a capture.
+    NodeTooOld,
+    /// End the UI run after Windows console teardown without a capture.
+    WindowsConsoleControl,
+    /// End the UI run after hq-cloud's retryable network outcome without a capture.
+    TransientRetry,
+    /// Log a fully explained non-zero exit without an additional UI event.
+    Ignore,
+}
+
+/// Classify the effects a non-zero runner exit should produce.
+///
+/// This is the sole exit-policy seam: callers that need a boolean must project
+/// from it rather than repeating code, signal, or run-total conditions. Node
+/// remediation intentionally outranks console-control and generic suppression,
+/// preserving the manual-sync dispatch ordering that existed before this
+/// classifier was introduced.
+pub fn classify_runner_exit_disposition(
+    code: Option<i32>,
+    signal: Option<i32>,
+    saw_error: bool,
+    saw_alertable_error: bool,
+    saw_node_too_old: bool,
+) -> RunnerExitDisposition {
+    if saw_node_too_old {
+        return RunnerExitDisposition::NodeTooOld;
+    }
+    if is_windows_console_control_exit(code, signal) {
+        return RunnerExitDisposition::WindowsConsoleControl;
+    }
+    if code == Some(RUNNER_TRANSIENT_RETRY_EXIT) {
+        return RunnerExitDisposition::TransientRetry;
+    }
+    if signal == Some(SIGTERM_SIGNAL)
+        || code == Some(RUNNER_OPERATION_LOCKED_EXIT)
+        || (saw_error && !saw_alertable_error)
+    {
+        return RunnerExitDisposition::Ignore;
+    }
+    RunnerExitDisposition::Alert
+}
+
+/// Boolean compatibility projection for existing capture seams.
 pub fn should_alert_on_nonzero_exit(
     code: Option<i32>,
     signal: Option<i32>,
@@ -438,19 +1371,16 @@ pub fn should_alert_on_nonzero_exit(
     saw_alertable_error: bool,
     saw_node_too_old: bool,
 ) -> bool {
-    if signal == Some(SIGTERM_SIGNAL) {
-        return false;
-    }
-    if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
-        return false;
-    }
-    if saw_node_too_old {
-        return false;
-    }
-    if saw_error && !saw_alertable_error {
-        return false;
-    }
-    true
+    matches!(
+        classify_runner_exit_disposition(
+            code,
+            signal,
+            saw_error,
+            saw_alertable_error,
+            saw_node_too_old,
+        ),
+        RunnerExitDisposition::Alert
+    )
 }
 
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
@@ -527,13 +1457,91 @@ mod tests {
     }
 
     #[test]
+    fn windows_exit_statuses_are_classified_from_independent_hex_literals() {
+        assert_eq!(
+            classify_windows_exit_status(0xC000_013Au32 as i32),
+            WindowsTermination::ConsoleControl
+        );
+        assert_eq!(
+            classify_windows_exit_status(0x4001_0004u32 as i32),
+            WindowsTermination::SessionTerminate
+        );
+        assert_eq!(
+            classify_windows_exit_status(0xFFFF_FFFFu32 as i32),
+            WindowsTermination::IndeterminateStatus
+        );
+        for raw in [0xC000_0005u32, 0xC000_00FD, 0xC000_0409] {
+            assert_eq!(
+                classify_windows_exit_status(raw as i32),
+                WindowsTermination::Fault(raw),
+                "0x{raw:08X} must remain an alertable Windows fault"
+            );
+        }
+        assert_eq!(
+            classify_windows_exit_status(17),
+            WindowsTermination::Ordinary(17)
+        );
+    }
+
+    #[test]
+    fn windows_exit_descriptions_keep_the_raw_hex_and_class() {
+        assert_eq!(
+            describe_exit(Some(0xFFFF_FFFFu32 as i32), None),
+            "with Windows status 0xFFFFFFFF (origin unknown)"
+        );
+        assert_eq!(
+            describe_exit(Some(0xC000_0409u32 as i32), None),
+            "with Windows status 0xC0000409 (fault)"
+        );
+    }
+
+    #[test]
+    fn session_terminate_exit_description_pins_the_sentry_wire_value() {
+        // Sentry reports this status as a positive decimal, whereas the
+        // Windows classifier reads its bit pattern. Pin both spellings so a
+        // future refactor cannot accidentally turn it back into exit:1073807364.
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
+        assert_eq!(
+            describe_exit(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "with Windows status 0x40010004 (session terminate)"
+        );
+    }
+
+    #[test]
     fn termination_fingerprint_separates_exit_codes_from_signals() {
         assert_eq!(termination_fingerprint_token(Some(2), None), "exit:2");
         assert_eq!(termination_fingerprint_token(None, Some(2)), "signal:2");
         assert_eq!(termination_fingerprint_token(Some(126), None), "exit:126");
+        assert_eq!(
+            termination_fingerprint_token(Some(WINDOWS_CONTROL_C_EXIT), None),
+            "windows:console-control"
+        );
+        assert_eq!(
+            termination_fingerprint_token(Some(0xFFFF_FFFFu32 as i32), None),
+            "windows:status-ffffffff"
+        );
+        assert_eq!(
+            termination_fingerprint_token(Some(0xC000_0409u32 as i32), None),
+            "windows:fault:0xC0000409"
+        );
         assert_ne!(
             termination_fingerprint_token(Some(2), None),
             termination_fingerprint_token(Some(126), None)
+        );
+    }
+
+    #[test]
+    fn session_terminate_fingerprint_is_windows_scoped_not_a_posix_exit() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        assert_eq!(OBSERVED_SESSION_TERMINATE_EXIT as u32, 0x4001_0004);
+        assert_eq!(
+            termination_fingerprint_token(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "windows:session-terminate"
+        );
+        assert_ne!(
+            termination_fingerprint_token(Some(OBSERVED_SESSION_TERMINATE_EXIT), None),
+            "exit:1073807364"
         );
     }
 
@@ -544,6 +1552,141 @@ mod tests {
             "invalid:exit:2+signal:2"
         );
         assert_eq!(termination_fingerprint_token(None, None), "unknown");
+    }
+
+    #[test]
+    fn normalized_abort_fingerprints_join_only_the_observed_host_encodings() {
+        for (code, signal, host) in [
+            (
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                None,
+                TerminationHost::Windows,
+            ),
+            (None, Some(SIGABRT_SIGNAL), TerminationHost::Posix),
+            (None, Some(SIGABRT_SIGNAL), TerminationHost::Windows),
+        ] {
+            assert_eq!(
+                termination_fingerprint_token_for_host(code, signal, host),
+                "abort:sigabrt"
+            );
+        }
+
+        assert_eq!(
+            termination_fingerprint_token_for_host(
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                None,
+                TerminationHost::Posix,
+            ),
+            "exit:134"
+        );
+    }
+
+    #[test]
+    fn normalized_abort_descriptions_are_exact_and_host_scoped() {
+        assert_eq!(
+            normalized_abort_description(None, Some(SIGABRT_SIGNAL), TerminationHost::Posix),
+            Some("aborted with SIGABRT")
+        );
+        assert_eq!(
+            normalized_abort_description(None, Some(SIGABRT_SIGNAL), TerminationHost::Windows),
+            Some("aborted with SIGABRT")
+        );
+        assert_eq!(
+            normalized_abort_description(
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                None,
+                TerminationHost::Windows,
+            ),
+            Some("aborted (Node abort exit code 134)")
+        );
+
+        for (code, signal, host) in [
+            (Some(NODE_WINDOWS_ABORT_EXIT), None, TerminationHost::Posix),
+            (
+                Some(NODE_WINDOWS_ABORT_EXIT),
+                Some(SIGABRT_SIGNAL),
+                TerminationHost::Windows,
+            ),
+            (None, None, TerminationHost::Posix),
+            (Some(221), None, TerminationHost::Windows),
+        ] {
+            assert_eq!(normalized_abort_description(code, signal, host), None);
+        }
+    }
+
+    #[test]
+    fn non_abort_host_tokens_delegate_byte_for_byte_to_the_base_contract() {
+        let cases = [
+            (Some(0), None, "exit:0"),
+            (Some(1), None, "exit:1"),
+            (Some(2), None, "exit:2"),
+            (Some(126), None, "exit:126"),
+            (Some(127), None, "exit:127"),
+            (Some(221), None, "exit:221"),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                "windows:console-control",
+            ),
+            (
+                Some(WINDOWS_SESSION_TERMINATE_EXIT),
+                None,
+                "windows:session-terminate",
+            ),
+            (
+                Some(0xC000_0409u32 as i32),
+                None,
+                "windows:fault:0xC0000409",
+            ),
+            (Some(2), Some(2), "invalid:exit:2+signal:2"),
+            (None, None, "unknown"),
+        ];
+
+        for host in [TerminationHost::Posix, TerminationHost::Windows] {
+            for (code, signal, expected) in cases {
+                assert_eq!(
+                    termination_fingerprint_token_for_host(code, signal, host),
+                    expected
+                );
+                assert_eq!(
+                    termination_fingerprint_token_for_host(code, signal, host),
+                    termination_fingerprint_token(code, signal)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn current_termination_host_matches_the_build_target() {
+        let expected = if cfg!(target_os = "windows") {
+            TerminationHost::Windows
+        } else {
+            TerminationHost::Posix
+        };
+        assert_eq!(current_termination_host(), expected);
+    }
+
+    #[test]
+    fn posix_termination_tokens_and_descriptions_are_byte_identical() {
+        for (code, signal, token, description) in [
+            (Some(126), None, "exit:126", "with code 126"),
+            (Some(127), None, "exit:127", "with code 127"),
+            (Some(2), None, "exit:2", "with code 2"),
+            (
+                None,
+                Some(11),
+                "signal:11",
+                "crashed with SIGSEGV (segfault)",
+            ),
+        ] {
+            assert_eq!(termination_fingerprint_token(code, signal), token);
+            assert_eq!(describe_exit(code, signal), description);
+        }
+        assert_eq!(
+            termination_fingerprint_token(Some(2), Some(11)),
+            "invalid:exit:2+signal:11"
+        );
+        assert_eq!(describe_exit(None, None), "with code unknown");
     }
 
     // ── RunTotals ────────────────────────────────────────────────────────
@@ -569,6 +1712,322 @@ mod tests {
     fn test_run_totals_default_is_zero() {
         let t = RunTotals::default();
         assert_eq!(t.conflicts, 0);
+        assert_eq!(t.runner_error_rollup.tag_value(), None);
+    }
+
+    #[test]
+    fn runner_error_rollup_is_fixed_vocabulary_and_never_leaks_path_or_message() {
+        let path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let raw_message = format!("EPERM: rename '{path}.hq-tmp-a1b2' -> '{path}'");
+        let mut totals = RunTotals::default();
+        totals.record_error(&make_company_error(Some("personal"), path, &raw_message));
+        totals.record_error(&make_company_error(
+            Some("personal"),
+            "another-private-path.md",
+            "EPERM: operation not permitted",
+        ));
+        totals.record_error(&make_company_error(
+            Some("personal"),
+            "ignored-path.md",
+            "EACCES: access denied",
+        ));
+
+        let tag = totals
+            .runner_error_rollup
+            .tag_value()
+            .expect("error counts");
+        assert_eq!(tag, "EPERM:2,EACCES:1");
+        assert!(!tag.contains(path));
+        assert!(!tag.contains("hq-tmp-a1b2"));
+        assert!(!tag.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn runner_error_rollup_fingerprint_token_is_dominant_class_and_permutation_stable() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let records = [
+            (
+                "personal",
+                format!(
+                    "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+                ),
+            ),
+            (
+                "health",
+                format!("Unauthorized: cognito token rejected, open '{private_path}'"),
+            ),
+            (
+                "personal",
+                format!(
+                    "EPERM: operation not permitted, rename '{private_path}.hq-tmp-c3d4' -> '{private_path}'"
+                ),
+            ),
+            (
+                "health",
+                format!("Unauthorized: cognito token rejected, open '{private_path}'"),
+            ),
+        ];
+
+        let mut first = RunTotals::default();
+        for (company, message) in &records {
+            first.record_error(&make_company_error(Some(company), private_path, message));
+        }
+
+        let mut permuted = RunTotals::default();
+        for (company, message) in records.iter().rev() {
+            permuted.record_error(&make_company_error(Some(company), private_path, message));
+        }
+
+        assert_eq!(first.runner_error_rollup.fingerprint_token(), "eperm");
+        assert_eq!(
+            permuted.runner_error_rollup.fingerprint_token(),
+            "eperm",
+            "ties must use the fixed RunnerErrorClass declaration order"
+        );
+        assert_eq!(
+            first.runner_error_ops.tag_value().as_deref(),
+            Some("rename:2,open:2")
+        );
+        assert_eq!(
+            permuted.runner_error_ops.tag_value(),
+            first.runner_error_ops.tag_value()
+        );
+        assert_eq!(first.runner_error_company_count(), 2);
+        assert_eq!(permuted.runner_error_company_count(), 2);
+        assert_eq!(
+            RunTotals::default().runner_error_rollup.fingerprint_token(),
+            "none"
+        );
+
+        let mut readlink_einval = RunTotals::default();
+        readlink_einval.record_error(&make_company_error(
+            Some("personal"),
+            private_path,
+            &format!("EINVAL: invalid argument, readlink '{private_path}'"),
+        ));
+        assert_eq!(
+            readlink_einval.runner_error_rollup.fingerprint_token(),
+            "other"
+        );
+        assert_eq!(
+            readlink_einval.runner_error_ops.tag_value().as_deref(),
+            Some("readlink:1")
+        );
+    }
+
+    #[test]
+    fn classify_runner_error_op_is_fixed_vocabulary_and_never_leaks_path_or_message() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let cases = [
+            ("rename", RunnerErrorOp::Rename),
+            ("unlink", RunnerErrorOp::Unlink),
+            ("open", RunnerErrorOp::Open),
+            ("mkdir", RunnerErrorOp::Mkdir),
+            ("rmdir", RunnerErrorOp::Rmdir),
+            ("symlink", RunnerErrorOp::Symlink),
+            ("readlink", RunnerErrorOp::Readlink),
+            ("stat", RunnerErrorOp::Stat),
+            ("lstat", RunnerErrorOp::Lstat),
+            ("chmod", RunnerErrorOp::Chmod),
+            ("copyfile", RunnerErrorOp::Copyfile),
+            ("utimes", RunnerErrorOp::Utimes),
+            ("scandir", RunnerErrorOp::Scandir),
+            ("read", RunnerErrorOp::Read),
+            ("write", RunnerErrorOp::Write),
+            ("access", RunnerErrorOp::Access),
+        ];
+
+        for (operation, expected) in cases {
+            let raw_message =
+                format!("EPERM: operation not permitted, {operation} '{private_path}.hq-tmp-a1b2'");
+            let actual = classify_runner_error_op(&raw_message);
+            assert_eq!(
+                actual, expected,
+                "must recognize Node's {operation} errno shape"
+            );
+            assert_eq!(actual.as_str(), operation);
+            assert!(!actual.as_str().contains(private_path));
+            assert!(!actual.as_str().contains("hq-tmp-a1b2"));
+        }
+
+        assert_eq!(
+            classify_runner_error_op(&format!("custom failure at '{private_path}'")),
+            RunnerErrorOp::Other
+        );
+    }
+
+    #[test]
+    fn fatal_runner_signatures_are_evidence_only() {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line("fatal error: unrecoverable runtime failure");
+        assert!(totals.saw_fatal_runner_signature);
+        assert!(!totals.saw_node_too_old);
+        assert!(is_fatal_runner_signature("UnhandledRejection: boom"));
+        assert!(!is_fatal_runner_signature("EPERM: operation not permitted"));
+    }
+
+    #[test]
+    fn runner_fatal_class_is_fixed_vocabulary_and_never_copies_stderr() {
+        let private_path = r"C:\\Users\\Ada\\hq\\companies\\personal\\secret-plan.md";
+        let libuv_assertion = format!(
+            "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\\\win\\\\async.c, line 76: {private_path}"
+        );
+        let permission_denied =
+            format!("sh: {private_path}/node_modules/.bin/hq-sync-runner: Permission denied");
+
+        assert_eq!(
+            classify_runner_fatal_class(&libuv_assertion),
+            RunnerFatalClass::LibuvAssert
+        );
+        assert_eq!(
+            classify_runner_fatal_class(&permission_denied),
+            RunnerFatalClass::ExecPermissionDenied
+        );
+        assert_eq!(
+            classify_runner_fatal_class("FATAL ERROR: JavaScript heap out of memory"),
+            RunnerFatalClass::HeapOom
+        );
+        assert_eq!(
+            classify_runner_fatal_class("thread 'main' panicked at 'boom'"),
+            RunnerFatalClass::RustPanic
+        );
+        assert_eq!(
+            classify_runner_fatal_class("UnhandledRejection: boom"),
+            RunnerFatalClass::NodeFatal
+        );
+        assert_eq!(
+            classify_runner_fatal_class("sh: hq-sync-runner: command not found"),
+            RunnerFatalClass::ExecNotFound
+        );
+        assert_eq!(
+            classify_runner_fatal_class(
+                "TypeError: diagnostics_channel.tracingChannel is not a function"
+            ),
+            RunnerFatalClass::NodeTooOld
+        );
+        assert_eq!(
+            classify_runner_fatal_class("EPERM: operation not permitted"),
+            RunnerFatalClass::None
+        );
+        assert_eq!(
+            classify_runner_fatal_class("EACCES: permission denied, open /private/user-file"),
+            RunnerFatalClass::None,
+            "ordinary runner file errors are not launch failures"
+        );
+        assert_eq!(
+            classify_runner_fatal_class(
+                "ENOENT: no such file or directory, open /private/user-file"
+            ),
+            RunnerFatalClass::None,
+            "ordinary runner file errors are not launch failures"
+        );
+        assert_eq!(classify_runner_fatal_class(""), RunnerFatalClass::None);
+
+        let token = classify_runner_fatal_class(&libuv_assertion).as_str();
+        assert_eq!(token, "libuv_assert");
+        assert!(!token.contains("Ada"));
+        assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn node_check_abort_classifier_requires_the_observed_assertion_line_shape() {
+        let companion = r"  #  C:\WINDOWS\system32\cmd.exe [44452]: char *__cdecl node::Realloc<char>(char *,unsigned __int64) at c:\ws\src\util-inl.h:378";
+        let assertion = "  #  Assertion failed: !(n > 0) || (ret != nullptr)";
+
+        assert_eq!(
+            classify_runner_fatal_class(assertion),
+            RunnerFatalClass::NodeCheckAbort
+        );
+        assert_eq!(
+            classify_runner_fatal_class(companion),
+            RunnerFatalClass::None
+        );
+        assert_eq!(
+            classify_runner_fatal_class(
+                "# Assertion failed: loop != nullptr, src\\\\win\\\\async.c libuv"
+            ),
+            RunnerFatalClass::LibuvAssert
+        );
+        assert_eq!(
+            classify_runner_fatal_class("Assertion failed: !(n > 0) || (ret != nullptr)"),
+            RunnerFatalClass::None
+        );
+        assert_eq!(
+            RunnerFatalClass::NodeCheckAbort.as_str(),
+            "node_check_abort"
+        );
+    }
+
+    #[test]
+    fn node_check_abort_stderr_rollup_is_sticky_across_the_observed_pair() {
+        let companion = r"  #  C:\WINDOWS\system32\cmd.exe [44452]: char *__cdecl node::Realloc<char>(char *,unsigned __int64) at c:\ws\src\util-inl.h:378";
+        let assertion = "  #  Assertion failed: !(n > 0) || (ret != nullptr)";
+
+        let mut companion_then_assertion = RunTotals::default();
+        for line in [companion, assertion, "", "    at journal.js:1:1"] {
+            companion_then_assertion.record_stderr_line(line);
+        }
+        assert_eq!(
+            companion_then_assertion.runner_fatal_class,
+            RunnerFatalClass::NodeCheckAbort
+        );
+
+        let mut assertion_then_companion = RunTotals::default();
+        for line in [assertion, companion, ""] {
+            assertion_then_companion.record_stderr_line(line);
+        }
+        assert_eq!(
+            assertion_then_companion.runner_fatal_class,
+            RunnerFatalClass::NodeCheckAbort
+        );
+
+        let mut companion_only = RunTotals::default();
+        companion_only.record_stderr_line(companion);
+        assert_eq!(companion_only.runner_fatal_class, RunnerFatalClass::None);
+    }
+
+    #[test]
+    fn fatal_diagnostics_do_not_change_termination_fingerprints() {
+        for (code, signal, expected) in [
+            (Some(-1_073_740_791), None, "windows:fault:0xC0000409"),
+            (Some(126), None, "exit:126"),
+            (Some(2), None, "exit:2"),
+            (Some(17), None, "exit:17"),
+            (
+                Some(0xC000_0005u32 as i32),
+                None,
+                "windows:fault:0xC0000005",
+            ),
+            (Some(0xC000_013Au32 as i32), None, "windows:console-control"),
+            (
+                Some(0x4001_0004u32 as i32),
+                None,
+                "windows:session-terminate",
+            ),
+        ] {
+            assert_eq!(termination_fingerprint_token(code, signal), expected);
+        }
+    }
+
+    #[test]
+    fn well_known_windows_fault_symbols_are_fixed_vocabulary() {
+        assert_eq!(
+            windows_fault_symbol(0xC000_0409u32 as i32),
+            Some("STATUS_STACK_BUFFER_OVERRUN")
+        );
+        assert_eq!(
+            windows_fault_symbol(0xC000_0005u32 as i32),
+            Some("ACCESS_VIOLATION")
+        );
+        assert_eq!(
+            windows_fault_symbol(0xC000_013Au32 as i32),
+            Some("CONTROL_C_EXIT")
+        );
+        assert_eq!(
+            windows_fault_symbol(0x8000_0003u32 as i32),
+            Some("BREAKPOINT")
+        );
+        assert_eq!(windows_fault_symbol(17), None);
     }
 
     #[test]
@@ -857,6 +2316,131 @@ mod tests {
     // ── should_alert_on_nonzero_exit ─────────────────────────────────────────
 
     #[test]
+    fn runner_exit_disposition_precedence_is_pinned() {
+        use RunnerExitDisposition::{
+            Alert, Ignore, NodeTooOld, TransientRetry, WindowsConsoleControl,
+        };
+
+        // This matrix preserves the pre-existing manual-sync dispatch ordering
+        // for every non-75 input while pinning the new hq-cloud retry contract.
+        let cases = [
+            (None, Some(SIGTERM_SIGNAL), false, false, false, Ignore),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                false,
+                false,
+                false,
+                WindowsConsoleControl,
+            ),
+            (
+                Some(RUNNER_OPERATION_LOCKED_EXIT),
+                None,
+                true,
+                true,
+                false,
+                Ignore,
+            ),
+            (Some(1), None, false, false, true, NodeTooOld),
+            (None, Some(SIGTERM_SIGNAL), false, false, true, NodeTooOld),
+            (
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                false,
+                false,
+                true,
+                NodeTooOld,
+            ),
+            (
+                Some(RUNNER_OPERATION_LOCKED_EXIT),
+                None,
+                false,
+                false,
+                true,
+                NodeTooOld,
+            ),
+            (Some(2), None, true, false, false, Ignore),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                true,
+                true,
+                false,
+                TransientRetry,
+            ),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                false,
+                false,
+                false,
+                TransientRetry,
+            ),
+            (
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                true,
+                true,
+                true,
+                NodeTooOld,
+            ),
+            (Some(2), None, true, true, false, Alert),
+            (Some(1), None, false, false, false, Alert),
+        ];
+
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old, expected) in cases {
+            assert_eq!(
+                classify_runner_exit_disposition(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                expected,
+                "unexpected disposition for code={code:?}, signal={signal:?}, error={saw_error}, alertable={saw_alertable_error}, node_too_old={saw_node_too_old}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_alert_is_only_a_projection_of_runner_exit_disposition() {
+        let cases = [
+            (None, Some(SIGTERM_SIGNAL), false, false, false),
+            (Some(WINDOWS_CONTROL_C_EXIT), None, false, false, false),
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None, true, true, false),
+            (Some(1), None, false, false, true),
+            (Some(2), None, true, false, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, true, true, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, false, false, false),
+            (Some(2), None, true, true, false),
+            (Some(1), None, false, false, false),
+        ];
+
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old) in cases {
+            assert_eq!(
+                should_alert_on_nonzero_exit(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                matches!(
+                    classify_runner_exit_disposition(
+                        code,
+                        signal,
+                        saw_error,
+                        saw_alertable_error,
+                        saw_node_too_old,
+                    ),
+                    RunnerExitDisposition::Alert
+                )
+            );
+        }
+    }
+
+    #[test]
     fn test_exit_alert_suppressed_for_operation_locked() {
         // Exit 17 = another sync holds the lock — a normal concurrent race.
         assert!(!should_alert_on_nonzero_exit(
@@ -905,6 +2489,60 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn windows_console_control_exit_is_exact_and_suppressed_for_manual_sync() {
+        assert!(is_windows_console_control_exit(
+            Some(WINDOWS_CONTROL_C_EXIT),
+            None
+        ));
+        for code in [
+            -1073741509, // adjacent non-control NTSTATUS
+            -1073741819, // 0xC0000005 access violation
+            -1073741571, // 0xC00000FD stack overflow
+            0,
+            1,
+            2,
+            RUNNER_OPERATION_LOCKED_EXIT,
+            126,
+            127,
+        ] {
+            assert!(
+                !is_windows_console_control_exit(Some(code), None),
+                "only STATUS_CONTROL_C_EXIT may be suppressed: {code}"
+            );
+        }
+        assert!(!is_windows_console_control_exit(None, None));
+        assert!(!is_windows_console_control_exit(
+            Some(WINDOWS_CONTROL_C_EXIT),
+            Some(SIGTERM_SIGNAL)
+        ));
+
+        for (saw_error, saw_alertable_error, saw_node_too_old) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (true, true, true),
+        ] {
+            assert!(!should_alert_on_nonzero_exit(
+                Some(WINDOWS_CONTROL_C_EXIT),
+                None,
+                saw_error,
+                saw_alertable_error,
+                saw_node_too_old,
+            ));
+        }
+
+        for fault in [-1073741819, -1073741571, 126, 127] {
+            assert!(should_alert_on_nonzero_exit(
+                Some(fault),
+                None,
+                false,
+                false,
+                false,
+            ));
+        }
     }
 
     #[test]
@@ -1224,6 +2862,58 @@ mod tests {
     }
 
     #[test]
+    fn session_end_affirmation_ttl_has_a_strict_twenty_second_boundary() {
+        assert_eq!(SESSION_END_AFFIRMATION_TTL_MS, 20_000);
+        assert!(session_end_affirms(Some(0), 19_999));
+        assert!(!session_end_affirms(Some(0), 20_000));
+        assert!(!session_end_affirms(Some(0), 20_001));
+        assert!(!session_end_affirms(None, 0));
+    }
+
+    #[test]
+    fn session_end_attribution_suppresses_only_the_affirmed_session_terminate_shape() {
+        let attributions = [
+            None,
+            Some(WindowsTerminatorAttribution::SessionEndObserved),
+            Some(WindowsTerminatorAttribution::Unattributed),
+            Some(WindowsTerminatorAttribution::ObserverUnavailable),
+            Some(WindowsTerminatorAttribution::ObserverFailed),
+        ];
+        let codes = [
+            Some(WINDOWS_SESSION_TERMINATE_EXIT),
+            Some(0xC000_0409u32 as i32),
+            Some(-1),
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(126),
+            Some(127),
+            Some(221),
+        ];
+
+        for attribution in attributions {
+            for code in codes {
+                for signal in [None, Some(9)] {
+                    let actual =
+                        watcher_exit_capture_policy_with_attribution(code, signal, attribution);
+                    let expected = if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
+                        && signal.is_none()
+                        && attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
+                    {
+                        WatcherExitCapturePolicy::LocalLogOnly
+                    } else {
+                        watcher_exit_capture_policy(code, signal)
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "code={code:?} signal={signal:?} attribution={attribution:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn exec_not_runnable_exits_escalate_only_after_a_sustained_streak() {
         let policy = watcher_exit_capture_policy(Some(127), None);
         for consecutive in [1, 2, 3] {
@@ -1296,5 +2986,121 @@ mod tests {
         assert!(!first.contains("/Users/"));
         assert!(!first.contains("/opt/homebrew/"));
         assert!(!first.contains("alice"));
+    }
+
+    #[test]
+    fn runner_stack_shape_recognises_both_libuv_windows_spellings() {
+        let backslash = vec![
+            r"Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76: C:\Users\Ada\secret-plan.md"
+                .to_string(),
+        ];
+        let slash = vec![backslash[0].replace(r"src\win\async.c", "src/win/async.c")];
+
+        let first = runner_stack_shape(&backslash);
+        let second = runner_stack_shape(&slash);
+        assert_ne!(first.shape, "all_redacted");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn runner_stack_shape_preserves_multi_line_frame_order_and_distinguishes_shapes() {
+        let first = runner_stack_shape(&[
+            "at node:internal/process/task_queues:95:5".to_string(),
+            "private application frame C:\\Users\\Ada\\secret-plan.md:10:2".to_string(),
+            "at node:events:517:28".to_string(),
+        ]);
+        let second = runner_stack_shape(&[
+            "at node:events:517:28".to_string(),
+            "private application frame C:\\Users\\Grace\\other.md:90:4".to_string(),
+            "at node:internal/process/task_queues:95:5".to_string(),
+        ]);
+
+        assert_eq!(first.shape, "node_task_queues>app>node_events");
+        assert_eq!(first.signature, "90c372213834ca17");
+        assert_eq!(first.depth, 3);
+        assert_eq!(first.redacted_frames, 1);
+        assert_ne!(first.shape, second.shape);
+        assert_ne!(first.signature, second.signature);
+    }
+
+    #[test]
+    fn runner_stack_shape_recognises_named_v8_parenthesized_locations() {
+        let shape = runner_stack_shape(&[
+            "at Module._compile (node:internal/modules/cjs/loader:1356:14)".to_string(),
+            "at EventEmitter.emit (node:events:517:28)".to_string(),
+        ]);
+
+        assert_eq!(shape.shape, "node_cjs_loader>node_events");
+        assert_eq!(shape.depth, 2);
+        assert_eq!(shape.redacted_frames, 0);
+    }
+
+    #[test]
+    fn runner_stack_shape_has_an_honest_all_redacted_contract_and_eight_frame_cap() {
+        let private_a = runner_stack_shape(&[
+            "at C:\\Users\\Ada\\secret-plan.md:10:2".to_string(),
+            "at company_private_symbol:20:4".to_string(),
+        ]);
+        let private_b = runner_stack_shape(&[
+            "at /Users/grace/another-secret.md:99:8".to_string(),
+            "at different_private_symbol:1:1".to_string(),
+        ]);
+        assert_eq!(private_a.shape, "all_redacted");
+        assert_eq!(private_a.signature, "unknown");
+        assert_eq!(private_a.redacted_frames, private_a.depth);
+        assert_eq!(private_b.shape, "all_redacted");
+        assert_eq!(private_b.signature, "unknown");
+
+        let many = (0..12)
+            .map(|_| "at node:fs:1:1".to_string())
+            .collect::<Vec<_>>();
+        let capped = runner_stack_shape(&many);
+        assert_eq!(capped.depth, 8);
+        assert_eq!(capped.shape.split('>').count(), 8);
+        assert!(capped
+            .shape
+            .split('>')
+            .all(|token| RUNNER_STACK_TOKENS.contains(&token)));
+    }
+
+    #[test]
+    fn runner_stack_shape_rejects_marker_spoofing_outside_frame_positions() {
+        for line in [
+            "message embedding node:fs for a user",
+            "home path /Users/Ada/node:internal/process/task_queues",
+            "symbol core::panicking_helper",
+            "file src/win/async.c.bak",
+        ] {
+            let shape = runner_stack_shape(&[line.to_string()]);
+            assert_eq!(shape.shape, "all_redacted", "line={line}");
+            assert_eq!(shape.signature, "unknown", "line={line}");
+        }
+    }
+
+    #[test]
+    fn shared_runner_phase_vocabulary_matches_the_watcher_contract() {
+        let push: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"up"}"#,
+        )
+        .expect("progress event");
+        let pull: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1,"direction":"down"}"#,
+        )
+        .expect("progress event");
+
+        assert_eq!(runner_phase_from_event(&push), Some("push"));
+        assert_eq!(runner_phase_from_event(&pull), Some("pull"));
+        assert_eq!(
+            runner_phase_elapsed_bucket(Duration::from_secs(59)),
+            "under_1m"
+        );
+        assert_eq!(
+            runner_phase_elapsed_bucket(Duration::from_secs(60)),
+            "1m_to_5m"
+        );
+        assert_eq!(
+            runner_phase_elapsed_bucket(Duration::from_secs(2 * 60 * 60)),
+            "over_2h"
+        );
     }
 }

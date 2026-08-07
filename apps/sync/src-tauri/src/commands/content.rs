@@ -379,8 +379,10 @@ fn get_github_token() -> Result<String, String> {
                 .to_string()
         })?;
 
-    let output = Command::new(&gh)
-        .args(["auth", "token"])
+    let mut command = Command::new(&gh);
+    command.args(["auth", "token"]);
+    crate::util::paths::no_window(&mut command);
+    let output = command
         .output()
         .map_err(|e| format!("failed to invoke `{} auth token`: {e}", gh.display()))?;
     if !output.status.success() {

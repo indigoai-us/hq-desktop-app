@@ -125,6 +125,11 @@ pub struct VendChildResult {
     pub expires_at: String,
 }
 
+/// Per-company white-label brand (hq-pro `CompanyBrand`). Canonical
+/// definition lives in `hq_desktop_core::workspaces` so the shared
+/// `Workspace` type can carry it; re-exported here for the membership payload.
+pub use hq_desktop_core::workspaces::CompanyBrand;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MembershipInfo {
@@ -161,6 +166,15 @@ pub struct MembershipInfo {
     /// ISO timestamp the invite was created (`invitedAt` on the row).
     #[serde(default)]
     pub invited_at: Option<String>,
+    /// Enterprise-only white-label entitlement (hq-pro US-001). Stamped on
+    /// `/membership/me` and `/membership/person/{uid}` enrichment. Absent on
+    /// legacy responses → false (no branding; safe either deploy order).
+    #[serde(default)]
+    pub branding_enabled: bool,
+    /// Re-validated brand projection; only present when `branding_enabled` is
+    /// true. Rides the existing membership payload — no new endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand: Option<CompanyBrand>,
 }
 
 impl MembershipInfo {

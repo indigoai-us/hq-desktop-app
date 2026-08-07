@@ -18,7 +18,7 @@
   } from '../lib/meetingsCache';
   import { shouldShowMeetingsLoadingPlaceholder } from '../lib/meetingsLoadingGate';
   import { humanCompanyLabel } from '../lib/visible-labels';
-  import { safeUnlisten } from '../lib/listener-registry';
+  import { safeUnlisten, subscribeWindowFocus } from '../lib/listener-registry';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
   import {
     botForEvent,
@@ -460,13 +460,13 @@
     let cancelled = false;
     (async () => {
       try {
-        unlisten = await listen<{ meetingId?: string }>(
+        unlisten = safeUnlisten(await listen<{ meetingId?: string }>(
           'meetings:focus-meeting',
           (event) => {
             const id = event.payload?.meetingId;
             if (id) focusMeetingRow(id);
           },
-        );
+        ));
         if (cancelled) {
           unlisten?.();
           return;
@@ -498,7 +498,7 @@
     let cancelled = false;
     (async () => {
       try {
-        unlisten = await listen<{
+        unlisten = safeUnlisten(await listen<{
           activeMeetings?: ActiveMeeting[];
           memberships?: ActiveMembership[];
           defaultRecordingCompanyUid?: string | null;
@@ -510,7 +510,7 @@
           recordingMemberships = Array.isArray(next.memberships)
             ? next.memberships
             : [];
-        });
+        }));
         if (cancelled) {
           unlisten?.();
           return;
@@ -554,13 +554,11 @@
     // by the `loading` guard at the top of refresh(), so we don't pay
     // for a double-fetch.
     let unlistenFocus: (() => void) | null = null;
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) void refresh();
-      })
-      .then((fn) => {
-        unlistenFocus = safeUnlisten(fn);
-      });
+    void subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
+      if (focused) void refresh();
+    }).then((fn) => {
+      unlistenFocus = safeUnlisten(fn);
+    });
 
     // Esc closes the window — feels native on macOS where ⌘W is the
     // standard but Esc is the common expectation for a detached panel.

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { onDestroy, onMount } from 'svelte';
   import {
     allSettled,
@@ -209,20 +210,20 @@
   }
 
   async function listenForProgress(runId: number): Promise<void> {
-    const unlisten = await listen<InstallProgressPayload>(
+    const unlisten = safeUnlisten(await listen<InstallProgressPayload>(
       'install:progress',
       (event) => trackInstallProgress(runId, event.payload),
-    );
+    ));
     if (!isCurrentRun(runId)) {
       unlisten();
       return;
     }
     unlistenInstallProgress = unlisten;
 
-    const unlistenContent = await listen<ContentProgressPayload>(
+    const unlistenContent = safeUnlisten(await listen<ContentProgressPayload>(
       'content:progress',
       (event) => trackContentProgress(runId, event.payload),
-    );
+    ));
     if (!isCurrentRun(runId)) {
       unlistenContent();
       return;

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { updateSettings } from '../../lib/settings-mutations';
   import {
     resolvePendingUpdateState,
@@ -122,10 +123,10 @@
         void register()
           .then((unlisten) => {
             if (cancelled) {
-              unlisten();
+              safeUnlisten(unlisten)();
               return;
             }
-            retain(unlisten);
+            retain(safeUnlisten(unlisten));
           })
           .catch(reportListenerError);
       } catch (reason) {
@@ -206,8 +207,8 @@
       coreLoadGeneration += 1;
       autoUpdateLoadGeneration += 1;
       autoUpdateSaveGeneration += 1;
-      unlistenAvailable?.();
-      unlistenCleared?.();
+      safeUnlisten(unlistenAvailable)();
+      safeUnlisten(unlistenCleared)();
     };
   });
 

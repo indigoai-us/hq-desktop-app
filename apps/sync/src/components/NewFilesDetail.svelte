@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
 
   interface NewFile {
     path: string;
@@ -33,10 +34,10 @@
     })
       .then(async (off) => {
         if (disposed) {
-          off();
+          safeUnlisten(off)();
           return;
         }
-        unlisten = off;
+        unlisten = safeUnlisten(off);
         // Rust creates this window hidden. Signal only after the event listener
         // exists so the first payload cannot disappear into the webview startup
         // gap; Rust then emits the snapshot and makes the window visible.
@@ -50,7 +51,7 @@
 
     return () => {
       disposed = true;
-      unlisten?.();
+      safeUnlisten(unlisten)();
     };
   });
 </script>

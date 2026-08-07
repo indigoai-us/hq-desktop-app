@@ -123,7 +123,15 @@ pub fn is_eligible_email(email: Option<&str>) -> bool {
 /// `.claude/` exists on every release from v14 through v15, so this admits the
 /// full upgrade range while still rejecting a directory that is not an HQ root.
 pub fn looks_like_hq_root(folder: &std::path::Path) -> bool {
-    folder.join("companies").is_dir()
+    // Absolute paths only. A drive-relative Windows path like `C:` joins into
+    // `C:companies`, which resolves against the process's per-drive cwd — the
+    // marker checks below can then pass against a directory that is NOT the
+    // configured root, and the spawned `hq-rescue` receives a root it cannot
+    // realpath (the 2026-08-02 field crash-loop: EISDIR lstat 'C:'). Note
+    // `Path::new("C:").is_absolute()` is false on Windows (prefix, no root),
+    // so this one check rejects bare drive letters and relative paths alike.
+    folder.is_absolute()
+        && folder.join("companies").is_dir()
         && (folder.join(".claude").is_dir()
             || folder.join("core").is_dir()
             || folder.join("personal").is_dir())
@@ -168,6 +176,31 @@ mod tests {
         // marker but no companies/ -> not an HQ root.
         let no_co = mk("nocompanies", &[".claude", "core", "personal"]);
         assert!(!looks_like_hq_root(&no_co));
+    }
+
+    /// Regression for the 2026-08-02 Windows field failure: a mangled config
+    /// produced the bare drive letter `C:` as the HQ root, whose drive-relative
+    /// joins (`C:companies`) can pass the marker checks against the process
+    /// cwd. `hq-rescue` then crash-looped daily on `realpathSync('C:')`. The
+    /// gate must reject any non-absolute root — bare drives, drive-relative,
+    /// and plain relative paths — even when the joined markers would resolve.
+    #[test]
+    fn looks_like_hq_root_rejects_non_absolute_roots() {
+        assert!(!looks_like_hq_root(std::path::Path::new("C:")));
+        assert!(!looks_like_hq_root(std::path::Path::new("C:Users\\x\\HQ")));
+
+        // A RELATIVE root whose markers genuinely exist under the cwd must
+        // still be rejected — relative resolution is exactly the ambiguity
+        // that let `C:` slip through on Windows.
+        let tmp = tempfile::tempdir().unwrap();
+        for d in ["companies", ".claude", "core", "personal"] {
+            std::fs::create_dir_all(tmp.path().join("hqroot").join(d)).unwrap();
+        }
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let verdict = looks_like_hq_root(std::path::Path::new("hqroot"));
+        std::env::set_current_dir(prev).unwrap();
+        assert!(!verdict, "relative roots must be rejected even when markers resolve");
     }
 
     fn idx() -> StagingIndex {

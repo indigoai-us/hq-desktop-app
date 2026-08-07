@@ -485,6 +485,16 @@ mod tests {
     use super::*;
     use crate::commands::sessions::{AgentTool, SessionStatus};
 
+    /// These tests exercise one process-global store and Rust runs them in
+    /// parallel by default. Serialize the reset/mutate/assert sequences so one
+    /// test cannot repopulate the store inside another test's assertion window.
+    fn store_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static TEST_LOCK: Mutex<()> = Mutex::new(());
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn outpost_session(id: &str) -> AgentSession {
         AgentSession {
             id: id.to_string(),
@@ -506,6 +516,7 @@ mod tests {
 
     #[test]
     fn fresh_heartbeat_surfaces_outpost_sessions() {
+        let _guard = store_test_guard();
         OutpostStore::reset();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000);
         OutpostStore::record_heartbeat(vec![outpost_session("o1")], now);
@@ -524,6 +535,7 @@ mod tests {
 
     #[test]
     fn stale_heartbeat_drops_outpost_sessions_and_marks_card() {
+        let _guard = store_test_guard();
         OutpostStore::reset();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000);
         OutpostStore::record_status(OutpostStatus {
@@ -558,6 +570,7 @@ mod tests {
 
     #[test]
     fn no_outpost_known_yields_no_card() {
+        let _guard = store_test_guard();
         OutpostStore::reset();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000);
         let view = OutpostStore::current(now);
@@ -571,6 +584,7 @@ mod tests {
 
     #[test]
     fn status_only_box_renders_card_without_sessions() {
+        let _guard = store_test_guard();
         OutpostStore::reset();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000);
         // /outpost/status succeeded but no per-session heartbeat yet (box up,

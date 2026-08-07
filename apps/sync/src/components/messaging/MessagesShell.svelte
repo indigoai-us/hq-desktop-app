@@ -32,6 +32,7 @@
     type EventCallback,
     type UnlistenFn,
   } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
   import { buildClaudePromptWithSkillCatalog } from '../../lib/skill-catalog-prompt';
@@ -1515,11 +1516,12 @@
     let disposed = false;
 
     function retainUnlistener(unlisten: UnlistenFn): void {
+      const safe = safeUnlisten(unlisten);
       if (disposed) {
-        unlisten();
+        safe();
         return;
       }
-      unlisteners.push(unlisten);
+      unlisteners.push(safe);
     }
 
     function registerListener<T>(

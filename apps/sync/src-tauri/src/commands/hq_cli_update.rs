@@ -56,24 +56,34 @@
 //! that needs sudo).
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::util::logfile::log;
 use crate::util::paths;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    auto_update_enabled, classify_install_failure, cli_auto_update_enabled, cmp_semver,
-    dismissed_cli_version, get_local_version, hq_version_string, install_argv, install_converged,
-    install_failure_detail, install_failure_report, is_cli_update_dismissed,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, non_convergent_cli_version,
-    non_convergent_detail, npm_prefix_from_hq_bin, read_installed_version, redact_home,
-    redact_home_in, report_install_failure, report_non_convergent_install,
-    report_unreadable_version, resolved_hq_version, should_auto_install, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, HqCliUpdateInfo, InstallFailureKind, NpmLatest,
+    apply_post_install_effects, auto_update_enabled, classify_install_failure,
+    classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
+    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
+    hq_version_string, install_argv, install_converged, install_failure_detail,
+    install_failure_detail_with_final_attempt, install_failure_report, is_cli_update_dismissed,
+    is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
+    is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
+    non_convergent_episode_blocked, npm_install_attempt_summary, npm_prefix_from_hq_bin,
+    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv, read_installed_version,
+    redact_home, redact_home_in, report_install_failure, report_install_failure_with_final_attempt,
+    report_non_convergent_install, report_non_convergent_marker_unpersisted,
+    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallExecutor,
+    InstallFailureKind, LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind,
+    NonConvergentReport, NpmLatest, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
+    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
@@ -128,7 +138,8 @@ async fn fetch_latest() -> Result<String, String> {
 /// — we don't pester users who don't have the CLI).
 pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, String> {
     let latest = fetch_latest().await?;
-    let local = get_local_version();
+    let local_version = get_local_version_diagnostics();
+    let local = local_version.local.clone();
     let update_available = match local.as_deref() {
         Some(l) => cmp_semver(l, &latest) == std::cmp::Ordering::Less,
         None => false,
@@ -144,8 +155,8 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, Stri
     // This is the silent-failure class that hid a stale CLI behind a missing
     // banner — surface it so we can see how often detection degrades in the
     // field (vs. the benign "user simply has no CLI" case, which stays quiet).
-    if local.is_none() && paths::resolve_bin("hq") != "hq" {
-        report_unreadable_version(&latest);
+    if should_report_unreadable_version(&local_version) {
+        report_unreadable_version(&latest, &local_version.probes);
     }
     if !update_available {
         return Ok(None);
@@ -237,8 +248,8 @@ fn npm_output_detail(output: &std::process::Output) -> String {
 /// An EEXIST bin collision: an existing `<prefix>/bin/hq` that npm did not
 /// create blocks the bin-link, so npm bails rather than clobber it. npm's own
 /// documented remedy is a `--force` retry (HQ-SYNC-B).
-fn is_bin_exists_failure(detail: &str) -> bool {
-    detail.contains("EEXIST")
+fn is_bin_exists_failure(detail: &str, prefix: Option<&str>) -> bool {
+    is_npm_bin_collision(detail, prefix)
 }
 
 /// An `ENOTEMPTY` partial/interrupted-install failure. npm updates a package by
@@ -336,63 +347,130 @@ fn clean_partial_hq_cli_install(prefix: &str) {
 async fn run_npm_install(
     npm: &str,
     path: &str,
+    npm_cache: &Path,
     args: Vec<String>,
 ) -> Result<std::process::Output, String> {
     let npm = npm.to_string();
     let path = path.to_string();
+    let npm_cache = npm_cache.to_path_buf();
     log(
         "hq-cli-update",
         &format!("install: spawning {} {}", npm, args.join(" ")),
     );
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = paths::spawn_command(&npm, &[]);
-        cmd.args(&args).env("PATH", path).output()
+        npm_install_command(&npm, &path, &npm_cache, &args).output()
     })
     .await
     .map_err(|e| format!("join blocking task: {e}"))?
     .map_err(|e| format!("spawn npm: {e}"))
 }
 
-fn verify_active_cli_version(local: Option<String>, latest: &str) -> Result<String, String> {
-    match local {
-        Some(local) if install_converged(Some(&local), latest) => Ok(local),
-        Some(local) => Err(format!(
-            "npm completed, but the active HQ CLI is still v{local} (expected v{latest}). \
-             The update was not applied to the CLI on PATH."
-        )),
-        None => Err(format!(
-            "npm completed, but the active HQ CLI version could not be verified \
-             (expected v{latest})."
-        )),
-    }
+const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;
+
+#[derive(Debug)]
+struct NpmInstallAttempt {
+    rung: &'static str,
+    forced: bool,
+    summary: String,
 }
 
-#[tauri::command]
-pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
-    let npm = paths::resolve_bin("npm");
-    let path = paths::child_path();
-    let hq = paths::resolve_bin("hq");
-    let prefix = npm_prefix_from_hq_bin(&hq);
-    let base_args = install_argv(prefix.as_deref());
+#[derive(Debug)]
+struct NpmInstallRun {
+    output: std::process::Output,
+    final_attempt_forced: bool,
+}
 
-    // Pin the target BEFORE spawning npm. Reading `latest` afterwards races a
-    // publish: npm can resolve `@latest` to A while a post-install fetch returns
-    // a freshly-published B, and we would then judge the installed A against B,
-    // call it non-convergent, and permanently block auto-installs of a version
-    // nothing ever attempted. Resolving first keeps the comparison and the
-    // recorded block bound to the version this run actually asked npm for.
-    let latest = fetch_latest().await?;
+async fn run_recorded_npm_install_attempt(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: Option<&str>,
+    args: Vec<String>,
+    rung: &'static str,
+    forced: bool,
+    ledger: &mut Vec<NpmInstallAttempt>,
+) -> Result<std::process::Output, String> {
+    let output = run_npm_install(npm, path, npm_cache, args).await?;
+    let detail = npm_output_detail(&output);
+    ledger.push(NpmInstallAttempt {
+        rung,
+        forced,
+        summary: npm_install_attempt_summary(output.status.code(), &detail, prefix),
+    });
+    Ok(output)
+}
+
+fn log_npm_install_attempt_ledger(ledger: &[NpmInstallAttempt]) {
+    let entries = ledger
+        .iter()
+        .map(|attempt| {
+            format!(
+                "rung={} forced={} {}",
+                attempt.rung, attempt.forced, attempt.summary
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     log(
         "hq-cli-update",
-        &format!(
-            "install: {} (prefix={})",
-            base_args.join(" "),
-            prefix.as_deref().unwrap_or("npm default prefix")
-        ),
+        &format!("install attempt ledger (path-free): [{entries}]"),
     );
+}
+
+/// Build the npm child with the exact PATH and app-owned cache the updater
+/// needs. Keeping this at the process boundary means every retry inherits the
+/// same cache instead of falling back to a potentially root-owned `~/.npm`.
+fn npm_install_command(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    args: &[String],
+) -> std::process::Command {
+    let mut cmd = paths::spawn_command(npm, &[]);
+    cmd.args(args)
+        .env("PATH", path)
+        .env("NPM_CONFIG_CACHE", npm_cache);
+    cmd
+}
+
+/// Create the stable cache directory owned by this app rather than inheriting
+/// npm's user-global cache. This deliberately never repairs, deletes, or
+/// changes ownership of the user's existing npm cache.
+fn prepare_app_npm_cache(app_cache_dir: PathBuf) -> Result<PathBuf, String> {
+    let npm_cache = app_cache_dir.join("npm");
+    std::fs::create_dir_all(&npm_cache).map_err(|e| format!("prepare app-owned npm cache: {e}"))?;
+    Ok(npm_cache)
+}
+
+fn app_npm_cache(app: &AppHandle) -> Result<PathBuf, (&'static str, String)> {
+    let app_cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| ("resolve", format!("resolve app cache directory: {e}")))?;
+    prepare_app_npm_cache(app_cache_dir).map_err(|e| ("create", e))
+}
+
+async fn run_npm_install_with_retries(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: Option<&str>,
+    base_args: Vec<String>,
+) -> Result<NpmInstallRun, String> {
+    let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
 
     // First attempt: a plain (non-forced) global install.
-    let mut output = run_npm_install(&npm, &path, base_args.clone()).await?;
+    let mut output = run_recorded_npm_install_attempt(
+        npm,
+        path,
+        npm_cache,
+        prefix,
+        base_args.clone(),
+        "plain",
+        false,
+        &mut ledger,
+    )
+    .await?;
 
     // EEXIST bin collision: an existing `<prefix>/bin/hq` npm didn't create
     // blocks the bin-link, so npm bails rather than clobber it. Retry ONCE with
@@ -401,14 +479,24 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // retry; every other failure falls straight through to the error below.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_bin_exists_failure(&detail) {
+        if is_bin_exists_failure(&detail, prefix) && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS {
             log(
                 "hq-cli-update",
                 &format!("install hit EEXIST bin collision; retrying with --force: {detail}"),
             );
             let mut forced = base_args.clone();
             forced.push("--force".to_string());
-            output = run_npm_install(&npm, &path, forced).await?;
+            output = run_recorded_npm_install_attempt(
+                npm,
+                path,
+                npm_cache,
+                prefix,
+                forced,
+                "forced-bin-collision",
+                true,
+                &mut ledger,
+            )
+            .await?;
         }
     }
 
@@ -424,15 +512,50 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     if !output.status.success() {
         let detail = npm_output_detail(&output);
         if is_partial_install_failure(&detail) {
-            if let Some(prefix) = prefix.as_deref() {
+            if let Some(cleanup_prefix) = prefix {
                 log(
                     "hq-cli-update",
                     &format!(
                         "install hit ENOTEMPTY partial install; cleaning and retrying: {detail}"
                     ),
                 );
-                clean_partial_hq_cli_install(prefix);
-                output = run_npm_install(&npm, &path, base_args.clone()).await?;
+                clean_partial_hq_cli_install(cleanup_prefix);
+                output = run_recorded_npm_install_attempt(
+                    npm,
+                    path,
+                    npm_cache,
+                    prefix,
+                    base_args.clone(),
+                    "cleanup-plain",
+                    false,
+                    &mut ledger,
+                )
+                .await?;
+
+                // Cleanup changes the on-disk package state. If its plain
+                // retry exposes the same structured bin collision, the npm
+                // remedy is newly armed once more. This is intentionally
+                // distinct from the Windows backoff rung below: a later
+                // EEXIST after EPERM remains loud because force did not
+                // directly produce that final output.
+                if !output.status.success()
+                    && is_bin_exists_failure(&npm_output_detail(&output), prefix)
+                    && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+                {
+                    let mut forced = base_args.clone();
+                    forced.push("--force".to_string());
+                    output = run_recorded_npm_install_attempt(
+                        npm,
+                        path,
+                        npm_cache,
+                        prefix,
+                        forced,
+                        "cleanup-forced-bin-collision",
+                        true,
+                        &mut ledger,
+                    )
+                    .await?;
+                }
             } else {
                 log(
                     "hq-cli-update",
@@ -453,7 +576,9 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // through to the error handler.
     if !output.status.success() {
         let detail = npm_output_detail(&output);
-        if is_windows_locked_binary_failure(output.status.code(), &detail) {
+        if is_windows_locked_binary_failure(output.status.code(), &detail)
+            && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+        {
             log(
                 "hq-cli-update",
                 &format!(
@@ -461,19 +586,299 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
                 ),
             );
             tokio::time::sleep(LOCKED_BINARY_RETRY_BACKOFF).await;
-            output = run_npm_install(&npm, &path, base_args.clone()).await?;
+            output = run_recorded_npm_install_attempt(
+                npm,
+                path,
+                npm_cache,
+                prefix,
+                base_args,
+                "windows-backoff-plain",
+                false,
+                &mut ledger,
+            )
+            .await?;
         }
     }
 
+    log_npm_install_attempt_ledger(&ledger);
+    let final_attempt_forced = ledger.last().is_some_and(|attempt| attempt.forced);
+    Ok(NpmInstallRun {
+        output,
+        final_attempt_forced,
+    })
+}
+
+/// Update a pnpm-managed `hq` with pnpm itself. npm cannot replace a shim in
+/// pnpm's flat global dir — `npm install -g` writes an unrelated prefix, exits
+/// 0, and the shim on PATH stays stale, which is exactly the non-convergent
+/// loop the convergence gate below catches after the fact. Branching here fixes
+/// it up front: the tool that owns the binary performs the update. Single
+/// attempt on purpose — the npm retry ladder (EEXIST/ENOTEMPTY/EPERM) encodes
+/// npm-specific failure shapes that don't apply to `pnpm add -g`.
+async fn install_hq_cli_update_via_pnpm(
+    app: &AppHandle,
+    hq: &str,
+    latest: &str,
+    already_blocked: bool,
+) -> Result<HqCliUpdateInfo, String> {
+    const MANUAL_CMD: &str = "pnpm add -g @indigoai-us/hq-cli@latest";
+    let pnpm = paths::resolve_bin("pnpm");
+    if pnpm == "pnpm" {
+        return Err(format!(
+            "hq was installed with pnpm, but pnpm could not be found. \
+             Update manually: {MANUAL_CMD}"
+        ));
+    }
+    // Derive pnpm's home strictly from the shim we already resolved. An
+    // underivable layout yields `None` and the child is spawned exactly as
+    // before rather than being aimed at an invented directory.
+    let pnpm_env = pnpm_global_env(hq);
+    let home_source = pnpm_env
+        .as_ref()
+        .map(|env| env.source)
+        .unwrap_or(PnpmHomeSource::Undetermined);
+    let home_env_present = std::env::var_os("PNPM_HOME").is_some();
+    let base_path = paths::child_path();
+    let path = pnpm_child_path(
+        &base_path,
+        pnpm_env.as_ref().map(|env| env.global_bin_dir.as_str()),
+    );
+    let shim_dir = pnpm_env.as_ref().map(|env| env.global_bin_dir.clone());
+    let path_has_shim_dir = shim_dir
+        .as_deref()
+        .is_some_and(|dir| path_contains_dir(&path, dir));
+    let args = pnpm_install_argv();
+    log(
+        "hq-cli-update",
+        &format!(
+            "install: pnpm-managed hq detected — spawning pnpm {} (home_source={}, \
+             path_has_shim_dir={path_has_shim_dir})",
+            args.join(" "),
+            home_source.telemetry_value()
+        ),
+    );
+    let output = {
+        let pnpm = pnpm.clone();
+        let path = path.clone();
+        let args = args.clone();
+        let pnpm_home = pnpm_env.as_ref().map(|env| env.home.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = paths::spawn_command(&pnpm, &[]);
+            cmd.args(&args).env("PATH", &path);
+            // Without PNPM_HOME the child falls back to its own default, which
+            // on a Dock-launched app is not necessarily the home that owns the
+            // shim we are trying to replace.
+            if let Some(home) = pnpm_home {
+                cmd.env("PNPM_HOME", home);
+            }
+            cmd.output()
+        })
+        .await
+        .map_err(|e| format!("join blocking task: {e}"))?
+        .map_err(|e| format!("spawn pnpm: {e}"))?
+    };
+    let pnpm_output_len = output.stdout.len() + output.stderr.len();
+    let pnpm_exit_status = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal/none".to_string());
     if !output.status.success() {
-        let raw_detail = npm_output_detail(&output);
-        let failure_kind =
-            classify_install_failure(output.status.code(), &raw_detail, prefix.as_deref());
-        let detail = install_failure_detail(output.status.code(), &raw_detail, prefix.as_deref());
+        let detail = npm_output_detail(&output);
         log(
             "hq-cli-update",
             &format!(
-                "install failed (kind={}, exit {:?}): {detail}",
+                "pnpm install failed (exit {:?}): {}",
+                output.status.code(),
+                redact_home(&detail)
+            ),
+        );
+        return Err(format!(
+            "pnpm could not update the HQ CLI: {detail}\nYou can run it manually: {MANUAL_CMD}"
+        ));
+    }
+    // Same convergence gate as the npm path, and the same re-resolve: pnpm may
+    // legitimately have moved which binary the app executes, and judging this
+    // run against the stale pre-install shim would block an update that landed.
+    let post_install_hq = paths::resolve_bin("hq");
+    let resolved = {
+        let hq = post_install_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let outcome = decide_post_install(&PostInstallContext {
+        executor: InstallExecutor::Pnpm,
+        before_bin: hq,
+        after_bin: &post_install_hq,
+        // Diagnostic only on the npm path, where it separates an expected
+        // shim-to-npm relocation from an in-place update. pnpm never relocates
+        // resolution away from its own global dir, so skipping the extra
+        // pre-install probe changes no decision — the post-install reading
+        // remains the sole authority for blocking.
+        before_version: None,
+        after_version: resolved.as_deref(),
+        latest,
+        npm_prefix_passed: None,
+        installer_bin: &pnpm,
+        already_blocked,
+        pnpm: Some(PnpmRunDiagnostics {
+            home_source,
+            home_env_present,
+            path_has_shim_dir,
+            exit_status: pnpm_exit_status,
+            output_len: pnpm_output_len,
+        }),
+    });
+    log("hq-cli-update", &outcome.log_line);
+    apply_post_install_with_app(app, &outcome)
+}
+
+/// Apply a post-install decision with the production effects. Both executors go
+/// through this one function so the fail-closed marker ordering, the episode
+/// bounding, and the capture rules cannot drift between them.
+fn apply_post_install_with_app(
+    app: &AppHandle,
+    outcome: &PostInstallOutcome,
+) -> Result<HqCliUpdateInfo, String> {
+    let record = |version: String| record_non_convergent_version(&version);
+    let clear = || clear_non_convergent_version();
+    let capture = |report: NonConvergentReport| report_non_convergent_install(&report);
+    let record_failure = |error: String| {
+        log("hq-cli-update", &error);
+        report_non_convergent_marker_unpersisted();
+    };
+    let emit_cleared = |info: HqCliUpdateInfo| {
+        // Frontend uses this to drop the banner immediately on success.
+        let _ = app.emit("hq-cli-update:cleared", &info);
+    };
+    let effects = PostInstallEffects {
+        record: &record,
+        clear: &clear,
+        capture: &capture,
+        record_failure: &record_failure,
+        emit_cleared: &emit_cleared,
+    };
+    apply_post_install(outcome, &effects)
+}
+
+/// The side effects selected by the pure core post-install decision. Keeping
+/// these injectable gives tests an exact ordering and call-count seam, and
+/// keeps capture behind a successful durable marker write for foreign-managed
+/// CLI layouts.
+struct PostInstallEffects<'a> {
+    record: &'a dyn Fn(String) -> Result<(), String>,
+    clear: &'a dyn Fn(),
+    capture: &'a dyn Fn(NonConvergentReport),
+    record_failure: &'a dyn Fn(String),
+    emit_cleared: &'a dyn Fn(HqCliUpdateInfo),
+}
+
+fn apply_post_install(
+    outcome: &PostInstallOutcome,
+    effects: &PostInstallEffects<'_>,
+) -> Result<HqCliUpdateInfo, String> {
+    let core_effects = PostInstallCoreEffects {
+        record: effects.record,
+        clear: effects.clear,
+        capture: effects.capture,
+        record_failure: effects.record_failure,
+    };
+    let success = apply_post_install_effects(outcome, &core_effects)?;
+    let info = HqCliUpdateInfo {
+        local: Some(success.local),
+        latest: success.latest,
+    };
+    (effects.emit_cleared)(info.clone());
+    Ok(info)
+}
+
+static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateInfo>> = OnceLock::new();
+
+fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateInfo> {
+    HQ_CLI_INSTALL_FLIGHT.get_or_init(AsyncSingleFlight::new)
+}
+
+#[tauri::command]
+pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+    hq_cli_install_flight()
+        .run(move || install_hq_cli_update_once(app))
+        .await
+}
+
+async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+    let npm = paths::resolve_bin("npm");
+    let path = paths::child_path();
+    let hq = paths::resolve_bin("hq");
+    // This must be sampled before the install, for either executor. An
+    // unwritable marker reads as absent; the post-install gate then refuses to
+    // capture unless this run successfully persists the first-episode marker.
+    let non_convergent_version = non_convergent_cli_version();
+    if is_pnpm_global_shim(&hq) {
+        // Pin the target before spawning, same as the npm path below.
+        let latest = fetch_latest().await?;
+        let already_blocked =
+            non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+        return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;
+    }
+    let prefix = npm_prefix_from_hq_bin(&hq);
+    let base_args = install_argv(prefix.as_deref());
+    let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
+        report_npm_cache_setup_failure(category);
+        error
+    })?;
+
+    // Pin the target BEFORE spawning npm. Reading `latest` afterwards races a
+    // publish: npm can resolve `@latest` to A while a post-install fetch returns
+    // a freshly-published B, and we would then judge the installed A against B,
+    // call it non-convergent, and permanently block auto-installs of a version
+    // nothing ever attempted. Resolving first keeps the comparison and the
+    // recorded block bound to the version this run actually asked npm for.
+    let latest = fetch_latest().await?;
+    let already_blocked =
+        non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+    log(
+        "hq-cli-update",
+        &format!(
+            "install: {} (prefix={})",
+            base_args.join(" "),
+            prefix.as_deref().unwrap_or("npm default prefix")
+        ),
+    );
+
+    // Capture the pre-install execution-bound version for the decision seam.
+    // It is diagnostic only; the post-install probe remains authoritative.
+    let before_version = {
+        let hq = hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+
+    let install_run =
+        run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
+    let output = install_run.output;
+
+    if !output.status.success() {
+        let raw_detail = npm_output_detail(&output);
+        let failure_kind = classify_install_failure_with_final_attempt(
+            output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+        );
+        let detail = install_failure_detail_with_final_attempt(
+            output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+        );
+        log(
+            "hq-cli-update",
+            &format!(
+                "install failed (kind={}, exit {:?}); raw npm output retained locally: {raw_detail}",
                 failure_kind.fingerprint_component(),
                 output.status.code()
             ),
@@ -481,7 +886,12 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         // Report using the original npm output so Sentry's diagnostic extra is
         // never replaced by the UI fallback text. Expected environment kinds
         // deliberately no-op inside `report_install_failure`.
-        report_install_failure(output.status.code(), &raw_detail, prefix.as_deref());
+        report_install_failure_with_final_attempt(
+            output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+        );
         return Err(detail);
     }
 
@@ -503,81 +913,51 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
     // freshly-installed copy in npm's own prefix while the executable the app
     // resolves is untouched. Accepting that would trade a loud loop for a silent
     // lie — "up to date" forever, while the app keeps running the old binary.
+    // Resolve again only after npm has exited. A shim may have been the
+    // pre-install answer while npm's default prefix now supplies the binary the
+    // app actually executes; judging this run against the stale shim would
+    // permanently block an update that did converge.
+    let post_install_hq = paths::resolve_bin("hq");
     let resolved = {
-        let hq = hq.clone();
+        let hq = post_install_hq.clone();
         tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
             .await
             .ok()
             .flatten()
     };
-    let local = match verify_active_cli_version(resolved.clone(), &latest) {
-        Ok(version) => version,
-        Err(reason) => {
-            // Re-running cannot change this, so record the version and let the
-            // background loop stop retrying it. `non_convergent_detail` carries
-            // the marker + remedy the UI shows in place of the generic
-            // copy-the-command text, which here would just repeat the failure.
-            let hq_display = if hq == "hq" { "PATH" } else { hq.as_str() };
-            log(
-                "hq-cli-update",
-                &format!(
-                    "{reason} — hq={hq_display} prefix={} — recording as non-convergent",
-                    prefix.as_deref().unwrap_or("npm default prefix"),
-                ),
-            );
-            record_non_convergent_version(&latest);
-            report_non_convergent_install(
-                &latest,
-                resolved.as_deref(),
-                hq_display,
-                prefix.as_deref(),
-            );
-            return Err(non_convergent_detail(
-                hq_display,
-                resolved.as_deref(),
-                &latest,
-            ));
-        }
-    };
-
-    // A convergent install clears any earlier block so a future version is
-    // never gated by a condition the user has since fixed.
-    clear_non_convergent_version();
-    log(
-        "hq-cli-update",
-        &format!("install succeeded: local={} latest={}", local, latest),
-    );
-    let info = HqCliUpdateInfo {
-        local: Some(local),
-        latest: latest.clone(),
-    };
-    // Frontend uses this to drop the banner immediately on success.
-    let _ = app.emit("hq-cli-update:cleared", &info);
-    Ok(info)
+    let outcome = decide_post_install(&PostInstallContext::npm(
+        &hq,
+        &post_install_hq,
+        before_version.as_deref(),
+        resolved.as_deref(),
+        &latest,
+        prefix.as_deref(),
+        &npm,
+        already_blocked,
+    ));
+    log("hq-cli-update", &outcome.log_line);
+    apply_post_install_with_app(&app, &outcome)
 }
 
 /// Persist the `latest` that installed cleanly but did not move the detected
 /// version, so `setup_hq_cli_update_checker` stops auto-retrying it. Written
 /// through the untyped-merge path for the same reason as the dismissal flag:
 /// `save_settings` only writes typed `MenubarPrefs` fields and would drop it.
-/// Failures are logged, not propagated — losing the marker only costs us a
-/// redundant retry, and must never mask the real error being returned.
-fn record_non_convergent_version(latest: &str) {
-    let write = paths::menubar_json_path().and_then(|path| {
-        hq_desktop_core::first_run::merge_menubar_flags(
-            &path,
-            &[(
-                NON_CONVERGENT_VERSION_KEY,
-                Value::String(latest.to_string()),
-            )],
-        )
-    });
-    if let Err(e) = write {
-        log(
-            "hq-cli-update",
-            &format!("could not record non-convergent version {latest}: {e}"),
-        );
-    }
+/// The caller must observe the failure before emitting a foreign-managed
+/// capture. Otherwise an unwritable config directory converts every scheduled
+/// retry into another apparent first episode.
+fn record_non_convergent_version(latest: &str) -> Result<(), String> {
+    paths::menubar_json_path()
+        .and_then(|path| {
+            hq_desktop_core::first_run::merge_menubar_flags(
+                &path,
+                &[(
+                    NON_CONVERGENT_VERSION_KEY,
+                    Value::String(latest.to_string()),
+                )],
+            )
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// Clear the non-convergent marker after an install that actually converged.
@@ -661,6 +1041,379 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::ffi::{OsStr, OsString};
+    #[cfg(unix)]
+    use std::sync::{Mutex, OnceLock};
+
+    #[cfg(unix)]
+    static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    #[cfg(unix)]
+    struct HomeEnvRestore(Option<OsString>);
+
+    #[cfg(unix)]
+    impl Drop for HomeEnvRestore {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.as_ref() {
+                std::env::set_var("HOME", value);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    #[test]
+    fn prepare_app_npm_cache_is_stable_and_creates_only_the_app_cache_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_cache = temp.path().join("app-cache");
+        let expected = app_cache.join("npm");
+
+        assert!(!expected.exists());
+        assert_eq!(prepare_app_npm_cache(app_cache.clone()).unwrap(), expected);
+        assert!(expected.is_dir());
+        assert_eq!(prepare_app_npm_cache(app_cache).unwrap(), expected);
+    }
+
+    #[test]
+    fn npm_install_command_uses_app_cache_without_changing_path_or_argv() {
+        let args = install_argv(Some("/tmp/hq-prefix"));
+        let command = npm_install_command(
+            "npm",
+            "/test/child-path",
+            Path::new("/tmp/app-cache/npm"),
+            &args,
+        );
+        let env_value = |name: &str| {
+            command
+                .get_envs()
+                .find_map(|(key, value)| (key == OsStr::new(name)).then_some(value).flatten())
+                .map(|value| value.to_os_string())
+        };
+
+        assert_eq!(env_value("PATH"), Some("/test/child-path".into()));
+        assert_eq!(
+            env_value("NPM_CONFIG_CACHE"),
+            Some("/tmp/app-cache/npm".into())
+        );
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            args.iter().map(OsStr::new).collect::<Vec<_>>(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_owned_cache_reaches_every_install_retry_attempt() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        for (mode, expected_attempts) in [
+            ("plain", 1usize),
+            ("eexist", 2),
+            ("enotempty", 2),
+            ("eperm", 2),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let npm = temp.path().join("fake-npm");
+            let state = temp.path().join("state");
+            let attempts = temp.path().join("attempts");
+            let script = format!(
+                r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s|%s\n' "$NPM_CONFIG_CACHE" "$*" >> "$attempts"
+case "{}:$count" in
+  eexist:1) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+  enotempty:1) printf '%s\n' 'npm error code ENOTEMPTY' >&2; exit 1 ;;
+  eperm:1) printf '%s\n' 'npm error code EPERM; npm error errno -4048' >&2; exit 1 ;;
+esac
+exit 0
+"#,
+                state.display(),
+                attempts.display(),
+                mode,
+            );
+            fs::write(&npm, script).unwrap();
+            let mut permissions = fs::metadata(&npm).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&npm, permissions).unwrap();
+
+            let npm_cache = temp.path().join("app-cache/npm");
+            fs::create_dir_all(&npm_cache).unwrap();
+            let prefix = temp.path().join("npm-prefix");
+            let path = std::env::var("PATH").unwrap();
+            let output = run_npm_install_with_retries(
+                npm.to_str().unwrap(),
+                &path,
+                &npm_cache,
+                Some(prefix.to_str().unwrap()),
+                install_argv(Some(prefix.to_str().unwrap())),
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                output.output.status.success(),
+                "{mode} retry path should recover"
+            );
+            let lines: Vec<_> = fs::read_to_string(&attempts)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(lines.len(), expected_attempts, "{mode} attempt count");
+            for line in lines {
+                assert!(
+                    line.starts_with(&format!("{}|", npm_cache.display())),
+                    "{mode} lost its app-owned npm cache: {line}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_retry_ladder_rearms_force_only_after_cleanup() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+case "$count" in
+  1) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+  2) printf '%s\n' 'npm error code ENOTEMPTY' >&2; exit 1 ;;
+  3) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+  4) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+esac
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap())),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        assert!(run.final_attempt_forced);
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 4, "retry work must stay within the hard cap");
+        assert!(!lines[0].contains("--force"));
+        assert!(lines[1].contains("--force"));
+        assert!(!lines[2].contains("--force"));
+        assert!(lines[3].contains("--force"));
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                run.output.status.code(),
+                &npm_output_detail(&run.output),
+                Some(prefix.to_str().unwrap()),
+                run.final_attempt_forced,
+            ),
+            InstallFailureKind::ExpectedBinCollision
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn eexist_after_windows_backoff_is_not_silently_forced_or_suppressed() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+case "$count" in
+  1) printf '%s\n' 'npm error code EPERM' 'npm error errno -4048' >&2; exit 1 ;;
+  2) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq' >&2; exit 1 ;;
+esac
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap())),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        assert!(!run.final_attempt_forced);
+        let lines = fs::read_to_string(&attempts).unwrap();
+        assert_eq!(lines.lines().count(), 2);
+        assert!(lines.lines().all(|line| !line.contains("--force")));
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                run.output.status.code(),
+                &npm_output_detail(&run.output),
+                Some(prefix.to_str().unwrap()),
+                run.final_attempt_forced,
+            ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_owned_cache_avoids_a_read_only_home_npm_cache() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("poisoned-home");
+        let poisoned_cache = home.join(".npm/_cacache");
+        fs::create_dir_all(&poisoned_cache).unwrap();
+        let mut permissions = fs::metadata(&poisoned_cache).unwrap().permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(&poisoned_cache, permissions).unwrap();
+
+        let _restore_home = HomeEnvRestore(std::env::var_os("HOME"));
+        std::env::set_var("HOME", &home);
+
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s|%s\n' "$HOME" "$NPM_CONFIG_CACHE" > "{}"
+exit 0
+"#,
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let app_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&app_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let output = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &app_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap())),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            output.output.status.success(),
+            "the isolated-cache install must converge"
+        );
+        assert_eq!(
+            fs::read_to_string(&attempts).unwrap().trim(),
+            format!("{}|{}", home.display(), app_cache.display()),
+            "npm must receive the app-owned cache, never HOME/.npm"
+        );
+    }
+
+    #[test]
+    fn unreadable_version_event_keeps_closed_diagnostics_after_scrubbing() {
+        let probes = hq_desktop_core::hq_cli_update::LocalVersionProbeDiagnostics {
+            binary_anchor: hq_desktop_core::hq_cli_update::VersionProbeOutcome::PackageNotFound,
+            npm_root: hq_desktop_core::hq_cli_update::VersionProbeOutcome::NonzeroExit,
+            hq_version: hq_desktop_core::hq_cli_update::VersionProbeOutcome::InvalidUtf8,
+            binary_anchor_shape: hq_desktop_core::hq_cli_update::BinaryAnchorShape::FlatGlobalBin,
+            resolved_program_kind:
+                hq_desktop_core::hq_cli_update::ResolvedProgramKind::Extensionless,
+        };
+        let events = sentry::test::with_captured_events(|| {
+            sentry::configure_scope(|scope| {
+                scope.set_extra("token", "fixture-token".into());
+            });
+            report_unreadable_version("5.77.7", &probes);
+        });
+
+        assert_eq!(events.len(), 1);
+        let event = hq_telemetry::before_send(events.into_iter().next().unwrap()).unwrap();
+        assert_eq!(event.level, sentry::Level::Warning);
+        assert_eq!(
+            event.message.as_deref(),
+            Some(
+                "[hq-cli-update] hq is installed but its version could not be read \
+                 (binary-anchor, npm root, and hq --version all failed)"
+            )
+        );
+        assert_eq!(event.tags["hq_cli_update_kind"], "version-unreadable");
+        assert_eq!(event.tags["latest"], "5.77.7");
+        assert_eq!(
+            event.extra["hq_cli_version_probes"],
+            serde_json::json!({
+                "binary_anchor": "package_not_found",
+                "npm_root": "nonzero_exit",
+                "hq_version": "invalid_utf8",
+                "binary_anchor_shape": "flat_global_bin",
+                // A resolution Windows cannot execute survives scrubbing as a
+                // closed enum value — never as the offending path.
+                "resolved_program_kind": "extensionless",
+            })
+        );
+        assert_eq!(event.extra["token"], serde_json::json!("[Filtered]"));
+
+        let serialized = serde_json::to_string(&event).unwrap();
+        assert!(!serialized.contains("fixture-token"));
+        assert!(!serialized.contains("/Users/fixture-home"));
+        assert!(!serialized.contains("fixture-stdout"));
+        assert!(!serialized.contains("fixture-stderr"));
+    }
 
     // HQ-SYNC-B: an EEXIST bin collision (a stale `<prefix>/bin/hq` npm didn't
     // create) must be the ONLY failure that arms the forced retry. Other npm
@@ -668,13 +1421,22 @@ mod tests {
     #[test]
     fn eexist_is_the_only_failure_that_arms_the_forced_retry() {
         assert!(is_bin_exists_failure(
-            "npm ERR! code EEXIST\nnpm ERR! path /usr/local/bin/hq"
+            "npm ERR! code EEXIST\nnpm ERR! path /usr/local/bin/hq",
+            Some("/usr/local"),
         ));
         assert!(!is_bin_exists_failure(
-            "npm ERR! code EACCES: permission denied, mkdir '/usr/local/lib/node_modules'"
+            "npm ERR! code EACCES: permission denied, mkdir '/usr/local/lib/node_modules'",
+            Some("/usr/local"),
         ));
-        assert!(!is_bin_exists_failure("npm ERR! network timeout"));
-        assert!(!is_bin_exists_failure(""));
+        assert!(!is_bin_exists_failure(
+            "npm error code 1\nnpm error command failed\nscript output EEXIST",
+            Some("/usr/local"),
+        ));
+        assert!(!is_bin_exists_failure(
+            "npm ERR! network timeout",
+            Some("/usr/local")
+        ));
+        assert!(!is_bin_exists_failure("", Some("/usr/local")));
     }
 
     // The forced retry reuses the base args plus `--force`, still targeting the
@@ -774,26 +1536,13 @@ mod tests {
     }
 
     #[test]
-    fn active_cli_verification_rejects_the_stale_post_install_loop() {
-        assert_eq!(
-            verify_active_cli_version(Some("5.79.0".to_string()), "5.79.0"),
-            Ok("5.79.0".to_string())
-        );
-        let stale = verify_active_cli_version(Some("5.77.7".to_string()), "5.79.0").unwrap_err();
-        assert!(stale.contains("still v5.77.7"), "{stale}");
-        assert!(stale.contains("not applied to the CLI on PATH"), "{stale}");
-        let missing = verify_active_cli_version(None, "5.79.0").unwrap_err();
-        assert!(missing.contains("could not be verified"), "{missing}");
-    }
-
-    #[test]
     fn clean_partial_hq_cli_install_removes_only_hq_cli_debris() {
         use std::fs;
         // A throwaway npm global prefix seeded with partial hq-cli debris plus an
         // unrelated sibling package, to prove cleanup is surgically scoped.
         let base = std::env::temp_dir().join(format!("hq-cli-clean-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
-        let scope = base.join("lib").join("node_modules").join("@indigoai-us");
+        let scope = partial_install_scope_dir(base.to_str().unwrap());
         // Partial package dir + its temp staging dir (the ENOTEMPTY culprits).
         fs::create_dir_all(scope.join("hq-cli").join("dist")).unwrap();
         fs::write(scope.join("hq-cli").join("package.json"), "{}").unwrap();
@@ -827,5 +1576,87 @@ mod tests {
         let base = std::env::temp_dir().join(format!("hq-cli-clean-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         clean_partial_hq_cli_install(base.to_str().unwrap());
+    }
+
+    #[test]
+    fn failed_foreign_marker_write_never_calls_the_non_convergent_capture() {
+        let records = Cell::new(0usize);
+        let captures = Cell::new(0usize);
+        let failures = Cell::new(0usize);
+
+        for _ in 0..5 {
+            let outcome = decide_post_install(&PostInstallContext::npm(
+                "/Users/t/Library/pnpm/hq",
+                "/Users/t/Library/pnpm/hq",
+                Some("5.77.14"),
+                Some("5.77.14"),
+                "5.84.0",
+                None,
+                "/opt/homebrew/bin/npm",
+                false,
+            ));
+            let record = |version: String| {
+                records.set(records.get() + 1);
+                assert_eq!(version, "5.84.0");
+                Err("config directory is unwritable".to_string())
+            };
+            let clear = || panic!("a non-convergent install must not clear its marker");
+            let capture = |_| captures.set(captures.get() + 1);
+            let record_failure = |_error: String| failures.set(failures.get() + 1);
+            let emit = |_| panic!("a non-convergent install must not emit cleared");
+            let effects = PostInstallEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+                emit_cleared: &emit,
+            };
+
+            let result = apply_post_install(&outcome, &effects);
+            assert!(
+                matches!(result, Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX))
+            );
+        }
+
+        assert_eq!(records.get(), 5);
+        assert_eq!(captures.get(), 0);
+        assert_eq!(failures.get(), 5);
+    }
+
+    #[test]
+    fn converged_post_install_clears_and_emits_once() {
+        let clears = Cell::new(0usize);
+        let emits = Cell::new(0usize);
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/.npm-global/bin/hq",
+            "/Users/t/.npm-global/bin/hq",
+            Some("5.77.14"),
+            Some("5.84.0"),
+            "5.84.0",
+            Some("/Users/t/.npm-global"),
+            "/opt/homebrew/bin/npm",
+            true,
+        ));
+        let record = |_| panic!("a converged install must not record a non-convergence");
+        let clear = || clears.set(clears.get() + 1);
+        let capture = |_| panic!("a converged install must not capture non-convergence");
+        let record_failure = |_error: String| panic!("a converged install has no marker failure");
+        let emit = |info: HqCliUpdateInfo| {
+            emits.set(emits.get() + 1);
+            assert_eq!(info.local.as_deref(), Some("5.84.0"));
+            assert_eq!(info.latest, "5.84.0");
+        };
+        let effects = PostInstallEffects {
+            record: &record,
+            clear: &clear,
+            capture: &capture,
+            record_failure: &record_failure,
+            emit_cleared: &emit,
+        };
+
+        let result = apply_post_install(&outcome, &effects).unwrap();
+        assert_eq!(result.local.as_deref(), Some("5.84.0"));
+        assert_eq!(clears.get(), 1);
+        assert_eq!(emits.get(), 1);
     }
 }

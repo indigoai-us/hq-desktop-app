@@ -39,6 +39,10 @@ interface WebDriverLogEntry {
 }
 
 const DESKTOP_ALT_SELECTOR = '#desktop-alt, html[data-window="desktop-alt"]';
+// Native WebDriver session creation can legitimately take about a minute on a
+// cold Windows runner. Keep every request bounded below Vitest's 120s live
+// ceiling without cutting off that supported startup path.
+const WEBDRIVER_REQUEST_TIMEOUT_MS = 90_000;
 // `src/main.ts` stamps every webview with its own Tauri window label
 // (`document.documentElement.dataset.window`), so the classic popover is
 // identifiable without depending on any markup that a redesign could move.
@@ -120,6 +124,8 @@ export interface LiveDesktopAltProbe {
   invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   /** Whether a desktop-alt webview exists. Restores focus to the popover. */
   hasDesktopAltWindow(): Promise<boolean>;
+  /** Invoke the app's real quit command and prove its exact process exits. */
+  quitAndAssertExited(timeoutMs: number): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -150,7 +156,7 @@ async function startLiveHarness(config: LiveConfig): Promise<LiveDesktopAltHarne
   const start = await startOrReuseDriver(config);
 
   try {
-    const live = await LiveDesktopAltHarness.create(start.client);
+    const live = await LiveDesktopAltHarness.create(start.client, config);
     console.log(`[desktop-alt-e2e] live tauri-driver harness active at ${config.webdriverUrl}.`);
     return live;
   } catch (error) {
@@ -164,11 +170,17 @@ async function startLiveHarness(config: LiveConfig): Promise<LiveDesktopAltHarne
 class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProbe {
   readonly mode = 'live';
 
-  private constructor(private readonly driver: WebDriverClient) {}
+  private constructor(
+    private readonly driver: WebDriverClient,
+    private readonly config: LiveConfig,
+  ) {}
 
-  static async create(driver: WebDriverClient): Promise<LiveDesktopAltHarness> {
+  static async create(
+    driver: WebDriverClient,
+    config: LiveConfig,
+  ): Promise<LiveDesktopAltHarness> {
     await driver.waitForWindow();
-    const harness = new LiveDesktopAltHarness(driver);
+    const harness = new LiveDesktopAltHarness(driver, config);
     await harness.installErrorCaptureForAllWindows();
     return harness;
   }
@@ -267,7 +279,8 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProb
 
   async dispose(): Promise<void> {
     // Only the session: the tauri-driver server is shared across the spec file.
-    await this.driver.deleteSession().catch(() => undefined);
+    // Teardown errors are proof failures in live mode, not cleanup noise.
+    await this.driver.deleteSession();
   }
 
   // ── LiveDesktopAltProbe ────────────────────────────────────────────────────
@@ -322,6 +335,42 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProb
     // window is wherever the walk stopped. Put the caller back on the popover.
     await this.switchToMainWindow();
     return Boolean(desktop);
+  }
+
+  async quitAndAssertExited(timeoutMs: number): Promise<void> {
+    if (process.platform !== 'win32') {
+      throw new Error('The live process-exit probe is Windows-only.');
+    }
+    const processIds = await windowsProcessIdsForExecutable(this.config.appPath);
+    if (processIds.length === 0) {
+      throw new Error(
+        `No running process matched the live application path: ${this.config.appPath}`,
+      );
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    const scheduled = await this.driver.execute<boolean>(`
+      const invoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+      if (!invoke) return false;
+      setTimeout(() => {
+        Promise.resolve(invoke('quit_app')).catch((error) => {
+          console.error('[desktop-alt-e2e] quit_app failed', String(error?.message || error));
+        });
+      }, 0);
+      return true;
+    `);
+    if (!scheduled) {
+      throw new Error('Tauri invoke bridge was unavailable before the real quit probe.');
+    }
+
+    await waitForProcessIdsToExit(processIds, deadline);
+    const deleteBudgetMs = deadline - Date.now();
+    if (deleteBudgetMs <= 0) {
+      throw new Error(`The app exited but exhausted the ${timeoutMs}ms teardown deadline.`);
+    }
+    // Keep this strict: a delete-session failure means the real WebDriver
+    // lifecycle did not close cleanly, even if the native PID disappeared.
+    await this.driver.deleteSession(deleteBudgetMs);
   }
 
   private async clickButtonWithText(label: string): Promise<void> {
@@ -529,9 +578,9 @@ class WebDriverClient {
     return this.send<WebDriverLogEntry[]>('POST', '/log', { type: 'browser' });
   }
 
-  async deleteSession(): Promise<void> {
+  async deleteSession(timeoutMs = 30_000): Promise<void> {
     if (!this.sessionId) return;
-    await this.raw('DELETE', `/session/${this.sessionId}`);
+    await this.raw('DELETE', `/session/${this.sessionId}`, undefined, timeoutMs);
     this.sessionId = null;
   }
 
@@ -565,11 +614,13 @@ class WebDriverClient {
     method: string,
     path: string,
     body?: unknown,
+    timeoutMs = WEBDRIVER_REQUEST_TIMEOUT_MS,
   ): Promise<WebDriverResponse<T>> {
     const response = await fetch(new URL(path, this.baseUrl), {
       method,
       headers: body === undefined ? undefined : { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const payload = (await response.json().catch(() => ({}))) as WebDriverResponse<T> & {
       value?: { message?: string };
@@ -590,6 +641,63 @@ class WebDriverClient {
     }
 
     return payload as WebDriverResponse<T>;
+  }
+}
+
+function windowsProcessIdsForExecutable(appPath: string): Promise<number[]> {
+  const appName = basename(appPath).replace(/'/g, "''");
+  const query =
+    '$target = [System.IO.Path]::GetFullPath($env:HQ_SYNC_E2E_APP_PATH); ' +
+    `Get-CimInstance Win32_Process -Filter "Name='${appName}'" | ` +
+    'Where-Object { $_.ExecutablePath -and ' +
+    '([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $target) } | ' +
+    'ForEach-Object { $_.ProcessId }';
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', query],
+      {
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, HQ_SYNC_E2E_APP_PATH: appPath },
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(new Error(`Failed to identify the live application process: ${error.message}`));
+          return;
+        }
+        const processIds = stdout
+          .split(/\s+/)
+          .filter(Boolean)
+          .map(Number)
+          .filter((value) => Number.isSafeInteger(value) && value > 0);
+        resolve([...new Set(processIds)]);
+      },
+    );
+  });
+}
+
+async function waitForProcessIdsToExit(processIds: number[], deadline: number): Promise<void> {
+  while (Date.now() < deadline) {
+    const alive = processIds.filter(isProcessAlive);
+    if (alive.length === 0) return;
+    await sleep(Math.min(50, Math.max(1, deadline - Date.now())));
+  }
+
+  const alive = processIds.filter(isProcessAlive);
+  throw new Error(`Application process did not exit before the deadline; still alive: ${alive.join(',')}`);
+}
+
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
   }
 }
 

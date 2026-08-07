@@ -17,10 +17,193 @@ const SENSITIVE_FIELD_NAMES: &[&str] = &[
     "token",
 ];
 
+const RUNNER_STACK_TOKENS: &[&str] = &[
+    "app",
+    "libuv_handle",
+    "libuv_win_async",
+    "libuv_unix_core",
+    "node_task_queues",
+    "node_cjs_loader",
+    "node_esm_loader",
+    "node_timers",
+    "node_child_process",
+    "node_events",
+    "node_fs",
+    "node_stream",
+    "rust_core_panicking",
+    "rust_std_panicking",
+];
+
 fn is_sensitive_key(k: &str) -> bool {
     SENSITIVE_FIELD_NAMES
         .iter()
         .any(|name| k.eq_ignore_ascii_case(name))
+}
+
+fn valid_runner_stack_shape(value: &str) -> bool {
+    if value == "all_redacted" {
+        return true;
+    }
+    let tokens = value.split('>').collect::<Vec<_>>();
+    !tokens.is_empty()
+        && tokens.len() <= 8
+        && tokens
+            .iter()
+            .all(|token| !token.is_empty() && RUNNER_STACK_TOKENS.contains(token))
+}
+
+fn valid_runner_stack_signature(value: &str) -> bool {
+    value == "unknown"
+        || (value.len() == 16
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+}
+
+fn valid_runner_stack_pair(shape: &str, signature: &str) -> bool {
+    (shape == "all_redacted" && signature == "unknown")
+        || (shape != "all_redacted"
+            && valid_runner_stack_shape(shape)
+            && signature != "unknown"
+            && valid_runner_stack_signature(signature))
+}
+
+/// Validate the fields whose producer consumes untrusted runner output. The
+/// producer already returns fixed vocabulary; this independent egress check
+/// ensures a future producer bug degrades to `[Filtered]` instead of shipping
+/// a path, symbol, company slug, or raw stderr fragment.
+fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
+    match key {
+        "runner_stack_shape" => Some(valid_runner_stack_shape(value)),
+        "runner_stack_signature" => Some(valid_runner_stack_signature(value)),
+        "watcher_launch_origin" => Some(matches!(
+            value,
+            "renderer" | "app_launch" | "supervisor_respawn"
+        )),
+        "sync_route" => Some(matches!(value, "manual" | "watcher")),
+        "sync_scope" => Some(matches!(value, "all" | "single_company")),
+        "runner_phase" => Some(matches!(
+            value,
+            "scan" | "push" | "pull" | "idle" | "unknown"
+        )),
+        _ => None,
+    }
+}
+
+fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
+    for (key, value) in event.tags.iter_mut() {
+        if valid_runner_diagnostic_field(key, value) == Some(false) {
+            *value = "[Filtered]".to_string();
+        }
+    }
+    for (key, value) in event.extra.iter_mut() {
+        let Some(is_valid) = (match value {
+            Value::String(value) => valid_runner_diagnostic_field(key, value),
+            _ => valid_runner_diagnostic_field(key, ""),
+        }) else {
+            continue;
+        };
+        if !is_valid {
+            *value = Value::String("[Filtered]".to_string());
+        }
+    }
+
+    if event
+        .tags
+        .get("runner_stack_shape")
+        .zip(event.tags.get("runner_stack_signature"))
+        .is_some_and(|(shape, signature)| !valid_runner_stack_pair(shape, signature))
+    {
+        event
+            .tags
+            .insert("runner_stack_shape".to_string(), "[Filtered]".to_string());
+        event.tags.insert(
+            "runner_stack_signature".to_string(),
+            "[Filtered]".to_string(),
+        );
+    }
+
+    let extra_pair_is_invalid = event
+        .extra
+        .get("runner_stack_shape")
+        .and_then(Value::as_str)
+        .zip(
+            event
+                .extra
+                .get("runner_stack_signature")
+                .and_then(Value::as_str),
+        )
+        .is_some_and(|(shape, signature)| !valid_runner_stack_pair(shape, signature));
+    if extra_pair_is_invalid {
+        event.extra.insert(
+            "runner_stack_shape".to_string(),
+            Value::String("[Filtered]".to_string()),
+        );
+        event.extra.insert(
+            "runner_stack_signature".to_string(),
+            Value::String("[Filtered]".to_string()),
+        );
+    }
+}
+
+/// Raw process-output stream breadcrumbs must never retain their message at
+/// telemetry egress. Match by stream shape instead of producer name so a new
+/// sidecar fails closed without requiring another category allowlist entry.
+fn is_raw_process_stream_category(category: Option<&str>) -> bool {
+    category.is_some_and(|category| {
+        matches!(category, "stderr" | "stdout")
+            || category.ends_with(".stderr")
+            || category.ends_with(".stdout")
+    })
+}
+
+/// The manual runner replaces raw stderr with this exact fixed-vocabulary
+/// grammar before adding a breadcrumb. Preserve only messages that fully match
+/// that grammar; a raw process line that merely resembles the prefix still
+/// fails closed at egress.
+fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option<&str>) -> bool {
+    if category != Some("runner.stderr") {
+        return false;
+    }
+    let Some(body) = message.and_then(|message| message.strip_prefix("runner stderr #")) else {
+        return false;
+    };
+    let Some((sequence, class_with_suffix)) = body.split_once(" (") else {
+        return false;
+    };
+    if sequence.is_empty() || !sequence.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Some(class) = class_with_suffix.strip_suffix(')') else {
+        return false;
+    };
+    let is_error_class = |value: &str| {
+        matches!(
+            value,
+            "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other"
+        )
+    };
+    let is_fatal_class = |value: &str| {
+        matches!(
+            value,
+            "libuv_assert"
+                | "node_fatal"
+                | "heap_oom"
+                | "rust_panic"
+                | "exec_permission_denied"
+                | "exec_not_found"
+                | "node_too_old"
+                | "none"
+        )
+    };
+
+    if let Some((error_class, fatal_class)) = class.split_once(';') {
+        is_error_class(error_class) && is_fatal_class(fatal_class) && !fatal_class.contains(';')
+    } else {
+        // Keep the previously shipped exact grammar sendable while clients
+        // update. New producers always include the second fatal-class token.
+        is_error_class(class)
+    }
 }
 
 fn scrub_sensitive_in_value(v: &mut Value) {
@@ -106,21 +289,35 @@ pub fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
             scrub_sensitive_in_value(v);
         }
     }
+    scrub_runner_diagnostic_fields(&mut event);
 
     // event.contexts is BTreeMap<String, Context>; `Context` is a typed enum
     // (`Device`, `Os`, `Runtime`, `App`, `Browser`, `Gpu`, `Trace`, `Other`).
     // Delegate each variant to `scrub_context` above so production and the
     // tests in this file share one code path (see the doc-comment there).
-    for (_name, ctx) in event.contexts.iter_mut() {
+    for ctx in event.contexts.values_mut() {
         let taken = std::mem::replace(ctx, Context::Other(BTreeMap::new()));
         *ctx = scrub_context(taken);
     }
 
-    // event.breadcrumbs[].data is BTreeMap<String, Value> — same pattern
-    // as event.extra. This is the surface that carries Authorization
-    // headers from HTTP breadcrumbs, which is the single most common
-    // auth-leak vector on the Rust side.
+    // Process output stays in local logs. Filter any raw stdout/stderr stream
+    // category defensively before send, including future producers that have
+    // not yet been named here; source-side guards still prevent new raw
+    // breadcrumbs from being created in the first place.
     for breadcrumb in event.breadcrumbs.values.iter_mut() {
+        if is_raw_process_stream_category(breadcrumb.category.as_deref())
+            && !is_content_safe_runner_stderr_message(
+                breadcrumb.category.as_deref(),
+                breadcrumb.message.as_deref(),
+            )
+        {
+            breadcrumb.message = Some("[Filtered]".into());
+        }
+
+        // event.breadcrumbs[].data is BTreeMap<String, Value> — same pattern
+        // as event.extra. This is the surface that carries Authorization
+        // headers from HTTP breadcrumbs, which is the single most common
+        // auth-leak vector on the Rust side.
         for (k, v) in breadcrumb.data.iter_mut() {
             if is_sensitive_key(k) {
                 *v = Value::String("[Filtered]".into());
@@ -315,6 +512,182 @@ mod tests {
         assert_eq!(data["url"], Value::String("/api".into()));
     }
 
+    #[test]
+    fn test_daemon_stderr_breadcrumb_message_is_filtered() {
+        let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let raw_message = format!(
+            "EPERM: operation not permitted, rename '{private_path}.hq-tmp-a1b2' -> '{private_path}'"
+        );
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("daemon.stderr".into()),
+            level: sentry::Level::Warning,
+            message: Some(raw_message.clone()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        let serialized = serde_json::to_string(&result).expect("serialize scrubbed event");
+
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("[Filtered]")
+        );
+        assert!(!serialized.contains("secret-plan.md"));
+        assert!(!serialized.contains("hq-tmp-a1b2"));
+        assert!(!serialized.contains("operation not permitted"));
+        assert!(!serialized.contains(&raw_message));
+    }
+
+    #[test]
+    fn test_runner_stderr_breadcrumb_message_is_filtered() {
+        let raw_message = "EPERM: operation not permitted, rename 'C:\\Users\\Ada\\secret-plan.md.hq-tmp-a1b2' -> 'C:\\Users\\Ada\\secret-plan.md'";
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("runner.stderr".into()),
+            level: sentry::Level::Warning,
+            message: Some(raw_message.into()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        let serialized = serde_json::to_string(&result).expect("serialize scrubbed event");
+
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("[Filtered]")
+        );
+        assert!(!serialized.contains("secret-plan.md"));
+        assert!(!serialized.contains("operation not permitted"));
+        assert!(!serialized.contains("hq-tmp"));
+    }
+
+    #[test]
+    fn test_classified_runner_stderr_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        for (sequence, class) in [
+            "eperm", "eacces", "enospc", "ebusy", "network", "auth", "other",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(format!("runner stderr #{} ({class})", sequence + 1)),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() != Some("[Filtered]")));
+        assert_eq!(
+            result.breadcrumbs.values.last().unwrap().message.as_deref(),
+            Some("runner stderr #7 (other)")
+        );
+    }
+
+    #[test]
+    fn test_fatal_classified_runner_stderr_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        for (sequence, fatal_class) in [
+            "libuv_assert",
+            "node_fatal",
+            "heap_oom",
+            "rust_panic",
+            "exec_permission_denied",
+            "exec_not_found",
+            "node_too_old",
+            "none",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(format!(
+                    "runner stderr #{} (other;{fatal_class})",
+                    sequence + 1
+                )),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() != Some("[Filtered]")));
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("runner stderr #1 (other;libuv_assert)")
+        );
+    }
+
+    #[test]
+    fn test_runner_stderr_fixed_vocabulary_lookalikes_are_filtered() {
+        let mut event = Event::default();
+        for message in [
+            "runner stderr #x (eperm)",
+            "runner stderr #1 (EPERM)",
+            "runner stderr #1 (unknown)",
+            "runner stderr #1 (eperm) secret-plan.md",
+            "runner stderr #1 (other;libuv_assert) secret-plan.md",
+        ] {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some("runner.stderr".into()),
+                message: Some(message.into()),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() == Some("[Filtered]")));
+    }
+
+    #[test]
+    fn test_unenumerated_stderr_stream_breadcrumb_message_is_filtered() {
+        let mut event = Event::default();
+        for category in ["stderr", "stdout", "sidecar.stderr", "sidecar.stdout"] {
+            event.breadcrumbs.values.push(Breadcrumb {
+                category: Some(category.into()),
+                message: Some(format!("future producer raw output from {category}")),
+                ..Default::default()
+            });
+        }
+
+        let result = before_send(event).expect("event remains sendable");
+        assert!(result
+            .breadcrumbs
+            .values
+            .iter()
+            .all(|breadcrumb| breadcrumb.message.as_deref() == Some("[Filtered]")));
+    }
+
+    #[test]
+    fn test_non_stream_breadcrumb_message_is_preserved() {
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("daemon.lifecycle".into()),
+            message: Some("watcher started".into()),
+            ..Default::default()
+        });
+
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("watcher started")
+        );
+    }
+
     // 6a. Typed Context::App round-trip — non-sensitive typed fields preserved
     #[test]
     fn test_context_app_round_trip() {
@@ -440,5 +813,127 @@ mod tests {
         let event = Event::default();
         let result = before_send(event);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_runner_diagnostic_fixed_vocabulary_survives_before_send() {
+        let mut event = Event::default();
+        for (key, value) in [
+            ("runner_stack_shape", "node_cjs_loader>app>node_fs"),
+            ("runner_stack_signature", "0123456789abcdef"),
+            ("sync_route", "manual"),
+            ("sync_scope", "single_company"),
+            ("runner_phase", "push"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        event.extra.insert(
+            "watcher_launch_origin".to_string(),
+            Value::String("supervisor_respawn".to_string()),
+        );
+        for (key, value) in [
+            ("runner_fatal_class", "node_fatal"),
+            ("runner_error_rollup", "stderr:1"),
+            ("windows_exit_status", "0xC0000409"),
+            ("windows_exit_class", "fault"),
+            ("windows_fault_symbol", "STATUS_STACK_BUFFER_OVERRUN"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        for (key, value) in [
+            ("watcher_lifecycle_state", "starting"),
+            ("runner_phase", "push"),
+            ("runner_phase_elapsed_bucket", "under_1m"),
+        ] {
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+        }
+        event
+            .extra
+            .insert("runner_stack_depth".to_string(), Value::Number(3.into()));
+        event.extra.insert(
+            "runner_stack_redacted_frames".to_string(),
+            Value::Number(1.into()),
+        );
+
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.tags["runner_stack_shape"],
+            "node_cjs_loader>app>node_fs"
+        );
+        assert_eq!(result.tags["runner_stack_signature"], "0123456789abcdef");
+        assert_eq!(result.tags["sync_route"], "manual");
+        assert_eq!(result.tags["sync_scope"], "single_company");
+        assert_eq!(result.tags["runner_phase"], "push");
+        for key in [
+            "runner_fatal_class",
+            "runner_error_rollup",
+            "windows_exit_status",
+            "windows_exit_class",
+            "windows_fault_symbol",
+        ] {
+            assert!(result.tags.contains_key(key), "missing tag {key}");
+        }
+        for key in [
+            "watcher_lifecycle_state",
+            "runner_phase",
+            "runner_phase_elapsed_bucket",
+            "watcher_launch_origin",
+            "runner_stack_depth",
+            "runner_stack_redacted_frames",
+        ] {
+            assert!(result.extra.contains_key(key), "missing extra {key}");
+        }
+        assert_eq!(
+            result.extra["watcher_launch_origin"],
+            Value::String("supervisor_respawn".to_string())
+        );
+    }
+
+    #[test]
+    fn test_runner_diagnostic_lookalikes_fail_closed_at_egress() {
+        for (key, value) in [
+            ("runner_stack_shape", "node_fs>/Users/Ada/secret.md"),
+            ("runner_stack_shape", "app>app>app>app>app>app>app>app>app"),
+            ("runner_stack_signature", "ABCDEF0123456789"),
+            ("runner_stack_signature", "0123456789abcdeg"),
+            ("watcher_launch_origin", "renderer:/Users/Ada"),
+            ("sync_route", "manual-private"),
+            ("sync_scope", "indigo"),
+            ("runner_phase", "push:/secret"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], "[Filtered]",
+                "tag key={key} value={value}"
+            );
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_runner_stack_shape_signature_pair_fails_closed_at_egress() {
+        for (shape, signature) in [("all_redacted", "0123456789abcdef"), ("node_fs", "unknown")] {
+            let mut event = Event::default();
+            event
+                .tags
+                .insert("runner_stack_shape".to_string(), shape.to_string());
+            event
+                .tags
+                .insert("runner_stack_signature".to_string(), signature.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags["runner_stack_shape"], "[Filtered]");
+            assert_eq!(result.tags["runner_stack_signature"], "[Filtered]");
+        }
     }
 }

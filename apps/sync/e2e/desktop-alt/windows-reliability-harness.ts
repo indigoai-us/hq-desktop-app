@@ -20,6 +20,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,133 @@ export interface LaunchResult {
   /** True when live was requested but configuration forced scripted fallback. */
   liveFallback: boolean;
   fallbackReason?: string;
+}
+
+/**
+ * Scripted representation of a sync-runner fatal termination. It deliberately
+ * contains only the same fixed vocabulary a production Sentry event may use:
+ * never stderr, source locations, cache paths, command lines, or usernames.
+ */
+export interface RunnerFatalAbortDiagnostic {
+  fatalClass: 'libuv_assert';
+  windowsFaultSymbol: 'STATUS_STACK_BUFFER_OVERRUN';
+  phase: 'unknown';
+  elapsedPhaseBucket: 'under_1m';
+}
+
+export interface RunnerExecPermissionDiagnostic {
+  fatalClass: 'exec_permission_denied';
+  execResolution: 'npx_cache';
+  targetExists: 'unknown';
+  targetExecutable: 'unknown';
+  phase: 'unknown';
+  elapsedPhaseBucket: 'under_1m';
+}
+
+export type RunnerRoute = 'manual' | 'watcher';
+export type RunnerLaunchOrigin = 'renderer' | 'app_launch' | 'supervisor_respawn';
+export type RunnerPhase = 'scan' | 'push' | 'pull' | 'idle' | 'unknown';
+
+export interface RunnerTerminationDiagnostic {
+  route: RunnerRoute;
+  launchOrigin?: RunnerLaunchOrigin;
+  phase: RunnerPhase;
+  elapsedPhaseBucket: 'under_1m';
+  fatalClass: 'libuv_assert' | 'exec_permission_denied' | 'none';
+  stackShape: string;
+  stackSignature: string;
+  stackDepth: number;
+  redactedFrames: number;
+  windowsExitStatus?: '0xC0000409';
+  windowsFaultSymbol?: 'STATUS_STACK_BUFFER_OVERRUN';
+}
+
+const RUNNER_FRAME_TABLE = new Map<string, string>([
+  ['uv_handle', 'libuv_handle'],
+  ['src\\win\\async.c', 'libuv_win_async'],
+  ['src/win/async.c', 'libuv_win_async'],
+  ['src/unix/core.c', 'libuv_unix_core'],
+  ['node:internal/process/task_queues', 'node_task_queues'],
+  ['node:internal/modules/cjs/loader', 'node_cjs_loader'],
+  ['node:internal/modules/esm/loader', 'node_esm_loader'],
+  ['node:internal/timers', 'node_timers'],
+  ['node:internal/child_process', 'node_child_process'],
+  ['node:events', 'node_events'],
+  ['node:fs', 'node_fs'],
+  ['node:stream', 'node_stream'],
+  ['core::panicking', 'rust_core_panicking'],
+  ['std::panicking', 'rust_std_panicking'],
+]);
+
+/**
+ * Mirror of the native `parenthesized_runtime_frame_token` fallback. A typical
+ * named V8 frame puts its runtime location after the function name — inside the
+ * final parentheses — so whole-token matching on split candidates alone would
+ * redact it to `app`. Keeping this in step with the core normalizer is the
+ * point of the artifact contract.
+ */
+function fixtureParenthesizedFrameToken(line: string): string | undefined {
+  const trimmed = line.trim();
+  if (!trimmed.slice(0, 3).toLowerCase().startsWith('at ')) return undefined;
+  const open = trimmed.lastIndexOf('(');
+  const close = trimmed.lastIndexOf(')');
+  if (open < 0 || close < 0 || open >= close) return undefined;
+  const candidate = trimmed.slice(open + 1, close).trim();
+  return RUNNER_FRAME_TABLE.get(candidate.replace(/:\d+:\d+$/, '').toLowerCase());
+}
+
+function fixtureRunnerStackShape(stderr: string[]): {
+  shape: string;
+  signature: string;
+  depth: number;
+  redactedFrames: number;
+} {
+  const frames: string[] = [];
+  let redactedFrames = 0;
+  let recognized = false;
+  for (const line of stderr.slice(0, 8)) {
+    const candidates = line.split(/[\s(),]+/).filter(Boolean);
+    const tokens = candidates
+      .map((candidate, index) => {
+        const previous = candidates[index - 1]?.toLowerCase();
+        const beforePrevious = candidates[index - 2]?.toLowerCase();
+        const isFramePosition =
+          index === 0 ||
+          previous === 'at' ||
+          previous === 'file' ||
+          (beforePrevious === 'at' && previous === 'async');
+        if (!isFramePosition) return undefined;
+        return RUNNER_FRAME_TABLE.get(candidate.replace(/:\d+:\d+$/, '').toLowerCase());
+      })
+      .filter((token): token is string => Boolean(token));
+    if (tokens.length === 0) {
+      const parenthesized = fixtureParenthesizedFrameToken(line);
+      if (parenthesized) tokens.push(parenthesized);
+    }
+    if (tokens.length === 0) {
+      frames.push('app');
+      redactedFrames += 1;
+    } else {
+      recognized = true;
+      frames.push(...tokens.slice(0, 8 - frames.length));
+    }
+    if (frames.length === 8) break;
+  }
+  if (!recognized) {
+    return {
+      shape: 'all_redacted',
+      signature: 'unknown',
+      depth: frames.length,
+      redactedFrames: frames.length,
+    };
+  }
+  const shape = frames.join('>');
+  return {
+    shape,
+    signature: createHash('sha256').update(shape).digest('hex').slice(0, 16),
+    depth: frames.length,
+    redactedFrames,
+  };
 }
 
 // Keys / string patterns that must never appear in diagnostics payloads.
@@ -591,6 +719,91 @@ export class WindowsReliabilityHarness {
       restarted: child.state === 'running' && jobTerminateCount === 1,
       diagnostic: { state: child.state, category },
     };
+  }
+
+  /**
+   * Script the observed Windows libuv fast-fail without copying its assertion
+   * text. This fixture pins the artifact diagnostic contract on every CI host.
+   */
+  simulateRunnerFatalAbort(): RunnerFatalAbortDiagnostic {
+    this.ensureLaunched();
+    const runner = this.fixtures.childProcesses.find((c) => c.role === 'sync-runner');
+    if (!runner) {
+      throw new Error('sync-runner fixture missing');
+    }
+    runner.state = 'backoff';
+    runner.visibleConsole = false;
+    return {
+      fatalClass: 'libuv_assert',
+      windowsFaultSymbol: 'STATUS_STACK_BUFFER_OVERRUN',
+      phase: 'unknown',
+      elapsedPhaseBucket: 'under_1m',
+    };
+  }
+
+  /**
+   * Script an npx runner launch refusal without inferring filesystem facts
+   * that exit status 126 cannot establish.
+   */
+  simulateRunnerExecPermissionFailure(): RunnerExecPermissionDiagnostic {
+    this.ensureLaunched();
+    const runner = this.fixtures.childProcesses.find((c) => c.role === 'sync-runner');
+    if (!runner) {
+      throw new Error('sync-runner fixture missing');
+    }
+    runner.state = 'backoff';
+    runner.visibleConsole = false;
+    return {
+      fatalClass: 'exec_permission_denied',
+      execResolution: 'npx_cache',
+      targetExists: 'unknown',
+      targetExecutable: 'unknown',
+      phase: 'unknown',
+      elapsedPhaseBucket: 'under_1m',
+    };
+  }
+
+  /**
+   * Fixture-backed artifact contract for the fixed-vocabulary native runner
+   * diagnostic. This does not observe a native Sentry event; Rust production
+   * seam tests and PR CI own that proof.
+   */
+  simulateRunnerTerminationDiagnostics(options: {
+    route: RunnerRoute;
+    origin?: RunnerLaunchOrigin;
+    phase: RunnerPhase;
+    exitCode: number;
+    stderr: string[];
+  }): RunnerTerminationDiagnostic {
+    this.ensureLaunched();
+    if (options.route === 'watcher' && !options.origin) {
+      throw new Error('watcher diagnostics require a fixed launch origin');
+    }
+    const stack = fixtureRunnerStackShape(options.stderr);
+    const windowsFault = options.exitCode === 0xc0000409;
+    const serializedStderr = options.stderr.join('\n').toLowerCase();
+    const fatalClass = windowsFault && serializedStderr.includes('uv_handle_closing')
+      ? 'libuv_assert'
+      : options.exitCode === 126
+        ? 'exec_permission_denied'
+        : 'none';
+    const diagnostic: RunnerTerminationDiagnostic = {
+      route: options.route,
+      phase: options.phase,
+      elapsedPhaseBucket: 'under_1m',
+      fatalClass,
+      stackShape: stack.shape,
+      stackSignature: stack.signature,
+      stackDepth: stack.depth,
+      redactedFrames: stack.redactedFrames,
+    };
+    if (options.origin) diagnostic.launchOrigin = options.origin;
+    if (windowsFault) {
+      diagnostic.windowsExitStatus = '0xC0000409';
+      diagnostic.windowsFaultSymbol = 'STATUS_STACK_BUFFER_OVERRUN';
+    }
+    assertContentSafeDiagnostics(diagnostic);
+    return diagnostic;
   }
 
   /** Record a backend request by logical resource name (no URLs or bodies). */

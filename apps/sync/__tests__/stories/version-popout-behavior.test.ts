@@ -50,6 +50,13 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function listenerHandle(): () => void {
+  // Tauri returns a distinct closure for each listener registration. Keep the
+  // shared spy as an invocation counter while preserving that real identity
+  // contract for safeUnlisten's duplicate-wrapper guard.
+  return vi.fn(() => tauri.unlisten());
+}
+
 function mountPopout(
   overrides: Partial<{
     version: string;
@@ -123,7 +130,7 @@ beforeEach(() => {
       } else {
         throw new Error(`Unexpected event: ${event}`);
       }
-      return tauri.unlisten;
+      return listenerHandle();
     },
   );
   tauri.invoke.mockImplementation(async (command: string) => {
@@ -615,7 +622,7 @@ describe('VersionPopout restored updater behavior', () => {
 
     await unmount(component!);
     component = null;
-    listener.resolve(tauri.unlisten);
+    listener.resolve(listenerHandle());
 
     await vi.waitFor(() => expect(tauri.unlisten).toHaveBeenCalledTimes(2));
   });

@@ -11,6 +11,10 @@ const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   unlisten: vi.fn(),
+  // The window's own `listen` — how focus/blur are registered since
+  // `subscribeWindowFocus` replaced the discarding `onFocusChanged` composite
+  // (Sentry HQ-DESKTOP-39).
+  windowListen: vi.fn(),
   onFocusChanged: vi.fn(),
   setSize: vi.fn(),
 }));
@@ -22,6 +26,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
+    listen: tauri.windowListen,
     onFocusChanged: tauri.onFocusChanged,
     setSize: tauri.setSize,
   }),
@@ -93,10 +98,12 @@ beforeEach(() => {
   tauri.invoke.mockReset();
   tauri.listen.mockReset();
   tauri.unlisten.mockReset();
+  tauri.windowListen.mockReset();
   tauri.onFocusChanged.mockReset();
   tauri.setSize.mockReset();
   feedData.loadTimeline.mockReset();
   tauri.listen.mockResolvedValue(tauri.unlisten);
+  tauri.windowListen.mockResolvedValue(tauri.unlisten);
   tauri.onFocusChanged.mockResolvedValue(tauri.unlisten);
   feedData.loadTimeline.mockResolvedValue({
     items: [],

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../lib/listener-registry';
   import { open as openInBrowser } from '@tauri-apps/plugin-shell';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import type { Issue } from '../lib/copy-prompts';
@@ -263,7 +264,7 @@
       invoke('drift_window_ready');
     });
     return () => {
-      unlisten?.();
+      safeUnlisten(unlisten)();
     };
   });
 </script>
