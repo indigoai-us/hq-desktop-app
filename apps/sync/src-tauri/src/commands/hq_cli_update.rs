@@ -75,15 +75,17 @@ pub use hq_desktop_core::hq_cli_update::{
     is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
     is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, npm_install_attempt_summary, npm_prefix_from_hq_bin,
-    pnpm_install_argv, read_installed_version, redact_home, redact_home_in, report_install_failure,
+    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv, read_installed_version,
+    redact_home, redact_home_in, report_install_failure,
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
     report_unreadable_version, resolved_hq_version, should_auto_install,
     should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
-    version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallFailureKind,
+    version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallExecutor, InstallFailureKind,
     LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    NpmLatest, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome, DISMISSED_VERSION_KEY,
+    HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -632,6 +634,7 @@ async fn install_hq_cli_update_via_pnpm(
     app: &AppHandle,
     hq: &str,
     latest: &str,
+    already_blocked: bool,
 ) -> Result<HqCliUpdateInfo, String> {
     const MANUAL_CMD: &str = "pnpm add -g @indigoai-us/hq-cli@latest";
     let pnpm = paths::resolve_bin("pnpm");
@@ -641,28 +644,60 @@ async fn install_hq_cli_update_via_pnpm(
              Update manually: {MANUAL_CMD}"
         ));
     }
-    let path = paths::child_path();
+    // Derive pnpm's home strictly from the shim we already resolved. An
+    // underivable layout yields `None` and the child is spawned exactly as
+    // before rather than being aimed at an invented directory.
+    let pnpm_env = pnpm_global_env(hq);
+    let home_source = pnpm_env
+        .as_ref()
+        .map(|env| env.source)
+        .unwrap_or(PnpmHomeSource::Undetermined);
+    let home_env_present = std::env::var_os("PNPM_HOME").is_some();
+    let base_path = paths::child_path();
+    let path = pnpm_child_path(
+        &base_path,
+        pnpm_env.as_ref().map(|env| env.global_bin_dir.as_str()),
+    );
+    let shim_dir = pnpm_env.as_ref().map(|env| env.global_bin_dir.clone());
+    let path_has_shim_dir = shim_dir
+        .as_deref()
+        .is_some_and(|dir| path_contains_dir(&path, dir));
     let args = pnpm_install_argv();
     log(
         "hq-cli-update",
         &format!(
-            "install: pnpm-managed hq detected — spawning pnpm {}",
-            args.join(" ")
+            "install: pnpm-managed hq detected — spawning pnpm {} (home_source={}, \
+             path_has_shim_dir={path_has_shim_dir})",
+            args.join(" "),
+            home_source.telemetry_value()
         ),
     );
     let output = {
         let pnpm = pnpm.clone();
         let path = path.clone();
         let args = args.clone();
+        let pnpm_home = pnpm_env.as_ref().map(|env| env.home.clone());
         tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = paths::spawn_command(&pnpm, &[]);
             cmd.args(&args).env("PATH", &path);
+            // Without PNPM_HOME the child falls back to its own default, which
+            // on a Dock-launched app is not necessarily the home that owns the
+            // shim we are trying to replace.
+            if let Some(home) = pnpm_home {
+                cmd.env("PNPM_HOME", home);
+            }
             cmd.output()
         })
         .await
         .map_err(|e| format!("join blocking task: {e}"))?
         .map_err(|e| format!("spawn pnpm: {e}"))?
     };
+    let pnpm_output_len = output.stdout.len() + output.stderr.len();
+    let pnpm_exit_status = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal/none".to_string());
     if !output.status.success() {
         let detail = npm_output_detail(&output);
         log(
@@ -677,55 +712,65 @@ async fn install_hq_cli_update_via_pnpm(
             "pnpm could not update the HQ CLI: {detail}\nYou can run it manually: {MANUAL_CMD}"
         ));
     }
-    // Same convergence gate as the npm path: a zero exit must have moved the
-    // binary the app actually resolves.
+    // Same convergence gate as the npm path, and the same re-resolve: pnpm may
+    // legitimately have moved which binary the app executes, and judging this
+    // run against the stale pre-install shim would block an update that landed.
+    let post_install_hq = paths::resolve_bin("hq");
     let resolved = {
-        let hq = hq.to_string();
+        let hq = post_install_hq.clone();
         tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
             .await
             .ok()
             .flatten()
     };
-    let local = match verify_active_cli_version(resolved.clone(), latest) {
-        Ok(version) => version,
-        Err(reason) => {
-            log(
-                "hq-cli-update",
-                &format!(
-                    "{reason} — pnpm path, hq={} — recording as non-convergent",
-                    redact_home(hq)
-                ),
-            );
-            if let Err(error) = record_non_convergent_version(latest) {
-                log(
-                    "hq-cli-update",
-                    &format!("could not record pnpm non-convergent version {latest}: {error}"),
-                );
-                report_non_convergent_marker_unpersisted();
-            }
-            report_non_convergent_install(
-                latest,
-                resolved.as_deref(),
-                hq,
-                None,
-                &pnpm,
-                false,
-                NonConvergenceKind::NpmTargeted,
-            );
-            return Err(non_convergent_detail(hq, resolved.as_deref(), latest));
-        }
+    let outcome = decide_post_install(&PostInstallContext {
+        executor: InstallExecutor::Pnpm,
+        before_bin: hq,
+        after_bin: &post_install_hq,
+        before_version: None,
+        after_version: resolved.as_deref(),
+        latest,
+        npm_prefix_passed: None,
+        installer_bin: &pnpm,
+        already_blocked,
+        pnpm: Some(PnpmRunDiagnostics {
+            home_source,
+            home_env_present,
+            path_has_shim_dir,
+            exit_status: pnpm_exit_status,
+            output_len: pnpm_output_len,
+        }),
+    });
+    log("hq-cli-update", &outcome.log_line);
+    apply_post_install_with_app(app, &outcome)
+}
+
+/// Apply a post-install decision with the production effects. Both executors go
+/// through this one function so the fail-closed marker ordering, the episode
+/// bounding, and the capture rules cannot drift between them.
+fn apply_post_install_with_app(
+    app: &AppHandle,
+    outcome: &PostInstallOutcome,
+) -> Result<HqCliUpdateInfo, String> {
+    let record = |version: String| record_non_convergent_version(&version);
+    let clear = || clear_non_convergent_version();
+    let capture = |report: NonConvergentReport| report_non_convergent_install(&report);
+    let record_failure = |error: String| {
+        log("hq-cli-update", &error);
+        report_non_convergent_marker_unpersisted();
     };
-    clear_non_convergent_version();
-    log(
-        "hq-cli-update",
-        &format!("pnpm install succeeded: local={local} latest={latest}"),
-    );
-    let info = HqCliUpdateInfo {
-        local: Some(local),
-        latest: latest.to_string(),
+    let emit_cleared = |info: HqCliUpdateInfo| {
+        // Frontend uses this to drop the banner immediately on success.
+        let _ = app.emit("hq-cli-update:cleared", &info);
     };
-    let _ = app.emit("hq-cli-update:cleared", &info);
-    Ok(info)
+    let effects = PostInstallEffects {
+        record: &record,
+        clear: &clear,
+        capture: &capture,
+        record_failure: &record_failure,
+        emit_cleared: &emit_cleared,
+    };
+    apply_post_install(outcome, &effects)
 }
 
 /// The side effects selected by the pure core post-install decision. Keeping
@@ -776,17 +821,19 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
+    // This must be sampled before the install, for either executor. An
+    // unwritable marker reads as absent; the post-install gate then refuses to
+    // capture unless this run successfully persists the first-episode marker.
+    let non_convergent_version = non_convergent_cli_version();
     if is_pnpm_global_shim(&hq) {
         // Pin the target before spawning, same as the npm path below.
         let latest = fetch_latest().await?;
-        return install_hq_cli_update_via_pnpm(&app, &hq, &latest).await;
+        let already_blocked =
+            non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+        return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;
     }
     let prefix = npm_prefix_from_hq_bin(&hq);
     let base_args = install_argv(prefix.as_deref());
-    // This must be sampled before the install. An unwritable marker reads as
-    // absent; the post-install gate then refuses to capture unless this run
-    // successfully persists the first-episode marker.
-    let non_convergent_version = non_convergent_cli_version();
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
         report_npm_cache_setup_failure(category);
         error
@@ -888,7 +935,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .ok()
             .flatten()
     };
-    let outcome = decide_post_install(
+    let outcome = decide_post_install(&PostInstallContext::npm(
         &hq,
         &post_install_hq,
         before_version.as_deref(),
@@ -897,38 +944,9 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         prefix.as_deref(),
         &npm,
         already_blocked,
-    );
+    ));
     log("hq-cli-update", &outcome.log_line);
-
-    let record = |version: String| record_non_convergent_version(&version);
-    let clear = || clear_non_convergent_version();
-    let capture = |report: NonConvergentReport| {
-        report_non_convergent_install(
-            &report.latest,
-            report.local.as_deref(),
-            &report.hq_bin,
-            report.npm_prefix.as_deref(),
-            &report.npm_bin,
-            report.hq_bin_changed,
-            report.kind,
-        );
-    };
-    let record_failure = |error: String| {
-        log("hq-cli-update", &error);
-        report_non_convergent_marker_unpersisted();
-    };
-    let emit_cleared = |info: HqCliUpdateInfo| {
-        // Frontend uses this to drop the banner immediately on success.
-        let _ = app.emit("hq-cli-update:cleared", &info);
-    };
-    let effects = PostInstallEffects {
-        record: &record,
-        clear: &clear,
-        capture: &capture,
-        record_failure: &record_failure,
-        emit_cleared: &emit_cleared,
-    };
-    apply_post_install(&outcome, &effects)
+    apply_post_install_with_app(&app, &outcome)
 }
 
 /// Persist the `latest` that installed cleanly but did not move the detected
@@ -1572,7 +1590,7 @@ exit 0
         let failures = Cell::new(0usize);
 
         for _ in 0..5 {
-            let outcome = decide_post_install(
+            let outcome = decide_post_install(&PostInstallContext::npm(
                 "/Users/t/Library/pnpm/hq",
                 "/Users/t/Library/pnpm/hq",
                 Some("5.77.14"),
@@ -1581,7 +1599,7 @@ exit 0
                 None,
                 "/opt/homebrew/bin/npm",
                 false,
-            );
+            ));
             let record = |version: String| {
                 records.set(records.get() + 1);
                 assert_eq!(version, "5.84.0");
@@ -1614,7 +1632,7 @@ exit 0
     fn converged_post_install_clears_and_emits_once() {
         let clears = Cell::new(0usize);
         let emits = Cell::new(0usize);
-        let outcome = decide_post_install(
+        let outcome = decide_post_install(&PostInstallContext::npm(
             "/Users/t/.npm-global/bin/hq",
             "/Users/t/.npm-global/bin/hq",
             Some("5.77.14"),
@@ -1623,7 +1641,7 @@ exit 0
             Some("/Users/t/.npm-global"),
             "/opt/homebrew/bin/npm",
             true,
-        );
+        ));
         let record = |_| panic!("a converged install must not record a non-convergence");
         let clear = || clears.set(clears.get() + 1);
         let capture = |_| panic!("a converged install must not capture non-convergence");

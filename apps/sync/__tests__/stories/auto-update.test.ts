@@ -131,7 +131,7 @@ describe('master automatic-updates switch', () => {
     //    hand-rolled comparison that could drift from it.
     expect(cliUpdateCore).toContain('pub fn decide_post_install(');
     expect(cliUpdate).toContain('let outcome = decide_post_install(');
-    expect(cliUpdate).toContain('apply_post_install(&outcome, &effects)');
+    expect(cliUpdate).toContain('apply_post_install(outcome, &effects)');
     // The old code fabricated `latest` as the local version when detection came
     // back empty, which is precisely what made a failed install read as a win.
     expect(cliUpdate).not.toContain('.or_else(|| Some(latest.clone()))');
@@ -182,6 +182,60 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('non_convergent_episode_blocked(');
   });
 
+  it('the pnpm executor shares the npm executor’s convergence contract', () => {
+    // HQ-DESKTOP-46 era 2: on hq-sync 0.10.69 the pnpm branch exited 0 without
+    // moving ~/Library/pnpm/bin/hq, and it reached the reporter through its own
+    // legacy call — no durable-marker gate, no episode bounding, and hardcoding
+    // `prefix = None` into an npm-shaped payload so the event rendered as an
+    // npm default-prefix run. Both executors now go through one seam.
+    const pnpmStart = cliUpdate.indexOf('async fn install_hq_cli_update_via_pnpm(');
+    expect(pnpmStart).toBeGreaterThan(-1);
+    const pnpmBranch = cliUpdate.slice(
+      pnpmStart,
+      cliUpdate.indexOf('fn apply_post_install_with_app('),
+    );
+    // Routed through the shared decision + effects seam...
+    expect(pnpmBranch).toContain('decide_post_install(&PostInstallContext {');
+    expect(pnpmBranch).toContain('executor: InstallExecutor::Pnpm,');
+    expect(pnpmBranch).toContain('apply_post_install_with_app(app, &outcome)');
+    // ...not the legacy unconditional record-then-report pair it used before.
+    expect(pnpmBranch).not.toContain('record_non_convergent_version(latest)');
+    expect(pnpmBranch).not.toContain('report_non_convergent_install(');
+    // Episode bounding is sampled before EITHER executor spawns.
+    expect(normalize(cliUpdate)).toContain(
+      'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest); return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;',
+    );
+    // Convergence is judged by re-resolving the binary the app executes, the
+    // same rule the npm branch follows — not by trusting pnpm's zero exit.
+    expect(pnpmBranch).toContain('let post_install_hq = paths::resolve_bin("hq");');
+
+    // The candidate cause: `child_path()` never contains `<pnpm-home>/bin`, so
+    // the spawned pnpm could resolve a different global dir than the app did.
+    expect(pnpmBranch).toContain('let pnpm_env = pnpm_global_env(hq);');
+    expect(pnpmBranch).toContain('cmd.env("PNPM_HOME", home);');
+    expect(pnpmBranch).toContain('pnpm_child_path(');
+    expect(cliUpdateCore).toContain('pub fn pnpm_global_env(');
+    // Derivation stays anchored to the resolved shim — an underivable layout
+    // must spawn pnpm exactly as before rather than inventing a home.
+    expect(cliUpdateCore).toContain('PnpmHomeSource::Undetermined');
+  });
+
+  it('a non-convergent capture names which package manager ran', () => {
+    // The three live 2026-08-06 events could not be attributed: same
+    // fingerprint, no executor tag, and an `npm_prefix` extra that was actively
+    // wrong for a pnpm run.
+    expect(cliUpdateCore).toContain('scope.set_tag("install_executor", executor.telemetry_value());');
+    expect(cliUpdateCore).toContain('scope.set_tag("pnpm_home_source"');
+    expect(cliUpdateCore).toContain('scope.set_tag("pnpm_home_env_present"');
+    expect(cliUpdateCore).toContain('scope.set_tag("pnpm_path_has_shim_dir"');
+    expect(cliUpdateCore).toContain('scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());');
+    // The grouping must NOT split: a new tag that forked the fingerprint would
+    // make the issue look resolved while the same defect kept occurring.
+    expect(cliUpdateCore).toContain(
+      'scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));',
+    );
+  });
+
   it('Rust CI cannot repair a stale lockfile before checking it', () => {
     expect(ciWorkflow).toContain('cargo test --workspace --locked');
     expect(ciWorkflow).toMatch(/working-directory: apps\/sync\/src-tauri\s+run: cargo test --locked/);
@@ -214,6 +268,11 @@ describe('master automatic-updates switch', () => {
     expect(settings).toContain('{#if (!hqCliVersion || hqCliUpdateError) && !hqCliNonConvergent}');
     // The marker the UI keys off must match the constant the Rust side emits.
     expect(cliUpdate).toContain('NON_CONVERGENT_ERROR_PREFIX');
+    // Both executors emit that marker, but the pnpm remedy differs: telling a
+    // user to "update it with the tool that installed it" is a dead end when
+    // the app just ran that tool and pnpm still did not converge.
+    expect(cliUpdateCore).toContain('InstallExecutor::Pnpm => format!(');
+    expect(cliUpdateCore).toContain('pnpm bin -g');
   });
 
   it('CLI updater telemetry carries only path-free install diagnostics', () => {
