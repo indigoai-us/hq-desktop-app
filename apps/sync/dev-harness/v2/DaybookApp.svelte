@@ -49,7 +49,32 @@
     VideoCamera,
     Warning,
   } from 'phosphor-svelte';
-  import { fly } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
+
+  /** Pane slide: widens from the right edge while its content translates in,
+   *  so the board reflows instead of being covered. */
+  /** Marketplace pack detail (same right-hand pane pattern as stories). */
+  let openPack = $state<[string, string, string, string] | null>(null);
+  const PACK_DETAIL: Record<string, { publisher: string; updated: string; includes: [string, string][]; notes: string }> = {
+    engineering: { publisher: 'Indigo', updated: 'Jul 28', notes: 'Adds the investigate → review → land loop, plus the release checklist worker.', includes: [['skill', '/investigate'], ['skill', '/review'], ['skill', '/land'], ['worker', 'build-agent']] },
+    'design-styles': { publisher: 'Indigo', updated: 'Today', notes: 'Brand packs and design tokens bound to deploys. v3.0 adds the daybook token set.', includes: [['skill', '/storyboard'], ['worker', 'paper-designer'], ['knowledge', 'design tokens']] },
+    parker: { publisher: 'Sender Agency', updated: 'Jul 14', notes: 'Creative iteration engine for short-form ads.', includes: [['worker', 'parker'], ['skill', '/hooks-test']] },
+    'slack-bot': { publisher: 'Indigo', updated: 'Jun 30', notes: 'Run HQ agents from inside a Slack workspace.', includes: [['worker', 'slack-relay'], ['skill', '/broadcast']] },
+    accounting: { publisher: 'Community', updated: 'Jul 2', notes: 'Books, categorization, and monthly close helpers.', includes: [['worker', 'bookkeeper'], ['skill', '/close-month']] },
+    'secure-sidecar': { publisher: 'Community', updated: 'Jun 18', notes: 'Scoped secret access for untrusted workloads.', includes: [['worker', 'sidecar'], ['policy', 'secret scoping']] },
+  };
+
+  const STORY_PANEL_W = 340;
+  /** Slides the pane in from the right by animating its margin, so the board
+   *  reflows around it. Deliberately avoids flex-basis/width: Svelte leaves the
+   *  finished animation applied, which would pin the pane's width forever. */
+  function slidePane() {
+    return {
+      duration: 200,
+      easing: cubicOut,
+      css: (t: number) => `margin-right: ${(t - 1) * STORY_PANEL_W}px; opacity: ${t};`,
+    };
+  }
 
   interface Props {
     theme?: string;
@@ -375,6 +400,8 @@
   const storyId = $derived(openStory ? openStory.title.split(' · ')[0] : '');
   const storyName = $derived(openStory ? openStory.title.split(' · ').slice(1).join(' · ') : '');
   const storyDetail = $derived(STORY_DETAIL[storyId] ?? GENERIC_DETAIL);
+  /** Board columns are set in caps for the board; detail reads in prose. */
+  const sentence = (v: string) => v.charAt(0) + v.slice(1).toLowerCase();
 
   /* ── Notifications ── */
   type Notif = {
@@ -625,7 +652,6 @@
             class="co-chip"
             class:active={coFilter === 'all'}
             aria-pressed={coFilter === 'all'}
-            data-tip="All companies"
             aria-label="All companies"
             onclick={() => (coFilter = 'all')}
           >
@@ -636,7 +662,6 @@
               class="co-chip"
               class:active={coFilter === key}
               aria-pressed={coFilter === key}
-              data-tip={c.label}
               aria-label={c.label}
               onclick={() => toggleCompany(key)}
             >
@@ -645,7 +670,7 @@
           {/each}
           {#if moreCompanies}
             {#each EXTRA_COMPANIES as [short, label] (short)}
-              <button class="co-chip" data-tip={label} aria-label={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
+              <button class="co-chip" aria-label={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
                 <span class="co-ava">{label}</span>
               </button>
             {/each}
@@ -730,8 +755,26 @@
           <div class="content">
             {#if tab === 'board'}
               <div class="board-wrap">
+              {#if chan.board}
+                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                <div class="board" onclick={(e) => { if (!(e.target as HTMLElement).closest('.story')) openStory = null; }}>
+                  {#each [['IN PROGRESS', chan.board.inprog], ['REVIEW', chan.board.review], ['DONE', chan.board.done]] as [name, items] (name)}
+                    <div class="col">
+                      <span class="colh mono">{name} · {(items as string[][]).length}</span>
+                      {#each items as [t, s, cls] (t)}
+                        <button class="story" class:dim={name === 'DONE'} onclick={() => (openStory = { title: t, sub: s, cls, col: name as string })}>
+                          <span class="st">{t}</span>
+                          <span class="ss mono" class:ok={cls === 'ok'} class:warn={cls === 'warn'}>{s}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="empty">No board — this is a plain channel.</div>
+              {/if}
               {#if openStory}
-                <aside class="story-panel" transition:fly={{ x: 400, duration: 180 }}>
+                <aside class="story-panel" transition:slidePane>
                   <div class="sd-head">
                     <span class="sd-id mono">{storyId}</span>
                     <button class="sd-close" aria-label="Close story" onclick={() => (openStory = null)}><X size={13} weight="bold" /></button>
@@ -744,7 +787,7 @@
                   <p class="sd-desc">{storyDetail.desc}</p>
 
                   <div class="sd-meta">
-                    {#each [['Column', openStory.col], ['Assignee', storyDetail.who], ['Project', chan.title.replace('# ', '')], ['Branch', 'feat/unified-shell']] as [k, v] (k)}
+                    {#each [['Status', sentence(openStory.col)], ['Assignee', storyDetail.who], ['Project', chan.title.replace('# ', '')], ['Branch', 'feat/unified-shell']] as [k, v] (k)}
                       <div class="sd-kv"><span class="sd-k mono">{k}</span><span class="sd-v">{v}</span></div>
                     {/each}
                   </div>
@@ -768,26 +811,9 @@
 
                   <div class="sd-actions">
                     <button class="chip" onclick={() => toast('Story would open in the project channel')}>Open in channel</button>
-                    <button class="chip g" onclick={() => toast('Diff would open')}>View diff</button>
+                    <button class="chip g" onclick={() => toast('Diff would open')}>View changes</button>
                   </div>
                 </aside>
-              {/if}
-              {#if chan.board}
-                <div class="board">
-                  {#each [['IN PROGRESS', chan.board.inprog], ['REVIEW', chan.board.review], ['DONE', chan.board.done]] as [name, items] (name)}
-                    <div class="col">
-                      <span class="colh mono">{name} · {(items as string[][]).length}</span>
-                      {#each items as [t, s, cls] (t)}
-                        <button class="story" class:dim={name === 'DONE'} onclick={() => (openStory = { title: t, sub: s, cls, col: name as string })}>
-                          <span class="st">{t}</span>
-                          <span class="ss mono" class:ok={cls === 'ok'} class:warn={cls === 'warn'}>{s}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  {/each}
-                </div>
-              {:else}
-                <div class="empty">No board — this is a plain channel.</div>
               {/if}
               </div>
             {:else if tab === 'files'}
@@ -895,13 +921,58 @@
           <span class="chan-title">Marketplace</span>
           <span class="chan-sub">packs & extensions for your HQ</span>
         </div>
-        <div class="market">
-          {#each MARKET as [n, d, cls, label] (n)}
-            <button class="pack" onclick={() => toast(`${n} pack detail would open`)}>
-              <span class="pn">{n}</span><span class="pd">{d}</span>
-              <div class="pf"><span class="pill mono {cls}">{label}</span></div>
-            </button>
-          {/each}
+        <div class="board-wrap">
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+          <div class="market" onclick={(e) => { if (!(e.target as HTMLElement).closest('.pack')) openPack = null; }}>
+            {#each MARKET as [n, d, cls, label] (n)}
+              <button class="pack" class:sel={openPack?.[0] === n} onclick={() => (openPack = [n, d, cls, label])}>
+                <span class="pn">{n}</span><span class="pd">{d}</span>
+                <div class="pf"><span class="pill mono {cls}">{label}</span></div>
+              </button>
+            {/each}
+          </div>
+          {#if openPack}
+            {@const pack = PACK_DETAIL[openPack[0]] ?? { publisher: 'Community', updated: '—', includes: [], notes: 'No description yet.' }}
+            <aside class="story-panel" transition:slidePane>
+              <div class="sd-head">
+                <span class="sd-id mono">PACK</span>
+                <button class="sd-close" aria-label="Close pack" onclick={() => (openPack = null)}><X size={13} weight="bold" /></button>
+              </div>
+              <div class="sd-title">{openPack[0]}</div>
+              {#if openPack[2] !== 'get'}
+                <div class="sd-status"><span class="pill mono {openPack[2]}">{openPack[3]}</span></div>
+              {/if}
+
+              <p class="sd-desc">{pack.notes}</p>
+
+              <div class="sd-meta">
+                <div class="sd-kv"><span class="sd-k mono">Publisher</span><span class="sd-v">{pack.publisher}</span></div>
+                <div class="sd-kv"><span class="sd-k mono">Updated</span><span class="sd-v">{pack.updated}</span></div>
+              </div>
+
+              <div class="grp"><span class="t mono">WHAT'S INSIDE</span><span class="d mono">{pack.includes.length}</span></div>
+              {#each pack.includes as [kind, name] (name)}
+                <div class="pk-row">
+                  <span class="pk-ic">
+                    {#if kind === 'skill'}<Lightning size={14} />{:else if kind === 'worker'}<UserCircle size={14} />{:else if kind === 'policy'}<ShieldCheck size={14} />{:else}<BookOpen size={14} />{/if}
+                  </span>
+                  <span class="pk-name">{name}</span>
+                  <span class="pk-kind mono">{kind}</span>
+                </div>
+              {/each}
+
+              <div class="sd-actions">
+                {#if openPack[2] === 'get'}
+                  <button class="upd-btn" onclick={() => toast(`${openPack?.[0]} would install`)}>Get pack</button>
+                {:else if openPack[2] === 'upd'}
+                  <button class="upd-btn" onclick={() => toast(`${openPack?.[0]} would update`)}>Update</button>
+                  <button class="chip g" onclick={() => toast('Release notes would open')}>Release notes</button>
+                {:else}
+                  <button class="chip g" onclick={() => toast(`${openPack?.[0]} would be removed`)}>Remove</button>
+                {/if}
+              </div>
+            </aside>
+          {/if}
         </div>
       {:else if view === 'sync'}
         <div class="chan-head">
@@ -1269,8 +1340,8 @@
     --raised: rgba(255, 255, 255, 0.05);
     --btn-bg: rgba(255, 255, 255, 0.07);
     --elevated: #1e1e24;
-    --panel-bg: rgba(255, 255, 255, 0.1);
-    --panel-border: rgba(255, 255, 255, 0.09);
+    --panel-bg: rgba(44, 44, 54, 0.94);
+    --panel-border: rgba(255, 255, 255, 0.1);
     /* Opaque stand-in for the frosted panel surface — facepile rings. */
     --panel-edge: #2b2b33;
     --border-active: rgba(255, 255, 255, 0.3);
@@ -1309,8 +1380,8 @@
     --raised: rgba(0, 0, 0, 0.035);
     --btn-bg: rgba(0, 0, 0, 0.045);
     --elevated: #ffffff;
-    --panel-bg: rgba(255, 255, 255, 0.78);
-    --panel-border: rgba(0, 0, 0, 0.06);
+    --panel-bg: rgba(252, 252, 253, 0.96);
+    --panel-border: rgba(0, 0, 0, 0.07);
     --panel-edge: #f0f1f4;
     --border-active: rgba(0, 0, 0, 0.3);
     --line: rgba(0, 0, 0, 0.08);
@@ -1536,7 +1607,7 @@
   .story { display: flex; flex-direction: column; gap: 6px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px; width: 100%; transition: background 0.12s, border-color 0.12s; }
   .story:hover { background: var(--btn-bg); border-color: var(--line2); }
   .story .st { font-weight: 500; font-size: 13px; }
-  .story .ss { font-size: 10px; color: var(--t2); }
+  .story .ss { font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--t2); }
   .story .ss.ok { color: var(--ok-ink); }
   .story .ss.warn { color: var(--warn-ink); }
   .story.dim { opacity: 0.65; }
@@ -1570,13 +1641,14 @@
   /* A search head above a list pulls the list closer (12px total gap). */
   .lib-main .listview, .lib-head + .listview { padding-top: 8px; }
 
-  .market { flex: 1; padding: 20px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; align-content: start; }
+  .market { flex: 1; min-width: 0; padding: 20px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; align-content: start; }
   .pack { display: flex; flex-direction: column; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .pack:hover { background: var(--btn-bg); border-color: var(--line2); }
   .pack .pn { font-weight: 600; font-size: 14px; }
   .pack .pd { font-size: 12px; color: var(--t2); line-height: 17px; flex: 1; }
   .pack .pf { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-  .pill { font-size: 10px; font-weight: 500; border-radius: 6px; padding: 2px 8px; }
+  /* Neutral is the base: light border + faint fill, like the tinted variants. */
+  .pill { font-size: 10px; font-weight: 500; border-radius: 6px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: var(--btn-bg); color: var(--t2); }
   /* Status tags: light tint fill + light border, toned ink. */
   .pill.inst { color: var(--ok-ink); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
   .pill.upd { color: var(--warn-ink); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
@@ -1642,23 +1714,19 @@
   .set-row .sd.mono { font-size: 11px; }
 
   /* ── Story detail (right side panel; board stays visible) ── */
-  .board-wrap { position: relative; flex: 1; display: flex; min-height: 0; overflow: hidden; }
+  .board-wrap { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+  .board-wrap > .board { flex: 1; min-width: 0; }
+  /* A real pane, styled exactly like the daybook sidebar: side tint, one
+     hairline edge, no shadow — it takes space rather than floating over. */
   .story-panel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(400px, 62%);
-    z-index: 20;
+    flex: 0 0 auto;
+    width: 340px;
     display: flex;
     flex-direction: column;
     padding: 16px 20px 20px;
     overflow: auto;
-    background: var(--panel-bg);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
-    border-left: 1px solid var(--panel-border);
-    box-shadow: -16px 0 40px rgba(0, 0, 0, 0.16);
+    background: var(--side-bg);
+    border-left: 1px solid var(--line);
   }
   .sd-head { display: flex; align-items: center; gap: 10px; }
   .sd-id { font-size: 11px; color: var(--t3); }
@@ -1673,14 +1741,21 @@
   .sd-k { font-size: 9px; letter-spacing: 0.1em; color: var(--t3); text-transform: uppercase; }
   .sd-v { font-size: 12px; color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .story-panel .grp { padding: 18px 2px 6px; }
-  .ac-row { display: flex; align-items: center; gap: 10px; padding: 7px 2px; }
-  .ac-mark { display: flex; align-items: center; color: var(--t3); }
+  /* Mark sits on the first text line, not centered on a wrapped block. */
+  .ac-row { display: flex; align-items: flex-start; gap: 10px; padding: 3px 2px; }
+  .ac-mark { display: flex; align-items: center; height: 20px; flex-shrink: 0; color: var(--t3); }
   .ac-row.done .ac-mark { color: var(--ok-ink); }
-  .ac-text { font-size: 13px; color: var(--t2); }
+  .ac-text { font-size: 13px; line-height: 20px; color: var(--t2); }
   .ac-row.done .ac-text { color: var(--t3); text-decoration: line-through; }
-  .sd-event { margin: 0; padding: 3px 0; }
-  .sd-event .fe-ic { width: 20px; }
+  .sd-event { margin: 0; padding: 3px 0; gap: 10px; }
+  .sd-event .fe-ic { width: 15px; }
   .sd-actions { display: flex; gap: 8px; margin-top: 22px; }
+  /* Pack contents list — mirrors the criteria rhythm. */
+  .pk-row { display: flex; align-items: center; gap: 10px; padding: 4px 2px; }
+  .pk-ic { display: flex; align-items: center; flex-shrink: 0; color: var(--t3); }
+  .pk-name { flex: 1; min-width: 0; font-size: 13px; color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pk-kind { flex-shrink: 0; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--t3); }
+  .pack.sel { border-color: var(--ice-ink); }
 
   /* ── Notifications ── */
   /* Naked icon button for the title bar; a dot marks unread. */
