@@ -12,7 +12,7 @@
   import { buildPrompt } from '../lib/copy-prompts';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import { sanitizeVisibleIdentifiers } from '../lib/visible-labels';
-  import { safeUnlisten } from '../lib/listener-registry';
+  import { safeUnlisten, subscribeWindowFocus } from '../lib/listener-registry';
   import {
     isWorkspaceSyncEnabled,
     type Workspace,
@@ -1340,13 +1340,12 @@
       handleWorkspaceSyncEnabledChanged as EventListener,
     );
 
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) {
-          refreshRealState();
-          hydrateMeetingStatus();
-        }
-      })
+    void subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
+      if (focused) {
+        refreshRealState();
+        hydrateMeetingStatus();
+      }
+    })
       .then((unlisten) => {
         const safe = safeUnlisten(unlisten);
         if (mounted) {

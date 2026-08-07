@@ -48,7 +48,9 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
 
 describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
   it('wires the shared ListenerRegistry into the app-surface lifecycle', () => {
-    expect(app).toContain("import { ListenerRegistry } from './lib/listener-registry'");
+    expect(app).toMatch(
+      /import \{[^}]*\bListenerRegistry\b[^}]*\} from '\.\/lib\/listener-registry'/,
+    );
     expect(app).toContain('async function setupTrayListeners(unlisteners: ListenerRegistry)');
     expect(app).toContain('void setupTrayListeners(listenerRegistry)');
     // Surface teardown must invalidate and cancel the channel-unread retry
@@ -84,8 +86,12 @@ describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
       const source = readFileSync(path, 'utf8');
       return (
         (source.includes('@tauri-apps/api/event') ||
-          source.includes('this.listen(')) &&
-        (source.includes('listen(') || source.includes('.onFocusChanged('))
+          source.includes('this.listen(') ||
+          // A focus surface no longer has to import the event module itself —
+          // `subscribeWindowFocus` owns that registration now — but it is still
+          // a listener surface and still needs the teardown boundary.
+          source.includes('subscribeWindowFocus(')) &&
+        (source.includes('listen(') || source.includes('subscribeWindowFocus('))
       );
     });
 
@@ -93,9 +99,26 @@ describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
     for (const path of listenerSurfaces) {
       const source = readFileSync(path, 'utf8');
       expect(
-        source.includes('safeUnlisten') || source.includes('ListenerRegistry'),
+        source.includes('safeUnlisten') ||
+          source.includes('ListenerRegistry') ||
+          source.includes('subscribeWindowFocus'),
         `${path} registers a Tauri listener without the shared teardown boundary`,
       ).toBe(true);
     }
+  });
+
+  it('decomposes the focus composite instead of wrapping it', () => {
+    // The recurrence: `safeUnlisten` can only contain a handle that RETURNS its
+    // rejection, and `Window.onFocusChanged` returns a synchronous composite
+    // that discards two inner unlisten promises. Wrapping it is a no-op, so the
+    // focus subscription has to own the two window registrations itself.
+    expect(listenerRegistry).toContain('export async function subscribeWindowFocus(');
+    expect(listenerRegistry).toMatch(
+      /win\.listen<unknown>\(WINDOW_FOCUS_EVENT[\s\S]*?win\.listen<unknown>\(WINDOW_BLUR_EVENT/,
+    );
+    // Both handles go through the shared boundary before being composed.
+    expect(listenerRegistry).toMatch(
+      /const safeFocus = safeUnlisten\(focusHandle\);[\s\S]*?const safeBlur = safeUnlisten\(blurHandle\);/,
+    );
   });
 });
