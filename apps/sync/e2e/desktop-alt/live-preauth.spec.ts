@@ -28,6 +28,16 @@ import { createLivePreAuthProbe, type LiveDesktopAltProbe } from './live-driver'
 /** The literal the Rust gate returns — `commands/desktop_alt.rs`. */
 const SIGNED_OUT_GATE_ERROR = 'desktop-alt requires a signed-in user';
 
+// A full TermSrv recovery takes 10 seconds, may need its one final retry, and
+// the built binary needs startup margin before the single shared driver can
+// invoke a command. This bound is intentionally larger than that complete
+// failure-recovery path without becoming an open-ended CI wait.
+const OBSERVER_READY_DEADLINE_MS = 30_000;
+const OBSERVER_READY_POLL_MS = 200;
+// ExitRequested gives the observer and child-process teardown 500ms each. Five
+// seconds leaves a generous runner margin while still catching a stalled quit.
+const APP_EXIT_DEADLINE_MS = 5_000;
+
 let app: LiveDesktopAltProbe;
 
 describe('desktop-alt live pre-auth smoke (Windows)', () => {
@@ -106,6 +116,22 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     ).toMatchObject({ authenticated: false });
   });
 
+  it('registers the session-end observer in the real Windows binary', async () => {
+    const deadline = Date.now() + OBSERVER_READY_DEADLINE_MS;
+    let status = 'unavailable';
+    do {
+      status = await app.invokeCommand<string>('session_end_observer_status');
+      if (status === 'registered') {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, OBSERVER_READY_POLL_MS));
+    } while (Date.now() < deadline);
+
+    throw new Error(
+      `session-end observer did not register within ${OBSERVER_READY_DEADLINE_MS}ms; last status=${status}`,
+    );
+  });
+
   it('refuses to open the desktop window for a signed-out user', async () => {
     // `desktop_alt_enabled` is what App.svelte, the tray and the notification
     // deep-links consult before offering the surface at all.
@@ -121,5 +147,9 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     // (or despite) the gate, a desktop-alt webview would now be attached to
     // this session and this assertion is what catches it.
     expect(await app.hasDesktopAltWindow()).toBe(false);
+  });
+
+  it('runs the real quit path and exits the Windows process within its bound', async () => {
+    await app.quitAndAssertExited(APP_EXIT_DEADLINE_MS);
   });
 });

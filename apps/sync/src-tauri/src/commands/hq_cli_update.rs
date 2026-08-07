@@ -70,9 +70,10 @@ pub use hq_desktop_core::hq_cli_update::{
     cli_auto_update_enabled, cmp_semver, dismissed_cli_version, get_local_version,
     get_local_version_diagnostics, hq_version_string, install_argv, install_converged,
     install_failure_detail, install_failure_detail_with_final_attempt, install_failure_report,
-    is_cli_update_dismissed, is_npm_bin_collision, is_prefix_permission_failure,
+    is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
     is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
-    npm_install_attempt_summary, npm_prefix_from_hq_bin, read_installed_version, redact_home,
+    npm_install_attempt_summary, npm_prefix_from_hq_bin, pnpm_install_argv, read_installed_version,
+    redact_home,
     redact_home_in, report_install_failure, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_npm_cache_setup_failure, report_unreadable_version,
     resolved_hq_version, should_auto_install, should_report_unreadable_version,
@@ -617,11 +618,103 @@ async fn run_npm_install_with_retries(
     })
 }
 
+/// Update a pnpm-managed `hq` with pnpm itself. npm cannot replace a shim in
+/// pnpm's flat global dir — `npm install -g` writes an unrelated prefix, exits
+/// 0, and the shim on PATH stays stale, which is exactly the non-convergent
+/// loop the convergence gate below catches after the fact. Branching here fixes
+/// it up front: the tool that owns the binary performs the update. Single
+/// attempt on purpose — the npm retry ladder (EEXIST/ENOTEMPTY/EPERM) encodes
+/// npm-specific failure shapes that don't apply to `pnpm add -g`.
+async fn install_hq_cli_update_via_pnpm(
+    app: &AppHandle,
+    hq: &str,
+    latest: &str,
+) -> Result<HqCliUpdateInfo, String> {
+    const MANUAL_CMD: &str = "pnpm add -g @indigoai-us/hq-cli@latest";
+    let pnpm = paths::resolve_bin("pnpm");
+    if pnpm == "pnpm" {
+        return Err(format!(
+            "hq was installed with pnpm, but pnpm could not be found. \
+             Update manually: {MANUAL_CMD}"
+        ));
+    }
+    let path = paths::child_path();
+    let args = pnpm_install_argv();
+    log(
+        "hq-cli-update",
+        &format!("install: pnpm-managed hq detected — spawning pnpm {}", args.join(" ")),
+    );
+    let output = {
+        let pnpm = pnpm.clone();
+        let path = path.clone();
+        let args = args.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = paths::spawn_command(&pnpm, &[]);
+            cmd.args(&args).env("PATH", &path);
+            cmd.output()
+        })
+        .await
+        .map_err(|e| format!("join blocking task: {e}"))?
+        .map_err(|e| format!("spawn pnpm: {e}"))?
+    };
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        log(
+            "hq-cli-update",
+            &format!(
+                "pnpm install failed (exit {:?}): {}",
+                output.status.code(),
+                redact_home(&detail)
+            ),
+        );
+        return Err(format!(
+            "pnpm could not update the HQ CLI: {detail}\nYou can run it manually: {MANUAL_CMD}"
+        ));
+    }
+    // Same convergence gate as the npm path: a zero exit must have moved the
+    // binary the app actually resolves.
+    let resolved = {
+        let hq = hq.to_string();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let local = match verify_active_cli_version(resolved.clone(), latest) {
+        Ok(version) => version,
+        Err(reason) => {
+            log(
+                "hq-cli-update",
+                &format!("{reason} — pnpm path, hq={} — recording as non-convergent", redact_home(hq)),
+            );
+            record_non_convergent_version(latest);
+            report_non_convergent_install(latest, resolved.as_deref(), hq, None);
+            return Err(non_convergent_detail(hq, resolved.as_deref(), latest));
+        }
+    };
+    clear_non_convergent_version();
+    log(
+        "hq-cli-update",
+        &format!("pnpm install succeeded: local={local} latest={latest}"),
+    );
+    let info = HqCliUpdateInfo {
+        local: Some(local),
+        latest: latest.to_string(),
+    };
+    let _ = app.emit("hq-cli-update:cleared", &info);
+    Ok(info)
+}
+
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
+    if is_pnpm_global_shim(&hq) {
+        // Pin the target before spawning, same as the npm path below.
+        let latest = fetch_latest().await?;
+        return install_hq_cli_update_via_pnpm(&app, &hq, &latest).await;
+    }
     let prefix = npm_prefix_from_hq_bin(&hq);
     let base_args = install_argv(prefix.as_deref());
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
