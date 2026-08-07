@@ -18,7 +18,7 @@
   } from '../lib/meetingsCache';
   import { shouldShowMeetingsLoadingPlaceholder } from '../lib/meetingsLoadingGate';
   import { humanCompanyLabel } from '../lib/visible-labels';
-  import { safeUnlisten } from '../lib/listener-registry';
+  import { safeUnlisten, subscribeWindowFocus } from '../lib/listener-registry';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
   import {
     botForEvent,
@@ -554,13 +554,11 @@
     // by the `loading` guard at the top of refresh(), so we don't pay
     // for a double-fetch.
     let unlistenFocus: (() => void) | null = null;
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) void refresh();
-      })
-      .then((fn) => {
-        unlistenFocus = safeUnlisten(fn);
-      });
+    void subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
+      if (focused) void refresh();
+    }).then((fn) => {
+      unlistenFocus = safeUnlisten(fn);
+    });
 
     // Esc closes the window — feels native on macOS where ⌘W is the
     // standard but Esc is the common expectation for a detached panel.

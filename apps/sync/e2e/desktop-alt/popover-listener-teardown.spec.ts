@@ -1,7 +1,30 @@
 // @vitest-environment happy-dom
 //
-// HQ-DESKTOP-39 artifact E2E: mount the real popover, then tear it down against
-// a Tauri handle that rejects exactly as the stale event-plugin map does.
+// HQ-DESKTOP-39 artifact E2E: mount the real surfaces, then tear them down
+// against Tauri handles that fail exactly as the stale event-plugin map does.
+//
+// The window double models @tauri-apps/api 2.11.1 faithfully, because the shape
+// of the handle is the entire bug:
+//
+//   - `listen()` resolves to `async () => _unlisten(event, eventId)`, a handle
+//     that RETURNS its rejecting promise, so a caller can contain it.
+//   - `onFocusChanged()` resolves to a SYNCHRONOUS composite
+//     `() => { unlistenFocus(); unlistenBlur(); }` which evaluates to
+//     `undefined` and drops both inner promises inside the framework closure.
+//
+// The previous version of this spec mocked `onFocusChanged` as
+// `async () => staleUnlisten()` — a handle that returns its own rejection.
+// That shape is containable by `safeUnlisten`, so the spec certified a fix that
+// production kept failing against. The composite is still offered here so this
+// spec goes red if a surface reaches for it again.
+//
+// Two harness details this spec depends on, both verified on vitest 4.1.9:
+//   - stale handles are plain async functions, never `vi.fn()`. Vitest's spy
+//     attaches its own continuation to record settled results, which marks a
+//     rejected promise as HANDLED — `process.on('unhandledRejection')` then
+//     never fires and the "leaks nothing" assertion passes vacuously.
+//   - a discarded rejection is reported within one macrotask, so teardown is
+//     drained with real timers before asserting.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -9,19 +32,34 @@ import { flushSync, mount, unmount } from 'svelte';
 const STALE_MAP_ERROR =
   "undefined is not an object (evaluating 'listeners[eventId].handlerId')";
 
+const WINDOW_FOCUS_EVENT = 'tauri://focus';
+const WINDOW_BLUR_EVENT = 'tauri://blur';
+
 type TeardownMode = 'async-reject' | 'sync-throw';
 
-const unlistenHandles: Array<ReturnType<typeof vi.fn>> = [];
+interface StaleHandle {
+  (): Promise<never> | never;
+  calls: number;
+}
+
+const unlistenHandles: StaleHandle[] = [];
+/** Event names the surface registered directly on the window instance. */
+const windowListenEvents: string[] = [];
+/** Set when a surface reaches for the discarding framework composite. */
+let compositeUsed = false;
 let teardownMode: TeardownMode = 'async-reject';
 
-function staleUnlisten(): ReturnType<typeof vi.fn> {
-  const unlisten = vi.fn(() => {
+/** A `listen()`-shaped handle: it hands its stale-map failure back to the caller. */
+function staleUnlisten(): StaleHandle {
+  const handle = (() => {
+    handle.calls += 1;
     const error = new TypeError(STALE_MAP_ERROR);
     if (teardownMode === 'sync-throw') throw error;
     return Promise.reject(error);
-  });
-  unlistenHandles.push(unlisten);
-  return unlisten;
+  }) as StaleHandle;
+  handle.calls = 0;
+  unlistenHandles.push(handle);
+  return handle;
 }
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -51,13 +89,27 @@ vi.mock('@tauri-apps/api/window', () => ({
     ) {}
   },
   getCurrentWindow: () => ({
-    onFocusChanged: async () => staleUnlisten(),
+    // The decomposed path the fix uses.
+    listen: async (event: string) => {
+      windowListenEvents.push(event);
+      return staleUnlisten();
+    },
+    // The framework composite: returns undefined, discards both inner promises.
+    onFocusChanged: async () => {
+      compositeUsed = true;
+      const focus = staleUnlisten();
+      const blur = staleUnlisten();
+      return () => {
+        focus();
+        blur();
+      };
+    },
     setSize: vi.fn(),
   }),
 }));
 
-// Compile Popover once during suite collection. Under full-suite parallel load,
-// this cold Svelte import can exceed the per-test timeout even though the
+// Compile the surfaces once during suite collection. Under full-suite parallel
+// load, a cold Svelte import can exceed the per-test timeout even though the
 // teardown churn itself takes only milliseconds.
 const { default: Popover } = await import('../../src/components/Popover.svelte');
 
@@ -68,8 +120,16 @@ let unhandled: unknown[] = [];
 let onUnhandledRejection: ((reason: unknown) => void) | null = null;
 let warn: ReturnType<typeof vi.spyOn> | null = null;
 
+/** Let registration promises settle, then let Node report any escaped rejection. */
+async function drain(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 beforeEach(() => {
   unlistenHandles.length = 0;
+  windowListenEvents.length = 0;
+  compositeUsed = false;
   teardownMode = 'async-reject';
   unhandled = [];
   onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
@@ -88,13 +148,16 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  if (onUnhandledRejection) {
-    process.off('unhandledRejection', onUnhandledRejection);
-    onUnhandledRejection = null;
-  }
   if (component) {
     await unmount(component);
     component = null;
+  }
+  // Drain before detaching the capture so a late rejection cannot bleed into
+  // the next test's assertions.
+  await drain();
+  if (onUnhandledRejection) {
+    process.off('unhandledRejection', onUnhandledRejection);
+    onUnhandledRejection = null;
   }
   host?.remove();
   host = null;
@@ -128,22 +191,46 @@ describe('HQ-DESKTOP-39: popover stale Tauri listener teardown', () => {
           },
         });
         flushSync();
-        await Promise.resolve();
-        await Promise.resolve();
+        // The focus subscription now awaits two registrations, so give the
+        // mount a real tick to finish wiring before tearing it down.
+        await drain();
 
         await unmount(component);
         component = null;
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await drain();
 
-      // Popover owns two listeners and its real NotificationFeed child owns
-      // additional native listeners. Every mounted handle must be released.
+      // Popover owns its focus pair plus a `popover:opened` listener, and its
+      // real NotificationFeed child owns further native listeners.
       expect(unlistenHandles.length).toBeGreaterThanOrEqual(6);
-      for (const unlisten of unlistenHandles) {
-        expect(unlisten).toHaveBeenCalledTimes(1);
+      for (const handle of unlistenHandles) {
+        expect(handle.calls).toBe(1);
       }
+      // The point of the fix: nothing escaped, and every failure was reported
+      // through the shared boundary rather than never having been produced.
       expect(unhandled).toEqual([]);
       expect(warn).toHaveBeenCalledTimes(unlistenHandles.length);
     },
   );
+
+  it('registers focus and blur separately instead of the discarding composite', async () => {
+    // Proves the containment above is structural rather than incidental: the
+    // popover never asks the framework for a handle it cannot contain.
+    component = mount(Popover, {
+      target: host!,
+      props: { syncState: 'idle', config: null, onsync: vi.fn() },
+    });
+    flushSync();
+    await drain();
+
+    expect(windowListenEvents).toContain(WINDOW_FOCUS_EVENT);
+    expect(windowListenEvents).toContain(WINDOW_BLUR_EVENT);
+    expect(compositeUsed).toBe(false);
+
+    await unmount(component);
+    component = null;
+    await drain();
+
+    expect(unhandled).toEqual([]);
+  });
 });

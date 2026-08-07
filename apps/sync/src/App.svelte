@@ -25,7 +25,7 @@
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
-  import { ListenerRegistry } from './lib/listener-registry';
+  import { ListenerRegistry, subscribeWindowFocus } from './lib/listener-registry';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import type { Channel } from './lib/channels';
   import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
@@ -1269,7 +1269,7 @@
     // sync — a brand-new company added between syncs would stay invisible
     // until the next sync click.
     unlisteners.push(
-      await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      await subscribeWindowFocus(getCurrentWindow(), ({ payload: focused }) => {
         if (focused) {
           // Refresh the open-set on every popover open (fire-and-forget):
           //  - workspaces, so a company added between syncs appears
