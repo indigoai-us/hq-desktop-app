@@ -3795,15 +3795,16 @@ mod windows_job_attachment_failure_tests {
         panic!("timed out after {DEADLINE:?} waiting for {what}");
     }
 
-    /// A root that spawns one real descendant and then blocks, so the fallback
-    /// has a genuine two-level tree to walk.
+    /// A root that spawns one real descendant and then blocks on it: `cmd /c`
+    /// runs `ping.exe` as a genuine child process, so the fallback has a real
+    /// tree to walk rather than a single process.
     fn nested_fixture() -> SpawnArgs {
         SpawnArgs {
             cmd: "cmd.exe".to_string(),
             args: vec![
                 "/d".to_string(),
                 "/c".to_string(),
-                "cmd.exe /d /c ping 127.0.0.1 -n 600 > nul".to_string(),
+                "ping 127.0.0.1 -n 600 > nul".to_string(),
             ],
             cwd: None,
             env: None,
@@ -4240,7 +4241,9 @@ mod cross_generation_escalation_tests {
             &handle,
             generation_b,
             SyncCancelCause::TimeoutWatchdog,
-            Duration::from_millis(50),
+            // Generous, so the SIGTERM this asserts on can never lose a race
+            // with its own escalation. The test does not wait for it.
+            Duration::from_secs(5),
         );
         assert!(attempt_b.executed);
         let (_, signal_b, record_b) = runner_b
