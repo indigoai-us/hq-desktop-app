@@ -38,6 +38,17 @@ const baseProbe = String.raw`
 /// CI-only red proof injected into the merge-base artifact. It drives the
 /// legacy Windows Job Object cancellation path and confirms that its code-1
 /// exit is still classified as a capture before this PR's new decision seam.
+///
+/// It also pins the two base defects this PR's new regressions guard, so each
+/// of those regressions has its own red half rather than riding on the
+/// classifier proof:
+///   1. With no Job Object attached, base's Windows cancellation arm performs
+///      no termination at all and still reports success — the child survives
+///      its own cancellation. The candidate's pid-tree fallback is therefore
+///      genuinely new behaviour that needs its own gate.
+///   2. Base teardown is keyed on the public handle alone, with no ownership
+///      token, so a stale owner — exactly what a delayed escalation thread is —
+///      evicts a replacement that has since acquired the same handle.
 pub fn run_sync_cancel_base_probe() -> Result<serde_json::Value, String> {
     let handle = format!("sync-cancel-base-probe-{}", Uuid::new_v4());
     pre_register_handle(&handle);
@@ -76,7 +87,50 @@ pub fn run_sync_cancel_base_probe() -> Result<serde_json::Value, String> {
     } else {
         "suppress"
     };
-    Ok(serde_json::json!({ "exit_code": exit_code, "decision": decision }))
+
+    // Base defect 1: an unattached Job Object leaves cancellation with nothing
+    // to terminate, and it still reports success to its caller.
+    let unattached_handle = format!("sync-cancel-base-nojob-{}", Uuid::new_v4());
+    let mut unattached = Command::new("cmd.exe")
+        .args(["/d", "/c", "ping 127.0.0.1 -n 30 > nul"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("base probe could not spawn the unattached fixture: {error}"))?;
+    register_process(&unattached_handle, unattached.id());
+    let unattached_cancel_reported = cancel_process_impl(&unattached_handle, Duration::ZERO);
+    // Proving an absence needs a settle window; it is bounded and fixed.
+    thread::sleep(Duration::from_millis(2000));
+    let unattached_terminated = unattached
+        .try_wait()
+        .map_err(|error| format!("base probe could not probe the unattached fixture: {error}"))?
+        .is_some();
+    let _ = unattached.kill();
+    let _ = unattached.wait();
+    deregister_process(&unattached_handle);
+
+    // Base defect 2: teardown carries only the public handle, so a stale owner
+    // removes whichever registration currently holds that handle.
+    let shared_handle = format!("sync-cancel-base-generation-{}", Uuid::new_v4());
+    if !try_register_handle(&shared_handle) {
+        return Err("base probe could not acquire its first handle owner".to_string());
+    }
+    deregister_process(&shared_handle);
+    if !try_register_handle(&shared_handle) {
+        return Err("base probe replacement could not acquire the handle".to_string());
+    }
+    deregister_process(&shared_handle);
+    let replacement_evicted = !is_registered(&shared_handle);
+    deregister_process(&shared_handle);
+
+    Ok(serde_json::json!({
+        "exit_code": exit_code,
+        "decision": decision,
+        "unattached_cancel_reported": unattached_cancel_reported,
+        "unattached_terminated": unattached_terminated,
+        "replacement_evicted": replacement_evicted,
+    }))
 }
 `;
 
@@ -143,8 +197,19 @@ try {
   });
   const raw = output.trim().split(/\r?\n/).at(-1);
   const probe = JSON.parse(raw);
-  if (probe.exit_code !== 1 || probe.decision !== "capture") {
-    throw new Error(`unexpected base sync-cancel probe result: ${raw}`);
+  // Each expectation below is the DEFECT at base. Every one of them must flip
+  // on the candidate, proving the new regressions gate genuinely new behaviour.
+  const baseDefects = [
+    ["the reported code-1 exit is still captured", probe.exit_code === 1 && probe.decision === "capture"],
+    ["an unattached cancellation still reports success", probe.unattached_cancel_reported === true],
+    ["an unattached cancellation terminates nothing", probe.unattached_terminated === false],
+    ["a stale handle owner evicts its replacement", probe.replacement_evicted === true],
+  ];
+  const missing = baseDefects.filter(([, held]) => !held).map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `base sync-cancel probe did not reproduce: ${missing.join("; ")} — raw result: ${raw}`,
+    );
   }
   process.stdout.write(`${JSON.stringify({ ...probe, base: mergeBase })}\n`);
 } finally {

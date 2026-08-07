@@ -581,12 +581,70 @@ enum JobAssignment {
     AssignFailed,
 }
 
+/// Forces the Job Object attachment outcome for one exact handle so Windows CI
+/// can drive a real child through the pid-tree fallback that a failing
+/// `CreateJobObjectW` / `AssignProcessToJobObject` selects in production. It
+/// forces only the attachment result: the termination that follows is the
+/// unmodified production path, so a test asserting that a real child and its
+/// real descendants disappeared is asserting production behaviour. Keyed by
+/// handle rather than thread so a runner spawned on a worker thread is covered.
+/// Test-only — it cannot exist in a shipped binary.
+#[cfg(all(test, target_os = "windows"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestJobAssignmentOutcome {
+    CreateFailed,
+    AssignFailed,
+}
+
+#[cfg(all(test, target_os = "windows"))]
+static TEST_JOB_ASSIGNMENTS: OnceLock<Mutex<HashMap<String, TestJobAssignmentOutcome>>> =
+    OnceLock::new();
+
+#[cfg(all(test, target_os = "windows"))]
+fn test_job_assignments() -> &'static Mutex<HashMap<String, TestJobAssignmentOutcome>> {
+    TEST_JOB_ASSIGNMENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+fn force_test_job_assignment(handle: &str, outcome: TestJobAssignmentOutcome) {
+    test_job_assignments()
+        .lock()
+        .unwrap()
+        .insert(handle.to_string(), outcome);
+}
+
+#[cfg(all(test, target_os = "windows"))]
+fn clear_test_job_assignment(handle: &str) {
+    test_job_assignments().lock().unwrap().remove(handle);
+}
+
+#[cfg(all(test, target_os = "windows"))]
+fn take_test_job_assignment(handle: &str) -> Option<TestJobAssignmentOutcome> {
+    test_job_assignments().lock().unwrap().get(handle).copied()
+}
+
 #[cfg(target_os = "windows")]
 fn assign_child_to_job(
     handle: &str,
     generation: u64,
     child: &std::process::Child,
 ) -> (Option<isize>, JobAssignment) {
+    #[cfg(test)]
+    if let Some(forced) = take_test_job_assignment(handle) {
+        log(
+            "process",
+            &format!(
+                "injected Job Object attachment failure ({forced:?}) for {handle} generation {generation}"
+            ),
+        );
+        return (
+            None,
+            match forced {
+                TestJobAssignmentOutcome::CreateFailed => JobAssignment::CreateFailed,
+                TestJobAssignmentOutcome::AssignFailed => JobAssignment::AssignFailed,
+            },
+        );
+    }
     let proc_handle = HANDLE(child.as_raw_handle());
     unsafe {
         match create_kill_on_close_job() {
@@ -1781,18 +1839,158 @@ where
     termination_effected
 }
 
+/// Which branch a scheduled escalation actually took, published per exact
+/// `(handle, generation)`. Escalation runs on its own thread after a delay, so
+/// without this a cross-generation test could only guess at ordering; with it a
+/// test blocks on the real outcome under a hard deadline. Test-only.
+#[cfg(all(test, unix))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestEscalationOutcome {
+    /// Read its own ownership and stopped — it never signalled anything.
+    NotCancelled,
+    NoPid,
+    PublicationLost,
+    Signalled {
+        effected: bool,
+    },
+}
+
+#[cfg(all(test, unix))]
+#[derive(Default)]
+struct TestEscalationState {
+    gates: HashSet<(String, u64)>,
+    outcomes: HashMap<(String, u64), TestEscalationOutcome>,
+}
+
+#[cfg(all(test, unix))]
+static TEST_ESCALATIONS: OnceLock<Arc<(Mutex<TestEscalationState>, Condvar)>> = OnceLock::new();
+
+#[cfg(all(test, unix))]
+fn test_escalations() -> &'static Arc<(Mutex<TestEscalationState>, Condvar)> {
+    TEST_ESCALATIONS
+        .get_or_init(|| Arc::new((Mutex::new(TestEscalationState::default()), Condvar::new())))
+}
+
+/// Hold one exact generation's escalation before it reads ownership, so a test
+/// can establish the replacement interleaving instead of racing it.
+#[cfg(all(test, unix))]
+fn arm_test_escalation_gate(handle: &str, generation: u64) {
+    let (state, _) = &**test_escalations();
+    state
+        .lock()
+        .unwrap()
+        .gates
+        .insert((handle.to_string(), generation));
+}
+
+#[cfg(all(test, unix))]
+fn release_test_escalation_gate(handle: &str, generation: u64) {
+    let (state, changed) = &**test_escalations();
+    state
+        .lock()
+        .unwrap()
+        .gates
+        .remove(&(handle.to_string(), generation));
+    changed.notify_all();
+}
+
+#[cfg(all(test, unix))]
+fn await_test_escalation_gate(handle: &str, generation: u64) {
+    let key = (handle.to_string(), generation);
+    let (state, changed) = &**test_escalations();
+    let mut guard = state.lock().unwrap();
+    let start = std::time::Instant::now();
+    while guard.gates.contains(&key) {
+        // Bounded on purpose: a test that never releases must fail through its
+        // own deadline rather than wedge a worker thread forever.
+        let Some(remaining) = TEST_ESCALATION_GATE_TIMEOUT.checked_sub(start.elapsed()) else {
+            break;
+        };
+        let (next, timeout) = changed
+            .wait_timeout(guard, remaining)
+            .expect("escalation gate mutex");
+        guard = next;
+        if timeout.timed_out() {
+            break;
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+const TEST_ESCALATION_GATE_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[cfg(all(test, unix))]
+fn record_test_escalation_outcome(handle: &str, generation: u64, outcome: TestEscalationOutcome) {
+    let (state, changed) = &**test_escalations();
+    state
+        .lock()
+        .unwrap()
+        .outcomes
+        .insert((handle.to_string(), generation), outcome);
+    changed.notify_all();
+}
+
+#[cfg(all(test, unix))]
+fn await_test_escalation_outcome(
+    handle: &str,
+    generation: u64,
+    deadline: Duration,
+) -> Option<TestEscalationOutcome> {
+    let key = (handle.to_string(), generation);
+    let (state, changed) = &**test_escalations();
+    let mut guard = state.lock().unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(outcome) = guard.outcomes.get(&key).copied() {
+            return Some(outcome);
+        }
+        let remaining = deadline.checked_sub(start.elapsed())?;
+        if remaining.is_zero() {
+            return None;
+        }
+        let (next, _) = changed
+            .wait_timeout(guard, remaining)
+            .expect("escalation outcome mutex");
+        guard = next;
+    }
+}
+
+#[cfg(all(test, unix))]
+fn clear_test_escalation(handle: &str, generation: u64) {
+    let (state, changed) = &**test_escalations();
+    let mut guard = state.lock().unwrap();
+    guard.gates.remove(&(handle.to_string(), generation));
+    guard.outcomes.remove(&(handle.to_string(), generation));
+    drop(guard);
+    changed.notify_all();
+}
+
 #[cfg(unix)]
 fn schedule_sigkill_escalation(handle: String, generation: u64, sigkill_delay: Duration) {
     thread::spawn(move || {
         thread::sleep(sigkill_delay);
+        // Test-only ordering barrier. It cannot exist in a shipped binary and
+        // never changes which branch production takes below; it only lets a
+        // test establish a replacement generation first and then observe the
+        // real decision this escalation makes about its own generation.
+        #[cfg(test)]
+        await_test_escalation_gate(&handle, generation);
         if !cancellation_requested_for_generation(&handle, generation) {
+            #[cfg(test)]
+            record_test_escalation_outcome(
+                &handle,
+                generation,
+                TestEscalationOutcome::NotCancelled,
+            );
             return;
         }
         let Some(pid) = pid_for_generation(&handle, generation) else {
+            #[cfg(test)]
+            record_test_escalation_outcome(&handle, generation, TestEscalationOutcome::NoPid);
             return;
         };
         if begin_effect_publication_if_record(&handle, generation) {
-            let _ = terminate_claimed_target_with(
+            let _effected = terminate_claimed_target_with(
                 &handle,
                 generation,
                 ProcessTerminationTarget::for_pid(pid),
@@ -1802,6 +2000,21 @@ fn schedule_sigkill_escalation(handle: String, generation: u64, sigkill_delay: D
                         signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL).is_ok()
                     })
                 },
+            );
+            #[cfg(test)]
+            record_test_escalation_outcome(
+                &handle,
+                generation,
+                TestEscalationOutcome::Signalled {
+                    effected: _effected,
+                },
+            );
+        } else {
+            #[cfg(test)]
+            record_test_escalation_outcome(
+                &handle,
+                generation,
+                TestEscalationOutcome::PublicationLost,
             );
         }
     });
@@ -2561,6 +2774,362 @@ mod windows_spawn_tests {
     }
 }
 
+/// Windows Job Object attachment can fail (`CreateJobObjectW` or
+/// `AssignProcessToJobObject`), and the base app then cancelled nothing at all
+/// while still reporting success. These regressions force each failure mode and
+/// require the production pid-tree fallback to terminate a real child and its
+/// real descendants, to leave everything outside that tree alone, and to keep an
+/// ineffective termination alertable.
+#[cfg(all(test, target_os = "windows"))]
+mod windows_job_attachment_failure_tests {
+    use super::*;
+    use hq_desktop_core::sync_outcome::{
+        classify_runner_exit_disposition_with_cancellation, RunnerExitDisposition,
+    };
+
+    /// Poll an observable condition under a hard deadline. Returns false on
+    /// expiry so the caller fails with its own message instead of hanging.
+    fn wait_until(deadline: Duration, mut ready: impl FnMut() -> bool) -> bool {
+        let start = std::time::Instant::now();
+        loop {
+            if ready() {
+                return true;
+            }
+            if start.elapsed() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Live-process probe over the same Toolhelp snapshot the production
+    /// descendant walk uses. A terminated process leaves that snapshot, so this
+    /// observes real disappearance rather than an injected boolean.
+    fn pid_alive(pid: u32) -> bool {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
+            .expect("process snapshot for the liveness probe");
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut next = unsafe { Process32FirstW(snapshot, &mut entry) };
+        let mut found = false;
+        while next.is_ok() {
+            if entry.th32ProcessID == pid {
+                found = true;
+                break;
+            }
+            entry = PROCESSENTRY32W::default();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            next = unsafe { Process32NextW(snapshot, &mut entry) };
+        }
+        unsafe {
+            let _ = CloseHandle(snapshot);
+        }
+        found
+    }
+
+    fn spawn_detached(cmd: &str, args: &[String]) -> std::process::Child {
+        let mut command = build_spawn_command(cmd, args);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command.spawn().expect("spawn Windows fixture process")
+    }
+
+    fn long_lived_ping() -> Vec<String> {
+        vec![
+            "/d".to_string(),
+            "/c".to_string(),
+            "ping 127.0.0.1 -n 60 > nul".to_string(),
+        ]
+    }
+
+    /// A root `cmd.exe` that spawns its own descendants, so the pid-tree walk
+    /// has a real multi-level tree to enumerate rather than a single process.
+    fn spawn_tree_root(dir: &std::path::Path) -> std::process::Child {
+        let script = dir.join("descendant-tree.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\ncmd.exe /d /c ping 127.0.0.1 -n 60 > nul\r\n",
+        )
+        .expect("write descendant fixture");
+        spawn_detached(
+            "cmd.exe",
+            &[
+                "/d".to_string(),
+                "/c".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+        )
+    }
+
+    fn assert_attachment_failure_terminates_real_tree(
+        label: &str,
+        forced: TestJobAssignmentOutcome,
+        expected: JobAssignment,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let handle = format!("{label}-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register test generation");
+        force_test_job_assignment(&handle, forced);
+
+        // Never registered and outside the tree under test: the fallback must
+        // not widen past the pid tree it was handed.
+        let mut outsider = spawn_detached("cmd.exe", &long_lived_ping());
+        let outsider_pid = outsider.id();
+
+        let mut child = spawn_tree_root(tmp.path());
+        let root_pid = child.id();
+        let (target, assignment) = prepare_termination_target(&handle, generation, &child);
+        assert_eq!(
+            assignment, expected,
+            "the seam must force exactly the production attachment failure under test"
+        );
+        assert!(matches!(
+            attach_prepared_process(&handle, Some(generation), target, false),
+            ProcessAttachOutcome::Attached {
+                generation: attached
+            } if attached == generation
+        ));
+
+        assert!(
+            wait_until(Duration::from_secs(30), || !windows_descendants(root_pid)
+                .is_empty()),
+            "the fixture root must actually spawn a descendant to terminate"
+        );
+        let descendants = windows_descendants(root_pid);
+        assert!(
+            !descendants.is_empty(),
+            "descendant snapshot must be stable"
+        );
+        assert!(
+            pid_alive(outsider_pid),
+            "the outsider must be running before cancellation"
+        );
+
+        let attempt = cancel_process_for_generation(
+            &handle,
+            generation,
+            SyncCancelCause::TimeoutWatchdog,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            attempt,
+            CancellationAttempt {
+                executed: true,
+                termination_effected: true,
+            },
+            "a real pid-tree fallback termination is an observed effective stop"
+        );
+
+        let status = child.wait().expect("reap the terminated fixture root");
+        assert_eq!(
+            (status.code(), status.success()),
+            (Some(1), false),
+            "the app's own Windows termination has the exact code-1/no-signal shape HQ-DESKTOP-48 reports"
+        );
+        for pid in &descendants {
+            assert!(
+                wait_until(Duration::from_secs(30), || !pid_alive(*pid)),
+                "descendant {pid} must be terminated by the production pid-tree fallback"
+            );
+        }
+        assert!(
+            pid_alive(outsider_pid),
+            "the fallback must never terminate a process outside the registered pid tree"
+        );
+
+        assert_eq!(
+            cancellation_record_for_generation(&handle, generation),
+            Some(CancellationRecord {
+                cause: Some(SyncCancelCause::TimeoutWatchdog),
+                termination_effected: true,
+            })
+        );
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                status.code(),
+                None,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::TimeoutWatchdog),
+            "an observed app termination of this exact generation is not a runner fault"
+        );
+
+        let _ = outsider.kill();
+        let _ = outsider.wait();
+        let _ = deregister_generation(&handle, generation);
+        clear_cancellation_record(&handle, generation);
+        clear_test_job_assignment(&handle);
+    }
+
+    #[test]
+    fn windows_job_create_failure_terminates_the_real_child_tree_and_spares_outsiders() {
+        assert_attachment_failure_terminates_real_tree(
+            "windows-job-create-failed",
+            TestJobAssignmentOutcome::CreateFailed,
+            JobAssignment::CreateFailed,
+        );
+    }
+
+    #[test]
+    fn windows_job_assign_failure_terminates_the_real_child_tree_and_spares_outsiders() {
+        assert_attachment_failure_terminates_real_tree(
+            "windows-job-assign-failed",
+            TestJobAssignmentOutcome::AssignFailed,
+            JobAssignment::AssignFailed,
+        );
+    }
+
+    #[test]
+    fn windows_attachment_failure_with_ineffective_root_termination_stays_alertable() {
+        let handle = format!("windows-attach-failure-ineffective-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register test generation");
+        force_test_job_assignment(&handle, TestJobAssignmentOutcome::CreateFailed);
+
+        let mut child = spawn_detached("cmd.exe", &long_lived_ping());
+        let (target, assignment) = prepare_termination_target(&handle, generation, &child);
+        assert_eq!(assignment, JobAssignment::CreateFailed);
+        assert!(matches!(
+            attach_prepared_process(&handle, Some(generation), target, false),
+            ProcessAttachOutcome::Attached {
+                generation: attached
+            } if attached == generation
+        ));
+
+        // The fallback runs, but its root termination fails. An unobserved stop
+        // must never be published as an effective one.
+        set_test_windows_termination_results(vec![TestWindowsTerminationResult::OpenProcess(
+            false,
+        )]);
+        let attempt = cancel_process_for_generation(
+            &handle,
+            generation,
+            SyncCancelCause::UserStop,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            attempt,
+            CancellationAttempt {
+                executed: true,
+                termination_effected: false,
+            }
+        );
+        assert_eq!(
+            cancellation_record_for_generation(&handle, generation),
+            Some(CancellationRecord {
+                cause: Some(SyncCancelCause::UserStop),
+                termination_effected: false,
+            })
+        );
+        assert_eq!(
+            child.try_wait().expect("probe the surviving fixture child"),
+            None,
+            "an ineffective cancellation must leave the child running"
+        );
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::UserStop),
+                false,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+            "without an observed effective termination the exit must stay alertable"
+        );
+
+        set_test_windows_termination_results(Vec::new());
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = deregister_generation(&handle, generation);
+        clear_cancellation_record(&handle, generation);
+        clear_test_job_assignment(&handle);
+    }
+
+    #[test]
+    fn windows_attachment_failure_runs_the_production_runner_to_a_cancelled_code_one_exit() {
+        let handle = format!("windows-attach-failure-runner-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("register test generation");
+        force_test_job_assignment(&handle, TestJobAssignmentOutcome::AssignFailed);
+
+        let spawn = SpawnArgs {
+            cmd: "cmd.exe".to_string(),
+            args: long_lived_ping(),
+            cwd: None,
+            env: None,
+        };
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let runner_handle = handle.clone();
+        let runner = thread::spawn(move || {
+            let mut terminal = None;
+            let outcome = run_process_impl(&runner_handle, &spawn, |event| {
+                if let ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } = event
+                {
+                    terminal = Some((
+                        code,
+                        signal,
+                        success,
+                        cancellation_record_for_generation(&runner_handle, generation),
+                    ));
+                }
+            });
+            let _ = finished_tx.send((outcome.is_ok(), terminal));
+        });
+
+        assert!(
+            wait_until(Duration::from_secs(30), || lookup_pid(&handle).is_some()),
+            "the production runner must attach its child pid"
+        );
+        let attempt = cancel_process_for_generation(
+            &handle,
+            generation,
+            SyncCancelCause::TimeoutWatchdog,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            attempt,
+            CancellationAttempt {
+                executed: true,
+                termination_effected: true,
+            }
+        );
+
+        let (ran, terminal) = finished_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the production runner must finish within its deadline");
+        runner.join().expect("runner thread must not panic");
+        assert!(
+            ran,
+            "the production runner must complete without a process error"
+        );
+        assert_eq!(
+            terminal,
+            Some((
+                Some(1),
+                None,
+                false,
+                Some(CancellationRecord {
+                    cause: Some(SyncCancelCause::TimeoutWatchdog),
+                    termination_effected: true,
+                }),
+            )),
+            "an unattached Job Object must still yield a suppressible app cancellation"
+        );
+        clear_test_job_assignment(&handle);
+    }
+}
+
 #[cfg(test)]
 mod registry_exit_order_tests {
     use super::*;
@@ -3237,5 +3806,236 @@ mod exit_teardown_tests {
     fn terminate_pids_for_exit_is_noop_when_empty() {
         // Must not sleep the grace period or panic when nothing is registered.
         terminate_pids_for_exit(&[], Duration::from_secs(30));
+    }
+}
+
+/// A cancelled run's SIGKILL escalation fires on its own thread after a delay,
+/// by which time the public handle may already belong to a replacement run. The
+/// base app gated that escalation on the handle alone and then deregistered by
+/// handle, so a stale escalation could signal and evict its successor. These
+/// regressions drive real children through the production escalation with the
+/// interleaving established rather than raced.
+#[cfg(all(test, unix))]
+mod cross_generation_escalation_tests {
+    use super::*;
+    use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+    use std::process::Command as StdCommand;
+
+    const SIGTERM_STATUS: i32 = 15;
+    const SIGKILL_STATUS: i32 = 9;
+
+    /// Probe existence without delivering a signal. True while the pid is live
+    /// OR an unreaped zombie, so callers reap before asserting absence.
+    fn alive(pid: u32) -> bool {
+        signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    fn wait_until(deadline: Duration, mut ready: impl FnMut() -> bool) -> bool {
+        let start = std::time::Instant::now();
+        loop {
+            if ready() {
+                return true;
+            }
+            if start.elapsed() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    enum SigtermPolicy {
+        /// Dies on the cancellation's own SIGTERM.
+        Obey,
+        /// Survives SIGTERM, so only the escalation can end it.
+        Ignore,
+    }
+
+    /// Spawn a real process-group leader and attach it through the production
+    /// path, exactly as `run_process_impl` does for a sync runner.
+    fn spawn_attached_generation(
+        handle: &str,
+        generation: u64,
+        policy: SigtermPolicy,
+        ready_marker: &std::path::Path,
+    ) -> std::process::Child {
+        let marker = ready_marker.display();
+        let script = match policy {
+            SigtermPolicy::Obey => format!(": > '{marker}'; exec sleep 30"),
+            // Readiness is published only after the trap is installed, so the
+            // cancellation below can never race the handler into place.
+            SigtermPolicy::Ignore => {
+                format!("trap '' TERM; : > '{marker}'; while :; do sleep 1; done")
+            }
+        };
+        let child = StdCommand::new("sh")
+            .arg("-c")
+            .arg(script)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn real generation child");
+        let (target, _) = prepare_termination_target(handle, generation, &child);
+        assert!(matches!(
+            attach_prepared_process(handle, Some(generation), target, false),
+            ProcessAttachOutcome::Attached {
+                generation: attached
+            } if attached == generation
+        ));
+        assert!(
+            wait_until(Duration::from_secs(30), || ready_marker.exists()),
+            "the fixture child must publish readiness before it is cancelled"
+        );
+        child
+    }
+
+    #[test]
+    fn stale_escalation_cannot_signal_or_deregister_a_handle_replacement() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let handle = format!("cross-generation-escalation-{}", Uuid::new_v4());
+
+        let first = try_register_handle_gen(&handle).expect("generation A acquires the handle");
+        let mut child_a = spawn_attached_generation(
+            &handle,
+            first,
+            SigtermPolicy::Obey,
+            &tmp.path().join("ready-a"),
+        );
+        let pid_a = child_a.id();
+
+        // Hold A's escalation before it reads ownership, so the replacement is
+        // established first and the interleaving is proven, never raced.
+        arm_test_escalation_gate(&handle, first);
+        let attempt = cancel_process_for_generation(
+            &handle,
+            first,
+            SyncCancelCause::UserStop,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            attempt,
+            CancellationAttempt {
+                executed: true,
+                termination_effected: true,
+            }
+        );
+
+        // A really ends on its own SIGTERM, is reaped, and releases the handle.
+        let status_a = child_a.wait().expect("reap generation A");
+        assert_eq!(status_a.signal(), Some(SIGTERM_STATUS));
+        assert!(deregister_generation(&handle, first));
+
+        let second =
+            try_register_handle_gen(&handle).expect("generation B acquires the same public handle");
+        assert_ne!(second, first);
+        let mut child_b = spawn_attached_generation(
+            &handle,
+            second,
+            SigtermPolicy::Obey,
+            &tmp.path().join("ready-b"),
+        );
+        let pid_b = child_b.id();
+        assert_ne!(pid_b, pid_a);
+
+        release_test_escalation_gate(&handle, first);
+        assert_eq!(
+            await_test_escalation_outcome(&handle, first, Duration::from_secs(60)),
+            Some(TestEscalationOutcome::NotCancelled),
+            "generation A's escalation must read its own ownership and stop without signalling"
+        );
+
+        // B is untouched: still the registered owner, uncancelled, unsignalled.
+        assert_eq!(generation_for_handle(&handle), Some(second));
+        assert!(!is_cancelled_for_generation(&handle, second));
+        assert_eq!(cancellation_record_for_generation(&handle, second), None);
+        assert_eq!(lookup_pid(&handle), Some(pid_b));
+        assert_eq!(
+            child_b.try_wait().expect("probe generation B"),
+            None,
+            "a stale escalation must never signal the replacement's process group"
+        );
+        assert!(alive(pid_b));
+
+        // A's own evidence survives untouched and is never credited to B.
+        assert_eq!(
+            cancellation_record_for_generation(&handle, first),
+            Some(CancellationRecord {
+                cause: Some(SyncCancelCause::UserStop),
+                termination_effected: true,
+            })
+        );
+
+        // Tear B down normally and prove the handle, the registry entry, and
+        // both cancellation records are fully released.
+        let _ = child_b.kill();
+        let _ = child_b.wait();
+        assert!(deregister_generation(&handle, second));
+        clear_cancellation_record(&handle, first);
+        clear_test_escalation(&handle, first);
+        assert_eq!(generation_for_handle(&handle), None);
+        assert_eq!(cancellation_record_for_generation(&handle, first), None);
+
+        let third =
+            try_register_handle_gen(&handle).expect("a clean generation reuses the freed handle");
+        assert_ne!(third, second);
+        assert!(deregister_generation(&handle, third));
+        assert_eq!(generation_for_handle(&handle), None);
+    }
+
+    #[test]
+    fn escalation_still_sigkills_the_generation_it_actually_owns() {
+        // Without this control the guard above could pass simply because the
+        // escalation never works at all.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let handle = format!("owned-generation-escalation-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("generation acquires the handle");
+        let mut child = spawn_attached_generation(
+            &handle,
+            generation,
+            SigtermPolicy::Ignore,
+            &tmp.path().join("ready"),
+        );
+        let pid = child.id();
+
+        arm_test_escalation_gate(&handle, generation);
+        let attempt = cancel_process_for_generation(
+            &handle,
+            generation,
+            SyncCancelCause::AppQuit,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            attempt,
+            CancellationAttempt {
+                executed: true,
+                termination_effected: true,
+            }
+        );
+        assert_eq!(
+            child.try_wait().expect("probe the SIGTERM-immune child"),
+            None,
+            "the fixture must survive SIGTERM so only the escalation can end it"
+        );
+
+        release_test_escalation_gate(&handle, generation);
+        assert_eq!(
+            await_test_escalation_outcome(&handle, generation, Duration::from_secs(60)),
+            Some(TestEscalationOutcome::Signalled { effected: true }),
+            "an escalation that still owns its generation must signal it"
+        );
+
+        let status = child.wait().expect("reap the escalated child");
+        assert_eq!(status.signal(), Some(SIGKILL_STATUS));
+        assert!(wait_until(Duration::from_secs(30), || !alive(pid)));
+
+        assert!(deregister_generation(&handle, generation));
+        clear_cancellation_record(&handle, generation);
+        clear_test_escalation(&handle, generation);
+        assert_eq!(generation_for_handle(&handle), None);
+        assert_eq!(
+            cancellation_record_for_generation(&handle, generation),
+            None
+        );
     }
 }

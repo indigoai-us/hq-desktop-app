@@ -81,8 +81,20 @@ jobs:
         run: cargo check --target x86_64-pc-windows-msvc
 
       - name: Windows tests
+        timeout-minutes: 30
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins
+
+      # These regressions force each Job Object attachment failure and then let
+      # the real production pid-tree fallback run: they assert that a real child
+      # and its real descendants disappeared, that nothing outside that tree was
+      # touched, and that a failed root termination stays alertable. They get
+      # their own bounded step so the proof is a named gate rather than a line
+      # buried in the full run.
+      - name: Windows Job attachment failure regressions
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests -- --nocapture
 
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync
