@@ -39,13 +39,14 @@ use hq_desktop_core::toolchain::ManagedRuntime;
 
 /// The literal Sentry title from issue HQ-DESKTOP-49, event
 /// `5bdc25c9de1742ac823cbb564093fc97`.
+///
+/// Unix-only because the reported event came from macOS, where errno 2 renders
+/// as "No such file or directory". Windows renders the same `ErrorKind` as
+/// "The system cannot find the file specified.", so this exact byte string is
+/// not the message a Windows build would compose. What is pinned on *every*
+/// platform is the composition — see `expected_title`.
+#[cfg(unix)]
 const REPORTED_TITLE: &str = "[provision-cli] spawn `hq` failed: \
-     npx:@indigoai-us/hq-cli@^5.10.0: No such file or directory (os error 2)";
-
-/// The same failure as the caller sees it. `report_provision_error` adds the
-/// `[provision-cli]` prefix on the way into Sentry, so the error's own
-/// `Display` is the title minus that prefix.
-const REPORTED_ERROR_DISPLAY: &str = "spawn `hq` failed: \
      npx:@indigoai-us/hq-cli@^5.10.0: No such file or directory (os error 2)";
 
 fn enoent() -> Error {
@@ -53,6 +54,27 @@ fn enoent() -> Error {
     // rendering — the same string the reported event carried, not a literal we
     // typed to match it.
     Error::from_raw_os_error(2)
+}
+
+/// The Sentry title this code composes on the current platform, built the same
+/// way production builds it (`report_provision_error` prefixes
+/// `[provision-cli] `; `finish_spawn_failure` joins the sentry label and the
+/// io error). Asserting against this still catches a changed prefix, a changed
+/// invocation label, a changed package range, or a lost error cause — it just
+/// does not hardcode one platform's errno wording.
+fn expected_title() -> String {
+    format!("[provision-cli] {}", expected_error_display())
+}
+
+/// The same failure as the caller sees it. `report_provision_error` adds the
+/// `[provision-cli]` prefix on the way into Sentry, so the error's own
+/// `Display` is the title minus that prefix.
+fn expected_error_display() -> String {
+    format!(
+        "spawn `hq` failed: {}: {}",
+        HqInvocation::Npx.sentry_label(),
+        enoent()
+    )
 }
 
 fn captured(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
@@ -102,15 +124,14 @@ fn the_reported_title_is_still_what_this_code_would_compose() {
         HqInvocation::Npx.sentry_label(),
         "npx:@indigoai-us/hq-cli@^5.10.0"
     );
-    assert_eq!(
-        format!(
-            "[provision-cli] spawn `hq` failed: {}: {}",
-            HqInvocation::Npx.sentry_label(),
-            enoent()
-        ),
-        REPORTED_TITLE,
-    );
-    assert_eq!(REPORTED_TITLE, format!("[provision-cli] {REPORTED_ERROR_DISPLAY}"));
+    assert!(expected_title().starts_with(
+        "[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: "
+    ));
+    assert!(expected_title().ends_with("(os error 2)"));
+
+    // On the platform the event actually came from, pin it byte-for-byte.
+    #[cfg(unix)]
+    assert_eq!(expected_title(), REPORTED_TITLE);
 }
 
 /// THE regression: the reported machine can no longer produce the reported
@@ -125,7 +146,7 @@ fn a_proven_missing_node_runtime_emits_no_envelope_at_all() {
          it must not page anyone; got: {:?}",
         events.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
     );
-    assert_ne!(message, REPORTED_ERROR_DISPLAY);
+    assert_ne!(message, expected_error_display());
     assert_eq!(
         message,
         "local environment failure (node-missing): \
@@ -225,8 +246,8 @@ fn every_unproven_runtime_state_still_captures_exactly_one_error() {
         assert_eq!(events.len(), 1, "{why}");
         let event = &events[0];
         assert_eq!(event.level, sentry::Level::Error, "{why}");
-        assert_eq!(event.message.as_deref(), Some(REPORTED_TITLE), "{why}");
-        assert_eq!(message, REPORTED_ERROR_DISPLAY, "{why}");
+        assert_eq!(event.message.as_deref(), Some(expected_title().as_str()), "{why}");
+        assert_eq!(message, expected_error_display(), "{why}");
         assert_eq!(event.tags["provision_kind"], "spawn", "{why}");
         assert_eq!(event.tags["cli_invocation"], "npx", "{why}");
         assert_eq!(event.tags["exit_code"], "signal/none", "{why}");
