@@ -110,8 +110,27 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
 
+      # The bulk-delete refusal gate persists its per-root cooldown anchor with
+      # `fs::write` of a temp file plus `fs::rename` over an existing
+      # destination inside the `.git` directory. Rename-over-existing is the one
+      # genuinely platform-sensitive operation in this module, and `cargo check`
+      # never builds `#[cfg(test)]` code — so without this step the persistence
+      # path ships to the Windows fleet (which produced the tightest observed
+      # refusal flood) having never been executed on the msvc target.
+      - name: Git mirror tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml git_mirror::tests
+
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
+
+      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
+      # the WebView2 runtime the app embeds; when they drift by a major version
+      # session creation fails ("only supports Microsoft Edge version N").
+      # Install a driver matched to the runtime and shadow the preinstalled one.
+      - name: Install msedgedriver matching the WebView2 runtime
+        shell: pwsh
+        run: scripts/ensure-msedgedriver.ps1
 
       # `--features e2e-automation` compiles in the WebView2 automation bridge
       # (src-tauri/src/util/webview2_automation.rs) that forwards msedgedriver's
@@ -198,6 +217,14 @@ jobs:
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
+
+      # The runner's preinstalled Edge WebDriver tracks the Edge browser, not
+      # the WebView2 runtime the app embeds; when they drift by a major version
+      # session creation fails ("only supports Microsoft Edge version N").
+      # Install a driver matched to the runtime and shadow the preinstalled one.
+      - name: Install msedgedriver matching the WebView2 runtime
+        shell: pwsh
+        run: scripts/ensure-msedgedriver.ps1
 
       # Same flag as the windows-check job: `e2e-automation` is what lets
       # msedgedriver attach, and it is never on in a shipped build. The honest

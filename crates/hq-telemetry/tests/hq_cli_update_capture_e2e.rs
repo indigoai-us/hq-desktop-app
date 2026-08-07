@@ -117,9 +117,23 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
     assert_eq!(events.len(), 1);
     let event = &events[0];
     assert_eq!(event.level, sentry::Level::Error);
+    // The title carries the bounded grouping signature, not npm's exit status.
     assert_eq!(
         event.message.as_deref(),
-        Some("[hq-cli-update] install failed (exit 1)")
+        Some("[hq-cli-update] install failed (EACCES:mkdir:other)")
+    );
+    assert_eq!(
+        event
+            .fingerprint
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>(),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected",
+            "EACCES:mkdir:other"
+        ]
     );
     assert_eq!(event.tags.get("eacces").map(String::as_str), Some("true"));
     assert_eq!(
@@ -183,7 +197,7 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
     );
     assert_eq!(
         events[0].tags.get("npm_error_code").map(String::as_str),
-        Some("unknown")
+        Some("none")
     );
 
     let transient_network = "npm error code ECONNRESET\nnpm error network request reset";

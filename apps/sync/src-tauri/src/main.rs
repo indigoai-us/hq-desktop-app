@@ -410,6 +410,7 @@ fn main() {
             commands::first_run::set_main_window_vibrancy,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
+            commands::session_end_observer::session_end_observer_status,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
             commands::workspaces::claim_pending_company_invite,
@@ -694,6 +695,17 @@ fn main() {
         ])
         .setup(|app| {
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
+            #[cfg(target_os = "windows")]
+            {
+                let tracker = std::sync::Arc::new(
+                    commands::session_end_observer::SessionEndTracker::new(std::sync::Arc::new(
+                        commands::session_end_observer::ProcessStartClock::new(),
+                    )),
+                );
+                app.manage(commands::session_end_observer::SessionEndObserverHandle::start(
+                    tracker,
+                ));
+            }
             // Classify this launch (FirstRun / ExistingUpdate / Normal) and
             // cache it in managed state. MUST run before anything that can
             // write `machineId` to menubar.json (sync, telemetry, the
@@ -1055,6 +1067,12 @@ fn main() {
             // ExitRequested is the single chokepoint for every quit path (tray
             // Quit, `quit_app`, Cmd-Q), all of which call `app.exit(0)`.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                #[cfg(target_os = "windows")]
+                if let Some(observer) = _app_handle
+                    .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
+                {
+                    observer.shutdown(std::time::Duration::from_millis(500));
+                }
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 

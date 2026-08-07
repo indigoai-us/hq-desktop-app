@@ -10,12 +10,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
     app_exit_requested, cancel_process_impl, deregister_process, is_cancelled, is_registered,
     lookup_pid, run_process_impl, try_register_handle, ProcessError, ProcessEvent,
 };
+#[cfg(target_os = "windows")]
+use crate::commands::session_end_observer::SessionEndObserverHandle;
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, RunTotals};
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
@@ -26,12 +30,14 @@ use hq_desktop_core::daemon::{
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::sync_outcome::{
-    classify_runner_fatal_class, classify_windows_exit_status, describe_exit,
-    is_windows_console_control_exit, runner_phase_elapsed_bucket, runner_phase_from_event,
-    runner_stack_shape, should_capture_watcher_exit, spawn_failure_capture_policy,
-    spawn_failure_fingerprint_token, termination_fingerprint_token, watcher_exit_capture_policy,
-    windows_exit_status_hex, windows_fault_symbol, SpawnFailureCapturePolicy,
-    WatcherExitCapturePolicy,
+    classify_runner_fatal_class, classify_windows_exit_status, current_termination_host,
+    describe_exit, is_windows_console_control_exit, normalized_abort_description,
+    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape,
+    should_capture_watcher_exit, spawn_failure_capture_policy, spawn_failure_fingerprint_token,
+    termination_fingerprint_token, termination_fingerprint_token_for_host,
+    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
+    windows_exit_status_hex, windows_fault_symbol, SpawnFailureCapturePolicy, TerminationHost,
+    WatcherExitCapturePolicy, WindowsTerminatorAttribution, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 
 #[cfg(target_os = "windows")]
@@ -775,6 +781,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         &watcher_phase,
                         &watcher_generation,
                         &stderr_tail,
+                        current_windows_terminator_attribution(&app, code, signal),
                     );
                     let last_stderr = stderr_tail.last().map(String::as_str);
                     handle_watcher_exit(
@@ -898,6 +905,7 @@ struct WatcherExitCaptureContext {
     runner_stack_signature: String,
     runner_stack_depth: u8,
     runner_stack_redacted_frames: u8,
+    windows_terminator: Option<WindowsTerminatorAttribution>,
 }
 
 impl Default for WatcherExitCaptureContext {
@@ -921,6 +929,7 @@ impl Default for WatcherExitCaptureContext {
             runner_stack_signature: "unknown".to_string(),
             runner_stack_depth: 0,
             runner_stack_redacted_frames: 0,
+            windows_terminator: None,
         }
     }
 }
@@ -961,6 +970,7 @@ fn watcher_exit_capture_context(
     phase_context: &Mutex<WatcherPhaseContext>,
     generation: &WatcherGeneration,
     stderr_tail: &[String],
+    windows_terminator: Option<WindowsTerminatorAttribution>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -993,7 +1003,33 @@ fn watcher_exit_capture_context(
         runner_stack_signature: stack.signature,
         runner_stack_depth: stack.depth,
         runner_stack_redacted_frames: stack.redacted_frames,
+        windows_terminator,
     }
+}
+
+#[cfg(target_os = "windows")]
+fn current_windows_terminator_attribution<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> Option<WindowsTerminatorAttribution> {
+    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
+        return None;
+    }
+    Some(
+        app.try_state::<SessionEndObserverHandle>()
+            .map(|observer| observer.tracker().attribution_now())
+            .unwrap_or(WindowsTerminatorAttribution::ObserverUnavailable),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_windows_terminator_attribution<R: tauri::Runtime>(
+    _app: &AppHandle<R>,
+    _code: Option<i32>,
+    _signal: Option<i32>,
+) -> Option<WindowsTerminatorAttribution> {
+    None
 }
 
 /// Effects used by the production watcher handlers.
@@ -1112,6 +1148,7 @@ fn handle_watcher_exit(
         cancelled,
         watcher_command,
         last_stderr,
+        current_termination_host(),
         context,
     );
 }
@@ -1124,6 +1161,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     cancelled: bool,
     watcher_command: &str,
     last_stderr: Option<&str>,
+    host: TerminationHost,
     context: &WatcherExitCaptureContext,
 ) {
     if cancelled {
@@ -1142,7 +1180,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     let capture_policy = if is_benign_watcher_exit(code, signal) {
         WatcherExitCapturePolicy::LocalLogOnly
     } else {
-        watcher_exit_capture_policy(code, signal)
+        watcher_exit_capture_policy_with_attribution(code, signal, context.windows_terminator)
     };
     let policy_consecutive =
         effects.note_watcher_capture_policy_streak(capture_policy, consecutive);
@@ -1168,6 +1206,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         capture_policy,
         watcher_command,
         last_stderr,
+        host,
         context,
     );
 }
@@ -1184,24 +1223,43 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     capture_policy: WatcherExitCapturePolicy,
     watcher_command: &str,
     last_stderr: Option<&str>,
+    host: TerminationHost,
     context: &WatcherExitCaptureContext,
 ) {
     if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
-        effects.log(
-            "daemon",
-            &format!(
-                "environmental watcher exit #{consecutive} — capture skipped \
-                 (code={code:?} signal={signal:?})"
-            ),
-        );
-        effects.add_breadcrumb(
-            "daemon.exit",
-            sentry::Level::Info,
-            format!(
-                "environmental auto-sync watcher exit #{consecutive}: \
-                 code={code:?} signal={signal:?}"
-            ),
-        );
+        if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
+            && signal.is_none()
+            && context.windows_terminator == Some(WindowsTerminatorAttribution::SessionEndObserved)
+        {
+            effects.log(
+                "daemon",
+                &format!("session-end-observed watcher exit #{consecutive} — capture skipped"),
+            );
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
+                    "session-end-observed auto-sync watcher exit #{consecutive}: \
+                     windows_terminator=session_end_observed"
+                ),
+            );
+        } else {
+            effects.log(
+                "daemon",
+                &format!(
+                    "environmental watcher exit #{consecutive} — capture skipped \
+                     (code={code:?} signal={signal:?})"
+                ),
+            );
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
+                    "environmental auto-sync watcher exit #{consecutive}: \
+                     code={code:?} signal={signal:?}"
+                ),
+            );
+        }
         return;
     }
 
@@ -1228,7 +1286,8 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
 
     let (uptime, rss_kb, rss_age) = effects.watcher_exit_diagnostics();
     let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
-    let fingerprint_token = termination_fingerprint_token(code, signal);
+    let raw_fingerprint_token = termination_fingerprint_token(code, signal);
+    let fingerprint_token = termination_fingerprint_token_for_host(code, signal, host);
     let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
     let fingerprint = [
         "sync",
@@ -1239,7 +1298,13 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let windows_termination = code
         .map(classify_windows_exit_status)
         .filter(|termination| termination.is_windows_status());
-    let message = if windows_termination.is_some() {
+    let normalized_abort = normalized_abort_description(code, signal, host);
+    let message = if let Some(exit_description) = normalized_abort {
+        format!(
+            "auto-sync watcher exited unexpectedly ({exit_description}), \
+             consecutive failure #{consecutive}{diag}"
+        )
+    } else if windows_termination.is_some() {
         let exit_description = describe_exit(code, signal);
         format!(
             "auto-sync watcher exited unexpectedly ({exit_description}), \
@@ -1284,8 +1349,19 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(operations) = &context.runner_error_ops {
         tags.push(("runner_error_ops", operations.clone()));
     }
+    if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none() {
+        if let Some(attribution) = context.windows_terminator {
+            tags.push(("windows_terminator", attribution.class_name().to_string()));
+        }
+    }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    if normalized_abort.is_some() {
+        extras.push((
+            "termination_status_raw",
+            sentry::protocol::Value::String(raw_fingerprint_token),
+        ));
+    }
     if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command) {
         extras.extend(exec_extras);
     }
@@ -1631,7 +1707,7 @@ fn crash_state() -> &'static Mutex<WatcherCrashState> {
 
 /// Record that a watcher was just spawned (called from `start_daemon`).
 fn note_watcher_spawned() {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.spawn_at = Some(Instant::now());
     // A spawn proves the runtime resolved, so the preflight failure streak is
     // over and a future episode gets a fresh first alert.
@@ -1646,7 +1722,7 @@ fn note_watcher_spawned() {
 /// Record an alertable preflight refusal and return the consecutive count so
 /// the caller can rate-limit captures.
 fn note_runner_preflight_failure() -> u32 {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.preflight_fails = st.preflight_fails.saturating_add(1);
     st.preflight_fails
 }
@@ -1654,7 +1730,7 @@ fn note_runner_preflight_failure() -> u32 {
 /// Update the crash-loop state on an unexpected watcher exit and return the
 /// consecutive-failure count so the caller can decide whether to capture.
 fn note_watcher_crashed() -> u32 {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
     if is_fast_failure(ran, FAST_FAIL_WINDOW) {
         st.consecutive = st.consecutive.saturating_add(1);
@@ -1677,7 +1753,7 @@ fn note_watcher_capture_policy_streak(
     policy: WatcherExitCapturePolicy,
     global_consecutive: u32,
 ) -> u32 {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     if policy == WatcherExitCapturePolicy::CaptureRateLimited {
         st.exec_not_runnable_consecutive =
             next_exec_not_runnable_streak(st.exec_not_runnable_consecutive, policy);
@@ -1698,7 +1774,7 @@ fn next_exec_not_runnable_streak(previous: u32, policy: WatcherExitCapturePolicy
 }
 
 fn reset_exec_not_runnable_failure_streak() {
-    crash_state().lock().unwrap().exec_not_runnable_consecutive = 0;
+    crash_state().lock().unwrap_or_else(|e| e.into_inner()).exec_not_runnable_consecutive = 0;
 }
 
 /// Apply the same exponential retry dampening when a preflight positively
@@ -1706,7 +1782,7 @@ fn reset_exec_not_runnable_failure_streak() {
 /// must not create a Sentry event; the backoff merely prevents the supervisor
 /// from retrying the same user-actionable diagnosis every 30 seconds.
 fn note_environment_preflight_failure() {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.consecutive = st.consecutive.saturating_add(1);
     st.backoff_until = Some(
         Instant::now() + respawn_backoff(st.consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
@@ -1715,7 +1791,7 @@ fn note_environment_preflight_failure() {
 
 /// Record the latest RSS (KB) sampled from the live watcher (supervisor tick).
 fn note_watcher_rss(kb: u64) {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.last_rss_kb = Some(kb);
     st.last_rss_at = Some(Instant::now());
 }
@@ -1723,7 +1799,7 @@ fn note_watcher_rss(kb: u64) {
 /// Snapshot for enriching a crash capture: watcher uptime (since spawn), the
 /// last RSS sample, and how long before now that sample was taken.
 fn watcher_exit_diagnostics() -> (Option<Duration>, Option<u64>, Option<Duration>) {
-    let st = crash_state().lock().unwrap();
+    let st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     let uptime = st.spawn_at.map(|t| t.elapsed());
     let rss_age = st.last_rss_at.map(|t| t.elapsed());
     (uptime, st.last_rss_kb, rss_age)
@@ -1731,7 +1807,7 @@ fn watcher_exit_diagnostics() -> (Option<Duration>, Option<u64>, Option<Duration
 
 /// Supervisor helper: is the watcher still inside its respawn-backoff window?
 fn within_respawn_backoff() -> bool {
-    let st = crash_state().lock().unwrap();
+    let st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.backoff_until
         .map(|until| Instant::now() < until)
         .unwrap_or(false)
@@ -1741,7 +1817,7 @@ fn within_respawn_backoff() -> bool {
 /// clear the crash-loop state so backoff + capture rate-limiting reset for the
 /// next failure episode.
 fn reset_crash_state_if_recovered() {
-    let mut st = crash_state().lock().unwrap();
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     if should_reset_after_recovery(st.spawn_at.map(|t| t.elapsed()), FAST_FAIL_WINDOW) {
         st.consecutive = 0;
         st.exec_not_runnable_consecutive = 0;
@@ -2459,6 +2535,7 @@ mod tests {
                 false,
                 "npx",
                 None,
+                current_termination_host(),
                 &WatcherExitCaptureContext::default(),
             );
             assert_eq!(
@@ -2688,6 +2765,7 @@ mod tests {
                 false,
                 "/opt/homebrew/bin/npx",
                 Some("runner ended without a documented code"),
+                current_termination_host(),
                 &WatcherExitCaptureContext::default(),
             );
 
@@ -2752,6 +2830,7 @@ mod tests {
                 false,
                 "npx",
                 Some("unknown runner exit"),
+                current_termination_host(),
                 &WatcherExitCaptureContext::default(),
             );
         }
@@ -2783,6 +2862,7 @@ mod tests {
             false,
             r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd --private-flag",
             Some(&raw_stderr),
+            current_termination_host(),
             &WatcherExitCaptureContext::default(),
         );
         let capture = &effects.captures[0];
@@ -2810,6 +2890,224 @@ mod tests {
         assert!(!serialized.contains("private-flag"));
         assert!(!serialized.contains("hq-tmp-a1b2"));
         assert!(!serialized.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn watcher_abort_encodings_share_a_group_and_keep_safe_raw_provenance() {
+        let companion = r"  #  C:\WINDOWS\system32\cmd.exe [44452]: char *__cdecl node::Realloc<char>(char *,unsigned __int64) at c:\ws\src\util-inl.h:378";
+        let assertion = "  #  Assertion failed: !(n > 0) || (ret != nullptr)";
+        let stderr_marker = "watcher-abort-private-stderr-marker";
+        let watcher_command = r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd --private-flag";
+
+        let mut totals = RunTotals::default();
+        for line in [companion, assertion, stderr_marker] {
+            totals.record_stderr_line(line);
+        }
+        let windows_context = WatcherExitCaptureContext {
+            runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
+            ..Default::default()
+        };
+
+        let mut windows = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut windows,
+            Some(134),
+            None,
+            false,
+            false,
+            watcher_command,
+            Some(stderr_marker),
+            TerminationHost::Windows,
+            &windows_context,
+        );
+        let windows_capture = windows.captures.first().expect("Windows abort captures");
+        assert_eq!(
+            windows_capture.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "abort:sigabrt",
+                "none"
+            ]
+        );
+        assert!(windows_capture.message.starts_with(
+            "auto-sync watcher exited unexpectedly (aborted (Node abort exit code 134)), consecutive failure #"
+        ));
+        assert!(!windows_capture.message.contains("code=Some(134)"));
+        assert_eq!(
+            recorded_tag(windows_capture, "runner_fatal_class"),
+            "node_check_abort"
+        );
+        assert_eq!(
+            recorded_string_extra(windows_capture, "termination_status_raw"),
+            "exit:134"
+        );
+        assert_eq!(
+            recorded_string_extra(windows_capture, "watcher_hq_cloud_package"),
+            HQ_CLOUD_PACKAGE
+        );
+        assert_eq!(
+            recorded_string_extra(windows_capture, "watcher_hq_cloud_version"),
+            HQ_CLOUD_VERSION
+        );
+        assert_eq!(
+            recorded_string_extra(windows_capture, "watcher_runner_binary"),
+            RUNNER_BIN
+        );
+
+        let posix_context = WatcherExitCaptureContext {
+            runner_fatal_class: "node_fatal".to_string(),
+            ..Default::default()
+        };
+        let mut posix = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut posix,
+            None,
+            Some(SIGABRT),
+            false,
+            false,
+            watcher_command,
+            Some("libc++abi: terminating due to uncaught exception"),
+            TerminationHost::Posix,
+            &posix_context,
+        );
+        let posix_capture = posix.captures.first().expect("POSIX abort captures");
+        assert_eq!(posix_capture.fingerprint, windows_capture.fingerprint);
+        assert!(posix_capture.message.starts_with(
+            "auto-sync watcher exited unexpectedly (aborted with SIGABRT), consecutive failure #"
+        ));
+        assert!(!posix_capture.message.contains("signal=Some(6)"));
+        assert_eq!(
+            recorded_string_extra(posix_capture, "termination_status_raw"),
+            "signal:6"
+        );
+
+        for capture in [windows_capture, posix_capture] {
+            let mut wire_strings = vec![capture.message.as_str()];
+            wire_strings.extend(capture.fingerprint.iter().map(String::as_str));
+            wire_strings.extend(capture.tags.iter().map(|(_, value)| value.as_str()));
+            wire_strings.extend(capture.extras.iter().filter_map(|(_, value)| match value {
+                sentry::protocol::Value::String(value) => Some(value.as_str()),
+                _ => None,
+            }));
+            for private_value in [stderr_marker, "/Users/", r"C:\Users\", "private-flag"] {
+                assert!(
+                    wire_strings
+                        .iter()
+                        .all(|wire_value| !wire_value.contains(private_value)),
+                    "wire capture leaked {private_value}"
+                );
+            }
+            assert!(capture
+                .fingerprint
+                .iter()
+                .all(|part| { !part.contains('/') && !part.contains('\\') }));
+            assert!(!recorded_string_extra(capture, "termination_status_raw").contains('/'));
+            assert!(!recorded_string_extra(capture, "termination_status_raw").contains('\\'));
+            for (name, value) in &capture.extras {
+                if let sentry::protocol::Value::String(value) = value {
+                    if value.contains('/') || value.contains('\\') {
+                        assert_eq!(name, "watcher_hq_cloud_package");
+                        assert_eq!(value, HQ_CLOUD_PACKAGE);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn watcher_abort_normalization_leaves_capture_policy_and_non_abort_wire_values_unchanged() {
+        for (code, signal) in [(Some(134), None), (None, Some(SIGABRT)), (Some(221), None)] {
+            let policy = watcher_exit_capture_policy(code, signal);
+            assert_eq!(policy, WatcherExitCapturePolicy::Capture);
+            assert!(should_capture_watcher_exit(policy, 1));
+        }
+
+        let mut posix_unknown = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut posix_unknown,
+            Some(221),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        let unknown_capture = posix_unknown.captures.first().expect("exit 221 captures");
+        assert_eq!(
+            unknown_capture.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:221", "none"]
+        );
+        assert!(unknown_capture
+            .message
+            .contains("code=Some(221) signal=None"));
+        assert!(unknown_capture
+            .extras
+            .iter()
+            .all(|(name, _)| name != "termination_status_raw"));
+
+        let windows_fault = 0xC000_0409u32 as i32;
+        let mut windows_status = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut windows_status,
+            Some(windows_fault),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Windows,
+            &WatcherExitCaptureContext::default(),
+        );
+        let windows_capture = windows_status
+            .captures
+            .first()
+            .expect("Windows fault captures");
+        assert_eq!(
+            windows_capture.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
+        );
+        assert!(windows_capture.message.contains("0xC0000409 (fault)"));
+        assert_eq!(
+            recorded_tag(windows_capture, "windows_exit_status"),
+            "0xC0000409"
+        );
+        assert!(windows_capture
+            .extras
+            .iter()
+            .all(|(name, _)| name != "termination_status_raw"));
+
+        let mut posix_134 = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut posix_134,
+            Some(134),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        let posix_134_capture = posix_134.captures.first().expect("POSIX 134 captures");
+        assert_eq!(
+            posix_134_capture.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:134", "none"]
+        );
+        assert!(posix_134_capture
+            .message
+            .contains("code=Some(134) signal=None"));
+        assert!(posix_134_capture
+            .extras
+            .iter()
+            .all(|(name, _)| name != "termination_status_raw"));
     }
 
     #[cfg(unix)]
@@ -2906,6 +3204,7 @@ mod tests {
                 false,
                 "npx",
                 None,
+                current_termination_host(),
                 &WatcherExitCaptureContext::default(),
             );
             assert_eq!(effects.captures.len(), 1, "terminal Exit owns capture");
@@ -2994,6 +3293,7 @@ mod tests {
             false,
             "npx",
             None,
+            current_termination_host(),
             &WatcherExitCaptureContext::default(),
         );
         assert!(
@@ -3010,6 +3310,7 @@ mod tests {
             false,
             "npx",
             None,
+            current_termination_host(),
             &WatcherExitCaptureContext::default(),
         );
         assert_eq!(
@@ -3046,6 +3347,7 @@ mod tests {
             false,
             "npx",
             None,
+            current_termination_host(),
             &context,
         );
 
@@ -3111,6 +3413,7 @@ mod tests {
             false,
             "npx",
             None,
+            current_termination_host(),
             &eperm_context,
         );
         handle_watcher_exit_with_effects(
@@ -3121,6 +3424,7 @@ mod tests {
             false,
             "npx",
             None,
+            current_termination_host(),
             &auth_context,
         );
 
@@ -3185,6 +3489,7 @@ mod tests {
             false,
             "npx",
             Some("untrusted runner output stays local"),
+            current_termination_host(),
             &context,
         );
 
@@ -3249,12 +3554,227 @@ mod tests {
             true,
             "npx",
             None,
+            current_termination_host(),
             &app_quit_context,
         );
         assert!(
             deliberate_stop.captures.is_empty(),
             "a cancelled app-quit path remains deliberately silent"
         );
+    }
+
+    #[test]
+    fn watcher_session_terminate_with_observed_session_end_is_local_log_only() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        let context = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+
+        assert!(effects.captures.is_empty());
+        assert_eq!(
+            effects.logs,
+            vec![(
+                "daemon".to_string(),
+                "session-end-observed watcher exit #1 — capture skipped".to_string(),
+            )]
+        );
+        assert_eq!(
+            effects.breadcrumbs,
+            vec![(
+                "daemon.exit".to_string(),
+                "Info".to_string(),
+                "session-end-observed auto-sync watcher exit #1: windows_terminator=session_end_observed"
+                    .to_string(),
+            )]
+        );
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::None)]
+        );
+    }
+
+    #[test]
+    fn watcher_session_terminate_unattributed_still_captures_with_terminator_tag() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        let mut baseline = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut baseline,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        let context = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::Unattributed),
+            ..Default::default()
+        };
+        let mut attributed = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut attributed,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+
+        assert_eq!(baseline.captures.len(), 1);
+        assert_eq!(attributed.captures.len(), 1);
+        let baseline = &baseline.captures[0];
+        let attributed = &attributed.captures[0];
+        assert_eq!(attributed.message, baseline.message);
+        assert_eq!(attributed.fingerprint, baseline.fingerprint);
+        assert_eq!(attributed.extras, baseline.extras);
+        assert_eq!(attributed.tags.len(), baseline.tags.len() + 1);
+        assert_eq!(
+            &attributed.tags[..baseline.tags.len()],
+            baseline.tags.as_slice()
+        );
+        assert_eq!(
+            attributed.tags.last(),
+            Some(&("windows_terminator".to_string(), "unattributed".to_string()))
+        );
+    }
+
+    #[test]
+    fn watcher_session_terminate_observer_unavailable_and_failed_fail_closed() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        for attribution in [
+            WindowsTerminatorAttribution::ObserverUnavailable,
+            WindowsTerminatorAttribution::ObserverFailed,
+        ] {
+            let context = WatcherExitCaptureContext {
+                windows_terminator: Some(attribution),
+                ..Default::default()
+            };
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(OBSERVED_SESSION_TERMINATE_EXIT),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                current_termination_host(),
+                &context,
+            );
+
+            assert_eq!(effects.captures.len(), 1);
+            assert_eq!(
+                recorded_tag(&effects.captures[0], "windows_terminator"),
+                attribution.class_name()
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_session_terminate_without_attribution_keeps_the_existing_capture_shape() {
+        const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OBSERVED_SESSION_TERMINATE_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:session-terminate",
+                "none"
+            ]
+        );
+        assert!(effects.captures[0]
+            .tags
+            .iter()
+            .all(|(name, _)| *name != "windows_terminator"));
+    }
+
+    #[test]
+    fn affirmed_attribution_does_not_suppress_or_tag_any_other_exit_shape() {
+        let context = WatcherExitCaptureContext {
+            windows_terminator: Some(WindowsTerminatorAttribution::SessionEndObserved),
+            ..Default::default()
+        };
+        let cases = [
+            (Some(1), None, false),
+            (Some(2), None, false),
+            (Some(126), None, false),
+            (Some(127), None, false),
+            (Some(221), None, true),
+            (Some(0xC000_0409u32 as i32), None, true),
+            (Some(-1), None, true),
+            (Some(WINDOWS_SESSION_TERMINATE_EXIT), Some(9), true),
+        ];
+
+        for (code, signal, should_capture) in cases {
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                signal,
+                false,
+                false,
+                "npx",
+                None,
+                current_termination_host(),
+                &context,
+            );
+
+            assert_eq!(
+                effects.captures.len(),
+                usize::from(should_capture),
+                "code={code:?} signal={signal:?}"
+            );
+            for capture in &effects.captures {
+                assert!(
+                    capture
+                        .tags
+                        .iter()
+                        .all(|(name, _)| name != "windows_terminator"),
+                    "code={code:?} signal={signal:?}"
+                );
+            }
+            if matches!(code, Some(1 | 2)) {
+                assert!(effects.logs.iter().any(|(_, message)| {
+                    message.starts_with("environmental watcher exit #1 — capture skipped")
+                }));
+                assert!(effects.breadcrumbs.iter().any(|(_, _, message)| {
+                    message.starts_with("environmental auto-sync watcher exit #1")
+                }));
+            }
+        }
     }
 
     #[test]
@@ -3293,6 +3813,7 @@ mod tests {
                 WatcherExitCapturePolicy::Capture,
                 "npx",
                 Some(&raw_message),
+                current_termination_host(),
                 &context,
             );
         });
@@ -3346,6 +3867,7 @@ mod tests {
                 WatcherExitCapturePolicy::Capture,
                 "npx",
                 Some(&raw_stderr),
+                current_termination_host(),
                 &WatcherExitCaptureContext::default(),
             );
         });
@@ -3389,6 +3911,7 @@ mod tests {
             WatcherExitCapturePolicy::CaptureRateLimited,
             "npx",
             Some(&raw_stderr),
+            current_termination_host(),
             &WatcherExitCaptureContext::default(),
         );
 
@@ -3512,6 +4035,7 @@ mod tests {
                 WatcherExitCapturePolicy::Capture,
                 watcher_command,
                 Some(&raw_stderr),
+                current_termination_host(),
                 &WatcherExitCaptureContext::default(),
             );
         });
@@ -3633,7 +4157,7 @@ mod tests {
     #[test]
     fn preflight_failure_streak_resets_after_a_successful_spawn() {
         {
-            let mut st = crash_state().lock().unwrap();
+            let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
             *st = WatcherCrashState::default();
         }
         assert_eq!(note_runner_preflight_failure(), 1);
@@ -3765,6 +4289,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
             &[],
+            None,
         );
 
         assert_eq!(context.watcher_launch_origin, "supervisor_respawn");
@@ -3799,6 +4324,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
             &tail,
+            None,
         );
         let mut effects = RecordingWatcherEffects::default();
         record_unexpected_watcher_exit(
@@ -3810,6 +4336,7 @@ mod tests {
             WatcherExitCapturePolicy::Capture,
             "npx",
             tail.last().map(String::as_str),
+            current_termination_host(),
             &context,
         );
 

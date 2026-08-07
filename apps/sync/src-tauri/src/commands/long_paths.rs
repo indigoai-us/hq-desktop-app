@@ -68,8 +68,11 @@ struct PowerShellLongPathsElevator;
 #[cfg(windows)]
 impl LongPathsElevator for PowerShellLongPathsElevator {
     fn run_elevated_powershell(&self, script: &str) -> Result<ElevatedProcessOutput, String> {
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        // Non-interactive elevation helper — never flash a console for the probe.
+        crate::util::paths::no_window(&mut command);
+        let output = command
             .output()
             .map_err(|e| format!("failed to spawn powershell: {e}"))?;
 
