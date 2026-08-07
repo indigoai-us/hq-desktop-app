@@ -3318,7 +3318,7 @@ mod tests {
         write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
         assert_eq!(
             hq_version_string_probe(&not_executable, "").1,
-            VersionProbeOutcome::SpawnNotExecutable
+            enoexec_fixture_outcome()
         );
 
         // Present, but this process may not execute it.
@@ -3363,7 +3363,7 @@ mod tests {
         write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
         assert_eq!(
             read_installed_version_probe(not_executable.to_str().unwrap(), "").1,
-            VersionProbeOutcome::SpawnNotExecutable
+            enoexec_fixture_outcome()
         );
 
         let nonzero = tmp.path().join("nonzero-npm");
@@ -3544,6 +3544,25 @@ mod tests {
         std::fs::set_permissions(path, permissions).unwrap();
     }
 
+    /// What spawning an exec-bit file whose content is not a valid executable
+    /// image actually produces on THIS host.
+    ///
+    /// Linux answers `ENOEXEC` straight from the spawn, which is the faithful
+    /// analogue of the Windows `ERROR_BAD_EXE_FORMAT` (os error 193) the field
+    /// events come from. macOS and the BSDs do not: their libc `execvp` retries
+    /// such a file under `/bin/sh`, so the spawn SUCCEEDS and the shell exits
+    /// nonzero instead. The fixture is therefore platform-dependent; the
+    /// 193/`ENOEXEC` mapping itself is pinned platform-independently by
+    /// `classify_spawn_error_splits_the_process_spawn_failed_bucket`.
+    #[cfg(unix)]
+    fn enoexec_fixture_outcome() -> VersionProbeOutcome {
+        if cfg!(target_os = "linux") {
+            VersionProbeOutcome::SpawnNotExecutable
+        } else {
+            VersionProbeOutcome::NonzeroExit
+        }
+    }
+
     // ── HQ-DESKTOP-3P: a Windows resolution that exists but cannot be spawned ──
 
     /// Every spawn failure used to collapse into `ProcessSpawnFailed`, so the
@@ -3636,6 +3655,11 @@ mod tests {
     /// `process_spawn_failed`) using the Unix ENOEXEC analogue of Windows os
     /// error 193, and pins that the spawn no longer collapses into the
     /// undifferentiated bucket.
+    ///
+    /// The base-red half is Linux-specific by necessity — see
+    /// [`enoexec_fixture_outcome`] for why macOS cannot produce the fixture —
+    /// but the three surrounding field outcomes and the reporting decision are
+    /// asserted on every Unix leg.
     #[test]
     #[cfg(unix)]
     fn field_shape_spawn_failure_is_classified_as_not_executable() {
@@ -3672,16 +3696,15 @@ mod tests {
             BinaryAnchorShape::NpmPrefix
         );
         assert_eq!(result.probes.npm_root, VersionProbeOutcome::PackageNotFound);
-        // …and the fourth now names the cause instead of the bucket.
+        // …and the fourth now names the cause instead of the bucket. This is
+        // the assertion that runs RED on the base commit, where every spawn
+        // failure collapsed into `process_spawn_failed`.
         assert_ne!(
             result.probes.hq_version,
             VersionProbeOutcome::ProcessSpawnFailed,
             "an unexecutable program must not report as an undifferentiated spawn failure"
         );
-        assert_eq!(
-            result.probes.hq_version,
-            VersionProbeOutcome::SpawnNotExecutable
-        );
+        assert_eq!(result.probes.hq_version, enoexec_fixture_outcome());
     }
 
     /// End-to-end at the seam that owns the recovery: the selector picks the
