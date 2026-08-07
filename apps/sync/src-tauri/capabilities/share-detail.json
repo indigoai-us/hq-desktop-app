@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "share-detail",
-  "description": "Capability set for the share-detail window. Receives event list via IPC; uses window.open() (Web API, no shell plugin needed) for the HQ Console link. Share reactions + reply: the window additionally invokes toggle_reaction / fetch_reactions (messageScope 'share:{eventId}', messageId = eventId), set_watched_shares (registers the visible share eventIds with the SINGLE DM poll path so a 'reaction' wake re-fetches and emits message:reaction), and open_messages_window (the 'Message the sharer' action deep-links the Messages window with a pending conversation target).",
+  "description": "Capability set for the share-detail window. Receives event list via IPC; uses window.open() (Web API, no shell plugin needed) for the HQ Console link. Share reactions + reply: the window additionally invokes toggle_reaction / fetch_reactions (messageScope 'share:{eventId}', messageId = eventId), set_watched_shares (registers the visible share eventIds with the SINGLE DM poll path so a 'reaction' wake re-fetches and emits message:reaction), and open_messages_window (the 'Message the sharer' action deep-links the Messages window with a pending conversation target). shell:allow-open is required because this window mounts the shared <DmThreadPane/> → <Conversation/> pane, which renders DM bodies through renderMessageBodyMarkdown; its markdown-link and autolink branches emit <a target=\"_blank\"> anchors that tauri-plugin-shell's injected click listener intercepts by invoking plugin:shell|open with no .catch(), so without the grant the click is inert and the ACL denial surfaces as an uncatchable UnhandledRejection (Sentry HQ-DESKTOP-4F, whose grouping signature carries no window label). The plugin's default open scope (https?://, mailto:, tel:) already covers every scheme safeHref admits, so no plugins.shell scope block is added to tauri.conf.json.",
   "windows": [
     "share-detail"
   ],
@@ -10,6 +10,7 @@
     "core:webview:allow-set-webview-zoom",
     "core:event:default",
     "core:window:allow-close",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    "shell:allow-open"
   ]
 }

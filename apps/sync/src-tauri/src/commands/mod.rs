@@ -51,6 +51,7 @@ pub mod projects_local;
 pub mod provision;
 pub mod recall_sdk;
 pub mod run_cli_provision;
+pub mod session_end_observer;
 pub mod sessions;
 pub mod settings;
 pub mod share_notify;
