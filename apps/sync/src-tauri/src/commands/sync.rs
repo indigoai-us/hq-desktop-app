@@ -1791,7 +1791,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             );
             if let Err(message) = provision_unprovisioned_node(&app).await {
                 log("sync", &format!("BAIL: {message}"));
-                deregister_process(SYNC_HANDLE);
+                let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
                 return Err(message);
             }
             log("sync", "managed Node runtime provisioned — continuing");
