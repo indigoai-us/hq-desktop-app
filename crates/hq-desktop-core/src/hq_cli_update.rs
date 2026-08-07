@@ -1643,6 +1643,57 @@ impl InstallFailureKind {
     }
 }
 
+/// `npm_error_code` echoes npm's own `code` token verbatim. For a lifecycle
+/// failure that token is the failed build script's numeric exit status ("1",
+/// "7", …), which carries no classification power the event does not already
+/// hold in its closed-enumeration tags — and using it for grouping would
+/// reintroduce exactly the exit-status cardinality the signature exists to
+/// remove. Collapse any purely numeric (or absent) code to `none`; symbolic
+/// codes such as `ENOTDIR` or `EEXIST` are real discriminators and are kept.
+fn symbolic_npm_error_code(detail: &str) -> String {
+    let code = npm_error_code(detail);
+    if code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return "none".to_string();
+    }
+    code
+}
+
+/// The grouping discriminator for a reportable install failure.
+///
+/// Every component is a closed enumeration or an npm package name already
+/// validated by `is_safe_npm_package_name`, so the fingerprint keeps the same
+/// scrub-safety guarantee as the tags: no free text, no raw npm stderr, no
+/// filesystem path.
+///
+/// The process exit status is deliberately NOT part of it. npm reports a failed
+/// build script's own status, so one broken dependency opened a new Sentry issue
+/// per status (HQ-DESKTOP-4G exit 1 and HQ-DESKTOP-4H exit 7 are the same
+/// better-sqlite3 build), and for an OS errno failure the status is only
+/// `256 - errno` — a lossy restatement of `npm_error_code` plus `npm_syscall`
+/// (HQ-DESKTOP-4J exit 236 is `ENOTDIR`). The same key also under-grouped:
+/// unrelated dependencies merged whenever they happened to share a status. The
+/// raw status stays on the `exit_code` tag and inside `npm_diagnostics`, where
+/// it remains searchable without deciding the group.
+fn install_failure_signature(
+    kind: InstallFailureKind,
+    detail: &str,
+    prefix: Option<&str>,
+) -> String {
+    if kind == InstallFailureKind::UnexpectedLifecycle {
+        // Classification already proved a third-party package was attributed,
+        // so this branch keys on the dependency whose build actually failed.
+        let package = npm_lifecycle_failure(detail).package;
+        let package = package.as_deref().unwrap_or("unrecognized");
+        return format!("lifecycle:{package}");
+    }
+    format!(
+        "{}:{}:{}",
+        symbolic_npm_error_code(detail),
+        npm_syscall(detail),
+        npm_path_shape(detail, prefix).tag_value(),
+    )
+}
+
 /// User-facing fallback text for an install failure that did not include useful
 /// npm stderr. The desktop UI always offers the copy-command escape hatch; the
 /// Windows abort wording tells the user why retrying after closing competing
@@ -1736,12 +1787,13 @@ pub fn install_failure_report_with_final_attempt(
     prefix: Option<&str>,
     final_attempt_forced: bool,
 ) -> Option<String> {
-    match classify_install_failure_with_final_attempt(
+    let kind = classify_install_failure_with_final_attempt(
         exit_code,
         detail,
         prefix,
         final_attempt_forced,
-    ) {
+    );
+    match kind {
         InstallFailureKind::ExpectedBinCollision => {
             return Some("[hq-cli-update] hq shim collision survived npm --force".to_string())
         }
@@ -1751,10 +1803,11 @@ pub fn install_failure_report_with_final_attempt(
         | InstallFailureKind::ExpectedWindowsLockedBinary
         | InstallFailureKind::ExpectedTransientRegistry => return None,
     }
-    let exit_str = exit_code
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "signal/none".to_string());
-    Some(format!("[hq-cli-update] install failed (exit {exit_str})"))
+    // Title the capture with the same signature the fingerprint groups on, so a
+    // Sentry issue's title cannot drift across the events inside it. The raw
+    // exit status stays on the `exit_code` tag and in `npm_diagnostics`.
+    let signature = install_failure_signature(kind, detail, prefix);
+    Some(format!("[hq-cli-update] install failed ({signature})"))
 }
 
 /// Capture an auto/manual CLI-install failure to Sentry — but only when it is a
@@ -1789,6 +1842,7 @@ pub fn report_install_failure_with_final_attempt(
     let exit_str = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
+    let signature = install_failure_signature(kind, detail, prefix);
     let eacces =
         has_eacces_evidence(detail) || kind == InstallFailureKind::ExpectedPrefixPermission;
     let npm_path_shape = npm_path_shape(detail, prefix);
@@ -1843,11 +1897,13 @@ pub fn report_install_failure_with_final_attempt(
             );
             scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
             scope.set_tag("npm_errno", npm_errno);
+            // Group on the failure's bounded signature, never on npm's exit
+            // status — see `install_failure_signature`.
             let fingerprint = [
                 "hq-cli-update",
                 "install-failed",
                 kind.fingerprint_component(),
-                exit_str.as_str(),
+                signature.as_str(),
             ];
             scope.set_fingerprint(Some(&fingerprint));
             scope.set_extra("npm_diagnostics", npm_diagnostics.into());
@@ -1952,6 +2008,21 @@ pub fn is_pnpm_global_shim(hq_bin: &str) -> bool {
     // that is not named `pnpm`.
     if parent.file_name().and_then(|n| n.to_str()) == Some("pnpm") {
         return true;
+    }
+    // pnpm ≥11 nests shims one level deeper: `<pnpm-home>/bin/hq`. The parent
+    // is now literally named `bin`, which is exactly the shape
+    // `npm_prefix_from_hq_bin` reads as an npm prefix — so without this arm,
+    // npm would install into `<pnpm-home>/{bin,lib}` and never move the shim.
+    // The grandparent being the pnpm home (named `pnpm`, or holding pnpm's
+    // `global/` store) is what tells the two layouts apart.
+    if parent.file_name().and_then(|n| n.to_str()) == Some("bin") {
+        if let Some(grandparent) = parent.parent() {
+            if grandparent.file_name().and_then(|n| n.to_str()) == Some("pnpm")
+                || grandparent.join("global").is_dir()
+            {
+                return true;
+            }
+        }
     }
     // Custom PNPM_HOME: pnpm keeps its `global/` store beside the shims, which
     // no npm prefix layout does.
@@ -2210,6 +2281,20 @@ mod tests {
         assert!(is_pnpm_global_shim(
             "C:\\Users\\test\\AppData\\Local\\pnpm\\hq"
         ));
+        // pnpm ≥11: shims nest under `<pnpm-home>/bin` — a parent literally
+        // named `bin`, the same shape npm prefixes use. Regression from the
+        // live smoke on 2026-08-05: pnpm 11.0.9 wrote ~/Library/pnpm/bin/hq
+        // and the flat-dir checks above all missed it.
+        assert!(is_pnpm_global_shim("/Users/test/Library/pnpm/bin/hq"));
+        assert!(is_pnpm_global_shim("/home/test/.local/share/pnpm/bin/hq"));
+        // Custom PNPM_HOME with the v11 nesting: global/ store marks the home.
+        let tmp_v11 = tempfile::TempDir::new().unwrap();
+        let home_v11 = tmp_v11.path().join("my-tools");
+        std::fs::create_dir_all(home_v11.join("global")).unwrap();
+        std::fs::create_dir_all(home_v11.join("bin")).unwrap();
+        let shim_v11 = home_v11.join("bin").join("hq");
+        std::fs::write(&shim_v11, "#!/bin/sh\n").unwrap();
+        assert!(is_pnpm_global_shim(shim_v11.to_str().unwrap()));
         // Custom PNPM_HOME: shims beside a `global/` store dir.
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("my-tools");
@@ -2949,7 +3034,7 @@ mod tests {
         );
         assert_eq!(
             install_failure_report(Some(1), detail, Some("/usr/local")),
-            Some("[hq-cli-update] install failed (exit 1)".to_string()),
+            Some("[hq-cli-update] install failed (EACCES:unknown:npm-cache)".to_string()),
         );
     }
 
@@ -3172,7 +3257,7 @@ mod tests {
     fn windows_eperm_exit_code_is_an_expected_locked_binary_failure() {
         // The exact event behind HQ-DESKTOP-3N: install exited -4048 with no
         // useful stderr tail. Old behavior classified this as Unexpected and
-        // captured "[hq-cli-update] install failed (exit -4048)" at Error level.
+        // captured "[hq-cli-update] install failed (…)" at Error level.
         assert_eq!(
             classify_install_failure(Some(-4048), "", None),
             InstallFailureKind::ExpectedWindowsLockedBinary
@@ -3230,18 +3315,186 @@ mod tests {
         assert!(!is_windows_locked_binary_failure(Some(1), ""));
     }
 
+    /// HQ-DESKTOP-4G / 4H / 4J: npm's exit status must never be the grouping
+    /// key. These pin the signature helper that replaced it.
+    #[test]
+    fn numeric_npm_error_codes_collapse_so_they_cannot_re_key_the_group() {
+        // npm echoes a failed build script's own status as its `code`. That is
+        // the exit status by another name, so it must not discriminate.
+        assert_eq!(symbolic_npm_error_code("npm error code 1"), "none");
+        assert_eq!(symbolic_npm_error_code("npm error code 7"), "none");
+        assert_eq!(symbolic_npm_error_code("npm error code 236"), "none");
+        // No code line at all is already "none".
+        assert_eq!(symbolic_npm_error_code("npm error network reset"), "none");
+        // Symbolic codes carry real classification and are preserved.
+        assert_eq!(symbolic_npm_error_code("npm error code ENOTDIR"), "ENOTDIR");
+        assert_eq!(symbolic_npm_error_code("npm error code EEXIST"), "EEXIST");
+        assert_eq!(
+            symbolic_npm_error_code("npm error code ELIFECYCLE"),
+            "ELIFECYCLE"
+        );
+    }
+
+    #[test]
+    fn lifecycle_signature_keys_on_the_failing_dependency_not_the_exit_status() {
+        let stderr = |package: &str, status: &str| {
+            format!(
+                "npm error code {status}\n\
+                 npm error command failed\n\
+                 npm error path /Users/alice/.npm-global/lib/node_modules/{package}"
+            )
+        };
+        let prefix = Some("/Users/alice/.npm-global");
+
+        // HQ-DESKTOP-4G (exit/code 1) and HQ-DESKTOP-4H (exit/code 7) are the
+        // same better-sqlite3 build; one signature, therefore one issue.
+        let four_g = stderr("better-sqlite3", "1");
+        let four_h = stderr("better-sqlite3", "7");
+        assert_eq!(
+            install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &four_g, prefix),
+            "lifecycle:better-sqlite3"
+        );
+        assert_eq!(
+            install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &four_h, prefix),
+            install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &four_g, prefix),
+        );
+
+        // The under-grouping half of the defect: a different dependency that
+        // happens to share an exit status must not share the issue.
+        let other = stderr("node-llama-cpp", "1");
+        assert_ne!(
+            install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &other, prefix),
+            install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &four_g, prefix),
+        );
+    }
+
+    #[test]
+    fn non_lifecycle_signatures_stay_distinct_across_code_syscall_and_path_shape() {
+        let signature = |detail: &str, prefix: Option<&str>| {
+            install_failure_signature(InstallFailureKind::Unexpected, detail, prefix)
+        };
+
+        // HQ-DESKTOP-4J: ENOTDIR/mkdir at the global install target.
+        let enotdir = "npm error code ENOTDIR\n\
+            npm error syscall mkdir\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            signature(enotdir, None),
+            "ENOTDIR:mkdir:global-lib-node-modules"
+        );
+
+        // Each axis moves the signature independently.
+        let same_code_other_syscall = "npm error code ENOTDIR\n\
+            npm error syscall open\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_ne!(
+            signature(same_code_other_syscall, None),
+            signature(enotdir, None)
+        );
+
+        let same_code_other_shape = "npm error code ENOTDIR\n\
+            npm error syscall mkdir\n\
+            npm error path /Users/alice/.npm/_cacache/content-v2";
+        assert_ne!(
+            signature(same_code_other_shape, None),
+            signature(enotdir, None)
+        );
+
+        let other_code = "npm error code EEXIST\n\
+            npm error syscall mkdir\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_ne!(signature(other_code, None), signature(enotdir, None));
+    }
+
+    #[test]
+    fn no_signature_carries_an_exit_status_or_a_filesystem_path() {
+        let cases: [(InstallFailureKind, &str, Option<&str>); 4] = [
+            (
+                InstallFailureKind::UnexpectedLifecycle,
+                "npm error code 236\n\
+                 npm error command failed\n\
+                 npm error path /Users/alice/.npm-global/lib/node_modules/better-sqlite3",
+                Some("/Users/alice/.npm-global"),
+            ),
+            (
+                InstallFailureKind::Unexpected,
+                "npm error code ENOTDIR\n\
+                 npm error syscall mkdir\n\
+                 npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli",
+                None,
+            ),
+            (
+                InstallFailureKind::ExpectedBinCollision,
+                "npm error code EEXIST\nnpm error path /usr/local/bin/hq",
+                Some("/usr/local"),
+            ),
+            (InstallFailureKind::Unexpected, "", None),
+        ];
+
+        for (kind, detail, prefix) in cases {
+            let signature = install_failure_signature(kind, detail, prefix);
+            for status in ["1", "7", "190", "202", "236", "243", "-4048"] {
+                assert!(
+                    !signature.contains(status),
+                    "signature {signature:?} carries exit status {status}"
+                );
+            }
+            for leak in ["Users", "alice", "usr", "lib/node_modules", "npm error"] {
+                assert!(
+                    !signature.contains(leak),
+                    "signature {signature:?} leaked {leak:?}"
+                );
+            }
+        }
+    }
+
+    /// A scoped third-party package is the one signature component that is not
+    /// a closed enumeration. It stays safe because `npm_lifecycle_failure`
+    /// already gates it through `is_safe_npm_package_name` — the same value the
+    /// `npm_lifecycle_package` tag has always carried.
+    #[test]
+    fn lifecycle_signature_only_ever_carries_a_validated_package_name() {
+        let scoped = "npm error code 1\n\
+            npm error command failed\n\
+            npm error path /Users/alice/.npm-global/lib/node_modules/@vendor/native-addon";
+        assert_eq!(
+            install_failure_signature(
+                InstallFailureKind::UnexpectedLifecycle,
+                scoped,
+                Some("/Users/alice/.npm-global")
+            ),
+            "lifecycle:@vendor/native-addon"
+        );
+        assert!(is_safe_npm_package_name("@vendor/native-addon"));
+
+        // A package name npm did not hand us in a validatable form falls back
+        // to a fixed literal rather than to free text.
+        let unattributable = "npm error code 1\n\
+            npm error command failed\n\
+            npm error path /Users/alice/project/package.json";
+        assert_eq!(
+            install_failure_signature(
+                InstallFailureKind::UnexpectedLifecycle,
+                unattributable,
+                None
+            ),
+            "lifecycle:unrecognized"
+        );
+    }
+
     #[test]
     fn install_failure_report_captures_genuine_failures() {
         // A real, unexpected failure stays loud — `Some(message)` drives the
         // Error-level capture.
         assert_eq!(
             install_failure_report(Some(1), "npm error network ETIMEDOUT", None),
-            Some("[hq-cli-update] install failed (exit 1)".to_string()),
+            Some("[hq-cli-update] install failed (none:unknown:none)".to_string()),
         );
-        // Killed by signal (no exit code) still reports, with the signal label.
+        // Killed by signal (no exit code) still reports — and now lands in the
+        // same group as the exit-1 run, because the cause is the same.
         assert_eq!(
             install_failure_report(None, "npm error network ETIMEDOUT", None),
-            Some("[hq-cli-update] install failed (exit signal/none)".to_string()),
+            install_failure_report(Some(1), "npm error network ETIMEDOUT", None),
         );
         assert_eq!(
             classify_install_failure(Some(1), "npm error network ETIMEDOUT", None),
