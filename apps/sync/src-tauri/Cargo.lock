@@ -2694,6 +2694,7 @@ dependencies = [
  "dirs",
  "fs2",
  "ignore",
+ "libc",
  "reqwest 0.12.28",
  "rustix",
  "semver",
@@ -2727,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.76"
+version = "0.10.77"
 dependencies = [
  "aws-config",
  "aws-credential-types",
