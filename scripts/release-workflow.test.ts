@@ -402,8 +402,15 @@ describe("release workflow channel contract", () => {
     // left the embedded __DWARF on this universal build, so an xcrun strip is
     // required to keep the bundle deterministically under budget.
     expect(macos).toContain('xcrun strip -S -x "$APP_BINARY"');
-    expect(macos).toContain("BUNDLE_BUDGET_KB=$((15 * 1024))");
-    expect(macos).toContain("macOS app bundle exceeds 15 MB budget");
+    // The 15 MB total-bundle budget was never satisfiable (the bundle carries
+    // the ~150 MB Recall SDK sidecar). The meaningful native-symbol/code-bloat
+    // signal is the stripped binary, budgeted tightly; a coarse total-bundle
+    // ceiling still catches runaway resource growth.
+    expect(macos).toContain("APP_BINARY_BUDGET_KB=$((120 * 1024))");
+    expect(macos).toContain("macOS app binary exceeds 120 MB budget");
+    expect(macos).toContain("BUNDLE_BUDGET_KB=$((300 * 1024))");
+    expect(macos).toContain("macOS app bundle exceeds 300 MB budget");
+    expect(macos).not.toContain("15 * 1024");
 
     expect(windows).toContain("Install Sentry CLI");
     expect(windows).toContain("Verify Windows debug file contract");
