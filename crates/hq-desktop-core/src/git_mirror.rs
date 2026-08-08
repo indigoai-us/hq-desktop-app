@@ -84,11 +84,34 @@ const REFUSAL_COOLDOWN: Duration = Duration::from_secs(6 * 60 * 60);
 ///
 /// A single refusing pass is the dominant field shape and the least actionable:
 /// the mirror samples the tree mid-sync, between a delete and its restore, and
-/// the next pass is clean. [`MIN_MIRROR_INTERVAL`] already spaces passes at
-/// least 60s apart, so a condition that is actually real is confirmed within
-/// about a minute. Every refusal — confirmed or not — is still logged in full
-/// on the machine it happened on; only the Sentry channel waits.
-const REFUSAL_CONFIRM_OCCURRENCES: usize = 2;
+/// the next pass is clean. Every refusal — confirmed or not — is still logged in
+/// full on the machine it happened on; only the Sentry channel waits.
+///
+/// This is a floor, not the gate. Pass count alone is what the second fix got
+/// wrong: [`MIN_MIRROR_INTERVAL`] floors passes at 60s, so two passes span about
+/// 70 seconds, and every single post-fix production event carried
+/// `episode_occurrences=2` with `episode_age_secs` in {68, 68, 69, 69, 71, 84}.
+/// A pass counter cannot tell a 70-second window from a wedge. [`REFUSAL_CONFIRM_MIN_AGE`]
+/// is the term that can.
+const REFUSAL_CONFIRM_OCCURRENCES: usize = 3;
+
+/// How long an episode must have been refusing *continuously* before it earns a
+/// Sentry event. This is the load-bearing half of the confirmation gate.
+///
+/// Field justification, from the second fix's own telemetry: the longest episode
+/// ever observed in production was 84 seconds (`episode_age_secs` in
+/// {68, 68, 69, 69, 71, 84} across every post-fix event), and each of those
+/// episodes was closed by [`note_mirror_recovered`] — i.e. the mirror reached a
+/// committable tree between consecutive banners, so the deletion is a recurring
+/// transient, not a settled wedge. The HQ roots producing it delete their own
+/// machine-managed subtrees (`.claude` + `core`, replaced wholesale by an HQ core
+/// update; `workspace` + `outputs`, session scratch created and destroyed by
+/// design), which is what opens a >70s window in which a large subtree is
+/// legitimately absent.
+///
+/// 30 minutes is ~21x the longest window ever observed, and a genuinely wedged
+/// root — which refuses about once a minute — still clears it inside ~26 passes.
+const REFUSAL_CONFIRM_MIN_AGE: Duration = Duration::from_secs(30 * 60);
 
 /// An episode with no refusing pass for this long is over — its root either
 /// recovered without the mirror observing it, or stopped being mirrored at all.
@@ -117,12 +140,24 @@ const ROOT_PREFIX_LABEL: &str = "<root>";
 #[derive(Debug, Clone)]
 struct RefusalEpisode {
     opened_at: Instant,
+    /// Age this episode already had when it was opened in *this* process,
+    /// recovered from the on-disk record. A monotonic `Instant` cannot be dated
+    /// before process start, so the inherited span is carried alongside it
+    /// rather than folded into `opened_at`.
+    carried_age: Duration,
     last_refusal_at: Instant,
     occurrences: usize,
     distinct_sets: usize,
     last_digest: String,
     suppressed_since_report: usize,
     reported_at: Option<Instant>,
+}
+
+impl RefusalEpisode {
+    /// How long this episode has been refusing, across process restarts.
+    fn age(&self, now: Instant) -> Duration {
+        now.duration_since(self.opened_at) + self.carried_age
+    }
 }
 
 /// Open refusal episodes, one per HQ root. A root that has not refused for a
@@ -146,14 +181,52 @@ const REFUSAL_STATE_FILE: &str = "hq-sync-mirror-refusal.json";
 /// should re-arm the first banner". On a fleet that shipped twelve releases in
 /// four days, that meant every auto-update re-armed every wedged install — which
 /// is what kept reopening the issue. Reversing that choice is the point.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The second fix persisted only [`Self::last_reported_at`] and left the
+/// confirmation clock in memory, where it was destroyed both by a recovering
+/// pass and by an app restart — so a 30-minute confirmation window would have
+/// been reset before it could ever elapse. The episode fields below are what
+/// make a duration gate reachable at all.
+///
+/// Every field is optional or defaulted, so a record written by an older build
+/// (or a partially-written one) still loads instead of poisoning the lane.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PersistedRefusalState {
-    /// Wall clock, RFC3339: the cooldown anchor that survives a restart.
-    last_reported_at: String,
-    /// Snapshot of the episode that produced that report. Forensic only — it
-    /// never feeds the suppression decision.
+    /// Wall clock, RFC3339: the cooldown anchor that survives a restart. Absent
+    /// until this root's first banner — the record is now written on the pass
+    /// that *opens* an episode, long before anything has been reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_reported_at: Option<String>,
+    /// Wall clock, RFC3339: when the currently open episode began refusing.
+    /// This is the confirmation clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    episode_started_at: Option<String>,
+    /// Wall clock, RFC3339: that episode's most recent refusing pass. Staleness
+    /// is judged from here, so an abandoned record cannot confirm a brand-new
+    /// episode the instant it opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    episode_last_refusal_at: Option<String>,
+    /// Refusing passes and distinct deletion sets accumulated by the open
+    /// episode, carried across a restart alongside its age.
+    #[serde(default)]
+    episode_occurrences: usize,
+    #[serde(default)]
+    episode_distinct_sets: usize,
+    /// Episodes that opened and then *recovered* since the last banner, and the
+    /// longest lifetime among them. This is the discriminator all three rounds
+    /// lacked: a genuine wedge reports zero recovered episodes, a recurring
+    /// transient reports N with a bounded maximum. Reset when a banner emits.
+    #[serde(default)]
+    recovered_episodes_since_report: usize,
+    #[serde(default)]
+    longest_recovered_episode_secs: u64,
+    /// Snapshot of the episode that produced the last report. Forensic only —
+    /// it never feeds the suppression decision.
+    #[serde(default)]
     episode_opened_at: String,
+    #[serde(default)]
     occurrences: usize,
+    #[serde(default)]
     distinct_sets: usize,
 }
 
@@ -321,6 +394,12 @@ impl RefusalReportAction {
 
 /// Pure refusal-report decision, over one HQ root's episode.
 ///
+/// "Confirmed" means **sustained in wall-clock time**, not merely seen twice.
+/// An episode has to clear both `confirm_after` passes and `confirm_min_age` of
+/// continuous refusal; either alone is a predicate the field has already
+/// falsified. `episode_age` spans process restarts, because a confirmation clock
+/// that resets on relaunch can never elapse.
+///
 /// `since_last_report` is the elapsed time since the *later* of this root's two
 /// report anchors — the in-process monotonic one and the persisted wall-clock
 /// one — so neither an app restart nor a wall clock that moved can shorten the
@@ -328,12 +407,14 @@ impl RefusalReportAction {
 /// tree churns, and keying on the churn is what produced the flood.
 fn decide_refusal_report(
     occurrences: usize,
+    episode_age: Duration,
     already_reported_in_episode: bool,
     since_last_report: Option<Duration>,
     confirm_after: usize,
+    confirm_min_age: Duration,
     cooldown: Duration,
 ) -> RefusalReportAction {
-    if occurrences < confirm_after {
+    if occurrences < confirm_after || episode_age < confirm_min_age {
         return RefusalReportAction::AwaitConfirmation;
     }
     match since_last_report {
@@ -376,14 +457,12 @@ fn refusal_state_path(git_dir: &Path) -> PathBuf {
     git_dir.join(REFUSAL_STATE_FILE)
 }
 
-/// Wall-clock stamp of this root's last report, or `None` when there is no
-/// usable one.
+/// The whole on-disk record for a root, or `None` when there is no usable one.
 ///
-/// Missing, unreadable, unparsable and future-dated records all resolve to
-/// `None` — i.e. treat the cooldown as re-armed. Every failure is logged and
-/// swallowed: the mirror must never fail or stall because an observability file
-/// went bad.
-fn read_persisted_report_at(git_dir: &Path, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+/// Missing, unreadable and unparsable records all resolve to `None`. Every
+/// failure is logged and swallowed: the mirror must never fail or stall because
+/// an observability file went bad.
+fn read_persisted_state(git_dir: &Path) -> Option<PersistedRefusalState> {
     let path = refusal_state_path(git_dir);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -400,8 +479,8 @@ fn read_persisted_report_at(git_dir: &Path, now: DateTime<Utc>) -> Option<DateTi
             return None;
         }
     };
-    let parsed: PersistedRefusalState = match serde_json::from_str(&raw) {
-        Ok(parsed) => parsed,
+    match serde_json::from_str(&raw) {
+        Ok(parsed) => Some(parsed),
         Err(err) => {
             log(
                 LOG_TAG,
@@ -410,48 +489,123 @@ fn read_persisted_report_at(git_dir: &Path, now: DateTime<Utc>) -> Option<DateTi
                     path.display()
                 ),
             );
-            return None;
+            None
         }
-    };
-    let reported_at = match DateTime::parse_from_rfc3339(&parsed.last_reported_at) {
+    }
+}
+
+/// A persisted RFC3339 stamp, accepted only if it parses and is not in the
+/// future. A stamp from the future means the clock moved backwards, a
+/// DST/timezone jump, or a copied `.git`; every caller here would rather
+/// re-arm (one extra banner) than latch silent for what could be years.
+fn usable_stamp(
+    raw: Option<&String>,
+    now: DateTime<Utc>,
+    path: &Path,
+    what: &str,
+) -> Option<DateTime<Utc>> {
+    let raw = raw?;
+    let parsed = match DateTime::parse_from_rfc3339(raw) {
         Ok(at) => at.with_timezone(&Utc),
         Err(err) => {
             log(
                 LOG_TAG,
                 &format!(
-                    "{} carries an unparsable timestamp {:?} ({err}) — treating the cooldown as \
-                     re-armed",
-                    path.display(),
-                    parsed.last_reported_at
+                    "{} carries an unparsable {what} {raw:?} ({err}) — discarding it",
+                    path.display()
                 ),
             );
             return None;
         }
     };
-    // A stamp from the future means the clock moved backwards, a DST/timezone
-    // jump, or a copied `.git`. Re-arm rather than latch silent for what could
-    // be years.
-    if elapsed_since_wall(reported_at, now).is_none() {
+    if elapsed_since_wall(parsed, now).is_none() {
         log(
             LOG_TAG,
             &format!(
-                "{} is dated in the future ({}) — treating the cooldown as re-armed",
-                path.display(),
-                parsed.last_reported_at
+                "{} has a {what} dated in the future ({raw}) — discarding it",
+                path.display()
             ),
         );
         return None;
     }
-    Some(reported_at)
+    Some(parsed)
 }
 
-/// Persist this root's report anchor via a same-directory temp file plus an
+/// Wall-clock stamp of this root's last report, or `None` when there is no
+/// usable one — i.e. treat the cooldown as re-armed.
+///
+/// The reporter reads the whole record instead (it needs the episode clock in
+/// the same pass); this is the narrow view the cooldown tests assert against.
+#[cfg(test)]
+fn read_persisted_report_at(git_dir: &Path, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let state = read_persisted_state(git_dir)?;
+    usable_stamp(
+        state.last_reported_at.as_ref(),
+        now,
+        &refusal_state_path(git_dir),
+        "report timestamp",
+    )
+}
+
+/// What an in-progress episode on disk contributes to a fresh in-memory one.
+#[derive(Debug, Clone, Copy, Default)]
+struct CarriedEpisode {
+    age: Duration,
+    occurrences: usize,
+    distinct_sets: usize,
+}
+
+/// Recover the open episode from a persisted record, if it is still live.
+///
+/// An abandoned record must read as *stale*, never as accumulated age — that is
+/// the one way a duration gate could confirm a brand-new episode instantly. A
+/// record is discarded whenever its last refusing pass is missing, unparsable,
+/// future-dated, or older than [`REFUSAL_EPISODE_IDLE_TTL`]; so is one whose
+/// start stamp is missing, unparsable or future-dated.
+fn carried_episode(
+    state: &PersistedRefusalState,
+    now: DateTime<Utc>,
+    path: &Path,
+) -> Option<CarriedEpisode> {
+    let last_refusal = usable_stamp(
+        state.episode_last_refusal_at.as_ref(),
+        now,
+        path,
+        "episode refusal stamp",
+    )?;
+    let idle = elapsed_since_wall(last_refusal, now)?;
+    if idle >= REFUSAL_EPISODE_IDLE_TTL {
+        log(
+            LOG_TAG,
+            &format!(
+                "{}: persisted episode has not refused for {}s — abandoning it and opening a \
+                 fresh one",
+                path.display(),
+                idle.as_secs()
+            ),
+        );
+        return None;
+    }
+    let started = usable_stamp(
+        state.episode_started_at.as_ref(),
+        now,
+        path,
+        "episode start stamp",
+    )?;
+    Some(CarriedEpisode {
+        age: elapsed_since_wall(started, now)?,
+        occurrences: state.episode_occurrences,
+        distinct_sets: state.episode_distinct_sets,
+    })
+}
+
+/// Persist this root's refusal record via a same-directory temp file plus an
 /// atomic rename, so a crash or a second process can never observe a torn
 /// record. Callers hold the cross-process mirror lock, which is what makes the
 /// fixed temp file name safe.
 ///
-/// Best-effort throughout: failing to persist costs exactly one re-armed banner.
-fn write_persisted_report_at(git_dir: &Path, state: &PersistedRefusalState) {
+/// Best-effort throughout: failing to persist costs at most one extra banner.
+fn write_persisted_state(git_dir: &Path, state: &PersistedRefusalState) {
     let path = refusal_state_path(git_dir);
     let temp = git_dir.join(format!("{REFUSAL_STATE_FILE}.tmp"));
     let encoded = match serde_json::to_string(state) {
@@ -939,7 +1093,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
             log(LOG_TAG, &format!("{hq_folder}: nothing to commit"));
             // A clean pass ends any refusal episode: the condition was
             // transient, so the next one deserves its own confirmation.
-            note_mirror_recovered(hq_folder);
+            note_mirror_recovered(hq_folder, git_dir);
             return Ok(());
         }
         Some(1) => {} // staged changes — proceed to commit
@@ -962,7 +1116,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     run_git(hq_folder, &["commit", "-m", &msg], GIT_INDEX_TIMEOUT)?;
     log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
     // The mirror committed, so this root is healthy again.
-    note_mirror_recovered(hq_folder);
+    note_mirror_recovered(hq_folder, git_dir);
 
     // No upstream → skip push. Covers detached HEAD, never-pushed branches,
     // and one-off forks. User runs `git push -u` once; later syncs push.
@@ -1079,9 +1233,28 @@ fn report_bulk_refusal_at(
     now: Instant,
     wall_now: DateTime<Utc>,
 ) -> bool {
-    // Read the persisted anchor before taking the lock: it is file I/O, and the
+    // Read the persisted record before taking the lock: it is file I/O, and the
     // episode map must never be held across it.
-    let persisted_report_at = read_persisted_report_at(report.git_dir, wall_now);
+    let state_path = refusal_state_path(report.git_dir);
+    let persisted = read_persisted_state(report.git_dir).unwrap_or_default();
+    let persisted_report_at = usable_stamp(
+        persisted.last_reported_at.as_ref(),
+        wall_now,
+        &state_path,
+        "report timestamp",
+    );
+    let carried = carried_episode(&persisted, wall_now, &state_path);
+    // How long ago disk last saw this episode refuse. `None` means the record is
+    // absent or unusable, so the clock has to be re-established now.
+    let persisted_refusal_gap = carried.and_then(|_| {
+        usable_stamp(
+            persisted.episode_last_refusal_at.as_ref(),
+            wall_now,
+            &state_path,
+            "episode refusal stamp",
+        )
+        .and_then(|at| elapsed_since_wall(at, wall_now))
+    });
 
     let outcome = {
         let mut episodes = REFUSAL_EPISODES
@@ -1092,16 +1265,23 @@ fn report_bulk_refusal_at(
             now.duration_since(episode.last_refusal_at) < REFUSAL_EPISODE_IDLE_TTL
         });
 
+        // An in-memory episode is authoritative and fresher; disk only seeds an
+        // episode this process has not seen — which is exactly the app-restart
+        // case the confirmation clock has to survive.
         let episode = episodes
             .entry(report.hq_folder.to_string())
-            .or_insert_with(|| RefusalEpisode {
-                opened_at: now,
-                last_refusal_at: now,
-                occurrences: 0,
-                distinct_sets: 0,
-                last_digest: String::new(),
-                suppressed_since_report: 0,
-                reported_at: None,
+            .or_insert_with(|| {
+                let seed = carried.unwrap_or_default();
+                RefusalEpisode {
+                    opened_at: now,
+                    carried_age: seed.age,
+                    last_refusal_at: now,
+                    occurrences: seed.occurrences,
+                    distinct_sets: seed.distinct_sets,
+                    last_digest: String::new(),
+                    suppressed_since_report: 0,
+                    reported_at: None,
+                }
             });
 
         episode.last_refusal_at = now;
@@ -1117,15 +1297,17 @@ fn report_bulk_refusal_at(
             episode.reported_at.map(|at| now.duration_since(at)),
             persisted_report_at.and_then(|at| elapsed_since_wall(at, wall_now)),
         );
+        let episode_age = episode.age(now);
         let action = decide_refusal_report(
             episode.occurrences,
+            episode_age,
             episode.reported_at.is_some(),
             since_last_report,
             REFUSAL_CONFIRM_OCCURRENCES,
+            REFUSAL_CONFIRM_MIN_AGE,
             REFUSAL_COOLDOWN,
         );
 
-        let episode_age = now.duration_since(episode.opened_at);
         let suppressed_since_report = if action.emits() {
             let suppressed = episode.suppressed_since_report;
             episode.reported_at = Some(now);
@@ -1144,7 +1326,7 @@ fn report_bulk_refusal_at(
             episode_age,
             since_last_report,
             // The wall-clock instant this episode opened, reconstructed from its
-            // monotonic age. Persisted as forensic context only.
+            // age — which now spans restarts, so this is the true start.
             episode_opened_at_wall: wall_now
                 - chrono::Duration::from_std(episode_age)
                     .unwrap_or_else(|_| chrono::Duration::zero()),
@@ -1152,14 +1334,49 @@ fn report_bulk_refusal_at(
     };
 
     let hq_folder = report.hq_folder;
+
+    // Keep the confirmation clock on disk. The pass that opens an episode always
+    // writes — an episode that never records its start can never confirm — and
+    // later passes refresh the stamp only once it would actually move by a mirror
+    // interval, which bounds the write rate on a root refusing once a minute.
+    let refresh_due = persisted_refusal_gap.is_none_or(|gap| gap >= MIN_MIRROR_INTERVAL);
+    if outcome.action.emits() || refresh_due {
+        let stamp = wall_now.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let opened_at = outcome
+            .episode_opened_at_wall
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        // Start from what is already on disk, so a pass that only refreshes the
+        // episode clock leaves the cooldown anchor and the recovered-episode
+        // evidence untouched. Rewriting the anchor here would silently re-arm on
+        // every refusing pass the cooldown it exists to serve.
+        let mut next = persisted.clone();
+        next.episode_started_at = Some(opened_at.clone());
+        next.episode_last_refusal_at = Some(stamp.clone());
+        next.episode_occurrences = outcome.occurrences;
+        next.episode_distinct_sets = outcome.distinct_sets;
+        if outcome.action.emits() {
+            next.last_reported_at = Some(stamp);
+            // A banner carries the recovered-episode evidence, so it also
+            // consumes it: the next banner describes the window after this one.
+            next.recovered_episodes_since_report = 0;
+            next.longest_recovered_episode_secs = 0;
+            next.episode_opened_at = opened_at;
+            next.occurrences = outcome.occurrences;
+            next.distinct_sets = outcome.distinct_sets;
+        }
+        write_persisted_state(report.git_dir, &next);
+    }
+
     if !outcome.action.emits() {
         match outcome.action {
             RefusalReportAction::AwaitConfirmation => log(
                 LOG_TAG,
                 &format!(
-                    "{hq_folder}: refusal not yet confirmed (pass {} of {REFUSAL_CONFIRM_OCCURRENCES}); \
-                     holding the Sentry banner in case the next pass is clean",
-                    outcome.occurrences
+                    "{hq_folder}: refusal not yet confirmed (pass {} of {REFUSAL_CONFIRM_OCCURRENCES}, \
+                     {}s of {}s sustained); holding the Sentry banner in case the next pass is clean",
+                    outcome.occurrences,
+                    outcome.episode_age.as_secs(),
+                    REFUSAL_CONFIRM_MIN_AGE.as_secs(),
                 ),
             ),
             _ => log(
@@ -1214,6 +1431,20 @@ fn report_bulk_refusal_at(
                     .unwrap_or_else(|| "never".to_string()),
             );
             scope.set_tag("report_source", outcome.action.source());
+            // The discriminator: how many times this root opened a refusal
+            // episode and then *recovered* since the last banner, and how long
+            // the longest of those windows lasted. Zero recovered episodes on a
+            // 30-minute-old episode is a genuine wedge; a non-zero count with a
+            // bounded maximum is a recurring transient, and names its true
+            // lifetime instead of leaving the next round to guess at it.
+            scope.set_tag(
+                "recovered_episodes_since_report",
+                persisted.recovered_episodes_since_report.to_string(),
+            );
+            scope.set_tag(
+                "longest_recovered_episode_secs",
+                persisted.longest_recovered_episode_secs.to_string(),
+            );
             // A refusing root with no upstream is only losing local history; one
             // with an upstream has silently stopped publishing.
             scope.set_tag("has_upstream", report.has_upstream.to_string());
@@ -1231,17 +1462,6 @@ fn report_bulk_refusal_at(
         },
     );
 
-    write_persisted_report_at(
-        report.git_dir,
-        &PersistedRefusalState {
-            last_reported_at: wall_now.to_rfc3339_opts(SecondsFormat::Secs, true),
-            episode_opened_at: outcome
-                .episode_opened_at_wall
-                .to_rfc3339_opts(SecondsFormat::Secs, true),
-            occurrences: outcome.occurrences,
-            distinct_sets: outcome.distinct_sets,
-        },
-    );
     true
 }
 
@@ -1251,20 +1471,73 @@ fn report_bulk_refusal_at(
 /// contiguous run of refusing passes and a healthy tree resets the lane. The
 /// *persisted* cooldown anchor is deliberately left in place: a tree that flaps
 /// between refusing and healthy must not earn a fresh banner on every flap.
-fn note_mirror_recovered(hq_folder: &str) {
-    let mut episodes = REFUSAL_EPISODES
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Some(episode) = episodes.remove(hq_folder) {
+fn note_mirror_recovered(hq_folder: &str, git_dir: &Path) {
+    note_mirror_recovered_at(hq_folder, git_dir, Instant::now(), Utc::now());
+}
+
+/// Returns whether an episode was actually closed. The clocks are injected so
+/// the recovered-episode evidence is testable without waiting.
+///
+/// Closing an episode is also the only moment its true lifetime is known, so
+/// that lifetime is folded into the persisted record rather than discarded —
+/// which is what left three rounds of triage unable to tell a recurring
+/// transient from a settled wedge.
+fn note_mirror_recovered_at(
+    hq_folder: &str,
+    git_dir: &Path,
+    now: Instant,
+    wall_now: DateTime<Utc>,
+) -> bool {
+    let closed = {
+        let mut episodes = REFUSAL_EPISODES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        episodes.remove(hq_folder)
+    };
+
+    if let Some(episode) = &closed {
         log(
             LOG_TAG,
             &format!(
                 "{hq_folder}: mirror recovered — closing refusal episode after {} refusing pass(es) \
-                 across {} distinct deletion set(s)",
-                episode.occurrences, episode.distinct_sets
+                 across {} distinct deletion set(s), {}s after it opened",
+                episode.occurrences,
+                episode.distinct_sets,
+                episode.age(now).as_secs(),
             ),
         );
     }
+
+    // Every healthy pass lands here, so touch disk only when there is genuinely
+    // an episode to close — a root that has never refused must not acquire a
+    // record at all.
+    let Some(mut state) = read_persisted_state(git_dir) else {
+        return closed.is_some();
+    };
+    if closed.is_none() && state.episode_started_at.is_none() {
+        return false;
+    }
+
+    let state_path = refusal_state_path(git_dir);
+    // Prefer the in-memory lifetime; fall back to what disk recorded, which is
+    // the only source when the episode outlived a restart and then recovered.
+    let lifetime = closed
+        .as_ref()
+        .map(|episode| episode.age(now))
+        .or_else(|| carried_episode(&state, wall_now, &state_path).map(|carried| carried.age));
+
+    if let Some(lifetime) = lifetime {
+        state.recovered_episodes_since_report += 1;
+        state.longest_recovered_episode_secs =
+            state.longest_recovered_episode_secs.max(lifetime.as_secs());
+    }
+    state.episode_started_at = None;
+    state.episode_last_refusal_at = None;
+    state.episode_occurrences = 0;
+    state.episode_distinct_sets = 0;
+    write_persisted_state(git_dir, &state);
+
+    closed.is_some()
 }
 
 /// Whether the current branch has a tracked upstream.
@@ -1524,6 +1797,74 @@ mod tests {
             .with_timezone(&Utc)
     }
 
+    /// The clocks for refusing pass `index`, one [`MIN_MIRROR_INTERVAL`] apart —
+    /// the fastest cadence production can actually produce.
+    fn pass_at(start: Instant, wall: DateTime<Utc>, index: u64) -> (Instant, DateTime<Utc>) {
+        let offset = index * MIN_MIRROR_INTERVAL.as_secs();
+        (
+            start + Duration::from_secs(offset),
+            wall + chrono::Duration::seconds(offset as i64),
+        )
+    }
+
+    /// How many passes at that cadence it takes to clear **both** halves of the
+    /// confirmation gate. Derived from the constants rather than hard-coded, so
+    /// re-tuning [`REFUSAL_CONFIRM_MIN_AGE`] does not silently turn these tests
+    /// into assertions about a window that no longer exists.
+    fn confirming_passes() -> u64 {
+        let by_age = REFUSAL_CONFIRM_MIN_AGE
+            .as_secs()
+            .div_ceil(MIN_MIRROR_INTERVAL.as_secs())
+            + 1;
+        by_age.max(REFUSAL_CONFIRM_OCCURRENCES as u64)
+    }
+
+    /// Drive refusing passes over `indices` at the production cadence.
+    fn sustain(
+        hq_folder: &str,
+        git_dir: &Path,
+        set: &StagedDeletions,
+        tracked: usize,
+        start: Instant,
+        wall: DateTime<Utc>,
+        indices: std::ops::Range<u64>,
+    ) {
+        for index in indices {
+            let (now, wall_now) = pass_at(start, wall, index);
+            refuse_at(hq_folder, git_dir, set, tracked, now, wall_now);
+        }
+    }
+
+    /// Seed the on-disk record directly, the way a previous process would have
+    /// left it. `age` is how long the open episode has already been refusing.
+    fn seed_persisted_episode(
+        git_dir: &Path,
+        wall_now: DateTime<Utc>,
+        age: Duration,
+        occurrences: usize,
+    ) {
+        write_persisted_state(
+            git_dir,
+            &PersistedRefusalState {
+                episode_started_at: Some(
+                    (wall_now - chrono::Duration::from_std(age).unwrap())
+                        .to_rfc3339_opts(SecondsFormat::Secs, true),
+                ),
+                episode_last_refusal_at: Some(
+                    (wall_now - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64))
+                        .to_rfc3339_opts(SecondsFormat::Secs, true),
+                ),
+                episode_occurrences: occurrences,
+                episode_distinct_sets: 1,
+                ..PersistedRefusalState::default()
+            },
+        );
+    }
+
+    fn persisted(git_dir: &Path) -> PersistedRefusalState {
+        read_persisted_state(git_dir).expect("a refusal record exists")
+    }
+
     #[test]
     fn throttle_skips_within_interval_and_allows_after() {
         let now = Instant::now();
@@ -1551,45 +1892,73 @@ mod tests {
     fn refusal_gate_confirms_first_then_holds_one_banner_per_cooldown() {
         let confirm = REFUSAL_CONFIRM_OCCURRENCES;
         let cooldown = REFUSAL_COOLDOWN;
+        let min_age = REFUSAL_CONFIRM_MIN_AGE;
+        let sustained = min_age;
+        let gate = |occurrences, age, reported, since| {
+            decide_refusal_report(
+                occurrences,
+                age,
+                reported,
+                since,
+                confirm,
+                min_age,
+                cooldown,
+            )
+        };
 
         // A single refusing pass is a candidate, not a signal.
         assert_eq!(
-            decide_refusal_report(1, false, None, confirm, cooldown),
+            gate(1, Duration::ZERO, false, None),
             RefusalReportAction::AwaitConfirmation
         );
-        // The second confirms it.
+        // Both halves of the gate are load-bearing, and each alone is a
+        // predicate the field has already falsified. Enough passes but a young
+        // episode is the exact production shape — every post-fix event was the
+        // second pass of a ~70-second-old episode.
         assert_eq!(
-            decide_refusal_report(2, false, None, confirm, cooldown),
+            gate(9_999, min_age - Duration::from_secs(1), false, None),
+            RefusalReportAction::AwaitConfirmation,
+            "pass count alone must not confirm a transient window"
+        );
+        // …and an old episode with too few passes is not a sustained refusal
+        // either; it is one sample with a stale clock behind it.
+        assert_eq!(
+            gate(confirm - 1, sustained, false, None),
+            RefusalReportAction::AwaitConfirmation,
+            "age alone must not confirm an episode that has barely refused"
+        );
+        // Clearing both confirms it.
+        assert_eq!(
+            gate(confirm, sustained, false, None),
             RefusalReportAction::ReportFirstConfirmed
         );
         // Everything after it, however long the episode runs, is suppressed…
         assert_eq!(
-            decide_refusal_report(3, true, Some(Duration::from_secs(1)), confirm, cooldown),
+            gate(confirm + 1, sustained, true, Some(Duration::from_secs(1))),
             RefusalReportAction::Suppress
         );
         assert_eq!(
-            decide_refusal_report(
+            gate(
                 9_999,
+                sustained,
                 true,
-                Some(cooldown - Duration::from_secs(1)),
-                confirm,
-                cooldown
+                Some(cooldown - Duration::from_secs(1))
             ),
             RefusalReportAction::Suppress
         );
         // …until the cooldown expires, which re-arms exactly one banner.
         assert_eq!(
-            decide_refusal_report(9_999, true, Some(cooldown), confirm, cooldown),
+            gate(9_999, sustained, true, Some(cooldown)),
             RefusalReportAction::ReportCooldownRearm
         );
         // A fresh episode whose root reported recently (a restart, or a tree
         // that flapped) still waits out that root's cooldown.
         assert_eq!(
-            decide_refusal_report(2, false, Some(Duration::from_secs(30)), confirm, cooldown),
+            gate(confirm, sustained, false, Some(Duration::from_secs(30))),
             RefusalReportAction::Suppress
         );
         assert_eq!(
-            decide_refusal_report(2, false, Some(cooldown), confirm, cooldown),
+            gate(confirm, sustained, false, Some(cooldown)),
             RefusalReportAction::ReportFirstConfirmed
         );
     }
@@ -1771,17 +2140,9 @@ mod tests {
         let start = Instant::now();
         let wall = epoch();
 
+        let confirming = confirming_passes();
         let events = sentry::test::with_captured_events(|| {
-            for pass in 0..6u64 {
-                refuse_at(
-                    "/hq",
-                    &git_dir,
-                    &set,
-                    100,
-                    start + Duration::from_secs(pass * 60),
-                    wall + chrono::Duration::seconds((pass * 60) as i64),
-                );
-            }
+            sustain("/hq", &git_dir, &set, 100, start, wall, 0..confirming + 5);
         });
         reset_refusal_report_state();
 
@@ -1799,16 +2160,27 @@ mod tests {
                 .tags
                 .get("episode_occurrences")
                 .map(String::as_str),
-            Some("2"),
-            "the banner fires on the confirming pass, not the first sample"
+            Some(confirming.to_string().as_str()),
+            "the banner fires on the pass that clears the confirmation window, \
+             not on an earlier sample"
+        );
+        assert!(
+            events[0]
+                .tags
+                .get("episode_age_secs")
+                .and_then(|secs| secs.parse::<u64>().ok())
+                .is_some_and(|secs| secs >= REFUSAL_CONFIRM_MIN_AGE.as_secs()),
+            "a confirmed banner must carry an episode age past the window, got {:?}",
+            events[0].tags.get("episode_age_secs")
         );
         assert_eq!(
             events[0]
                 .tags
                 .get("refusals_since_last_report")
                 .map(String::as_str),
-            Some("1"),
-            "the unconfirmed first pass is counted as suppressed, not lost"
+            Some((confirming - 1).to_string().as_str()),
+            "every unconfirmed pass the banner waited on is counted as \
+             suppressed, not lost"
         );
     }
 
@@ -1822,37 +2194,32 @@ mod tests {
         let start = Instant::now();
         let wall = epoch();
 
+        let confirming = confirming_passes();
+        let banner_at = confirming - 1;
         let events = sentry::test::with_captured_events(|| {
-            refuse_at("/hq", &git_dir, &set, 100, start, wall);
-            refuse_at(
+            // The episode confirms on pass `banner_at`…
+            sustain("/hq", &git_dir, &set, 100, start, wall, 0..confirming);
+            // …then four more refusing passes inside the cooldown. They emit
+            // nothing, but they must be *counted* — the rearm event is the only
+            // place triage learns how wedged this root was while it stayed quiet.
+            sustain(
                 "/hq",
                 &git_dir,
                 &set,
                 100,
-                start + Duration::from_secs(60),
-                wall + chrono::Duration::seconds(60),
+                start,
+                wall,
+                confirming..confirming + 4,
             );
-            // Four more refusing passes inside the cooldown. They emit nothing,
-            // but they must be *counted* — the rearm event is the only place
-            // triage learns how wedged this root was while it stayed quiet.
-            for pass in 2..=5u64 {
-                refuse_at(
-                    "/hq",
-                    &git_dir,
-                    &set,
-                    100,
-                    start + Duration::from_secs(pass * 60),
-                    wall + chrono::Duration::seconds((pass * 60) as i64),
-                );
-            }
-            // Still wedged six hours later.
+            // Still wedged six hours after the banner.
+            let (now, wall_now) = pass_at(start, wall, banner_at);
             refuse_at(
                 "/hq",
                 &git_dir,
                 &set,
                 100,
-                start + Duration::from_secs(60) + REFUSAL_COOLDOWN,
-                wall + chrono::Duration::seconds(60) + chrono::Duration::hours(6),
+                now + REFUSAL_COOLDOWN,
+                wall_now + chrono::Duration::hours(6),
             );
         });
         reset_refusal_report_state();
@@ -1879,8 +2246,8 @@ mod tests {
                 .tags
                 .get("refusals_since_last_report")
                 .map(String::as_str),
-            Some("1"),
-            "the first banner carries only the unconfirmed pass it waited on"
+            Some((confirming - 1).to_string().as_str()),
+            "the first banner carries the unconfirmed passes it waited on"
         );
         assert_eq!(
             events[1]
@@ -1906,12 +2273,18 @@ mod tests {
         let start = Instant::now();
         let wall = epoch();
 
+        // The same alternating 7m36s / 5m25s cadence, carried far enough to
+        // clear the confirmation window — churn must not shorten it either.
+        let passes = [
+            (0u64, "set-a", 576usize),
+            (456, "set-b", 1531),
+            (781, "set-c", 916),
+            (1237, "set-d", 1204),
+            (1562, "set-e", 833),
+            (2018, "set-f", 1447),
+        ];
         let events = sentry::test::with_captured_events(|| {
-            for (offset, digest, count) in [
-                (0u64, "set-a", 576usize),
-                (456, "set-b", 1531),
-                (781, "set-c", 916),
-            ] {
+            for (offset, digest, count) in passes {
                 refuse_at(
                     "/hq",
                     &git_dir,
@@ -1935,7 +2308,7 @@ mod tests {
                 .tags
                 .get("distinct_deletion_sets")
                 .map(String::as_str),
-            Some("2"),
+            Some(passes.len().to_string().as_str()),
             "the churn is preserved as evidence on the surviving event"
         );
         assert_eq!(
@@ -1957,30 +2330,22 @@ mod tests {
         let start = Instant::now();
         let wall = epoch();
 
+        let confirming = confirming_passes();
         let events = sentry::test::with_captured_events(|| {
-            refuse_at("/hq", &git_dir, &set, 100, start, wall);
-            refuse_at(
-                "/hq",
-                &git_dir,
-                &set,
-                100,
-                start + Duration::from_secs(60),
-                wall + chrono::Duration::seconds(60),
-            );
+            sustain("/hq", &git_dir, &set, 100, start, wall, 0..confirming);
 
             // An auto-update relaunch: the process-local episode is gone, the
             // broken tree and the persisted anchor on disk are not.
             reset_refusal_report_state();
-            for pass in 1..=2i64 {
-                refuse_at(
-                    "/hq",
-                    &git_dir,
-                    &set,
-                    100,
-                    start + Duration::from_secs(120 + pass as u64 * 60),
-                    wall + chrono::Duration::seconds(120 + pass * 60),
-                );
-            }
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                100,
+                start,
+                wall,
+                confirming..confirming + 2,
+            );
         });
         reset_refusal_report_state();
 
@@ -2001,30 +2366,18 @@ mod tests {
         let start = Instant::now();
         let wall = epoch();
 
+        let confirming = confirming_passes();
         let events = sentry::test::with_captured_events(|| {
-            refuse_at("/hq", &git_dir, &set, 100, start, wall);
-            refuse_at(
-                "/hq",
-                &git_dir,
-                &set,
-                100,
-                start + Duration::from_secs(60),
-                wall + chrono::Duration::seconds(60),
-            );
+            sustain("/hq", &git_dir, &set, 100, start, wall, 0..confirming);
 
             // Relaunched a day later, still wedged. Suppression must not latch
             // forever — the persisted anchor is now older than the cooldown.
+            // The persisted *episode* is older than REFUSAL_EPISODE_IDLE_TTL too,
+            // so the relaunched process opens a fresh one and has to earn its
+            // banner over the confirmation window all over again.
             reset_refusal_report_state();
             let later = wall + chrono::Duration::hours(24);
-            refuse_at("/hq", &git_dir, &set, 100, start, later);
-            refuse_at(
-                "/hq",
-                &git_dir,
-                &set,
-                100,
-                start + Duration::from_secs(60),
-                later + chrono::Duration::seconds(60),
-            );
+            sustain("/hq", &git_dir, &set, 100, start, later, 0..confirming);
         });
         reset_refusal_report_state();
 
@@ -2073,17 +2426,10 @@ mod tests {
                 "case {index}"
             );
 
+            let confirming = confirming_passes();
             let events = sentry::test::with_captured_events(|| {
                 let start = Instant::now();
-                refuse_at("/hq", &git_dir, &set, 100, start, wall);
-                refuse_at(
-                    "/hq",
-                    &git_dir,
-                    &set,
-                    100,
-                    start + Duration::from_secs(60),
-                    wall + chrono::Duration::seconds(60),
-                );
+                sustain("/hq", &git_dir, &set, 100, start, wall, 0..confirming);
             });
             assert_eq!(
                 events.len(),
@@ -2091,11 +2437,420 @@ mod tests {
                 "case {index} must re-arm exactly one banner"
             );
             // …and the reporter must have replaced the bad record with a good one.
+            let after = wall + chrono::Duration::seconds((confirming * 60) as i64);
             assert!(
-                read_persisted_report_at(&git_dir, wall + chrono::Duration::seconds(60)).is_some(),
+                read_persisted_report_at(&git_dir, after).is_some(),
                 "case {index} must have replaced the bad record with a usable one"
             );
         }
+        reset_refusal_report_state();
+    }
+
+    // ── B3: the confirmation window is a duration, not a pass count ──────
+
+    /// The exact production shape this round exists to kill: two refusing passes
+    /// about seventy seconds apart on one stable deletion set, then a clean pass.
+    ///
+    /// Every post-fix event in the field was precisely this — `report_source=
+    /// first-confirmed`, `episode_occurrences=2`, `episode_age_secs` in
+    /// {68, 68, 69, 69, 71, 84}, `refusals_since_last_report=1`,
+    /// `distinct_deletion_sets=1`, `deletion_set_stable=true` — repeated once per
+    /// HQ root per cooldown, forever. It must now be silent.
+    #[test]
+    fn a_transient_window_that_clears_the_pass_gate_is_not_reported() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0.claude/b.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+
+        let events = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, start, wall);
+            let (now, wall_now) = (
+                start + Duration::from_secs(70),
+                wall + chrono::Duration::seconds(70),
+            );
+            refuse_at("/hq", &git_dir, &set, 1_356, now, wall_now);
+            note_mirror_recovered_at("/hq", &git_dir, now, wall_now);
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            0,
+            "a seventy-second window that then healed is a transient, not a wedge"
+        );
+        let state = persisted(&git_dir);
+        assert_eq!(state.last_reported_at, None);
+        assert_eq!(state.episode_started_at, None, "the episode was closed");
+        assert_eq!(state.recovered_episodes_since_report, 1);
+        assert_eq!(
+            state.longest_recovered_episode_secs, 70,
+            "the transient's true lifetime is kept — it is the measurement the \
+             next threshold decision needs"
+        );
+    }
+
+    #[test]
+    fn a_sustained_refusal_reports_once_the_confirmation_window_elapses() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+
+        let events = sentry::test::with_captured_events(|| {
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                start,
+                wall,
+                0..confirming_passes(),
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "a root that never recovers must be reported"
+        );
+        assert_eq!(
+            events[0].tags.get("report_source").map(String::as_str),
+            Some("first-confirmed")
+        );
+        let age: u64 = events[0].tags["episode_age_secs"].parse().unwrap();
+        assert!(
+            age >= REFUSAL_CONFIRM_MIN_AGE.as_secs(),
+            "a confirmed banner must have sustained the whole window, got {age}s"
+        );
+        assert_eq!(
+            events[0]
+                .tags
+                .get("recovered_episodes_since_report")
+                .map(String::as_str),
+            Some("0"),
+            "nothing recovered, so this reads as a genuine wedge"
+        );
+    }
+
+    /// The confirmation clock has to be on disk. Under the previous fix it lived
+    /// only in `REFUSAL_EPISODES`, so an auto-update — twelve releases in four
+    /// days on this fleet — would have reset a thirty-minute window before it
+    /// could ever elapse, and a real wedge would have gone unreported forever.
+    #[test]
+    fn a_wedge_confirms_across_an_app_restart() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        // Forty minutes of refusing, about one pass a minute, then a relaunch.
+        seed_persisted_episode(&git_dir, wall, Duration::from_secs(40 * 60), 39);
+
+        let events = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "a wedge that outlived a restart must still confirm — the clock is on \
+             disk, not in the process"
+        );
+        let age: u64 = events[0].tags["episode_age_secs"].parse().unwrap();
+        assert!(
+            age >= REFUSAL_CONFIRM_MIN_AGE.as_secs(),
+            "the inherited age must be carried, got {age}s"
+        );
+        assert_eq!(
+            events[0]
+                .tags
+                .get("episode_occurrences")
+                .map(String::as_str),
+            Some("40"),
+            "the inherited pass count is carried too, not restarted at one"
+        );
+    }
+
+    #[test]
+    fn recovery_clears_the_persisted_episode_so_the_next_window_starts_from_zero() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+        let confirming = confirming_passes();
+
+        let confirmed = sentry::test::with_captured_events(|| {
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+        });
+        assert_eq!(confirmed.len(), 1);
+
+        // The tree heals.
+        let (recovered_now, recovered_wall) = pass_at(start, wall, confirming);
+        assert!(note_mirror_recovered_at(
+            "/hq",
+            &git_dir,
+            recovered_now,
+            recovered_wall
+        ));
+        let state = persisted(&git_dir);
+        assert_eq!(state.episode_started_at, None);
+        assert_eq!(state.episode_last_refusal_at, None);
+        assert_eq!(state.episode_occurrences, 0);
+        assert_eq!(state.episode_distinct_sets, 0);
+        assert!(
+            state.last_reported_at.is_some(),
+            "recovery must not erase the cooldown anchor — a flapping tree must \
+             not earn a banner per flap"
+        );
+
+        // A fresh seventy-second window, deliberately placed *past* the cooldown
+        // so suppression cannot be what keeps it quiet: only a reset episode
+        // clock can.
+        reset_refusal_report_state();
+        let later_wall = recovered_wall + chrono::Duration::hours(12);
+        let later = recovered_now + Duration::from_secs(12 * 60 * 60);
+        let events = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, later, later_wall);
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                later + Duration::from_secs(70),
+                later_wall + chrono::Duration::seconds(70),
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            0,
+            "the next window must start its confirmation clock from zero"
+        );
+    }
+
+    /// Seeding age from disk is only safe if an abandoned record reads as stale.
+    /// Each of these four shapes must open a fresh episode instead of confirming
+    /// one instantly, and none may panic.
+    #[test]
+    fn a_stale_or_corrupt_persisted_episode_never_confirms_instantly() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let sustained = REFUSAL_CONFIRM_MIN_AGE + Duration::from_secs(600);
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // Each case claims a long-running episode; only its refusal stamp differs.
+        let cases: [(&str, PersistedRefusalState); 4] = [
+            (
+                "idle past the TTL",
+                PersistedRefusalState {
+                    episode_started_at: stamp(wall - chrono::Duration::hours(48)),
+                    episode_last_refusal_at: stamp(wall - chrono::Duration::hours(24)),
+                    episode_occurrences: 9_999,
+                    ..PersistedRefusalState::default()
+                },
+            ),
+            (
+                "no refusal stamp at all",
+                PersistedRefusalState {
+                    episode_started_at: stamp(
+                        wall - chrono::Duration::seconds(sustained.as_secs() as i64),
+                    ),
+                    episode_last_refusal_at: None,
+                    episode_occurrences: 9_999,
+                    ..PersistedRefusalState::default()
+                },
+            ),
+            (
+                "an unparsable refusal stamp",
+                PersistedRefusalState {
+                    episode_started_at: stamp(
+                        wall - chrono::Duration::seconds(sustained.as_secs() as i64),
+                    ),
+                    episode_last_refusal_at: Some("whenever".to_string()),
+                    episode_occurrences: 9_999,
+                    ..PersistedRefusalState::default()
+                },
+            ),
+            (
+                "a future-dated refusal stamp",
+                PersistedRefusalState {
+                    episode_started_at: stamp(
+                        wall - chrono::Duration::seconds(sustained.as_secs() as i64),
+                    ),
+                    episode_last_refusal_at: stamp(wall + chrono::Duration::hours(9)),
+                    episode_occurrences: 9_999,
+                    ..PersistedRefusalState::default()
+                },
+            ),
+        ];
+
+        for (label, state) in cases {
+            reset_refusal_report_state();
+            let git_dir = scratch_git_dir(&tmp, &format!("git-dir-{}", label.len()));
+            let _ = fs::remove_file(refusal_state_path(&git_dir));
+            write_persisted_state(&git_dir, &state);
+
+            let events = sentry::test::with_captured_events(|| {
+                refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+            });
+            assert_eq!(
+                events.len(),
+                0,
+                "{label}: a stale record must open a fresh episode, never confirm one"
+            );
+            // …and a genuinely live record of the same age still does confirm,
+            // so the discipline above is rejecting staleness rather than the
+            // carry mechanism itself.
+            reset_refusal_report_state();
+            seed_persisted_episode(&git_dir, wall, sustained, 30);
+            let live = sentry::test::with_captured_events(|| {
+                refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+            });
+            assert_eq!(
+                live.len(),
+                1,
+                "{label}: control — a live record of the same age must confirm"
+            );
+        }
+        reset_refusal_report_state();
+    }
+
+    /// With the episode surviving on disk, `ReportCooldownRearm` becomes
+    /// reachable for a real wedge — it never fired once in production under the
+    /// previous fix, which is itself how we know no episode ever survived.
+    #[test]
+    fn a_confirmed_wedge_still_rearms_one_banner_per_cooldown() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+        let confirming = confirming_passes();
+
+        let events = sentry::test::with_captured_events(|| {
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+            // Still wedged six hours after the first banner.
+            let (banner_now, banner_wall) = pass_at(start, wall, confirming - 1);
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                banner_now + REFUSAL_COOLDOWN,
+                banner_wall + chrono::Duration::hours(6),
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            2,
+            "a still-wedged root re-arms once per cooldown"
+        );
+        assert_eq!(
+            events[1].tags.get("report_source").map(String::as_str),
+            Some("cooldown-rearm")
+        );
+    }
+
+    /// The discriminator three rounds of triage lacked: whether the root ever
+    /// recovered between banners. It costs no extra event volume.
+    #[test]
+    fn report_carries_recovered_episode_evidence() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let start = Instant::now();
+
+        // Three transient windows of different lengths, each healing.
+        let windows = [70u64, 240, 130];
+        let mut cursor = 0u64;
+        let events = sentry::test::with_captured_events(|| {
+            for lifetime in windows {
+                let open = cursor;
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    1_356,
+                    start + Duration::from_secs(open),
+                    wall + chrono::Duration::seconds(open as i64),
+                );
+                let close = open + lifetime;
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    1_356,
+                    start + Duration::from_secs(close),
+                    wall + chrono::Duration::seconds(close as i64),
+                );
+                note_mirror_recovered_at(
+                    "/hq",
+                    &git_dir,
+                    start + Duration::from_secs(close),
+                    wall + chrono::Duration::seconds(close as i64),
+                );
+                cursor = close + 600;
+            }
+
+            // Then the root really does wedge.
+            let base = start + Duration::from_secs(cursor);
+            let base_wall = wall + chrono::Duration::seconds(cursor as i64);
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                base,
+                base_wall,
+                0..confirming_passes(),
+            );
+        });
+
+        assert_eq!(events.len(), 1, "only the sustained episode is a banner");
+        assert_eq!(
+            events[0]
+                .tags
+                .get("recovered_episodes_since_report")
+                .map(String::as_str),
+            Some(windows.len().to_string().as_str()),
+            "the banner names how many windows healed on their own before it"
+        );
+        assert_eq!(
+            events[0]
+                .tags
+                .get("longest_recovered_episode_secs")
+                .map(String::as_str),
+            Some(windows.iter().max().unwrap().to_string().as_str()),
+            "…and how long the longest of them lasted"
+        );
+
+        // A banner consumes the evidence, so the next one describes its own window.
+        let state = persisted(&git_dir);
+        assert_eq!(state.recovered_episodes_since_report, 0);
+        assert_eq!(state.longest_recovered_episode_secs, 0);
         reset_refusal_report_state();
     }
 
@@ -2109,18 +2864,18 @@ mod tests {
 
         // A stable episode: the same subtree missing on every pass.
         reset_refusal_report_state();
+        let confirming = confirming_passes();
         let stable_dir = scratch_git_dir(&tmp, "stable-git-dir");
         let stable = sentry::test::with_captured_events(|| {
-            for pass in 0..3u64 {
-                refuse_at(
-                    "/hq/stable",
-                    &stable_dir,
-                    &staged("set-a", 162, records),
-                    1356,
-                    start + Duration::from_secs(pass * 60),
-                    wall + chrono::Duration::seconds((pass * 60) as i64),
-                );
-            }
+            sustain(
+                "/hq/stable",
+                &stable_dir,
+                &staged("set-a", 162, records),
+                1356,
+                start,
+                wall,
+                0..confirming,
+            );
         });
 
         assert_eq!(stable.len(), 1);
@@ -2132,6 +2887,8 @@ mod tests {
             "episode_age_secs",
             "since_last_report_secs",
             "report_source",
+            "recovered_episodes_since_report",
+            "longest_recovered_episode_secs",
             "has_upstream",
         ] {
             assert!(
@@ -2149,8 +2906,8 @@ mod tests {
         );
         assert_eq!(
             event.tags.get("episode_age_secs").map(String::as_str),
-            Some("60"),
-            "the banner fires on the confirming pass, one minute into the episode"
+            Some(((confirming - 1) * 60).to_string().as_str()),
+            "the banner fires on the pass that clears the confirmation window"
         );
         assert_eq!(
             event.tags.get("since_last_report_secs").map(String::as_str),
@@ -2174,14 +2931,15 @@ mod tests {
         reset_refusal_report_state();
         let churn_dir = scratch_git_dir(&tmp, "churn-git-dir");
         let churning = sentry::test::with_captured_events(|| {
-            for (pass, digest) in ["set-a", "set-b", "set-c"].into_iter().enumerate() {
+            for pass in 0..confirming {
+                let (now, wall_now) = pass_at(start, wall, pass);
                 refuse_at(
                     "/hq/churn",
                     &churn_dir,
-                    &staged(digest, 162, records),
+                    &staged(&format!("set-{pass}"), 162, records),
                     1356,
-                    start + Duration::from_secs(pass as u64 * 60),
-                    wall + chrono::Duration::seconds(pass as i64 * 60),
+                    now,
+                    wall_now,
                 );
             }
         });
@@ -2210,16 +2968,15 @@ mod tests {
             b"companies/acme-corp/knowledge/salaries.md\0companies/acme-corp/x.md\0secret-notes.md\0";
 
         let events = sentry::test::with_captured_events(|| {
-            for pass in 0..2u64 {
-                refuse_at(
-                    "/hq",
-                    &git_dir,
-                    &staged("set-a", 3, records),
-                    30,
-                    start + Duration::from_secs(pass * 60),
-                    wall + chrono::Duration::seconds((pass * 60) as i64),
-                );
-            }
+            sustain(
+                "/hq",
+                &git_dir,
+                &staged("set-a", 3, records),
+                30,
+                start,
+                wall,
+                0..confirming_passes(),
+            );
         });
         reset_refusal_report_state();
 
@@ -2386,6 +3143,56 @@ mod tests {
         for i in range {
             fs::write(dir.join(format!("file-{i:04}.md")), format!("content {i}")).unwrap();
         }
+    }
+
+    /// The deletion set real git would stage for this tree right now, read
+    /// through the same code path the mirror uses and then unstaged again, so
+    /// the tree is left exactly as it was found.
+    ///
+    /// `run_mirror` reports on the real clock, so a real-git test can prove the
+    /// mechanism (refuse, reset, commit nothing) but cannot cross a 30-minute
+    /// confirmation window. Handing the *genuine* staged set to the injected
+    /// clock seam continues the same episode — same digest, same counts — rather
+    /// than asserting against a hand-built stand-in.
+    fn staged_deletions_now(dir: &Path) -> StagedDeletions {
+        assert!(git(dir, &["add", "-A"]).status.success());
+        let staged = count_staged_deletions(dir.to_str().unwrap()).expect("git reports deletions");
+        assert!(git(dir, &["reset", "-q"]).status.success());
+        staged
+    }
+
+    /// Carry a real-git episode past the confirmation window on the injected
+    /// clock, one refusing pass at a time, and return the events it captured.
+    fn cross_confirmation_window(
+        dir: &Path,
+        tracked: usize,
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        let set = staged_deletions_now(dir);
+        let git_dir = git_dir_of(dir);
+        let hq = dir.to_str().unwrap();
+        // Everything the report carries is read from the real repository, so the
+        // only thing injected is the clock.
+        let has_upstream = repo_has_upstream(hq);
+        // Both clocks continue from where the real passes left them, so the
+        // record this writes stays coherent with the one they wrote.
+        let start = Instant::now();
+        let wall = Utc::now();
+        sentry::test::with_captured_events(|| {
+            for index in 0..confirming_passes() {
+                let (now, wall_now) = pass_at(start, wall, index);
+                report_bulk_refusal_at(
+                    &RefusalReport {
+                        hq_folder: hq,
+                        git_dir: &git_dir,
+                        deletions: &set,
+                        tracked,
+                        has_upstream,
+                    },
+                    now,
+                    wall_now,
+                );
+            }
+        })
     }
 
     /// `run_mirror` takes the resolved git directory; resolve it the same way
@@ -2578,17 +3385,27 @@ mod tests {
         seed_repo(tmp.path(), 100);
         delete_files(tmp.path(), 0..50);
 
-        let events = sentry::test::with_captured_events(|| {
+        let inside_window = sentry::test::with_captured_events(|| {
             for _ in 0..5 {
                 run_mirror_at(tmp.path()).expect("mirror reports a refused deletion safely");
             }
         });
+        assert_eq!(
+            inside_window.len(),
+            0,
+            "five back-to-back mirror cycles span seconds, not a sustained refusal — \
+             this is the exact production shape that kept reopening the issue"
+        );
+
+        // The same episode, carried past the confirmation window.
+        let events = cross_confirmation_window(tmp.path(), 100);
         reset_refusal_report_state();
 
         assert_eq!(
             events.len(),
             1,
-            "an unchanged deletion set must capture one Sentry event across five mirror cycles"
+            "an unchanged deletion set must capture one Sentry event once it has \
+             refused for the whole confirmation window"
         );
         let event = &events[0];
         assert_eq!(
@@ -2607,14 +3424,24 @@ mod tests {
                 .tags
                 .get("refusals_since_last_report")
                 .map(String::as_str),
-            Some("1"),
-            "the banner fires on the confirming pass, so pass one is counted as \
-             suppressed rather than lost"
+            Some((5 + confirming_passes() - 1).to_string().as_str()),
+            "every pass the banner waited on — the five real mirror cycles plus \
+             the window it then had to sustain — is counted as suppressed rather \
+             than lost"
         );
         assert_eq!(
             event.tags.get("deletion_set_stable").map(String::as_str),
             Some("true"),
             "the same 50 files were missing on every pass"
+        );
+        assert_eq!(
+            event
+                .tags
+                .get("recovered_episodes_since_report")
+                .map(String::as_str),
+            Some("0"),
+            "this root never recovered, which is what separates a wedge from the \
+             recurring transient the field was actually producing"
         );
     }
 
@@ -2644,9 +3471,25 @@ mod tests {
             0,
             "a refusal that heals on the very next pass must not reach Sentry"
         );
-        assert!(
-            !refusal_state_path(&git_dir_of(tmp.path())).exists(),
+        // The episode clock now lives on disk (it has to, or a restart would
+        // reset it before it could elapse), so the record exists — but an
+        // unreported episode must still leave no cooldown anchor behind, and a
+        // recovered one must leave no open episode.
+        let state = persisted(&git_dir_of(tmp.path()));
+        assert_eq!(
+            state.last_reported_at, None,
             "an unreported episode must not persist a cooldown anchor"
+        );
+        assert_eq!(
+            state.episode_started_at, None,
+            "a recovered episode must not be left open on disk"
+        );
+        assert_eq!(state.episode_last_refusal_at, None);
+        assert_eq!(state.episode_occurrences, 0);
+        // …and the window it did live for is kept as evidence for the next banner.
+        assert_eq!(
+            state.recovered_episodes_since_report, 1,
+            "a transient window that healed must be counted, not discarded"
         );
         assert_eq!(
             rev_count(tmp.path()),
@@ -2674,7 +3517,7 @@ mod tests {
         seed_repo(tmp.path(), 1_356);
         let before = rev_count(tmp.path());
 
-        let events = sentry::test::with_captured_events(|| {
+        let inside_window = sentry::test::with_captured_events(|| {
             delete_files(tmp.path(), 0..162);
             run_mirror_at(tmp.path()).expect("a refusal is not an error");
             assert!(index_is_clean(tmp.path()), "refusal must reset the index");
@@ -2693,9 +3536,25 @@ mod tests {
         );
         assert!(index_is_clean(tmp.path()), "refusal must reset the index");
         assert_eq!(
+            inside_window.len(),
+            0,
+            "two back-to-back refusing passes are ~70 seconds apart at the mirror \
+             floor — the exact shape every post-fix production event carried, and \
+             far too short to call a wedge"
+        );
+
+        // Sustained for the whole window, it is one condition and one banner.
+        let events = cross_confirmation_window(tmp.path(), 1_356);
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "nothing may be committed or pushed while the breaker refuses"
+        );
+        assert!(index_is_clean(tmp.path()), "refusal must reset the index");
+        assert_eq!(
             events.len(),
             1,
-            "two refusing passes with different missing files are one condition"
+            "refusing passes with different missing files are one condition"
         );
         let event = &events[0];
         assert_eq!(event.tags.get("deletions").map(String::as_str), Some("162"));
@@ -2721,6 +3580,89 @@ mod tests {
         reset_refusal_report_state();
     }
 
+    /// The two shapes the field actually produced, through real git children:
+    /// `{'.claude': 34, 'core': 125}` of 1571 tracked, and
+    /// `{'workspace': 623, 'outputs': 8}` of 4558. Both are HQ's own
+    /// machine-managed subtrees — release scaffold an HQ core update replaces
+    /// wholesale, and session scratch created and destroyed by design — which is
+    /// what opens a window long enough to clear a pass counter and nothing more.
+    #[test]
+    fn run_mirror_on_real_repo_with_the_field_prefix_shape() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+
+        for (subtrees, filler) in [
+            ([(".claude", 34usize), ("core", 125usize)], 1_412usize),
+            ([("workspace", 623), ("outputs", 8)], 3_927),
+        ] {
+            reset_refusal_report_state();
+            let tmp = TempDir::new().unwrap();
+            init_repo(tmp.path());
+            for i in 0..filler {
+                fs::write(tmp.path().join(format!("file-{i:04}.md")), "x").unwrap();
+            }
+            for (name, count) in subtrees {
+                fs::create_dir_all(tmp.path().join(name)).unwrap();
+                for i in 0..count {
+                    fs::write(tmp.path().join(name).join(format!("{i:04}.md")), "x").unwrap();
+                }
+            }
+            assert!(git(tmp.path(), &["add", "-A"]).status.success());
+            assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+                .status
+                .success());
+            let before = rev_count(tmp.path());
+            let tracked = filler + subtrees.iter().map(|(_, n)| n).sum::<usize>();
+
+            for (name, _) in subtrees {
+                fs::remove_dir_all(tmp.path().join(name)).unwrap();
+            }
+
+            let events = sentry::test::with_captured_events(|| {
+                run_mirror_at(tmp.path()).expect("a refusal is not an error");
+                run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            });
+
+            assert_eq!(
+                events.len(),
+                0,
+                "{subtrees:?}: two passes inside the confirmation window must stay quiet"
+            );
+            assert_eq!(
+                rev_count(tmp.path()),
+                before,
+                "{subtrees:?}: the breaker must commit nothing"
+            );
+            assert!(
+                index_is_clean(tmp.path()),
+                "{subtrees:?}: refusal must reset the index"
+            );
+
+            // Sustained, it reports — and names the subtrees, nothing deeper.
+            let confirmed = cross_confirmation_window(tmp.path(), tracked);
+            assert_eq!(
+                confirmed.len(),
+                1,
+                "{subtrees:?}: a sustained wedge reports"
+            );
+            let expected: serde_json::Map<String, serde_json::Value> = subtrees
+                .iter()
+                .map(|(name, count)| (name.to_string(), serde_json::Value::from(*count)))
+                .collect();
+            assert_eq!(
+                confirmed[0].extra.get("deletion_prefixes"),
+                Some(&serde_json::Value::Object(expected)),
+                "{subtrees:?}: the histogram carries the shape of the loss"
+            );
+            assert_eq!(
+                rev_count(tmp.path()),
+                before,
+                "{subtrees:?}: still nothing committed"
+            );
+            reset_refusal_report_state();
+        }
+    }
+
     #[test]
     fn recovery_closes_the_episode_and_a_fresh_one_still_honors_the_cooldown() {
         let _serial = serial();
@@ -2731,22 +3673,21 @@ mod tests {
         seed_repo(tmp.path(), 100);
         let before = rev_count(tmp.path());
 
-        let events = sentry::test::with_captured_events(|| {
-            // Episode one: confirmed, reported.
-            delete_files(tmp.path(), 0..50);
-            run_mirror_at(tmp.path()).expect("a refusal is not an error");
-            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        // Episode one: sustained through the whole window, so it reports.
+        delete_files(tmp.path(), 0..50);
+        let first = cross_confirmation_window(tmp.path(), 100);
+        assert_eq!(first.len(), 1, "a sustained episode earns its banner");
 
+        let healed = sentry::test::with_captured_events(|| {
             // The tree heals and the mirror commits an unrelated change.
             restore_files(tmp.path(), 0..50);
             fs::write(tmp.path().join("new.md"), "content").unwrap();
             run_mirror_at(tmp.path()).expect("mirror ok");
-
-            // Episode two, inside the cooldown.
-            delete_files(tmp.path(), 0..50);
-            run_mirror_at(tmp.path()).expect("a refusal is not an error");
-            run_mirror_at(tmp.path()).expect("a refusal is not an error");
         });
+
+        // Episode two, equally sustained, but inside the per-root cooldown.
+        delete_files(tmp.path(), 0..50);
+        let second = cross_confirmation_window(tmp.path(), 100);
         reset_refusal_report_state();
 
         assert_eq!(
@@ -2754,11 +3695,12 @@ mod tests {
             before + 1,
             "exactly the one healthy pass may commit"
         );
+        assert_eq!(healed.len(), 0, "a healthy pass never reports");
         assert_eq!(
-            events.len(),
-            1,
+            second.len(),
+            0,
             "closing and reopening an episode must not re-arm the banner inside \
-             the per-root cooldown"
+             the per-root cooldown, however long the second episode sustains"
         );
     }
 
@@ -2780,7 +3722,7 @@ mod tests {
         let state_file = refusal_state_path(&git_dir_of(tmp.path()));
         assert!(
             state_file.is_file(),
-            "a confirmed report must persist its cooldown anchor"
+            "a refusing pass must persist its episode record"
         );
         // It lives inside the git dir, so git cannot see it — which is what
         // keeps it from feeding back into the deletion accounting it describes.
