@@ -801,6 +801,13 @@ pub enum SyncCancelCause {
     UserStop,
     TimeoutWatchdog,
     AppQuit,
+    /// The auto-sync daemon's heartbeat-stall watchdog tore down its own wedged
+    /// watcher. Distinct from `TimeoutWatchdog` (the manual-sync one-hour
+    /// ceiling): this is published by the daemon's stall escalation so the
+    /// watcher's terminal boundary can attribute its own SIGKILL through the
+    /// durable cancellation record instead of capturing it as an unexplained
+    /// external kill when the ephemeral cancelled flag has been lost.
+    HeartbeatStall,
 }
 
 impl SyncCancelCause {
@@ -811,6 +818,7 @@ impl SyncCancelCause {
             Self::UserStop => "user-stop",
             Self::TimeoutWatchdog => "timeout-watchdog",
             Self::AppQuit => "app-quit",
+            Self::HeartbeatStall => "heartbeat-stall",
         }
     }
 }
@@ -1554,6 +1562,42 @@ pub fn classify_runner_exit_disposition_with_cancellation(
         saw_error,
         saw_alertable_error,
         saw_node_too_old,
+    )
+}
+
+/// Watcher-boundary projection of
+/// [`classify_runner_exit_disposition_with_cancellation`].
+///
+/// The auto-sync watcher's terminal boundary needs only a yes/no: does a durable
+/// cancellation record prove the *app itself* terminated this watcher? It answers
+/// by delegating to the manual-sync classifier and projecting `CancelledByApp`,
+/// so the two boundaries can never drift apart on the four gates — cause present,
+/// termination observably effected, exit shape matching an app teardown, and no
+/// alertable runner error.
+///
+/// `saw_error` and `saw_node_too_old` cannot change a `CancelledByApp` verdict:
+/// they only steer the *non*-attributing fallback, which never yields
+/// `CancelledByApp`. So the boundary is spared threading them, and
+/// `watcher_boundary_matches_full_classifier` pins that reduction against the
+/// full input lattice.
+pub fn watcher_exit_attributed_to_app_teardown(
+    code: Option<i32>,
+    signal: Option<i32>,
+    cause: Option<SyncCancelCause>,
+    termination_effected: bool,
+    saw_alertable_error: bool,
+) -> bool {
+    matches!(
+        classify_runner_exit_disposition_with_cancellation(
+            code,
+            signal,
+            cause,
+            termination_effected,
+            saw_alertable_error,
+            saw_alertable_error,
+            false,
+        ),
+        RunnerExitDisposition::CancelledByApp(_)
     )
 }
 
@@ -2899,6 +2943,136 @@ mod tests {
             ),
             RunnerExitDisposition::Alert,
         );
+    }
+
+    #[test]
+    fn watcher_boundary_helper_attributes_only_through_all_four_gates() {
+        let (owned_code, owned_signal) = match current_termination_host() {
+            TerminationHost::Windows => (Some(1), None),
+            TerminationHost::Posix => (None, Some(SIGKILL_SIGNAL)),
+        };
+
+        // All four gates satisfied: a heartbeat-stall teardown SIGKILL that the
+        // app observed take effect, with no alertable runner error — attributed.
+        assert!(watcher_exit_attributed_to_app_teardown(
+            owned_code,
+            owned_signal,
+            Some(SyncCancelCause::HeartbeatStall),
+            true,
+            false,
+        ));
+        // SIGTERM shape is equally an app-termination shape on POSIX.
+        let sigterm_shape = matches!(current_termination_host(), TerminationHost::Posix);
+        if sigterm_shape {
+            assert!(watcher_exit_attributed_to_app_teardown(
+                None,
+                Some(SIGTERM_SIGNAL),
+                Some(SyncCancelCause::HeartbeatStall),
+                true,
+                false,
+            ));
+        }
+
+        // Gate 1 — no recorded cause (an external kill with no app cancellation).
+        assert!(!watcher_exit_attributed_to_app_teardown(
+            owned_code,
+            owned_signal,
+            None,
+            true,
+            false,
+        ));
+        // Gate 2 — cause recorded but termination not observed (ESRCH / lost /
+        // timed-out publication). This is the invariant that keeps external kills
+        // alertable, so it must never be weakened.
+        assert!(!watcher_exit_attributed_to_app_teardown(
+            owned_code,
+            owned_signal,
+            Some(SyncCancelCause::HeartbeatStall),
+            false,
+            false,
+        ));
+        // Gate 3 — wrong exit shape (a genuine crash signal, not an app teardown).
+        assert!(!watcher_exit_attributed_to_app_teardown(
+            None,
+            Some(6), // SIGABRT
+            Some(SyncCancelCause::HeartbeatStall),
+            true,
+            false,
+        ));
+        assert!(!watcher_exit_attributed_to_app_teardown(
+            Some(1),
+            None,
+            Some(SyncCancelCause::HeartbeatStall),
+            true,
+            false,
+        ));
+        // Gate 4 — a concurrent alertable runner error wins over attribution.
+        assert!(!watcher_exit_attributed_to_app_teardown(
+            owned_code,
+            owned_signal,
+            Some(SyncCancelCause::HeartbeatStall),
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn watcher_boundary_matches_full_classifier_over_the_lattice() {
+        // The reduced-input boundary helper must agree with the full manual-sync
+        // classifier's `CancelledByApp` projection for EVERY combination of
+        // `saw_error` and `saw_node_too_old` — proving those two inputs cannot
+        // change an attribution verdict, which is what justifies omitting them.
+        let shapes: [(Option<i32>, Option<i32>); 7] = [
+            (None, Some(SIGTERM_SIGNAL)),
+            (None, Some(SIGKILL_SIGNAL)),
+            (None, Some(6)),
+            (Some(1), None),
+            (Some(0), None),
+            (Some(2), None),
+            (None, None),
+        ];
+        let causes = [
+            None,
+            Some(SyncCancelCause::HeartbeatStall),
+            Some(SyncCancelCause::UserStop),
+            Some(SyncCancelCause::TimeoutWatchdog),
+            Some(SyncCancelCause::AppQuit),
+        ];
+        for (code, signal) in shapes {
+            for cause in causes {
+                for termination_effected in [false, true] {
+                    for saw_error in [false, true] {
+                        for saw_alertable_error in [false, true] {
+                            for saw_node_too_old in [false, true] {
+                                let full = matches!(
+                                    classify_runner_exit_disposition_with_cancellation(
+                                        code,
+                                        signal,
+                                        cause,
+                                        termination_effected,
+                                        saw_error,
+                                        saw_alertable_error,
+                                        saw_node_too_old,
+                                    ),
+                                    RunnerExitDisposition::CancelledByApp(_)
+                                );
+                                let boundary = watcher_exit_attributed_to_app_teardown(
+                                    code,
+                                    signal,
+                                    cause,
+                                    termination_effected,
+                                    saw_alertable_error,
+                                );
+                                assert_eq!(
+                                    boundary, full,
+                                    "boundary/classifier disagree for code={code:?} signal={signal:?} cause={cause:?} effected={termination_effected} saw_error={saw_error} saw_alertable={saw_alertable_error} saw_node={saw_node_too_old}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

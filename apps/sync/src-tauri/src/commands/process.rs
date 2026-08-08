@@ -696,6 +696,34 @@ fn mark_cancelled(handle: &str) -> bool {
     }
 }
 
+/// Seed a durable cancellation record for an exact generation through the real
+/// publication helpers, so a boundary test can construct the `{cause,
+/// termination_effected:false}` state an ESRCH / lost / timed-out publication
+/// leaves — the shape that must stay alertable. `termination_effected:true`
+/// mirrors an observed OS teardown. Crate-visible for the daemon boundary tests.
+#[cfg(test)]
+pub(crate) fn seed_cancellation_record_for_test(
+    handle: &str,
+    generation: u64,
+    cause: SyncCancelCause,
+    termination_effected: bool,
+) {
+    let (owns_publication, _created) =
+        begin_cancellation_publication(handle, generation, Some(cause));
+    assert!(
+        owns_publication,
+        "test seed must own the publication for {handle} generation {generation}"
+    );
+    complete_cancellation_publication(handle, generation, termination_effected);
+}
+
+/// Drop a seeded (or real) cancellation record so a boundary test leaves the
+/// side map clean for the next serialized test.
+#[cfg(test)]
+pub(crate) fn clear_cancellation_record_for_test(handle: &str, generation: u64) {
+    clear_cancellation_record(handle, generation);
+}
+
 fn revoke_signal_authority_for_generation(handle: &str, generation: u64) -> bool {
     let mut reg = process_registry().lock().unwrap();
     entry_for_generation_mut(&mut reg, handle, generation)

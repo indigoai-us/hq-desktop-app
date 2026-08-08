@@ -15,9 +15,10 @@ use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::process::{
-    app_exit_requested, cancel_process_generation_impl, deregister_generation,
-    generation_for_handle, is_cancelled_for_generation, is_registered, lookup_pid,
-    run_process_impl, run_process_impl_for_generation, try_register_handle_gen, ProcessError,
+    app_exit_requested, cancel_process_for_generation, cancel_process_generation_impl,
+    cancellation_record_for_generation, deregister_generation, generation_for_handle,
+    is_cancelled_for_generation, is_registered, lookup_pid, run_process_impl,
+    run_process_impl_for_generation, try_register_handle_gen, CancellationRecord, ProcessError,
     ProcessEvent,
 };
 #[cfg(target_os = "windows")]
@@ -37,11 +38,11 @@ use hq_desktop_core::sync_outcome::{
     normalized_abort_description, runner_phase_elapsed_bucket, runner_phase_from_event,
     runner_stack_shape, session_end_grace_waited_bucket, should_capture_watcher_exit,
     spawn_failure_capture_policy, spawn_failure_fingerprint_token, termination_fingerprint_token,
-    termination_fingerprint_token_for_host, watcher_exit_capture_policy,
-    watcher_exit_capture_policy_with_attribution, windows_exit_status_hex, windows_fault_symbol,
-    DeferredSessionEndOutcome, SpawnFailureCapturePolicy, TerminationHost,
-    WatcherExitCapturePolicy, WindowsTerminatorAttribution, SESSION_END_GRACE_MS,
-    WINDOWS_SESSION_TERMINATE_EXIT,
+    termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
+    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
+    windows_exit_status_hex, windows_fault_symbol, DeferredSessionEndOutcome,
+    SpawnFailureCapturePolicy, SyncCancelCause, TerminationHost, WatcherExitCapturePolicy,
+    WindowsTerminatorAttribution, SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 
 #[cfg(target_os = "windows")]
@@ -379,7 +380,24 @@ fn terminate_daemon_generation_once_with_delay(
     if !should_terminate_job_on_path(already, category) {
         return false;
     }
-    let cancelled = cancel_process_generation_impl(DAEMON_HANDLE, generation, sigkill_delay);
+    // Only the heartbeat-stall watchdog stamps a durable cause: it is the one
+    // daemon teardown the watcher's terminal boundary may later attribute to the
+    // app. The cause is published before any OS call, so an ESRCH/lost-publication
+    // outcome retains {cause, termination_effected:false} and stays alertable.
+    // Every other category keeps the causeless seam, so it can never suppress a
+    // runner-exit capture on its own.
+    let cancelled = match category {
+        DaemonFailureCategory::HeartbeatStall => {
+            cancel_process_for_generation(
+                DAEMON_HANDLE,
+                generation,
+                SyncCancelCause::HeartbeatStall,
+                sigkill_delay,
+            )
+            .executed
+        }
+        _ => cancel_process_generation_impl(DAEMON_HANDLE, generation, sigkill_delay),
+    };
     if cancelled {
         match category {
             DaemonFailureCategory::HeartbeatStall => {
@@ -860,6 +878,17 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // (HQ-DESKTOP-3J / HQ-DESKTOP-4D).
                         let cancelled =
                             is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
+                        // Read the durable cancellation record for this exact
+                        // generation too. It survives the deregistration that can
+                        // lose the ephemeral `cancelled` flag before this terminal
+                        // read, so the app's own watchdog teardown stays
+                        // attributable (and every still-alertable exit carries a
+                        // self-assigning readout). Bounded by
+                        // CANCELLATION_PUBLICATION_TIMEOUT, degrading to
+                        // termination_effected=false — identical to the shipped
+                        // manual-sync boundary.
+                        let cancellation_record =
+                            cancellation_record_for_generation(DAEMON_HANDLE, daemon_generation);
                         let stderr_tail = process_stderr_tail
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -873,6 +902,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             &watcher_generation,
                             &stderr_tail,
                             current_windows_terminator_attribution(&app, code, signal),
+                            cancellation_record,
                         );
                         let last_stderr = stderr_tail.last().map(String::as_str);
                         handle_watcher_exit(
@@ -998,6 +1028,38 @@ struct WatcherExitCaptureContext {
     runner_stack_depth: u8,
     runner_stack_redacted_frames: u8,
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    /// Durable cancellation-record readout for this exact generation, read at the
+    /// terminal boundary alongside the ephemeral cancelled flag. These three make
+    /// the next occurrence self-assigning between an external kill and a lost
+    /// ephemeral flag, and drive the durable-record attribution gate.
+    cancellation_record_present: bool,
+    cancellation_record_cause: Option<SyncCancelCause>,
+    cancellation_termination_effected: bool,
+    /// Snapshot of whether this pass saw an alertable runner error. A concurrent
+    /// alertable fault must win over durable-record attribution, exactly as at
+    /// the manual-sync boundary.
+    saw_alertable_error: bool,
+}
+
+impl WatcherExitCaptureContext {
+    /// The durable cancellation record's verdict on this exit: `true` only when
+    /// the record proves the app itself terminated this watcher, through the exact
+    /// four gates the manual-sync boundary applies (cause present, termination
+    /// observed, exit shape matching an app teardown, no alertable runner error).
+    ///
+    /// It deliberately never consults `HEARTBEAT_STALL_TERMINATION_IN_FLIGHT`:
+    /// that flag remains a diagnostic extra, never an attribution input. An
+    /// ESRCH/lost/timed-out publication leaves `cancellation_termination_effected`
+    /// false, so this refuses attribution and the exit stays alertable.
+    fn attributed_to_app_teardown(&self, code: Option<i32>, signal: Option<i32>) -> bool {
+        watcher_exit_attributed_to_app_teardown(
+            code,
+            signal,
+            self.cancellation_record_cause,
+            self.cancellation_termination_effected,
+            self.saw_alertable_error,
+        )
+    }
 }
 
 impl Default for WatcherExitCaptureContext {
@@ -1022,6 +1084,10 @@ impl Default for WatcherExitCaptureContext {
             runner_stack_depth: 0,
             runner_stack_redacted_frames: 0,
             windows_terminator: None,
+            cancellation_record_present: false,
+            cancellation_record_cause: None,
+            cancellation_termination_effected: false,
+            saw_alertable_error: false,
         }
     }
 }
@@ -1063,6 +1129,7 @@ fn watcher_exit_capture_context(
     generation: &WatcherGeneration,
     stderr_tail: &[String],
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    cancellation_record: Option<CancellationRecord>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -1096,6 +1163,12 @@ fn watcher_exit_capture_context(
         runner_stack_depth: stack.depth,
         runner_stack_redacted_frames: stack.redacted_frames,
         windows_terminator,
+        cancellation_record_present: cancellation_record.is_some(),
+        cancellation_record_cause: cancellation_record.and_then(|record| record.cause),
+        cancellation_termination_effected: cancellation_record
+            .map(|record| record.termination_effected)
+            .unwrap_or(false),
+        saw_alertable_error: totals.saw_alertable_error,
     }
 }
 
@@ -1631,6 +1704,17 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         return;
     }
 
+    if context.attributed_to_app_teardown(code, signal) {
+        // The durable cancellation record proves the app's own watchdog tore this
+        // watcher down, even though the ephemeral `cancelled` flag was lost before
+        // this terminal read (a post-revocation entry drop). Take the exact same
+        // silent path as the ephemeral-flag stop above: `terminate` already
+        // recorded the lifecycle transition, so this is not a new event, not a
+        // lifecycle change, and never references the stall in-flight flag.
+        effects.reset_exec_not_runnable_failure_streak();
+        return;
+    }
+
     if !is_unexpected_watcher_exit(success, signal, cancelled) {
         effects.reset_exec_not_runnable_failure_streak();
         effects.set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
@@ -1918,6 +2002,24 @@ fn watcher_exit_context_extras(
         (
             "runner_stack_redacted_frames",
             serde_json::json!(context.runner_stack_redacted_frames),
+        ),
+        (
+            "cancellation_record_present",
+            sentry::protocol::Value::String(context.cancellation_record_present.to_string()),
+        ),
+        (
+            "cancellation_record_cause",
+            sentry::protocol::Value::String(
+                context
+                    .cancellation_record_cause
+                    .map(SyncCancelCause::as_str)
+                    .unwrap_or("none")
+                    .to_string(),
+            ),
+        ),
+        (
+            "cancellation_termination_effected",
+            sentry::protocol::Value::String(context.cancellation_termination_effected.to_string()),
         ),
     ]
 }
@@ -4260,6 +4362,267 @@ mod tests {
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
     }
 
+    /// Base-red / candidate-green. Reproduces the production signature — an
+    /// exact-shape (None, Some(9)) watcher exit reported as uncancelled while a
+    /// heartbeat-stall teardown was in flight — by dropping the public handle in
+    /// the terminal callback AFTER the wait owner has revoked signal authority,
+    /// which is exactly the post-revocation entry loss the events hit. On the
+    /// base the ephemeral flag is gone and the causeless record cannot attribute,
+    /// so it captures; on the candidate the durable record now carries the
+    /// HeartbeatStall cause and the exit is attributed silently.
+    #[cfg(unix)]
+    #[test]
+    fn watchdog_escalation_attributes_via_durable_record_when_entry_dropped() {
+        use crate::commands::process::{
+            clear_cancellation_record_for_test, deregister_process, SpawnArgs,
+        };
+        use std::sync::mpsc;
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+        HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(true, Ordering::Release);
+
+        let daemon_generation =
+            try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon generation");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let runner = thread::spawn(move || {
+            let mut terminal = None;
+            let captures = sentry::test::with_captured_events(|| {
+                run_process_impl(
+                    DAEMON_HANDLE,
+                    &SpawnArgs {
+                        cmd: "sh".to_string(),
+                        args: vec![
+                            "-c".to_string(),
+                            "trap '' TERM; echo ready; while :; do sleep 1; done".to_string(),
+                        ],
+                        cwd: None,
+                        env: None,
+                    },
+                    |event| match event {
+                        ProcessEvent::Stdout(line) if line == "ready" => {
+                            ready_tx
+                                .send(())
+                                .expect("watchdog readiness receiver must remain alive");
+                        }
+                        ProcessEvent::Exit {
+                            code,
+                            signal,
+                            success,
+                        } => {
+                            // By callback time the wait owner has already revoked
+                            // signal authority, so releasing the public handle
+                            // here takes the shipped drop-not-retire branch and
+                            // the ephemeral `cancelled` flag can no longer be
+                            // read — modeling the production flag loss. The durable
+                            // record lives in a separate map and survives.
+                            deregister_generation(DAEMON_HANDLE, daemon_generation);
+                            let cancelled =
+                                is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
+                            let record = cancellation_record_for_generation(
+                                DAEMON_HANDLE,
+                                daemon_generation,
+                            );
+                            let context = WatcherExitCaptureContext {
+                                cancellation_record_present: record.is_some(),
+                                cancellation_record_cause: record.and_then(|r| r.cause),
+                                cancellation_termination_effected: record
+                                    .map(|r| r.termination_effected)
+                                    .unwrap_or(false),
+                                ..Default::default()
+                            };
+                            handle_watcher_exit(
+                                code, signal, success, cancelled, "npx", None, &context,
+                            );
+                            terminal = Some((code, signal, success, cancelled, record));
+                        }
+                        _ => {}
+                    },
+                )
+                .expect("watchdog fixture must reach its terminal callback");
+            });
+            (
+                terminal.expect("watchdog fixture must emit one terminal event"),
+                captures,
+            )
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("watchdog fixture must install its SIGTERM trap before cancellation");
+        assert!(lookup_pid(DAEMON_HANDLE).is_some());
+
+        assert!(terminate_daemon_once_with_delay(
+            DaemonFailureCategory::HeartbeatStall,
+            Duration::from_millis(100),
+        ));
+        let ((code, signal, success, cancelled, record), captures) = runner
+            .join()
+            .expect("watchdog process runner must not panic");
+        HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
+        clear_cancellation_record_for_test(DAEMON_HANDLE, daemon_generation);
+
+        assert_eq!((code, signal, success), (None, Some(9), false));
+        assert!(
+            !cancelled,
+            "the post-revocation entry drop must lose the ephemeral cancelled flag"
+        );
+        let record = record.expect("the durable cancellation record survives the entry drop");
+        assert!(
+            record.termination_effected,
+            "the app observed SIGTERM delivery to the trapped group"
+        );
+        assert_eq!(
+            record.cause,
+            Some(SyncCancelCause::HeartbeatStall),
+            "the watchdog teardown published its cause through the durable record"
+        );
+        assert!(
+            captures.is_empty(),
+            "the durable record attributes the app's own teardown despite the lost flag"
+        );
+        assert!(!is_registered(DAEMON_HANDLE));
+        assert_eq!(current_lifecycle_state(), WatchDaemonState::Stopped);
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+    }
+
+    /// Pins invariant 1: an external SIGKILL whose durable record carries a cause
+    /// but `termination_effected=false` (what ESRCH / a lost or timed-out
+    /// publication publishes) stays alertable, and the still-alertable capture
+    /// carries the three fixed-vocabulary extras that make the next production
+    /// event self-assigning.
+    #[cfg(unix)]
+    #[test]
+    fn external_kill_with_stall_record_stays_alertable() {
+        use crate::commands::process::{
+            clear_cancellation_record_for_test, deregister_process,
+            seed_cancellation_record_for_test, SpawnArgs,
+        };
+        use nix::{
+            sys::signal::{self, Signal},
+            unistd::Pid,
+        };
+        use std::sync::mpsc;
+
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        deregister_process(DAEMON_HANDLE);
+        note_watcher_spawned();
+        let daemon_generation =
+            try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon generation");
+        // Seed the record the watchdog's own cancellation publishes on ESRCH / a
+        // lost or timed-out publication: cause known, OS teardown NOT observed.
+        seed_cancellation_record_for_test(
+            DAEMON_HANDLE,
+            daemon_generation,
+            SyncCancelCause::HeartbeatStall,
+            false,
+        );
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let runner = thread::spawn(move || {
+            let mut terminal = None;
+            let captures = sentry::test::with_captured_events(|| {
+                run_process_impl_for_generation(
+                    DAEMON_HANDLE,
+                    daemon_generation,
+                    &SpawnArgs {
+                        cmd: "sh".to_string(),
+                        args: vec![
+                            "-c".to_string(),
+                            "echo ready; while :; do sleep 1; done".to_string(),
+                        ],
+                        cwd: None,
+                        env: None,
+                    },
+                    |event| match event {
+                        ProcessEvent::Stdout(line) if line == "ready" => {
+                            ready_tx
+                                .send(())
+                                .expect("SIGKILL readiness receiver must remain alive");
+                        }
+                        ProcessEvent::Exit {
+                            code,
+                            signal,
+                            success,
+                        } => {
+                            let cancelled =
+                                is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
+                            let record = cancellation_record_for_generation(
+                                DAEMON_HANDLE,
+                                daemon_generation,
+                            );
+                            let context = WatcherExitCaptureContext {
+                                lifecycle_state: "running".to_string(),
+                                runner_fatal_class: "none".to_string(),
+                                runner_error_class: "none",
+                                runner_phase: "unknown".to_string(),
+                                runner_phase_elapsed_bucket: "under_1m".to_string(),
+                                cancellation_record_present: record.is_some(),
+                                cancellation_record_cause: record.and_then(|r| r.cause),
+                                cancellation_termination_effected: record
+                                    .map(|r| r.termination_effected)
+                                    .unwrap_or(false),
+                                ..Default::default()
+                            };
+                            handle_watcher_exit(
+                                code, signal, success, cancelled, "npx", None, &context,
+                            );
+                            terminal = Some((code, signal, success, cancelled));
+                        }
+                        _ => {}
+                    },
+                )
+                .expect("externally killed fixture must reach its terminal callback");
+            });
+            (
+                terminal.expect("externally killed fixture must emit one terminal event"),
+                captures,
+            )
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("fixture must become ready before the external kill");
+        let pid = lookup_pid(DAEMON_HANDLE).expect("fixture must publish its pid");
+        signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL)
+            .expect("external SIGKILL must reach the process group");
+
+        let ((code, signal, success, cancelled), captures) = runner
+            .join()
+            .expect("external-SIGKILL runner must not panic");
+        clear_cancellation_record_for_test(DAEMON_HANDLE, daemon_generation);
+        assert_eq!((code, signal, success), (None, Some(9), false));
+        assert!(!cancelled, "the external kill must remain unclaimed");
+        assert_eq!(
+            captures.len(),
+            1,
+            "termination_effected=false keeps the exit alertable under the existing fingerprint"
+        );
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("external SIGKILL event remains sendable");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none"]
+        );
+        assert_eq!(
+            event.extra["cancellation_record_present"],
+            sentry::protocol::Value::String("true".to_string())
+        );
+        assert_eq!(
+            event.extra["cancellation_record_cause"],
+            sentry::protocol::Value::String("heartbeat-stall".to_string())
+        );
+        assert_eq!(
+            event.extra["cancellation_termination_effected"],
+            sentry::protocol::Value::String("false".to_string())
+        );
+        assert_eq!(
+            event.extra["watcher_cancelled"],
+            sentry::protocol::Value::String("false".to_string())
+        );
+        assert!(!is_registered(DAEMON_HANDLE));
+        set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+    }
+
     #[cfg(unix)]
     #[test]
     fn cancelled_sigkill_skips_capture_but_uncancelled_sigkill_still_captures() {
@@ -5639,6 +6002,7 @@ mod tests {
             &generation,
             &[],
             None,
+            None,
         );
 
         assert_eq!(context.watcher_launch_origin, "supervisor_respawn");
@@ -5673,6 +6037,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
             &tail,
+            None,
             None,
         );
         let mut effects = RecordingWatcherEffects::default();
@@ -5770,6 +6135,7 @@ mod tests {
             &phase_context,
             &generation,
             &tail,
+            None,
             None,
         );
 
@@ -5878,6 +6244,7 @@ mod tests {
             }),
             &generation,
             &[],
+            None,
             None,
         );
 

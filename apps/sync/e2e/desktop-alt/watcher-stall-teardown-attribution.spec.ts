@@ -127,6 +127,42 @@ describe('watcher stall-teardown attribution — source contracts', () => {
     expect(classifier).toContain('signal != Some(SIGTERM)');
   });
 
+  it('consults the durable cancellation record at the terminal boundary', () => {
+    // The Exit arm reads the exact-generation durable record alongside the
+    // ephemeral flag, so a lost flag (post-revocation entry drop) no longer
+    // mis-reports the app's own watchdog teardown as an external kill.
+    expect(exitHandlerBlock).toContain(
+      'cancellation_record_for_generation(DAEMON_HANDLE, daemon_generation)',
+    );
+
+    const decision = sliceBetween(
+      daemonSource,
+      'fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(',
+      'let consecutive = effects.note_watcher_crashed();',
+      'handle_watcher_exit_with_effects durable-record gate',
+    );
+    // The ephemeral early return stays intact, and a SECOND early return
+    // attributes through the durable record — never through the stall flag.
+    expect(decision).toMatch(/if cancelled \{[\s\S]*?return;\n {4}\}/);
+    expect(decision).toContain('attributed_to_app_teardown(code, signal)');
+    expect(decision).not.toContain('HEARTBEAT_STALL_TERMINATION_IN_FLIGHT');
+  });
+
+  it('routes only the heartbeat-stall teardown through the cause-carrying seam', () => {
+    // The durable record can only carry a cause the app itself published; the
+    // stall watchdog is the one daemon teardown allowed to stamp one.
+    const terminate = sliceBetween(
+      daemonSource,
+      'fn terminate_daemon_generation_once_with_delay(',
+      'cancelled\n}',
+      'terminate_daemon_generation_once_with_delay',
+    );
+    expect(terminate).toContain('DaemonFailureCategory::HeartbeatStall => cancel_process_for_generation(');
+    expect(terminate).toContain('SyncCancelCause::HeartbeatStall');
+    // Every other category keeps the causeless seam, so it can never attribute.
+    expect(terminate).toContain('cancel_process_generation_impl(DAEMON_HANDLE, generation, sigkill_delay)');
+  });
+
   it('records the stall flag as a diagnostic extra rather than a capture gate', () => {
     const captureContext = sliceBetween(
       daemonSource,
@@ -212,12 +248,54 @@ function terminationFingerprint(code: number | null, signal: number | null): str
   return ['sync', 'auto-sync-watcher-termination', token, 'none'];
 }
 
+/**
+ * Fixed vocabulary the daemon watchdog may stamp on the durable cancellation
+ * record. `null` models a causeless record (the pre-fix base) or no record.
+ */
+type SyncCancelCauseToken = 'heartbeat-stall' | 'user-stop' | 'timeout-watchdog' | 'app-quit';
+
 interface TeardownScenario {
   policy: RegistryPolicy;
   /** Whether the app itself asked for this termination. */
   appRequested: boolean;
   code: number | null;
   signal: number | null;
+  /**
+   * The durable cancellation record for this exact generation, read at the
+   * terminal boundary. It survives the deregistration that loses the ephemeral
+   * flag, so it — not the flag — is what attributes an app teardown once the
+   * flag is gone. Absent by default (external kills with no app cancellation).
+   */
+  recordCause?: SyncCancelCauseToken | null;
+  recordTerminationEffected?: boolean;
+  /** A concurrent alertable runner error must win over attribution (gate 4). */
+  sawAlertableError?: boolean;
+  /**
+   * `'fixed'` consults the durable record at the boundary (the candidate);
+   * `'pre-fix'` ignores it entirely (the base, which had no such gate), so the
+   * simulator can reproduce the bug and keep the passing direction non-vacuous.
+   */
+  build?: 'fixed' | 'pre-fix';
+}
+
+/** Mirrors `exit_matches_app_termination` for the POSIX host the model targets. */
+function isAppTerminationShape(code: number | null, signal: number | null): boolean {
+  return code === null && (signal === SIGTERM || signal === SIGKILL);
+}
+
+/**
+ * Mirrors `watcher_exit_attributed_to_app_teardown`: the four gates that let a
+ * durable record attribute the app's own teardown — cause present, termination
+ * observed, exit shape matching an app teardown, and no alertable runner error.
+ */
+function durableRecordAttributes(scenario: TeardownScenario): boolean {
+  const cause = scenario.recordCause ?? null;
+  return (
+    cause !== null &&
+    scenario.recordTerminationEffected === true &&
+    isAppTerminationShape(scenario.code, scenario.signal) &&
+    scenario.sawAlertableError !== true
+  );
 }
 
 /**
@@ -240,6 +318,13 @@ function simulateTeardownEnvelope(scenario: TeardownScenario): SentryEnvelopeEve
     // Deliberate stop path — lifecycle already recorded, no capture.
     return [];
   }
+  // Durable-record gate: even with the ephemeral flag lost, the candidate
+  // attributes the app's own teardown through the exact-generation record. The
+  // pre-fix build has no such gate, so it reproduces the misattribution.
+  const build = scenario.build ?? 'fixed';
+  if (build === 'fixed' && durableRecordAttributes(scenario)) {
+    return [];
+  }
   if (!isUnexpectedWatcherExit(false, scenario.signal, cancelled)) {
     return [];
   }
@@ -254,6 +339,11 @@ function simulateTeardownEnvelope(scenario: TeardownScenario): SentryEnvelopeEve
         heartbeat_stall_termination_in_flight: stallTerminationInFlight,
         watcher_lifecycle_state: 'running',
         runner_fatal_class: 'none',
+        // The three fixed-vocabulary extras that make the next production event
+        // self-assigning between an external kill and a lost ephemeral flag.
+        cancellation_record_present: String(scenario.recordCause != null),
+        cancellation_record_cause: scenario.recordCause ?? 'none',
+        cancellation_termination_effected: String(scenario.recordTerminationEffected === true),
       },
     },
   ];
@@ -342,5 +432,76 @@ describe('watcher stall-teardown attribution — shipped Sentry envelope', () =>
   it('ships a content-safe envelope', () => {
     const envelope = simulateTeardownEnvelope(EXTERNAL_SIGKILL);
     assertContentSafeDiagnostics(envelope);
+  });
+
+  // The watchdog requested cancellation and escalated to SIGKILL, but the public
+  // handle was dropped post-revocation, so the ephemeral flag is lost at exit
+  // while the durable record survives with the stamped cause + observed effect.
+  const FLAG_LOST_STALL_TEARDOWN: TeardownScenario = {
+    policy: 'deregister-on-sigkill',
+    appRequested: true,
+    code: null,
+    signal: SIGKILL,
+    recordCause: 'heartbeat-stall',
+    recordTerminationEffected: true,
+    build: 'fixed',
+  };
+
+  it('attributes a flag-lost stall teardown through the durable record', () => {
+    const envelope = simulateTeardownEnvelope(FLAG_LOST_STALL_TEARDOWN);
+    expect(
+      envelope.filter((event) => event.fingerprint[1] === 'auto-sync-watcher-termination'),
+    ).toHaveLength(0);
+  });
+
+  it('reproduces the flag-lost misattribution on the pre-fix build (non-vacuous)', () => {
+    // Same physical teardown, but the base has no durable-record gate and its
+    // record is causeless — so the app's own teardown is captured as a crash.
+    const envelope = simulateTeardownEnvelope({
+      ...FLAG_LOST_STALL_TEARDOWN,
+      build: 'pre-fix',
+      recordCause: null,
+    });
+    const terminations = envelope.filter(
+      (event) => event.fingerprint[1] === 'auto-sync-watcher-termination',
+    );
+    expect(terminations).toHaveLength(1);
+    expect(terminations[0].fingerprint).toEqual([
+      'sync',
+      'auto-sync-watcher-termination',
+      'signal:9',
+      'none',
+    ]);
+    expect(terminations[0].extras.heartbeat_stall_termination_in_flight).toBe(true);
+    expect(terminations[0].extras.cancelled).toBe(false);
+  });
+
+  it('keeps an external kill alertable when the stall record was never effected', () => {
+    // ESRCH / a lost or timed-out publication publishes {cause, effected:false}.
+    // Gate 2 refuses attribution, so the exit stays alertable AND carries the
+    // three fixed-vocabulary extras that make it self-assigning.
+    const envelope = simulateTeardownEnvelope({
+      policy: 'retire-on-release',
+      appRequested: false,
+      code: null,
+      signal: SIGKILL,
+      recordCause: 'heartbeat-stall',
+      recordTerminationEffected: false,
+      build: 'fixed',
+    });
+    expect(envelope).toHaveLength(1);
+    expect(envelope[0].extras.cancellation_record_present).toBe('true');
+    expect(envelope[0].extras.cancellation_record_cause).toBe('heartbeat-stall');
+    expect(envelope[0].extras.cancellation_termination_effected).toBe('false');
+    assertContentSafeDiagnostics(envelope);
+  });
+
+  it('never attributes when a concurrent alertable runner error is present', () => {
+    // Cause + effected + matching shape, but the alertable fault wins (gate 4).
+    const envelope = simulateTeardownEnvelope({
+      ...FLAG_LOST_STALL_TEARDOWN,
+      sawAlertableError: true,
+    });
+    expect(envelope).toHaveLength(1);
   });
 });
