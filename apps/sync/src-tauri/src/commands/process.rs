@@ -337,11 +337,19 @@ fn begin_cancellation_publication(
     let (records, _) = &**cancellation_records();
     let mut state = records.lock().unwrap();
     let created = !state.records.contains_key(&key);
-    let record = state.records.entry(key.clone()).or_default();
-    if let Some(cause) = cause {
-        record.cause.get_or_insert(cause);
+    // Claim the publication cycle first. Only the actor that owns it may stamp a
+    // cause: a concurrent non-owner (e.g. the heartbeat watchdog racing an
+    // in-flight causeless Cancelled/ForceClear teardown that has begun but not
+    // yet marked the entry cancelled) must never relabel the initiating actor's
+    // record, which would give a causeless teardown a durable cause it was never
+    // meant to carry.
+    let owns_publication = state.pending_publications.insert(key.clone());
+    let record = state.records.entry(key).or_default();
+    if owns_publication {
+        if let Some(cause) = cause {
+            record.cause.get_or_insert(cause);
+        }
     }
-    let owns_publication = state.pending_publications.insert(key);
     (owns_publication, created)
 }
 
@@ -3067,6 +3075,47 @@ mod windows_spawn_tests {
 #[cfg(test)]
 mod registry_exit_order_tests {
     use super::*;
+
+    /// Regression: a non-owning publication must never relabel the initiating
+    /// actor's record. A heartbeat teardown that races an in-flight causeless
+    /// Cancelled/ForceClear teardown does not own the publication, so it must not
+    /// stamp `HeartbeatStall` onto that teardown's causeless record — otherwise a
+    /// causeless teardown would gain a durable cause it was never meant to carry,
+    /// and the watcher boundary's durable-record gate could then attribute it.
+    #[test]
+    fn a_non_owning_publication_never_relabels_the_initiating_cause() {
+        let handle = format!("relabel-guard-{}", Uuid::new_v4());
+        let generation = 1;
+
+        // A causeless (None) publication is in flight — mirrors a Cancelled or
+        // ForceClear teardown that has begun but not yet completed.
+        let (owns_first, _created_first) = begin_cancellation_publication(&handle, generation, None);
+        assert!(owns_first, "the first publisher owns the cycle");
+
+        // A racing heartbeat tries to stamp HeartbeatStall while the first actor
+        // still owns the pending publication.
+        let (owns_second, _created_second) = begin_cancellation_publication(
+            &handle,
+            generation,
+            Some(SyncCancelCause::HeartbeatStall),
+        );
+        assert!(!owns_second, "the racing actor does not own the publication");
+
+        let cause = {
+            let (records, _) = &**cancellation_records();
+            let state = records.lock().unwrap();
+            state
+                .records
+                .get(&(handle.clone(), generation))
+                .and_then(|record| record.cause)
+        };
+        assert_eq!(
+            cause, None,
+            "a non-owning publication must not relabel the initiating causeless record"
+        );
+
+        clear_cancellation_record(&handle, generation);
+    }
 
     #[test]
     fn exit_callback_observes_cancelled_registry_entry_until_it_returns() {
