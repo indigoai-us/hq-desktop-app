@@ -252,7 +252,12 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('"cleanup-forced-bin-collision"');
     expect(cliUpdate).toContain('let final_attempt_forced = ledger.last().is_some_and');
     expect(cliUpdate).toContain('classify_install_failure_with_final_attempt(');
-    expect(cliUpdate).toContain('report_install_failure_with_final_attempt(');
+    // Failures now report through the repeat-guarded episode entrypoint, which
+    // still receives the final-attempt context — so the classifier can tell a
+    // post-force collision from an initial EEXIST — alongside the toolchain
+    // provenance the previous events lacked.
+    expect(cliUpdate).toContain('report_install_failure_episode(');
+    expect(cliUpdate).toContain('install_run.final_attempt_forced,');
     expect(normalize(cliUpdateCore)).toContain(
       'scope.set_tag( "npm_final_attempt_forced",',
     );
