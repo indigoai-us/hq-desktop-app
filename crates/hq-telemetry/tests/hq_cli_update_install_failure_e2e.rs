@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    report_install_failure, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_npm_cache_setup_failure, InstallExecutor,
-    NonConvergenceKind, NonConvergentReport,
+    report_install_failure, report_install_failure_episode,
+    report_install_failure_with_environment, report_install_failure_with_final_attempt,
+    report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
+    InstallExecutor, InstallFailureEpisode, NonConvergenceKind, NonConvergentReport,
+    NpmToolchainSource,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -58,6 +60,7 @@ fn assert_unexpected_install_event(
     expected_path_shape: &str,
     expected_stderr_len: &str,
     expected_lifecycle_package: Option<&str>,
+    expected_lifecycle_cause: &str,
     expected_signature: &str,
 ) {
     assert_eq!(event.level, sentry::Level::Error);
@@ -124,11 +127,34 @@ fn assert_unexpected_install_event(
         event.tags.get("npm_lifecycle_package").map(String::as_str),
         expected_lifecycle_package
     );
+    // The lifecycle-cause tag is present exactly when npm reported a lifecycle
+    // failure (parallel to npm_lifecycle_package); its value is the diagnosed
+    // cause. A non-lifecycle failure carries no such tag.
+    assert_eq!(
+        event.tags.get("npm_lifecycle_cause").map(String::as_str),
+        expected_lifecycle_package.map(|_| expected_lifecycle_cause)
+    );
+    // Toolchain provenance. Through these legacy entrypoints it is always the
+    // "unknown" fallback (the app-side probes feed the environment-aware path),
+    // but the tags must always be present so an event is never missing them.
+    for (tag_key, expected) in [
+        ("node_version", "unknown"),
+        ("node_abi", "unknown"),
+        ("npm_version", "unknown"),
+        ("npm_toolchain_source", "unknown"),
+        ("npm_managed_toolchain_retry", "false"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag_key).map(String::as_str),
+            Some(expected),
+            "unexpected {tag_key} tag"
+        );
+    }
     assert_eq!(
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(
             format!(
-                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len}"
+                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len} lifecycle_cause={expected_lifecycle_cause} node_version=unknown node_abi=unknown npm_version=unknown toolchain_source=unknown"
             )
             .into()
         ))
@@ -144,16 +170,19 @@ fn assert_unexpected_install_event(
 /// `npm_path_shape=selected-prefix-node-modules` and `npm_prefix_known=true`).
 const SELECTED_PREFIX: &str = "/Users/alice/.npm-global";
 
-/// Reproduce the production stderr shape behind HQ-DESKTOP-4G / HQ-DESKTOP-4H:
-/// a third-party dependency's build script failing under the selected prefix.
-/// npm reports that script's own exit status as its `code`, which is the only
-/// thing that differed between the two Sentry issues.
+/// Reproduce the production stderr shape behind HQ-DESKTOP-4R / HQ-DESKTOP-4S:
+/// a third-party native dependency's build script failing under the selected
+/// prefix because the machine's Node ABI has no published prebuild. npm reports
+/// that script's own exit status as its `code`, which is the only thing that
+/// differed between the historic exit-1 / exit-7 issues; the diagnosed cause is
+/// `prebuild-unavailable`, carried by prebuild-install's own miss message.
 fn lifecycle_stderr(script_status: &str, package: &str) -> String {
     format!(
         "npm error code {script_status}\n\
          npm error path {SELECTED_PREFIX}/lib/node_modules/{package}\n\
          npm error command failed\n\
-         npm error command sh -c prebuild-install || node-gyp rebuild"
+         npm error command sh -c prebuild-install || node-gyp rebuild\n\
+         prebuild-install warn install No prebuilt binaries found (target=23.0.0 runtime=node arch=arm64)"
     )
 }
 
@@ -206,12 +235,12 @@ fn the_same_lifecycle_failure_groups_identically_across_npm_exit_statuses() {
             "hq-cli-update",
             "install-failed",
             "unexpected-lifecycle",
-            "lifecycle:better-sqlite3"
+            "lifecycle:better-sqlite3:prebuild-unavailable"
         ]
     );
     assert_eq!(
         exit_one.message.as_deref(),
-        Some("[hq-cli-update] install failed (lifecycle:better-sqlite3)")
+        Some("[hq-cli-update] install failed (lifecycle:better-sqlite3:prebuild-unavailable)")
     );
 
     // Fixture fidelity: these are the tags Sentry actually recorded on 4G/4H.
@@ -324,7 +353,7 @@ fn genuinely_different_causes_keep_distinct_fingerprints() {
             "hq-cli-update",
             "install-failed",
             "unexpected-lifecycle",
-            "lifecycle:node-llama-cpp"
+            "lifecycle:node-llama-cpp:prebuild-unavailable"
         ]
     );
 
@@ -387,6 +416,7 @@ fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics()
         "npm-cache",
         cache_eacces_len.as_str(),
         None,
+        "none",
         "EACCES:unknown:npm-cache",
     );
     assert_path_safe(&events[0], &["/Users/", "alice", "_cacache", "npm error"]);
@@ -405,6 +435,7 @@ fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics()
         "other",
         unknown_len.as_str(),
         Some("unrecognized"),
+        "unknown",
         // A symbolic npm code is a real discriminator, so it is kept.
         "ELIFECYCLE:unknown:other",
     );
@@ -434,6 +465,7 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
         "none",
         lifecycle_len.as_str(),
         Some("unrecognized"),
+        "unknown",
         // npm echoed the build script's own status as its code; a bare number
         // must collapse instead of re-keying the group on the exit status.
         "none:unknown:none",
@@ -632,6 +664,7 @@ fn force_exhausted_structured_bin_collision_stays_visible_as_a_warning() {
         "bin-hq",
         bin_collision.len().to_string().as_str(),
         None,
+        "none",
         "EEXIST:unknown:bin-hq",
     );
 }
@@ -640,10 +673,10 @@ fn force_exhausted_structured_bin_collision_stays_visible_as_a_warning() {
 fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_are_loud() {
     let third_party = "npm error code 1\n\
         npm error command failed\n\
-        npm error path /Users/alice/toolchain/lib/node_modules/better-sqlite3\n\
+        npm error path /Users/alice/workroot/lib/node_modules/better-sqlite3\n\
         npm error command sh -c prebuild-install || node-gyp rebuild";
     let events = captured_events(|| {
-        report_install_failure(Some(1), third_party, Some("/Users/alice/toolchain"))
+        report_install_failure(Some(1), third_party, Some("/Users/alice/workroot"))
     });
     assert_eq!(events.len(), 1);
     let event = &events[0];
@@ -654,7 +687,7 @@ fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_a
             "hq-cli-update",
             "install-failed",
             "unexpected-lifecycle",
-            "lifecycle:better-sqlite3"
+            "lifecycle:better-sqlite3:unknown"
         ]
     );
     assert_eq!(
@@ -676,7 +709,7 @@ fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_a
             .map(String::as_str),
         Some("false")
     );
-    assert_path_safe(event, &["/Users/", "alice", "toolchain", "npm error"]);
+    assert_path_safe(event, &["/Users/", "alice", "workroot", "npm error"]);
 
     // An HQ-owned package and an unattributable build both stay on the
     // `unexpected` path, and each keeps its own bounded signature rather than
@@ -745,4 +778,263 @@ fn cache_setup_failures_capture_stable_path_safe_envelopes() {
         );
         assert_path_safe(event, &["/Users/", "alice", "_cacache", "npm error"]);
     }
+}
+
+/// The core of the fix for HQ-DESKTOP-4R / HQ-DESKTOP-4S: the environment-aware
+/// capture carries the diagnosed cause and the toolchain provenance the original
+/// events never had, in the exact serialized event, scrub-safely.
+#[test]
+fn environment_aware_capture_carries_the_previously_missing_provenance() {
+    let stderr = lifecycle_stderr("1", "better-sqlite3");
+    let env = InstallEnvironment {
+        node_version: Some("v22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::Managed,
+        managed_toolchain_retry: true,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            &stderr,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+        )
+    }));
+
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (lifecycle:better-sqlite3:prebuild-unavailable)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected-lifecycle",
+            "lifecycle:better-sqlite3:prebuild-unavailable"
+        ]
+    );
+    for (key, value) in [
+        ("npm_lifecycle_package", "better-sqlite3"),
+        ("npm_lifecycle_cause", "prebuild-unavailable"),
+        ("node_version", "22.17.0"),
+        ("node_abi", "127"),
+        ("npm_version", "10.9.2"),
+        ("npm_toolchain_source", "managed"),
+        ("npm_managed_toolchain_retry", "true"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(value)) => value.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        diagnostics.contains(
+            "lifecycle_cause=prebuild-unavailable node_version=22.17.0 node_abi=127 npm_version=10.9.2 toolchain_source=managed"
+        ),
+        "npm_diagnostics missing provenance suffix: {diagnostics}"
+    );
+    assert_path_safe(
+        &event,
+        &[
+            "/Users/",
+            "alice",
+            ".npm-global",
+            "npm error",
+            "No prebuilt",
+        ],
+    );
+}
+
+/// The version/ABI strings are caller-probed, so a malformed one must never
+/// reach Sentry: it is rejected to `unknown` before tagging.
+#[test]
+fn malformed_probe_values_are_rejected_to_unknown_before_tagging() {
+    let stderr = lifecycle_stderr("1", "better-sqlite3");
+    let env = InstallEnvironment {
+        node_version: Some("22.x-nightly; rm -rf /".to_string()),
+        node_abi: Some("/Users/alice/toolchain".to_string()),
+        npm_version: Some(String::new()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            &stderr,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+        )
+    }));
+    for (key, value) in [
+        ("node_version", "unknown"),
+        ("node_abi", "unknown"),
+        ("npm_version", "unknown"),
+        ("npm_toolchain_source", "user-path"),
+        ("npm_managed_toolchain_retry", "false"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    assert_path_safe(&event, &["/Users/", "alice", "rm -rf", "nightly"]);
+}
+
+/// HQ-DESKTOP-4S, node-llama-cpp's cmake-js build failing because the compiler
+/// toolchain is missing: a distinct cause, a distinct group, an actionable tag.
+#[test]
+fn node_llama_cpp_missing_compiler_groups_by_toolchain_missing_cause() {
+    let stderr = format!(
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/node-llama-cpp\n\
+         npm error command failed\n\
+         npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+         Error: Cannot find cmake, please install cmake and try again"
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &stderr, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (lifecycle:node-llama-cpp:toolchain-missing)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected-lifecycle",
+            "lifecycle:node-llama-cpp:toolchain-missing"
+        ]
+    );
+    assert_eq!(tag(&event, "npm_lifecycle_package"), Some("node-llama-cpp"));
+    assert_eq!(
+        tag(&event, "npm_lifecycle_cause"),
+        Some("toolchain-missing")
+    );
+    assert_path_safe(
+        &event,
+        &["/Users/", "alice", ".npm-global", "npm error", "cmake"],
+    );
+}
+
+/// Instrumentation must not weaken scrub-safety: raw node-gyp output, a home
+/// directory, and the absolute prefix in the fixture reach neither the message,
+/// tags, extras, nor fingerprint of the emitted event.
+#[test]
+fn provenance_instrumentation_never_weakens_scrub_safety() {
+    let raw = format!(
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/better-sqlite3\n\
+         npm error command failed\n\
+         gyp ERR! build error\n\
+         gyp ERR! stack Error: not found: make\n\
+         gyp ERR! cwd /Users/alice/secret-project\n\
+         gyp ERR! node -v v23.1.0"
+    );
+    let env = InstallEnvironment {
+        node_version: Some("23.1.0".to_string()),
+        node_abi: Some("131".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(1), &raw, Some(SELECTED_PREFIX), false, &env)
+    }));
+    assert_eq!(
+        tag(&event, "npm_lifecycle_cause"),
+        Some("toolchain-missing")
+    );
+    assert_eq!(tag(&event, "node_abi"), Some("131"));
+    assert_path_safe(
+        &event,
+        &[
+            "/Users/",
+            "alice",
+            ".npm-global",
+            "secret-project",
+            "npm error",
+            "gyp ERR!",
+            "not found: make",
+        ],
+    );
+}
+
+/// The repeat-guard: a permanent per-machine build failure that re-fires on
+/// every scheduled check reports exactly once per `(version × package × cause)`
+/// key, and pages again only when that key changes.
+#[test]
+fn repeat_guard_reports_once_per_key_and_pages_again_on_a_changed_key() {
+    let stderr = lifecycle_stderr("1", "better-sqlite3");
+    let env = InstallEnvironment::default();
+
+    // First occurrence: no marker yet → reports once and hands back the key.
+    let mut persisted: Option<String> = None;
+    let first = captured_events(|| {
+        let last = persisted.clone();
+        match report_install_failure_episode(
+            Some(1),
+            &stderr,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+            "5.97.0",
+            last.as_deref(),
+        ) {
+            InstallFailureEpisode::Reported { persist_key } => persisted = persist_key,
+            other => panic!("expected Reported on first occurrence, got {other:?}"),
+        }
+    });
+    assert_eq!(first.len(), 1, "first occurrence must report");
+    assert_eq!(
+        persisted.as_deref(),
+        Some("5.97.0|better-sqlite3|prebuild-unavailable")
+    );
+
+    // Identical repeat with the persisted marker: suppressed, zero events.
+    let repeat = captured_events(|| {
+        let last = persisted.clone();
+        assert_eq!(
+            report_install_failure_episode(
+                Some(1),
+                &stderr,
+                Some(SELECTED_PREFIX),
+                false,
+                &env,
+                "5.97.0",
+                last.as_deref(),
+            ),
+            InstallFailureEpisode::SuppressedRepeat
+        );
+    });
+    assert!(
+        repeat.is_empty(),
+        "an identical repeat must not re-page: {repeat:?}"
+    );
+
+    // A bumped target version is a new key → pages again.
+    let bumped = captured_events(|| {
+        let last = persisted.clone();
+        match report_install_failure_episode(
+            Some(1),
+            &stderr,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+            "5.98.0",
+            last.as_deref(),
+        ) {
+            InstallFailureEpisode::Reported { persist_key } => assert_eq!(
+                persist_key.as_deref(),
+                Some("5.98.0|better-sqlite3|prebuild-unavailable")
+            ),
+            other => panic!("expected Reported on a bumped version, got {other:?}"),
+        }
+    });
+    assert_eq!(bumped.len(), 1, "a new target version must page again");
 }

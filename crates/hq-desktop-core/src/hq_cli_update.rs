@@ -1878,6 +1878,103 @@ fn is_third_party_npm_lifecycle_failure(detail: &str) -> bool {
             .is_some_and(|package| !is_indigoai_owned_npm_package(package))
 }
 
+/// Diagnose WHY a native dependency's install lifecycle script failed, as a
+/// CLOSED enumeration. This is the single field the reported events for
+/// HQ-DESKTOP-4R / HQ-DESKTOP-4S never carried, and it is the whole reason the
+/// specific per-machine reason could not be determined remotely.
+///
+/// The return type is `&'static str` on purpose: no attacker- or path-derived
+/// text from `detail` can ever reach Sentry through this value. The raw npm
+/// output stays in the local `log("hq-cli-update", …)` record only.
+///
+/// Matching is deliberately conservative and keys on the *actual failure
+/// evidence* — prebuild-install's own "No prebuilt binaries found", node-gyp's
+/// `gyp ERR!`, a libuv transport errno while fetching a prebuild, `ENOSPC` —
+/// never on the mere presence of a build tool's name in the command line npm
+/// echoes (`sh -c prebuild-install || node-gyp rebuild` names node-gyp but does
+/// not mean the compiler is missing). Each cause requires its own distinctive
+/// token(s); anything unrecognized returns the first-class value "unknown".
+///
+/// Ordering matters: disk exhaustion can masquerade as any other failure, and a
+/// prebuild miss that then falls through to a failing `node-gyp rebuild` should
+/// report the compiler as missing (the actionable cause) rather than the
+/// prebuild gap, so `toolchain-missing` is checked before `prebuild-unavailable`.
+fn npm_lifecycle_cause(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+
+    // Disk exhaustion is unambiguous and dominates: a full disk can present as a
+    // truncated prebuild download or a failed compile, so it is decided first.
+    if lower.contains("enospc") || lower.contains("no space left on device") {
+        return "disk-space";
+    }
+
+    // A network fault while FETCHING the prebuilt binary. Requires a transport
+    // errno AND download/fetch context — a bare "network" word is not enough,
+    // and npm's own transient-registry errors are handled separately upstream.
+    let transport_errno = [
+        "etimedout",
+        "enotfound",
+        "eai_again",
+        "econnreset",
+        "econnrefused",
+        "socket hang up",
+    ]
+    .iter()
+    .any(|token| lower.contains(token));
+    let fetch_context = [
+        "prebuild",
+        "download",
+        "fetch",
+        "https://",
+        "http://",
+        "getaddrinfo",
+        "registry",
+    ]
+    .iter()
+    .any(|token| lower.contains(token));
+    if transport_errno && fetch_context {
+        return "network";
+    }
+
+    // The compiler/toolchain is missing, so node-gyp / cmake-js could not build
+    // from source. Match on the builders' OWN error output, never on the echoed
+    // command line.
+    let missing_tokens = [
+        "not found",
+        "cannot find",
+        "not installed",
+        "command not found",
+        "enoent",
+        "no such file",
+    ];
+    let cmake_missing = (lower.contains("cmake") || lower.contains("cmake-js"))
+        && missing_tokens.iter().any(|token| lower.contains(token));
+    let compiler_missing = ["c++", "g++", "clang++", "cc1plus", "make: "]
+        .iter()
+        .any(|token| lower.contains(token))
+        && (lower.contains("command not found") || lower.contains("no such file"));
+    if lower.contains("gyp err!")
+        || lower.contains("xcode-select")
+        || lower.contains("no xcodebuild")
+        || lower.contains("command line tools")
+        || lower.contains("no developer tools")
+        || cmake_missing
+        || compiler_missing
+    {
+        return "toolchain-missing";
+    }
+
+    // No prebuilt binary is published for this Node ABI / platform, so
+    // prebuild-install reported a miss (its own message) or the download 404'd.
+    if lower.contains("no prebuilt binaries found")
+        || (lower.contains("prebuild") && lower.contains("404"))
+    {
+        return "prebuild-unavailable";
+    }
+
+    "unknown"
+}
+
 /// A normalized local-log record for an npm attempt. It deliberately contains
 /// only bounded npm code and path-shape values, never raw npm output or paths.
 pub fn npm_install_attempt_summary(
@@ -2133,10 +2230,15 @@ fn install_failure_signature(
 ) -> String {
     if kind == InstallFailureKind::UnexpectedLifecycle {
         // Classification already proved a third-party package was attributed,
-        // so this branch keys on the dependency whose build actually failed.
+        // so this branch keys on the dependency whose build actually failed AND
+        // the diagnosed cause. Appending the cause (never substituting it for
+        // the package, so the e0afe711 per-package split is preserved) stops a
+        // prebuild gap and a missing compiler from sharing one issue. `cause` is
+        // a closed enumeration, so cardinality stays bounded to package × cause.
         let package = npm_lifecycle_failure(detail).package;
         let package = package.as_deref().unwrap_or("unrecognized");
-        return format!("lifecycle:{package}");
+        let cause = npm_lifecycle_cause(detail);
+        return format!("lifecycle:{package}:{cause}");
     }
     format!(
         "{}:{}:{}",
@@ -2181,8 +2283,17 @@ pub fn install_failure_detail_with_final_attempt(
         );
     }
     if npm_lifecycle_failure(detail).failed {
-        return "A dependency build step failed while npm was installing hq. Run the copied command in a terminal to see the full build output and repair the local toolchain."
-            .to_string();
+        // Cause-specific, actionable wording. Every branch keeps the copyable
+        // command escape hatch ("copied command") so the UI fallback is intact
+        // regardless of which cause was diagnosed.
+        return match npm_lifecycle_cause(detail) {
+            "toolchain-missing" => "A dependency needs to build a native component, but the build tools are missing. On macOS, install them by running `xcode-select --install`, then run the copied command in a terminal.",
+            "prebuild-unavailable" => "Your installed Node.js version has no prebuilt binary for a component hq needs, so npm tried to build it from source and failed. Install the supported Node.js (version 22), then run the copied command in a terminal.",
+            "network" => "A prebuilt component could not be downloaded while installing hq. Check your network or proxy, then run the copied command in a terminal to retry.",
+            "disk-space" => "The install ran out of disk space while building a component hq needs. Free up disk space, then run the copied command in a terminal.",
+            _ => "A dependency build step failed while npm was installing hq. Run the copied command in a terminal to see the full build output and repair the local toolchain.",
+        }
+        .to_string();
     }
     if !detail.trim().is_empty() {
         return detail.trim().to_string();
@@ -2262,6 +2373,86 @@ pub fn install_failure_report_with_final_attempt(
     Some(format!("[hq-cli-update] install failed ({signature})"))
 }
 
+/// Which toolchain the failing npm run used, as a CLOSED enumeration. The
+/// caller decides this from whether the resolved npm/node path is inside the
+/// app's managed toolchain directory; only the enum value ever reaches Sentry,
+/// never a filesystem path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NpmToolchainSource {
+    Managed,
+    UserPath,
+    #[default]
+    Unknown,
+}
+
+impl NpmToolchainSource {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::Managed => "managed",
+            Self::UserPath => "user-path",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Toolchain provenance for a failed hq-CLI install — the evidence the reported
+/// HQ-DESKTOP-4R / HQ-DESKTOP-4S events lacked. Every version field is optional
+/// because the updater probes them best-effort; a missing or malformed value is
+/// tagged `unknown`. The version/ABI strings are raw here and are reduced to a
+/// strictly bounded numeric token before they are ever tagged (see
+/// [`sanitized_version_token`]), so no caller-supplied free text can reach
+/// Sentry through them.
+#[derive(Debug, Clone, Default)]
+pub struct InstallEnvironment {
+    pub node_version: Option<String>,
+    pub node_abi: Option<String>,
+    pub npm_version: Option<String>,
+    pub toolchain_source: NpmToolchainSource,
+    pub managed_toolchain_retry: bool,
+}
+
+/// Reduce a caller-supplied node/npm version or Node ABI to a strictly bounded
+/// token (ASCII digits and dots, at least one digit, 1..=24 chars) or the
+/// literal `unknown`. This is the ONLY path by which a probed version reaches
+/// Sentry, so it is the scrub-safety boundary for those values: anything that
+/// is empty, over-long, or contains any other byte collapses to `unknown`.
+fn sanitized_version_token(raw: Option<&str>) -> String {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "unknown".to_string();
+    };
+    let value = raw.strip_prefix('v').unwrap_or(raw);
+    if (1..=24).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && value.bytes().any(|byte| byte.is_ascii_digit())
+    {
+        value.to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+/// The provenance segment appended to `npm_diagnostics`. Its shape is constant
+/// (always these five keys) so the extra stays trivially assertable; each value
+/// is already a closed enumeration or a `sanitized_version_token` output.
+fn install_environment_diagnostics_suffix(
+    lifecycle_cause: Option<&str>,
+    node_version: &str,
+    node_abi: &str,
+    npm_version: &str,
+    toolchain_source: &str,
+) -> String {
+    format!(
+        "lifecycle_cause={} node_version={} node_abi={} npm_version={} toolchain_source={}",
+        lifecycle_cause.unwrap_or("none"),
+        node_version,
+        node_abi,
+        npm_version,
+        toolchain_source,
+    )
+}
+
 /// Capture an auto/manual CLI-install failure to Sentry — but only when it is a
 /// reportable failure (see `install_failure_report`). The expected permission
 /// failure at the selected global prefix is deliberately NOT captured: it
@@ -2279,6 +2470,29 @@ pub fn report_install_failure_with_final_attempt(
     detail: &str,
     prefix: Option<&str>,
     final_attempt_forced: bool,
+) {
+    report_install_failure_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        &InstallEnvironment::default(),
+    );
+}
+
+/// Like [`report_install_failure_with_final_attempt`], but also attaches the
+/// toolchain provenance the reported HQ-DESKTOP-4R / HQ-DESKTOP-4S events were
+/// missing — the diagnosed lifecycle cause, the Node version and ABI, the npm
+/// version, whether npm ran under the app's managed toolchain, and whether a
+/// managed-toolchain retry was armed. Every added value is a closed enumeration
+/// or a strictly validated numeric token, so the capture keeps the same
+/// scrub-safety guarantee as before.
+pub fn report_install_failure_with_environment(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
 ) {
     let kind = classify_install_failure_with_final_attempt(
         exit_code,
@@ -2303,13 +2517,35 @@ pub fn report_install_failure_with_final_attempt(
     let npm_lifecycle = npm_lifecycle_failure(detail);
     let npm_stderr_len = detail.len().to_string();
     let npm_errno = npm_errno_from_exit_status(exit_code);
-    let npm_diagnostics = npm_diagnostics_summary(
-        exit_str.as_str(),
-        npm_errno,
-        detail,
-        npm_path_shape,
-        npm_prefix_known,
-        eacces,
+    // The lifecycle cause is meaningful only when npm actually reported a
+    // lifecycle failure (parallel to `npm_lifecycle_package`); otherwise the
+    // provenance suffix records it as `none`.
+    let lifecycle_cause = if npm_lifecycle.failed {
+        Some(npm_lifecycle_cause(detail))
+    } else {
+        None
+    };
+    let node_version = sanitized_version_token(env.node_version.as_deref());
+    let node_abi = sanitized_version_token(env.node_abi.as_deref());
+    let npm_version = sanitized_version_token(env.npm_version.as_deref());
+    let toolchain_source = env.toolchain_source.tag_value();
+    let npm_diagnostics = format!(
+        "{} {}",
+        npm_diagnostics_summary(
+            exit_str.as_str(),
+            npm_errno,
+            detail,
+            npm_path_shape,
+            npm_prefix_known,
+            eacces,
+        ),
+        install_environment_diagnostics_suffix(
+            lifecycle_cause,
+            &node_version,
+            &node_abi,
+            &npm_version,
+            toolchain_source,
+        ),
     );
     sentry::with_scope(
         |scope| {
@@ -2343,6 +2579,24 @@ pub fn report_install_failure_with_final_attempt(
                     npm_lifecycle.package.as_deref().unwrap_or("unrecognized"),
                 );
             }
+            if let Some(cause) = lifecycle_cause {
+                scope.set_tag("npm_lifecycle_cause", cause);
+            }
+            // Toolchain provenance — the fields the reported 4R/4S events lacked,
+            // which make the next occurrence self-diagnosing. Each is a closed
+            // enumeration or a validated numeric token.
+            scope.set_tag("node_version", node_version.as_str());
+            scope.set_tag("node_abi", node_abi.as_str());
+            scope.set_tag("npm_version", npm_version.as_str());
+            scope.set_tag("npm_toolchain_source", toolchain_source);
+            scope.set_tag(
+                "npm_managed_toolchain_retry",
+                if env.managed_toolchain_retry {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
             scope.set_tag(
                 "npm_prefix_known",
                 if npm_prefix_known { "true" } else { "false" },
@@ -2369,6 +2623,113 @@ pub fn report_install_failure_with_final_attempt(
             sentry::capture_message(&message, level);
         },
     );
+}
+
+/// Per-machine episode key for a reportable install failure, or `None` when the
+/// failure is not a third-party lifecycle failure. Only lifecycle failures recur
+/// identically on every scheduled check (the machine's Node ABI has no prebuild,
+/// or its compiler is missing — a permanent per-machine condition), so only they
+/// warrant repeat-suppression; every other reportable failure keeps paging as it
+/// does today.
+///
+/// The key is the exact tuple that must change before the same machine pages
+/// again: the CLI version being installed, the failing dependency, and the
+/// diagnosed cause. Every component is a closed enumeration or an already
+/// `is_safe_npm_package_name`-validated package name, so the key is safe to
+/// persist and log. `latest` is a published npm version string the updater
+/// resolved, not user input.
+pub fn install_failure_episode_key(latest: &str, detail: &str) -> Option<String> {
+    if !is_third_party_npm_lifecycle_failure(detail) {
+        return None;
+    }
+    let package = npm_lifecycle_failure(detail).package;
+    let package = package.as_deref().unwrap_or("unrecognized");
+    let cause = npm_lifecycle_cause(detail);
+    Some(format!("{latest}|{package}|{cause}"))
+}
+
+/// Whether a lifecycle-failure episode identical to one already reported on this
+/// machine should be suppressed. Mirrors [`non_convergent_episode_blocked`]: a
+/// byte-for-byte match on the last reported key means the same broken build is
+/// re-firing on a scheduled check and must not re-page. Any change to the CLI
+/// version, package, or cause yields a different key and pages again. A caller
+/// that cannot read its marker passes `None` and therefore always reports —
+/// fail-closed, staying loud (commit 3f52d298).
+pub fn install_failure_episode_blocked(last_reported_key: Option<&str>, current_key: &str) -> bool {
+    last_reported_key == Some(current_key)
+}
+
+/// Outcome of [`report_install_failure_episode`], telling the caller both what
+/// happened and whether it must persist a marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallFailureEpisode {
+    /// An expected local condition; nothing was sent (as today).
+    NotReportable,
+    /// The failure was reported to Sentry. `persist_key` is `Some` for a
+    /// lifecycle episode whose key the caller should persist so the NEXT
+    /// byte-for-byte identical attempt is suppressed; `None` for a non-lifecycle
+    /// failure, which is never repeat-suppressed.
+    Reported { persist_key: Option<String> },
+    /// A lifecycle episode identical to the last reported one; deliberately not
+    /// sent, so a permanent per-machine build failure stops re-paging on every
+    /// scheduled check. The caller still logs it locally and unconditionally.
+    SuppressedRepeat,
+}
+
+/// Report a CLI-install failure with the repeat-guard applied. First occurrence
+/// of a given `(latest × package × cause)` key reports at Error exactly as today
+/// (with the provenance from `env`); an identical re-attempt of the SAME key is
+/// suppressed; any new CLI target version, package, or cause reports again.
+///
+/// Persistence is deliberately left to the caller (mirroring how the
+/// non-convergent marker is read/written in the app layer): pass the last
+/// reported key in `last_reported_key`, and on a `Reported { persist_key: Some }`
+/// outcome persist that key. A caller that cannot read its marker passes `None`
+/// and therefore reports (fail-closed).
+pub fn report_install_failure_episode(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+    latest: &str,
+    last_reported_key: Option<&str>,
+) -> InstallFailureEpisode {
+    // Only failures that would actually be captured are subject to the guard.
+    if install_failure_report_with_final_attempt(exit_code, detail, prefix, final_attempt_forced)
+        .is_none()
+    {
+        return InstallFailureEpisode::NotReportable;
+    }
+    match install_failure_episode_key(latest, detail) {
+        // A non-lifecycle reportable failure: report every time, as before.
+        None => {
+            report_install_failure_with_environment(
+                exit_code,
+                detail,
+                prefix,
+                final_attempt_forced,
+                env,
+            );
+            InstallFailureEpisode::Reported { persist_key: None }
+        }
+        Some(key) => {
+            if install_failure_episode_blocked(last_reported_key, &key) {
+                InstallFailureEpisode::SuppressedRepeat
+            } else {
+                report_install_failure_with_environment(
+                    exit_code,
+                    detail,
+                    prefix,
+                    final_attempt_forced,
+                    env,
+                );
+                InstallFailureEpisode::Reported {
+                    persist_key: Some(key),
+                }
+            }
+        }
+    }
 }
 
 /// Report a failure to prepare the updater's app-owned npm cache without
@@ -4177,7 +4538,7 @@ mod tests {
         let four_h = stderr("better-sqlite3", "7");
         assert_eq!(
             install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &four_g, prefix),
-            "lifecycle:better-sqlite3"
+            "lifecycle:better-sqlite3:unknown"
         );
         assert_eq!(
             install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &four_h, prefix),
@@ -4288,7 +4649,7 @@ mod tests {
                 scoped,
                 Some("/Users/alice/.npm-global")
             ),
-            "lifecycle:@vendor/native-addon"
+            "lifecycle:@vendor/native-addon:unknown"
         );
         assert!(is_safe_npm_package_name("@vendor/native-addon"));
 
@@ -4303,7 +4664,218 @@ mod tests {
                 unattributable,
                 None
             ),
-            "lifecycle:unrecognized"
+            "lifecycle:unrecognized:unknown"
+        );
+    }
+
+    #[test]
+    fn npm_lifecycle_cause_classifies_each_closed_value_from_real_failure_evidence() {
+        // prebuild-install's own miss message (the better-sqlite3 case: the
+        // machine's Node ABI has no published prebuild).
+        let prebuild = "npm error code 1\n\
+            npm error command sh -c prebuild-install || node-gyp rebuild\n\
+            prebuild-install warn install No prebuilt binaries found (target=23.0.0 runtime=node arch=arm64)";
+        assert_eq!(npm_lifecycle_cause(prebuild), "prebuild-unavailable");
+
+        // node-gyp fell through to a source build with no compiler present.
+        let gyp = "npm error code 1\n\
+            gyp ERR! build error\n\
+            gyp ERR! stack Error: not found: make\n\
+            gyp ERR! System Darwin";
+        assert_eq!(npm_lifecycle_cause(gyp), "toolchain-missing");
+
+        // Command Line Tools absent — the macOS non-developer case.
+        let clt = "npm error code 1\n\
+            xcode-select: note: no developer tools were found, requesting install";
+        assert_eq!(npm_lifecycle_cause(clt), "toolchain-missing");
+
+        // node-llama-cpp's cmake-js build with cmake missing.
+        let cmake = "npm error code 1\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: Cannot find cmake, please install cmake and try again";
+        assert_eq!(npm_lifecycle_cause(cmake), "toolchain-missing");
+
+        // A transport errno WHILE fetching a prebuild is a network cause.
+        let network = "npm error code 1\n\
+            prebuild-install http request to https://github.com failed\n\
+            Error: connect ETIMEDOUT 140.82.113.3:443";
+        assert_eq!(npm_lifecycle_cause(network), "network");
+
+        // Disk exhaustion dominates.
+        let disk = "npm error code 1\n\
+            gyp ERR! stack Error: ENOSPC: no space left on device";
+        assert_eq!(npm_lifecycle_cause(disk), "disk-space");
+
+        // The command echo alone (no failure evidence) must NOT be classified:
+        // naming node-gyp in `sh -c prebuild-install || node-gyp rebuild` does
+        // not mean the compiler is missing.
+        let command_echo_only = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c prebuild-install || node-gyp rebuild";
+        assert_eq!(npm_lifecycle_cause(command_echo_only), "unknown");
+        assert_eq!(npm_lifecycle_cause(""), "unknown");
+    }
+
+    #[test]
+    fn npm_lifecycle_cause_only_ever_returns_a_closed_constant_even_for_adversarial_input() {
+        let allowed = [
+            "prebuild-unavailable",
+            "toolchain-missing",
+            "network",
+            "disk-space",
+            "unknown",
+        ];
+        for adversarial in [
+            "npm error code 1\nnpm error path /Users/attacker/../../etc/passwd\nlifecycle_cause=INJECTED node_version=99",
+            "gyp ERR! /home/victim/secret token=abc123 No prebuilt binaries found",
+            "ENOSPC ETIMEDOUT prebuild download https:// cmake not found xcode-select",
+            "\u{0}\u{1}\u{2} No PREBUILT Binaries Found \u{7f}",
+            "random build noise with no recognizable failure token",
+        ] {
+            let cause = npm_lifecycle_cause(adversarial);
+            assert!(
+                allowed.contains(&cause),
+                "cause {cause:?} is not one of the closed constants"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitized_version_token_accepts_only_bounded_numeric_tokens() {
+        assert_eq!(sanitized_version_token(Some("22.17.0")), "22.17.0");
+        assert_eq!(sanitized_version_token(Some("v22.17.0")), "22.17.0");
+        assert_eq!(sanitized_version_token(Some(" 127 ")), "127");
+        // Anything non-numeric, empty, absent, or over-long collapses to unknown
+        // so no caller-supplied free text can reach Sentry through the tag.
+        assert_eq!(sanitized_version_token(None), "unknown");
+        assert_eq!(sanitized_version_token(Some("")), "unknown");
+        assert_eq!(sanitized_version_token(Some("22.17.0-nightly")), "unknown");
+        assert_eq!(sanitized_version_token(Some("/Users/alice")), "unknown");
+        assert_eq!(sanitized_version_token(Some("22; rm -rf")), "unknown");
+        assert_eq!(
+            sanitized_version_token(Some("1234567890123456789012345")),
+            "unknown"
+        );
+        assert_eq!(sanitized_version_token(Some("v")), "unknown");
+    }
+
+    #[test]
+    fn npm_toolchain_source_tags_are_closed() {
+        assert_eq!(NpmToolchainSource::Managed.tag_value(), "managed");
+        assert_eq!(NpmToolchainSource::UserPath.tag_value(), "user-path");
+        assert_eq!(NpmToolchainSource::Unknown.tag_value(), "unknown");
+        assert_eq!(NpmToolchainSource::default(), NpmToolchainSource::Unknown);
+    }
+
+    #[test]
+    fn install_failure_episode_key_is_only_minted_for_third_party_lifecycle_failures() {
+        let better_sqlite3 = "npm error code 1\n\
+            npm error command failed\n\
+            npm error path /usr/local/lib/node_modules/better-sqlite3\n\
+            prebuild-install warn install No prebuilt binaries found";
+        assert_eq!(
+            install_failure_episode_key("5.97.0", better_sqlite3).as_deref(),
+            Some("5.97.0|better-sqlite3|prebuild-unavailable")
+        );
+
+        // An owned package, an unattributable build, and a plain non-lifecycle
+        // failure never get a key — they keep paging every time.
+        let owned = "npm error code 1\n\
+            npm error command failed\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(install_failure_episode_key("5.97.0", owned), None);
+        assert_eq!(
+            install_failure_episode_key("5.97.0", "npm error code ENOTDIR"),
+            None
+        );
+    }
+
+    #[test]
+    fn install_failure_episode_blocked_suppresses_only_an_identical_key() {
+        assert!(install_failure_episode_blocked(
+            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
+            "5.97.0|better-sqlite3|prebuild-unavailable"
+        ));
+        // A changed version, package, or cause yields a different key → not
+        // blocked → pages again.
+        assert!(!install_failure_episode_blocked(
+            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
+            "5.98.0|better-sqlite3|prebuild-unavailable"
+        ));
+        assert!(!install_failure_episode_blocked(
+            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
+            "5.97.0|node-llama-cpp|prebuild-unavailable"
+        ));
+        assert!(!install_failure_episode_blocked(
+            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
+            "5.97.0|better-sqlite3|toolchain-missing"
+        ));
+        // No readable marker → not blocked → fail-closed (report).
+        assert!(!install_failure_episode_blocked(
+            None,
+            "5.97.0|better-sqlite3|prebuild-unavailable"
+        ));
+    }
+
+    #[test]
+    fn cause_specific_install_failure_detail_stays_actionable_with_the_copyable_command() {
+        let base = |cause_body: &str| {
+            format!(
+                "npm error code 1\n\
+                 npm error command failed\n\
+                 npm error path /usr/local/lib/node_modules/better-sqlite3\n\
+                 {cause_body}"
+            )
+        };
+        let toolchain = base("gyp ERR! stack Error: not found: make");
+        let detail = install_failure_detail(Some(1), &toolchain, Some("/usr/local"));
+        assert!(detail.contains("xcode-select --install"), "got: {detail}");
+        assert!(detail.contains("copied command"), "got: {detail}");
+
+        let prebuild = base("prebuild-install warn install No prebuilt binaries found");
+        let detail = install_failure_detail(Some(1), &prebuild, Some("/usr/local"));
+        assert!(detail.contains("version 22"), "got: {detail}");
+        assert!(detail.contains("copied command"), "got: {detail}");
+
+        let network = base("prebuild-install download https:// failed: connect ETIMEDOUT");
+        let detail = install_failure_detail(Some(1), &network, Some("/usr/local"));
+        assert!(detail.contains("could not be downloaded"), "got: {detail}");
+        assert!(detail.contains("copied command"), "got: {detail}");
+
+        let disk = base("gyp ERR! ENOSPC: no space left on device");
+        let detail = install_failure_detail(Some(1), &disk, Some("/usr/local"));
+        assert!(detail.contains("disk space"), "got: {detail}");
+        assert!(detail.contains("copied command"), "got: {detail}");
+
+        // The unclassified case keeps the original generic-but-actionable copy.
+        let unknown = base("some build noise with no recognizable cause");
+        let detail = install_failure_detail(Some(1), &unknown, Some("/usr/local"));
+        assert!(detail.contains("dependency build step"), "got: {detail}");
+        assert!(detail.contains("copied command"), "got: {detail}");
+    }
+
+    #[test]
+    fn lifecycle_signature_splits_a_prebuild_gap_from_a_missing_compiler() {
+        let path = "npm error path /usr/local/lib/node_modules/better-sqlite3";
+        let prebuild = format!(
+            "npm error code 1\nnpm error command failed\n{path}\nprebuild-install warn install No prebuilt binaries found"
+        );
+        let toolchain = format!(
+            "npm error code 1\nnpm error command failed\n{path}\ngyp ERR! stack Error: not found: make"
+        );
+        let prefix = Some("/usr/local");
+        let prebuild_sig =
+            install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &prebuild, prefix);
+        let toolchain_sig =
+            install_failure_signature(InstallFailureKind::UnexpectedLifecycle, &toolchain, prefix);
+        assert_eq!(
+            prebuild_sig,
+            "lifecycle:better-sqlite3:prebuild-unavailable"
+        );
+        assert_eq!(toolchain_sig, "lifecycle:better-sqlite3:toolchain-missing");
+        assert_ne!(
+            prebuild_sig, toolchain_sig,
+            "a prebuild gap and a missing compiler must not share one issue"
         );
     }
 

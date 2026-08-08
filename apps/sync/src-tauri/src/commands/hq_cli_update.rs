@@ -76,13 +76,15 @@ pub use hq_desktop_core::hq_cli_update::{
     is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, npm_install_attempt_summary, npm_prefix_from_hq_bin,
     path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv, read_installed_version,
-    redact_home, redact_home_in, report_install_failure, report_install_failure_with_final_attempt,
+    redact_home, redact_home_in, report_install_failure, report_install_failure_episode,
+    report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_non_convergent_marker_unpersisted,
     report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
     should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallExecutor,
-    InstallFailureKind, LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind,
-    NonConvergentReport, NpmLatest, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
+    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo,
+    InstallEnvironment, InstallExecutor, InstallFailureEpisode, InstallFailureKind,
+    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport,
+    NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
 };
@@ -608,6 +610,115 @@ async fn run_npm_install_with_retries(
     })
 }
 
+/// Hard cap on a single node/npm provenance probe. Bounded and non-looping.
+const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// menubar.json key holding the last-reported install-failure episode key, so an
+/// identical lifecycle failure stops re-paging Sentry on every scheduled check.
+const INSTALL_FAILURE_EPISODE_KEY: &str = "cliInstallFailureEpisode";
+
+/// Run one bounded provenance probe (`node --version`, `node -p
+/// process.versions.modules`, `npm --version`) and return its trimmed stdout, or
+/// `None` on any failure or timeout. Never blocks the updater: the child runs on
+/// the blocking pool under `TOOL_PROBE_TIMEOUT`.
+async fn probe_tool_line(bin: String, path: String, args: Vec<String>) -> Option<String> {
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut cmd = paths::spawn_command(&bin, &arg_refs);
+        cmd.env("PATH", &path);
+        cmd.output().ok()
+    });
+    let output = tokio::time::timeout(TOOL_PROBE_TIMEOUT, handle)
+        .await
+        .ok()?
+        .ok()??;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!line.is_empty()).then_some(line)
+}
+
+/// Whether the resolved npm sits inside the app's managed toolchain. A path
+/// comparison only; the reported value is the closed enum, never a path.
+fn npm_toolchain_source(npm: &str) -> NpmToolchainSource {
+    if npm == "npm" {
+        return NpmToolchainSource::Unknown;
+    }
+    let npm_path = Path::new(npm);
+    if paths::managed_toolchain_roots()
+        .iter()
+        .any(|root| npm_path.starts_with(root))
+    {
+        NpmToolchainSource::Managed
+    } else {
+        NpmToolchainSource::UserPath
+    }
+}
+
+/// Best-effort toolchain provenance for a failed install — the Node/npm
+/// versions, the Node ABI, and whether npm ran under the managed toolchain. This
+/// is the evidence HQ-DESKTOP-4R / HQ-DESKTOP-4S never carried. Bounded and
+/// non-blocking; a probe that fails leaves its field `None` (tagged `unknown`).
+async fn probe_install_environment(
+    npm: &str,
+    path: &str,
+    managed_toolchain_retry: bool,
+) -> InstallEnvironment {
+    let node = paths::resolve_bin("node");
+    let node_version = probe_tool_line(
+        node.clone(),
+        path.to_string(),
+        vec!["--version".to_string()],
+    )
+    .await;
+    let node_abi = probe_tool_line(
+        node,
+        path.to_string(),
+        vec!["-p".to_string(), "process.versions.modules".to_string()],
+    )
+    .await;
+    let npm_version = probe_tool_line(
+        npm.to_string(),
+        path.to_string(),
+        vec!["--version".to_string()],
+    )
+    .await;
+    InstallEnvironment {
+        node_version,
+        node_abi,
+        npm_version,
+        toolchain_source: npm_toolchain_source(npm),
+        managed_toolchain_retry,
+    }
+}
+
+/// Read the last-reported install-failure episode key from menubar.json, or
+/// `None` if absent/unreadable. A read failure yields `None`, which makes the
+/// repeat-guard fail closed (report) — the same fail-closed contract as the
+/// non-convergent marker.
+fn install_failure_episode_marker() -> Option<String> {
+    let path = paths::menubar_json_path().ok()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&contents).ok()?;
+    value
+        .get(INSTALL_FAILURE_EPISODE_KEY)?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Persist the reported episode key so an identical repeat is suppressed. Uses
+/// the same untyped-merge path as `record_non_convergent_version`, so unknown
+/// future menubar.json keys survive.
+fn record_install_failure_episode_marker(key: &str) -> Result<(), String> {
+    paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(INSTALL_FAILURE_EPISODE_KEY, Value::String(key.to_string()))],
+        )
+    })
+}
+
 /// Update a pnpm-managed `hq` with pnpm itself. npm cannot replace a shim in
 /// pnpm's flat global dir — `npm install -g` writes an unrelated prefix, exits
 /// 0, and the shim on PATH stays stale, which is exactly the non-convergent
@@ -883,15 +994,42 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 output.status.code()
             ),
         );
-        // Report using the original npm output so Sentry's diagnostic extra is
-        // never replaced by the UI fallback text. Expected environment kinds
-        // deliberately no-op inside `report_install_failure`.
-        report_install_failure_with_final_attempt(
+        // Attach the toolchain provenance the reported 4R/4S events lacked, then
+        // report through the repeat-guard so an identical lifecycle failure that
+        // re-fires on every scheduled check pages once, not forever. The raw npm
+        // output is passed so Sentry's diagnostic extra is never replaced by the
+        // UI fallback text; expected environment kinds still no-op in the reporter.
+        let install_env =
+            probe_install_environment(&npm, &path, /* managed_toolchain_retry */ false).await;
+        let last_episode_key = install_failure_episode_marker();
+        match report_install_failure_episode(
             output.status.code(),
             &raw_detail,
             prefix.as_deref(),
             install_run.final_attempt_forced,
-        );
+            &install_env,
+            &latest,
+            last_episode_key.as_deref(),
+        ) {
+            InstallFailureEpisode::Reported {
+                persist_key: Some(key),
+            } => {
+                if let Err(e) = record_install_failure_episode_marker(&key) {
+                    log(
+                        "hq-cli-update",
+                        &format!("could not persist install-failure episode marker: {e}"),
+                    );
+                }
+            }
+            InstallFailureEpisode::SuppressedRepeat => {
+                log(
+                    "hq-cli-update",
+                    "install-failure episode already reported for this (version, package, cause); not re-paging",
+                );
+            }
+            InstallFailureEpisode::Reported { persist_key: None }
+            | InstallFailureEpisode::NotReportable => {}
+        }
         return Err(detail);
     }
 
