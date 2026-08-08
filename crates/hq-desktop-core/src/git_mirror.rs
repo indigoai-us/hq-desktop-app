@@ -792,6 +792,57 @@ const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(10);
 /// see yet.
 const STALE_LOCK_MIN_AGE: Duration = Duration::from_secs(300);
 
+/// The bounded escape hatch for the *non-empty* orphaned lock — the one state
+/// [`should_reap_index_lock`] refuses forever, because a partial index (a writer
+/// killed mid-write) and a live writer we failed to observe look identical from
+/// outside. A real git index write completes in well under a second, so a lock
+/// that stays byte-for-byte frozen (same mtime), unheld, with no git process
+/// anywhere, continuously for *this* long is one no live writer could still own.
+/// Far longer than [`STALE_LOCK_MIN_AGE`] precisely because the cost of being
+/// wrong here is a corrupt index, so the window is measured in tens of minutes,
+/// not the empty case's five.
+const WEDGED_LOCK_HARD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Field-tuning override for [`WEDGED_LOCK_HARD_TIMEOUT`]. Same spelling
+/// convention as the other env knobs in this module. Values below
+/// [`STALE_LOCK_MIN_AGE`] are clamped up to it: the escape hatch must never fire
+/// faster than the empty-lock grace, no matter how the knob is set.
+const WEDGED_LOCK_HARD_TIMEOUT_ENV: &str = "HQ_INDEX_LOCK_HARD_TIMEOUT_SECS";
+
+/// Resolve the hard timeout, honouring the override with a safety floor.
+fn wedged_lock_hard_timeout() -> Duration {
+    match std::env::var(WEDGED_LOCK_HARD_TIMEOUT_ENV) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs.max(STALE_LOCK_MIN_AGE.as_secs())),
+            Err(_) => WEDGED_LOCK_HARD_TIMEOUT,
+        },
+        Err(_) => WEDGED_LOCK_HARD_TIMEOUT,
+    }
+}
+
+/// The observability record that lets the hard timeout span passes and restarts.
+const WEDGE_STATE_FILE: &str = "hq-sync-mirror-index-wedge.json";
+
+/// Cross-pass observation of a single wedged non-empty lock. The confirmation
+/// clock the hard timeout measures lives here so it survives app restarts — a
+/// clock kept only in memory would reset before tens of minutes could elapse.
+/// Written via the same temp-then-rename shape as the other observability files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PersistedIndexLockWedge {
+    /// Wall clock, RFC3339: the first pass this exact frozen lock was observed
+    /// wedged. The hard timeout is measured from here, not from the file's own
+    /// mtime, so a copied `.git` carrying an ancient mtime cannot mature into an
+    /// instant reap — the clock only starts once *we* have watched it dead.
+    first_seen_at: String,
+    /// The lock file's mtime in unix nanoseconds — the identity of "this exact
+    /// lock". If it advances between passes, a writer is alive and touching the
+    /// index, so the clock resets.
+    lock_mtime_nanos: i64,
+    /// Forensic only: the lock's size when first seen. Never gates the decision.
+    #[serde(default)]
+    size_bytes: u64,
+}
+
 /// Observable facts about `.git/index.lock`, separated from the decision so
 /// the decision is a pure function over all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -801,6 +852,10 @@ struct IndexLockState {
     /// `None` when the mtime is unreadable — treated as "unknown", never as
     /// "old enough".
     age: Option<Duration>,
+    /// The lock's mtime in unix nanoseconds, `None` when unreadable. Absolute
+    /// (independent of the injected `now`), so it is a stable identity for "this
+    /// exact lock" that the wedge escape hatch compares across passes.
+    mtime_nanos: Option<i64>,
     /// Some process has the file open (unix `lsof`).
     holder_present: bool,
     /// A process named exactly `git` is running.
@@ -915,20 +970,23 @@ fn read_index_lock_state(lock_path: &Path, now: SystemTime) -> IndexLockState {
                 exists: false,
                 size_bytes: 0,
                 age: None,
+                mtime_nanos: None,
                 holder_present: false,
                 git_process_running: false,
             }
         }
     };
-    let age = meta
-        .modified()
-        .ok()
-        .and_then(|modified| now.duration_since(modified).ok());
+    let modified = meta.modified().ok();
+    let age = modified.and_then(|modified| now.duration_since(modified).ok());
+    let mtime_nanos = modified
+        .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|since_epoch| since_epoch.as_nanos() as i64);
     let (holder_present, git_process_running) = probe_lock_in_use(lock_path);
     IndexLockState {
         exists: true,
         size_bytes: meta.len(),
         age,
+        mtime_nanos,
         holder_present,
         git_process_running,
     }
@@ -948,6 +1006,231 @@ fn is_orphaned_but_nonempty(state: IndexLockState, min_age: Duration) -> bool {
         && state.age.map(|age| age >= min_age).unwrap_or(false)
 }
 
+fn wedge_state_path(git_dir: &Path) -> PathBuf {
+    git_dir.join(WEDGE_STATE_FILE)
+}
+
+/// Read the wedge record, or `None` when there is no usable one. Like every
+/// other observability read here, a bad file resolves to `None` — the worst it
+/// can do is restart the confirmation clock, never fire the escape hatch early.
+fn read_wedge_state(git_dir: &Path) -> Option<PersistedIndexLockWedge> {
+    let raw = fs::read_to_string(wedge_state_path(git_dir)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_wedge_state(git_dir: &Path, record: &PersistedIndexLockWedge) {
+    let Ok(encoded) = serde_json::to_string(record) else {
+        return;
+    };
+    // Same temp-then-rename shape as the refusal and push-block records, so a
+    // crash mid-write cannot leave a torn file that reads as a matured clock.
+    let temp = git_dir.join(format!("{WEDGE_STATE_FILE}.tmp"));
+    if fs::write(&temp, encoded).is_ok() && fs::rename(&temp, wedge_state_path(git_dir)).is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+}
+
+fn clear_wedge_state(git_dir: &Path) {
+    let _ = fs::remove_file(wedge_state_path(git_dir));
+}
+
+/// What the escape hatch should do with a wedged non-empty lock this pass. Pure
+/// over the prior observation and the current mtime so the timeout arithmetic is
+/// unit-testable without a git repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WedgeDecision {
+    /// First observation, or the mtime advanced (a writer touched the index), or
+    /// the clock is otherwise unusable — (re)start it with `first_seen = now`.
+    /// This is the conservative default: any uncertainty resets the clock.
+    StartClock,
+    /// Same byte-for-byte frozen lock, but the hard timeout has not elapsed.
+    /// Keep refusing and keep the human signal.
+    AwaitTimeout,
+    /// Same frozen lock, dead the whole time, past the hard timeout. Safe to
+    /// back up and auto-reap. Carries how long it stayed wedged, for the log.
+    Reap { wedged_secs: u64 },
+}
+
+/// The escape-hatch decision. Every uncertain branch resolves to `StartClock`,
+/// which only ever *delays* a reap — a single unreadable or ambiguous sample can
+/// never mature into a removal.
+fn decide_wedge_reap(
+    prior: Option<&PersistedIndexLockWedge>,
+    current_mtime_nanos: Option<i64>,
+    wall_now: DateTime<Utc>,
+    hard_timeout: Duration,
+    state_path: &Path,
+) -> WedgeDecision {
+    // No readable mtime means we cannot prove the lock is frozen at all.
+    let Some(mtime) = current_mtime_nanos else {
+        return WedgeDecision::StartClock;
+    };
+    // No prior observation — this pass opens the clock.
+    let Some(prior) = prior else {
+        return WedgeDecision::StartClock;
+    };
+    // The lock's mtime advanced since we first saw it: a writer is alive and
+    // touching the index. Not a corpse — reset the clock.
+    if prior.lock_mtime_nanos != mtime {
+        return WedgeDecision::StartClock;
+    }
+    // Same frozen lock. How long have we continuously observed it dead? A
+    // missing, unparsable, or future-dated stamp is discarded by `usable_stamp`
+    // (the shared future-clock guard), which resets the clock rather than
+    // letting a bad stamp confirm an instant reap.
+    let Some(first_seen) = usable_stamp(
+        Some(&prior.first_seen_at),
+        wall_now,
+        state_path,
+        "index-lock wedge stamp",
+    ) else {
+        return WedgeDecision::StartClock;
+    };
+    match elapsed_since_wall(first_seen, wall_now) {
+        Some(elapsed) if elapsed >= hard_timeout => WedgeDecision::Reap {
+            wedged_secs: elapsed.as_secs(),
+        },
+        _ => WedgeDecision::AwaitTimeout,
+    }
+}
+
+/// Copy a doomed non-empty lock aside before removing it, so a mis-judged
+/// partial index stays recoverable for forensics. Lands in the git dir beside
+/// the lock — untracked, exactly like the other observability files, so the
+/// mirror's own `git add -A` never stages it. Best-effort with a hard rule: if
+/// the copy fails we return `None` and the caller must NOT remove the lock, so
+/// the only copy of a partial index is never destroyed.
+fn back_up_wedged_lock(
+    lock_path: &Path,
+    git_dir: &Path,
+    wall_now: DateTime<Utc>,
+) -> Option<PathBuf> {
+    // Colons are legal on the target filesystems but awkward everywhere else;
+    // swap them so the backup name is portable.
+    let stamp = wall_now
+        .to_rfc3339_opts(SecondsFormat::Secs, true)
+        .replace(':', "-");
+    let backup = git_dir.join(format!("index.lock.reaped-{stamp}"));
+    match fs::copy(lock_path, &backup) {
+        Ok(_) => Some(backup),
+        Err(err) => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "could not back up {} before reaping ({err}) — leaving the lock in place",
+                    lock_path.display()
+                ),
+            );
+            None
+        }
+    }
+}
+
+/// The wedged-but-non-empty log line, shared across every pass that refuses so
+/// the human signal stays identical whether the clock is opening, running, or
+/// (backup-failed) still stuck. Now says "yet" and names the hard timeout: the
+/// state is no longer permanent, but it is still actionable right now.
+fn log_wedged_refusal(hq_folder: &str, lock_path: &Path, state: IndexLockState) {
+    let message = format!(
+        "{hq_folder}: {} is {}s old with no holder and no git process, but is not \
+         empty ({}B), so HQ will not remove it yet — a partial index and a live writer \
+         look identical from outside. HQ git writes stay blocked until it clears or the \
+         hard timeout elapses. Quit HQ Sync, confirm no git is running, then delete {}.",
+        lock_path.display(),
+        state.age.map(|a| a.as_secs()).unwrap_or(0),
+        state.size_bytes,
+        lock_path.display(),
+    );
+    log(LOG_TAG, &message);
+}
+
+/// The wedged-but-non-empty branch: track the frozen lock across passes, keep
+/// the human signal until the hard timeout, then — and only then — back it up
+/// and auto-reap a lock proven dead. Returns whether a lock was removed.
+fn handle_wedged_nonempty_lock(
+    hq_folder: &str,
+    git_dir: &Path,
+    lock_path: &Path,
+    state: IndexLockState,
+    now: SystemTime,
+) -> bool {
+    let wall_now: DateTime<Utc> = now.into();
+    let hard_timeout = wedged_lock_hard_timeout();
+    let prior = read_wedge_state(git_dir);
+    let decision = decide_wedge_reap(
+        prior.as_ref(),
+        state.mtime_nanos,
+        wall_now,
+        hard_timeout,
+        &wedge_state_path(git_dir),
+    );
+
+    match decision {
+        WedgeDecision::Reap { wedged_secs } => {
+            // Back up before removing. A failed backup means we keep refusing —
+            // never destroy the only copy of a possible partial index.
+            let Some(backup) = back_up_wedged_lock(lock_path, git_dir, wall_now) else {
+                log_wedged_refusal(hq_folder, lock_path, state);
+                report_wedged_index_lock(state.size_bytes);
+                return false;
+            };
+            match fs::remove_file(lock_path) {
+                Ok(()) => {
+                    clear_wedge_state(git_dir);
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "{hq_folder}: auto-reaped wedged {} after {wedged_secs}s frozen \
+                             (size={}B, mtime unchanged, no holder, no git process) — backed up \
+                             to {} — HQ git writes unblocked",
+                            lock_path.display(),
+                            state.size_bytes,
+                            backup.display()
+                        ),
+                    );
+                    report_auto_reaped_index_lock(state.size_bytes, wedged_secs);
+                    true
+                }
+                Err(err) => {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "{hq_folder}: could not remove wedged {}: {err} (backup at {})",
+                            lock_path.display(),
+                            backup.display()
+                        ),
+                    );
+                    false
+                }
+            }
+        }
+        WedgeDecision::StartClock => {
+            // Open (or reset) the confirmation clock — but only when we can pin
+            // the lock's identity. Without a readable mtime we cannot prove it
+            // stays frozen next pass, so drop any stale record instead.
+            match state.mtime_nanos {
+                Some(mtime) => write_wedge_state(
+                    git_dir,
+                    &PersistedIndexLockWedge {
+                        first_seen_at: wall_now.to_rfc3339_opts(SecondsFormat::Secs, true),
+                        lock_mtime_nanos: mtime,
+                        size_bytes: state.size_bytes,
+                    },
+                ),
+                None => clear_wedge_state(git_dir),
+            }
+            log_wedged_refusal(hq_folder, lock_path, state);
+            report_wedged_index_lock(state.size_bytes);
+            false
+        }
+        WedgeDecision::AwaitTimeout => {
+            log_wedged_refusal(hq_folder, lock_path, state);
+            report_wedged_index_lock(state.size_bytes);
+            false
+        }
+    }
+}
+
 /// Remove `.git/index.lock` when — and only when — the full safety
 /// conjunction holds. Returns whether a lock was actually removed.
 fn reap_index_lock_if_stale(
@@ -960,18 +1243,9 @@ fn reap_index_lock_if_stale(
     let state = read_index_lock_state(&lock_path, now);
     if !should_reap_index_lock(state, min_age) {
         if is_orphaned_but_nonempty(state, min_age) {
-            let message = format!(
-                "{hq_folder}: {} is {}s old with no holder and no git process, but is not \
-                 empty ({}B), so HQ will not remove it automatically — a partial index and a \
-                 live writer look identical from outside. Every HQ git write stays blocked \
-                 until it is deleted. Quit HQ Sync, confirm no git is running, then delete {}.",
-                lock_path.display(),
-                state.age.map(|a| a.as_secs()).unwrap_or(0),
-                state.size_bytes,
-                lock_path.display(),
-            );
-            log(LOG_TAG, &message);
-            report_wedged_index_lock(state.size_bytes);
+            // The one immortal state — now bounded by a hard timeout that only
+            // fires once a live writer is effectively impossible.
+            return handle_wedged_nonempty_lock(hq_folder, git_dir, &lock_path, state, now);
         } else if state.exists {
             log(
                 LOG_TAG,
@@ -987,11 +1261,18 @@ fn reap_index_lock_if_stale(
                     state.git_process_running,
                 ),
             );
+        } else {
+            // No lock at all — drop any wedge record left by a prior episode so
+            // a fresh lock can never coincidentally match a stale mtime.
+            clear_wedge_state(git_dir);
         }
         return false;
     }
     match fs::remove_file(&lock_path) {
         Ok(()) => {
+            // An empty reap clears the same wedge record: whatever we just
+            // removed, no wedge clock should outlive it.
+            clear_wedge_state(git_dir);
             log(
                 LOG_TAG,
                 &format!(
@@ -1027,7 +1308,29 @@ fn report_wedged_index_lock(size_bytes: u64) {
         || {
             sentry::capture_message(
                 "[git-mirror] .git/index.lock is orphaned but non-empty; HQ git writes are \
-                 blocked and automatic recovery is unsafe",
+                 blocked and automatic recovery is unsafe until the hard timeout elapses",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
+/// The escape hatch fired: a non-empty lock stayed frozen and unheld past the
+/// hard timeout, so HQ backed it up and removed it. A distinct signal from
+/// [`report_wedged_index_lock`] so triage can tell "still wedged, watching" from
+/// "recovered automatically".
+fn report_auto_reaped_index_lock(size_bytes: u64, wedged_secs: u64) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("git_mirror_kind", "index-lock-auto-reaped");
+            scope.set_tag("lock_size_bytes", size_bytes.to_string());
+            scope.set_tag("wedged_secs", wedged_secs.to_string());
+        },
+        || {
+            sentry::capture_message(
+                "[git-mirror] auto-reaped a non-empty .git/index.lock after the hard timeout: it \
+                 stayed byte-for-byte frozen, unheld, with no git process the entire window, so \
+                 HQ backed it up and removed it to unblock git writes",
                 sentry::Level::Warning,
             );
         },
@@ -3219,6 +3522,7 @@ mod tests {
             exists: true,
             size_bytes: size,
             age: Some(Duration::from_secs(age_secs)),
+            mtime_nanos: Some(0),
             holder_present: false,
             git_process_running: false,
         }
@@ -3239,6 +3543,7 @@ mod tests {
             exists: false,
             size_bytes: 0,
             age: None,
+            mtime_nanos: None,
             holder_present: false,
             git_process_running: false,
         };
@@ -4167,6 +4472,307 @@ mod tests {
         assert!(!reaped, "a non-empty lock must never be removed");
         assert!(lock.exists());
         fs::remove_file(&lock).unwrap();
+    }
+
+    // ── hard-timeout escape hatch for the wedged non-empty lock ───────────
+
+    fn wedge_record(first_seen: DateTime<Utc>, mtime_nanos: i64) -> PersistedIndexLockWedge {
+        PersistedIndexLockWedge {
+            first_seen_at: first_seen.to_rfc3339_opts(SecondsFormat::Secs, true),
+            lock_mtime_nanos: mtime_nanos,
+            size_bytes: 42,
+        }
+    }
+
+    #[test]
+    fn wedge_decision_starts_the_clock_when_there_is_nothing_to_compare() {
+        let now = epoch();
+        let p = Path::new("state.json");
+        // No prior observation: this pass opens the clock.
+        assert_eq!(
+            decide_wedge_reap(None, Some(100), now, WEDGED_LOCK_HARD_TIMEOUT, p),
+            WedgeDecision::StartClock
+        );
+        // Unreadable current mtime cannot prove the lock is frozen, even against
+        // a long-matured prior record.
+        let matured = wedge_record(now - chrono::Duration::seconds(9999), 100);
+        assert_eq!(
+            decide_wedge_reap(Some(&matured), None, now, WEDGED_LOCK_HARD_TIMEOUT, p),
+            WedgeDecision::StartClock
+        );
+    }
+
+    #[test]
+    fn wedge_decision_resets_when_the_mtime_advances() {
+        let now = epoch();
+        let p = Path::new("state.json");
+        // Same episode on paper, but the live mtime moved: a writer touched the
+        // index, so this is not a corpse — reset rather than reap.
+        let prior = wedge_record(now - chrono::Duration::seconds(9999), 100);
+        assert_eq!(
+            decide_wedge_reap(Some(&prior), Some(200), now, WEDGED_LOCK_HARD_TIMEOUT, p),
+            WedgeDecision::StartClock
+        );
+    }
+
+    #[test]
+    fn wedge_decision_awaits_within_the_window_then_reaps_past_it() {
+        let now = epoch();
+        let p = Path::new("state.json");
+        // Same frozen lock, seen only briefly — keep waiting.
+        let fresh = wedge_record(now - chrono::Duration::seconds(60), 100);
+        assert_eq!(
+            decide_wedge_reap(Some(&fresh), Some(100), now, WEDGED_LOCK_HARD_TIMEOUT, p),
+            WedgeDecision::AwaitTimeout
+        );
+        // Same frozen lock, continuously dead past the hard timeout — reap.
+        let matured = wedge_record(
+            now - chrono::Duration::seconds(WEDGED_LOCK_HARD_TIMEOUT.as_secs() as i64 + 5),
+            100,
+        );
+        match decide_wedge_reap(Some(&matured), Some(100), now, WEDGED_LOCK_HARD_TIMEOUT, p) {
+            WedgeDecision::Reap { wedged_secs } => {
+                assert!(wedged_secs >= WEDGED_LOCK_HARD_TIMEOUT.as_secs())
+            }
+            other => panic!("expected Reap past the hard timeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wedge_decision_discards_a_future_stamp_rather_than_maturing_it() {
+        let now = epoch();
+        let p = Path::new("state.json");
+        // A first_seen dated in the future (a backwards clock, DST jump, or a
+        // copied `.git`) must re-open the clock, never confirm an instant reap —
+        // the same fail-safe every stamp in this module obeys.
+        let future = wedge_record(now + chrono::Duration::seconds(100), 100);
+        assert_eq!(
+            decide_wedge_reap(Some(&future), Some(100), now, WEDGED_LOCK_HARD_TIMEOUT, p),
+            WedgeDecision::StartClock
+        );
+    }
+
+    /// The injected `now` is pushed an hour ahead so the 300s age gate is met
+    /// without rewriting the lock's mtime; the wedge clock is driven purely by
+    /// the persisted `first_seen`, so these tests never sleep.
+    fn future_now() -> SystemTime {
+        SystemTime::now() + Duration::from_secs(3600)
+    }
+
+    #[test]
+    fn wedged_lock_frozen_past_the_hard_timeout_is_backed_up_and_reaped() {
+        let _serial = serial();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        let now = future_now();
+        let wall_now: DateTime<Utc> = now.into();
+        let mtime = read_index_lock_state(&lock, now).mtime_nanos.unwrap();
+        // Same frozen mtime, opened well past the hard timeout.
+        write_wedge_state(
+            &git_dir,
+            &wedge_record(wall_now - chrono::Duration::seconds(2000), mtime),
+        );
+
+        let reaped = reap_index_lock_if_stale(
+            tmp.path().to_str().unwrap(),
+            &git_dir,
+            STALE_LOCK_MIN_AGE,
+            now,
+        );
+        set_probe_override(None);
+
+        assert!(
+            reaped,
+            "a lock proven dead past the hard timeout must be reaped"
+        );
+        assert!(!lock.exists(), "the wedged lock must be removed");
+
+        // A forensic backup with the original bytes must survive beside it.
+        let backups: Vec<_> = fs::read_dir(&git_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("index.lock.reaped-")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "exactly one forensic backup must be written"
+        );
+        assert_eq!(
+            fs::read(backups[0].path()).unwrap(),
+            b"partial index data",
+            "the backup must preserve the original (possibly partial) index bytes"
+        );
+        assert!(
+            read_wedge_state(&git_dir).is_none(),
+            "the wedge clock must be cleared once the lock is gone"
+        );
+    }
+
+    #[test]
+    fn wedged_lock_whose_mtime_advanced_resets_the_clock_and_is_not_reaped() {
+        let _serial = serial();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        let now = future_now();
+        let wall_now: DateTime<Utc> = now.into();
+        let mtime = read_index_lock_state(&lock, now).mtime_nanos.unwrap();
+        // Record is old enough to reap, but its mtime differs from the live
+        // file's — a writer touched the index since, so it must NOT be reaped.
+        write_wedge_state(
+            &git_dir,
+            &wedge_record(wall_now - chrono::Duration::seconds(2000), mtime - 1),
+        );
+
+        let reaped = reap_index_lock_if_stale(
+            tmp.path().to_str().unwrap(),
+            &git_dir,
+            STALE_LOCK_MIN_AGE,
+            now,
+        );
+        set_probe_override(None);
+
+        assert!(
+            !reaped,
+            "an advancing mtime means a live writer; never reap"
+        );
+        assert!(lock.exists());
+        // The clock reset to the live mtime and this pass's stamp.
+        let rec = read_wedge_state(&git_dir).expect("the clock must restart");
+        assert_eq!(rec.lock_mtime_nanos, mtime);
+        assert_eq!(
+            rec.first_seen_at,
+            wall_now.to_rfc3339_opts(SecondsFormat::Secs, true)
+        );
+        fs::remove_file(&lock).unwrap();
+    }
+
+    #[test]
+    fn wedged_lock_with_a_holder_is_never_reaped_even_past_the_timeout() {
+        let _serial = serial();
+        // A holder is present: the fail-closed probe says a writer may be live.
+        set_probe_override(Some((true, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        let now = future_now();
+        let wall_now: DateTime<Utc> = now.into();
+        let mtime = read_index_lock_state(&lock, now).mtime_nanos.unwrap();
+        write_wedge_state(
+            &git_dir,
+            &wedge_record(wall_now - chrono::Duration::seconds(2000), mtime),
+        );
+
+        let reaped = reap_index_lock_if_stale(
+            tmp.path().to_str().unwrap(),
+            &git_dir,
+            STALE_LOCK_MIN_AGE,
+            now,
+        );
+        set_probe_override(None);
+
+        assert!(
+            !reaped,
+            "an open handle means a possible live writer; the timeout must not override it"
+        );
+        assert!(lock.exists());
+        fs::remove_file(&lock).unwrap();
+    }
+
+    #[test]
+    fn wedged_lock_before_the_hard_timeout_still_refuses_and_opens_the_clock() {
+        let _serial = serial();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        // Past the 300s grace (via the injected future now) but with no prior
+        // observation, so the hard-timeout clock only opens on this pass — the
+        // pre-timeout window must behave exactly as before: refuse and signal.
+        let now = future_now();
+        let wall_now: DateTime<Utc> = now.into();
+        assert!(read_wedge_state(&git_dir).is_none());
+
+        let reaped = reap_index_lock_if_stale(
+            tmp.path().to_str().unwrap(),
+            &git_dir,
+            STALE_LOCK_MIN_AGE,
+            now,
+        );
+        assert!(
+            !reaped,
+            "the first observation must refuse, exactly as before"
+        );
+        assert!(
+            lock.exists(),
+            "the wedged lock stays until the hard timeout"
+        );
+        let rec = read_wedge_state(&git_dir).expect("the clock opens on first observation");
+        assert_eq!(
+            rec.first_seen_at,
+            wall_now.to_rfc3339_opts(SecondsFormat::Secs, true)
+        );
+
+        // A second immediate pass is still inside the window: keep refusing, and
+        // the clock must not restart (that would push the deadline out forever).
+        let reaped2 = reap_index_lock_if_stale(
+            tmp.path().to_str().unwrap(),
+            &git_dir,
+            STALE_LOCK_MIN_AGE,
+            now,
+        );
+        set_probe_override(None);
+        assert!(!reaped2);
+        assert!(lock.exists());
+        let rec2 = read_wedge_state(&git_dir).expect("the clock stays open");
+        assert_eq!(
+            rec2.first_seen_at, rec.first_seen_at,
+            "the confirmation clock must not restart within the window"
+        );
+        fs::remove_file(&lock).unwrap();
+    }
+
+    #[test]
+    fn hard_timeout_override_is_honored_with_a_safety_floor() {
+        let _serial = serial();
+        // Default when unset.
+        std::env::remove_var(WEDGED_LOCK_HARD_TIMEOUT_ENV);
+        assert_eq!(wedged_lock_hard_timeout(), WEDGED_LOCK_HARD_TIMEOUT);
+        // A larger value is taken verbatim, for field tuning.
+        std::env::set_var(WEDGED_LOCK_HARD_TIMEOUT_ENV, "5400");
+        assert_eq!(wedged_lock_hard_timeout(), Duration::from_secs(5400));
+        // Below the empty-lock grace is clamped up to it: the escape hatch must
+        // never fire faster than the routine reaper, whatever the knob says.
+        std::env::set_var(WEDGED_LOCK_HARD_TIMEOUT_ENV, "5");
+        assert_eq!(wedged_lock_hard_timeout(), STALE_LOCK_MIN_AGE);
+        // Garbage falls back to the safe default rather than disabling the guard.
+        std::env::set_var(WEDGED_LOCK_HARD_TIMEOUT_ENV, "not-a-number");
+        assert_eq!(wedged_lock_hard_timeout(), WEDGED_LOCK_HARD_TIMEOUT);
+        std::env::remove_var(WEDGED_LOCK_HARD_TIMEOUT_ENV);
     }
 
     #[test]
