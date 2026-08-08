@@ -2991,7 +2991,10 @@ mod tests {
             false,
             false,
         ));
-        // Gate 3 — wrong exit shape (a genuine crash signal, not an app teardown).
+        // Gate 3 — wrong exit shape. Both of these are an app-termination shape
+        // on NEITHER host: POSIX wants (code=None, signal in {15,9}) and Windows
+        // wants (code=1, signal=None), so a crash signal or a plain non-1 exit
+        // code never attributes regardless of platform.
         assert!(!watcher_exit_attributed_to_app_teardown(
             None,
             Some(6), // SIGABRT
@@ -3000,7 +3003,7 @@ mod tests {
             false,
         ));
         assert!(!watcher_exit_attributed_to_app_teardown(
-            Some(1),
+            Some(2), // plain non-zero exit code — not code 1, so not the Windows shape
             None,
             Some(SyncCancelCause::HeartbeatStall),
             true,
