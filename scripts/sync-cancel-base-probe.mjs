@@ -193,11 +193,28 @@ try {
   ];
   const missing = baseDefects.filter(([, held]) => !held).map(([name]) => name);
   if (missing.length > 0) {
-    throw new Error(
-      `base sync-cancel probe did not reproduce: ${missing.join("; ")} — raw result: ${raw}`,
-    );
+    // After HQ-DESKTOP-48 landed on main, subsequent PRs (including version
+    // bumps) share a merge-base that already carries the fixed cancellation
+    // path. The historical red defects then do not hold — that is expected,
+    // not a regression. Accept only the fully post-fix shape; any mixed
+    // partial state still fails so a half-landed base cannot silently pass.
+    const alreadyFixed =
+      probe.decision === "suppress" &&
+      probe.unattached_terminated === true;
+    if (alreadyFixed) {
+      process.stdout.write(
+        `${JSON.stringify({ ...probe, base: mergeBase, already_fixed: true, missing })}
+`,
+      );
+    } else {
+      throw new Error(
+        `base sync-cancel probe did not reproduce: ${missing.join("; ")} — raw result: ${raw}`,
+      );
+    }
+  } else {
+    process.stdout.write(`${JSON.stringify({ ...probe, base: mergeBase })}
+`);
   }
-  process.stdout.write(`${JSON.stringify({ ...probe, base: mergeBase })}\n`);
 } finally {
   try {
     run("git", ["-C", repo, "worktree", "remove", "--force", worktreeRoot], {
