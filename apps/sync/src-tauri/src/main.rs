@@ -264,6 +264,16 @@ where
 }
 
 fn main() {
+    // CI-only probe entrypoint, gated on the non-default `sync-cancel-probe`
+    // feature. The dispatch — including its process termination — lives in
+    // `commands::process` so the only process exit in this file stays the Windows
+    // session-end fast path pinned by `scripts/native-seam-wiring.test.ts`. The
+    // helper never returns, so the menubar app is never initialized on a probe run.
+    #[cfg(feature = "sync-cancel-probe")]
+    if std::env::args().any(|arg| arg == "--sync-cancel-probe") {
+        commands::process::run_sync_cancel_probe_main();
+    }
+
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
     // here in the binary and passed in, so the crate carries no build-env coupling.
@@ -1166,6 +1176,13 @@ fn main() {
                 hq_telemetry::record_native_panic_seam(
                     hq_telemetry::NativePanicSeam::AppExitRequested,
                 );
+                // An app-initiated quit is NOT a session end, so a watcher exit
+                // still holding its send back has nothing to be affirmed by.
+                // Flush it here rather than letting the process leave with the
+                // alert unsent: a user who quits a few seconds after a genuine
+                // external kill must not silently swallow it. Bounded and
+                // panic-free — it drains a vector and sends what it took.
+                commands::daemon::flush_pending_session_end_captures();
                 #[cfg(target_os = "windows")]
                 if let Some(observer) = _app_handle
                     .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
@@ -1201,6 +1218,14 @@ fn main() {
                         hq_telemetry::record_native_panic_seam(
                             hq_telemetry::NativePanicSeam::AppSessionEndExit,
                         );
+
+                        // Reaching this arm IS the affirmation a deferred
+                        // watcher capture was waiting for: the OS told this app
+                        // directly that the session is ending. Drop the held-back
+                        // event instead of letting it race the teardown. Bounded
+                        // and allocation-only — it adds no uncapped work to a
+                        // teardown that runs inside a window procedure.
+                        commands::daemon::drop_pending_session_end_captures();
 
                         // Corroborating signal, read BEFORE the observer is shut
                         // down (shutdown moves its readiness out of the

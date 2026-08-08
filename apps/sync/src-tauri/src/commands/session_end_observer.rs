@@ -7,7 +7,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use hq_desktop_core::sync_outcome::{session_end_affirms, WindowsTerminatorAttribution};
+use hq_desktop_core::sync_outcome::{
+    session_end_affirms, session_end_signal_is_fresh, WindowsTerminatorAttribution,
+};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -157,6 +159,12 @@ impl SessionEndTracker {
 
     /// Return an attribution that is safe to feed directly to capture policy.
     /// Failed or stopped observation wins over an otherwise fresh affirmation.
+    ///
+    /// Only a committed, contemporaneous session end affirms. The three
+    /// unattributed values below never suppress anything on their own — they
+    /// exist so a watcher exit that could not be attributed says WHY, instead
+    /// of collapsing a query-phase race, a never-signalled termination and an
+    /// expired affirmation into one undiagnosable token.
     pub fn attribution_now(&self) -> WindowsTerminatorAttribution {
         let now = self.clock.now_millis();
         let state = self
@@ -172,8 +180,16 @@ impl SessionEndTracker {
             | ObserverReadiness::Recovering => {
                 if session_end_affirms(state.affirmed_end_ms, now) {
                     WindowsTerminatorAttribution::SessionEndObserved
+                } else if session_end_signal_is_fresh(state.pending_query_ms, now) {
+                    // A live query phase, diagnostic only: Windows can still
+                    // revoke a query with WM_ENDSESSION(FALSE), so this must
+                    // never suppress. It reads on the same TTL as a commit, so
+                    // a query from hours ago cannot masquerade as a live one.
+                    WindowsTerminatorAttribution::UnattributedQueryOnly
+                } else if state.affirmed_end_ms.is_some() {
+                    WindowsTerminatorAttribution::UnattributedStaleAffirmation
                 } else {
-                    WindowsTerminatorAttribution::Unattributed
+                    WindowsTerminatorAttribution::UnattributedNoSignal
                 }
             }
         }
@@ -1325,14 +1341,14 @@ mod windows_observer {
             );
             assert_eq!(
                 tracker.attribution_now(),
-                WindowsTerminatorAttribution::Unattributed
+                WindowsTerminatorAttribution::UnattributedQueryOnly
             );
 
             send_message_bounded(hwnd, WM_ENDSESSION, WPARAM(0), LPARAM(0));
             assert_eq!(tracker.pending_query_millis_for_test(), None);
             assert_eq!(
                 tracker.attribution_now(),
-                WindowsTerminatorAttribution::Unattributed
+                WindowsTerminatorAttribution::UnattributedNoSignal
             );
 
             send_message_bounded(hwnd, WM_ENDSESSION, WPARAM(1), LPARAM(0));
@@ -1343,7 +1359,7 @@ mod windows_observer {
             clock.advance_by(20_001);
             assert_eq!(
                 tracker.attribution_now(),
-                WindowsTerminatorAttribution::Unattributed
+                WindowsTerminatorAttribution::UnattributedStaleAffirmation
             );
 
             let mut own_session_id = 0;
@@ -1355,9 +1371,11 @@ mod windows_observer {
                 WPARAM(WTS_SESSION_LOCK as usize),
                 LPARAM(own_session_id as isize),
             );
+            // The committed end from earlier in this test is still recorded but
+            // has aged past the TTL, so the reading names exactly that.
             assert_eq!(
                 tracker.attribution_now(),
-                WindowsTerminatorAttribution::Unattributed
+                WindowsTerminatorAttribution::UnattributedStaleAffirmation
             );
             send_message_bounded(
                 hwnd,
@@ -1367,7 +1385,7 @@ mod windows_observer {
             );
             assert_eq!(
                 tracker.attribution_now(),
-                WindowsTerminatorAttribution::Unattributed
+                WindowsTerminatorAttribution::UnattributedStaleAffirmation
             );
             send_message_bounded(
                 hwnd,
@@ -1428,9 +1446,11 @@ mod tests {
 
         tracker.note_query_end_session();
         assert_eq!(tracker.pending_query_millis_for_test(), Some(0));
+        // Diagnostic only. A live query names the failing link but still does
+        // not affirm — Windows can revoke it with WM_ENDSESSION(FALSE).
         assert_eq!(
             tracker.attribution_now(),
-            WindowsTerminatorAttribution::Unattributed
+            WindowsTerminatorAttribution::UnattributedQueryOnly
         );
 
         clock.set(20_001);
@@ -1438,7 +1458,7 @@ mod tests {
         assert_eq!(tracker.pending_query_millis_for_test(), None);
         assert_eq!(
             tracker.attribution_now(),
-            WindowsTerminatorAttribution::Unattributed
+            WindowsTerminatorAttribution::UnattributedNoSignal
         );
     }
 
@@ -1455,7 +1475,7 @@ mod tests {
         clock.set(20_000);
         assert_eq!(
             tracker.attribution_now(),
-            WindowsTerminatorAttribution::Unattributed
+            WindowsTerminatorAttribution::UnattributedStaleAffirmation
         );
 
         tracker.note_wts_logoff_same_session();
@@ -1498,5 +1518,103 @@ mod tests {
         assert_eq!(ObserverReadiness::Recovering.class_name(), "recovering");
         assert_eq!(ObserverReadiness::Failed.class_name(), "failed");
         assert_eq!(ObserverReadiness::Stopped.class_name(), "stopped");
+    }
+
+    /// Every reading the observer can produce, each driven through the injected
+    /// monotonic clock. This is the table that turns a residual recurrence from
+    /// "unattributed, cause unknown" into a named failing link.
+    #[test]
+    fn each_unattributed_reading_names_the_link_of_the_chain_that_failed() {
+        // No session-end signal ever arrived — a genuine external kill, or a
+        // termination Windows never announced to this process.
+        let clock = Arc::new(TestClock::default());
+        let tracker = SessionEndTracker::new(clock.clone());
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::UnattributedNoSignal
+        );
+
+        // The query phase opened and nothing committed yet: the exact race the
+        // forward grace exists to absorb.
+        tracker.note_query_end_session();
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::UnattributedQueryOnly
+        );
+
+        // A query is a signal, not a commitment. It expires on the same TTL a
+        // commit does, so a stale one cannot keep claiming a live session end.
+        clock.set(20_000);
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::UnattributedNoSignal
+        );
+
+        // A commit affirms, and keeps affirming until the TTL — then says so
+        // rather than reverting to "nothing was ever seen".
+        let clock = Arc::new(TestClock::default());
+        let tracker = SessionEndTracker::new(clock.clone());
+        tracker.note_end_session(true);
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::SessionEndObserved
+        );
+        clock.set(19_999);
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::SessionEndObserved
+        );
+        clock.set(20_000);
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::UnattributedStaleAffirmation
+        );
+
+        // A fresh query after a stale commit reports the live signal, because
+        // that is the one that is still in play.
+        tracker.note_query_end_session();
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::UnattributedQueryOnly
+        );
+
+        // An unhealthy observer still wins over every one of them.
+        for readiness in [ObserverReadiness::Failed, ObserverReadiness::Stopped] {
+            tracker.set_readiness(readiness);
+            assert_eq!(
+                tracker.attribution_now(),
+                WindowsTerminatorAttribution::ObserverFailed,
+                "{readiness:?} must fail closed"
+            );
+        }
+    }
+
+    /// A pending query must never suppress on its own, at any readiness and at
+    /// any age. Windows can still revoke one with `WM_ENDSESSION(FALSE)`.
+    #[test]
+    fn a_pending_query_never_affirms_at_any_readiness_or_age() {
+        for readiness in [
+            ObserverReadiness::Starting,
+            ObserverReadiness::Registered,
+            ObserverReadiness::Recovering,
+        ] {
+            for age in [0, 1, 19_999, 20_000, 60_000] {
+                let clock = Arc::new(TestClock::default());
+                let tracker = SessionEndTracker::new(clock.clone());
+                tracker.set_readiness(readiness);
+                tracker.note_query_end_session();
+                clock.set(age);
+                assert_ne!(
+                    tracker.attribution_now(),
+                    WindowsTerminatorAttribution::SessionEndObserved,
+                    "a bare query affirmed at {readiness:?} after {age}ms"
+                );
+                assert!(
+                    tracker.attribution_now().is_unattributed(),
+                    "a bare query must stay in the unattributed family at {readiness:?} \
+                     after {age}ms"
+                );
+            }
+        }
     }
 }

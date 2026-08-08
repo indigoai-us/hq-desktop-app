@@ -788,6 +788,33 @@ pub fn current_termination_host() -> TerminationHost {
     }
 }
 
+/// POSIX SIGKILL. Unlike a bare SIGKILL (which can be an OOM or a force-quit),
+/// this is attributable to the app only when an exact-generation cancellation
+/// record proves the app escalated a prior cancellation successfully.
+pub const SIGKILL_SIGNAL: i32 = 9;
+
+/// The explicit initiator of a manual sync cancellation. This is deliberately
+/// a small, closed vocabulary: only cancellation paths owned by the desktop
+/// application may make a terminal runner exit attributable to the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncCancelCause {
+    UserStop,
+    TimeoutWatchdog,
+    AppQuit,
+}
+
+impl SyncCancelCause {
+    /// Stable, content-safe value for local log lines and Sentry context on
+    /// residual captures. Do not derive this from user or runner input.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserStop => "user-stop",
+            Self::TimeoutWatchdog => "timeout-watchdog",
+            Self::AppQuit => "app-quit",
+        }
+    }
+}
+
 /// Windows `STATUS_CONTROL_C_EXIT` (`0xC000013A`) represented as the signed
 /// process exit code Rust reports. Windows gives this status to a console
 /// process when its default console-control handler ends it, including a
@@ -805,10 +832,19 @@ pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;
 ///
 /// This remains typed until the app-facing Sentry boundary so policy decisions
 /// cannot accidentally be driven by an arbitrary string.
+///
+/// The three `Unattributed*` values are deliberately distinct rather than one
+/// catch-all. A single `unattributed` collapsed "no session-end signal ever
+/// arrived", "the query phase started but never committed" and "a commit
+/// existed but had expired" into one undiagnosable token, which is what made
+/// the first recurrence of this defect cost a blind investigation round. Each
+/// value now names which link of the chain failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsTerminatorAttribution {
     SessionEndObserved,
-    Unattributed,
+    UnattributedNoSignal,
+    UnattributedQueryOnly,
+    UnattributedStaleAffirmation,
     ObserverUnavailable,
     ObserverFailed,
 }
@@ -818,10 +854,27 @@ impl WindowsTerminatorAttribution {
     pub fn class_name(self) -> &'static str {
         match self {
             Self::SessionEndObserved => "session_end_observed",
-            Self::Unattributed => "unattributed",
+            Self::UnattributedNoSignal => "unattributed_no_signal",
+            Self::UnattributedQueryOnly => "unattributed_query_only",
+            Self::UnattributedStaleAffirmation => "unattributed_stale_affirmation",
             Self::ObserverUnavailable => "observer_unavailable",
             Self::ObserverFailed => "observer_failed",
         }
+    }
+
+    /// True for the family that means "the observer was alive and healthy, but
+    /// it had no contemporaneous committed session end to offer".
+    ///
+    /// This is the only family whose decision is worth re-reading after a
+    /// grace: an unavailable or failed observer cannot start affirming, so it
+    /// keeps delegating to the established capture policy verbatim.
+    pub fn is_unattributed(self) -> bool {
+        matches!(
+            self,
+            Self::UnattributedNoSignal
+                | Self::UnattributedQueryOnly
+                | Self::UnattributedStaleAffirmation
+        )
     }
 }
 
@@ -830,13 +883,44 @@ impl WindowsTerminatorAttribution {
 /// exactly 20 seconds fail closed.
 pub const SESSION_END_AFFIRMATION_TTL_MS: u64 = 20_000;
 
+/// How long a `DBG_TERMINATE_PROCESS` watcher exit that the observer could not
+/// yet attribute may hold its Sentry send back, waiting for an affirmation that
+/// has not arrived *yet*.
+///
+/// Windows tears a session down per process. A windowless child is terminated
+/// by csrss on its own schedule while the interactive app is given the
+/// `WM_QUERYENDSESSION` / `WM_ENDSESSION` courtesy and dies last, so "the child
+/// dies first and the app is affirmed a moment later" is the normal ordering at
+/// logoff — not an exotic one. [`session_end_affirms`] only ever looked
+/// backward, so an affirmation arriving even one millisecond after the child's
+/// exit callback could not suppress anything.
+///
+/// 6 seconds is chosen to sit inside two independent ceilings:
+///
+/// - well under the 20s [`SESSION_END_AFFIRMATION_TTL_MS`], so a deferral can
+///   never outlive the affirmation window it is waiting on; and
+/// - under Windows' 5s default `WaitToKillAppTimeout` plus the app's own
+///   ~1.75s capped session-end teardown (6.75s), so at a real session end the
+///   app reaches its exit path and drops the deferral rather than racing it.
+///
+/// It is a fixed compile-time constant: this is a bounded delay, never a poll
+/// loop and never an unbounded wait.
+pub const SESSION_END_GRACE_MS: u64 = 6_000;
+
+/// Whether a recorded session-end signal is contemporaneous with the watcher
+/// exit being attributed. Shared by the committed-end check and the query-phase
+/// discriminator so both expire on exactly the same boundary.
+pub fn session_end_signal_is_fresh(stamp_ms: Option<u64>, now_ms: u64) -> bool {
+    matches!(
+        stamp_ms,
+        Some(stamp) if now_ms.saturating_sub(stamp) < SESSION_END_AFFIRMATION_TTL_MS
+    )
+}
+
 /// Whether a recorded committed session end is fresh enough to attribute a
 /// watcher `DBG_TERMINATE_PROCESS` exit to Windows teardown.
 pub fn session_end_affirms(affirmed_end_ms: Option<u64>, now_ms: u64) -> bool {
-    matches!(
-        affirmed_end_ms,
-        Some(stamp) if now_ms.saturating_sub(stamp) < SESSION_END_AFFIRMATION_TTL_MS
-    )
+    session_end_signal_is_fresh(affirmed_end_ms, now_ms)
 }
 
 /// The raw Windows status `0xFFFFFFFF` represented as Rust's signed process
@@ -1025,11 +1109,17 @@ pub fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
 /// `CaptureRateLimited` is reserved for failures that are initially
 /// environmental but need an escalating, milestone-limited alert if they
 /// persist. `LocalLogOnly` records a breadcrumb without creating an event.
+/// `DeferSessionEndDecision` is `Capture` with its *send* held back for
+/// [`SESSION_END_GRACE_MS`] so a session-end affirmation that lands just after
+/// the watcher's exit callback can still be honoured; it never cancels an
+/// alert, and the caller's lifecycle, failure category and crash-loop counting
+/// are identical to `Capture`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatcherExitCapturePolicy {
     Capture,
     CaptureRateLimited,
     LocalLogOnly,
+    DeferSessionEndDecision,
 }
 
 /// Explicit Sentry policy for a failure returned by `Command::spawn`.
@@ -1077,21 +1167,66 @@ pub fn watcher_exit_capture_policy(
     }
 }
 
-/// Extend the existing watcher-exit policy with an affirmative-only session
-/// attribution. Every missing, failed, or stale attribution delegates to the
-/// established policy verbatim, so the observer can never hide an alert.
+/// Extend the existing watcher-exit policy with a session attribution that is
+/// now two-sided in time.
+///
+/// Exactly one exit shape — `DBG_TERMINATE_PROCESS`, no signal — can consult
+/// the observer at all. Within it:
+///
+/// - an affirmed session end suppresses immediately, as before;
+/// - an *unattributed* reading defers the send, because the affirmation may
+///   simply not have arrived yet (see [`SESSION_END_GRACE_MS`]);
+/// - an unavailable or failed observer, and every other exit shape, delegate to
+///   the established policy verbatim, so the observer can never hide an alert.
 pub fn watcher_exit_capture_policy_with_attribution(
     code: Option<i32>,
     signal: Option<i32>,
     attribution: Option<WindowsTerminatorAttribution>,
 ) -> WatcherExitCapturePolicy {
-    if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
-        && signal.is_none()
-        && attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
-    {
-        WatcherExitCapturePolicy::LocalLogOnly
-    } else {
-        watcher_exit_capture_policy(code, signal)
+    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
+        return watcher_exit_capture_policy(code, signal);
+    }
+    match attribution {
+        Some(WindowsTerminatorAttribution::SessionEndObserved) => {
+            WatcherExitCapturePolicy::LocalLogOnly
+        }
+        Some(other) if other.is_unattributed() => WatcherExitCapturePolicy::DeferSessionEndDecision,
+        _ => watcher_exit_capture_policy(code, signal),
+    }
+}
+
+/// What a deferred session-end capture must do once its grace has elapsed and
+/// the attribution has been read a second time.
+///
+/// Deliberately fail-closed and deliberately narrow: only an OS affirmation
+/// drops the event. A still-unattributed reading, a failed observer, or an
+/// observer that vanished all send the alert that was held back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredSessionEndOutcome {
+    Drop,
+    Capture,
+}
+
+/// Resolve a deferred session-end capture against the re-read attribution.
+pub fn deferred_session_end_outcome(
+    attribution: WindowsTerminatorAttribution,
+) -> DeferredSessionEndOutcome {
+    match attribution {
+        WindowsTerminatorAttribution::SessionEndObserved => DeferredSessionEndOutcome::Drop,
+        _ => DeferredSessionEndOutcome::Capture,
+    }
+}
+
+/// Content-safe bucket for how long a deferred session-end capture actually
+/// waited. A raw millisecond count is a timing side channel with no triage
+/// value; the bucket answers the only question that matters — did the grace run
+/// to completion, or did something resolve it early.
+pub fn session_end_grace_waited_bucket(waited_ms: u64) -> &'static str {
+    match waited_ms {
+        0..=999 => "under_1s",
+        1_000..=2_999 => "1s_to_3s",
+        3_000..=5_999 => "3s_to_6s",
+        _ => "at_or_over_6s",
     }
 }
 
@@ -1100,7 +1235,12 @@ pub fn watcher_exit_capture_policy_with_attribution(
 pub fn should_capture_watcher_exit(policy: WatcherExitCapturePolicy, consecutive: u32) -> bool {
     match policy {
         WatcherExitCapturePolicy::LocalLogOnly => false,
-        WatcherExitCapturePolicy::Capture => is_capture_milestone(consecutive),
+        // A deferral is a `Capture` whose send is delayed, so it inherits the
+        // same milestone limiter: a crash loop must not become a deferral loop
+        // that outruns it.
+        WatcherExitCapturePolicy::Capture | WatcherExitCapturePolicy::DeferSessionEndDecision => {
+            is_capture_milestone(consecutive)
+        }
         WatcherExitCapturePolicy::CaptureRateLimited => {
             consecutive >= EXEC_NOT_RUNNABLE_CAPTURE_AFTER_CONSECUTIVE
                 && is_capture_milestone(consecutive)
@@ -1327,6 +1467,10 @@ pub enum RunnerExitDisposition {
     WindowsConsoleControl,
     /// End the UI run after hq-cloud's retryable network outcome without a capture.
     TransientRetry,
+    /// End the UI run after an exact run was observably stopped by the desktop
+    /// app. This is intentionally distinct from generic `Ignore`: callers must
+    /// still emit one terminal UI event so both desktop surfaces leave syncing.
+    CancelledByApp(SyncCancelCause),
     /// Log a fully explained non-zero exit without an additional UI event.
     Ignore,
 }
@@ -1361,6 +1505,56 @@ pub fn classify_runner_exit_disposition(
         return RunnerExitDisposition::Ignore;
     }
     RunnerExitDisposition::Alert
+}
+
+/// Classify a manual-sync terminal exit with exact-generation cancellation
+/// evidence. The existing classifier remains the compatibility policy for all
+/// callers that do not own an observed cancellation record.
+///
+/// A cancellation must satisfy four gates before it becomes a suppression:
+/// it has a known app-owned cause, the termination call observably succeeded,
+/// the terminal status matches that termination, and no alertable runner error
+/// was seen. This preserves real runner faults that race a Stop, timeout, or
+/// application quit.
+pub fn classify_runner_exit_disposition_with_cancellation(
+    code: Option<i32>,
+    signal: Option<i32>,
+    cause: Option<SyncCancelCause>,
+    termination_effected: bool,
+    saw_error: bool,
+    saw_alertable_error: bool,
+    saw_node_too_old: bool,
+) -> RunnerExitDisposition {
+    // Preserve the legacy outcome for any alertable runner fault. In
+    // particular this prevents a successful app cancellation from hiding a
+    // concurrent EPERM / EISDIR-style runner failure.
+    if saw_alertable_error {
+        return classify_runner_exit_disposition(
+            code,
+            signal,
+            saw_error,
+            saw_alertable_error,
+            saw_node_too_old,
+        );
+    }
+
+    let exit_matches_app_termination = match current_termination_host() {
+        TerminationHost::Windows => code == Some(1) && signal.is_none(),
+        TerminationHost::Posix => {
+            code.is_none() && matches!(signal, Some(SIGTERM_SIGNAL) | Some(SIGKILL_SIGNAL))
+        }
+    };
+    if let Some(cause) = cause.filter(|_| termination_effected && exit_matches_app_termination) {
+        return RunnerExitDisposition::CancelledByApp(cause);
+    }
+
+    classify_runner_exit_disposition(
+        code,
+        signal,
+        saw_error,
+        saw_alertable_error,
+        saw_node_too_old,
+    )
 }
 
 /// Boolean compatibility projection for existing capture seams.
@@ -2626,6 +2820,206 @@ mod tests {
     }
 
     #[test]
+    fn effective_app_cancellation_is_suppressed_only_for_its_own_exit_shape() {
+        let (owned_code, owned_signal) = match current_termination_host() {
+            TerminationHost::Windows => (Some(1), None),
+            TerminationHost::Posix => (None, Some(SIGTERM_SIGNAL)),
+        };
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                owned_code,
+                owned_signal,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::TimeoutWatchdog),
+        );
+
+        // An attempted cancellation is not evidence that it terminated the
+        // runner. A later real failure must stay loud.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::UserStop),
+                false,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+
+        // The alertable runner fault wins even when our termination also
+        // succeeded; this preserves the EPERM class in the reported issue.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::AppQuit),
+                true,
+                true,
+                true,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+
+        // A natural non-zero exit racing a cancellation is not attributable to
+        // the application solely because a cancellation record exists.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(2),
+                None,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn code_one_is_not_an_app_termination_shape_on_posix() {
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+    }
+
+    #[test]
+    fn cancellation_classifier_preserves_legacy_policy_outside_exact_effective_stops() {
+        let (owned_code, owned_signal) = match current_termination_host() {
+            TerminationHost::Windows => (Some(1), None),
+            TerminationHost::Posix => (None, Some(SIGTERM_SIGNAL)),
+        };
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old) in [
+            (Some(1), None, false, false, false),
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None, true, true, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, false, false, false),
+            (Some(WINDOWS_CONTROL_C_EXIT), None, false, false, false),
+            (Some(2), None, true, false, false),
+        ] {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    code,
+                    signal,
+                    None,
+                    false,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                classify_runner_exit_disposition(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                "no cancellation evidence must delegate unchanged"
+            );
+        }
+
+        for cause in [SyncCancelCause::UserStop, SyncCancelCause::AppQuit] {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    owned_code,
+                    owned_signal,
+                    Some(cause),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                RunnerExitDisposition::CancelledByApp(cause),
+            );
+        }
+
+        // Unix terminal status shapes are attributable only with an exact,
+        // observed application termination. A bare SIGKILL remains loud.
+        if current_termination_host() == TerminationHost::Posix {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    None,
+                    Some(SIGKILL_SIGNAL),
+                    Some(SyncCancelCause::UserStop),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop),
+            );
+        }
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                None,
+                Some(SIGKILL_SIGNAL),
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+
+        // Cancellation takes precedence over the no-capture Node marker, but
+        // never over a genuine alertable runner fault.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                owned_code,
+                owned_signal,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                true,
+            ),
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::TimeoutWatchdog),
+        );
+
+        // An exact effective cancellation still delegates every legacy special
+        // disposition when its terminal status is not one produced by our
+        // terminator. This keeps runner-side lock timeouts, Ctrl+C teardown,
+        // and transient retry semantics byte-for-byte unchanged.
+        for (code, signal) in [
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None),
+            (Some(WINDOWS_CONTROL_C_EXIT), None),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None),
+        ] {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    code,
+                    signal,
+                    Some(SyncCancelCause::TimeoutWatchdog),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                classify_runner_exit_disposition(code, signal, false, false, false),
+                "a non-owned status must retain its legacy disposition"
+            );
+        }
+    }
+
+    #[test]
     fn test_exit_alert_suppressed_for_node_too_old() {
         assert!(!should_alert_on_nonzero_exit(
             Some(1),
@@ -2870,15 +3264,21 @@ mod tests {
         assert!(!session_end_affirms(None, 0));
     }
 
+    /// Every attribution the app can produce. Kept as one list so the
+    /// exhaustive table below cannot silently stop covering a new variant.
+    const ALL_TERMINATOR_ATTRIBUTIONS: [WindowsTerminatorAttribution; 6] = [
+        WindowsTerminatorAttribution::SessionEndObserved,
+        WindowsTerminatorAttribution::UnattributedNoSignal,
+        WindowsTerminatorAttribution::UnattributedQueryOnly,
+        WindowsTerminatorAttribution::UnattributedStaleAffirmation,
+        WindowsTerminatorAttribution::ObserverUnavailable,
+        WindowsTerminatorAttribution::ObserverFailed,
+    ];
+
     #[test]
     fn session_end_attribution_suppresses_only_the_affirmed_session_terminate_shape() {
-        let attributions = [
-            None,
-            Some(WindowsTerminatorAttribution::SessionEndObserved),
-            Some(WindowsTerminatorAttribution::Unattributed),
-            Some(WindowsTerminatorAttribution::ObserverUnavailable),
-            Some(WindowsTerminatorAttribution::ObserverFailed),
-        ];
+        let mut attributions = vec![None];
+        attributions.extend(ALL_TERMINATOR_ATTRIBUTIONS.map(Some));
         let codes = [
             Some(WINDOWS_SESSION_TERMINATE_EXIT),
             Some(0xC000_0409u32 as i32),
@@ -2896,13 +3296,21 @@ mod tests {
                 for signal in [None, Some(9)] {
                     let actual =
                         watcher_exit_capture_policy_with_attribution(code, signal, attribution);
-                    let expected = if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
-                        && signal.is_none()
-                        && attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
-                    {
-                        WatcherExitCapturePolicy::LocalLogOnly
-                    } else {
-                        watcher_exit_capture_policy(code, signal)
+                    let is_session_terminate_shape =
+                        code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none();
+                    let expected = match attribution {
+                        Some(WindowsTerminatorAttribution::SessionEndObserved)
+                            if is_session_terminate_shape =>
+                        {
+                            WatcherExitCapturePolicy::LocalLogOnly
+                        }
+                        Some(other) if is_session_terminate_shape && other.is_unattributed() => {
+                            WatcherExitCapturePolicy::DeferSessionEndDecision
+                        }
+                        // Everything else — including every non-session-terminate
+                        // shape, an unavailable observer and a failed observer —
+                        // still delegates to the established policy verbatim.
+                        _ => watcher_exit_capture_policy(code, signal),
                     };
                     assert_eq!(
                         actual, expected,
@@ -2910,6 +3318,181 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // The regression this fix exists for: the session-terminate exit that the
+    // observer could not attribute must no longer be captured on the spot.
+    #[test]
+    fn an_unattributed_session_terminate_defers_instead_of_capturing() {
+        for attribution in [
+            WindowsTerminatorAttribution::UnattributedNoSignal,
+            WindowsTerminatorAttribution::UnattributedQueryOnly,
+            WindowsTerminatorAttribution::UnattributedStaleAffirmation,
+        ] {
+            assert!(attribution.is_unattributed(), "{attribution:?}");
+            assert_eq!(
+                watcher_exit_capture_policy_with_attribution(
+                    Some(WINDOWS_SESSION_TERMINATE_EXIT),
+                    None,
+                    Some(attribution),
+                ),
+                WatcherExitCapturePolicy::DeferSessionEndDecision,
+                "{attribution:?} must defer, not capture"
+            );
+        }
+
+        // The two observer-fault values are explicitly NOT deferred: neither can
+        // start affirming, so waiting on them would only delay an alert.
+        for attribution in [
+            WindowsTerminatorAttribution::ObserverUnavailable,
+            WindowsTerminatorAttribution::ObserverFailed,
+        ] {
+            assert!(!attribution.is_unattributed(), "{attribution:?}");
+            assert_eq!(
+                watcher_exit_capture_policy_with_attribution(
+                    Some(WINDOWS_SESSION_TERMINATE_EXIT),
+                    None,
+                    Some(attribution),
+                ),
+                WatcherExitCapturePolicy::Capture,
+                "{attribution:?} must keep capturing immediately"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deferral_only_drops_its_event_for_an_affirmed_session_end() {
+        for attribution in ALL_TERMINATOR_ATTRIBUTIONS {
+            let expected = if attribution == WindowsTerminatorAttribution::SessionEndObserved {
+                DeferredSessionEndOutcome::Drop
+            } else {
+                DeferredSessionEndOutcome::Capture
+            };
+            assert_eq!(
+                deferred_session_end_outcome(attribution),
+                expected,
+                "{attribution:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deferred_capture_keeps_the_crash_loop_milestone_limiter() {
+        let deferred = WatcherExitCapturePolicy::DeferSessionEndDecision;
+        for consecutive in [1, 2, 4, 8, 16] {
+            assert!(
+                should_capture_watcher_exit(deferred, consecutive),
+                "milestone #{consecutive} must still send"
+            );
+        }
+        for consecutive in [3, 5, 6, 7, 9] {
+            assert!(
+                !should_capture_watcher_exit(deferred, consecutive),
+                "non-milestone #{consecutive} must stay limited"
+            );
+        }
+        // Byte for byte the `Capture` limiter — a deferral delays a send, it
+        // never changes which sends happen.
+        for consecutive in 1..64u32 {
+            assert_eq!(
+                should_capture_watcher_exit(deferred, consecutive),
+                should_capture_watcher_exit(WatcherExitCapturePolicy::Capture, consecutive),
+                "deferral diverged from Capture at #{consecutive}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_session_end_grace_sits_inside_both_of_its_ceilings() {
+        assert_eq!(SESSION_END_GRACE_MS, 6_000);
+        // Never outlive the affirmation window it waits on.
+        assert!(SESSION_END_GRACE_MS < SESSION_END_AFFIRMATION_TTL_MS);
+        // Windows' 5s default WaitToKillAppTimeout plus the app's own ~1.75s
+        // capped session-end teardown: at a real session end the app reaches
+        // its exit path and drops the deferral rather than racing it.
+        assert!(SESSION_END_GRACE_MS < 5_000 + 1_750);
+    }
+
+    #[test]
+    fn an_affirmation_inside_the_grace_suppresses_and_one_outside_it_does_not() {
+        // The forward half of the window, expressed against the same TTL the
+        // backward half uses: an affirmation stamped anywhere within the grace
+        // is still fresh when the deferral re-reads it.
+        let exit_at_ms = 100_000;
+        let affirmed_just_inside = exit_at_ms + SESSION_END_GRACE_MS - 1;
+        let resolves_at = exit_at_ms + SESSION_END_GRACE_MS;
+        assert!(session_end_affirms(Some(affirmed_just_inside), resolves_at));
+
+        // And an affirmation that never arrives leaves the held-back event to
+        // send — the grace delays an alert, it never cancels one.
+        assert!(!session_end_affirms(None, resolves_at));
+
+        // The 20s TTL still fails closed at exactly 20000ms, unchanged.
+        assert!(session_end_affirms(Some(0), 19_999));
+        assert!(!session_end_affirms(Some(0), 20_000));
+    }
+
+    #[test]
+    fn the_query_phase_shares_the_committed_ends_freshness_boundary() {
+        // One boundary, two callers: a query recorded 20s ago is no more
+        // contemporaneous than a commit recorded 20s ago, so a stale query can
+        // never masquerade as a live session-end phase hours later.
+        assert!(session_end_signal_is_fresh(Some(0), 19_999));
+        assert!(!session_end_signal_is_fresh(Some(0), 20_000));
+        assert!(!session_end_signal_is_fresh(None, 0));
+        for now in [0, 1, 19_999, 20_000, 50_000] {
+            assert_eq!(
+                session_end_signal_is_fresh(Some(0), now),
+                session_end_affirms(Some(0), now),
+                "the two freshness checks diverged at {now}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminator_attribution_names_stay_a_fixed_content_safe_vocabulary() {
+        let names: Vec<&str> = ALL_TERMINATOR_ATTRIBUTIONS
+            .iter()
+            .map(|attribution| attribution.class_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "session_end_observed",
+                "unattributed_no_signal",
+                "unattributed_query_only",
+                "unattributed_stale_affirmation",
+                "observer_unavailable",
+                "observer_failed",
+            ]
+        );
+        // The undiscriminated value is gone: a residual recurrence has to name
+        // which link of the chain failed.
+        assert!(!names.contains(&"unattributed"));
+        for name in &names {
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{name} is not a fixed-vocabulary tag token"
+            );
+        }
+
+        for (waited, bucket) in [
+            (0u64, "under_1s"),
+            (999, "under_1s"),
+            (1_000, "1s_to_3s"),
+            (2_999, "1s_to_3s"),
+            (3_000, "3s_to_6s"),
+            (5_999, "3s_to_6s"),
+            (6_000, "at_or_over_6s"),
+            (60_000, "at_or_over_6s"),
+        ] {
+            assert_eq!(
+                session_end_grace_waited_bucket(waited),
+                bucket,
+                "{waited}ms"
+            );
         }
     }
 
