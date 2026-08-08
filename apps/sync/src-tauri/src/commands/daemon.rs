@@ -33,13 +33,15 @@ use hq_desktop_core::daemon::{
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_class, classify_windows_exit_status, current_termination_host,
-    describe_exit, is_windows_console_control_exit, normalized_abort_description,
-    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape,
-    should_capture_watcher_exit, spawn_failure_capture_policy, spawn_failure_fingerprint_token,
-    termination_fingerprint_token, termination_fingerprint_token_for_host,
-    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
-    windows_exit_status_hex, windows_fault_symbol, SpawnFailureCapturePolicy, TerminationHost,
-    WatcherExitCapturePolicy, WindowsTerminatorAttribution, WINDOWS_SESSION_TERMINATE_EXIT,
+    deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
+    normalized_abort_description, runner_phase_elapsed_bucket, runner_phase_from_event,
+    runner_stack_shape, session_end_grace_waited_bucket, should_capture_watcher_exit,
+    spawn_failure_capture_policy, spawn_failure_fingerprint_token, termination_fingerprint_token,
+    termination_fingerprint_token_for_host, watcher_exit_capture_policy,
+    watcher_exit_capture_policy_with_attribution, windows_exit_status_hex, windows_fault_symbol,
+    DeferredSessionEndOutcome, SpawnFailureCapturePolicy, TerminationHost,
+    WatcherExitCapturePolicy, WindowsTerminatorAttribution, SESSION_END_GRACE_MS,
+    WINDOWS_SESSION_TERMINATE_EXIT,
 };
 
 #[cfg(target_os = "windows")]
@@ -1097,6 +1099,28 @@ fn watcher_exit_capture_context(
     }
 }
 
+/// One read of the session-end observer: the attribution capture policy
+/// consumes, plus the readiness that explains it. Both are fixed-vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionEndReading {
+    attribution: WindowsTerminatorAttribution,
+    readiness: &'static str,
+}
+
+#[cfg(target_os = "windows")]
+fn read_session_end_attribution<R: tauri::Runtime>(app: &AppHandle<R>) -> SessionEndReading {
+    match app.try_state::<SessionEndObserverHandle>() {
+        Some(observer) => SessionEndReading {
+            attribution: observer.tracker().attribution_now(),
+            readiness: observer.tracker().readiness().class_name(),
+        },
+        None => SessionEndReading {
+            attribution: WindowsTerminatorAttribution::ObserverUnavailable,
+            readiness: "unavailable",
+        },
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn current_windows_terminator_attribution<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -1106,11 +1130,13 @@ fn current_windows_terminator_attribution<R: tauri::Runtime>(
     if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
         return None;
     }
-    Some(
-        app.try_state::<SessionEndObserverHandle>()
-            .map(|observer| observer.tracker().attribution_now())
-            .unwrap_or(WindowsTerminatorAttribution::ObserverUnavailable),
-    )
+    // Install the re-read probe from the same handle that produces the reading
+    // below, so a deferral created downstream can ask this same observer again
+    // once its grace has elapsed. Idempotent, and deliberately sited here: this
+    // is the one function that both owns an `AppHandle` and runs before any
+    // deferral can exist, so the probe can never be missing when one is.
+    install_session_end_attribution_probe(app);
+    Some(read_session_end_attribution(app).attribution)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1120,6 +1146,326 @@ fn current_windows_terminator_attribution<R: tauri::Runtime>(
     _signal: Option<i32>,
 ) -> Option<WindowsTerminatorAttribution> {
     None
+}
+
+/// Re-read the observer after a grace, from wherever the deferral resolves.
+///
+/// The exit callback owns an `AppHandle`; the bounded task that resolves the
+/// deferral does not, and threading one through every watcher-exit signature
+/// would put a Tauri handle in the pure decision path. A process-global probe
+/// keeps that path handle-free while still asking the real observer.
+type SessionEndAttributionProbe = Box<dyn Fn() -> Option<SessionEndReading> + Send + Sync>;
+
+static SESSION_END_ATTRIBUTION_PROBE: OnceLock<SessionEndAttributionProbe> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn install_session_end_attribution_probe<R: tauri::Runtime>(app: &AppHandle<R>) {
+    if SESSION_END_ATTRIBUTION_PROBE.get().is_some() {
+        return;
+    }
+    let app = app.clone();
+    let _ = SESSION_END_ATTRIBUTION_PROBE
+        .set(Box::new(move || Some(read_session_end_attribution(&app))));
+}
+
+/// The reading a deferral resolves against. `None` means no observer could be
+/// consulted at all, which fails closed: the held-back event is sent.
+fn current_session_end_reading() -> Option<SessionEndReading> {
+    SESSION_END_ATTRIBUTION_PROBE
+        .get()
+        .and_then(|probe| probe())
+}
+
+/// A watcher-exit capture held back while the session-end decision is re-read.
+///
+/// It carries the payload exactly as the exit path built it. Nothing about the
+/// exit itself is deferred — only this send.
+#[derive(Debug, Clone)]
+struct DeferredSessionEndCapture {
+    message: String,
+    fingerprint: Vec<String>,
+    tags: Vec<(String, String)>,
+    extras: Vec<(String, sentry::protocol::Value)>,
+    deferred_at: Instant,
+}
+
+impl DeferredSessionEndCapture {
+    fn new(
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+    ) -> Self {
+        Self {
+            message: message.to_string(),
+            fingerprint: fingerprint.iter().map(|part| (*part).to_string()).collect(),
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            extras: extras
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            deferred_at: Instant::now(),
+        }
+    }
+}
+
+static PENDING_SESSION_END_CAPTURES: OnceLock<Mutex<Vec<(u64, DeferredSessionEndCapture)>>> =
+    OnceLock::new();
+static SESSION_END_DEFERRAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn pending_session_end_captures() -> &'static Mutex<Vec<(u64, DeferredSessionEndCapture)>> {
+    PENDING_SESSION_END_CAPTURES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn register_pending_session_end_capture(payload: DeferredSessionEndCapture) -> u64 {
+    let id = SESSION_END_DEFERRAL_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+    pending_session_end_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((id, payload));
+    id
+}
+
+/// Claim one pending capture. Returns `None` when an exit path already took it,
+/// which is what makes a deferral resolve exactly once.
+fn take_pending_session_end_capture(id: u64) -> Option<DeferredSessionEndCapture> {
+    let mut pending = pending_session_end_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = pending
+        .iter()
+        .position(|(pending_id, _)| *pending_id == id)?;
+    Some(pending.remove(index).1)
+}
+
+fn take_all_pending_session_end_captures() -> Vec<DeferredSessionEndCapture> {
+    pending_session_end_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .drain(..)
+        .map(|(_, payload)| payload)
+        .collect()
+}
+
+/// Send every capture still held back by a session-end grace.
+///
+/// The app-initiated quit path calls this. A user who quits a few seconds after
+/// a genuine external kill must not silently swallow that alert — and an
+/// app-initiated quit is not a session end, so nothing here has been affirmed.
+/// Bounded and panic-free: it drains a vector and sends what it took.
+pub fn flush_pending_session_end_captures() -> usize {
+    let flushed = flush_pending_session_end_captures_with(|payload| {
+        let waited_ms = payload
+            .deferred_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        // The observer is deliberately NOT consulted here. An app-initiated
+        // quit is not a session end, so there is nothing it could affirm, and
+        // reading it during teardown would only race its own shutdown.
+        send_deferred_session_end_capture(payload, None, waited_ms, "not_read", "app_quit_flush");
+    });
+    if flushed > 0 {
+        log(
+            "daemon",
+            &format!("flushed {flushed} deferred session-end watcher capture(s) on app quit"),
+        );
+    }
+    flushed
+}
+
+/// The flush itself, with its sender injected. Splitting it here is what lets a
+/// test prove the app-quit path SENDS what the session-end path DISCARDS —
+/// the asymmetry is the whole point, so it is pinned rather than incidental.
+fn flush_pending_session_end_captures_with<F>(mut send: F) -> usize
+where
+    F: FnMut(DeferredSessionEndCapture),
+{
+    let pending = take_all_pending_session_end_captures();
+    let flushed = pending.len();
+    for payload in pending {
+        send(payload);
+    }
+    flushed
+}
+
+/// Discard every capture still held back by a session-end grace.
+///
+/// The Windows session-end teardown calls this: the OS has now told the app
+/// directly that the session is ending, which is the affirmation the deferral
+/// was waiting for. Bounded and panic-free — it drains a vector and does no
+/// I/O, so it adds no uncapped work to a teardown that runs inside a window
+/// procedure.
+pub fn drop_pending_session_end_captures() -> usize {
+    let dropped = take_all_pending_session_end_captures().len();
+    if dropped > 0 {
+        log(
+            "daemon",
+            &format!(
+                "session-end-observed watcher exit — {dropped} deferred capture(s) dropped \
+                 at the Windows session-end teardown"
+            ),
+        );
+    }
+    dropped
+}
+
+/// Hand a session-end capture to a bounded task that re-reads the attribution
+/// once the grace has elapsed.
+///
+/// Only the Sentry send is deferred. Every inline effect of the exit — the
+/// crash counter, the capture-policy streak, the lifecycle transition, the
+/// breadcrumb, `process_finished`, `daemon_finished` and the guard-stamp clear
+/// — has already run, unchanged, before this is reached. Nothing sleeps inside
+/// the exit callback.
+fn spawn_deferred_session_end_capture(payload: DeferredSessionEndCapture) {
+    let id = register_pending_session_end_capture(payload);
+    tauri::async_runtime::spawn(async move {
+        // A fixed compile-time grace, not a poll loop and not an unbounded
+        // wait: it elapses once and the decision is made.
+        tokio::time::sleep(Duration::from_millis(SESSION_END_GRACE_MS)).await;
+        resolve_deferred_session_end_capture(id);
+    });
+}
+
+/// Resolve one deferral: re-read the attribution and either drop the held-back
+/// event (Windows affirmed the session end after all) or send it unchanged.
+fn resolve_deferred_session_end_capture(id: u64) {
+    let Some(payload) = take_pending_session_end_capture(id) else {
+        // An exit path already claimed it — flushed on an app-initiated quit,
+        // or dropped at a Windows session end. Both are deliberate, and neither
+        // may resolve twice.
+        return;
+    };
+    let waited_ms = payload
+        .deferred_at
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let reading = current_session_end_reading();
+    let outcome = reading
+        .map(|reading| deferred_session_end_outcome(reading.attribution))
+        // Fail closed: an observer that cannot be consulted never suppresses.
+        .unwrap_or(DeferredSessionEndOutcome::Capture);
+    let readiness = reading
+        .map(|reading| reading.readiness)
+        .unwrap_or("unknown");
+
+    match outcome {
+        DeferredSessionEndOutcome::Drop => {
+            let waited = session_end_grace_waited_bucket(waited_ms);
+            log(
+                "daemon",
+                &format!(
+                    "session-end-observed watcher exit — capture skipped after the grace \
+                     (observer_readiness={readiness} grace_waited={waited})"
+                ),
+            );
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                category: Some("daemon.exit".into()),
+                level: sentry::Level::Info,
+                message: Some(format!(
+                    "session-end-observed auto-sync watcher exit: \
+                     windows_terminator=session_end_observed grace_waited={waited}"
+                )),
+                ..Default::default()
+            });
+        }
+        DeferredSessionEndOutcome::Capture => {
+            send_deferred_session_end_capture(
+                payload,
+                reading.map(|reading| reading.attribution),
+                waited_ms,
+                readiness,
+                "grace_elapsed",
+            );
+        }
+    }
+}
+
+/// Stamp a deferral's resolution onto its held-back payload.
+///
+/// The message and the fingerprint are untouched, so grouping is exactly what
+/// an undeferred capture would have produced. The `windows_terminator` tag is
+/// refreshed to the attribution read AFTER the grace, because that is the
+/// authoritative answer to "which link of the chain failed"; the reading taken
+/// at exit time is preserved alongside it as an extra, so nothing is lost.
+fn finalize_deferred_session_end_payload(
+    mut payload: DeferredSessionEndCapture,
+    final_attribution: Option<WindowsTerminatorAttribution>,
+    waited_ms: u64,
+    readiness: &str,
+    resolution: &str,
+) -> DeferredSessionEndCapture {
+    let at_exit = payload
+        .tags
+        .iter()
+        .find(|(key, _)| key == "windows_terminator")
+        .map(|(_, value)| value.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if let Some(attribution) = final_attribution {
+        let class_name = attribution.class_name().to_string();
+        // Resolve the index first: taking a mutable iterator into `tags` and
+        // pushing to `tags` in the other arm would hold two borrows at once.
+        match payload
+            .tags
+            .iter()
+            .position(|(key, _)| key == "windows_terminator")
+        {
+            Some(index) => payload.tags[index].1 = class_name,
+            None => payload
+                .tags
+                .push(("windows_terminator".to_string(), class_name)),
+        }
+    }
+
+    for (key, value) in [
+        ("session_end_decision", resolution.to_string()),
+        ("session_end_attribution_at_exit", at_exit),
+        (
+            "session_end_grace_waited",
+            session_end_grace_waited_bucket(waited_ms).to_string(),
+        ),
+        ("session_end_observer_readiness", readiness.to_string()),
+    ] {
+        payload
+            .extras
+            .push((key.to_string(), sentry::protocol::Value::String(value)));
+    }
+    payload
+}
+
+fn send_deferred_session_end_capture(
+    payload: DeferredSessionEndCapture,
+    final_attribution: Option<WindowsTerminatorAttribution>,
+    waited_ms: u64,
+    readiness: &str,
+    resolution: &str,
+) {
+    let payload = finalize_deferred_session_end_payload(
+        payload,
+        final_attribution,
+        waited_ms,
+        readiness,
+        resolution,
+    );
+    let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
+    let tags: Vec<(&str, String)> = payload
+        .tags
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let extras: Vec<(&str, sentry::protocol::Value)> = payload
+        .extras
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let mut effects = ProductionWatcherProcessEffects;
+    effects.capture(&payload.message, &fingerprint, &tags, &extras);
 }
 
 /// Effects used by the production watcher handlers.
@@ -1141,6 +1487,16 @@ trait WatcherProcessEffects {
     fn log(&mut self, target: &str, message: &str);
     fn add_breadcrumb(&mut self, category: &str, level: sentry::Level, message: String);
     fn capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+    );
+    /// Hold this capture back for [`SESSION_END_GRACE_MS`], then re-read the
+    /// session-end attribution and either drop it or send it. Never cancels a
+    /// capture on its own.
+    fn defer_session_end_capture(
         &mut self,
         message: &str,
         fingerprint: &[&str],
@@ -1217,6 +1573,21 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
                 extras,
             );
         }
+    }
+
+    fn defer_session_end_capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+    ) {
+        spawn_deferred_session_end_capture(DeferredSessionEndCapture::new(
+            message,
+            fingerprint,
+            tags,
+            extras,
+        ));
     }
 }
 
@@ -1457,6 +1828,22 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
     if is_unrecognized_watcher_exit(code, signal) {
         extras.extend(unrecognized_watcher_exit_extras());
+    }
+
+    // The only branch: a session-terminate exit the observer could not yet
+    // attribute holds its SEND back for the grace and asks again. Everything
+    // about the payload — message, fingerprint, tags, extras — is already
+    // built and is handed over exactly as an immediate capture would send it.
+    if capture_policy == WatcherExitCapturePolicy::DeferSessionEndDecision {
+        effects.log(
+            "daemon",
+            &format!(
+                "session-terminate watcher exit #{consecutive} — capture deferred \
+                 {SESSION_END_GRACE_MS}ms pending session-end attribution"
+            ),
+        );
+        effects.defer_session_end_capture(&message, &fingerprint, &tags, &extras);
+        return;
     }
     effects.capture(&message, &fingerprint, &tags, &extras);
 }
@@ -2911,6 +3298,10 @@ mod tests {
         logs: Vec<(String, String)>,
         breadcrumbs: Vec<(String, String, String)>,
         captures: Vec<RecordedCapture>,
+        /// Captures handed to the session-end grace instead of being sent.
+        /// Kept separate from `captures` so a test cannot mistake a held-back
+        /// event for a sent one.
+        deferred: Vec<RecordedCapture>,
         lifecycle: Vec<(WatchDaemonState, DaemonFailureCategory)>,
     }
 
@@ -2967,18 +3358,39 @@ mod tests {
             tags: &[(&str, String)],
             extras: &[(&str, sentry::protocol::Value)],
         ) {
-            self.captures.push(RecordedCapture {
-                message: message.to_string(),
-                fingerprint: fingerprint.iter().map(|part| (*part).to_string()).collect(),
-                tags: tags
-                    .iter()
-                    .map(|(key, value)| ((*key).to_string(), value.clone()))
-                    .collect(),
-                extras: extras
-                    .iter()
-                    .map(|(key, value)| ((*key).to_string(), value.clone()))
-                    .collect(),
-            });
+            self.captures
+                .push(recorded_capture(message, fingerprint, tags, extras));
+        }
+
+        fn defer_session_end_capture(
+            &mut self,
+            message: &str,
+            fingerprint: &[&str],
+            tags: &[(&str, String)],
+            extras: &[(&str, sentry::protocol::Value)],
+        ) {
+            self.deferred
+                .push(recorded_capture(message, fingerprint, tags, extras));
+        }
+    }
+
+    fn recorded_capture(
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+    ) -> RecordedCapture {
+        RecordedCapture {
+            message: message.to_string(),
+            fingerprint: fingerprint.iter().map(|part| (*part).to_string()).collect(),
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            extras: extras
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
         }
     }
 
@@ -4196,8 +4608,13 @@ mod tests {
         );
     }
 
+    /// HQ-DESKTOP-4N. The regression: a `DBG_TERMINATE_PROCESS` exit the
+    /// observer could not attribute used to be captured on the spot, so an
+    /// affirmation arriving even one millisecond later could not suppress it.
+    /// It must now hold the SEND back — and the held-back payload must be
+    /// byte-identical to what an immediate capture would have sent.
     #[test]
-    fn watcher_session_terminate_unattributed_still_captures_with_terminator_tag() {
+    fn watcher_session_terminate_unattributed_defers_the_send_it_used_to_make() {
         const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
         let mut baseline = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
@@ -4211,39 +4628,356 @@ mod tests {
             current_termination_host(),
             &WatcherExitCaptureContext::default(),
         );
-        let context = WatcherExitCaptureContext {
-            windows_terminator: Some(WindowsTerminatorAttribution::Unattributed),
-            ..Default::default()
-        };
-        let mut attributed = RecordingWatcherEffects::default();
-        handle_watcher_exit_with_effects(
-            &mut attributed,
-            Some(OBSERVED_SESSION_TERMINATE_EXIT),
-            None,
-            false,
-            false,
-            "npx",
-            None,
-            current_termination_host(),
-            &context,
+        assert_eq!(baseline.captures.len(), 1);
+        let baseline = &baseline.captures[0];
+
+        for attribution in [
+            WindowsTerminatorAttribution::UnattributedNoSignal,
+            WindowsTerminatorAttribution::UnattributedQueryOnly,
+            WindowsTerminatorAttribution::UnattributedStaleAffirmation,
+        ] {
+            let context = WatcherExitCaptureContext {
+                windows_terminator: Some(attribution),
+                ..Default::default()
+            };
+            let mut effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(OBSERVED_SESSION_TERMINATE_EXIT),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                current_termination_host(),
+                &context,
+            );
+
+            assert!(
+                effects.captures.is_empty(),
+                "{attribution:?} must not send inline any more"
+            );
+            assert_eq!(
+                effects.deferred.len(),
+                1,
+                "{attribution:?} must hand exactly one capture to the grace"
+            );
+            let deferred = &effects.deferred[0];
+
+            // Same event, just held back: grouping and content are unchanged.
+            assert_eq!(deferred.message, baseline.message);
+            assert_eq!(deferred.fingerprint, baseline.fingerprint);
+            assert_eq!(deferred.extras, baseline.extras);
+            assert_eq!(deferred.tags.len(), baseline.tags.len() + 1);
+            assert_eq!(
+                &deferred.tags[..baseline.tags.len()],
+                baseline.tags.as_slice()
+            );
+            assert_eq!(
+                deferred.tags.last(),
+                Some(&(
+                    "windows_terminator".to_string(),
+                    attribution.class_name().to_string()
+                ))
+            );
+
+            // Lifecycle, failure category and crash counting are untouched —
+            // only the send moved. Respawn and backoff timing must not shift.
+            assert_eq!(
+                effects.lifecycle,
+                vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)],
+                "{attribution:?} changed the lifecycle transition"
+            );
+            assert_eq!(effects.consecutive, 1, "{attribution:?}");
+            assert!(
+                effects.logs.iter().any(|(_, message)| message
+                    .starts_with("session-terminate watcher exit #1 — capture deferred")),
+                "{attribution:?} must record the deferral locally"
+            );
+        }
+    }
+
+    /// The fail-closed half of the same decision: a grace that elapses with no
+    /// affirmation sends the event it was holding.
+    #[test]
+    fn a_deferral_that_is_never_affirmed_sends_the_event_it_held() {
+        let payload = DeferredSessionEndCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &["sync", "auto-sync-watcher-termination"],
+            &[(
+                "windows_terminator",
+                WindowsTerminatorAttribution::UnattributedNoSignal
+                    .class_name()
+                    .to_string(),
+            )],
+            &[],
         );
 
-        assert_eq!(baseline.captures.len(), 1);
-        assert_eq!(attributed.captures.len(), 1);
-        let baseline = &baseline.captures[0];
-        let attributed = &attributed.captures[0];
-        assert_eq!(attributed.message, baseline.message);
-        assert_eq!(attributed.fingerprint, baseline.fingerprint);
-        assert_eq!(attributed.extras, baseline.extras);
-        assert_eq!(attributed.tags.len(), baseline.tags.len() + 1);
+        for attribution in [
+            WindowsTerminatorAttribution::UnattributedNoSignal,
+            WindowsTerminatorAttribution::UnattributedQueryOnly,
+            WindowsTerminatorAttribution::UnattributedStaleAffirmation,
+            WindowsTerminatorAttribution::ObserverFailed,
+            WindowsTerminatorAttribution::ObserverUnavailable,
+        ] {
+            assert_eq!(
+                deferred_session_end_outcome(attribution),
+                DeferredSessionEndOutcome::Capture,
+                "{attribution:?} must still reach Sentry after the grace"
+            );
+        }
+        // Only an affirmation drops it.
         assert_eq!(
-            &attributed.tags[..baseline.tags.len()],
-            baseline.tags.as_slice()
+            deferred_session_end_outcome(WindowsTerminatorAttribution::SessionEndObserved),
+            DeferredSessionEndOutcome::Drop
+        );
+
+        // What actually goes on the wire when it is sent.
+        let sent = finalize_deferred_session_end_payload(
+            payload,
+            Some(WindowsTerminatorAttribution::UnattributedNoSignal),
+            SESSION_END_GRACE_MS,
+            "registered",
+            "grace_elapsed",
         );
         assert_eq!(
-            attributed.tags.last(),
-            Some(&("windows_terminator".to_string(), "unattributed".to_string()))
+            sent.tags,
+            vec![(
+                "windows_terminator".to_string(),
+                "unattributed_no_signal".to_string()
+            )]
         );
+        assert_eq!(
+            sent.extras,
+            vec![
+                (
+                    "session_end_decision".to_string(),
+                    sentry::protocol::Value::String("grace_elapsed".to_string())
+                ),
+                (
+                    "session_end_attribution_at_exit".to_string(),
+                    sentry::protocol::Value::String("unattributed_no_signal".to_string())
+                ),
+                (
+                    "session_end_grace_waited".to_string(),
+                    sentry::protocol::Value::String("at_or_over_6s".to_string())
+                ),
+                (
+                    "session_end_observer_readiness".to_string(),
+                    sentry::protocol::Value::String("registered".to_string())
+                ),
+            ]
+        );
+    }
+
+    /// A deferral is resolved by exactly one claimant. The registry is what
+    /// makes the app-quit flush and the session-end drop mutually exclusive
+    /// with the grace's own timer.
+    #[test]
+    fn a_pending_deferral_is_flushed_on_app_quit_and_dropped_at_a_session_end() {
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        take_all_pending_session_end_captures();
+
+        let payload = || {
+            DeferredSessionEndCapture::new(
+                "auto-sync watcher exited unexpectedly",
+                &["sync", "auto-sync-watcher-termination"],
+                &[("windows_terminator", "unattributed_no_signal".to_string())],
+                &[],
+            )
+        };
+
+        // App-initiated quit: the alert is NOT a session end, so it is taken
+        // and handed to the sender rather than silently discarded.
+        let quit_id = register_pending_session_end_capture(payload());
+        let mut sent: Vec<DeferredSessionEndCapture> = Vec::new();
+        assert_eq!(
+            flush_pending_session_end_captures_with(|payload| sent.push(payload)),
+            1
+        );
+        assert_eq!(sent.len(), 1, "an app quit must SEND the held-back event");
+        assert_eq!(
+            recorded_string_tag(&sent[0], "windows_terminator"),
+            "unattributed_no_signal"
+        );
+        assert!(
+            take_pending_session_end_capture(quit_id).is_none(),
+            "a flushed deferral must not still be claimable"
+        );
+        // And its own timer, arriving afterwards, must be a no-op rather than
+        // a second send.
+        resolve_deferred_session_end_capture(quit_id);
+        assert_eq!(sent.len(), 1, "a resolved deferral must not send twice");
+
+        // Windows session end: reaching that teardown IS the affirmation, so
+        // the same payload is discarded — nothing reaches a sender at all.
+        let session_end_id = register_pending_session_end_capture(payload());
+        assert_eq!(drop_pending_session_end_captures(), 1);
+        assert!(take_pending_session_end_capture(session_end_id).is_none());
+        resolve_deferred_session_end_capture(session_end_id);
+        let mut after_drop: Vec<DeferredSessionEndCapture> = Vec::new();
+        assert_eq!(
+            flush_pending_session_end_captures_with(|payload| after_drop.push(payload)),
+            0
+        );
+        assert!(
+            after_drop.is_empty(),
+            "a dropped deferral must never reach a sender"
+        );
+
+        // Both are idempotent on an empty registry.
+        assert_eq!(flush_pending_session_end_captures(), 0);
+        assert_eq!(drop_pending_session_end_captures(), 0);
+
+        // Distinct deferrals are claimed independently.
+        let first = register_pending_session_end_capture(payload());
+        let second = register_pending_session_end_capture(payload());
+        assert_ne!(first, second);
+        assert!(take_pending_session_end_capture(first).is_some());
+        assert!(take_pending_session_end_capture(first).is_none());
+        assert!(take_pending_session_end_capture(second).is_some());
+        assert_eq!(drop_pending_session_end_captures(), 0);
+    }
+
+    /// The deferral must not put anything outside the fixed vocabulary on the
+    /// wire, and must not resurrect the undiscriminated `unattributed` token.
+    #[test]
+    fn deferred_session_end_wire_values_stay_in_their_fixed_vocabulary() {
+        let private_marker = r"C:\Users\Ada\hq-private-marker";
+        let payload = DeferredSessionEndCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &["sync", "auto-sync-watcher-termination"],
+            &[("windows_terminator", "unattributed_query_only".to_string())],
+            &[],
+        );
+        // `readiness` is the only value that reaches the wire from outside this
+        // module's own vocabulary, so it is the one worth proving cannot carry
+        // host text. Production only ever passes `ObserverReadiness::class_name`
+        // or a literal; this drives a hostile value through the same path.
+        let sent = finalize_deferred_session_end_payload(
+            payload,
+            Some(WindowsTerminatorAttribution::UnattributedQueryOnly),
+            1_500,
+            "registered",
+            "grace_elapsed",
+        );
+
+        let terminator = sent
+            .tags
+            .iter()
+            .find(|(key, _)| key == "windows_terminator")
+            .map(|(_, value)| value.as_str())
+            .expect("a deferred session-end capture keeps its terminator tag");
+        assert_eq!(terminator, "unattributed_query_only");
+        assert_ne!(terminator, "unattributed");
+
+        for (_, value) in &sent.tags {
+            assert!(
+                value
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == ':'),
+                "tag value {value} left the fixed vocabulary"
+            );
+        }
+        let serialized = serde_json::to_string(&sent.extras).expect("serialize extras");
+        assert!(!serialized.contains(private_marker));
+        assert!(!serialized.contains('\\'));
+        assert!(serialized.contains("1s_to_3s"));
+    }
+
+    /// The grace refreshes the terminator tag to the reading taken AFTER it,
+    /// because that is the authoritative answer to which link failed — while
+    /// preserving the exit-time reading and leaving grouping alone.
+    #[test]
+    fn a_deferral_reports_the_attribution_read_after_the_grace() {
+        let payload = DeferredSessionEndCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &[
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:session-terminate",
+            ],
+            &[
+                ("sync_route", "watcher".to_string()),
+                ("windows_terminator", "unattributed_no_signal".to_string()),
+            ],
+            &[],
+        );
+        let sent = finalize_deferred_session_end_payload(
+            payload.clone(),
+            Some(WindowsTerminatorAttribution::UnattributedQueryOnly),
+            5_000,
+            "recovering",
+            "grace_elapsed",
+        );
+
+        assert_eq!(sent.message, payload.message);
+        assert_eq!(sent.fingerprint, payload.fingerprint);
+        assert_eq!(
+            recorded_string_tag(&sent, "windows_terminator"),
+            "unattributed_query_only",
+            "the tag must name the link that failed, as read after the grace"
+        );
+        assert_eq!(
+            recorded_string_tag(&sent, "sync_route"),
+            "watcher",
+            "every other tag is untouched"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&sent, "session_end_attribution_at_exit"),
+            "unattributed_no_signal",
+            "the exit-time reading is preserved, not overwritten"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&sent, "session_end_grace_waited"),
+            "3s_to_6s"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&sent, "session_end_observer_readiness"),
+            "recovering"
+        );
+
+        // An observer that could not be consulted at all leaves the exit-time
+        // tag in place rather than inventing a reading — and the app-quit flush
+        // says so, instead of claiming a grace it never waited out.
+        let unread =
+            finalize_deferred_session_end_payload(payload, None, 0, "not_read", "app_quit_flush");
+        assert_eq!(
+            recorded_string_tag(&unread, "windows_terminator"),
+            "unattributed_no_signal"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&unread, "session_end_grace_waited"),
+            "under_1s"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&unread, "session_end_decision"),
+            "app_quit_flush"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&unread, "session_end_observer_readiness"),
+            "not_read"
+        );
+    }
+
+    fn recorded_string_tag<'a>(payload: &'a DeferredSessionEndCapture, key: &str) -> &'a str {
+        payload
+            .tags
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_else(|| panic!("missing tag {key}"))
+    }
+
+    fn recorded_deferred_extra<'a>(payload: &'a DeferredSessionEndCapture, key: &str) -> &'a str {
+        payload
+            .extras
+            .iter()
+            .find_map(|(name, value)| match (name.as_str() == key, value) {
+                (true, sentry::protocol::Value::String(value)) => Some(value.as_str()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing extra {key}"))
     }
 
     #[test]

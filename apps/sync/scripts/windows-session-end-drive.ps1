@@ -38,6 +38,18 @@ param(
     # interval and hoping.
     [switch] $ProbeOnly,
 
+    # Deliver ONLY WM_QUERYENDSESSION — the query phase, with no committed
+    # WM_ENDSESSION and no follow-up message.
+    #
+    # This is the half of the sequence Windows performs first, and the half the
+    # app must treat as non-committal: a query announces that a session end is
+    # being considered, and Windows can still revoke it with
+    # WM_ENDSESSION(FALSE). An app that tore down (or that let a query suppress
+    # a watcher-exit alert) on the query alone would be acting on a decision the
+    # OS has not made. Driving it in isolation is the only way to prove that
+    # from outside the process (HQ-DESKTOP-4N).
+    [switch] $QueryOnly,
+
     # Milliseconds each SendMessageTimeout may block. Session-end messages are
     # delivered synchronously, so an unbounded send would hang the harness if
     # the app wedged.
@@ -131,6 +143,21 @@ foreach ($hWnd in $windows) {
             $SMTO_ABORTIFHUNG, $SendTimeoutMs, [ref] $result) -ne [IntPtr]::Zero) {
         $queryDelivered++
     }
+}
+
+if ($QueryOnly) {
+    # Same refusal as the no-windows case: a query-only run that delivered
+    # nothing has proven nothing about how the app treats the query phase.
+    if ($queryDelivered -eq 0) {
+        throw "WM_QUERYENDSESSION reached none of the $($windows.Count) window(s) of process $TargetProcessId."
+    }
+    [pscustomobject]@{
+        windowCount     = $windows.Count
+        queryDelivered  = $queryDelivered
+        endDelivered    = 0
+        followUpPosted  = 0
+    } | ConvertTo-Json -Compress
+    exit 0
 }
 
 foreach ($hWnd in $windows) {

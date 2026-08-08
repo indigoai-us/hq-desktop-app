@@ -987,6 +987,17 @@ export interface SessionEndLiveObservation {
   queryEndSessionDelivered: number;
   endSessionDelivered: number;
   followUpPosted: number;
+  /**
+   * Set only when `queryOnlyFirst` was requested. How many windows took a bare
+   * WM_QUERYENDSESSION, and whether the app was still running and still owned
+   * top-level windows afterwards — i.e. whether it correctly treated the query
+   * phase as non-committal (HQ-DESKTOP-4N).
+   */
+  queryOnly: {
+    queryDelivered: number;
+    survived: boolean;
+    windowCountAfter: number;
+  } | null;
   /** Process exit code, or null when it never exited inside the deadline. */
   exitCode: number | null;
   exitedWithinDeadline: boolean;
@@ -1309,6 +1320,20 @@ export interface DriveSessionEndOptions {
   exitTimeoutMs?: number;
   /** Override the ownership-report destination (tests; defaults to a temp file). */
   ownedPidsReportPath?: string;
+  /**
+   * Deliver WM_QUERYENDSESSION on its own first, observe that the app is still
+   * alive and still owns its windows, and only then drive the full sequence
+   * (HQ-DESKTOP-4N).
+   *
+   * The query phase is non-committal — Windows can revoke it with
+   * WM_ENDSESSION(FALSE) — so an app that tore down on the query alone would be
+   * acting on a decision the OS has not made. Reusing this same run to then
+   * drive the committed end keeps the single-instance constraint intact: only
+   * one app is ever up.
+   */
+  queryOnlyFirst?: boolean;
+  /** How long the app gets to prove it SURVIVED a bare query. */
+  queryOnlySettleMs?: number;
 }
 
 /**
@@ -1407,6 +1432,62 @@ export async function driveWindowsSessionEnd(
       );
     }
 
+    // How many top-level windows the app owns right now. Throws rather than
+    // reporting zero when the probe itself could not run: "no windows" and
+    // "could not look" must never read the same, or a broken probe would make
+    // a surviving app look like one that tore down.
+    const countTopLevelWindows = async (): Promise<number> => {
+      const probe = await runPowerShell(
+        ['-File', driverScript, '-TargetProcessId', String(pid), '-ProbeOnly'],
+        30_000,
+      );
+      if (probe.exitCode !== 0) {
+        throw new Error(
+          `window probe failed (exit ${probe.exitCode}): ${probe.stderr.trim()}`,
+        );
+      }
+      try {
+        return (JSON.parse(probe.stdout.trim()) as { windowCount: number }).windowCount;
+      } catch (error) {
+        throw new Error(
+          `window probe returned unreadable output (${(error as Error).message}): ${probe.stdout.trim()}`,
+        );
+      }
+    };
+
+    let queryOnly: SessionEndLiveObservation['queryOnly'] = null;
+    if (options.queryOnlyFirst) {
+      // The query phase on its own. Windows can still revoke it with
+      // WM_ENDSESSION(FALSE), so the app must treat it as non-committal.
+      const queryDriver = await runPowerShell(
+        ['-File', driverScript, '-TargetProcessId', String(pid), '-QueryOnly'],
+        60_000,
+      );
+      if (queryDriver.exitCode !== 0) {
+        throw new Error(
+          `query-only session-end driver failed (exit ${queryDriver.exitCode}): ${queryDriver.stderr.trim()}`,
+        );
+      }
+      const queried = JSON.parse(queryDriver.stdout.trim()) as {
+        queryDelivered: number;
+      };
+
+      // A bounded settle, not a wait-for-success: nothing is supposed to
+      // happen here, and the deadline is how long the app is given to
+      // (incorrectly) act on a query it should have ignored.
+      await waitFor(async () => exited, {
+        timeoutMs: options.queryOnlySettleMs ?? 3_000,
+        intervalMs: 250,
+      });
+
+      const windowCountAfter = exited ? 0 : await countTopLevelWindows();
+      queryOnly = {
+        queryDelivered: queried.queryDelivered,
+        survived: !exited && windowCountAfter > 0,
+        windowCountAfter,
+      };
+    }
+
     const observedChildrenBefore = await descendantProcesses(pid);
 
     // `-File`, not `-Command`: no call operator and no quoting for PowerShell
@@ -1470,6 +1551,7 @@ export async function driveWindowsSessionEnd(
       queryEndSessionDelivered: driven.queryDelivered,
       endSessionDelivered: driven.endDelivered,
       followUpPosted: driven.followUpPosted,
+      queryOnly,
       exitCode,
       exitedWithinDeadline,
       observedDestroyedStatePanic: captured.includes(DESTROYED_STATE_PANIC),
