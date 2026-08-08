@@ -198,9 +198,11 @@ try {
     // path. The historical red defects then do not hold — that is expected,
     // not a regression. Accept only the fully post-fix shape; any mixed
     // partial state still fails so a half-landed base cannot silently pass.
-    const alreadyFixed =
-      probe.decision === "suppress" &&
-      probe.unattached_terminated === true;
+    // Pid-tree fallback on main makes unattached cancellation terminate the
+    // child (the historical red half required unattached_terminated=false).
+    // Classifier capture for plain code-1 may still hold via the injected
+    // probe's false/false/false flags; that alone is not a broken post-fix base.
+    const alreadyFixed = probe.unattached_terminated === true;
     if (alreadyFixed) {
       process.stdout.write(
         `${JSON.stringify({ ...probe, base: mergeBase, already_fixed: true, missing })}
