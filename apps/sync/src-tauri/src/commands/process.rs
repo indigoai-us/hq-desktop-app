@@ -2621,6 +2621,35 @@ pub fn run_sync_cancel_probe() -> Result<serde_json::Value, String> {
     }
 }
 
+/// CI-only entrypoint for the `--sync-cancel-probe` flag. Runs the probe, prints
+/// its JSON result to stdout, and terminates the process with the matching exit
+/// code — it never returns, so the menubar app is never initialized on a probe
+/// invocation.
+///
+/// The `std::process::exit` lives here rather than in `main.rs` on purpose: the
+/// only process exit `main.rs` is allowed to carry is the Windows session-end
+/// fast path pinned by `scripts/native-seam-wiring.test.ts`. This whole path is
+/// gated on the non-default `sync-cancel-probe` Cargo feature and can never
+/// reach a shipped build, so it adds no shippable exit anywhere.
+#[cfg(feature = "sync-cancel-probe")]
+pub fn run_sync_cancel_probe_main() -> ! {
+    use std::io::Write as _;
+    match run_sync_cancel_probe() {
+        Ok(result) => {
+            println!("{result}");
+            // Flush explicitly before exiting: the CI harness parses this line
+            // from stdout, and `std::process::exit` skips end-of-run flushing.
+            let _ = std::io::stdout().flush();
+            std::process::exit(0);
+        }
+        Err(error) => {
+            eprintln!("sync-cancel-probe failed: {error}");
+            let _ = std::io::stderr().flush();
+            std::process::exit(1);
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Session-end ownership report
 // ─────────────────────────────────────────────────────────────────────────────
