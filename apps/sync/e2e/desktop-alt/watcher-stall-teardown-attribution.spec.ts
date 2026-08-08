@@ -157,7 +157,11 @@ describe('watcher stall-teardown attribution — source contracts', () => {
       'cancelled\n}',
       'terminate_daemon_generation_once_with_delay',
     );
-    expect(terminate).toContain('DaemonFailureCategory::HeartbeatStall => cancel_process_for_generation(');
+    // Formatting-robust: rustfmt may wrap the arm body in a block, so allow an
+    // optional brace between the arm and the cause-carrying call.
+    expect(terminate).toMatch(
+      /DaemonFailureCategory::HeartbeatStall\s*=>\s*\{?\s*cancel_process_for_generation\(/,
+    );
     expect(terminate).toContain('SyncCancelCause::HeartbeatStall');
     // Every other category keeps the causeless seam, so it can never attribute.
     expect(terminate).toContain('cancel_process_generation_impl(DAEMON_HANDLE, generation, sigkill_delay)');
