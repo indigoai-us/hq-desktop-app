@@ -175,6 +175,8 @@ fn force_foreground_hwnd(hwnd_raw: isize) {
         return;
     }
 
+    hq_telemetry::record_native_panic_seam(hq_telemetry::NativePanicSeam::WindowForceForeground);
+
     unsafe {
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);

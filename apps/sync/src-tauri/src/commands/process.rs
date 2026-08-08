@@ -204,6 +204,31 @@ pub fn app_exit_requested() -> bool {
     APP_EXIT_REQUESTED.load(Ordering::Acquire)
 }
 
+/// Raised only by the app's `RunEvent::ExitRequested` arm, i.e. only when the
+/// *app* asked to quit (tray Quit, `quit_app`, Cmd-Q, last window closed).
+///
+/// This is deliberately NOT `APP_EXIT_REQUESTED`: that flag is set inside
+/// `terminate_all_for_exit`, which the Windows session-end path also calls, so
+/// it cannot tell the two exits apart. This one can, because
+/// `RunEvent::ExitRequested` is never emitted for a Windows `WM_ENDSESSION`
+/// (tauri-runtime-wry raises it only when the last window is destroyed or on
+/// `Message::RequestExit`) — so `RunEvent::Exit` with this flag still false
+/// means the OS is ending the desktop session.
+static APP_INITIATED_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// Latch the app-initiated quit. One-way: an exit is never un-requested.
+pub fn note_app_initiated_exit() {
+    APP_INITIATED_EXIT.store(true, Ordering::Release);
+}
+
+/// Read by the Windows-only `RunEvent::Exit` arm (and by this crate's tests on
+/// every host); gated so a macOS/Linux release build does not carry it as dead
+/// code.
+#[cfg(any(target_os = "windows", test))]
+pub fn app_initiated_exit() -> bool {
+    APP_INITIATED_EXIT.load(Ordering::Acquire)
+}
+
 fn process_registry() -> &'static Arc<Mutex<ProcessRegistry>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(ProcessRegistry::default())))
 }
@@ -1995,9 +2020,97 @@ fn terminate_registered_processes_for_exit(processes: &[RegisteredProcess], _gra
 /// `RunEvent::ExitRequested` handler so closing HQ Sync (tray Quit, `quit_app`,
 /// or Cmd-Q) reliably stops the `--watch` sync daemon and any sidecar instead
 /// of orphaning them.
+///
+/// Windows session end (`WM_ENDSESSION`) never produces `ExitRequested`, so the
+/// session-end branch of `RunEvent::Exit` calls this too. Idempotent by
+/// construction: the registry empties as children are reaped, so a second call
+/// on a path that already ran is a no-op.
 pub fn terminate_all_for_exit(grace: Duration) {
     APP_EXIT_REQUESTED.store(true, Ordering::Release);
     terminate_registered_processes_for_exit(&registered_processes_including_retired(), grace);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session-end ownership report
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Env var naming the file the Windows session-end teardown writes its
+/// ownership report to.
+///
+/// Unset in every shipped build, so the whole path below is inert in
+/// production. The session-end artifact proof
+/// (`apps/sync/e2e/desktop-alt/windows-session-end.spec.ts`) points it at a
+/// temp file and reads the result back, which buys it two things nothing else
+/// can:
+///
+/// - the file existing at all proves the Windows `RunEvent::Exit` teardown
+///   really ran — delete the arm, its cfg gate, or the teardown call and the
+///   proof goes red even when the registry happens to be empty; and
+/// - the pids it lists are exactly the children this app claims to own, so the
+///   proof can assert the teardown's actual claim instead of guessing at
+///   process names from an image-name blocklist. The app is the only thing
+///   that knows what it spawned through `run_process_impl`; anything else is
+///   inference over a `ParentProcessId` query whose pid is reusable the
+///   instant the app exits.
+pub const SESSION_END_OWNED_PIDS_ENV: &str = "HQ_SYNC_SESSION_END_OWNED_PIDS";
+
+/// Resolve the report destination from a raw env value.
+///
+/// Split out from the env read itself so both branches stay unit testable
+/// without a test mutating process-wide state out from under its neighbours.
+pub fn owned_pids_report_path(raw: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let raw = raw?;
+    if raw.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(raw))
+}
+
+/// Render a registry snapshot as the ownership report.
+///
+/// Content-safe by construction: handles are UUIDs or the fixed singleton
+/// names (`hq-sync`, `hq-sync-daemon`) and pids are integers. No paths,
+/// arguments, or user identifiers, so CI may print the whole thing.
+pub fn owned_pids_report_json(pids: &[(String, u32)]) -> String {
+    let owned: Vec<serde_json::Value> = pids
+        .iter()
+        .map(|(handle, pid)| serde_json::json!({ "handle": handle, "pid": pid }))
+        .collect();
+    serde_json::json!({ "pids": owned }).to_string()
+}
+
+/// Write the ownership report: one small write, no fsync, no retry.
+pub fn write_owned_pids_report(path: &std::path::Path, pids: &[(String, u32)]) -> io::Result<()> {
+    std::fs::write(path, owned_pids_report_json(pids))
+}
+
+/// Best-effort ownership report — never panics and never propagates.
+///
+/// This runs inside a Windows window procedure during the session-end
+/// teardown, where an unwind aborts the process exactly the way HQ-DESKTOP-44
+/// did. A failed write is logged and the teardown continues; the proof reads
+/// the missing file as a failure, and the log line says why it is missing.
+pub fn report_owned_pids_to(path: Option<&std::path::Path>, pids: &[(String, u32)]) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Err(err) = write_owned_pids_report(path, pids) {
+        crate::util::logfile::log(
+            "process",
+            &format!("SESSION_END_OWNED_PIDS report write failed: {err}"),
+        );
+    }
+}
+
+/// Env-gated entry point for the Windows session-end teardown.
+///
+/// Call it immediately BEFORE `terminate_all_for_exit`, while the registry
+/// still holds the children that are about to be terminated — afterwards the
+/// registry has emptied and the report would name nothing.
+#[cfg(any(target_os = "windows", test))]
+pub fn report_session_end_owned_pids() {
+    let path = owned_pids_report_path(std::env::var_os(SESSION_END_OWNED_PIDS_ENV));
+    report_owned_pids_to(path.as_deref(), &registered_pids());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3083,6 +3196,128 @@ mod process_error_tests {
         );
         assert_eq!(token, "not-found");
         assert!(!token.contains(tmp.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[cfg(test)]
+mod app_initiated_exit_tests {
+    use super::*;
+
+    /// The Windows session-end fix hangs off exactly one bit: was this exit
+    /// asked for by the app, or forced by the OS? This is the ONLY test in the
+    /// crate that writes `APP_INITIATED_EXIT`, and it asserts the unset state
+    /// before it writes — so the latch is proven to start false and to be
+    /// observable afterwards regardless of how the harness interleaves tests.
+    #[test]
+    fn app_initiated_exit_latches_once_the_exit_requested_arm_notes_it() {
+        assert!(
+            !app_initiated_exit(),
+            "a process that never reached ExitRequested must read as OS-forced"
+        );
+
+        note_app_initiated_exit();
+
+        assert!(
+            app_initiated_exit(),
+            "the Exit arm must observe the flag the ExitRequested arm set"
+        );
+
+        // One-way: re-noting cannot clear it.
+        note_app_initiated_exit();
+        assert!(app_initiated_exit());
+    }
+}
+
+#[cfg(test)]
+mod session_end_owned_pids_tests {
+    use super::*;
+
+    fn reported(json: &str) -> Vec<(String, u32)> {
+        let parsed: serde_json::Value = serde_json::from_str(json).expect("report is valid JSON");
+        parsed["pids"]
+            .as_array()
+            .expect("report carries a pids array")
+            .iter()
+            .map(|entry| {
+                (
+                    entry["handle"]
+                        .as_str()
+                        .expect("every entry names its handle")
+                        .to_string(),
+                    entry["pid"].as_u64().expect("every entry carries a pid") as u32,
+                )
+            })
+            .collect()
+    }
+
+    /// The production gate. An unset (or blank) variable must resolve to no
+    /// destination at all, so a shipped build never touches the filesystem on
+    /// the session-end teardown path.
+    #[test]
+    fn the_report_is_written_only_when_the_env_var_names_a_path() {
+        assert_eq!(owned_pids_report_path(None), None);
+        assert_eq!(
+            owned_pids_report_path(Some(std::ffi::OsString::from(""))),
+            None
+        );
+        assert_eq!(
+            owned_pids_report_path(Some(std::ffi::OsString::from("/tmp/owned.json"))),
+            Some(std::path::PathBuf::from("/tmp/owned.json"))
+        );
+
+        // No destination resolved ⇒ nothing is written and nothing throws.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let unwritten = tmp.path().join("never-written.json");
+        report_owned_pids_to(None, &[("hq-sync".to_string(), 42)]);
+        assert!(!unwritten.exists());
+
+        // The composed entry point is what main.rs calls; with the ambient
+        // environment it must stay panic-free either way.
+        report_session_end_owned_pids();
+    }
+
+    /// The report has to name exactly what the registry holds — no more (which
+    /// would make the proof assert ownership of something the teardown cannot
+    /// kill) and no fewer (which would let a real orphan pass unnoticed).
+    #[test]
+    fn the_report_contains_exactly_the_registered_pids() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("owned.json");
+        let pids = vec![
+            ("hq-sync".to_string(), 4321_u32),
+            ("hq-sync-daemon".to_string(), 8765_u32),
+        ];
+
+        report_owned_pids_to(Some(path.as_path()), &pids);
+
+        let written = std::fs::read_to_string(&path).expect("report was written");
+        assert_eq!(reported(&written), pids);
+
+        // An empty registry is a legitimate outcome, and it must still produce
+        // a file: its existence is what proves the teardown ran. It reads as
+        // `owned=0`, never as "nothing to check, therefore green".
+        let empty_path = tmp.path().join("owned-empty.json");
+        report_owned_pids_to(Some(empty_path.as_path()), &[]);
+        let empty = std::fs::read_to_string(&empty_path).expect("empty report was written");
+        assert_eq!(reported(&empty), Vec::<(String, u32)>::new());
+    }
+
+    /// The diagnostic runs inside a Windows window procedure. A write failure
+    /// there must not unwind — that is the exact shape of the crash this whole
+    /// branch exists to stop.
+    #[test]
+    fn a_failed_write_is_swallowed_rather_than_propagated() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let unwritable = tmp.path().join("no-such-dir").join("owned.json");
+
+        assert!(
+            write_owned_pids_report(unwritable.as_path(), &[("hq-sync".to_string(), 1)]).is_err(),
+            "writing into a missing directory must genuinely fail"
+        );
+
+        // …and the best-effort wrapper absorbs that failure.
+        report_owned_pids_to(Some(unwritable.as_path()), &[("hq-sync".to_string(), 1)]);
+        assert!(!unwritable.exists());
     }
 }
 

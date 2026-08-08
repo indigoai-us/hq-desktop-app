@@ -325,6 +325,83 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
 
+      - name: Install Sentry CLI
+        shell: bash
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify macOS debug file contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+          APP_BINARY="$APP_BUNDLE/Contents/MacOS/hq-sync-menubar"
+          DSYM_BUNDLE="${APP_BUNDLE}.dSYM"
+          DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"
+          test -f "$APP_BINARY"
+          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
+          BUNDLE_BUDGET_KB=$((15 * 1024))
+          if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
+            echo "::error::macOS app bundle exceeds 15 MB budget: ${BUNDLE_KB} KB"
+            exit 1
+          fi
+          echo "macOS app bundle size: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
+          rm -rf "$DSYM_BUNDLE"
+          xcrun dsymutil "$APP_BINARY" -o "$DSYM_BUNDLE"
+          test -f "$DSYM_BINARY"
+          APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
+          test -n "$APP_DEBUG_ID"
+          test "$APP_DEBUG_ID" = "$DSYM_DEBUG_ID"
+          echo "macOS app/dSYM debug id: $APP_DEBUG_ID"
+
+      - name: Upload macOS debug files to Sentry
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          DEBUG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+          APP_BINARY="$DEBUG_DIR/HQ.app/Contents/MacOS/hq-sync-menubar"
+          DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); print(",".join(ids) or "unknown")')"
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            MESSAGE="SENTRY_AUTH_TOKEN is not configured; debug id $DEBUG_ID was not uploaded and no recoverable debug file was retained."
+            echo "::warning::$MESSAGE"
+            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 "$DEBUG_DIR"; then
+            MESSAGE="SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $DEBUG_ID was not uploaded and no recoverable debug file was retained."
+            echo "::warning::$MESSAGE"
+            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          export DEBUG_IDS="$DEBUG_ID"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          token = os.environ["SENTRY_AUTH_TOKEN"]
+          debug_ids = [debug_id for debug_id in os.environ["DEBUG_IDS"].split(",") if debug_id]
+          if not debug_ids:
+              raise SystemExit("debug-file upload verification has no debug ids")
+
+          for debug_id in debug_ids:
+              url = f"{endpoint}?{urllib.parse.urlencode({'debug_id': debug_id})}"
+              request = urllib.request.Request(
+                  url,
+                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  records = json.load(response)
+              if not any((record.get("debugId") or "").casefold() == debug_id.casefold() for record in records):
+                  raise SystemExit(f"Sentry debug-file listing is missing uploaded debug id {debug_id}")
+              print(f"Verified Sentry debug-file record for {debug_id}")
+          PY
+
       - name: Fix Recall framework symlinks
         shell: bash
         run: bash scripts/fix-recall-framework-symlinks.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
@@ -575,6 +652,72 @@ jobs:
           RECALL_SIDECAR_TARGET: ${{ matrix.target }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
 
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      - name: Verify Windows debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\${{ matrix.target }}\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required release executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required release PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugIds = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $pdbDebugIds = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $exeDebugId = $exeDebugIds -join ","
+          $pdbDebugId = $pdbDebugIds -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Release executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Windows executable/PDB debug id: $exeDebugId"
+
+      - name: Upload Windows debug files to Sentry
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          $releaseDir = "src-tauri\target\${{ matrix.target }}\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $metadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $debugIds = @($metadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique)
+          $debugId = $debugIds -join ","
+          if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
+            $message = "SENTRY_AUTH_TOKEN is not configured; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+          & sentry-cli debug-files upload --org indigo-d0 --project hq-desktop --no-sources --wait-for 60 $releaseDir
+          if ($LASTEXITCODE -ne 0) {
+            $message = "SENTRY_AUTH_TOKEN is invalid or upload failed; debug id $debugId was not uploaded and no recoverable debug file was retained."
+            Write-Host "::warning::$message"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $message
+            exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:SENTRY_AUTH_TOKEN"
+            Accept = "application/json"
+          }
+          $endpoint = "https://sentry.io/api/0/projects/indigo-d0/hq-desktop/files/dsyms/"
+          foreach ($expectedDebugId in $debugIds) {
+            $encodedDebugId = [uri]::EscapeDataString($expectedDebugId)
+            $records = @(Invoke-RestMethod -Uri "$endpoint?debug_id=$encodedDebugId" -Headers $headers -Method Get -TimeoutSec 30)
+            $matchingRecords = @($records | Where-Object { $_.debugId -ieq $expectedDebugId })
+            if ($matchingRecords.Count -eq 0) {
+              throw "Sentry debug-file listing is missing uploaded debug id $expectedDebugId"
+            }
+            Write-Host "Verified Sentry debug-file record for $expectedDebugId"
+          }
+
       - name: Azure login (OIDC)
         if: ${{ vars.AZURE_CLIENT_ID != '' && env.UNVERIFIED_RELEASE != 'true' }}
         uses: azure/login@v3
@@ -704,10 +847,23 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Download all artifacts
+      - name: Download macOS release artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: hq-macos-universal
+          path: artifacts/hq-macos-universal
+
+      - name: Download Windows x64 release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hq-windows-x86_64-pc-windows-msvc
+          path: artifacts/hq-windows-x86_64-pc-windows-msvc
+
+      - name: Download Windows ARM64 release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hq-windows-aarch64-pc-windows-msvc
+          path: artifacts/hq-windows-aarch64-pc-windows-msvc
 
       - name: Flatten artifacts
         run: |

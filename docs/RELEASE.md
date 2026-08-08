@@ -91,8 +91,37 @@ Alongside the version-stamped assets, each release also publishes versionless co
 
 - `VITE_SENTRY_DSN`: Svelte/Vite Sentry DSN inlined into the web bundle.
 - `HQ_SYNC_SENTRY_DSN`: Rust Sentry DSN read by `apps/sync/src-tauri/build.rs`.
+- `SENTRY_AUTH_TOKEN`: an org-scoped Sentry token with `project:write` access
+  to `indigo-d0/hq-desktop`. The release workflow uses it only to upload
+  native debug files without source content. This token is required for
+  server-side symbolication. Without it, the release still builds, but the job
+  summary names the debug id that was not uploaded.
 
 No Cognito `VITE_*` secrets are required by the current unified app. Grepping the app shows only `VITE_SENTRY_DSN` is read by frontend release code.
+
+### Native debug-file contract
+
+Each release build creates the native files that Sentry needs to resolve a
+crash:
+
+- macOS: the universal `HQ.app` and its adjacent `HQ.app.dSYM`.
+- Windows: `hq-sync-menubar.exe` and the adjacent
+  `hq_sync_menubar.pdb`, for both x64 and ARM64.
+
+The workflow verifies each executable and debug-file pair with `sentry-cli
+difutil check` before upload. Sentry is the only retention path. The upload uses
+`--no-sources`, and `.pdb` and `.dSYM` files are never published as GitHub
+Release assets or GitHub Actions workflow artifacts.
+
+If `SENTRY_AUTH_TOKEN` is missing or Sentry rejects it, the workflow adds a
+warning to the log and job summary. The release still succeeds, but that build
+has no recoverable symbols. After a successful upload, the workflow queries the
+Sentry project's debug-file listing for every verified debug id and fails if a
+matching record is missing.
+
+To verify a release manually, list the debug files in `indigo-d0/hq-desktop`
+and compare each returned debug id with the id printed by the build's debug-file
+contract step.
 
 ## Required GitHub Repository Variables
 

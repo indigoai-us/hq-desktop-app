@@ -417,6 +417,9 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     let _ = crate::commands::desktop_alt::activation_policy(
                         crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
                     );
+                    hq_telemetry::record_native_panic_seam(
+                        hq_telemetry::NativePanicSeam::TrayLeftClick,
+                    );
                     toggle_popover_window(&app_handle);
                 }
             }
@@ -424,6 +427,16 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .build(app)?;
 
     Ok(tray)
+}
+
+pub(crate) fn handle_tray_blur_hide<F>(should_hide: bool, hide_action: F)
+where
+    F: FnOnce(),
+{
+    if should_hide {
+        hq_telemetry::record_native_panic_seam(hq_telemetry::NativePanicSeam::TrayBlurHide);
+        hide_action();
+    }
 }
 
 /// Create the system tray icon with its context menu and event handlers.
@@ -484,14 +497,14 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     .webview_windows()
                     .iter()
                     .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
-                if !is_modal_open()
+                let should_hide = !is_modal_open()
                     && !secondary_open
                     && !disable_blur_hide
                     && !blur_hide_suppressed()
-                    && !onboarding_window_requires_blur_suppression(win_clone.app_handle())
-                {
+                    && !onboarding_window_requires_blur_suppression(win_clone.app_handle());
+                handle_tray_blur_hide(should_hide, || {
                     let _ = win_clone.hide();
-                }
+                });
             }
         });
     }

@@ -49,6 +49,14 @@ const WEBDRIVER_REQUEST_TIMEOUT_MS = 90_000;
 const MAIN_WINDOW_PREDICATE = `
   return document.documentElement?.dataset?.window === 'main';
 `;
+// WebDriver sees the popover's browser target as soon as WebView2 creates it,
+// which is strictly before `src/main.ts` runs and stamps that dataset attribute.
+// Sampling the predicate once therefore races the app's first paint: on a busy
+// runner msedgedriver reports a single page at `http://tauri.localhost/` whose
+// document is still empty, and the probe wrongly concludes the popover is
+// absent. The window must still appear — this only gives it a deadline instead
+// of one instant.
+const MAIN_WINDOW_READY_TIMEOUT_MS = 30_000;
 const ERROR_CAPTURE_SCRIPT = `
   if (!window.__desktopAltE2eErrors) {
     window.__desktopAltE2eErrors = [];
@@ -167,7 +175,10 @@ async function startLiveHarness(config: LiveConfig): Promise<LiveDesktopAltHarne
   }
 }
 
-class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProbe {
+// Exported so the readiness contract of `switchToMainWindow` can be pinned by a
+// scripted spec against a fake driver — the live job is the only place a real
+// one exists, and a race that only reproduces there is a race nothing guards.
+export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProbe {
   readonly mode = 'live';
 
   private constructor(
@@ -286,12 +297,21 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktopAltProb
   // ── LiveDesktopAltProbe ────────────────────────────────────────────────────
 
   async switchToMainWindow(): Promise<void> {
-    const main = await this.findWindowWithPredicate(MAIN_WINDOW_PREDICATE);
+    // Bounded, for the reason recorded at MAIN_WINDOW_READY_TIMEOUT_MS. The
+    // claim is unchanged — a real popover window must show up — so a genuinely
+    // missing one still fails, just after the deadline instead of instantly.
+    let main: string | null = null;
+    await this.driver
+      .waitUntil(async () => {
+        main = await this.findWindowWithPredicate(MAIN_WINDOW_PREDICATE);
+        return Boolean(main);
+      }, MAIN_WINDOW_READY_TIMEOUT_MS)
+      .catch(() => undefined);
     if (!main) {
       const handles = await this.driver.getWindowHandles();
       throw new Error(
         `The app exposed ${handles.length} webview(s) to WebDriver but none of them is the ` +
-          `classic popover (html[data-window="main"]).`,
+          `classic popover (html[data-window="main"]) within ${MAIN_WINDOW_READY_TIMEOUT_MS}ms.`,
       );
     }
     await this.driver.switchToWindow(main);
