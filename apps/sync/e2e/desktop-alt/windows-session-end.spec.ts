@@ -207,4 +207,71 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
       `children the app declared it owns survived the session end; ${diagnostics}`,
     ).toBe(0);
   });
+
+  /**
+   * HQ-DESKTOP-4N — the query phase, driven on its own against the real binary.
+   *
+   * Windows announces a session end in two steps: `WM_QUERYENDSESSION` asks
+   * whether one may proceed, and only `WM_ENDSESSION(TRUE)` commits it. The
+   * query is revocable — `WM_ENDSESSION(FALSE)` withdraws it — so nothing in
+   * the app may treat a bare query as a session end. That invariant is what
+   * lets the watcher-exit attribution record a live query phase as a diagnostic
+   * (`unattributed_query_only`) without ever letting it suppress an alert.
+   *
+   * The scripted Rust layer pins that decision on every OS and, through the
+   * windows-check job's msvc test runs, on real Windows. What it cannot prove is
+   * that the query is actually DELIVERED to the built binary's window
+   * procedures and survived by the running app — which is what this case adds.
+   *
+   * It drives the committed end afterwards in the same run, so exactly one app
+   * instance is ever up (`tauri_plugin_single_instance` folds a second launch
+   * into the first) and the app is always cleaned up.
+   */
+  it('survives a bare WM_QUERYENDSESSION and only ends on the committed one', async () => {
+    if (live.blockedReason) {
+      throw new Error(
+        `live session-end proof was requested but cannot run: ${live.blockedReason}`,
+      );
+    }
+    if (!live.enabled || !live.appPath) {
+      return;
+    }
+
+    const observed = await driveWindowsSessionEnd({
+      appPath: live.appPath,
+      queryOnlyFirst: true,
+    });
+
+    const diagnostics = [
+      `query_only_delivered=${observed.queryOnly?.queryDelivered}`,
+      `query_only_survived=${observed.queryOnly?.survived}`,
+      `query_only_windows_after=${observed.queryOnly?.windowCountAfter}`,
+      `windows=${observed.windowCount}`,
+      `query_delivered=${observed.queryEndSessionDelivered}`,
+      `exit=${observed.exitCode}`,
+      `exited_in_deadline=${observed.exitedWithinDeadline}`,
+      `destroyed_panic=${observed.observedDestroyedStatePanic}`,
+      `abort_marker=${observed.observedAbortMarker}`,
+    ].join(' ');
+    // eslint-disable-next-line no-console
+    console.log(`[session-end query-only] ${diagnostics}`);
+
+    expect(observed.queryOnly, diagnostics).not.toBeNull();
+    // The query has to have actually landed, or "the app survived" proves
+    // nothing — an undelivered message is survived trivially.
+    expect(observed.queryOnly?.queryDelivered, diagnostics).toBeGreaterThan(0);
+    // The claim: a revocable query is not a session end. The app is still
+    // running and still owns its windows.
+    expect(observed.queryOnly?.survived, diagnostics).toBe(true);
+    expect(observed.queryOnly?.windowCountAfter, diagnostics).toBeGreaterThan(0);
+    // And it did not half-tear-down either: no panic, no abort.
+    expect(observed.observedDestroyedStatePanic, diagnostics).toBe(false);
+    expect(observed.observedAbortMarker, diagnostics).toBe(false);
+
+    // The committed end that follows still does what HQ-DESKTOP-44 requires,
+    // proving the query left the app in a working state rather than a wedged
+    // one that would have exited anyway.
+    expect(observed.exitedWithinDeadline, diagnostics).toBe(true);
+    expect(observed.exitCode, diagnostics).toBe(0);
+  });
 });

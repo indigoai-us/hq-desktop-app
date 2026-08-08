@@ -132,6 +132,36 @@ const boundaryContracts: BoundaryContract[] = [
     endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
   },
   {
+    // HQ-DESKTOP-4N. A watcher capture held back by the session-end grace is
+    // resolved deliberately at BOTH exits, and the two arms do opposite
+    // things. An app-initiated quit is not a session end, so it must SEND —
+    // deleting this call would let a user who quits during the grace silently
+    // swallow a genuine external kill, which is exactly the alert loss the
+    // deferral is allowed to risk only if this flush exists.
+    label: "app-quit deferred session-end flush",
+    file: "main",
+    hook: "commands::daemon::flush_pending_session_end_captures();",
+    startMarker: "if let tauri::RunEvent::ExitRequested { .. } = event {",
+    endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    // Before the children are torn down: once `terminate_all_for_exit` runs,
+    // further watcher exits are cancelled teardown, not the kill being held.
+    beforeMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
+    // The other half of the same asymmetry: reaching the Windows session-end
+    // teardown IS the affirmation the deferral was waiting for, so it drops.
+    // It must run BEFORE the observer is shut down and the children are
+    // terminated — both of which are part of a teardown that has already
+    // decided this is a session end.
+    label: "session-end deferred capture drop",
+    file: "main",
+    hook: "commands::daemon::drop_pending_session_end_captures();",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+    afterMarkers: ["NativePanicSeam::AppSessionEndExit"],
+    beforeMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
     label: "running phase",
     file: "main",
     hook:
