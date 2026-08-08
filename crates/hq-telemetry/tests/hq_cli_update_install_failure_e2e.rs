@@ -965,76 +965,65 @@ fn provenance_instrumentation_never_weakens_scrub_safety() {
     );
 }
 
-/// The repeat-guard: a permanent per-machine build failure that re-fires on
-/// every scheduled check reports exactly once per `(version × package × cause)`
-/// key, and pages again only when that key changes.
+/// The repeat-guard: a permanent per-machine build failure reports once per
+/// `(version × package × cause)` key and pages again only when that key changes.
+/// Critically for this two-package cluster, it retains a SET of keys, so an
+/// A/B/A interleave of two different failing native modules (which a single-slot
+/// marker would let re-page every check) stays suppressed.
 #[test]
-fn repeat_guard_reports_once_per_key_and_pages_again_on_a_changed_key() {
-    let stderr = lifecycle_stderr("1", "better-sqlite3");
-    let env = InstallEnvironment::default();
-
-    // First occurrence: no marker yet → reports once and hands back the key.
-    let mut persisted: Option<String> = None;
-    let first = captured_events(|| {
-        let last = persisted.clone();
-        match report_install_failure_episode(
-            Some(1),
-            &stderr,
-            Some(SELECTED_PREFIX),
-            false,
-            &env,
-            "5.97.0",
-            last.as_deref(),
-        ) {
-            InstallFailureEpisode::Reported { persist_key } => persisted = persist_key,
-            other => panic!("expected Reported on first occurrence, got {other:?}"),
-        }
-    });
-    assert_eq!(first.len(), 1, "first occurrence must report");
-    assert_eq!(
-        persisted.as_deref(),
-        Some("5.97.0|better-sqlite3|prebuild-unavailable")
+fn repeat_guard_reports_once_per_key_and_survives_multi_package_interleave() {
+    let bs3 = lifecycle_stderr("1", "better-sqlite3"); // -> prebuild-unavailable
+    let nllama = format!(
+        // node-llama-cpp with cmake missing -> toolchain-missing
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/node-llama-cpp\n\
+         npm error command failed\n\
+         npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+         Error: Cannot find cmake, please install cmake and try again"
     );
-
-    // Identical repeat with the persisted marker: suppressed, zero events.
-    let repeat = captured_events(|| {
-        let last = persisted.clone();
-        assert_eq!(
-            report_install_failure_episode(
+    let env = InstallEnvironment::default();
+    // Reports `detail` at `latest` against the current key set; returns how many
+    // events it captured (0 = suppressed, 1 = reported) and the updated set.
+    let run = |reported: &[String], detail: &str, latest: &str| -> (usize, Vec<String>) {
+        let mut updated = reported.to_vec();
+        let events = captured_events(|| {
+            match report_install_failure_episode(
                 Some(1),
-                &stderr,
+                detail,
                 Some(SELECTED_PREFIX),
                 false,
                 &env,
-                "5.97.0",
-                last.as_deref(),
-            ),
-            InstallFailureEpisode::SuppressedRepeat
-        );
-    });
-    assert!(
-        repeat.is_empty(),
-        "an identical repeat must not re-page: {repeat:?}"
-    );
+                latest,
+                reported,
+            ) {
+                InstallFailureEpisode::Reported {
+                    persist_keys: Some(set),
+                } => updated = set,
+                InstallFailureEpisode::SuppressedRepeat => {}
+                other => panic!("unexpected outcome {other:?}"),
+            }
+        });
+        (events.len(), updated)
+    };
 
-    // A bumped target version is a new key → pages again.
-    let bumped = captured_events(|| {
-        let last = persisted.clone();
-        match report_install_failure_episode(
-            Some(1),
-            &stderr,
-            Some(SELECTED_PREFIX),
-            false,
-            &env,
-            "5.98.0",
-            last.as_deref(),
-        ) {
-            InstallFailureEpisode::Reported { persist_key } => assert_eq!(
-                persist_key.as_deref(),
-                Some("5.98.0|better-sqlite3|prebuild-unavailable")
-            ),
-            other => panic!("expected Reported on a bumped version, got {other:?}"),
-        }
-    });
-    assert_eq!(bumped.len(), 1, "a new target version must page again");
+    // A (better-sqlite3): first occurrence pages, set = {A}.
+    let (n, persisted) = run(&[], &bs3, "5.97.0");
+    assert_eq!(n, 1, "first better-sqlite3 failure must page");
+    assert!(persisted.contains(&"5.97.0|better-sqlite3|prebuild-unavailable".to_string()));
+    // B (node-llama-cpp): a different package pages, set = {A, B}.
+    let (n, persisted) = run(&persisted, &nllama, "5.97.0");
+    assert_eq!(n, 1, "a different package must page");
+    assert!(persisted.contains(&"5.97.0|node-llama-cpp|toolchain-missing".to_string()));
+    // A again: still in the set, so it is suppressed even though B was the most
+    // recent report -- the exact case a single-slot marker got wrong.
+    let (n, persisted) = run(&persisted, &bs3, "5.97.0");
+    assert_eq!(n, 0, "an A/B/A interleave must stay suppressed");
+    // A bumped target version resets the set and pages again.
+    let (n, persisted) = run(&persisted, &bs3, "5.98.0");
+    assert_eq!(n, 1, "a new target version must page again");
+    assert_eq!(
+        persisted,
+        vec!["5.98.0|better-sqlite3|prebuild-unavailable".to_string()],
+        "a new version resets the set to the current version's keys"
+    );
 }

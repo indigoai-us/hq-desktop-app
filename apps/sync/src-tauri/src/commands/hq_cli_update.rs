@@ -613,25 +613,26 @@ async fn run_npm_install_with_retries(
 /// Hard cap on a single node/npm provenance probe. Bounded and non-looping.
 const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// menubar.json key holding the last-reported install-failure episode key, so an
-/// identical lifecycle failure stops re-paging Sentry on every scheduled check.
-const INSTALL_FAILURE_EPISODE_KEY: &str = "cliInstallFailureEpisode";
+/// menubar.json key holding the machine's set of already-reported install-failure
+/// episode keys, so an identical lifecycle failure stops re-paging Sentry on
+/// every scheduled check. A set (not a single key) because this dependency
+/// closure has more than one native module that can fail.
+const INSTALL_FAILURE_EPISODE_KEYS: &str = "cliInstallFailureEpisodeKeys";
 
 /// Run one bounded provenance probe (`node --version`, `node -p
 /// process.versions.modules`, `npm --version`) and return its trimmed stdout, or
-/// `None` on any failure or timeout. Never blocks the updater: the child runs on
-/// the blocking pool under `TOOL_PROBE_TIMEOUT`.
+/// `None` on any failure or timeout. Runs through tokio's async child with
+/// `kill_on_drop`, so a hung probe (e.g. a broken node/npm wrapper) is actually
+/// terminated when `TOOL_PROBE_TIMEOUT` fires instead of leaking a stuck process
+/// and a blocking-pool thread.
 async fn probe_tool_line(bin: String, path: String, args: Vec<String>) -> Option<String> {
-    let handle = tauri::async_runtime::spawn_blocking(move || {
-        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let mut cmd = paths::spawn_command(&bin, &arg_refs);
-        cmd.env("PATH", &path);
-        cmd.output().ok()
-    });
-    let output = tokio::time::timeout(TOOL_PROBE_TIMEOUT, handle)
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut cmd = paths::tokio_spawn_command(&bin, &arg_refs);
+    cmd.env("PATH", &path).kill_on_drop(true);
+    let output = tokio::time::timeout(TOOL_PROBE_TIMEOUT, cmd.output())
         .await
-        .ok()?
-        .ok()??;
+        .ok()? // timed out -> future dropped -> child killed
+        .ok()?; // spawn / exec error
     if !output.status.success() {
         return None;
     }
@@ -665,15 +666,20 @@ async fn probe_install_environment(
     path: &str,
     managed_toolchain_retry: bool,
 ) -> InstallEnvironment {
-    let node = paths::resolve_bin("node");
+    // Probe the Node the failing install's PATH selects -- the same Node its
+    // lifecycle children (`prebuild-install`, `node-gyp`) ran under -- by
+    // invoking a bare `node` through that PATH, not an absolute
+    // `resolve_bin("node")`. The two can differ (e.g. nvm ordered ahead of
+    // `~/.npm-global`/system in `child_path()` vs. resolve_bin's order), and the
+    // Node ABI is the exact provenance this change exists to diagnose.
     let node_version = probe_tool_line(
-        node.clone(),
+        "node".to_string(),
         path.to_string(),
         vec!["--version".to_string()],
     )
     .await;
     let node_abi = probe_tool_line(
-        node,
+        "node".to_string(),
         path.to_string(),
         vec!["-p".to_string(), "process.versions.modules".to_string()],
     )
@@ -693,28 +699,41 @@ async fn probe_install_environment(
     }
 }
 
-/// Read the last-reported install-failure episode key from menubar.json, or
-/// `None` if absent/unreadable. A read failure yields `None`, which makes the
-/// repeat-guard fail closed (report) — the same fail-closed contract as the
-/// non-convergent marker.
-fn install_failure_episode_marker() -> Option<String> {
-    let path = paths::menubar_json_path().ok()?;
-    let contents = std::fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&contents).ok()?;
+/// Read the machine's set of already-reported install-failure episode keys from
+/// menubar.json, or an empty set if absent/unreadable. An unreadable marker
+/// yields an empty set, which makes the repeat-guard fail closed (report) -- the
+/// same fail-closed contract as the non-convergent marker.
+fn install_failure_episode_markers() -> Vec<String> {
+    let Ok(path) = paths::menubar_json_path() else {
+        return Vec::new();
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&contents) else {
+        return Vec::new();
+    };
     value
-        .get(INSTALL_FAILURE_EPISODE_KEY)?
-        .as_str()
-        .map(str::to_string)
+        .get(INSTALL_FAILURE_EPISODE_KEYS)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// Persist the reported episode key so an identical repeat is suppressed. Uses
-/// the same untyped-merge path as `record_non_convergent_version`, so unknown
-/// future menubar.json keys survive.
-fn record_install_failure_episode_marker(key: &str) -> Result<(), String> {
+/// Persist the updated reported-key set so every already-reported key for the
+/// current target version stays suppressed. Uses the same untyped-merge path as
+/// `record_non_convergent_version`, so unknown future menubar.json keys survive.
+fn record_install_failure_episode_markers(keys: &[String]) -> Result<(), String> {
+    let array = Value::Array(keys.iter().map(|key| Value::String(key.clone())).collect());
     paths::menubar_json_path().and_then(|path| {
         hq_desktop_core::first_run::merge_menubar_flags(
             &path,
-            &[(INSTALL_FAILURE_EPISODE_KEY, Value::String(key.to_string()))],
+            &[(INSTALL_FAILURE_EPISODE_KEYS, array)],
         )
     })
 }
@@ -1001,7 +1020,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // UI fallback text; expected environment kinds still no-op in the reporter.
         let install_env =
             probe_install_environment(&npm, &path, /* managed_toolchain_retry */ false).await;
-        let last_episode_key = install_failure_episode_marker();
+        let reported_episode_keys = install_failure_episode_markers();
         match report_install_failure_episode(
             output.status.code(),
             &raw_detail,
@@ -1009,15 +1028,15 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             install_run.final_attempt_forced,
             &install_env,
             &latest,
-            last_episode_key.as_deref(),
+            &reported_episode_keys,
         ) {
             InstallFailureEpisode::Reported {
-                persist_key: Some(key),
+                persist_keys: Some(keys),
             } => {
-                if let Err(e) = record_install_failure_episode_marker(&key) {
+                if let Err(e) = record_install_failure_episode_markers(&keys) {
                     log(
                         "hq-cli-update",
-                        &format!("could not persist install-failure episode marker: {e}"),
+                        &format!("could not persist install-failure episode markers: {e}"),
                     );
                 }
             }
@@ -1027,7 +1046,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                     "install-failure episode already reported for this (version, package, cause); not re-paging",
                 );
             }
-            InstallFailureEpisode::Reported { persist_key: None }
+            InstallFailureEpisode::Reported { persist_keys: None }
             | InstallFailureEpisode::NotReportable => {}
         }
         return Err(detail);

@@ -1947,17 +1947,25 @@ fn npm_lifecycle_cause(detail: &str) -> &'static str {
         "enoent",
         "no such file",
     ];
-    let cmake_missing = (lower.contains("cmake") || lower.contains("cmake-js"))
-        && missing_tokens.iter().any(|token| lower.contains(token));
+    let missing_evidence = missing_tokens.iter().any(|token| lower.contains(token));
+    let cmake_missing = (lower.contains("cmake") || lower.contains("cmake-js")) && missing_evidence;
     let compiler_missing = ["c++", "g++", "clang++", "cc1plus", "make: "]
         .iter()
         .any(|token| lower.contains(token))
         && (lower.contains("command not found") || lower.contains("no such file"));
-    if lower.contains("gyp err!")
-        || lower.contains("xcode-select")
+    // A bare `gyp ERR!` is NOT proof the build toolchain is missing: node-gyp
+    // emits it for ordinary compile errors and native-API mismatches too, and an
+    // unconditional match would both mis-advise users to install tools they may
+    // already have and override a preceding prebuild-miss message. Require
+    // concrete missing-tool evidence alongside it (a missing interpreter, SDK, or
+    // compiler). The explicit Xcode/CLT phrases are strong enough on their own.
+    let gyp_missing_tool =
+        lower.contains("gyp err!") && (lower.contains("find python") || missing_evidence);
+    if lower.contains("xcode-select")
         || lower.contains("no xcodebuild")
         || lower.contains("command line tools")
         || lower.contains("no developer tools")
+        || gyp_missing_tool
         || cmake_missing
         || compiler_missing
     {
@@ -2649,43 +2657,77 @@ pub fn install_failure_episode_key(latest: &str, detail: &str) -> Option<String>
 }
 
 /// Whether a lifecycle-failure episode identical to one already reported on this
-/// machine should be suppressed. Mirrors [`non_convergent_episode_blocked`]: a
-/// byte-for-byte match on the last reported key means the same broken build is
-/// re-firing on a scheduled check and must not re-page. Any change to the CLI
-/// version, package, or cause yields a different key and pages again. A caller
-/// that cannot read its marker passes `None` and therefore always reports —
+/// machine should be suppressed: the `current_key` is already in the machine's
+/// reported-key set. Mirrors [`non_convergent_episode_blocked`], but over a SET
+/// rather than a single last key — this dependency closure has more than one
+/// native module that can fail (better-sqlite3, node-llama-cpp), and npm has run
+/// lifecycle scripts concurrently since v7, so which one surfaces first varies
+/// run to run. A single-slot marker let an A/B/A sequence overwrite itself and
+/// re-page every check; keying on membership fixes that. A caller that cannot
+/// read its marker passes an empty slice and therefore always reports —
 /// fail-closed, staying loud (commit 3f52d298).
-pub fn install_failure_episode_blocked(last_reported_key: Option<&str>, current_key: &str) -> bool {
-    last_reported_key == Some(current_key)
+pub fn install_failure_episode_blocked(reported_keys: &[String], current_key: &str) -> bool {
+    reported_keys.iter().any(|key| key == current_key)
+}
+
+/// Upper bound on the reported-key set persisted per machine, so a pathological
+/// stream of distinct failures cannot grow menubar.json without limit.
+pub const MAX_INSTALL_FAILURE_EPISODE_KEYS: usize = 32;
+
+/// The reported-key set to persist after reporting `current_key`. Keeps only the
+/// keys for the CURRENT target version (a new `latest` resets the set, since its
+/// keys carry a different `latest|` prefix and could never match anyway), appends
+/// the new key, and bounds the result to the most-recent
+/// [`MAX_INSTALL_FAILURE_EPISODE_KEYS`]. Retaining every current-version key —
+/// not just the last — is what keeps an A/B/A interleave suppressed.
+pub fn install_failure_episode_record(
+    reported_keys: &[String],
+    current_key: &str,
+    latest: &str,
+) -> Vec<String> {
+    let prefix = format!("{latest}|");
+    let mut kept: Vec<String> = reported_keys
+        .iter()
+        .filter(|key| key.starts_with(&prefix) && key.as_str() != current_key)
+        .cloned()
+        .collect();
+    kept.push(current_key.to_string());
+    if kept.len() > MAX_INSTALL_FAILURE_EPISODE_KEYS {
+        let overflow = kept.len() - MAX_INSTALL_FAILURE_EPISODE_KEYS;
+        kept.drain(0..overflow);
+    }
+    kept
 }
 
 /// Outcome of [`report_install_failure_episode`], telling the caller both what
-/// happened and whether it must persist a marker.
+/// happened and whether it must persist an updated marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallFailureEpisode {
     /// An expected local condition; nothing was sent (as today).
     NotReportable,
-    /// The failure was reported to Sentry. `persist_key` is `Some` for a
-    /// lifecycle episode whose key the caller should persist so the NEXT
-    /// byte-for-byte identical attempt is suppressed; `None` for a non-lifecycle
-    /// failure, which is never repeat-suppressed.
-    Reported { persist_key: Option<String> },
-    /// A lifecycle episode identical to the last reported one; deliberately not
-    /// sent, so a permanent per-machine build failure stops re-paging on every
+    /// The failure was reported to Sentry. `persist_keys` is `Some(updated set)`
+    /// for a lifecycle episode — the caller persists it so every already-reported
+    /// key for this target version stays suppressed — and `None` for a
+    /// non-lifecycle failure, which is never repeat-suppressed.
+    Reported { persist_keys: Option<Vec<String>> },
+    /// A lifecycle episode already present in the reported-key set; deliberately
+    /// not sent, so a permanent per-machine build failure stops re-paging on every
     /// scheduled check. The caller still logs it locally and unconditionally.
     SuppressedRepeat,
 }
 
-/// Report a CLI-install failure with the repeat-guard applied. First occurrence
-/// of a given `(latest × package × cause)` key reports at Error exactly as today
-/// (with the provenance from `env`); an identical re-attempt of the SAME key is
-/// suppressed; any new CLI target version, package, or cause reports again.
+/// Report a CLI-install failure with the repeat-guard applied. The first
+/// occurrence of a `(latest × package × cause)` key reports at Error exactly as
+/// today (with the provenance from `env`); a repeat of any key already in
+/// `reported_keys` is suppressed; a new CLI target version, package, or cause
+/// reports again.
 ///
 /// Persistence is deliberately left to the caller (mirroring how the
-/// non-convergent marker is read/written in the app layer): pass the last
-/// reported key in `last_reported_key`, and on a `Reported { persist_key: Some }`
-/// outcome persist that key. A caller that cannot read its marker passes `None`
-/// and therefore reports (fail-closed).
+/// non-convergent marker is read/written in the app layer): pass the machine's
+/// current reported-key set in `reported_keys`, and on a
+/// `Reported { persist_keys: Some(set) }` outcome persist that set. A caller that
+/// cannot read its marker passes an empty slice and therefore reports
+/// (fail-closed).
 pub fn report_install_failure_episode(
     exit_code: Option<i32>,
     detail: &str,
@@ -2693,7 +2735,7 @@ pub fn report_install_failure_episode(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
     latest: &str,
-    last_reported_key: Option<&str>,
+    reported_keys: &[String],
 ) -> InstallFailureEpisode {
     // Only failures that would actually be captured are subject to the guard.
     if install_failure_report_with_final_attempt(exit_code, detail, prefix, final_attempt_forced)
@@ -2711,10 +2753,10 @@ pub fn report_install_failure_episode(
                 final_attempt_forced,
                 env,
             );
-            InstallFailureEpisode::Reported { persist_key: None }
+            InstallFailureEpisode::Reported { persist_keys: None }
         }
         Some(key) => {
-            if install_failure_episode_blocked(last_reported_key, &key) {
+            if install_failure_episode_blocked(reported_keys, &key) {
                 InstallFailureEpisode::SuppressedRepeat
             } else {
                 report_install_failure_with_environment(
@@ -2724,8 +2766,9 @@ pub fn report_install_failure_episode(
                     final_attempt_forced,
                     env,
                 );
+                let persist_keys = install_failure_episode_record(reported_keys, &key, latest);
                 InstallFailureEpisode::Reported {
-                    persist_key: Some(key),
+                    persist_keys: Some(persist_keys),
                 }
             }
         }
@@ -4714,6 +4757,24 @@ mod tests {
             npm error command sh -c prebuild-install || node-gyp rebuild";
         assert_eq!(npm_lifecycle_cause(command_echo_only), "unknown");
         assert_eq!(npm_lifecycle_cause(""), "unknown");
+
+        // node-gyp reached the compiler and failed on the CODE, not a missing
+        // tool. `gyp ERR!` alone must NOT be read as toolchain-missing (it would
+        // mis-advise installing tools the user already has)...
+        let gyp_compile_error = "npm error code 1\n\
+            gyp ERR! build error\n\
+            gyp ERR! stack Error: `make` failed with exit code 2\n\
+            ../src/binding.cpp:14:3: error: use of undeclared identifier 'foo'";
+        assert_eq!(npm_lifecycle_cause(gyp_compile_error), "unknown");
+        // ...and it must not override a prebuild-miss message either.
+        let prebuild_then_gyp_compile_error = "npm error code 1\n\
+            prebuild-install warn install No prebuilt binaries found\n\
+            gyp ERR! build error\n\
+            ../src/binding.cpp:14:3: error: use of undeclared identifier 'foo'";
+        assert_eq!(
+            npm_lifecycle_cause(prebuild_then_gyp_compile_error),
+            "prebuild-unavailable"
+        );
     }
 
     #[test]
@@ -4791,30 +4852,74 @@ mod tests {
     }
 
     #[test]
-    fn install_failure_episode_blocked_suppresses_only_an_identical_key() {
+    fn install_failure_episode_blocked_suppresses_only_a_key_in_the_reported_set() {
+        let reported = [
+            "5.97.0|better-sqlite3|prebuild-unavailable".to_string(),
+            "5.97.0|node-llama-cpp|toolchain-missing".to_string(),
+        ];
+        // Any key already in the set is suppressed...
         assert!(install_failure_episode_blocked(
-            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
+            &reported,
             "5.97.0|better-sqlite3|prebuild-unavailable"
         ));
-        // A changed version, package, or cause yields a different key → not
-        // blocked → pages again.
+        assert!(install_failure_episode_blocked(
+            &reported,
+            "5.97.0|node-llama-cpp|toolchain-missing"
+        ));
+        // ...while a changed version, package, or cause is not.
         assert!(!install_failure_episode_blocked(
-            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
+            &reported,
             "5.98.0|better-sqlite3|prebuild-unavailable"
         ));
         assert!(!install_failure_episode_blocked(
-            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
-            "5.97.0|node-llama-cpp|prebuild-unavailable"
-        ));
-        assert!(!install_failure_episode_blocked(
-            Some("5.97.0|better-sqlite3|prebuild-unavailable"),
+            &reported,
             "5.97.0|better-sqlite3|toolchain-missing"
         ));
-        // No readable marker → not blocked → fail-closed (report).
+        // An empty (unreadable) marker → nothing blocked → fail-closed (report).
         assert!(!install_failure_episode_blocked(
-            None,
+            &[],
             "5.97.0|better-sqlite3|prebuild-unavailable"
         ));
+    }
+
+    #[test]
+    fn install_failure_episode_record_retains_every_current_version_key() {
+        let a = "5.97.0|better-sqlite3|prebuild-unavailable".to_string();
+        let b = "5.97.0|node-llama-cpp|toolchain-missing".to_string();
+
+        // Recording A then B keeps BOTH for the version, so an A/B/A interleave
+        // (the exact failure mode of a single-slot marker) stays suppressed.
+        let after_a = install_failure_episode_record(&[], &a, "5.97.0");
+        assert_eq!(after_a, vec![a.clone()]);
+        let after_b = install_failure_episode_record(&after_a, &b, "5.97.0");
+        assert!(after_b.contains(&a) && after_b.contains(&b));
+        assert!(install_failure_episode_blocked(&after_b, &a));
+        // Re-recording A does not duplicate it.
+        let after_aba = install_failure_episode_record(&after_b, &a, "5.97.0");
+        assert_eq!(
+            after_aba.iter().filter(|k| **k == a).count(),
+            1,
+            "a re-reported key must not be duplicated"
+        );
+
+        // A new target version resets the set: prior-version keys are dropped.
+        let bumped = install_failure_episode_record(
+            &after_b,
+            "5.98.0|better-sqlite3|prebuild-unavailable",
+            "5.98.0",
+        );
+        assert_eq!(bumped, vec!["5.98.0|better-sqlite3|prebuild-unavailable"]);
+
+        // The set is bounded to MAX_INSTALL_FAILURE_EPISODE_KEYS.
+        let mut acc: Vec<String> = Vec::new();
+        for i in 0..(MAX_INSTALL_FAILURE_EPISODE_KEYS + 5) {
+            acc = install_failure_episode_record(&acc, &format!("9.0.0|pkg{i}|unknown"), "9.0.0");
+        }
+        assert_eq!(acc.len(), MAX_INSTALL_FAILURE_EPISODE_KEYS);
+        assert!(
+            acc.iter().all(|k| k.starts_with("9.0.0|")),
+            "bounded set must only hold current-version keys"
+        );
     }
 
     #[test]
