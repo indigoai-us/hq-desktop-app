@@ -345,9 +345,36 @@ jobs:
             exit 1
           fi
           echo "macOS app bundle size: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
+
+          # The shipped binary is stripped (strip = "symbols" in
+          # [profile.release]) so the bundle stays under the budget above. A
+          # stripped binary has no debug map, so `dsymutil $APP_BINARY` can no
+          # longer recover a dSYM from it. Instead, assemble the sidecar dSYM
+          # from the packed per-arch dSYMs that split-debuginfo = "packed"
+          # emitted at link time. The universal app binary is a lipo of both
+          # arch slices (two debug ids); combine the matching per-arch DWARF
+          # into one fat DWARF so the sidecar carries exactly the same id set.
+          declare -a DWARF_SLICES=()
+          FIRST_PACKED_DSYM=""
+          for ARCH in aarch64-apple-darwin x86_64-apple-darwin; do
+            PACKED_DSYM="src-tauri/target/${ARCH}/release/hq-sync-menubar.dSYM"
+            PACKED_DWARF="${PACKED_DSYM}/Contents/Resources/DWARF/hq-sync-menubar"
+            if [ -f "$PACKED_DWARF" ]; then
+              DWARF_SLICES+=("$PACKED_DWARF")
+              [ -z "$FIRST_PACKED_DSYM" ] && FIRST_PACKED_DSYM="$PACKED_DSYM"
+            else
+              echo "::warning::No packed dSYM for ${ARCH} at ${PACKED_DSYM}"
+            fi
+          done
+          if [ "${#DWARF_SLICES[@]}" -eq 0 ]; then
+            echo "::error::split-debuginfo=packed produced no per-arch dSYM under src-tauri/target/*/release/hq-sync-menubar.dSYM"
+            exit 1
+          fi
           rm -rf "$DSYM_BUNDLE"
-          xcrun dsymutil "$APP_BINARY" -o "$DSYM_BUNDLE"
+          cp -R "$FIRST_PACKED_DSYM" "$DSYM_BUNDLE"
+          lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"
           test -f "$DSYM_BINARY"
+
           APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
           DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
           test -n "$APP_DEBUG_ID"
