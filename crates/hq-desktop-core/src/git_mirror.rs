@@ -175,6 +175,24 @@ static REFUSAL_EPISODES: LazyLock<Mutex<HashMap<String, RefusalEpisode>>> =
 /// accounting it describes.
 const REFUSAL_STATE_FILE: &str = "hq-sync-mirror-refusal.json";
 
+/// Name of the push-wedge record. Lives beside the refusal record, in the
+/// resolved git directory, for the same reason: `git add -A` must never see it.
+const PUSH_BLOCK_STATE_FILE: &str = "hq-sync-mirror-push-block.json";
+
+/// How long to stop pushing after a rejection that retrying cannot fix.
+///
+/// Some rejections are settled facts about history, not weather. A blob over
+/// the remote's file-size limit is the case that motivated this: once such a
+/// commit exists, *every* push is rejected until history is rewritten, and the
+/// mirror was re-attempting one a minute — thousands of identical failures a
+/// day, each appending a multi-line stderr block to the diagnostic log.
+///
+/// A cooldown rather than a permanent latch: the operator may fix the cause at
+/// any time, and the mirror should discover that on its own without needing a
+/// restart. Six hours turns ~1440 doomed pushes a day into 4 while still
+/// self-healing the same day.
+const PUSH_BLOCK_COOLDOWN: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// The slice of refusal state that has to outlive the process.
 ///
 /// The first fix kept all of it in memory, on the reasoning that "an app restart
@@ -451,6 +469,118 @@ fn later_report_elapsed(
         (Some(only), None) | (None, Some(only)) => Some(only),
         (None, None) => None,
     }
+}
+
+/// Whether a failed `git push` is worth trying again next cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PushFailure {
+    /// A settled fact about the repository. Retrying changes nothing until a
+    /// human intervenes, so the mirror backs off instead of hammering.
+    Permanent { reason: String },
+    /// Weather — DNS, timeout, contention, a race with another writer. The
+    /// next cycle may well succeed, so nothing is recorded.
+    Transient,
+}
+
+/// The push-wedge record, written when a rejection is classified permanent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedPushBlock {
+    /// Wall clock, RFC3339 — the same convention as the refusal record, since
+    /// chrono's serde integration is not enabled for this crate.
+    blocked_at: String,
+    reason: String,
+}
+
+/// Classify `git push` stderr.
+///
+/// Deliberately narrow. A false "permanent" silently stops mirroring, which is
+/// strictly worse than a few wasted retries — so only rejections that are
+/// provably unfixable by repetition qualify. Everything unrecognised, including
+/// auth and non-fast-forward failures that often clear on their own, stays
+/// transient.
+fn classify_push_failure(stderr: &str) -> PushFailure {
+    let haystack = stderr.to_ascii_lowercase();
+
+    // A blob over the remote's per-file ceiling. The offending object is in
+    // history, so every future push carries it too.
+    const OVERSIZED_MARKERS: [&str; 3] = [
+        "exceeds github's file size limit",
+        "gh001",
+        "large files detected",
+    ];
+    if OVERSIZED_MARKERS.iter().any(|m| haystack.contains(m)) {
+        return PushFailure::Permanent {
+            reason: oversized_reason(stderr),
+        };
+    }
+
+    PushFailure::Transient
+}
+
+/// Pull the offending path out of a size-limit rejection so the log line is
+/// actionable rather than just loud. Falls back to a generic description.
+fn oversized_reason(stderr: &str) -> String {
+    for line in stderr.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("exceeds") && lower.contains("file size limit") {
+            // `remote: error: File <path> is 183.58 MB; this exceeds ...`
+            if let Some(rest) = line.split("File ").nth(1) {
+                if let Some(path) = rest.split(" is ").next() {
+                    return format!("history contains a file over the remote's size limit: {path}");
+                }
+            }
+        }
+    }
+    "history contains a file over the remote's size limit".to_string()
+}
+
+fn push_block_path(git_dir: &Path) -> PathBuf {
+    git_dir.join(PUSH_BLOCK_STATE_FILE)
+}
+
+/// Is a recorded block still in force?
+///
+/// A stamp in the future means the clock moved backwards or the `.git` was
+/// copied between machines. Treat that as "not blocked" and re-probe: an extra
+/// doomed push costs one log line, whereas latching on a bad stamp would
+/// silently stop mirroring forever.
+fn push_block_is_active(block: Option<&PersistedPushBlock>, now: DateTime<Utc>) -> bool {
+    let Some(block) = block else { return false };
+    // An unparsable stamp re-probes for the same reason a future one does:
+    // losing a push is recoverable, silently never pushing again is not.
+    let Ok(blocked_at) = DateTime::parse_from_rfc3339(&block.blocked_at) else {
+        return false;
+    };
+    match now
+        .signed_duration_since(blocked_at.with_timezone(&Utc))
+        .to_std()
+    {
+        Ok(elapsed) => elapsed < PUSH_BLOCK_COOLDOWN,
+        Err(_) => false,
+    }
+}
+
+/// Read the block record, or `None` when there is no usable one. Every failure
+/// mode resolves to `None`: a bad observability file must never stop the mirror.
+fn read_push_block(git_dir: &Path) -> Option<PersistedPushBlock> {
+    let raw = fs::read_to_string(push_block_path(git_dir)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_push_block(git_dir: &Path, block: &PersistedPushBlock) {
+    let Ok(encoded) = serde_json::to_string(block) else {
+        return;
+    };
+    // Same temp-then-rename shape as the refusal record, so a crash mid-write
+    // cannot leave a torn file that reads as a block.
+    let temp = git_dir.join(format!("{PUSH_BLOCK_STATE_FILE}.tmp"));
+    if fs::write(&temp, encoded).is_ok() && fs::rename(&temp, push_block_path(git_dir)).is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+}
+
+fn clear_push_block(git_dir: &Path) {
+    let _ = fs::remove_file(push_block_path(git_dir));
 }
 
 fn refusal_state_path(git_dir: &Path) -> PathBuf {
@@ -1113,7 +1243,17 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     // ISO-8601 to the second; sortable in `git log` without quoting issues.
     let now_iso = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let msg = format!("hq-sync: {now_iso}");
-    run_git(hq_folder, &["commit", "-m", &msg], GIT_INDEX_TIMEOUT)?;
+    // `--no-gpg-sign` is not optional here. The mirror runs from a background
+    // daemon with no TTY and no GUI session, so when the user has
+    // `commit.gpgsign = true` globally, gpg cannot reach pinentry and the commit
+    // dies with "gpg: signing failed: No pinentry" → "fatal: failed to write
+    // commit object". Observed in the wild: dozens of silently lost mirror
+    // commits a day. An automated snapshot gains nothing from a signature.
+    run_git(
+        hq_folder,
+        &["commit", "--no-gpg-sign", "-m", &msg],
+        GIT_INDEX_TIMEOUT,
+    )?;
     log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
     // The mirror committed, so this root is healthy again.
     note_mirror_recovered(hq_folder, git_dir);
@@ -1126,13 +1266,81 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
         GIT_INDEX_TIMEOUT,
     )?;
     if upstream.status.success() {
-        run_git(hq_folder, &["push"], GIT_PUSH_TIMEOUT)?;
-        log(LOG_TAG, &format!("{hq_folder}: push ok"));
+        push_with_backoff(hq_folder, git_dir, Utc::now());
     } else {
         log(LOG_TAG, &format!("{hq_folder}: no upstream, skipping push"));
     }
 
     Ok(())
+}
+
+/// Push, unless a recent rejection says it is pointless.
+///
+/// A push failure never fails the mirror: the commit already landed, and the
+/// local snapshot is the part that matters. What changes here is *repetition* —
+/// a rejection that retrying cannot fix backs the mirror off for
+/// [`PUSH_BLOCK_COOLDOWN`] instead of recurring every cycle.
+fn push_with_backoff(hq_folder: &str, git_dir: &Path, now: DateTime<Utc>) {
+    let existing = read_push_block(git_dir);
+    if push_block_is_active(existing.as_ref(), now) {
+        // One quiet line, not the full multi-line remote stderr — the loud,
+        // actionable version was already logged when the block was recorded.
+        if let Some(block) = existing {
+            log(
+                LOG_TAG,
+                &format!("{hq_folder}: push skipped — {} (backing off)", block.reason),
+            );
+        }
+        return;
+    }
+
+    let out = match git_output(hq_folder, &["push"], GIT_PUSH_TIMEOUT) {
+        Ok(out) => out,
+        Err(e) => {
+            log(LOG_TAG, &format!("{hq_folder}: git push: {e}"));
+            return;
+        }
+    };
+
+    if out.status.success() {
+        clear_push_block(git_dir);
+        log(LOG_TAG, &format!("{hq_folder}: push ok"));
+        return;
+    }
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    match classify_push_failure(&stderr) {
+        PushFailure::Permanent { reason } => {
+            write_push_block(
+                git_dir,
+                &PersistedPushBlock {
+                    blocked_at: now.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    reason: reason.clone(),
+                },
+            );
+            log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: push rejected and retrying cannot fix it — {reason}. \
+                     Backing off {}h. Remove the file from history, then push by hand.",
+                    PUSH_BLOCK_COOLDOWN.as_secs() / 3600
+                ),
+            );
+        }
+        PushFailure::Transient => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: git push failed (exit {}): {}",
+                    out.status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".to_string()),
+                    stderr.trim()
+                ),
+            );
+        }
+    }
 }
 
 /// Apply the bulk-asymmetry breaker to what `git add -A` just staged. On
@@ -4047,5 +4255,201 @@ mod tests {
             child.try_wait().expect("try_wait").is_some(),
             "the timed-out child must have been killed and reaped"
         );
+    }
+
+    // ── B7: mirror commits are never gpg-signed ──────────────────────────
+
+    /// Force signing on with a gpg program that always fails — exactly what a
+    /// background daemon sees when the user has `commit.gpgsign = true`
+    /// globally and gpg cannot reach pinentry without a TTY or GUI session.
+    fn force_broken_gpg_signing(dir: &Path) {
+        assert!(git(dir, &["config", "commit.gpgsign", "true"])
+            .status
+            .success());
+        assert!(git(dir, &["config", "user.signingkey", "DEADBEEFDEADBEEF"])
+            .status
+            .success());
+        assert!(git(dir, &["config", "gpg.program", "/bin/false"])
+            .status
+            .success());
+    }
+
+    #[test]
+    fn commits_even_when_signing_is_forced_on_and_gpg_is_unusable() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        force_broken_gpg_signing(tmp.path());
+        fs::write(tmp.path().join("new-file.txt"), "hello").unwrap();
+
+        run_mirror_at(tmp.path()).expect("an unavailable signer must not fail the mirror");
+
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the mirror commit must land unsigned rather than be lost to \
+             'gpg: signing failed: No pinentry' -> 'fatal: failed to write commit object'"
+        );
+    }
+
+    // ── B8: push failure classification ──────────────────────────────────
+
+    const GH001_STDERR: &str = "\
+remote: error: GH001: Large files detected. You may want to try Git Large File Storage.
+remote: error: See https://gh.io/lfs for more information.
+remote: error: File workspace/.session-logs/dfd5ecb3.jsonl is 183.58 MB; this exceeds GitHub's file size limit of 100.00 MB
+error: failed to push some refs to 'https://github.com/owner/repo.git'";
+
+    #[test]
+    fn oversized_blob_rejection_is_permanent_and_names_the_file() {
+        match classify_push_failure(GH001_STDERR) {
+            PushFailure::Permanent { reason } => assert!(
+                reason.contains("workspace/.session-logs/dfd5ecb3.jsonl"),
+                "the operator needs the offending path to act on, got: {reason}"
+            ),
+            other => panic!("a size-limit rejection can never be fixed by retrying, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn network_failures_stay_transient() {
+        for stderr in [
+            "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host: github.com",
+            "fatal: unable to access 'https://github.com/o/r.git/': Operation timed out",
+            "",
+        ] {
+            assert_eq!(
+                classify_push_failure(stderr),
+                PushFailure::Transient,
+                "weather must keep retrying: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_fast_forward_stays_transient() {
+        let stderr = " ! [rejected]        main -> main (fetch first)\n\
+error: failed to push some refs to 'https://github.com/o/r.git'\n\
+hint: Updates were rejected because the remote contains work that you do not have.";
+        assert_eq!(
+            classify_push_failure(stderr),
+            PushFailure::Transient,
+            "a non-fast-forward clears once the next cycle pulls — never latch on it"
+        );
+    }
+
+    // ── B9: push backoff record ──────────────────────────────────────────
+
+    fn block_at(when: DateTime<Utc>) -> PersistedPushBlock {
+        PersistedPushBlock {
+            blocked_at: when.to_rfc3339_opts(SecondsFormat::Secs, true),
+            reason: "history contains a file over the remote's size limit".to_string(),
+        }
+    }
+
+    fn cooldown_secs() -> i64 {
+        PUSH_BLOCK_COOLDOWN.as_secs() as i64
+    }
+
+    #[test]
+    fn no_record_means_the_push_is_attempted() {
+        assert!(!push_block_is_active(None, Utc::now()));
+    }
+
+    #[test]
+    fn a_block_suppresses_pushes_then_expires_so_a_fix_self_heals() {
+        let now = Utc::now();
+
+        assert!(push_block_is_active(Some(&block_at(now)), now));
+        assert!(push_block_is_active(
+            Some(&block_at(
+                now - chrono::Duration::seconds(cooldown_secs() - 60)
+            )),
+            now
+        ));
+        assert!(
+            !push_block_is_active(
+                Some(&block_at(
+                    now - chrono::Duration::seconds(cooldown_secs() + 60)
+                )),
+                now
+            ),
+            "after the cooldown the mirror must re-probe, so a rewritten history \
+             recovers without an app restart"
+        );
+    }
+
+    #[test]
+    fn a_future_stamp_re_arms_rather_than_latching() {
+        let now = Utc::now();
+        assert!(
+            !push_block_is_active(Some(&block_at(now + chrono::Duration::hours(5))), now),
+            "a backwards clock or a copied .git must never wedge the mirror silently"
+        );
+    }
+
+    #[test]
+    fn block_records_round_trip_and_a_successful_push_clears_them() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        let now = Utc::now();
+
+        assert!(read_push_block(&git_dir).is_none());
+        write_push_block(&git_dir, &block_at(now));
+        assert!(push_block_is_active(
+            read_push_block(&git_dir).as_ref(),
+            now
+        ));
+
+        clear_push_block(&git_dir);
+        assert!(
+            read_push_block(&git_dir).is_none(),
+            "a push that succeeds must clear the block"
+        );
+    }
+
+    #[test]
+    fn the_block_record_lives_in_the_git_dir_and_is_never_staged() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let git_dir = git_dir_of(tmp.path());
+
+        write_push_block(&git_dir, &block_at(Utc::now()));
+
+        let status = git(
+            tmp.path(),
+            &["status", "--porcelain", "--untracked-files=all"],
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+            "the record must be invisible to `git add -A`, or the mirror would \
+             commit its own bookkeeping"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_block_record_never_wedges_the_mirror() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        fs::write(push_block_path(&git_dir), "{ not json").unwrap();
+
+        assert!(read_push_block(&git_dir).is_none());
+        assert!(!push_block_is_active(
+            read_push_block(&git_dir).as_ref(),
+            Utc::now()
+        ));
     }
 }
