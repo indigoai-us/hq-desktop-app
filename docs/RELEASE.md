@@ -108,6 +108,16 @@ crash:
 - Windows: `hq-sync-menubar.exe` and the adjacent
   `hq_sync_menubar.pdb`, for both x64 and ARM64.
 
+On macOS the shipped binary is stripped (`strip = "symbols"` in
+`[profile.release]`) so the public `.app` stays under the 15 MB bundle budget
+deterministically — without it, stale rust-cache / incremental artifacts
+intermittently left full debug info embedded and blew the guard. Because a
+stripped binary can no longer be re-processed by `dsymutil`, the workflow builds
+`HQ.app.dSYM` from the packed per-arch dSYMs that `split-debuginfo = "packed"`
+emits at link time (`lipo`-combining the two arch DWARFs into one universal
+sidecar). The binary's `LC_UUID` debug id survives strip, so the app binary and
+the sidecar dSYM still share the same debug id set.
+
 The workflow verifies each executable and debug-file pair with `sentry-cli
 difutil check` before upload. Sentry is the only retention path. The upload uses
 `--no-sources`, and `.pdb` and `.dSYM` files are never published as GitHub

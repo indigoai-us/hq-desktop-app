@@ -390,7 +390,14 @@ describe("release workflow channel contract", () => {
     expect(macos).toContain(
       'DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"',
     );
-    expect(macos).toContain("xcrun dsymutil");
+    // The shipped binary is stripped (strip = "symbols"), so the sidecar dSYM
+    // must be assembled from the packed per-arch dSYMs emitted at link time
+    // (split-debuginfo = "packed"), NOT re-extracted from the stripped binary.
+    expect(macos).not.toContain("xcrun dsymutil");
+    expect(macos).toContain(
+      "src-tauri/target/${ARCH}/release/hq-sync-menubar.dSYM",
+    );
+    expect(macos).toContain('lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"');
     expect(macos).toContain("BUNDLE_BUDGET_KB=$((15 * 1024))");
     expect(macos).toContain("macOS app bundle exceeds 15 MB budget");
 
@@ -420,6 +427,10 @@ describe("release workflow channel contract", () => {
     expect(windows).toContain("$pdbMetadata.variants");
     expect(macos).toContain('data.get("variants", [])');
     expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?debug = "line-tables-only"/);
+    // Deterministic strip keeps the shipped macOS .app under the 15 MB budget
+    // regardless of rust-cache / incremental-artifact state (v0.10.81 regression).
+    expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?strip = "symbols"/);
+    expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?split-debuginfo = "packed"/);
 
     expect(windowsCheckWorkflow).toContain("Verify installer debug file contract");
     expect(windowsCheckWorkflow).toContain("hq-sync-menubar.exe");
