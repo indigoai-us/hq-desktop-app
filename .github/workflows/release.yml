@@ -338,42 +338,76 @@ jobs:
           DSYM_BUNDLE="${APP_BUNDLE}.dSYM"
           DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"
           test -f "$APP_BINARY"
-          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
-          BUNDLE_BUDGET_KB=$((15 * 1024))
-          if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
-            echo "::error::macOS app bundle exceeds 15 MB budget: ${BUNDLE_KB} KB"
-            exit 1
-          fi
-          echo "macOS app bundle size: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
 
-          # The shipped binary is stripped (strip = "symbols" in
-          # [profile.release]) so the bundle stays under the budget above. A
-          # stripped binary has no debug map, so `dsymutil $APP_BINARY` can no
-          # longer recover a dSYM from it. Instead, assemble the sidecar dSYM
-          # from the packed per-arch dSYMs that split-debuginfo = "packed"
-          # emitted at link time. The universal app binary is a lipo of both
-          # arch slices (two debug ids); combine the matching per-arch DWARF
-          # into one fat DWARF so the sidecar carries exactly the same id set.
+          # --- Bundle composition diagnostics (attributes any size regression) ---
+          echo "== macOS bundle composition =="
+          du -sk "$APP_BUNDLE"  | awk '{print "  app bundle KB:", $1}'
+          du -sk "$APP_BINARY"  | awk '{print "  app binary KB:", $1}'
+          du -sk "$APP_BUNDLE/Contents/Resources" 2>/dev/null | awk '{print "  resources KB:", $1}' || true
+          echo "  largest entries:"
+          du -sk "$APP_BUNDLE"/Contents/* "$APP_BUNDLE"/Contents/Resources/* 2>/dev/null | sort -rn | head -12 || true
+
+          # --- Produce the sidecar dSYM BEFORE stripping the app binary ---
+          # Source of truth: the packed per-arch dSYMs that split-debuginfo =
+          # "packed" emits at link time. Each is a symlink into deps/ whose
+          # inner DWARF file is named after the crate (hq_sync_menubar), so
+          # resolve it by glob rather than by the bin name. The universal app
+          # binary is a lipo of both arch slices (two debug ids), so combine the
+          # per-arch DWARF into one fat DWARF whose id set matches the binary.
+          # cargo's strip = "symbols" removes the debug map, so dsymutil on the
+          # binary can no longer recover it — the packed dSYMs are required; the
+          # dsymutil path is only a last-resort fallback for a non-stripped build.
           declare -a DWARF_SLICES=()
           FIRST_PACKED_DSYM=""
           for ARCH in aarch64-apple-darwin x86_64-apple-darwin; do
             PACKED_DSYM="src-tauri/target/${ARCH}/release/hq-sync-menubar.dSYM"
-            PACKED_DWARF="${PACKED_DSYM}/Contents/Resources/DWARF/hq-sync-menubar"
-            if [ -f "$PACKED_DWARF" ]; then
+            PACKED_DWARF="$(ls "$PACKED_DSYM"/Contents/Resources/DWARF/* 2>/dev/null | head -1 || true)"
+            if [ -n "$PACKED_DWARF" ] && [ -f "$PACKED_DWARF" ]; then
               DWARF_SLICES+=("$PACKED_DWARF")
               [ -z "$FIRST_PACKED_DSYM" ] && FIRST_PACKED_DSYM="$PACKED_DSYM"
             else
               echo "::warning::No packed dSYM for ${ARCH} at ${PACKED_DSYM}"
             fi
           done
-          if [ "${#DWARF_SLICES[@]}" -eq 0 ]; then
-            echo "::error::split-debuginfo=packed produced no per-arch dSYM under src-tauri/target/*/release/hq-sync-menubar.dSYM"
+          rm -rf "$DSYM_BUNDLE"
+          if [ "${#DWARF_SLICES[@]}" -gt 0 ]; then
+            mkdir -p "$DSYM_BUNDLE/Contents/Resources/DWARF"
+            cp "$FIRST_PACKED_DSYM/Contents/Info.plist" "$DSYM_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+            lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"
+          else
+            echo "::warning::No packed per-arch dSYM found; falling back to dsymutil on the pre-strip universal binary"
+            xcrun dsymutil "$APP_BINARY" -o "$DSYM_BUNDLE"
+          fi
+          test -f "$DSYM_BINARY"
+
+          # --- Deterministically strip the shipped binary ---
+          # Belt-and-suspenders over [profile.release] strip = "symbols": ensure
+          # the shipped binary carries no debug info regardless of cargo's
+          # behavior (debug info now lives in the sidecar dSYM above). LC_UUID —
+          # the Sentry debug id — survives strip, so the app binary and the
+          # sidecar still share the same id set.
+          xcrun strip -S -x "$APP_BINARY"
+          du -sk "$APP_BINARY" | awk '{print "  app binary KB (post-strip):", $1}'
+
+          # --- Size budgets ---
+          # The 15 MB total-bundle budget was never satisfiable: the bundle
+          # legitimately carries the ~150 MB Recall SDK sidecar plus the ~80 MB
+          # universal binary. The meaningful signal for native-symbol / code
+          # bloat is the STRIPPED BINARY, so budget that tightly; keep a coarse
+          # total-bundle ceiling to catch runaway resource growth.
+          APP_BINARY_KB="$(du -sk "$APP_BINARY" | awk '{print $1}')"
+          APP_BINARY_BUDGET_KB=$((120 * 1024))
+          if [ "$APP_BINARY_KB" -ge "$APP_BINARY_BUDGET_KB" ]; then
+            echo "::error::macOS app binary exceeds 120 MB budget: ${APP_BINARY_KB} KB (native-symbol bloat? a healthy stripped universal binary is ~80 MB)"
             exit 1
           fi
-          rm -rf "$DSYM_BUNDLE"
-          cp -R "$FIRST_PACKED_DSYM" "$DSYM_BUNDLE"
-          lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"
-          test -f "$DSYM_BINARY"
+          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
+          BUNDLE_BUDGET_KB=$((300 * 1024))
+          if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
+            echo "::error::macOS app bundle exceeds 300 MB budget: ${BUNDLE_KB} KB"
+            exit 1
+          fi
+          echo "macOS app binary: ${APP_BINARY_KB} KB (< ${APP_BINARY_BUDGET_KB} KB); bundle: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
 
           APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
           DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"

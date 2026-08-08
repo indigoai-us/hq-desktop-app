@@ -108,15 +108,24 @@ crash:
 - Windows: `hq-sync-menubar.exe` and the adjacent
   `hq_sync_menubar.pdb`, for both x64 and ARM64.
 
-On macOS the shipped binary is stripped (`strip = "symbols"` in
-`[profile.release]`) so the public `.app` stays under the 15 MB bundle budget
-deterministically — without it, stale rust-cache / incremental artifacts
-intermittently left full debug info embedded and blew the guard. Because a
-stripped binary can no longer be re-processed by `dsymutil`, the workflow builds
-`HQ.app.dSYM` from the packed per-arch dSYMs that `split-debuginfo = "packed"`
-emits at link time (`lipo`-combining the two arch DWARFs into one universal
-sidecar). The binary's `LC_UUID` debug id survives strip, so the app binary and
-the sidecar dSYM still share the same debug id set.
+On macOS the shipped binary is stripped — `strip = "symbols"` in
+`[profile.release]` plus an explicit `xcrun strip -S -x` in the release job as a
+belt-and-suspenders — so it carries no debug info. Because a stripped binary can
+no longer be re-processed by `dsymutil`, the workflow builds `HQ.app.dSYM` from
+the packed per-arch dSYMs that `split-debuginfo = "packed"` emits at link time
+(`lipo`-combining the two arch DWARFs into one universal sidecar; each packed
+dSYM is a symlink into `deps/` whose inner DWARF is named after the crate, so it
+is resolved by glob). The binary's `LC_UUID` debug id survives strip, so the app
+binary and the sidecar dSYM still share the same debug id set.
+
+**Size budgets.** The macOS `.app` legitimately bundles the ~150 MB Recall SDK
+sidecar (`Contents/Resources/recall-sdk-bridge`) on top of the ~80 MB universal
+binary, so the total bundle is ~230 MB — an earlier 15 MB total-bundle budget
+was never satisfiable and blocked every release once it was added. The verify
+step instead budgets the **stripped app binary** at 120 MB (a healthy universal
+binary is ~80 MB; this catches native-symbol / code bloat, which is what a size
+guard should catch) and keeps a coarse 300 MB total-bundle ceiling to catch
+runaway resource growth.
 
 The workflow verifies each executable and debug-file pair with `sentry-cli
 difutil check` before upload. Sentry is the only retention path. The upload uses
