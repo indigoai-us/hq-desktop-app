@@ -124,8 +124,16 @@ jobs:
       - name: Workspace crate tests (hq-desktop-core, hq-platform, hq-telemetry)
         run: cargo test --workspace --locked
       - name: App crate tests (hq-sync-menubar)
+        timeout-minutes: 20
         working-directory: apps/sync/src-tauri
         run: cargo test --locked
+      # Real-child SIGKILL escalation across a handle replacement. Its ordering
+      # is established through the escalation's own observable outcome under a
+      # hard deadline, not by sleeping, so it gets a named bounded step.
+      - name: Cross-generation escalation regressions (real children)
+        timeout-minutes: 10
+        working-directory: apps/sync/src-tauri
+        run: cargo test --locked commands::process::cross_generation_escalation_tests -- --nocapture
       - name: Root workspace lockfile check
         run: cargo check --workspace --locked
       - name: App workspace lockfile check

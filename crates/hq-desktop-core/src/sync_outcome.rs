@@ -788,6 +788,33 @@ pub fn current_termination_host() -> TerminationHost {
     }
 }
 
+/// POSIX SIGKILL. Unlike a bare SIGKILL (which can be an OOM or a force-quit),
+/// this is attributable to the app only when an exact-generation cancellation
+/// record proves the app escalated a prior cancellation successfully.
+pub const SIGKILL_SIGNAL: i32 = 9;
+
+/// The explicit initiator of a manual sync cancellation. This is deliberately
+/// a small, closed vocabulary: only cancellation paths owned by the desktop
+/// application may make a terminal runner exit attributable to the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncCancelCause {
+    UserStop,
+    TimeoutWatchdog,
+    AppQuit,
+}
+
+impl SyncCancelCause {
+    /// Stable, content-safe value for local log lines and Sentry context on
+    /// residual captures. Do not derive this from user or runner input.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserStop => "user-stop",
+            Self::TimeoutWatchdog => "timeout-watchdog",
+            Self::AppQuit => "app-quit",
+        }
+    }
+}
+
 /// Windows `STATUS_CONTROL_C_EXIT` (`0xC000013A`) represented as the signed
 /// process exit code Rust reports. Windows gives this status to a console
 /// process when its default console-control handler ends it, including a
@@ -1327,6 +1354,10 @@ pub enum RunnerExitDisposition {
     WindowsConsoleControl,
     /// End the UI run after hq-cloud's retryable network outcome without a capture.
     TransientRetry,
+    /// End the UI run after an exact run was observably stopped by the desktop
+    /// app. This is intentionally distinct from generic `Ignore`: callers must
+    /// still emit one terminal UI event so both desktop surfaces leave syncing.
+    CancelledByApp(SyncCancelCause),
     /// Log a fully explained non-zero exit without an additional UI event.
     Ignore,
 }
@@ -1361,6 +1392,56 @@ pub fn classify_runner_exit_disposition(
         return RunnerExitDisposition::Ignore;
     }
     RunnerExitDisposition::Alert
+}
+
+/// Classify a manual-sync terminal exit with exact-generation cancellation
+/// evidence. The existing classifier remains the compatibility policy for all
+/// callers that do not own an observed cancellation record.
+///
+/// A cancellation must satisfy four gates before it becomes a suppression:
+/// it has a known app-owned cause, the termination call observably succeeded,
+/// the terminal status matches that termination, and no alertable runner error
+/// was seen. This preserves real runner faults that race a Stop, timeout, or
+/// application quit.
+pub fn classify_runner_exit_disposition_with_cancellation(
+    code: Option<i32>,
+    signal: Option<i32>,
+    cause: Option<SyncCancelCause>,
+    termination_effected: bool,
+    saw_error: bool,
+    saw_alertable_error: bool,
+    saw_node_too_old: bool,
+) -> RunnerExitDisposition {
+    // Preserve the legacy outcome for any alertable runner fault. In
+    // particular this prevents a successful app cancellation from hiding a
+    // concurrent EPERM / EISDIR-style runner failure.
+    if saw_alertable_error {
+        return classify_runner_exit_disposition(
+            code,
+            signal,
+            saw_error,
+            saw_alertable_error,
+            saw_node_too_old,
+        );
+    }
+
+    let exit_matches_app_termination = match current_termination_host() {
+        TerminationHost::Windows => code == Some(1) && signal.is_none(),
+        TerminationHost::Posix => {
+            code.is_none() && matches!(signal, Some(SIGTERM_SIGNAL) | Some(SIGKILL_SIGNAL))
+        }
+    };
+    if let Some(cause) = cause.filter(|_| termination_effected && exit_matches_app_termination) {
+        return RunnerExitDisposition::CancelledByApp(cause);
+    }
+
+    classify_runner_exit_disposition(
+        code,
+        signal,
+        saw_error,
+        saw_alertable_error,
+        saw_node_too_old,
+    )
 }
 
 /// Boolean compatibility projection for existing capture seams.
@@ -2623,6 +2704,206 @@ mod tests {
         assert!(should_alert_on_nonzero_exit(
             None, None, false, false, false
         ));
+    }
+
+    #[test]
+    fn effective_app_cancellation_is_suppressed_only_for_its_own_exit_shape() {
+        let (owned_code, owned_signal) = match current_termination_host() {
+            TerminationHost::Windows => (Some(1), None),
+            TerminationHost::Posix => (None, Some(SIGTERM_SIGNAL)),
+        };
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                owned_code,
+                owned_signal,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::TimeoutWatchdog),
+        );
+
+        // An attempted cancellation is not evidence that it terminated the
+        // runner. A later real failure must stay loud.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::UserStop),
+                false,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+
+        // The alertable runner fault wins even when our termination also
+        // succeeded; this preserves the EPERM class in the reported issue.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::AppQuit),
+                true,
+                true,
+                true,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+
+        // A natural non-zero exit racing a cancellation is not attributable to
+        // the application solely because a cancellation record exists.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(2),
+                None,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn code_one_is_not_an_app_termination_shape_on_posix() {
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(1),
+                None,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+    }
+
+    #[test]
+    fn cancellation_classifier_preserves_legacy_policy_outside_exact_effective_stops() {
+        let (owned_code, owned_signal) = match current_termination_host() {
+            TerminationHost::Windows => (Some(1), None),
+            TerminationHost::Posix => (None, Some(SIGTERM_SIGNAL)),
+        };
+        for (code, signal, saw_error, saw_alertable_error, saw_node_too_old) in [
+            (Some(1), None, false, false, false),
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None, true, true, false),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None, false, false, false),
+            (Some(WINDOWS_CONTROL_C_EXIT), None, false, false, false),
+            (Some(2), None, true, false, false),
+        ] {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    code,
+                    signal,
+                    None,
+                    false,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                classify_runner_exit_disposition(
+                    code,
+                    signal,
+                    saw_error,
+                    saw_alertable_error,
+                    saw_node_too_old,
+                ),
+                "no cancellation evidence must delegate unchanged"
+            );
+        }
+
+        for cause in [SyncCancelCause::UserStop, SyncCancelCause::AppQuit] {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    owned_code,
+                    owned_signal,
+                    Some(cause),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                RunnerExitDisposition::CancelledByApp(cause),
+            );
+        }
+
+        // Unix terminal status shapes are attributable only with an exact,
+        // observed application termination. A bare SIGKILL remains loud.
+        if current_termination_host() == TerminationHost::Posix {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    None,
+                    Some(SIGKILL_SIGNAL),
+                    Some(SyncCancelCause::UserStop),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop),
+            );
+        }
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                None,
+                Some(SIGKILL_SIGNAL),
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            RunnerExitDisposition::Alert,
+        );
+
+        // Cancellation takes precedence over the no-capture Node marker, but
+        // never over a genuine alertable runner fault.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                owned_code,
+                owned_signal,
+                Some(SyncCancelCause::TimeoutWatchdog),
+                true,
+                false,
+                false,
+                true,
+            ),
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::TimeoutWatchdog),
+        );
+
+        // An exact effective cancellation still delegates every legacy special
+        // disposition when its terminal status is not one produced by our
+        // terminator. This keeps runner-side lock timeouts, Ctrl+C teardown,
+        // and transient retry semantics byte-for-byte unchanged.
+        for (code, signal) in [
+            (Some(RUNNER_OPERATION_LOCKED_EXIT), None),
+            (Some(WINDOWS_CONTROL_C_EXIT), None),
+            (Some(RUNNER_TRANSIENT_RETRY_EXIT), None),
+        ] {
+            assert_eq!(
+                classify_runner_exit_disposition_with_cancellation(
+                    code,
+                    signal,
+                    Some(SyncCancelCause::TimeoutWatchdog),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+                classify_runner_exit_disposition(code, signal, false, false, false),
+                "a non-owned status must retain its legacy disposition"
+            );
+        }
     }
 
     #[test]

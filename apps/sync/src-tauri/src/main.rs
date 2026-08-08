@@ -264,6 +264,16 @@ where
 }
 
 fn main() {
+    // CI-only probe entrypoint, gated on the non-default `sync-cancel-probe`
+    // feature. The dispatch — including its process termination — lives in
+    // `commands::process` so the only process exit in this file stays the Windows
+    // session-end fast path pinned by `scripts/native-seam-wiring.test.ts`. The
+    // helper never returns, so the menubar app is never initialized on a probe run.
+    #[cfg(feature = "sync-cancel-probe")]
+    if std::env::args().any(|arg| arg == "--sync-cancel-probe") {
+        commands::process::run_sync_cancel_probe_main();
+    }
+
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
     // here in the binary and passed in, so the crate carries no build-env coupling.

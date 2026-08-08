@@ -39,21 +39,28 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
+#[cfg(test)]
+use hq_desktop_core::sync_outcome::classify_runner_exit_disposition;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, classify_runner_error_class, classify_runner_exit_disposition,
-    classify_runner_fatal_class, classify_windows_exit_status, describe_exit,
-    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape,
-    should_synthesize_all_complete, termination_fingerprint_token, windows_exit_status_hex,
-    windows_fault_symbol, RunnerErrorClass, RunnerExitDisposition,
+    classify_error_event, classify_runner_error_class,
+    classify_runner_exit_disposition_with_cancellation, classify_runner_fatal_class,
+    classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
+    runner_phase_from_event, runner_stack_shape, should_synthesize_all_complete,
+    termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol, RunnerErrorClass,
+    RunnerExitDisposition, SyncCancelCause,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
+#[cfg(test)]
+use crate::commands::process::run_process_impl;
 use crate::commands::process::{
-    cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
-    ProcessEvent, SpawnArgs,
+    abandon_process_generation, app_exit_requested, cancel_process_for_generation,
+    cancellation_record_for_generation, generation_for_handle, is_cancelled_for_generation,
+    run_process_impl_for_generation, try_register_handle_gen, CancellationRecord, ProcessEvent,
+    SpawnArgs,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
@@ -252,6 +259,7 @@ fn runner_exit_telemetry_context(
     code: Option<i32>,
     totals: &RunTotals,
     context: &ManualRunnerExitContext,
+    sync_termination_reason: &'static str,
 ) -> (
     Vec<(&'static str, String)>,
     Vec<(&'static str, sentry::protocol::Value)>,
@@ -273,6 +281,10 @@ fn runner_exit_telemetry_context(
     tags.push((
         "runner_fatal_class",
         totals.runner_fatal_class.as_str().to_string(),
+    ));
+    tags.push((
+        "sync_termination_reason",
+        sync_termination_reason.to_string(),
     ));
     if let Some(code) = code {
         let termination = classify_windows_exit_status(code);
@@ -321,6 +333,24 @@ fn capture_runner_exit_error(
     payload: &SyncErrorEvent,
     context: &ManualRunnerExitContext,
 ) {
+    capture_runner_exit_error_with_termination_reason(
+        code,
+        signal,
+        totals,
+        payload,
+        context,
+        "uncancelled",
+    );
+}
+
+fn capture_runner_exit_error_with_termination_reason(
+    code: Option<i32>,
+    signal: Option<i32>,
+    totals: &RunTotals,
+    payload: &SyncErrorEvent,
+    context: &ManualRunnerExitContext,
+    sync_termination_reason: &'static str,
+) {
     let termination = termination_fingerprint_token(code, signal);
     let error_class = totals.runner_error_rollup.fingerprint_token();
     let fingerprint = [
@@ -329,7 +359,8 @@ fn capture_runner_exit_error(
         termination.as_str(),
         error_class,
     ];
-    let (tags, extras) = runner_exit_telemetry_context(code, totals, context);
+    let (tags, extras) =
+        runner_exit_telemetry_context(code, totals, context, sync_termination_reason);
     capture_sync_error_with_fingerprint_and_context(
         payload.company.as_deref(),
         &payload.path,
@@ -366,6 +397,59 @@ fn terminal_sync_error_for_transient_retry() -> SyncErrorEvent {
     }
 }
 
+fn terminal_sync_error_for_cancelled_by_app(cause: SyncCancelCause) -> SyncErrorEvent {
+    let message = match cause {
+        SyncCancelCause::TimeoutWatchdog => "Sync was stopped after reaching the one-hour limit.",
+        SyncCancelCause::UserStop | SyncCancelCause::AppQuit => "Sync was stopped.",
+    };
+    SyncErrorEvent {
+        company: None,
+        path: "(runner)".to_string(),
+        message: message.to_string(),
+    }
+}
+
+/// Read only exact-generation evidence for the manual sync's terminal event.
+/// App-exit remains a defensive fallback for a legacy cancellation that was
+/// recorded before explicit causes existed; normal app-exit teardown stamps the
+/// cause through `cancel_process_for_generation`.
+fn cancellation_for_runner_exit(generation: u64) -> CancellationRecord {
+    let mut record =
+        cancellation_record_for_generation(SYNC_HANDLE, generation).unwrap_or_default();
+    if record.cause.is_none()
+        && app_exit_requested()
+        && is_cancelled_for_generation(SYNC_HANDLE, generation)
+    {
+        record.cause = Some(SyncCancelCause::AppQuit);
+    }
+    record
+}
+
+/// Safe vocabulary on residual captures. `uncancelled` means no cancellation
+/// cause was recorded. An effective cancellation whose status does not match
+/// the app-owned termination shape remains loud and receives its own truthful
+/// fixed value rather than being mislabeled as uncancelled.
+fn residual_sync_termination_reason(
+    cancellation: CancellationRecord,
+    totals: &RunTotals,
+) -> &'static str {
+    match cancellation {
+        CancellationRecord {
+            cause: Some(_),
+            termination_effected: true,
+        } if totals.saw_alertable_error => "cancelled-with-alertable-error",
+        CancellationRecord {
+            cause: Some(_),
+            termination_effected: false,
+        } => "cancel-ineffective",
+        CancellationRecord {
+            cause: Some(_),
+            termination_effected: true,
+        } => "cancel-status-mismatch",
+        _ => "uncancelled",
+    }
+}
+
 /// Capture and surface the terminal runner error exactly once. The renderer
 /// receives this event for UI state only; it deliberately does not submit a
 /// second Sentry event for the same native capture.
@@ -376,8 +460,16 @@ fn report_runner_exit_error(
     totals: &RunTotals,
     payload: SyncErrorEvent,
     context: &ManualRunnerExitContext,
+    sync_termination_reason: &'static str,
 ) -> tauri::Result<()> {
-    capture_runner_exit_error(code, signal, totals, &payload, context);
+    capture_runner_exit_error_with_termination_reason(
+        code,
+        signal,
+        totals,
+        &payload,
+        context,
+        sync_termination_reason,
+    );
     app.emit(EVENT_SYNC_ERROR, payload)
 }
 
@@ -400,6 +492,7 @@ trait RunnerExitEffects {
 
 struct ProductionRunnerExitEffects<'a> {
     app: &'a AppHandle,
+    sync_termination_reason: &'static str,
 }
 
 impl RunnerExitEffects for ProductionRunnerExitEffects<'_> {
@@ -415,7 +508,15 @@ impl RunnerExitEffects for ProductionRunnerExitEffects<'_> {
         payload: SyncErrorEvent,
         context: &ManualRunnerExitContext,
     ) {
-        let _ = report_runner_exit_error(self.app, code, signal, totals, payload, context);
+        let _ = report_runner_exit_error(
+            self.app,
+            code,
+            signal,
+            totals,
+            payload,
+            context,
+            self.sync_termination_reason,
+        );
     }
 
     fn emit_sync_error(&mut self, payload: SyncErrorEvent) {
@@ -472,6 +573,14 @@ fn apply_runner_exit_disposition<E: RunnerExitEffects>(
                 "runner exited non-zero ({exit_desc}) for a transient HQ network retry — ending Sync Now UI state without alerting"
             ));
             effects.emit_sync_error(terminal_sync_error_for_transient_retry());
+        }
+        RunnerExitDisposition::CancelledByApp(cause) => {
+            effects.log(&format!(
+                "runner exited non-zero ({exit_desc}) after app-owned {} cancellation \
+                 — ending Sync Now UI state without alerting",
+                cause.as_str(),
+            ));
+            effects.emit_sync_error(terminal_sync_error_for_cancelled_by_app(cause));
         }
         RunnerExitDisposition::Ignore => effects.log(&format!(
             "runner exited non-zero ({exit_desc}) but fully explained by benign conditions \
@@ -1600,12 +1709,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     eprintln!("[sync] start_sync invoked");
 
     // Atomically check-and-register to prevent concurrent syncs (TOCTOU-safe)
-    if !try_register_handle(SYNC_HANDLE) {
+    let Some(sync_generation) = try_register_handle_gen(SYNC_HANDLE) else {
         log("sync", "BAIL: already running");
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: already running");
         return Err("Sync is already running".to_string());
-    }
+    };
 
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
@@ -1670,7 +1779,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 log("sync", &format!("BAIL: {message}"));
                 #[cfg(debug_assertions)]
                 eprintln!("[sync] BAIL: managed node missing at {expected_node}");
-                deregister_process(SYNC_HANDLE);
+                let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
                 return Err(message);
             }
             log("sync", "managed Node runtime repaired — continuing");
@@ -1682,7 +1791,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             );
             if let Err(message) = provision_unprovisioned_node(&app).await {
                 log("sync", &format!("BAIL: {message}"));
-                deregister_process(SYNC_HANDLE);
+                let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
                 return Err(message);
             }
             log("sync", "managed Node runtime provisioned — continuing");
@@ -1691,7 +1800,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             log("sync", &format!("BAIL: node too old (v{major})"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] BAIL: node too old (v{major})");
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(node_too_old_message(major, path.as_deref()));
         }
     }
@@ -1699,7 +1808,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         log("sync", &format!("BAIL: runner unresolvable: {msg}"));
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: runner unresolvable: {msg}");
-        deregister_process(SYNC_HANDLE);
+        let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
         return Err(msg);
     }
 
@@ -1715,7 +1824,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         Ok(Ok(())) => {}
         Ok(Err(msg)) => {
             log("sync", &format!("BAIL: npx cache materialization: {msg}"));
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(msg);
         }
         Err(err) => {
@@ -1724,7 +1833,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 "sync",
                 &format!("BAIL: npx cache materialization task: {err}"),
             );
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(msg);
         }
     }
@@ -1739,7 +1848,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             log("sync", &format!("BAIL: resolve_hq_folder_path failed: {e}"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] BAIL: resolve_hq_folder_path failed: {}", e);
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(e);
         }
     };
@@ -1774,7 +1883,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         }
         Err(e) => {
             log("sync", &format!("BAIL: resolve_vault_api_url failed: {e}"));
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(e);
         }
     };
@@ -1796,7 +1905,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     message: cognito::REAUTH_MESSAGE.to_string(),
                 },
             );
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             // Auth-required is a handled terminal state, not a process crash.
             // Returning success keeps the manual path aligned with the
             // runner's exit-0 auth-error contract and avoids red error UI.
@@ -1804,7 +1913,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         }
         Err(ResolveJwtError::Other(e)) => {
             log("sync", &format!("BAIL: resolve_jwt failed: {e}"));
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(e);
         }
     };
@@ -1867,7 +1976,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 "sync",
                 &format!("BAIL: provision_missing_companies failed: {e}"),
             );
-            deregister_process(SYNC_HANDLE);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(e);
         }
     };
@@ -1974,14 +2083,27 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         spawn_args.cmd, spawn_args.args, hq_folder_path
     );
 
-    // Timeout watchdog — cancels sync after SYNC_TIMEOUT
+    // Timeout watchdog — cancellation is bound to this run's immutable
+    // generation, so an old watchdog cannot stop a newer sync that reused the
+    // public handle.
+    let watchdog_generation = sync_generation;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SYNC_TIMEOUT).await;
-        if is_registered(SYNC_HANDLE) {
+        let attempt = cancel_process_for_generation(
+            SYNC_HANDLE,
+            watchdog_generation,
+            SyncCancelCause::TimeoutWatchdog,
+            SIGKILL_DELAY,
+        );
+        if attempt.executed {
             log("sync", "timeout reached, cancelling");
             #[cfg(debug_assertions)]
             eprintln!("[sync] timeout reached, cancelling");
-            cancel_process_impl(SYNC_HANDLE, SIGKILL_DELAY);
+        } else {
+            log(
+                "sync",
+                "timeout reached for stale sync generation; no cancellation sent",
+            );
         }
     });
 
@@ -1992,6 +2114,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     let app_bg = app.clone();
     let hq_folder_for_handler = hq_folder_path.clone();
     let jwt_for_handler = jwt.clone();
+    let sync_generation_for_runner = sync_generation;
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     let runner_phase: Arc<Mutex<RunnerPhaseContext>> =
@@ -2003,117 +2126,131 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
         eprintln!("[sync] bg task: entering run_process_impl");
-        let result = run_process_impl(SYNC_HANDLE, &spawn_args, |event| match event {
-            ProcessEvent::Stdout(line) => {
-                // Always mirror runner stdout to the log file — this is the
-                // ndjson protocol stream and the only durable record of what
-                // the runner did. The eprintln! is dev-only / verbose.
-                log("runner.stdout", &line);
-                #[cfg(debug_assertions)]
-                eprintln!("[sync stdout] {}", line);
-                handle_sync_line(
-                    &app_bg,
-                    &hq_folder_for_handler,
-                    &totals,
-                    &runner_phase,
-                    &jwt_for_handler,
-                    &line,
-                );
-            }
-            ProcessEvent::Stderr(line) => {
-                // Always log runner stderr — when sync gets stuck this is the
-                // most likely place the cause shows up (npx download retry,
-                // node uncaught exception, runner panic, etc.).
-                log("runner.stderr", &line);
-                // Preserve temporal shape in Sentry without copying untrusted
-                // process output. Raw lines stay local in hq-sync.log; Sentry
-                // receives only a monotonic sequence and fixed error class.
-                runner_stderr_sequence = runner_stderr_sequence.saturating_add(1);
-                sentry::add_breadcrumb(runner_stderr_breadcrumb(runner_stderr_sequence, &line));
-                push_runner_stderr_tail(
-                    &mut runner_stderr_tail
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                    line.clone(),
-                );
-                // Re-ingest stderr protocol records. Error events feed the
-                // benign-vs-alertable exit classification, while auth-error
-                // emits the re-authentication signal even though the runner
-                // intentionally exits 0 after a failed token refresh.
-                handle_runner_stderr_line(&app_bg, &totals, &line);
-                #[cfg(debug_assertions)]
-                eprintln!("[sync stderr] {}", line);
-            }
-            ProcessEvent::Exit {
-                code,
-                signal,
-                success,
-            } => {
-                let exit_desc = describe_exit(code, signal);
-                log(
-                    "sync",
-                    &format!("runner exited: success={} {}", success, exit_desc),
-                );
-                // The runner exits 0 for recoverable conditions (setup-needed,
-                // auth-error) — those surface as ndjson events before exit, so
-                // the frontend already knows. A non-zero exit means the runner
-                // bailed before emitting a useful protocol stream.
-                if !success {
-                    let totals_snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    let disposition = classify_runner_exit_disposition(
-                        code,
-                        signal,
-                        totals_snapshot.saw_error,
-                        totals_snapshot.saw_alertable_error,
-                        totals_snapshot.saw_node_too_old,
+        let result = run_process_impl_for_generation(
+            SYNC_HANDLE,
+            sync_generation_for_runner,
+            &spawn_args,
+            |event| match event {
+                ProcessEvent::Stdout(line) => {
+                    // Always mirror runner stdout to the log file — this is the
+                    // ndjson protocol stream and the only durable record of what
+                    // the runner did. The eprintln! is dev-only / verbose.
+                    log("runner.stdout", &line);
+                    #[cfg(debug_assertions)]
+                    eprintln!("[sync stdout] {}", line);
+                    handle_sync_line(
+                        &app_bg,
+                        &hq_folder_for_handler,
+                        &totals,
+                        &runner_phase,
+                        &jwt_for_handler,
+                        &line,
                     );
-                    let exit_context =
-                        manual_runner_exit_context(&scope, &runner_phase, &runner_stderr_tail);
-                    let mut effects = ProductionRunnerExitEffects { app: &app_bg };
-                    apply_runner_exit_disposition(
-                        &mut effects,
-                        disposition,
-                        code,
-                        signal,
-                        &exit_desc,
-                        &totals_snapshot,
-                        &exit_context,
+                }
+                ProcessEvent::Stderr(line) => {
+                    // Always log runner stderr — when sync gets stuck this is the
+                    // most likely place the cause shows up (npx download retry,
+                    // node uncaught exception, runner panic, etc.).
+                    log("runner.stderr", &line);
+                    // Preserve temporal shape in Sentry without copying untrusted
+                    // process output. Raw lines stay local in hq-sync.log; Sentry
+                    // receives only a monotonic sequence and fixed error class.
+                    runner_stderr_sequence = runner_stderr_sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(runner_stderr_sequence, &line));
+                    push_runner_stderr_tail(
+                        &mut runner_stderr_tail
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        line.clone(),
                     );
-                } else {
-                    // Successful exit but no AllComplete observed (e.g.
-                    // runner bailed on setup-needed for a brand-new account
-                    // with no companies yet). Emit a synthetic AllComplete
-                    // so the UI returns to idle and the local sync-state.json
-                    // gets stamped with "just now" — otherwise the popover
-                    // sits in "syncing" forever and the top SyncStats card
-                    // shows "never" while the personal first-push (which DID
-                    // run) updated everything else.
-                    let (saw_complete, saw_auth_error) = totals
-                        .lock()
-                        .map(|t| (t.all_complete_seen, t.saw_auth_error))
-                        .unwrap_or((false, false));
-                    if should_synthesize_all_complete(success, saw_complete, saw_auth_error) {
-                        log("sync", "runner exited without AllComplete — synthesizing");
-                        let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
-                            companies_attempted: 0,
-                            files_downloaded: 0,
-                            bytes_downloaded: 0,
-                            errors: Vec::new(),
-                        });
-                        let line =
-                            serde_json::to_string(&synthetic).unwrap_or_else(|_| "{}".to_string());
-                        handle_sync_line(
-                            &app_bg,
-                            &hq_folder_for_handler,
-                            &totals,
-                            &runner_phase,
-                            &jwt_for_handler,
-                            &line,
+                    // Re-ingest stderr protocol records. Error events feed the
+                    // benign-vs-alertable exit classification, while auth-error
+                    // emits the re-authentication signal even though the runner
+                    // intentionally exits 0 after a failed token refresh.
+                    handle_runner_stderr_line(&app_bg, &totals, &line);
+                    #[cfg(debug_assertions)]
+                    eprintln!("[sync stderr] {}", line);
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => {
+                    let exit_desc = describe_exit(code, signal);
+                    log(
+                        "sync",
+                        &format!("runner exited: success={} {}", success, exit_desc),
+                    );
+                    // The runner exits 0 for recoverable conditions (setup-needed,
+                    // auth-error) — those surface as ndjson events before exit, so
+                    // the frontend already knows. A non-zero exit means the runner
+                    // bailed before emitting a useful protocol stream.
+                    if !success {
+                        let totals_snapshot =
+                            totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        let cancellation = cancellation_for_runner_exit(sync_generation_for_runner);
+                        let disposition = classify_runner_exit_disposition_with_cancellation(
+                            code,
+                            signal,
+                            cancellation.cause,
+                            cancellation.termination_effected,
+                            totals_snapshot.saw_error,
+                            totals_snapshot.saw_alertable_error,
+                            totals_snapshot.saw_node_too_old,
                         );
+                        let sync_termination_reason =
+                            residual_sync_termination_reason(cancellation, &totals_snapshot);
+                        let exit_context =
+                            manual_runner_exit_context(&scope, &runner_phase, &runner_stderr_tail);
+                        let mut effects = ProductionRunnerExitEffects {
+                            app: &app_bg,
+                            sync_termination_reason,
+                        };
+                        apply_runner_exit_disposition(
+                            &mut effects,
+                            disposition,
+                            code,
+                            signal,
+                            &exit_desc,
+                            &totals_snapshot,
+                            &exit_context,
+                        );
+                    } else {
+                        // Successful exit but no AllComplete observed (e.g.
+                        // runner bailed on setup-needed for a brand-new account
+                        // with no companies yet). Emit a synthetic AllComplete
+                        // so the UI returns to idle and the local sync-state.json
+                        // gets stamped with "just now" — otherwise the popover
+                        // sits in "syncing" forever and the top SyncStats card
+                        // shows "never" while the personal first-push (which DID
+                        // run) updated everything else.
+                        let (saw_complete, saw_auth_error) = totals
+                            .lock()
+                            .map(|t| (t.all_complete_seen, t.saw_auth_error))
+                            .unwrap_or((false, false));
+                        if should_synthesize_all_complete(success, saw_complete, saw_auth_error) {
+                            log("sync", "runner exited without AllComplete — synthesizing");
+                            let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
+                                companies_attempted: 0,
+                                files_downloaded: 0,
+                                bytes_downloaded: 0,
+                                errors: Vec::new(),
+                            });
+                            let line = serde_json::to_string(&synthetic)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            handle_sync_line(
+                                &app_bg,
+                                &hq_folder_for_handler,
+                                &totals,
+                                &runner_phase,
+                                &jwt_for_handler,
+                                &line,
+                            );
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
 
         if let Err(e) = result {
             log("sync", &format!("run_process_impl error: {e}"));
@@ -2151,7 +2288,17 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
 /// Returns `true` if a sync was running and cancellation was initiated.
 #[tauri::command]
 pub fn cancel_sync() -> bool {
-    cancel_process_impl(SYNC_HANDLE, SIGKILL_DELAY)
+    generation_for_handle(SYNC_HANDLE)
+        .map(|generation| {
+            cancel_process_for_generation(
+                SYNC_HANDLE,
+                generation,
+                SyncCancelCause::UserStop,
+                SIGKILL_DELAY,
+            )
+            .executed
+        })
+        .unwrap_or(false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2692,6 +2839,100 @@ mod tests {
             event.message,
             "Sync stopped by Windows. Please try Sync Now again."
         );
+    }
+
+    #[test]
+    fn app_cancelled_runner_exit_ends_sync_once_without_sentry_capture() {
+        let totals = RunTotals::default();
+        let mut effects = RecordingRunnerExitEffects::default();
+        apply_runner_exit_disposition(
+            &mut effects,
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::TimeoutWatchdog),
+            Some(1),
+            None,
+            "with code 1",
+            &totals,
+            &ManualRunnerExitContext::default(),
+        );
+
+        assert!(effects.captures.is_empty());
+        assert_eq!(effects.terminal_events.len(), 1);
+        assert_eq!(
+            effects.terminal_events[0].message,
+            "Sync was stopped after reaching the one-hour limit."
+        );
+        assert!(effects.logs[0].contains("timeout-watchdog"));
+    }
+
+    #[test]
+    fn residual_termination_reason_preserves_only_safe_causality_classes() {
+        let ordinary = RunTotals::default();
+        assert_eq!(
+            residual_sync_termination_reason(CancellationRecord::default(), &ordinary),
+            "uncancelled"
+        );
+        assert_eq!(
+            residual_sync_termination_reason(
+                CancellationRecord {
+                    cause: Some(SyncCancelCause::UserStop),
+                    termination_effected: false,
+                },
+                &ordinary,
+            ),
+            "cancel-ineffective"
+        );
+        let mut alertable = RunTotals::default();
+        alertable.saw_alertable_error = true;
+        assert_eq!(
+            residual_sync_termination_reason(
+                CancellationRecord {
+                    cause: Some(SyncCancelCause::AppQuit),
+                    termination_effected: true,
+                },
+                &alertable,
+            ),
+            "cancelled-with-alertable-error"
+        );
+        assert_eq!(
+            residual_sync_termination_reason(
+                CancellationRecord {
+                    cause: Some(SyncCancelCause::TimeoutWatchdog),
+                    termination_effected: true,
+                },
+                &ordinary,
+            ),
+            "cancel-status-mismatch",
+            "an effective cancellation that remains capture-worthy is not uncancelled"
+        );
+    }
+
+    #[test]
+    fn residual_runner_capture_includes_the_safe_termination_reason_tag() {
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        for reason in [
+            "uncancelled",
+            "cancel-ineffective",
+            "cancelled-with-alertable-error",
+            "cancel-status-mismatch",
+        ] {
+            let captures = sentry::test::with_captured_events(|| {
+                capture_runner_exit_error_with_termination_reason(
+                    Some(2),
+                    None,
+                    &RunTotals::default(),
+                    &payload,
+                    &ManualRunnerExitContext::default(),
+                    reason,
+                );
+            });
+            let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+                .expect("runner capture remains sendable");
+            assert_eq!(event.tags["sync_termination_reason"], reason);
+        }
     }
 
     #[derive(Default)]

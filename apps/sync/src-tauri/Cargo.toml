@@ -205,6 +205,10 @@ objc2-core-foundation = "0.3"
 [features]
 journal-cli = []
 
+# CI-only probe compiled into the production menubar binary. It is off by
+# default, so a shipped app cannot expose the fixture cancellation path.
+sync-cancel-probe = []
+
 # Compiles the WebView2 automation bridge (`util::webview2_automation`), which
 # forwards a WebDriver host's WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS into this
 # app's own webviews so msedgedriver can attach to them.
