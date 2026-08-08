@@ -390,14 +390,18 @@ describe("release workflow channel contract", () => {
     expect(macos).toContain(
       'DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"',
     );
-    // The shipped binary is stripped (strip = "symbols"), so the sidecar dSYM
-    // must be assembled from the packed per-arch dSYMs emitted at link time
-    // (split-debuginfo = "packed"), NOT re-extracted from the stripped binary.
-    expect(macos).not.toContain("xcrun dsymutil");
+    // The sidecar dSYM is produced BEFORE the app binary is stripped: preferred
+    // source is the packed per-arch dSYMs (split-debuginfo = "packed"),
+    // lipo-combined into one universal DWARF; dsymutil on the pre-strip binary
+    // is only a fallback.
     expect(macos).toContain(
       "src-tauri/target/${ARCH}/release/hq-sync-menubar.dSYM",
     );
     expect(macos).toContain('lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"');
+    // The shipped binary is stripped explicitly in the workflow: cargo's strip
+    // left the embedded __DWARF on this universal build, so an xcrun strip is
+    // required to keep the bundle deterministically under budget.
+    expect(macos).toContain('xcrun strip -S -x "$APP_BINARY"');
     expect(macos).toContain("BUNDLE_BUDGET_KB=$((15 * 1024))");
     expect(macos).toContain("macOS app bundle exceeds 15 MB budget");
 

@@ -338,22 +338,26 @@ jobs:
           DSYM_BUNDLE="${APP_BUNDLE}.dSYM"
           DSYM_BINARY="$DSYM_BUNDLE/Contents/Resources/DWARF/hq-sync-menubar"
           test -f "$APP_BINARY"
-          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
-          BUNDLE_BUDGET_KB=$((15 * 1024))
-          if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
-            echo "::error::macOS app bundle exceeds 15 MB budget: ${BUNDLE_KB} KB"
-            exit 1
-          fi
-          echo "macOS app bundle size: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
 
-          # The shipped binary is stripped (strip = "symbols" in
-          # [profile.release]) so the bundle stays under the budget above. A
-          # stripped binary has no debug map, so `dsymutil $APP_BINARY` can no
-          # longer recover a dSYM from it. Instead, assemble the sidecar dSYM
-          # from the packed per-arch dSYMs that split-debuginfo = "packed"
-          # emitted at link time. The universal app binary is a lipo of both
-          # arch slices (two debug ids); combine the matching per-arch DWARF
-          # into one fat DWARF so the sidecar carries exactly the same id set.
+          # --- Diagnostics: what is actually in the bundle before we strip? ---
+          echo "== macOS bundle diagnostics (pre-strip) =="
+          du -sk "$APP_BUNDLE"  | awk '{print "  app bundle KB:", $1}'
+          du -sk "$APP_BINARY"  | awk '{print "  app binary KB:", $1}'
+          du -sk "$APP_BUNDLE/Contents/Resources" 2>/dev/null | awk '{print "  resources KB:", $1}' || true
+          echo "  largest entries:"
+          du -sk "$APP_BUNDLE"/Contents/* "$APP_BUNDLE"/Contents/Resources/* 2>/dev/null | sort -rn | head -15 || true
+          echo "  Mach-O segments (app binary):"
+          xcrun size -m "$APP_BINARY" 2>/dev/null | grep -iE 'Segment __|total ' | head -40 || true
+          echo "  packed per-arch dSYMs:"
+          ls -ld src-tauri/target/*/release/hq-sync-menubar.dSYM 2>/dev/null || echo "    (none found)"
+
+          # --- Produce the sidecar dSYM BEFORE stripping the app binary ---
+          # Preferred source: the packed per-arch dSYMs that split-debuginfo =
+          # "packed" emits at link time. The universal app binary is a lipo of
+          # both arch slices (two debug ids), so combine the matching per-arch
+          # DWARF into one fat DWARF whose id set matches the app binary. If the
+          # packed dSYMs are somehow absent, fall back to dsymutil on the
+          # not-yet-stripped universal binary.
           declare -a DWARF_SLICES=()
           FIRST_PACKED_DSYM=""
           for ARCH in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -366,14 +370,34 @@ jobs:
               echo "::warning::No packed dSYM for ${ARCH} at ${PACKED_DSYM}"
             fi
           done
-          if [ "${#DWARF_SLICES[@]}" -eq 0 ]; then
-            echo "::error::split-debuginfo=packed produced no per-arch dSYM under src-tauri/target/*/release/hq-sync-menubar.dSYM"
+          rm -rf "$DSYM_BUNDLE"
+          if [ "${#DWARF_SLICES[@]}" -gt 0 ]; then
+            cp -R "$FIRST_PACKED_DSYM" "$DSYM_BUNDLE"
+            lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"
+          else
+            echo "::warning::No packed per-arch dSYM found; falling back to dsymutil on the pre-strip universal binary"
+            xcrun dsymutil "$APP_BINARY" -o "$DSYM_BUNDLE"
+          fi
+          test -f "$DSYM_BINARY"
+
+          # --- Deterministically strip the shipped binary ---
+          # cargo's strip ([profile.release] strip = "symbols") proved
+          # insufficient on this universal build: it removed the symbol table
+          # but left the embedded __DWARF, so the bundle intermittently blew the
+          # budget. Strip explicitly here (debug info now lives in the sidecar
+          # dSYM above). LC_UUID — the Sentry debug id — survives strip, so the
+          # app binary and the sidecar still share the same id set.
+          xcrun strip -S -x "$APP_BINARY"
+          du -sk "$APP_BINARY" | awk '{print "  app binary KB (post-strip):", $1}'
+
+          # --- Enforce the 15 MB budget on the stripped bundle ---
+          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
+          BUNDLE_BUDGET_KB=$((15 * 1024))
+          if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
+            echo "::error::macOS app bundle exceeds 15 MB budget: ${BUNDLE_KB} KB"
             exit 1
           fi
-          rm -rf "$DSYM_BUNDLE"
-          cp -R "$FIRST_PACKED_DSYM" "$DSYM_BUNDLE"
-          lipo -create "${DWARF_SLICES[@]}" -output "$DSYM_BINARY"
-          test -f "$DSYM_BINARY"
+          echo "macOS app bundle size: ${BUNDLE_KB} KB (< ${BUNDLE_BUDGET_KB} KB)"
 
           APP_DEBUG_ID="$(sentry-cli difutil check --json "$APP_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
           DSYM_DEBUG_ID="$(sentry-cli difutil check --json "$DSYM_BINARY" | python3 -c 'import json,sys; data=json.load(sys.stdin); ids=sorted({variant.get("debug_id") for variant in data.get("variants", []) if variant.get("debug_id")}); assert ids; print(",".join(ids))')"
