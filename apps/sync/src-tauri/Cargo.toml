@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.80"
+version = "0.10.82"
 edition = "2021"
 
 [build-dependencies]
@@ -105,7 +105,26 @@ semver = "1"
 url = "2"
 
 [profile.release]
-# macOS/dSYM-specific. On Windows MSVC the pdb is already a separate sidecar.
+# Emit file/line data for private dSYM/PDB upload. This deliberately avoids
+# full debug info so public bundle size remains within the release budget.
+debug = "line-tables-only"
+# Deterministically strip the shipped binary. Without an explicit strip, whether
+# the linked release binary ended up carrying its DWARF was nondeterministic:
+# stale rust-cache / incremental artifacts intermittently left full debug info
+# embedded, blowing the macOS 15 MB bundle guard (v0.10.81 shipped a 275 MB
+# HQ.app an hour after v0.10.80 built clean on identical config). Stripping here
+# makes the public .app bundle reliably small. This does NOT lose native
+# symbolication: the LC_UUID debug id survives strip (so the app binary still
+# matches its dSYM), and the line-tables DWARF is retained in the packed sidecar
+# dSYM below (see split-debuginfo). macOS/dSYM only — on Windows MSVC the debug
+# info already lives in a separate .pdb sidecar, unaffected by this.
+strip = "symbols"
+# Move the DWARF out of the object files into a packed `<bin>.dSYM` sidecar at
+# link time (via dsymutil). This is the source of truth for the release dSYM the
+# workflow ships alongside HQ.app — the stripped binary above can no longer be
+# re-processed by dsymutil, so the release job assembles the universal sidecar
+# dSYM from these packed per-arch dSYMs. On Windows MSVC the pdb is already a
+# separate sidecar.
 split-debuginfo = "packed"
 
 # Unix signal handling for the process-group tree-kill in commands/process.rs.

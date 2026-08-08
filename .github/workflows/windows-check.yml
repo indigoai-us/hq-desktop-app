@@ -207,6 +207,33 @@ jobs:
       - name: Build launchable Windows app
         run: pnpm tauri build --debug --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --features e2e-automation
 
+      # HQ-DESKTOP-44. The only artifact-level proof that a Windows session end
+      # no longer aborts the app: it launches the real binary and sends it
+      # WM_QUERYENDSESSION then WM_ENDSESSION(TRUE) followed by an ordinary
+      # posted message — the exact sequence that latches tao's event-loop runner
+      # into `Destroyed` and then dispatches into it. A real logoff is not used;
+      # it would take the runner down with it and prove less.
+      #
+      # Runs BEFORE the pre-auth smoke test on purpose: `tauri_plugin_single_instance`
+      # folds a second launch into an already-running process, so these two must
+      # never have an app up at the same time. Not conditional and never
+      # continue-on-error — this job builds the binary, so the spec can always
+      # run, and a skip would read as a pass.
+      - name: Live Windows session-end proof
+        env:
+          HQ_SYNC_DESKTOP_ALT_LIVE: "1"
+          HQ_SYNC_WINDOWS_SESSION_END_LIVE: "1"
+          HQ_SYNC_DESKTOP_ALT_APP: ${{ github.workspace }}\apps\sync\src-tauri\target\x86_64-pc-windows-msvc\debug\hq-sync-menubar.exe
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/windows-session-end.spec.ts
+
+      # Defence in depth for the single-instance constraint above: if the
+      # session-end spec failed mid-run it may have left the app up, which would
+      # silently fold the next launch into it.
+      - name: Stop any stray app instance
+        if: always()
+        shell: pwsh
+        run: Get-Process hq-sync-menubar -ErrorAction SilentlyContinue | Stop-Process -Force
+
       # Signed-out by design: a GitHub runner has no Cognito session, and the
       # honest alternatives (a fabricated token, a CI login secret, or loosening
       # the gate) would each destroy the thing under test. The spec asserts what
@@ -318,6 +345,34 @@ jobs:
           --config src-tauri/tauri.windows.ci.conf.json
           --config $env:TAURI_MSI_VERSION_CONFIG
           --features e2e-automation
+
+      - name: Install Sentry CLI
+        shell: pwsh
+        run: npm install --global @sentry/cli@3.6.2
+
+      # Exercise the release-profile symbol contract on every PR that changes
+      # the release workflow. The e2e feature changes the binary's debug id,
+      # but the executable and its PDB must still carry the same id.
+      - name: Verify installer debug file contract
+        shell: pwsh
+        run: |
+          $releaseDir = "src-tauri\target\x86_64-pc-windows-msvc\release"
+          $exe = Join-Path $releaseDir "hq-sync-menubar.exe"
+          $pdb = Join-Path $releaseDir "hq_sync_menubar.pdb"
+          if (-not (Test-Path $exe)) {
+            throw "Required installer executable is missing: $exe"
+          }
+          if (-not (Test-Path $pdb)) {
+            throw "Required installer PDB is missing: $pdb"
+          }
+          $exeMetadata = (& sentry-cli difutil check --json $exe | ConvertFrom-Json)
+          $pdbMetadata = (& sentry-cli difutil check --json $pdb | ConvertFrom-Json)
+          $exeDebugId = @($exeMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
+          $pdbDebugId = @($pdbMetadata.variants | ForEach-Object { $_.debug_id } | Where-Object { $_ } | Sort-Object -Unique) -join ","
+          if (-not $exeDebugId -or -not $pdbDebugId -or $exeDebugId -ne $pdbDebugId) {
+            throw "Installer executable and PDB debug ids differ: exe=$exeDebugId pdb=$pdbDebugId"
+          }
+          Write-Host "Installer executable/PDB debug id: $exeDebugId"
 
       - name: Verify prerelease MSI package
         shell: pwsh
