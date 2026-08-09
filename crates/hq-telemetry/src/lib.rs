@@ -357,15 +357,23 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
         return false;
     };
     let is_error_class = |value: &str| {
+        // `identity` is the current breadcrumb spelling of the auth error class
+        // (renamed off the literal `auth`, which Sentry's default @password:filter
+        // scrubber deletes — the HQ-DESKTOP-4T breadcrumb loss). `auth` stays
+        // accepted so in-flight older clients still emitting it remain sendable.
         matches!(
             value,
-            "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other"
+            "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "identity" | "other"
         )
     };
     let is_fatal_class = |value: &str| {
+        // Must accept every token `RunnerFatalClass::as_str()` can produce.
+        // `node_check_abort` was missing, so our own before_send blanked a
+        // node_check_abort breadcrumb before it left the machine.
         matches!(
             value,
             "libuv_assert"
+                | "node_check_abort"
                 | "node_fatal"
                 | "heap_oom"
                 | "rust_panic"
@@ -829,6 +837,85 @@ mod tests {
             result.breadcrumbs.values[0].message.as_deref(),
             Some("runner stderr #1 (other;libuv_assert)")
         );
+    }
+
+    #[test]
+    fn every_emitter_error_and_fatal_token_round_trips_through_the_content_safe_allowlist() {
+        use hq_desktop_core::sync_outcome::{RunnerErrorClass, RunnerFatalClass};
+
+        // Enumerate the emitter's OWN token set — never a hand-copied list — so the
+        // allowlist can never silently drift behind it again. Every error-class
+        // breadcrumb token (auth renamed to identity) crossed with every fatal
+        // token, including the previously-missing node_check_abort, must survive.
+        for error_class in RunnerErrorClass::ALL {
+            for fatal_class in RunnerFatalClass::ALL {
+                let message = format!(
+                    "runner stderr #1 ({};{})",
+                    error_class.breadcrumb_token(),
+                    fatal_class.as_str()
+                );
+                assert!(
+                    is_content_safe_runner_stderr_message(Some("runner.stderr"), Some(&message)),
+                    "emitter token pair rejected by allowlist: {message}"
+                );
+            }
+        }
+
+        // The exact drift this fix closes: node_check_abort was missing.
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #1 (other;node_check_abort)")
+        ));
+        // The legacy `auth` spelling stays sendable so in-flight older clients
+        // (still emitting it) are not blanked by our own before_send …
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #7245 (auth;none)")
+        ));
+        // … alongside the new denylist-safe `identity` spelling.
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #7245 (identity;none)")
+        ));
+    }
+
+    #[test]
+    fn no_emitter_breadcrumb_token_contains_a_sentry_denylist_substring() {
+        use hq_desktop_core::sync_outcome::{RunnerErrorClass, RunnerFatalClass};
+
+        // The guard that would have caught the destroyed HQ-DESKTOP-4T breadcrumb
+        // at authoring time: no token the breadcrumb renderer can emit may contain
+        // a substring Sentry's default scrubber denylists, or before_send and the
+        // server-side @password:filter would blank the breadcrumb outright.
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        let tokens = RunnerErrorClass::ALL
+            .into_iter()
+            .map(|class| class.breadcrumb_token())
+            .chain(
+                RunnerFatalClass::ALL
+                    .into_iter()
+                    .map(|fatal| fatal.as_str()),
+            );
+        for token in tokens {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "emitter breadcrumb token {token:?} contains Sentry denylist substring {denied:?}"
+                );
+            }
+        }
     }
 
     #[test]

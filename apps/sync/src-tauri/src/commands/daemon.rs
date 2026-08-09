@@ -32,6 +32,7 @@ use hq_desktop_core::daemon::{
     derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
+use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_class, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
@@ -1019,6 +1020,9 @@ struct WatcherExitCaptureContext {
     runner_error_rollup: Option<String>,
     runner_error_class: &'static str,
     runner_error_ops: Option<String>,
+    runner_error_shapes: Option<String>,
+    runner_error_path_roots: Option<String>,
+    runner_error_scope: Option<String>,
     runner_error_companies: u32,
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
@@ -1027,6 +1031,7 @@ struct WatcherExitCaptureContext {
     runner_stack_signature: String,
     runner_stack_depth: u8,
     runner_stack_redacted_frames: u8,
+    runner_stack_input: String,
     windows_terminator: Option<WindowsTerminatorAttribution>,
     /// Durable cancellation-record readout for this exact generation, read at the
     /// terminal boundary alongside the ephemeral cancelled flag. These three make
@@ -1075,6 +1080,9 @@ impl Default for WatcherExitCaptureContext {
             runner_error_rollup: None,
             runner_error_class: "none",
             runner_error_ops: None,
+            runner_error_shapes: None,
+            runner_error_path_roots: None,
+            runner_error_scope: None,
             runner_error_companies: 0,
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
@@ -1083,6 +1091,7 @@ impl Default for WatcherExitCaptureContext {
             runner_stack_signature: "unknown".to_string(),
             runner_stack_depth: 0,
             runner_stack_redacted_frames: 0,
+            runner_stack_input: "empty".to_string(),
             windows_terminator: None,
             cancellation_record_present: false,
             cancellation_record_cause: None,
@@ -1151,6 +1160,11 @@ fn watcher_exit_capture_context(
         runner_error_rollup: totals.runner_error_rollup.tag_value(),
         runner_error_class: totals.runner_error_rollup.fingerprint_token(),
         runner_error_ops: totals.runner_error_ops.tag_value(),
+        // Shared attribution axes — the watcher route reads the SAME RunTotals
+        // source as the manual route so the two can never drift apart.
+        runner_error_shapes: totals.runner_error_shapes.tag_value(),
+        runner_error_path_roots: totals.runner_error_path_roots.tag_value(),
+        runner_error_scope: totals.runner_error_scope(),
         runner_error_companies: totals.runner_error_company_count(),
         runner_phase: phase_context.phase.to_string(),
         runner_phase_elapsed_bucket: runner_phase_elapsed_bucket(
@@ -1162,6 +1176,9 @@ fn watcher_exit_capture_context(
         runner_stack_signature: stack.signature,
         runner_stack_depth: stack.depth,
         runner_stack_redacted_frames: stack.redacted_frames,
+        runner_stack_input: classify_runner_stack_input(stderr_tail)
+            .as_str()
+            .to_string(),
         windows_terminator,
         cancellation_record_present: cancellation_record.is_some(),
         cancellation_record_cause: cancellation_record.and_then(|record| record.cause),
@@ -1894,6 +1911,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(operations) = &context.runner_error_ops {
         tags.push(("runner_error_ops", operations.clone()));
     }
+    if let Some(shapes) = &context.runner_error_shapes {
+        tags.push(("runner_error_shapes", shapes.clone()));
+    }
+    if let Some(path_roots) = &context.runner_error_path_roots {
+        tags.push(("runner_error_path_roots", path_roots.clone()));
+    }
     if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none() {
         if let Some(attribution) = context.windows_terminator {
             tags.push(("windows_terminator", attribution.class_name().to_string()));
@@ -1948,7 +1971,7 @@ fn watcher_exit_context_extras(
     context: &WatcherExitCaptureContext,
     runner_fatal_class_seen: bool,
 ) -> Vec<(&'static str, sentry::protocol::Value)> {
-    vec![
+    let mut extras = vec![
         (
             "watcher_lifecycle_state",
             sentry::protocol::Value::String(context.lifecycle_state.clone()),
@@ -2021,7 +2044,19 @@ fn watcher_exit_context_extras(
             "cancellation_termination_effected",
             sentry::protocol::Value::String(context.cancellation_termination_effected.to_string()),
         ),
-    ]
+        (
+            "runner_stack_input",
+            sentry::protocol::Value::String(context.runner_stack_input.clone()),
+        ),
+    ];
+    // Company-scope vs per-file split, only when a runner error was recorded.
+    if let Some(scope) = &context.runner_error_scope {
+        extras.push((
+            "runner_error_scope",
+            sentry::protocol::Value::String(scope.clone()),
+        ));
+    }
+    extras
 }
 
 /// The selected spawn command determines the fixed-vocabulary resolution
@@ -4682,6 +4717,112 @@ mod tests {
             "watcher_cancelled".to_string(),
             sentry::protocol::Value::String("false".to_string())
         )));
+    }
+
+    #[test]
+    fn watcher_exit_emits_the_shared_shape_path_and_scope_attribution() {
+        use crate::events::SyncErrorEvent;
+
+        // Feed the SAME error flood the manual-seam artifact test uses, through
+        // the SAME RunTotals source, and prove the watcher route emits the
+        // identical fixed-vocabulary attribution — the two seams cannot drift.
+        let mut totals = RunTotals::default();
+        for i in 0..120 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: format!("knowledge/secret-a{i}.md"),
+                message: "download skipped: local parent escaped the sync root".to_string(),
+            });
+        }
+        for i in 0..40 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: format!("repos/secret-b{i}"),
+                message: format!("presigned GET failed for repos/secret-b{i}: 500"),
+            });
+        }
+        for _ in 0..8 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: "(company)".to_string(),
+                message: "Entity cmp_SECRET NOT FOUND".to_string(),
+            });
+        }
+        let ndjson_tail = vec![
+            r#"{"type":"error","company":"acme","path":"(company)","message":"Entity cmp_SECRET NOT FOUND"}"#
+                .to_string(),
+        ];
+
+        // Exactly the expressions watcher_exit_capture_context() uses to read the
+        // shared source.
+        let context = WatcherExitCaptureContext {
+            runner_error_rollup: totals.runner_error_rollup.tag_value(),
+            runner_error_ops: totals.runner_error_ops.tag_value(),
+            runner_error_shapes: totals.runner_error_shapes.tag_value(),
+            runner_error_path_roots: totals.runner_error_path_roots.tag_value(),
+            runner_error_scope: totals.runner_error_scope(),
+            runner_stack_input: classify_runner_stack_input(&ndjson_tail)
+                .as_str()
+                .to_string(),
+            ..Default::default()
+        };
+
+        let mut effects = RecordingWatcherEffects::default();
+        // An external SIGKILL is an unexpected crash that captures.
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(9),
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+
+        assert_eq!(effects.captures.len(), 1);
+        let event = &effects.captures[0];
+        assert_eq!(recorded_tag(event, "sync_route"), "watcher");
+        // Identical to the manual seam's values for the same RunTotals.
+        assert_eq!(recorded_tag(event, "runner_error_rollup"), "OTHER:168");
+        assert_eq!(recorded_tag(event, "runner_error_ops"), "other:168");
+        assert_eq!(
+            recorded_tag(event, "runner_error_shapes"),
+            "containment_escape:120,presigned_get_failed:40,unknown:8"
+        );
+        assert_eq!(
+            recorded_tag(event, "runner_error_path_roots"),
+            "knowledge:120,repos:40"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "runner_error_scope"),
+            "company:8,file:160"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "runner_stack_input"),
+            "ndjson_error_records"
+        );
+
+        // No seeded path/message bytes reach the wire.
+        let mut wire_strings: Vec<&str> = event.tags.iter().map(|(_, v)| v.as_str()).collect();
+        for (_, value) in &event.extras {
+            if let sentry::protocol::Value::String(text) = value {
+                wire_strings.push(text.as_str());
+            }
+        }
+        for forbidden in [
+            "secret-a",
+            "secret-b",
+            "cmp_SECRET",
+            "acme",
+            "escaped the sync root",
+        ] {
+            assert!(
+                wire_strings.iter().all(|value| !value.contains(forbidden)),
+                "watcher wire leaked seeded content: {forbidden}"
+            );
+        }
     }
 
     #[test]
