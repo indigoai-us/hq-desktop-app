@@ -28,6 +28,11 @@ use crate::events::SyncEvent;
 /// scope split and the path-root rollup agree on what "not a file path" means.
 pub const COMPANY_ERROR_PATH_SENTINEL: &str = "(company)";
 
+/// Sentinel `path` the runner uses for a pre-fanout discovery-phase error
+/// (`company` is absent), before any company or per-file work exists. Kept
+/// distinct so a discovery failure is never miscounted as a per-file error.
+pub const DISCOVERY_ERROR_PATH_SENTINEL: &str = "(discovery)";
+
 /// Cap on how many entries a rollup renders into a single Sentry tag value,
 /// highest count first. Keeps the tag value bounded well under Sentry's 200-char
 /// tag-value limit even when many distinct shapes or path roots occur in one
@@ -116,7 +121,11 @@ pub fn classify_runner_error_shape(message: &str) -> RunnerErrorShape {
         RunnerErrorShape::PresignedGetFailed
     } else if msg.contains("presigned head failed") {
         RunnerErrorShape::PresignedHeadFailed
-    } else if msg.contains("returned no row") {
+    } else if msg.contains("presign") && msg.contains("returned no row") {
+        // Require the `presign` context: the documented source is specifically
+        // `presign <op> returned no row for <key>`. Matching the bare phrase
+        // would mislabel an unrelated "returned no row" (e.g. a DB lookup),
+        // violating the fail-to-`unknown` policy.
         RunnerErrorShape::PresignNoRow
     } else {
         RunnerErrorShape::Unknown
@@ -520,6 +529,8 @@ mod tests {
             "the sync root was reindexed", // contains "sync root" but not "escaped the sync root"
             "unlink succeeded for tombstone", // contains tombstone+unlink but not "unlink failed"
             "presigned GET succeeded for knowledge/a.md",
+            "entity lookup returned no row for cmp_x", // "returned no row" without the presign context
+            "journal query returned no row",
         ] {
             assert_eq!(
                 classify_runner_error_shape(message),

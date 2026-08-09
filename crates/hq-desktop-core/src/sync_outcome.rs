@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
     RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
+    DISCOVERY_ERROR_PATH_SENTINEL,
 };
 use sha2::{Digest, Sha256};
 
@@ -87,6 +88,10 @@ pub struct RunTotals {
     pub runner_error_path_roots: RunnerErrorPathRootRollup,
     /// Count of company-scope errors (`path == "(company)"`) seen this pass.
     runner_error_company_scope: u32,
+    /// Count of pre-fanout discovery-phase errors (`path == "(discovery)"`) seen
+    /// this pass. Kept distinct so a discovery failure is never miscounted as a
+    /// per-file error or given a path root.
+    runner_error_discovery_scope: u32,
     /// Count of per-file errors (any other `path`) seen this pass.
     runner_error_file_scope: u32,
 }
@@ -129,10 +134,14 @@ impl RunTotals {
         self.runner_error_rollup.record(&err.message);
         self.runner_error_ops.record(&err.message);
         // Additive attribution axes (never affect alerting/suppression): a
-        // message shape for every error, and a path root for per-file errors.
+        // message shape for every error, and — for genuine per-file errors only —
+        // a path root. The company and discovery sentinels are not file paths, so
+        // they are counted by scope and never given a path root.
         self.runner_error_shapes.record(&err.message);
         if err.path == COMPANY_ERROR_PATH_SENTINEL {
             self.runner_error_company_scope = self.runner_error_company_scope.saturating_add(1);
+        } else if err.path == DISCOVERY_ERROR_PATH_SENTINEL {
+            self.runner_error_discovery_scope = self.runner_error_discovery_scope.saturating_add(1);
         } else {
             self.runner_error_file_scope = self.runner_error_file_scope.saturating_add(1);
             self.runner_error_path_roots.record(&err.path);
@@ -158,13 +167,20 @@ impl RunTotals {
     pub fn runner_error_scope(&self) -> Option<String> {
         let total = self
             .runner_error_company_scope
-            .saturating_add(self.runner_error_file_scope);
-        (total > 0).then(|| {
-            format!(
-                "company:{},file:{}",
-                self.runner_error_company_scope, self.runner_error_file_scope
-            )
-        })
+            .saturating_add(self.runner_error_file_scope)
+            .saturating_add(self.runner_error_discovery_scope);
+        if total == 0 {
+            return None;
+        }
+        let mut rendered = format!(
+            "company:{},file:{}",
+            self.runner_error_company_scope, self.runner_error_file_scope
+        );
+        // Appended only when present, so the common company/file split is stable.
+        if self.runner_error_discovery_scope > 0 {
+            rendered.push_str(&format!(",discovery:{}", self.runner_error_discovery_scope));
+        }
+        Some(rendered)
     }
 
     pub fn record_auth_error(&mut self) {
@@ -1887,6 +1903,38 @@ mod tests {
             assert!(!rendered.contains("secret-file"));
             assert!(!rendered.contains("acme"));
         }
+    }
+
+    #[test]
+    fn runner_error_scope_counts_discovery_separately_and_never_path_roots_it() {
+        let mut totals = RunTotals::default();
+        // A pre-fanout discovery failure: company absent, path is the sentinel.
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(discovery)".to_string(),
+            message: "Vault unreachable".to_string(),
+        });
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "knowledge/a.md".to_string(),
+            message: "download skipped: local parent escaped the sync root".to_string(),
+        });
+        // Discovery is its own scope, appended after the company/file split, and
+        // never counted as a per-file error …
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:0,file:1,discovery:1")
+        );
+        // … and never given a path root ("(discovery)" is not a file path).
+        assert_eq!(
+            totals.runner_error_path_roots.tag_value().as_deref(),
+            Some("knowledge:1")
+        );
+        // Its message shape is still recorded like any other error.
+        assert_eq!(
+            totals.runner_error_shapes.tag_value().as_deref(),
+            Some("containment_escape:1,unknown:1")
+        );
     }
 
     // ── describe_exit ────────────────────────────────────────────────────────────
