@@ -303,4 +303,64 @@ describe('master automatic-updates switch', () => {
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
   });
+
+  it('the installer asks for the same version the app compared against', () => {
+    // HQ-DESKTOP-46: the app fetched an exact `latest` but asked npm for the
+    // mutable `@latest` DIST-TAG, which npm re-resolved through its own lagging
+    // cache/CDN and could install N-1 while convergence was judged against N.
+    // Both executors now build their argv from the EXACT resolved version via a
+    // single spec builder, so the version asked for and the version compared
+    // against are one string by construction.
+    expect(cliUpdateCore).toContain('pub fn hq_cli_package_spec(version: Option<&str>)');
+    expect(cliUpdateCore).toContain(
+      'pub fn install_argv(prefix: Option<&str>, target_version: Option<&str>)',
+    );
+    expect(cliUpdateCore).toContain('pub fn pnpm_install_argv(target_version: Option<&str>)');
+    expect(cliUpdateCore).toContain('argv.push(hq_cli_package_spec(target_version));');
+
+    // The npm branch resolves `latest` BEFORE building the argv and threads it
+    // in — the old code built the @latest argv before `fetch_latest` ran.
+    const pnpmReturn = cliUpdate.indexOf('return install_hq_cli_update_via_pnpm(');
+    expect(pnpmReturn).toBeGreaterThan(-1);
+    const npmBranch = cliUpdate.slice(pnpmReturn);
+    const fetchIdx = npmBranch.indexOf('let latest = fetch_latest().await?;');
+    const argvIdx = npmBranch.indexOf(
+      'let base_args = install_argv(prefix.as_deref(), Some(&latest));',
+    );
+    expect(fetchIdx).toBeGreaterThan(-1);
+    expect(argvIdx).toBeGreaterThan(fetchIdx);
+    // The pnpm branch likewise pins the resolved version into its argv.
+    expect(cliUpdate).toContain('let args = pnpm_install_argv(Some(latest));');
+    // And the decision seam is told exactly what it asked for.
+    expect(cliUpdate).toContain('.with_requested_version(Some(&latest))');
+  });
+
+  it('a version the registry has not propagated yet does not wedge auto-update', () => {
+    // With the exact version pinned, a not-yet-propagated release either fails
+    // with ETARGET (already an expected transient — no event, retried) or, if
+    // npm exits 0 without delivering it, is classified a non-blocking resolution
+    // shortfall. Neither may permanently block auto-update (HQ-DESKTOP-46).
+    const core = cliUpdateCore;
+    // ETARGET stays an expected transient registry failure.
+    expect(core).toContain('fn is_expected_transient_registry_failure(');
+    expect(core).toContain('"ETARGET"');
+    // The npm-targeted class now requires DELIVERY EVIDENCE; without it the same
+    // shape is a resolution shortfall that never records a block. This is the
+    // tautology fix — aiming at the prefix is no longer sufficient.
+    expect(core).toContain('NonConvergenceKind::ResolutionShortfall');
+    expect(normalize(core)).toContain(
+      'if install_converged(npm_prefix_manifest_version, latest) { ' +
+        'NonConvergenceKind::NpmTargeted } else { NonConvergenceKind::ResolutionShortfall }',
+    );
+    // Delivery evidence is read from the prefix's own manifest.
+    expect(core).toContain('pub fn prefix_manifest_version(');
+    // A machine wedged by the OLD racy contract carries a legacy bare-string
+    // marker; that grants exactly one re-attempt instead of blocking forever,
+    // while a marker written under the pinned contract keeps blocking.
+    expect(core).toContain('NON_CONVERGENT_MARKER_PINNED_PREFIX');
+    expect(core).toContain('pub fn encode_non_convergent_marker(');
+    expect(core).toContain('marker.pinned && marker.version == latest');
+    // The app persists the marker under the pinned contract.
+    expect(cliUpdate).toContain('encode_non_convergent_marker(latest)');
+  });
 });

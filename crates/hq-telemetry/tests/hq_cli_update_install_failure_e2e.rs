@@ -3,9 +3,9 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_install_failure_episode,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
-    InstallExecutor, InstallFailureEpisode, NonConvergenceKind, NonConvergentReport,
-    NpmToolchainSource,
+    report_non_convergent_install, report_npm_cache_setup_failure, should_auto_install,
+    InstallEnvironment, InstallExecutor, InstallFailureEpisode, NonConvergenceKind,
+    NonConvergentReport, NpmToolchainSource,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -400,6 +400,45 @@ fn transient_registry_failures_do_not_capture() {
     }
 }
 
+/// HQ-DESKTOP-46: pinning the exact version turns a not-yet-propagated version
+/// into an ETARGET failure during the post-publish window. It must stay silent
+/// and retryable — it flows through the SAME production episode path as any
+/// install failure, is classified NotReportable (no Sentry event), and (being an
+/// install FAILURE, never a zero-exit convergence check) writes no non-convergent
+/// marker, so `should_auto_install` stays armed and the next scheduled check
+/// retries once the version propagates.
+#[test]
+fn a_pinned_install_etarget_during_propagation_emits_no_event_and_leaves_auto_update_armed() {
+    let pinned_etarget = "npm error code ETARGET\n\
+        npm error notarget No matching version found for @indigoai-us/hq-cli@5.97.1\n\
+        npm error notarget In most cases you or one of your dependencies are requesting a";
+    let env = InstallEnvironment::default();
+
+    let mut outcome_kind: Option<InstallFailureEpisode> = None;
+    let events = captured_events(|| {
+        outcome_kind = Some(report_install_failure_episode(
+            Some(1),
+            pinned_etarget,
+            Some("/Users/reviewer/.npm-global"),
+            false,
+            &env,
+            "5.97.1",
+            &[],
+        ));
+    });
+    assert!(
+        events.is_empty(),
+        "a pinned-install ETARGET during propagation must emit no event"
+    );
+    assert!(
+        matches!(outcome_kind, Some(InstallFailureEpisode::NotReportable)),
+        "an expected transient must be NotReportable, got {outcome_kind:?}"
+    );
+    // An install FAILURE never reaches the zero-exit convergence gate, so no
+    // non-convergent marker is written — auto-update stays armed and retries.
+    assert!(should_auto_install("5.97.1", None));
+}
+
 #[test]
 fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics() {
     let cache_eacces = "npm error code EACCES\n\
@@ -556,6 +595,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             local: Some("5.77.14".to_string()),
             hq_bin: hq_bin.clone(),
             npm_prefix: None,
+            requested_version: Some("5.83.0".to_string()),
             installer_bin: "/opt/homebrew/bin/npm".to_string(),
             hq_bin_changed: true,
             pnpm: None,

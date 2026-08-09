@@ -120,6 +120,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
             after_version: Some("5.77.14"),
             latest: "5.84.0",
             npm_prefix_passed: None,
+            npm_prefix_manifest_version: None,
+            requested_version: Some("5.84.0"),
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: false,
             pnpm: Some(PnpmRunDiagnostics {

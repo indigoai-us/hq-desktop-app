@@ -4,7 +4,8 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_install_failure,
     report_non_convergent_install, report_unreadable_version, BinaryAnchorShape, InstallExecutor,
-    LocalVersionProbeDiagnostics, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics,
+    LocalVersionProbeDiagnostics, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
+    PnpmRunDiagnostics,
     PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind, VersionProbeOutcome,
     NON_CONVERGENT_ERROR_PREFIX,
 };
@@ -74,6 +75,8 @@ fn pnpm_context<'a>(
         after_version: Some("5.77.14"),
         latest: "5.84.0",
         npm_prefix_passed: None,
+        npm_prefix_manifest_version: None,
+        requested_version: Some("5.84.0"),
         installer_bin: pnpm_bin,
         already_blocked,
         pnpm: Some(PnpmRunDiagnostics {
@@ -271,8 +274,14 @@ fn foreign_managed_repeat_episodes_stay_suppressed_through_the_executor() {
     }
 }
 
+/// HQ-DESKTOP-46 genuine shadowing: the install DID deliver `latest` into the
+/// passed prefix (prefix manifest reached it) but the resolved binary is a
+/// foreign copy still on the old version. This is a real layout defect, so it
+/// captures loudly on EVERY occurrence (even an already-blocked episode) and
+/// keeps a durable blocking record — exactly the historical NpmTargeted
+/// behaviour, now backed by delivery evidence rather than a prefix tautology.
 #[test]
-fn npm_targeted_non_convergence_stays_loud_for_an_already_marked_episode() {
+fn true_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_block() {
     let home = hq_desktop_core::paths::home_dir().expect("test home directory");
     let home_text = home.to_string_lossy().to_string();
     let prefix = home.join(".npm-global").to_string_lossy().to_string();
@@ -286,10 +295,15 @@ fn npm_targeted_non_convergence_stays_loud_for_an_already_marked_episode() {
         "npm-global"
     };
 
+    // `already_blocked = true` AND delivery evidence present (prefix manifest at
+    // the target) → still loud, still records the block.
+    let ctx = npm_context(&hq_bin, Some(&prefix), true)
+        .with_prefix_manifest_version(Some("5.84.0"))
+        .with_requested_version(Some("5.84.0"));
     let (events, records, captures, record_failures) =
-        composed_non_convergent_events(&npm_context(&hq_bin, Some(&prefix), true), true);
-    assert_eq!(records, 1);
-    assert_eq!(captures, 1);
+        composed_non_convergent_events(&ctx, true);
+    assert_eq!(records, 1, "a real layout defect keeps its durable block");
+    assert_eq!(captures, 1, "and stays loud on every occurrence");
     assert_eq!(record_failures, 0);
     assert_eq!(events.len(), 1);
     assert_non_convergent_event(
@@ -298,6 +312,11 @@ fn npm_targeted_non_convergence_stays_loud_for_an_already_marked_episode() {
         expected_hq_source,
         "~/.npm-global/bin/hq",
         "~/.npm-global",
+    );
+    assert_eq!(
+        events[0].tags.get("requested_version").map(String::as_str),
+        Some("5.84.0"),
+        "the installer asked for the exact delivered target"
     );
     let serialized = serde_json::to_string(&events[0]).expect("serialize event");
     assert!(!serialized.contains(&home_text));
@@ -737,4 +756,182 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         events[0].tags.get("npm_path_shape").map(String::as_str),
         Some("global-lib-node-modules")
     );
+}
+
+/// Drive a resolution-shortfall outcome through the real effects executor and
+/// the real reporter (via `before_send`). Unlike `composed_non_convergent_events`
+/// this PERMITS the `clear` effect, because a shortfall clears any stale/legacy
+/// marker rather than recording a block.
+fn composed_shortfall_events(
+    ctx: &PostInstallContext<'_>,
+) -> (Vec<sentry::protocol::Event<'static>>, usize, usize, usize) {
+    let records = Cell::new(0usize);
+    let clears = Cell::new(0usize);
+    let captures = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(ctx);
+        let record = |_version: String| {
+            records.set(records.get() + 1);
+            Ok(())
+        };
+        let clear = || clears.set(clears.get() + 1);
+        let capture = |report: NonConvergentReport| {
+            captures.set(captures.get() + 1);
+            report_non_convergent_install(&report);
+        };
+        let record_failure =
+            |_error: String| panic!("a shortfall writes no marker, so there is no failure path");
+        let _ = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+    });
+    (events, records.get(), clears.get(), captures.get())
+}
+
+/// HQ-DESKTOP-46 core fix at the artifact level: a resolution shortfall names
+/// itself (its own closed `non_convergence_kind` tag, plus delivered-vs-requested
+/// version tags), keeps the stable fingerprint so it never splits the Sentry
+/// group, leaks no filesystem path, writes NO blocking marker, and clears any
+/// stale/legacy marker. It must NOT render as a targeted layout defect.
+#[test]
+fn a_resolution_shortfall_names_itself_and_does_not_render_as_a_targeted_layout_defect() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let prefix = home.join(".npm-global").to_string_lossy().to_string();
+    let hq_bin = home
+        .join(".npm-global/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    // Aimed at the resolved binary's own prefix, npm exited 0, but the prefix
+    // manifest is still short of the target — the post-publish propagation race.
+    let ctx = PostInstallContext::npm(
+        &hq_bin,
+        &hq_bin,
+        Some("5.96.0"),
+        Some("5.96.0"),
+        "5.96.1",
+        Some(&prefix),
+        "/opt/homebrew/bin/npm",
+        false,
+    )
+    .with_prefix_manifest_version(Some("5.96.0"))
+    .with_requested_version(Some("5.96.1"));
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::ResolutionShortfall)
+    );
+
+    let (events, records, clears, captures) = composed_shortfall_events(&ctx);
+    assert_eq!(records, 0, "a shortfall must not write a blocking marker");
+    assert_eq!(clears, 1, "a shortfall clears any stale/legacy marker");
+    assert_eq!(captures, 1, "but it still names itself");
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    // Stable fingerprint — never splits the existing Sentry group.
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    // Names its own mechanism, distinct from the targeted layout class.
+    for (tag, expected) in [
+        ("non_convergence_kind", "resolution-shortfall"),
+        ("requested_version", "5.96.1"),
+        ("local", "5.96.0"),
+        ("latest", "5.96.1"),
+        ("prefix_known", "true"),
+        ("hq_bin_changed", "false"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    // Closed tag domain: no tag carries a filesystem path, and the real home is
+    // redacted everywhere in the serialized event.
+    for value in event.tags.values() {
+        assert!(!value.contains('/'), "a tag must never carry a path: {value}");
+    }
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+}
+
+/// Replays the exact tag shape captured on 2026-08-09T00:47:11Z (npm executor,
+/// prefix known, hq_bin unchanged, managed-toolchain hq bin, delivered 5.97.0
+/// against target 5.97.1). Under the OLD contract this was a tautological
+/// `npm-targeted` that recorded a permanent block. Under the new contract, with
+/// no delivery evidence, it reclassifies as a non-blocking resolution shortfall.
+#[test]
+fn the_2026_08_09_field_event_shape_reclassifies_under_the_new_contract() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    // The field shape: delivered 5.97.0 into the prefix, target 5.97.1, and the
+    // resolved binary never moved (hq_bin_changed=false).
+    let ctx = PostInstallContext::npm(
+        &hq_bin,
+        &hq_bin,
+        Some("5.97.0"),
+        Some("5.97.0"),
+        "5.97.1",
+        Some(&prefix),
+        "/opt/homebrew/bin/npm",
+        false,
+    )
+    .with_prefix_manifest_version(Some("5.97.0"))
+    .with_requested_version(Some("5.97.1"));
+
+    let outcome = decide_post_install(&ctx);
+    assert_eq!(
+        outcome.non_convergence_kind,
+        Some(NonConvergenceKind::ResolutionShortfall),
+        "the 2026-08-09 shape must no longer read as a targeted layout defect"
+    );
+    assert!(
+        outcome.record_non_convergent.is_none(),
+        "the wedge is gone: no permanent block is recorded for this shape"
+    );
+
+    let (events, records, _clears, captures) = composed_shortfall_events(&ctx);
+    assert_eq!(records, 0);
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("resolution-shortfall")
+    );
+    assert_ne!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("npm-targeted"),
+        "must not reproduce the tautological targeted classification"
+    );
+    assert_eq!(
+        event.tags.get("hq_bin_changed").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        event.tags.get("prefix_known").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.tags.get("requested_version").map(String::as_str),
+        Some("5.97.1")
+    );
+    assert_eq!(event.tags.get("local").map(String::as_str), Some("5.97.0"));
 }

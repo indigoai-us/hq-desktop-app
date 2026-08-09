@@ -69,13 +69,15 @@ use crate::util::paths;
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_update_enabled, classify_install_failure,
     classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
-    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
+    decide_post_install, dismissed_cli_version, encode_non_convergent_marker, get_local_version,
+    get_local_version_diagnostics,
     hq_version_string, install_argv, install_converged, install_failure_detail,
     install_failure_detail_with_final_attempt, install_failure_report, is_cli_update_dismissed,
     is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
     is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, npm_install_attempt_summary, npm_prefix_from_hq_bin,
-    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv, read_installed_version,
+    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv, prefix_manifest_version,
+    read_installed_version,
     redact_home, redact_home_in, report_install_failure, report_install_failure_episode,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_non_convergent_marker_unpersisted,
@@ -777,7 +779,9 @@ async fn install_hq_cli_update_via_pnpm(
     let path_has_shim_dir = shim_dir
         .as_deref()
         .is_some_and(|dir| path_contains_dir(&path, dir));
-    let args = pnpm_install_argv();
+    // Pin the EXACT resolved version, not the mutable `@latest` tag, so pnpm
+    // installs the version the app compared against (HQ-DESKTOP-46).
+    let args = pnpm_install_argv(Some(latest));
     log(
         "hq-cli-update",
         &format!(
@@ -851,6 +855,8 @@ async fn install_hq_cli_update_via_pnpm(
         after_version: resolved.as_deref(),
         latest,
         npm_prefix_passed: None,
+        npm_prefix_manifest_version: None,
+        requested_version: Some(latest),
         installer_bin: &pnpm,
         already_blocked,
         pnpm: Some(PnpmRunDiagnostics {
@@ -953,21 +959,24 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;
     }
     let prefix = npm_prefix_from_hq_bin(&hq);
-    let base_args = install_argv(prefix.as_deref());
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
         report_npm_cache_setup_failure(category);
         error
     })?;
 
-    // Pin the target BEFORE spawning npm. Reading `latest` afterwards races a
-    // publish: npm can resolve `@latest` to A while a post-install fetch returns
-    // a freshly-published B, and we would then judge the installed A against B,
-    // call it non-convergent, and permanently block auto-installs of a version
-    // nothing ever attempted. Resolving first keeps the comparison and the
-    // recorded block bound to the version this run actually asked npm for.
+    // Resolve the target version ONCE, before building the argv, and install
+    // exactly that version. The prior code built the argv (which requested the
+    // mutable `@latest` tag) BEFORE this fetch, so npm re-resolved `@latest`
+    // through its own lagging packument cache/CDN edge and could install N-1
+    // while this fetch returned N — convergence then judged the installed N-1
+    // against N, called it non-convergent, and permanently blocked a version
+    // nothing ever actually attempted (HQ-DESKTOP-46). Threading the fetched
+    // version into `install_argv` makes the version we ask npm for and the
+    // version we judge convergence against one and the same string.
     let latest = fetch_latest().await?;
     let already_blocked =
         non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+    let base_args = install_argv(prefix.as_deref(), Some(&latest));
     log(
         "hq-cli-update",
         &format!(
@@ -1082,16 +1091,38 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .ok()
             .flatten()
     };
-    let outcome = decide_post_install(&PostInstallContext::npm(
-        &hq,
-        &post_install_hq,
-        before_version.as_deref(),
-        resolved.as_deref(),
-        &latest,
-        prefix.as_deref(),
-        &npm,
-        already_blocked,
-    ));
+    // Delivery evidence: what version did the install actually write INTO the
+    // prefix we aimed at? This separates genuine shadowing (target delivered but
+    // a foreign copy shadows PATH — a real layout defect, stays loud and blocks)
+    // from a registry shortfall (target never delivered — the propagation race,
+    // must never block). Read off the blocking thread; only meaningful when we
+    // passed a prefix. An unreadable manifest reads as `None`, which fails safe
+    // toward retrying rather than wedging.
+    let prefix_manifest = match prefix.as_deref() {
+        Some(prefix) => {
+            let prefix = prefix.to_string();
+            let bin = post_install_hq.clone();
+            tauri::async_runtime::spawn_blocking(move || prefix_manifest_version(&prefix, &bin))
+                .await
+                .ok()
+                .flatten()
+        }
+        None => None,
+    };
+    let outcome = decide_post_install(
+        &PostInstallContext::npm(
+            &hq,
+            &post_install_hq,
+            before_version.as_deref(),
+            resolved.as_deref(),
+            &latest,
+            prefix.as_deref(),
+            &npm,
+            already_blocked,
+        )
+        .with_prefix_manifest_version(prefix_manifest.as_deref())
+        .with_requested_version(Some(&latest)),
+    );
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(&app, &outcome)
 }
@@ -1104,13 +1135,18 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 /// capture. Otherwise an unwritable config directory converts every scheduled
 /// retry into another apparent first episode.
 fn record_non_convergent_version(latest: &str) -> Result<(), String> {
+    // Stamp the pinned-install contract onto the marker. A marker written here
+    // records a version proven non-convergent by an install that asked npm for
+    // the EXACT version (a real layout defect), so it blocks that version
+    // permanently. Legacy bare-string markers (written by the older racy
+    // `@latest` install) are read back as non-blocking and grant one re-attempt.
     paths::menubar_json_path()
         .and_then(|path| {
             hq_desktop_core::first_run::merge_menubar_flags(
                 &path,
                 &[(
                     NON_CONVERGENT_VERSION_KEY,
-                    Value::String(latest.to_string()),
+                    Value::String(encode_non_convergent_marker(latest)),
                 )],
             )
         })
@@ -1234,7 +1270,7 @@ mod tests {
 
     #[test]
     fn npm_install_command_uses_app_cache_without_changing_path_or_argv() {
-        let args = install_argv(Some("/tmp/hq-prefix"));
+        let args = install_argv(Some("/tmp/hq-prefix"), Some("5.97.1"));
         let command = npm_install_command(
             "npm",
             "/test/child-path",
@@ -1309,7 +1345,7 @@ exit 0
                 &path,
                 &npm_cache,
                 Some(prefix.to_str().unwrap()),
-                install_argv(Some(prefix.to_str().unwrap())),
+                install_argv(Some(prefix.to_str().unwrap()), Some("5.97.1")),
             )
             .await
             .unwrap();
@@ -1376,7 +1412,7 @@ exit 0
             &std::env::var("PATH").unwrap(),
             &npm_cache,
             Some(prefix.to_str().unwrap()),
-            install_argv(Some(prefix.to_str().unwrap())),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.97.1")),
         )
         .await
         .unwrap();
@@ -1445,7 +1481,7 @@ exit 0
             &std::env::var("PATH").unwrap(),
             &npm_cache,
             Some(prefix.to_str().unwrap()),
-            install_argv(Some(prefix.to_str().unwrap())),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.97.1")),
         )
         .await
         .unwrap();
@@ -1506,7 +1542,7 @@ exit 0
             &std::env::var("PATH").unwrap(),
             &app_cache,
             Some(prefix.to_str().unwrap()),
-            install_argv(Some(prefix.to_str().unwrap())),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.97.1")),
         )
         .await
         .unwrap();
@@ -1600,7 +1636,7 @@ exit 0
     // global hq-cli install — it just overwrites the stale bin link.
     #[test]
     fn forced_retry_args_add_force_to_a_global_install() {
-        let mut forced = install_argv(None);
+        let mut forced = install_argv(None, Some("5.97.1"));
         forced.push("--force".to_string());
         assert!(
             forced.iter().any(|a| a == "--force"),
