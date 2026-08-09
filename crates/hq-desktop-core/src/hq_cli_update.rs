@@ -15,8 +15,31 @@ use crate::paths;
 /// import path for the resolver's program classification.
 pub use crate::paths::ResolvedProgramKind;
 
-/// npm package the menubar nags the user to keep current.
+/// npm package the menubar nags the user to keep current. The `@latest`
+/// dist-tag is a MUTABLE pointer that npm re-resolves through its own
+/// (app-private, persistent) packument cache and the registry CDN — a second,
+/// independently-cacheable resolution of "what is latest" that can disagree
+/// with the exact version the app already read from the registry's /latest
+/// endpoint. Prefer [`hq_cli_package_spec`] with the resolved version; this
+/// constant is the `None` fallback for call sites with no resolved target.
 pub const HQ_CLI_PACKAGE: &str = "@indigoai-us/hq-cli@latest";
+
+/// The bare package name, without any version or dist-tag suffix.
+pub const HQ_CLI_PACKAGE_NAME: &str = "@indigoai-us/hq-cli";
+
+/// Build the install spec the package manager is asked for. `Some(version)`
+/// pins the EXACT version the app resolved, so the version the app compares
+/// against and the version it asks npm/pnpm to install are the same string by
+/// construction — no second, independently-cacheable dist-tag resolution.
+/// `None` falls back to the `@latest` dist-tag only for call sites that
+/// genuinely have no resolved target, so no caller silently loses its ability
+/// to install.
+pub fn hq_cli_package_spec(version: Option<&str>) -> String {
+    match version {
+        Some(version) => format!("{HQ_CLI_PACKAGE_NAME}@{version}"),
+        None => HQ_CLI_PACKAGE.to_string(),
+    }
+}
 
 /// Payload emitted to the frontend and returned by `check_hq_cli_update`.
 #[derive(Debug, Clone, Serialize)]
@@ -581,6 +604,43 @@ pub fn non_convergent_cli_version() -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// menubar.json key recording WHICH contract wrote the non-convergent marker.
+/// Present (== [`PINNED_MARKER_CONTRACT`]) only for markers written after the
+/// installer began pinning the exact resolved version; absent on legacy markers
+/// written under the racy `@latest` dist-tag contract. Its presence is what
+/// separates a block backed by delivery evidence from one a transient registry
+/// race may have produced.
+pub const NON_CONVERGENT_CONTRACT_KEY: &str = "cliUpdateNonConvergentContract";
+
+/// The contract tag a pinned-install non-convergence writes beside its version.
+/// A marker carrying it represents a real, delivery-backed layout defect and
+/// blocks auto-update permanently; a marker without it earns one recovery
+/// re-attempt (see [`legacy_marker_needs_recovery`]).
+pub const PINNED_MARKER_CONTRACT: &str = "pinned-v1";
+
+/// The contract tag recorded beside the non-convergent version, if any. `None`
+/// when the key is absent, `null`, or unreadable — i.e. a legacy marker.
+pub fn non_convergent_cli_contract() -> Option<String> {
+    let dir = paths::hq_config_dir().ok()?;
+    let contents = std::fs::read_to_string(dir.join("menubar.json")).ok()?;
+    let json: Value = serde_json::from_str(&contents).ok()?;
+    json.get(NON_CONVERGENT_CONTRACT_KEY)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Does a persisted non-convergent marker predate the pinned-install contract
+/// and therefore deserve exactly one recovery re-attempt? True iff a version is
+/// recorded but it carries no pinned contract tag. Such a marker may have been
+/// written by the `@latest` dist-tag race — a transient registry lag that
+/// installed N-1 and then permanently disabled auto-install of N — so clearing
+/// it once lets the next scheduled check re-install under the pinned contract.
+/// A marker that IS pinned is backed by delivery evidence and keeps blocking, so
+/// this returns false for it (no unbounded loop for a genuinely stuck layout).
+pub fn legacy_marker_needs_recovery(contract: Option<&str>, version: Option<&str>) -> bool {
+    version.is_some() && contract != Some(PINNED_MARKER_CONTRACT)
+}
+
 /// Version of the `hq` the app will actually **execute** — the only probe valid
 /// for proving an install converged.
 ///
@@ -687,6 +747,14 @@ pub enum NonConvergenceKind {
     /// land, so it stays loud instead of being bounded like a foreign layout.
     PnpmTargeted,
     ForeignManaged,
+    /// npm was aimed at the resolved binary's own prefix, yet the target version
+    /// was never delivered INTO that prefix — the manifest there does not report
+    /// the version we asked for. That is not a layout defect (the installer had
+    /// the right target); it is a transient registry/resolution shortfall: npm
+    /// resolved the requested version to an older one, or the CDN/packument
+    /// cache lagged the publish. It must NOT wedge auto-update — the next
+    /// scheduled check simply retries.
+    ResolutionShortfall,
 }
 
 impl NonConvergenceKind {
@@ -695,15 +763,27 @@ impl NonConvergenceKind {
             Self::NpmTargeted => "npm-targeted",
             Self::PnpmTargeted => "pnpm-targeted",
             Self::ForeignManaged => "foreign-managed",
+            Self::ResolutionShortfall => "resolution-shortfall",
         }
     }
 
-    /// Did we aim the installer at the binary the app resolves? Targeted
-    /// non-convergence is a genuine updater defect and is reported on every
-    /// occurrence; a foreign layout is an environment shape we cannot drive and
-    /// is bounded to one capture per episode.
+    /// Did we aim the installer at the binary the app resolves AND see the
+    /// target delivered there? Targeted non-convergence is a genuine updater
+    /// defect and is reported on every occurrence; a foreign layout is an
+    /// environment shape we cannot drive and is bounded to one capture per
+    /// episode. A resolution shortfall was aimed correctly but delivered
+    /// nothing, so it is neither — it stays observable but never blocks.
     pub fn is_installer_targeted(self) -> bool {
         matches!(self, Self::NpmTargeted | Self::PnpmTargeted)
+    }
+
+    /// May a non-convergence of this kind persist the durable marker that stops
+    /// the background auto-installer? Only a defect backed by evidence that the
+    /// installer actually delivered the target may block; a resolution shortfall
+    /// never can, or a transient registry race would permanently disable
+    /// auto-update.
+    pub fn may_block_auto_update(self) -> bool {
+        !matches!(self, Self::ResolutionShortfall)
     }
 }
 
@@ -712,11 +792,21 @@ impl NonConvergenceKind {
 /// safe prefix to pass and may write a valid package somewhere the app will
 /// never execute. The pnpm executor is targeted exactly when we derived its
 /// global environment from the resolved shim and handed it to the child.
+///
+/// `target_delivered` is the delivery evidence for the npm-targeted arm: whether
+/// the manifest inside the passed prefix reports the version we asked for. When
+/// npm was aimed at the resolved binary's prefix but the target was never
+/// delivered there, the "targeted" match is a tautology (the passed prefix was
+/// itself derived from that same binary) covering a transient resolution
+/// shortfall, not a layout defect — so it is classified as such and must not
+/// block. It is ignored for the pnpm executor, whose `pnpm_targeted` signal is
+/// derived independently from the shim's own home.
 pub fn non_convergence_kind(
     executor: InstallExecutor,
     npm_prefix_passed: Option<&str>,
     pnpm_targeted: bool,
     post_install_hq_bin: &str,
+    target_delivered: bool,
 ) -> NonConvergenceKind {
     match executor {
         InstallExecutor::Pnpm => {
@@ -731,7 +821,17 @@ pub fn non_convergence_kind(
             npm_prefix_from_hq_bin(post_install_hq_bin),
         ) {
             (Some(passed), Some(active_prefix)) if passed == active_prefix => {
-                NonConvergenceKind::NpmTargeted
+                // Aiming npm at the resolved binary's prefix is a tautology when
+                // the binary did not move — the passed prefix was derived from
+                // that same path. Only a manifest at the target INSIDE that
+                // prefix proves the installer actually delivered it (genuine
+                // shadowing). Without that evidence this is a transient
+                // resolution shortfall and must not wedge auto-update.
+                if target_delivered {
+                    NonConvergenceKind::NpmTargeted
+                } else {
+                    NonConvergenceKind::ResolutionShortfall
+                }
             }
             _ => NonConvergenceKind::ForeignManaged,
         },
@@ -929,6 +1029,13 @@ pub struct NonConvergentReport {
     /// The installer binary that ran — `npm` or `pnpm`, per `executor`.
     pub installer_bin: String,
     pub hq_bin_changed: bool,
+    /// The version the installer actually delivered INTO the passed prefix, if a
+    /// manifest was readable there. `None` means no delivery evidence was found.
+    /// Reported alongside the requested version so a residual occurrence names
+    /// its own mechanism — a resolution shortfall (delivered < requested, or
+    /// none) versus genuine shadowing (delivered == requested) — without further
+    /// inference.
+    pub delivered_version: Option<String>,
     pub pnpm: Option<PnpmRunDiagnostics>,
 }
 
@@ -1095,6 +1202,12 @@ pub struct PostInstallContext<'a> {
     pub latest: &'a str,
     /// npm executor only; the pnpm branch always passes `None`.
     pub npm_prefix_passed: Option<&'a str>,
+    /// The version the installer delivered INTO `npm_prefix_passed`, read from
+    /// the manifest there. `Some(v)` is the delivery evidence that turns an
+    /// otherwise-tautological npm-targeted match into either a genuine shadowing
+    /// defect (v reaches `latest`) or a transient resolution shortfall (v short
+    /// of `latest`, or `None`). Ignored for the pnpm executor.
+    pub delivered_version: Option<&'a str>,
     /// The installer binary that ran.
     pub installer_bin: &'a str,
     pub already_blocked: bool,
@@ -1106,6 +1219,7 @@ pub struct PostInstallContext<'a> {
 impl<'a> PostInstallContext<'a> {
     /// Convenience constructor for the npm executor, which carries no pnpm
     /// diagnostics and is by far the most common call shape in tests.
+    #[allow(clippy::too_many_arguments)]
     pub fn npm(
         before_bin: &'a str,
         after_bin: &'a str,
@@ -1115,6 +1229,7 @@ impl<'a> PostInstallContext<'a> {
         npm_prefix_passed: Option<&'a str>,
         npm_bin: &'a str,
         already_blocked: bool,
+        delivered_version: Option<&'a str>,
     ) -> Self {
         Self {
             executor: InstallExecutor::Npm,
@@ -1124,6 +1239,7 @@ impl<'a> PostInstallContext<'a> {
             after_version,
             latest,
             npm_prefix_passed,
+            delivered_version,
             installer_bin: npm_bin,
             already_blocked,
             pnpm: None,
@@ -1145,6 +1261,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         after_version,
         latest,
         npm_prefix_passed,
+        delivered_version,
         installer_bin,
         already_blocked,
         pnpm,
@@ -1157,8 +1274,12 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         *installer_bin,
         *already_blocked,
     );
-    let (before_version, after_version, npm_prefix_passed) =
-        (*before_version, *after_version, *npm_prefix_passed);
+    let (before_version, after_version, npm_prefix_passed, delivered_version) = (
+        *before_version,
+        *after_version,
+        *npm_prefix_passed,
+        *delivered_version,
+    );
     let verdict = convergence_verdict(before_version, after_version, before_bin, after_bin, latest);
     if matches!(
         verdict,
@@ -1191,14 +1312,46 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
     let pnpm_targeted = pnpm.as_ref().is_some_and(|diagnostics| {
         diagnostics.home_source != PnpmHomeSource::Undetermined && diagnostics.path_has_shim_dir
     });
-    let kind = non_convergence_kind(executor, npm_prefix_passed, pnpm_targeted, after_bin);
+    // Delivery evidence: did the installer write the target version INTO the
+    // prefix it was aimed at? Only that separates genuine shadowing (delivered,
+    // but a copy earlier on PATH still wins) from a transient resolution
+    // shortfall (never delivered). A missing manifest reads as not delivered,
+    // which fails safe toward retrying rather than toward a durable block.
+    let target_delivered = delivered_version
+        .is_some_and(|delivered| cmp_semver(delivered, latest) != std::cmp::Ordering::Less);
+    let kind = non_convergence_kind(
+        executor,
+        npm_prefix_passed,
+        pnpm_targeted,
+        after_bin,
+        target_delivered,
+    );
     let hq_display = if after_bin == "hq" { "PATH" } else { after_bin };
-    let detail = non_convergent_detail(executor, hq_display, after_version, latest);
-    let capture_requires_durable_record = !kind.is_installer_targeted();
-    // A targeted install remains a real updater defect and must remain loud
-    // even when an earlier marker exists. Foreign-managed layouts get one
-    // capture only on a newly durable episode.
-    let should_capture = kind.is_installer_targeted() || !already_blocked;
+    let detail = match kind {
+        // A resolution shortfall is transient and self-healing; the layout is
+        // fine, so its remedy differs from the "shadowed copy" wording.
+        NonConvergenceKind::ResolutionShortfall => {
+            resolution_shortfall_detail(hq_display, after_version, latest)
+        }
+        _ => non_convergent_detail(executor, hq_display, after_version, latest),
+    };
+    // A resolution shortfall stays observable but NEVER persists the blocking
+    // marker — a propagation lag must not permanently disable auto-update. A
+    // targeted defect stays loud on every occurrence and blocks; a foreign
+    // layout is bounded to one durable-record-gated capture per episode.
+    let (record_non_convergent, should_capture, capture_requires_durable_record) =
+        if !kind.may_block_auto_update() {
+            (None, true, false)
+        } else if kind.is_installer_targeted() {
+            (Some(latest.to_string()), true, false)
+        } else {
+            let first_episode = !already_blocked;
+            (
+                first_episode.then(|| latest.to_string()),
+                first_episode,
+                true,
+            )
+        };
     let report = should_capture.then(|| NonConvergentReport {
         executor,
         kind,
@@ -1208,10 +1361,9 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         npm_prefix: npm_prefix_passed.map(str::to_owned),
         installer_bin: installer_bin.to_string(),
         hq_bin_changed: before_bin != after_bin,
+        delivered_version: delivered_version.map(str::to_owned),
         pnpm: pnpm.clone(),
     });
-    let record_non_convergent =
-        (!already_blocked || kind.is_installer_targeted()).then(|| latest.to_string());
 
     PostInstallOutcome {
         verdict: ConvergenceVerdict::NonConvergent,
@@ -1322,6 +1474,23 @@ pub fn non_convergent_detail(
     }
 }
 
+/// The message for a resolution shortfall: the installer was aimed correctly but
+/// the registry had not finished publishing the requested version here, so it
+/// delivered an older one. Unlike a layout defect this needs no manual fix — the
+/// next scheduled check retries once the publish propagates — so it must not
+/// tell the user to change or remove anything. It keeps the shared marker prefix
+/// so the UI routes it through the same surface rather than the generic
+/// "retry / copy the install command" copy.
+pub fn resolution_shortfall_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
+    let current = local.unwrap_or("an unreadable version");
+    format!(
+        "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} was requested, but the npm registry has not \
+         finished publishing it to this machine yet, so the installer delivered hq {current} at \
+         {hq_bin}. This is a transient registry lag, not a problem with your install — HQ retries \
+         automatically on the next check, and no action is needed."
+    )
+}
+
 /// Capture the non-convergent-install signal. This is a distinct class from
 /// `install-failed`: npm exited 0 and nothing threw, so nothing else in the
 /// pipeline would ever notice. It is exactly the silent state that ran on a
@@ -1342,6 +1511,17 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
             scope.set_tag("non_convergence_kind", report.kind.telemetry_value());
             scope.set_tag("latest", report.latest.as_str());
             scope.set_tag("local", report.local.as_deref().unwrap_or("unreadable"));
+            // Requested vs delivered: the version the installer was ASKED for
+            // and the version it actually wrote into the prefix. For a
+            // resolution shortfall these differ (or delivered is absent), which
+            // names the mechanism without inference; both are bare semver
+            // strings, never a path. `requested_version` mirrors `latest` for a
+            // self-contained delivered-vs-requested pair.
+            scope.set_tag("requested_version", report.latest.as_str());
+            scope.set_tag(
+                "delivered_version",
+                report.delivered_version.as_deref().unwrap_or("none"),
+            );
             scope.set_tag("hq_bin_source", bin_resolution_source(hq_bin));
             scope.set_tag(
                 "installer_bin_source",
@@ -2887,11 +3067,14 @@ pub fn is_pnpm_global_shim(hq_bin: &str) -> bool {
 
 /// argv for updating a pnpm-managed global install. pnpm resolves the right
 /// global dir itself from its own config/PNPM_HOME — no `--prefix` juggling.
-pub fn pnpm_install_argv() -> Vec<String> {
+///
+/// `target_version` pins the exact resolved version, mirroring [`install_argv`]:
+/// both executors ask the package manager for the same string the app resolved.
+pub fn pnpm_install_argv(target_version: Option<&str>) -> Vec<String> {
     vec![
         "add".to_string(),
         "-g".to_string(),
-        HQ_CLI_PACKAGE.to_string(),
+        hq_cli_package_spec(target_version),
     ]
 }
 
@@ -2989,17 +3172,38 @@ fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path
     candidates
 }
 
+/// The hq-cli version the installer actually wrote into `prefix`, read straight
+/// from the package.json manifest with no subprocess. This is the delivery
+/// evidence that separates a genuine shadowing defect (the installer DID deliver
+/// the target into the prefix, but a copy earlier on PATH still wins) from a
+/// transient resolution shortfall (the installer never delivered the target at
+/// all). Reuses the same candidate enumeration detection uses, so it covers the
+/// unix, Windows, and pnpm-store layouts in a fixed order. Returns `None` when
+/// no manifest is readable — absence of delivery evidence must fail safe toward
+/// retrying, never toward a durable block.
+pub fn installed_hq_cli_version_in_prefix(prefix: &str, hq_bin: &str) -> Option<String> {
+    let hq_path = Path::new(hq_bin);
+    hq_cli_package_json_candidates(Path::new(prefix), hq_path)
+        .into_iter()
+        .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
+}
+
 /// Build the argv for the global install. Factored out so the unit test
 /// can lock the shape without spawning npm. When we know the prefix that
 /// contains the resolved `hq`, pass it explicitly so npm updates the binary
 /// the app actually runs instead of npm's unrelated default global prefix.
-pub fn install_argv(prefix: Option<&str>) -> Vec<String> {
+///
+/// `target_version` pins the EXACT version the app resolved so npm installs
+/// precisely what the app compared against, never re-resolving the `@latest`
+/// dist-tag through its own lagging cache. `None` keeps the `@latest` fallback
+/// for call sites without a resolved target.
+pub fn install_argv(prefix: Option<&str>, target_version: Option<&str>) -> Vec<String> {
     let mut argv = vec!["install".to_string(), "-g".to_string()];
     if let Some(prefix) = prefix {
         argv.push("--prefix".to_string());
         argv.push(prefix.to_string());
     }
-    argv.push(HQ_CLI_PACKAGE.to_string());
+    argv.push(hq_cli_package_spec(target_version));
     argv
 }
 
@@ -3098,30 +3302,59 @@ mod tests {
         assert_eq!(cmp_semver("5.11.0-rc.3", "5.12.0"), Ordering::Less);
     }
 
-    /// Lock the npm argv shape so a typo (e.g., dropping `-g`, renaming
-    /// the package) can't ship a non-global or wrong-package install.
+    /// The defect this whole change closes: the installer must ask npm for the
+    /// EXACT version the app resolved, not the mutable `@latest` dist-tag that
+    /// npm re-resolves through its own lagging cache. On unmodified main the
+    /// function took only a prefix and always emitted `@latest`, so this fails
+    /// there for the right reason.
     #[test]
-    fn install_argv_targets_global_hq_cli() {
-        let argv = install_argv(None);
+    fn install_argv_pins_the_exact_resolved_version_not_the_latest_dist_tag() {
+        let argv = install_argv(Some("/tmp/hq-prefix"), Some("5.97.1"));
+        assert_eq!(
+            argv,
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "--prefix".to_string(),
+                "/tmp/hq-prefix".to_string(),
+                "@indigoai-us/hq-cli@5.97.1".to_string(),
+            ]
+        );
+        // Still a global install of the right package, whatever the version.
         assert_eq!(argv[0], "install");
         assert_eq!(argv[1], "-g");
+        assert!(argv.last().unwrap().starts_with("@indigoai-us/hq-cli@"));
+        // The pinned spec must NOT carry the mutable dist-tag.
         assert!(
-            argv[2].starts_with("@indigoai-us/hq-cli@"),
-            "package arg must target @indigoai-us/hq-cli; got {}",
-            argv[2],
+            !argv.iter().any(|arg| arg.ends_with("@latest")),
+            "a pinned install must not request the @latest dist-tag: {argv:?}"
         );
-        // The banner button is the "update to current" path — pin must
-        // resolve to `latest`, not a hardcoded version that would rot.
-        assert!(
-            argv[2].ends_with("@latest"),
-            "package arg must request @latest; got {}",
-            argv[2],
+    }
+
+    /// The `None` arm still yields `@latest` for call sites with no resolved
+    /// target, so no caller silently loses its ability to install.
+    #[test]
+    fn package_spec_falls_back_to_the_latest_tag_only_without_a_resolved_target() {
+        assert_eq!(hq_cli_package_spec(None), "@indigoai-us/hq-cli@latest");
+        assert_eq!(hq_cli_package_spec(None), HQ_CLI_PACKAGE);
+        assert_eq!(
+            hq_cli_package_spec(Some("5.97.1")),
+            "@indigoai-us/hq-cli@5.97.1"
+        );
+        let latest_argv = install_argv(None, None);
+        assert_eq!(
+            latest_argv,
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                HQ_CLI_PACKAGE.to_string(),
+            ]
         );
     }
 
     #[test]
     fn install_argv_includes_prefix_when_available() {
-        let argv = install_argv(Some("/tmp/hq-prefix"));
+        let argv = install_argv(Some("/tmp/hq-prefix"), None);
         assert_eq!(
             argv,
             vec![
@@ -3386,6 +3619,8 @@ mod tests {
             after_version: Some("5.93.0"),
             latest: "5.94.1",
             npm_prefix_passed: None,
+            // npm-only; the pnpm executor's classification ignores it.
+            delivered_version: None,
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: true,
             pnpm: Some(pnpm.clone()),
@@ -3422,6 +3657,8 @@ mod tests {
                 after_version: Some("5.93.0"),
                 latest: "5.94.1",
                 npm_prefix_passed: None,
+                // npm-only; the pnpm executor's classification ignores it.
+                delivered_version: None,
                 installer_bin: "/opt/homebrew/bin/pnpm",
                 already_blocked: false,
                 pnpm: Some(PnpmRunDiagnostics {
@@ -3454,34 +3691,68 @@ mod tests {
             "/Users/t/Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq",
         ] {
             // npm with no prefix passed is foreign-managed for every one of
-            // them: npm has nowhere safe to aim.
+            // them: npm has nowhere safe to aim. Delivery evidence is irrelevant
+            // — the prefix never matched, so it never reaches the delivery gate.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Npm, None, false, hq_bin),
+                non_convergence_kind(InstallExecutor::Npm, None, false, hq_bin, false),
                 NonConvergenceKind::ForeignManaged,
                 "npm/{hq_bin}"
             );
-            // pnpm is targeted only when we actually aimed it.
+            // pnpm is targeted only when we actually aimed it; its targeting is
+            // derived independently, so the npm delivery flag is ignored.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin),
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false),
                 NonConvergenceKind::PnpmTargeted,
                 "pnpm-targeted/{hq_bin}"
             );
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin),
+                non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin, false),
                 NonConvergenceKind::ForeignManaged,
                 "pnpm-untargeted/{hq_bin}"
             );
         }
-        // An npm prefix that matches the post-install binary's own prefix is
-        // the one genuinely npm-targeted shape.
+        // An npm prefix that matches the post-install binary's own prefix is the
+        // one genuinely npm-targeted shape — but only WITH delivery evidence.
         assert_eq!(
             non_convergence_kind(
                 InstallExecutor::Npm,
                 Some("/Users/t/.npm-global"),
                 false,
-                "/Users/t/.npm-global/bin/hq"
+                "/Users/t/.npm-global/bin/hq",
+                true,
             ),
             NonConvergenceKind::NpmTargeted
+        );
+    }
+
+    /// The classifier defect at the heart of the regression: with the binary
+    /// unmoved, `npm_prefix_passed == npm_prefix_from_hq_bin(after_bin)` is a
+    /// tautology, so the same prefix that "proves" targeting is derived from the
+    /// same path. Delivery evidence is what breaks the tautology — the loud,
+    /// blocking `NpmTargeted` now requires the target to actually be present in
+    /// the prefix; without it the same inputs are a non-blocking shortfall.
+    #[test]
+    fn npm_targeted_requires_delivery_evidence_and_is_no_longer_a_prefix_tautology() {
+        let prefix = "/Users/t/.npm-global";
+        let hq_bin = "/Users/t/.npm-global/bin/hq";
+        // Same tautological (prefix, bin) pair, opposite delivery evidence.
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, true),
+            NonConvergenceKind::NpmTargeted,
+            "delivered target in a matching prefix is genuine shadowing"
+        );
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, false),
+            NonConvergenceKind::ResolutionShortfall,
+            "an undelivered target in a matching prefix is a resolution shortfall"
+        );
+        // Only the loud class blocks; the shortfall never disables auto-update.
+        assert!(NonConvergenceKind::NpmTargeted.may_block_auto_update());
+        assert!(!NonConvergenceKind::ResolutionShortfall.may_block_auto_update());
+        assert!(!NonConvergenceKind::ResolutionShortfall.is_installer_targeted());
+        assert_eq!(
+            NonConvergenceKind::ResolutionShortfall.telemetry_value(),
+            "resolution-shortfall"
         );
     }
 
@@ -3534,15 +3805,34 @@ mod tests {
         assert!(!summary.contains('/'));
     }
 
-    /// Lock the pnpm argv shape the same way `install_argv` is locked: a typo
-    /// (dropping `-g`, wrong package) must fail a unit test, not a user.
+    /// The pnpm executor pins the exact resolved version too, so both executors
+    /// ask the package manager for the same string the app compared against. On
+    /// unmodified main `pnpm_install_argv()` took no version and always emitted
+    /// `@latest`, so this fails there for the right reason.
     #[test]
-    fn pnpm_install_argv_targets_global_hq_cli_latest() {
-        let argv = pnpm_install_argv();
-        assert_eq!(argv[0], "add");
-        assert_eq!(argv[1], "-g");
-        assert!(argv[2].starts_with("@indigoai-us/hq-cli@"));
-        assert!(argv[2].ends_with("@latest"));
+    fn pnpm_install_argv_pins_the_exact_resolved_version() {
+        let argv = pnpm_install_argv(Some("5.97.1"));
+        assert_eq!(
+            argv,
+            vec![
+                "add".to_string(),
+                "-g".to_string(),
+                "@indigoai-us/hq-cli@5.97.1".to_string(),
+            ]
+        );
+        assert!(
+            !argv.iter().any(|arg| arg.ends_with("@latest")),
+            "a pinned pnpm install must not request the @latest dist-tag: {argv:?}"
+        );
+        // The `None` arm keeps the dist-tag fallback for versionless callers.
+        assert_eq!(
+            pnpm_install_argv(None),
+            vec![
+                "add".to_string(),
+                "-g".to_string(),
+                HQ_CLI_PACKAGE.to_string(),
+            ]
+        );
     }
 
     /// Convergence is the property the old code never checked: npm exiting 0
@@ -5436,6 +5726,7 @@ mod tests {
             None,
             "/opt/homebrew/bin/npm",
             true,
+            None,
         ));
         assert_eq!(outcome.verdict, ConvergenceVerdict::NonConvergent);
         assert_eq!(
@@ -5473,6 +5764,7 @@ mod tests {
             None,
             "/opt/homebrew/bin/npm",
             first_episode_blocked,
+            None,
         ));
         assert_eq!(first.record_non_convergent.as_deref(), Some(latest));
         assert!(first.capture.is_some());
@@ -5491,6 +5783,7 @@ mod tests {
             None,
             "/opt/homebrew/bin/npm",
             repeat_episode_blocked,
+            None,
         ));
         assert!(repeat.record_non_convergent.is_none());
         assert!(repeat.capture.is_none());
@@ -5529,6 +5822,7 @@ mod tests {
                     None,
                     "/opt/homebrew/bin/npm",
                     false,
+                    None,
                 ));
                 let record = |_version: String| {
                     records.fetch_add(1, AtomicOrdering::SeqCst);
@@ -5581,6 +5875,7 @@ mod tests {
             None,
             "/opt/homebrew/bin/npm",
             false,
+            None,
         ));
         assert_eq!(
             outcome.non_convergence_kind,
@@ -5602,6 +5897,9 @@ mod tests {
             Some("/Users/t/.npm-global"),
             "/opt/homebrew/bin/npm",
             true,
+            // Delivery evidence present: the target reached the prefix, so a
+            // shadowing copy on PATH is a genuine, loud, blocking defect.
+            Some("5.84.0"),
         ));
         assert_eq!(
             outcome.non_convergence_kind,
@@ -5609,6 +5907,129 @@ mod tests {
         );
         assert!(outcome.capture.is_some());
         assert!(!outcome.capture_requires_durable_record);
+    }
+
+    /// Genuine shadowing: npm delivered the target INTO the prefix, but a copy
+    /// earlier on PATH still wins, so the resolved binary stays stale. A real
+    /// updater defect — loud on every occurrence and blocking, so the loop stops
+    /// reinstalling a version it cannot make win.
+    #[test]
+    fn a_delivered_target_that_the_binary_does_not_reflect_stays_loud_and_blocking() {
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/.npm-global/bin/hq",
+            "/Users/t/.npm-global/bin/hq",
+            Some("5.97.0"),
+            Some("5.97.0"),
+            "5.97.1",
+            Some("/Users/t/.npm-global"),
+            "/opt/homebrew/bin/npm",
+            false,
+            Some("5.97.1"), // delivered == target
+        ));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::NpmTargeted)
+        );
+        assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.97.1"));
+        assert!(!outcome.capture_requires_durable_record);
+        let report = outcome.capture.expect("genuine shadowing stays loud");
+        assert_eq!(report.delivered_version.as_deref(), Some("5.97.1"));
+    }
+
+    /// The registry race: npm exited 0 into the right prefix but delivered N-1
+    /// (the target never propagated), so no manifest at the target exists. That
+    /// is a resolution shortfall, not a layout defect: it must NEVER persist the
+    /// blocking marker, so the next scheduled check retries rather than the
+    /// version being wedged forever.
+    #[test]
+    fn an_undelivered_target_is_a_resolution_shortfall_and_never_blocks_auto_install() {
+        for delivered in [Some("5.97.0"), None] {
+            let outcome = decide_post_install(&PostInstallContext::npm(
+                "/Users/t/.npm-global/bin/hq",
+                "/Users/t/.npm-global/bin/hq",
+                Some("5.97.0"),
+                Some("5.97.0"),
+                "5.97.1",
+                Some("/Users/t/.npm-global"),
+                "/opt/homebrew/bin/npm",
+                false,
+                delivered, // short of, or absent, the target
+            ));
+            assert_eq!(
+                outcome.non_convergence_kind,
+                Some(NonConvergenceKind::ResolutionShortfall),
+                "delivered={delivered:?}"
+            );
+            assert!(
+                outcome.record_non_convergent.is_none(),
+                "a shortfall must never wedge auto-update (delivered={delivered:?})"
+            );
+            // Still observable, and its detail self-describes as transient rather
+            // than telling the user to change or remove anything.
+            let report = outcome.capture.as_ref().expect("a shortfall still signals");
+            assert_eq!(report.delivered_version.as_deref(), delivered);
+            assert!(matches!(
+                &outcome.result,
+                Err(detail)
+                    if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)
+                        && detail.contains("transient registry lag")
+            ));
+        }
+    }
+
+    /// Un-wedging already-affected machines is bounded. A legacy (unversioned)
+    /// marker earns exactly one recovery re-attempt; a marker written under the
+    /// pinned contract is delivery-backed and keeps blocking, so a genuinely
+    /// stuck layout re-blocks after its single re-attempt rather than looping.
+    #[test]
+    fn a_legacy_unversioned_marker_permits_exactly_one_reattempt() {
+        assert!(legacy_marker_needs_recovery(None, Some("5.97.1")));
+        assert!(legacy_marker_needs_recovery(
+            Some("some-older-tag"),
+            Some("5.97.1")
+        ));
+        // No marker → nothing to recover.
+        assert!(!legacy_marker_needs_recovery(None, None));
+        assert!(!legacy_marker_needs_recovery(
+            Some(PINNED_MARKER_CONTRACT),
+            None
+        ));
+    }
+
+    #[test]
+    fn a_marker_written_under_the_pinned_contract_keeps_blocking() {
+        // A pinned-contract marker is delivery-backed: never re-attempted...
+        assert!(!legacy_marker_needs_recovery(
+            Some(PINNED_MARKER_CONTRACT),
+            Some("5.97.1")
+        ));
+        // ...and the shared block predicate still blocks that exact version, so
+        // the background loop skips it.
+        assert!(non_convergent_episode_blocked(Some("5.97.1"), "5.97.1"));
+        assert!(!should_auto_install("5.97.1", Some("5.97.1")));
+    }
+
+    /// A pinned install of a not-yet-propagated version fails with ETARGET,
+    /// already an expected transient registry failure: it is not reported as an
+    /// install failure and touches no marker (that path is exit-0 only), so
+    /// auto-update stays armed and simply retries on the next check.
+    #[test]
+    fn etarget_on_a_pinned_install_is_an_expected_transient_and_writes_no_marker() {
+        let etarget = "npm error code ETARGET\n\
+            npm error notarget No matching version found for @indigoai-us/hq-cli@5.97.1";
+        assert!(is_expected_transient_registry_failure(etarget));
+        for detail in [
+            "npm error code ECONNRESET",
+            "npm error code ETIMEDOUT",
+            "npm error code ENOTFOUND",
+        ] {
+            assert!(is_expected_transient_registry_failure(detail));
+        }
+        // A genuine, non-transient failure must NOT be swept into the transient
+        // bucket, or a real defect would be silently retried forever.
+        assert!(!is_expected_transient_registry_failure(
+            "npm error code EACCES"
+        ));
     }
 
     #[test]

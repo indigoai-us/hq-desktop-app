@@ -400,6 +400,40 @@ fn transient_registry_failures_do_not_capture() {
     }
 }
 
+/// Pinning the exact version can turn a previously-silent stale-tag install into
+/// a visible ETARGET during the post-publish propagation window: npm finds no
+/// matching version for the pinned spec and exits non-zero. That is already an
+/// expected transient registry failure, so it emits NO Sentry event. And because
+/// it is an install FAILURE (non-zero exit), it never reaches the exit-0-only
+/// non-convergent marker path — so no blocking marker is written and auto-update
+/// stays armed to retry once the publish propagates. This is the low-risk
+/// landing spot the pin relies on, asserted end to end rather than assumed.
+#[test]
+fn a_pinned_install_etarget_during_propagation_emits_no_event_and_leaves_auto_update_armed() {
+    // The exact pinned spec the app now asks npm for, not yet propagated here.
+    let pinned_etarget = "npm error code ETARGET\n\
+        npm error notarget No matching version found for @indigoai-us/hq-cli@5.97.1\n\
+        npm error notarget In most cases you or one of your dependencies are requesting\n\
+        npm error notarget a package version that doesn't exist.";
+
+    // Across the prefixes the installer may pass, and whether or not npm's own
+    // retry ladder forced a final attempt, a pinned-install ETARGET stays quiet.
+    for prefix in [None, Some("/usr/local")] {
+        let events = captured_events(|| report_install_failure(Some(1), pinned_etarget, prefix));
+        assert!(
+            events.is_empty(),
+            "a pinned-install ETARGET must not page (prefix={prefix:?}): {events:?}"
+        );
+        let events = captured_events(|| {
+            report_install_failure_with_final_attempt(Some(1), pinned_etarget, prefix, true)
+        });
+        assert!(
+            events.is_empty(),
+            "a forced-final pinned-install ETARGET must not page either: {events:?}"
+        );
+    }
+}
+
 #[test]
 fn unexpected_install_failures_keep_stable_envelopes_and_path_safe_diagnostics() {
     let cache_eacces = "npm error code EACCES\n\
@@ -558,6 +592,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             npm_prefix: None,
             installer_bin: "/opt/homebrew/bin/npm".to_string(),
             hq_bin_changed: true,
+            delivered_version: None,
             pnpm: None,
         })
     });

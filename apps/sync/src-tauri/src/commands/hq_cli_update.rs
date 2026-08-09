@@ -71,22 +71,25 @@ pub use hq_desktop_core::hq_cli_update::{
     classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
     decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
     hq_version_string, install_argv, install_converged, install_failure_detail,
-    install_failure_detail_with_final_attempt, install_failure_report, is_cli_update_dismissed,
-    is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
-    is_windows_locked_binary_failure, non_convergent_cli_version, non_convergent_detail,
-    non_convergent_episode_blocked, npm_install_attempt_summary, npm_prefix_from_hq_bin,
-    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv, read_installed_version,
-    redact_home, redact_home_in, report_install_failure, report_install_failure_episode,
-    report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_non_convergent_marker_unpersisted,
-    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo,
-    InstallEnvironment, InstallExecutor, InstallFailureEpisode, InstallFailureKind,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
-    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    install_failure_detail_with_final_attempt, install_failure_report,
+    installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_npm_bin_collision,
+    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    legacy_marker_needs_recovery, non_convergent_cli_contract, non_convergent_cli_version,
+    non_convergent_detail, non_convergent_episode_blocked, npm_install_attempt_summary,
+    npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv,
+    read_installed_version, redact_home, redact_home_in, report_install_failure,
+    report_install_failure_episode, report_install_failure_with_environment,
+    report_install_failure_with_final_attempt, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
+    version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    InstallFailureEpisode, InstallFailureKind, LocalVersionProbeDiagnostics,
+    LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport, NpmLatest,
+    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome, DISMISSED_VERSION_KEY,
+    HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX,
+    NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -777,7 +780,9 @@ async fn install_hq_cli_update_via_pnpm(
     let path_has_shim_dir = shim_dir
         .as_deref()
         .is_some_and(|dir| path_contains_dir(&path, dir));
-    let args = pnpm_install_argv();
+    // Pin the exact resolved version, mirroring the npm path: pnpm is asked for
+    // the same string the app compared against, never the mutable `@latest` tag.
+    let args = pnpm_install_argv(Some(latest));
     log(
         "hq-cli-update",
         &format!(
@@ -851,6 +856,9 @@ async fn install_hq_cli_update_via_pnpm(
         after_version: resolved.as_deref(),
         latest,
         npm_prefix_passed: None,
+        // Delivery evidence is the npm-targeted arm's concern; the pnpm executor
+        // is targeted via its own shim-derived home, so this stays None.
+        delivered_version: None,
         installer_bin: &pnpm,
         already_blocked,
         pnpm: Some(PnpmRunDiagnostics {
@@ -953,21 +961,24 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;
     }
     let prefix = npm_prefix_from_hq_bin(&hq);
-    let base_args = install_argv(prefix.as_deref());
+    // Pin the target BEFORE building the install argv. The app resolved `latest`
+    // from the registry's /latest endpoint; it must ask npm for THAT EXACT
+    // version, not the `@latest` dist-tag. npm re-resolves that tag through its
+    // own app-private packument cache and the registry CDN edge, both of which
+    // lag /latest for a short post-publish window — so the tag can still point at
+    // N-1 while the app already read N. That is the registry race: npm installs
+    // N-1, exits 0, and the convergence gate — comparing the fresher N — records
+    // a marker that permanently wedges auto-install of a version nothing ever
+    // attempted. Resolving once and pinning it makes the version the app compares
+    // against and the version it asks npm to install the same string.
+    let latest = fetch_latest().await?;
+    let already_blocked =
+        non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+    let base_args = install_argv(prefix.as_deref(), Some(latest.as_str()));
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
         report_npm_cache_setup_failure(category);
         error
     })?;
-
-    // Pin the target BEFORE spawning npm. Reading `latest` afterwards races a
-    // publish: npm can resolve `@latest` to A while a post-install fetch returns
-    // a freshly-published B, and we would then judge the installed A against B,
-    // call it non-convergent, and permanently block auto-installs of a version
-    // nothing ever attempted. Resolving first keeps the comparison and the
-    // recorded block bound to the version this run actually asked npm for.
-    let latest = fetch_latest().await?;
-    let already_blocked =
-        non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
     log(
         "hq-cli-update",
         &format!(
@@ -1082,6 +1093,26 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .ok()
             .flatten()
     };
+    // Delivery evidence for the classifier: the version the install actually
+    // wrote INTO the prefix we aimed at, read straight from the manifest. If the
+    // pinned target IS present there but the resolved binary is still stale, that
+    // is genuine shadowing (loud, blocking). If it is absent, the target was
+    // never delivered — a transient resolution shortfall that must not wedge
+    // auto-update. A foreign-managed layout passes no prefix and never reaches
+    // the targeted arm, so `None` there changes no decision.
+    let delivered_version = match prefix.as_deref() {
+        Some(prefix) => {
+            let prefix = prefix.to_string();
+            let hq = post_install_hq.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                installed_hq_cli_version_in_prefix(&prefix, &hq)
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+        None => None,
+    };
     let outcome = decide_post_install(&PostInstallContext::npm(
         &hq,
         &post_install_hq,
@@ -1091,6 +1122,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         prefix.as_deref(),
         &npm,
         already_blocked,
+        delivered_version.as_deref(),
     ));
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(&app, &outcome)
@@ -1108,24 +1140,38 @@ fn record_non_convergent_version(latest: &str) -> Result<(), String> {
         .and_then(|path| {
             hq_desktop_core::first_run::merge_menubar_flags(
                 &path,
-                &[(
-                    NON_CONVERGENT_VERSION_KEY,
-                    Value::String(latest.to_string()),
-                )],
+                // Stamp the pinned-contract tag beside the version. Its presence
+                // marks this block as backed by delivery evidence, so it persists
+                // permanently and is never given the legacy one-shot re-attempt.
+                &[
+                    (
+                        NON_CONVERGENT_VERSION_KEY,
+                        Value::String(latest.to_string()),
+                    ),
+                    (
+                        NON_CONVERGENT_CONTRACT_KEY,
+                        Value::String(PINNED_MARKER_CONTRACT.to_string()),
+                    ),
+                ],
             )
         })
         .map_err(|error| error.to_string())
 }
 
 /// Clear the non-convergent marker after an install that actually converged.
+/// Both the version and the contract tag are cleared so no stale contract key
+/// survives to mislabel a later marker.
 fn clear_non_convergent_version() {
-    if non_convergent_cli_version().is_none() {
+    if non_convergent_cli_version().is_none() && non_convergent_cli_contract().is_none() {
         return;
     }
     let write = paths::menubar_json_path().and_then(|path| {
         hq_desktop_core::first_run::merge_menubar_flags(
             &path,
-            &[(NON_CONVERGENT_VERSION_KEY, Value::Null)],
+            &[
+                (NON_CONVERGENT_VERSION_KEY, Value::Null),
+                (NON_CONVERGENT_CONTRACT_KEY, Value::Null),
+            ],
         )
     });
     if let Err(e) = write {
@@ -1150,6 +1196,24 @@ fn clear_non_convergent_version() {
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        // One-time un-wedge for machines blocked by the pre-pin dist-tag race. A
+        // non-convergent marker written before the pinned-install contract has no
+        // contract tag; it may have been recorded when a transient registry lag
+        // installed N-1 and then permanently disabled auto-install of N. Clear
+        // such a legacy marker ONCE so the next check re-installs under the pinned
+        // contract. A genuinely stuck layout then re-writes the marker WITH the
+        // pinned tag (delivery-backed), which blocks permanently and is never
+        // cleared again — so this cannot reopen the endless-reinstall loop.
+        if legacy_marker_needs_recovery(
+            non_convergent_cli_contract().as_deref(),
+            non_convergent_cli_version().as_deref(),
+        ) {
+            log(
+                "hq-cli-update",
+                "clearing a legacy (pre-pin) non-convergent marker for one recovery re-attempt",
+            );
+            clear_non_convergent_version();
+        }
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
             match check_once(&handle).await {
@@ -1234,7 +1298,7 @@ mod tests {
 
     #[test]
     fn npm_install_command_uses_app_cache_without_changing_path_or_argv() {
-        let args = install_argv(Some("/tmp/hq-prefix"));
+        let args = install_argv(Some("/tmp/hq-prefix"), None);
         let command = npm_install_command(
             "npm",
             "/test/child-path",
@@ -1309,7 +1373,7 @@ exit 0
                 &path,
                 &npm_cache,
                 Some(prefix.to_str().unwrap()),
-                install_argv(Some(prefix.to_str().unwrap())),
+                install_argv(Some(prefix.to_str().unwrap()), None),
             )
             .await
             .unwrap();
@@ -1376,7 +1440,7 @@ exit 0
             &std::env::var("PATH").unwrap(),
             &npm_cache,
             Some(prefix.to_str().unwrap()),
-            install_argv(Some(prefix.to_str().unwrap())),
+            install_argv(Some(prefix.to_str().unwrap()), None),
         )
         .await
         .unwrap();
@@ -1445,7 +1509,7 @@ exit 0
             &std::env::var("PATH").unwrap(),
             &npm_cache,
             Some(prefix.to_str().unwrap()),
-            install_argv(Some(prefix.to_str().unwrap())),
+            install_argv(Some(prefix.to_str().unwrap()), None),
         )
         .await
         .unwrap();
@@ -1506,7 +1570,7 @@ exit 0
             &std::env::var("PATH").unwrap(),
             &app_cache,
             Some(prefix.to_str().unwrap()),
-            install_argv(Some(prefix.to_str().unwrap())),
+            install_argv(Some(prefix.to_str().unwrap()), None),
         )
         .await
         .unwrap();
@@ -1600,7 +1664,7 @@ exit 0
     // global hq-cli install — it just overwrites the stale bin link.
     #[test]
     fn forced_retry_args_add_force_to_a_global_install() {
-        let mut forced = install_argv(None);
+        let mut forced = install_argv(None, None);
         forced.push("--force".to_string());
         assert!(
             forced.iter().any(|a| a == "--force"),
@@ -1751,6 +1815,7 @@ exit 0
                 None,
                 "/opt/homebrew/bin/npm",
                 false,
+                None,
             ));
             let record = |version: String| {
                 records.set(records.get() + 1);
@@ -1793,6 +1858,7 @@ exit 0
             Some("/Users/t/.npm-global"),
             "/opt/homebrew/bin/npm",
             true,
+            Some("5.84.0"),
         ));
         let record = |_| panic!("a converged install must not record a non-convergence");
         let clear = || clears.set(clears.get() + 1);

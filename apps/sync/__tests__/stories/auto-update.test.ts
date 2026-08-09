@@ -220,6 +220,60 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).toContain('PnpmHomeSource::Undetermined');
   });
 
+  it('the installer asks for the same version the app compared against', () => {
+    // HQ-DESKTOP-46 reopen: the app resolved `latest` from the registry's
+    // /latest endpoint but asked npm for the mutable `@latest` dist-tag, which
+    // npm re-resolves through its own lagging packument cache — so it could
+    // install N-1, exit 0, and wedge auto-update on a version nothing attempted.
+    // Both executors now pin the EXACT resolved version.
+    expect(cliUpdateCore).toContain(
+      'pub fn install_argv(prefix: Option<&str>, target_version: Option<&str>)',
+    );
+    expect(cliUpdateCore).toContain('pub fn pnpm_install_argv(target_version: Option<&str>)');
+    expect(cliUpdateCore).toContain('pub fn hq_cli_package_spec(version: Option<&str>)');
+
+    // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
+    // the version the app compares against is the version it installs.
+    const npmBranchStart = cliUpdate.indexOf('let prefix = npm_prefix_from_hq_bin(&hq);');
+    const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retries(&npm');
+    expect(npmBranchStart).toBeGreaterThan(-1);
+    expect(npmBranchEnd).toBeGreaterThan(npmBranchStart);
+    const npmBranch = cliUpdate.slice(npmBranchStart, npmBranchEnd);
+    expect(npmBranch).toContain('let latest = fetch_latest().await?;');
+    expect(npmBranch).toContain(
+      'let base_args = install_argv(prefix.as_deref(), Some(latest.as_str()));',
+    );
+    expect(npmBranch.indexOf('fetch_latest()')).toBeLessThan(
+      npmBranch.indexOf('install_argv(prefix.as_deref()'),
+    );
+
+    // pnpm branch pins the same way, from the target already resolved for it.
+    expect(cliUpdate).toContain('let args = pnpm_install_argv(Some(latest));');
+  });
+
+  it('a version the registry has not propagated yet does not wedge auto-update', () => {
+    // Delivery evidence breaks the npm-targeted tautology: a non-convergence may
+    // block auto-update only when the target was actually delivered into the
+    // prefix. A shortfall (delivered N-1, or ETARGET) never wedges.
+    expect(cliUpdateCore).toContain('ResolutionShortfall');
+    expect(cliUpdateCore).toContain('pub fn installed_hq_cli_version_in_prefix(');
+    expect(cliUpdateCore).toContain('fn may_block_auto_update(');
+    // The app reads the delivered version and threads it into the decision.
+    expect(cliUpdate).toContain('installed_hq_cli_version_in_prefix(&prefix, &hq)');
+    expect(cliUpdate).toContain('delivered_version.as_deref(),');
+
+    // A legacy (pre-pin) marker earns exactly one recovery re-attempt so an
+    // already-wedged machine recovers; a marker written under the pinned
+    // contract keeps blocking, so a genuinely stuck layout does not reopen the
+    // endless-reinstall loop.
+    expect(cliUpdateCore).toContain('pub fn legacy_marker_needs_recovery(');
+    expect(cliUpdateCore).toContain('pub const PINNED_MARKER_CONTRACT');
+    expect(cliUpdate).toContain('if legacy_marker_needs_recovery(');
+    // The blocking marker is stamped with the pinned contract tag so it is never
+    // mistaken for a recoverable legacy one.
+    expect(cliUpdate).toContain('NON_CONVERGENT_CONTRACT_KEY');
+  });
+
   it('a non-convergent capture names which package manager ran', () => {
     // The three live 2026-08-06 events could not be attributed: same
     // fingerprint, no executor tag, and an `npm_prefix` extra that was actively

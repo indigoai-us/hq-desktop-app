@@ -99,6 +99,7 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
             None,
             "/opt/homebrew/bin/npm",
             false,
+            None,
         ),
         5,
     );
@@ -120,6 +121,7 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
             after_version: Some("5.77.14"),
             latest: "5.84.0",
             npm_prefix_passed: None,
+            delivered_version: None,
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: false,
             pnpm: Some(PnpmRunDiagnostics {
