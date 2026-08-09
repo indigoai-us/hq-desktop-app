@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
+use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
 #[cfg(test)]
 use hq_desktop_core::sync_outcome::classify_runner_exit_disposition;
 use hq_desktop_core::sync_outcome::{
@@ -46,7 +47,7 @@ use hq_desktop_core::sync_outcome::{
     classify_runner_exit_disposition_with_cancellation, classify_runner_fatal_class,
     classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
     runner_phase_from_event, runner_stack_shape, should_synthesize_all_complete,
-    termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol, RunnerErrorClass,
+    termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol,
     RunnerExitDisposition, SyncCancelCause,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
@@ -216,6 +217,9 @@ struct ManualRunnerExitContext {
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
     stderr_tail: Vec<String>,
+    /// Total stderr lines observed this run (from the monotonic sequence
+    /// counter), so the bounded 8-line tail is never misread as the full count.
+    stderr_line_count: u32,
 }
 
 impl Default for ManualRunnerExitContext {
@@ -225,6 +229,7 @@ impl Default for ManualRunnerExitContext {
             runner_phase: "unknown".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             stderr_tail: Vec::new(),
+            stderr_line_count: 0,
         }
     }
 }
@@ -233,6 +238,7 @@ fn manual_runner_exit_context(
     scope: &SyncRunScope,
     phase_context: &Mutex<RunnerPhaseContext>,
     stderr_tail: &Mutex<VecDeque<String>>,
+    stderr_line_count: u32,
 ) -> ManualRunnerExitContext {
     let phase_context = phase_context
         .lock()
@@ -252,6 +258,7 @@ fn manual_runner_exit_context(
         )
         .to_string(),
         stderr_tail: stderr_tail.iter().cloned().collect(),
+        stderr_line_count,
     }
 }
 
@@ -278,6 +285,19 @@ fn runner_exit_telemetry_context(
     if let Some(operations) = totals.runner_error_ops.tag_value() {
         tags.push(("runner_error_ops", operations));
     }
+    // Additive attribution axes (see runner_error_shape): message shapes and
+    // per-file path roots turn the OTHER/other flood into an actionable signal.
+    if let Some(shapes) = totals.runner_error_shapes.tag_value() {
+        tags.push(("runner_error_shapes", shapes));
+    }
+    if let Some(path_roots) = totals.runner_error_path_roots.tag_value() {
+        tags.push(("runner_error_path_roots", path_roots));
+    }
+    // Runner provenance: npx resolves `~6.14.x` at spawn, so the desktop release
+    // tag alone cannot say which runner emitted the errors. Mirrors the watcher
+    // route's watcher_hq_cloud_version/package.
+    tags.push(("hq_cloud_version", HQ_CLOUD_VERSION.to_string()));
+    tags.push(("hq_cloud_package", HQ_CLOUD_PACKAGE.to_string()));
     tags.push((
         "runner_fatal_class",
         totals.runner_fatal_class.as_str().to_string(),
@@ -296,7 +316,7 @@ fn runner_exit_telemetry_context(
             tags.push(("windows_fault_symbol", symbol.to_string()));
         }
     }
-    let extras = vec![
+    let mut extras = vec![
         (
             "saw_alertable_error",
             sentry::protocol::Value::Bool(totals.saw_alertable_error),
@@ -322,7 +342,27 @@ fn runner_exit_telemetry_context(
             "runner_stack_redacted_frames",
             serde_json::json!(stack.redacted_frames),
         ),
+        // Make the stack shape honest: `all_redacted` from a flood of ndjson
+        // error records is not the same as a real but unrecognised stack.
+        (
+            "runner_stack_input",
+            sentry::protocol::Value::String(
+                classify_runner_stack_input(&context.stderr_tail)
+                    .as_str()
+                    .to_string(),
+            ),
+        ),
+        // Total stderr lines this run, so the 8-line ring buffer / 100-breadcrumb
+        // cap is not misread as the real line count.
+        (
+            "runner_stderr_line_count",
+            sentry::protocol::Value::Number(context.stderr_line_count.into()),
+        ),
     ];
+    // Company-scope vs per-file split, only when a runner error was recorded.
+    if let Some(scope) = totals.runner_error_scope() {
+        extras.push(("runner_error_scope", sentry::protocol::Value::String(scope)));
+    }
     (tags, extras)
 }
 
@@ -1096,15 +1136,10 @@ pub(crate) fn runner_stderr_needs_reauth(line: &str) -> Option<SyncAuthErrorEven
 }
 
 fn runner_stderr_breadcrumb(sequence: u32, line: &str) -> sentry::Breadcrumb {
-    let error_class = match classify_runner_error_class(line) {
-        RunnerErrorClass::Eperm => "eperm",
-        RunnerErrorClass::Eacces => "eacces",
-        RunnerErrorClass::Enospc => "enospc",
-        RunnerErrorClass::Ebusy => "ebusy",
-        RunnerErrorClass::Network => "network",
-        RunnerErrorClass::Auth => "auth",
-        RunnerErrorClass::Other => "other",
-    };
+    // `breadcrumb_token()` spells the auth class `identity` (not `auth`) so
+    // Sentry's default @password:filter scrubber cannot delete the breadcrumb;
+    // the single-source vocabulary is machine-checked in hq-telemetry.
+    let error_class = classify_runner_error_class(line).breadcrumb_token();
     let fatal_class = classify_runner_fatal_class(line).as_str();
     sentry::Breadcrumb {
         category: Some("runner.stderr".into()),
@@ -2204,8 +2239,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         );
                         let sync_termination_reason =
                             residual_sync_termination_reason(cancellation, &totals_snapshot);
-                        let exit_context =
-                            manual_runner_exit_context(&scope, &runner_phase, &runner_stderr_tail);
+                        let exit_context = manual_runner_exit_context(
+                            &scope,
+                            &runner_phase,
+                            &runner_stderr_tail,
+                            runner_stderr_sequence,
+                        );
                         let mut effects = ProductionRunnerExitEffects {
                             app: &app_bg,
                             sync_termination_reason,
@@ -3103,6 +3142,204 @@ mod tests {
         }
     }
 
+    /// Build the cross-platform script the artifact runner executes: each seeded
+    /// ndjson line is emitted verbatim to stderr, then the child exits 2. JSON is
+    /// single-quoted on both shells (it contains no single quote), so no escaping
+    /// of its double quotes is needed.
+    fn error_flood_spawn_args(lines: &[String]) -> SpawnArgs {
+        #[cfg(unix)]
+        {
+            let mut script = String::new();
+            for line in lines {
+                script.push_str(&format!("printf '%s\\n' '{line}' >&2; "));
+            }
+            script.push_str("exit 2");
+            SpawnArgs {
+                cmd: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                cwd: None,
+                env: None,
+            }
+        }
+        #[cfg(windows)]
+        {
+            let mut script = String::new();
+            for line in lines {
+                script.push_str(&format!("[Console]::Error.WriteLine('{line}'); "));
+            }
+            script.push_str("exit 2");
+            SpawnArgs {
+                cmd: "powershell.exe".to_string(),
+                args: vec!["-NoProfile".to_string(), "-Command".to_string(), script],
+                cwd: None,
+                env: None,
+            }
+        }
+    }
+
+    /// Artifact/E2E proof for HQ-DESKTOP-4T: a genuine child floods stderr with
+    /// hq-cloud's verbatim pull-leg error prose (carrying realistic company-root-
+    /// relative vault keys) and exits 2. Driving it through the production
+    /// breadcrumb + RunTotals + capture path and then `hq_telemetry::before_send`
+    /// must yield a scrubbed event that (1) is now attributable — message shapes,
+    /// path roots, stack-input, stderr line count, runner provenance, and scope —
+    /// while (2) keeping the pre-existing rollups, fatal class, and fingerprint
+    /// byte-identical, and (3) leaking not one seeded path, filename, or message
+    /// fragment. On the base revision the new keys are absent, so every new
+    /// assertion fails — reproducing the unattributability in a test.
+    #[test]
+    fn real_child_error_flood_exit_2_is_attributable_and_content_safe() {
+        // Seeded flood: two distinct file-error shapes in two subtrees plus a few
+        // company-scope errors. Paths/messages carry secret-looking tokens that
+        // must never reach Sentry.
+        let mut lines: Vec<String> = Vec::new();
+        for i in 0..120 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": format!("knowledge/secret-a{i}.md"),
+                    "message": "download skipped: local parent escaped the sync root",
+                })
+                .to_string(),
+            );
+        }
+        for i in 0..40 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": format!("repos/secret-b{i}"),
+                    "message": format!("presigned GET failed for repos/secret-b{i}: 500"),
+                })
+                .to_string(),
+            );
+        }
+        for _ in 0..8 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    "message": "Entity cmp_SECRET NOT FOUND",
+                })
+                .to_string(),
+            );
+        }
+        let spawn = error_flood_spawn_args(&lines);
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut sequence = 0_u32;
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-error-flood", &spawn, |event| match event {
+                ProcessEvent::Stderr(line) => {
+                    // Exactly the production stderr arm: sequence, breadcrumb,
+                    // record into RunTotals, keep the bounded tail.
+                    sequence = sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line,
+                    );
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) => {}
+            })
+            .expect("real fake runner should run");
+
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let context =
+                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence);
+            capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(2), None, false)));
+        assert_eq!(sequence, 168);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("flood event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // (1) Newly attributable — the whole point of the fix.
+        assert_eq!(
+            event.tags["runner_error_shapes"],
+            "containment_escape:120,presigned_get_failed:40,unknown:8"
+        );
+        assert_eq!(
+            event.tags["runner_error_path_roots"],
+            "knowledge:120,repos:40"
+        );
+        assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
+        assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
+        assert_eq!(
+            event.extra["runner_stack_input"],
+            sentry::protocol::Value::String("ndjson_error_records".to_string())
+        );
+        assert_eq!(
+            event.extra["runner_stderr_line_count"],
+            sentry::protocol::Value::Number(168.into())
+        );
+        assert_eq!(
+            event.extra["runner_error_scope"],
+            sentry::protocol::Value::String("company:8,file:160".to_string())
+        );
+
+        // (2) Pre-existing attribution + grouping unchanged.
+        assert_eq!(event.tags["runner_error_rollup"], "OTHER:168");
+        assert_eq!(event.tags["runner_error_ops"], "other:168");
+        assert_eq!(event.tags["runner_fatal_class"], "none");
+        assert_eq!(event.tags["sync_route"], "manual");
+        assert_eq!(event.tags["runner_stack_shape"], "all_redacted");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "runner-termination", "exit:2", "other"]
+        );
+        assert_eq!(
+            event.extra["saw_alertable_error"],
+            sentry::protocol::Value::Bool(true)
+        );
+
+        // Every retained breadcrumb is the fixed content-safe grammar.
+        for breadcrumb in &event.breadcrumbs.values {
+            let message = breadcrumb.message.as_deref().unwrap_or_default();
+            assert!(
+                message.starts_with("runner stderr #") && message.ends_with("(other;none)"),
+                "unexpected breadcrumb shape: {message:?}"
+            );
+        }
+
+        // (3) No seeded path, filename, message fragment, or company leaks.
+        for forbidden in [
+            "secret-a",
+            "secret-b",
+            "cmp_SECRET",
+            "acme",
+            "escaped the sync root",
+            "presigned GET failed",
+            "Entity",
+            "knowledge/secret",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "final event leaked seeded runner content: {forbidden}"
+            );
+        }
+    }
+
     #[test]
     fn manual_runner_exit_capture_is_content_safe_and_keeps_context_and_grouping() {
         let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
@@ -3839,6 +4076,7 @@ mod tests {
             &SyncRunScope::Company("private-company".to_string()),
             &phase,
             &stderr_tail,
+            2,
         );
         let totals = totals
             .lock()
@@ -3872,6 +4110,18 @@ mod tests {
             "STATUS_STACK_BUFFER_OVERRUN"
         );
         assert_eq!(event.tags["runner_stack_shape"], "libuv_win_async>node_fs");
+        // Runner provenance is attached on the manual seam, mirroring the watcher.
+        assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
+        assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
+        // The tail here is a real (recognised) stack, not an ndjson flood.
+        assert_eq!(
+            event.extra["runner_stack_input"],
+            sentry::protocol::Value::String("plain_stderr".to_string())
+        );
+        assert_eq!(
+            event.extra["runner_stderr_line_count"],
+            sentry::protocol::Value::Number(2.into())
+        );
         assert_eq!(
             event.extra["runner_phase_elapsed_bucket"],
             sentry::protocol::Value::String("under_1m".to_string())
@@ -3902,8 +4152,9 @@ mod tests {
         observe_manual_runner_phase(&first, &push);
 
         let empty_tail = Mutex::new(std::collections::VecDeque::new());
-        let first_context = manual_runner_exit_context(&SyncRunScope::All, &first, &empty_tail);
-        let second_context = manual_runner_exit_context(&SyncRunScope::All, &second, &empty_tail);
+        let first_context = manual_runner_exit_context(&SyncRunScope::All, &first, &empty_tail, 0);
+        let second_context =
+            manual_runner_exit_context(&SyncRunScope::All, &second, &empty_tail, 0);
         assert_eq!(first_context.runner_phase, "push");
         assert_eq!(second_context.runner_phase, "unknown");
     }

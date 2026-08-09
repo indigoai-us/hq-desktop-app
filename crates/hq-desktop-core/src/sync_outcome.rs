@@ -3,6 +3,9 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
+use crate::runner_error_shape::{
+    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
+};
 use sha2::{Digest, Sha256};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +75,20 @@ pub struct RunTotals {
     /// content-safe enum token used only as evidence on a termination event;
     /// it must never affect the capture or suppression decision.
     pub runner_fatal_class: RunnerFatalClass,
+    /// Content-safe message-shape counts for the runner errors seen in this pass.
+    /// A third attribution axis beside the class/op rollups: it discriminates the
+    /// hq-cloud pull-leg prose that both of those axes collapse to `OTHER`/`other`
+    /// (the HQ-DESKTOP-4T unattributability). Every rendered token is chosen in
+    /// code, never copied from a runner message.
+    pub runner_error_shapes: RunnerErrorShapeRollup,
+    /// Content-safe first-path-segment counts for per-file runner errors, so a
+    /// flood confined to one subtree is distinguishable from a whole-company one
+    /// without ever emitting a user path.
+    pub runner_error_path_roots: RunnerErrorPathRootRollup,
+    /// Count of company-scope errors (`path == "(company)"`) seen this pass.
+    runner_error_company_scope: u32,
+    /// Count of per-file errors (any other `path`) seen this pass.
+    runner_error_file_scope: u32,
 }
 
 impl RunTotals {
@@ -111,6 +128,15 @@ impl RunTotals {
         self.saw_error = true;
         self.runner_error_rollup.record(&err.message);
         self.runner_error_ops.record(&err.message);
+        // Additive attribution axes (never affect alerting/suppression): a
+        // message shape for every error, and a path root for per-file errors.
+        self.runner_error_shapes.record(&err.message);
+        if err.path == COMPANY_ERROR_PATH_SENTINEL {
+            self.runner_error_company_scope = self.runner_error_company_scope.saturating_add(1);
+        } else {
+            self.runner_error_file_scope = self.runner_error_file_scope.saturating_add(1);
+            self.runner_error_path_roots.record(&err.path);
+        }
         if let Some(company) = err.company.as_deref() {
             self.runner_error_companies.insert(company.to_string());
         }
@@ -123,6 +149,22 @@ impl RunTotals {
     /// process or this private deduplication set.
     pub fn runner_error_company_count(&self) -> u32 {
         u32::try_from(self.runner_error_companies.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Compact, content-safe split of company-scope vs per-file runner errors
+    /// seen this pass, e.g. `company:1,file:7204`. `None` when no runner error
+    /// was recorded, so no extra should be sent. Both counts are integers, never
+    /// paths or names.
+    pub fn runner_error_scope(&self) -> Option<String> {
+        let total = self
+            .runner_error_company_scope
+            .saturating_add(self.runner_error_file_scope);
+        (total > 0).then(|| {
+            format!(
+                "company:{},file:{}",
+                self.runner_error_company_scope, self.runner_error_file_scope
+            )
+        })
     }
 
     pub fn record_auth_error(&mut self) {
@@ -354,6 +396,18 @@ pub enum RunnerErrorClass {
 }
 
 impl RunnerErrorClass {
+    /// Every variant, so content-safety tests can enumerate the emitter's own
+    /// token set instead of a hand-copied list.
+    pub const ALL: [RunnerErrorClass; 7] = [
+        Self::Eperm,
+        Self::Eacces,
+        Self::Enospc,
+        Self::Ebusy,
+        Self::Network,
+        Self::Auth,
+        Self::Other,
+    ];
+
     fn tag_name(self) -> &'static str {
         match self {
             Self::Eperm => "EPERM",
@@ -374,6 +428,23 @@ impl RunnerErrorClass {
             Self::Ebusy => "ebusy",
             Self::Network => "network",
             Self::Auth => "auth",
+            Self::Other => "other",
+        }
+    }
+
+    /// Breadcrumb-only rendering of the class. Deliberately spells the auth class
+    /// `identity`, NOT `auth`: Sentry's default `@password:filter` scrubber
+    /// deletes any breadcrumb containing an auth-ish token, which destroyed the
+    /// single most diagnostic HQ-DESKTOP-4T breadcrumb. `tag_name()` and
+    /// `fingerprint_token()` keep `AUTH`/`auth` so grouping and history survive.
+    pub fn breadcrumb_token(self) -> &'static str {
+        match self {
+            Self::Eperm => "eperm",
+            Self::Eacces => "eacces",
+            Self::Enospc => "enospc",
+            Self::Ebusy => "ebusy",
+            Self::Network => "network",
+            Self::Auth => "identity",
             Self::Other => "other",
         }
     }
@@ -505,6 +576,20 @@ pub enum RunnerFatalClass {
 }
 
 impl RunnerFatalClass {
+    /// Every variant, so content-safety tests can enumerate the emitter's own
+    /// fatal-class token set instead of a hand-copied list.
+    pub const ALL: [RunnerFatalClass; 9] = [
+        Self::LibuvAssert,
+        Self::NodeCheckAbort,
+        Self::NodeFatal,
+        Self::HeapOom,
+        Self::RustPanic,
+        Self::ExecPermissionDenied,
+        Self::ExecNotFound,
+        Self::NodeTooOld,
+        Self::None,
+    ];
+
     /// Fixed vocabulary safe for Sentry tags and breadcrumbs.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1657,6 +1742,152 @@ pub fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEven
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── grouping / suppression invariance (attribution must only ADD info) ───────
+    //
+    // The message-shape / path-root / provenance attribution added for
+    // HQ-DESKTOP-4T must never change how a runner exit groups or whether it
+    // alerts. These pins lock the exact pre-change return values of every token
+    // and decision the plan declares off-limits, so a future edit that turns
+    // attribution into re-grouping or suppression fails loudly.
+
+    #[test]
+    fn runner_error_class_group_tokens_are_pinned() {
+        // fingerprint_token drives Sentry grouping; tag_name drives the tag value.
+        // The Auth breadcrumb-token rename must not have touched either.
+        for (class, tag, fingerprint) in [
+            (RunnerErrorClass::Eperm, "EPERM", "eperm"),
+            (RunnerErrorClass::Eacces, "EACCES", "eacces"),
+            (RunnerErrorClass::Enospc, "ENOSPC", "enospc"),
+            (RunnerErrorClass::Ebusy, "EBUSY", "ebusy"),
+            (RunnerErrorClass::Network, "NETWORK", "network"),
+            (RunnerErrorClass::Auth, "AUTH", "auth"),
+            (RunnerErrorClass::Other, "OTHER", "other"),
+        ] {
+            assert_eq!(class.tag_name(), tag);
+            assert_eq!(class.fingerprint_token(), fingerprint);
+        }
+    }
+
+    #[test]
+    fn runner_error_rollup_group_token_is_pinned_for_the_hq_desktop_4t_shape() {
+        // The event that motivated this fix: an all-OTHER flood must still group
+        // as `other`, and an empty pass as `none`.
+        let mut rollup = RunnerErrorRollup::default();
+        for _ in 0..7205 {
+            rollup.record("download skipped: local parent escaped the sync root");
+        }
+        assert_eq!(rollup.fingerprint_token(), "other");
+        assert_eq!(RunnerErrorRollup::default().fingerprint_token(), "none");
+    }
+
+    #[test]
+    fn termination_fingerprint_token_is_pinned() {
+        // exit:2 is the exact HQ-DESKTOP-4T termination; it must not regroup.
+        assert_eq!(termination_fingerprint_token(Some(2), None), "exit:2");
+        assert_eq!(termination_fingerprint_token(None, Some(15)), "signal:15");
+        assert_eq!(
+            termination_fingerprint_token(Some(0), Some(15)),
+            "invalid:exit:0+signal:15"
+        );
+        assert_eq!(termination_fingerprint_token(None, None), "unknown");
+    }
+
+    #[test]
+    fn exit_disposition_is_pinned_across_the_alert_boundary() {
+        // Alertable exit-2 (HQ-DESKTOP-4T) still alerts …
+        assert_eq!(
+            classify_runner_exit_disposition(Some(2), None, true, true, false),
+            RunnerExitDisposition::Alert
+        );
+        assert!(should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            true,
+            true,
+            false
+        ));
+        // … and a benign exit-2 fully explained by non-alertable errors is still
+        // ignored — attribution must not flip either verdict.
+        assert_eq!(
+            classify_runner_exit_disposition(Some(2), None, true, false, false),
+            RunnerExitDisposition::Ignore
+        );
+        assert!(!should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            true,
+            false,
+            false
+        ));
+        // Node-too-old and transient-retry precedence unchanged.
+        assert_eq!(
+            classify_runner_exit_disposition(Some(2), None, true, true, true),
+            RunnerExitDisposition::NodeTooOld
+        );
+        assert_eq!(
+            classify_runner_exit_disposition(
+                Some(RUNNER_TRANSIENT_RETRY_EXIT),
+                None,
+                false,
+                false,
+                false
+            ),
+            RunnerExitDisposition::TransientRetry
+        );
+        // A concurrent alertable fault still wins over a cancellation record.
+        assert_eq!(
+            classify_runner_exit_disposition_with_cancellation(
+                Some(2),
+                None,
+                Some(SyncCancelCause::UserStop),
+                true,
+                true,
+                true,
+                false,
+            ),
+            RunnerExitDisposition::Alert
+        );
+    }
+
+    #[test]
+    fn runner_error_scope_splits_company_and_file_without_leaking_paths() {
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "Entity not found".to_string(),
+        });
+        for i in 0..3 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: format!("knowledge/secret-file-{i}.md"),
+                message: "download skipped: local parent escaped the sync root".to_string(),
+            });
+        }
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:1,file:3")
+        );
+        // The shape + path-root rollups render only fixed tokens, never the seeded
+        // path bytes.
+        let shapes = totals
+            .runner_error_shapes
+            .tag_value()
+            .expect("shapes present");
+        let roots = totals
+            .runner_error_path_roots
+            .tag_value()
+            .expect("roots present");
+        // 3 per-file containment escapes + the company-scope "Entity not found"
+        // (unknown shape). Path roots exclude the `(company)` sentinel entirely.
+        assert_eq!(shapes, "containment_escape:3,unknown:1");
+        assert_eq!(roots, "knowledge:3");
+        for rendered in [&shapes, &roots] {
+            assert!(!rendered.contains("secret-file"));
+            assert!(!rendered.contains("acme"));
+        }
+    }
 
     // ── describe_exit ────────────────────────────────────────────────────────────
 
