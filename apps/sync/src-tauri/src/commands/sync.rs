@@ -401,6 +401,10 @@ fn terminal_sync_error_for_cancelled_by_app(cause: SyncCancelCause) -> SyncError
     let message = match cause {
         SyncCancelCause::TimeoutWatchdog => "Sync was stopped after reaching the one-hour limit.",
         SyncCancelCause::UserStop | SyncCancelCause::AppQuit => "Sync was stopped.",
+        // Only ever published by the auto-sync daemon watchdog against
+        // DAEMON_HANDLE, so a manual sync's terminal boundary never actually
+        // reads it; the arm keeps the match exhaustive with a plain message.
+        SyncCancelCause::HeartbeatStall => "Sync was stopped after it stopped responding.",
     };
     SyncErrorEvent {
         company: None,
@@ -2903,6 +2907,29 @@ mod tests {
             ),
             "cancel-status-mismatch",
             "an effective cancellation that remains capture-worthy is not uncancelled"
+        );
+    }
+
+    #[test]
+    fn cancelled_by_app_terminal_message_covers_every_cause() {
+        assert_eq!(
+            terminal_sync_error_for_cancelled_by_app(SyncCancelCause::TimeoutWatchdog).message,
+            "Sync was stopped after reaching the one-hour limit."
+        );
+        assert_eq!(
+            terminal_sync_error_for_cancelled_by_app(SyncCancelCause::UserStop).message,
+            "Sync was stopped."
+        );
+        assert_eq!(
+            terminal_sync_error_for_cancelled_by_app(SyncCancelCause::AppQuit).message,
+            "Sync was stopped."
+        );
+        // Only ever published against DAEMON_HANDLE by the daemon watchdog, so a
+        // manual sync never actually renders it; the arm keeps the match
+        // exhaustive with a plain, content-safe message.
+        assert_eq!(
+            terminal_sync_error_for_cancelled_by_app(SyncCancelCause::HeartbeatStall).message,
+            "Sync was stopped after it stopped responding."
         );
     }
 
