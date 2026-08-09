@@ -54,6 +54,10 @@ fn npm_context<'a>(
         npm_prefix,
         "/opt/homebrew/bin/npm",
         already_blocked,
+        // Delivery evidence == the target: a matching-prefix non-convergence is
+        // genuine shadowing (loud), not a resolution shortfall. Foreign-managed
+        // fixtures pass no prefix, so this flag is moot for them.
+        Some("5.84.0"),
     )
 }
 
@@ -74,6 +78,8 @@ fn pnpm_context<'a>(
         after_version: Some("5.77.14"),
         latest: "5.84.0",
         npm_prefix_passed: None,
+        // npm-only; the pnpm executor's classification ignores it.
+        delivered_version: None,
         installer_bin: pnpm_bin,
         already_blocked,
         pnpm: Some(PnpmRunDiagnostics {
@@ -736,5 +742,168 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
     assert_eq!(
         events[0].tags.get("npm_path_shape").map(String::as_str),
         Some("global-lib-node-modules")
+    );
+}
+
+/// The registry-race capture, end to end: npm was aimed at the resolved
+/// binary's own prefix but delivered N-1 (the target never propagated). Driven
+/// through the real decision seam, effects executor, and reporter and scrubbed
+/// by `hq_telemetry::before_send`, it must (1) write NO blocking marker, (2)
+/// name itself as a resolution shortfall carrying delivered-vs-requested version
+/// tags, (3) keep the stable fingerprint so it does not split the group, and
+/// (4) stay path-free.
+#[test]
+fn a_resolution_shortfall_names_itself_and_does_not_render_as_a_targeted_layout_defect() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let prefix = home.join(".npm-global").to_string_lossy().to_string();
+    let hq_bin = home
+        .join(".npm-global/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let ctx = PostInstallContext::npm(
+        &hq_bin,
+        &hq_bin,
+        Some("5.83.0"),
+        Some("5.83.0"),
+        "5.84.0",
+        Some(&prefix),
+        "/opt/homebrew/bin/npm",
+        false,
+        Some("5.83.0"), // delivered short of the 5.84.0 target
+    );
+
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(
+        records, 0,
+        "a resolution shortfall must write no blocking marker"
+    );
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    // Grouping does NOT split: the fingerprint is unchanged.
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("resolution-shortfall"),
+        "it must name its own mechanism, not a targeted layout defect"
+    );
+    assert_eq!(
+        event.tags.get("requested_version").map(String::as_str),
+        Some("5.84.0")
+    );
+    assert_eq!(
+        event.tags.get("delivered_version").map(String::as_str),
+        Some("5.83.0")
+    );
+    // Path-free after the real scrubber.
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+    for forbidden in ["/Users/", "/home/"] {
+        assert!(
+            !serialized.contains(forbidden),
+            "resolution-shortfall event leaked {forbidden:?}: {serialized}"
+        );
+    }
+}
+
+/// Genuine shadowing (the installer delivered the target INTO the prefix but a
+/// copy earlier on PATH still wins) is a real defect. It must remain loud on
+/// EVERY occurrence — even an already-blocked episode — and keep its durable
+/// block, unchanged by this change.
+#[test]
+fn true_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_block() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let prefix = home.join(".npm-global").to_string_lossy().to_string();
+    let hq_bin = home
+        .join(".npm-global/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let ctx = PostInstallContext::npm(
+        &hq_bin,
+        &hq_bin,
+        Some("5.77.14"),
+        Some("5.77.14"),
+        "5.84.0",
+        Some(&prefix),
+        "/opt/homebrew/bin/npm",
+        true,           // already blocked — a real defect stays loud anyway
+        Some("5.84.0"), // delivered == target: genuine shadowing
+    );
+
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(records, 1, "genuine shadowing keeps the durable block");
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("npm-targeted")
+    );
+    assert_eq!(
+        event.tags.get("delivered_version").map(String::as_str),
+        Some("5.84.0")
+    );
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+}
+
+/// Replay the exact tag shape captured on 2026-08-09T00:47:11Z (npm executor,
+/// prefix known, hq_bin unchanged, managed-toolchain hq bin, delivered 5.97.0
+/// against target 5.97.1). Under the old contract it was npm-targeted and
+/// blocking; under the delivery-evidence contract it must reclassify as a
+/// non-blocking resolution shortfall.
+#[test]
+fn the_2026_08_09_field_event_shape_reclassifies_under_the_new_contract() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    // The managed-toolchain npm-global layout the field event carried.
+    let prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = format!("{prefix}/bin/hq");
+    let ctx = PostInstallContext::npm(
+        &hq_bin,
+        &hq_bin, // hq_bin_changed = false, as in the field event
+        Some("5.97.0"),
+        Some("5.97.0"),
+        "5.97.1",
+        Some(&prefix),
+        "/usr/local/bin/npm",
+        false,
+        Some("5.97.0"), // delivered N-1
+    );
+
+    let (events, records, captures, _record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(
+        records, 0,
+        "the field event must no longer wedge auto-update"
+    );
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("resolution-shortfall")
+    );
+    assert_eq!(
+        event.tags.get("requested_version").map(String::as_str),
+        Some("5.97.1")
+    );
+    assert_eq!(
+        event.tags.get("delivered_version").map(String::as_str),
+        Some("5.97.0")
+    );
+    assert_eq!(
+        event.tags.get("hq_bin_changed").map(String::as_str),
+        Some("false")
     );
 }
