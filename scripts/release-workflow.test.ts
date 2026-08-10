@@ -224,8 +224,14 @@ describe("release workflow channel contract", () => {
     // blocks or masks a shipped release.
     expect(sync).toContain("needs: [validate, publish]");
     expect(sync).toContain("needs.publish.result == 'success'");
-    expect(sync).toContain("contents: write");
     expect(sync).toContain("ref: main");
+
+    // main is protected with no role bypass, and GitHub will not accept the
+    // Actions identity as a ruleset bypass actor — the push must go through the
+    // hq-audit-bot App, which is the bypass actor on the `main` ruleset.
+    expect(sync).toContain("actions/create-github-app-token@v1");
+    expect(sync).toContain("HQ_AUDIT_BOT_APP_ID");
+    expect(sync).toContain("token: ${{ steps.app-token.outputs.token }}");
     expect(sync).toContain("scripts/release-version-order.mjs");
     expect(sync).toContain("git push origin HEAD:refs/heads/main");
     // Never `git add -A`: only the five version surfaces may be committed.
