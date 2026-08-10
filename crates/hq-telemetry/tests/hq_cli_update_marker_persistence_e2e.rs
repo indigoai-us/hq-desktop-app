@@ -4,7 +4,8 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
     reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
-    PnpmRunDiagnostics, PostInstallContext, PostInstallCoreEffects, NON_CONVERGENT_ERROR_PREFIX,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::test::with_captured_events_options;
 
@@ -37,11 +38,14 @@ fn drive_failed_marker_writes(
                 report_non_convergent_install(&report);
             };
             let record_failure = |_error: String| report_non_convergent_marker_unpersisted();
+            let record_capture_episode = |_keys: Vec<String>| Ok(());
             let effects = PostInstallCoreEffects {
                 record: &record,
                 clear: &clear,
                 capture: &capture,
                 record_failure: &record_failure,
+                capture_episode_reported_keys: &[],
+                record_capture_episode: &record_capture_episode,
             };
 
             let result = apply_post_install_effects(&outcome, &effects);
@@ -134,6 +138,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 global_bin_dir_matches_shim_dir: None,
                 exit_status: "0".to_string(),
                 output_len: 64,
+                store_family: PnpmStoreFamily::Unknown,
+                authoritative_query_ok: false,
             }),
         },
         5,
@@ -170,6 +176,8 @@ fn pnpm_marker_ctx(
             global_bin_dir_matches_shim_dir: matches,
             exit_status: "0".to_string(),
             output_len: 96,
+            store_family: PnpmStoreFamily::V11Plus,
+            authoritative_query_ok: true,
         }),
     }
 }
@@ -189,11 +197,14 @@ fn drive_success_path(ctx: &PostInstallContext<'_>) -> (usize, usize) {
         captures.set(captures.get() + 1);
     };
     let record_failure = |_error: String| panic!("record must succeed on this path");
+    let record_capture_episode = |_keys: Vec<String>| Ok(());
     let effects = PostInstallCoreEffects {
         record: &record,
         clear: &clear,
         capture: &capture,
         record_failure: &record_failure,
+        capture_episode_reported_keys: &[],
+        record_capture_episode: &record_capture_episode,
     };
     let result = apply_post_install_effects(&outcome, &effects);
     assert!(matches!(

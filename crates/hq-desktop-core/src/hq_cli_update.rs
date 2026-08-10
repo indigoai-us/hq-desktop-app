@@ -1042,6 +1042,14 @@ pub struct PnpmRunDiagnostics {
     /// Length of pnpm's combined output. The text itself is never sent — only
     /// its size, so a talkative pnpm cannot smuggle paths into telemetry.
     pub output_len: usize,
+    /// The observed pnpm global-store family (`v11` / numeric / both / none).
+    /// A closed token so a residual occurrence names the store layout it saw —
+    /// the pnpm 11 `v11` store is exactly what the guessed candidates missed.
+    pub store_family: PnpmStoreFamily,
+    /// Did the authoritative `pnpm ls -g --json` delivery reader parse a version?
+    /// A closed boolean: `false` means delivery evidence fell back to the store
+    /// scan (or was absent entirely), which the classifier treats as no evidence.
+    pub authoritative_query_ok: bool,
 }
 
 impl PnpmRunDiagnostics {
@@ -1116,6 +1124,14 @@ pub struct PostInstallCoreEffects<'a> {
     pub clear: &'a dyn Fn(),
     pub capture: &'a dyn Fn(NonConvergentReport),
     pub record_failure: &'a dyn Fn(String),
+    /// The machine's persisted non-blocking-capture episode keys (empty when
+    /// unreadable, which fails open toward capturing). Consulted only for a
+    /// non-blocking kind; see [`non_convergent_capture_episode_key`].
+    pub capture_episode_reported_keys: &'a [String],
+    /// Persist the updated non-blocking-capture episode-key set after a bounded
+    /// capture fires. Best-effort: a failure here at most lets one duplicate
+    /// non-blocking capture through on the next check, never a durable block.
+    pub record_capture_episode: &'a dyn Fn(Vec<String>) -> Result<(), String>,
 }
 
 struct AsyncSingleFlightState<T> {
@@ -1467,7 +1483,31 @@ pub fn apply_post_install_effects(
 
     if let Some(report) = outcome.capture.as_ref() {
         if !outcome.capture_requires_durable_record || marker_persisted {
-            (effects.capture)(report.clone());
+            match non_convergent_capture_episode_key(report) {
+                // A non-blocking kind (resolution shortfall / misdirected): bound
+                // to one capture per (latest, kind, home_source) episode so a
+                // persistent environment shape reports once per new `latest`
+                // instead of once per scheduled check and once per app restart.
+                Some(key) => {
+                    if !non_convergent_capture_episode_blocked(
+                        effects.capture_episode_reported_keys,
+                        &key,
+                    ) {
+                        (effects.capture)(report.clone());
+                        let updated = non_convergent_capture_episode_record(
+                            effects.capture_episode_reported_keys,
+                            &key,
+                            &report.latest,
+                        );
+                        // Best-effort: a persist failure at most lets one
+                        // duplicate non-blocking capture through next check.
+                        let _ = (effects.record_capture_episode)(updated);
+                    }
+                }
+                // A blocking or foreign-managed kind: capture on every occurrence.
+                // Foreign-managed is already bounded by its durable marker above.
+                None => (effects.capture)(report.clone()),
+            }
         }
     }
 
@@ -1488,6 +1528,74 @@ pub fn non_convergent_episode_blocked(non_convergent: Option<&str>, latest: &str
 
 pub fn should_auto_install(latest: &str, non_convergent: Option<&str>) -> bool {
     !non_convergent_episode_blocked(non_convergent, latest)
+}
+
+/// Upper bound on the reported non-blocking-capture episode-key set persisted per
+/// machine, so a pathological stream of distinct environment shapes cannot grow
+/// menubar.json without limit. Small: the key space is (latest × kind × home),
+/// and only non-blocking kinds contribute.
+pub const MAX_NON_CONVERGENT_CAPTURE_EPISODE_KEYS: usize = 16;
+
+/// The episode key for a NON-BLOCKING non-convergent capture, or `None` when the
+/// kind is not episode-bounded.
+///
+/// A blocking kind (`NpmTargeted`/`PnpmTargeted`) captures on every occurrence —
+/// it is a real, driveable defect the team must see each time. A foreign-managed
+/// kind is already bounded by its durable version marker. Only the remaining
+/// non-blocking kinds (`ResolutionShortfall`, `PnpmMisdirected`) are a persistent
+/// ENVIRONMENT shape that would otherwise re-page on every scheduled check and
+/// every app restart — the 16:13:33/16:14:27 double-fire across an app
+/// self-update. Keying on `(latest, kind, home_source)` reports such a shape once
+/// per new `latest` and suppresses same-version repeats.
+pub fn non_convergent_capture_episode_key(report: &NonConvergentReport) -> Option<String> {
+    if report.kind.may_block_auto_update() {
+        return None;
+    }
+    let home_source = report
+        .pnpm
+        .as_ref()
+        .map(|diagnostics| diagnostics.home_source)
+        .unwrap_or(PnpmHomeSource::Undetermined);
+    Some(format!(
+        "{}|{}|{}",
+        report.latest,
+        report.kind.telemetry_value(),
+        home_source.telemetry_value()
+    ))
+}
+
+/// Whether a non-blocking-capture episode identical to one already reported on
+/// this machine should be suppressed. Mirrors [`install_failure_episode_blocked`]:
+/// membership in the persisted key set. A caller that cannot read its marker
+/// passes an empty slice and therefore always reports — fail-open toward staying
+/// loud, since a non-blocking capture never wedges auto-update.
+pub fn non_convergent_capture_episode_blocked(reported_keys: &[String], current_key: &str) -> bool {
+    reported_keys.iter().any(|key| key == current_key)
+}
+
+/// The reported non-blocking-capture episode-key set to persist after reporting
+/// `current_key`. Keeps only keys for the CURRENT `latest` (a new target resets
+/// the set, since its keys carry a different `latest|` prefix and could never
+/// match), appends the new key, and bounds the result to the most-recent
+/// [`MAX_NON_CONVERGENT_CAPTURE_EPISODE_KEYS`]. Mirrors
+/// [`install_failure_episode_record`].
+pub fn non_convergent_capture_episode_record(
+    reported_keys: &[String],
+    current_key: &str,
+    latest: &str,
+) -> Vec<String> {
+    let prefix = format!("{latest}|");
+    let mut kept: Vec<String> = reported_keys
+        .iter()
+        .filter(|key| key.starts_with(&prefix) && key.as_str() != current_key)
+        .cloned()
+        .collect();
+    kept.push(current_key.to_string());
+    if kept.len() > MAX_NON_CONVERGENT_CAPTURE_EPISODE_KEYS {
+        let overflow = kept.len() - MAX_NON_CONVERGENT_CAPTURE_EPISODE_KEYS;
+        kept.drain(0..overflow);
+    }
+    kept
 }
 
 /// Stable marker on the non-convergent error string. The UI keys off it to tell
@@ -1647,6 +1755,21 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                         global_bin_dir_match_tag(
                             diagnostics.and_then(|d| d.global_bin_dir_matches_shim_dir),
                         ),
+                    );
+                    // Self-diagnosing store provenance: which global-store family
+                    // pnpm actually had (the `v11` store is the one the guessed
+                    // candidates missed), and whether the authoritative `pnpm ls`
+                    // reader answered. Closed tokens only — never a path.
+                    scope.set_tag(
+                        "pnpm_store_family",
+                        diagnostics
+                            .map(|d| d.store_family)
+                            .unwrap_or(PnpmStoreFamily::Unknown)
+                            .telemetry_value(),
+                    );
+                    scope.set_tag(
+                        "pnpm_authoritative_query",
+                        bool_tag(diagnostics.is_some_and(|d| d.authoritative_query_ok)),
                     );
                     if let Some(diagnostics) = diagnostics {
                         scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());
@@ -3345,13 +3468,96 @@ fn pnpm_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
     Some(parent.to_path_buf())
 }
 
+/// Parse a pnpm global-store directory name into its numeric store-format rank.
+///
+/// Accepts BOTH the pnpm <=10 bare-integer names (`5`, `4`) and the pnpm 11
+/// `v`-prefixed names (`v11`). Before this, a bare `name.parse::<u64>()` scored
+/// `v11` as 0, so on a machine migrated from pnpm 10 the stale numeric store was
+/// enumerated ahead of the live `v11` one — the ordering that entrenched the
+/// stale reading. `None` for anything unrecognized so it sorts last (rank 0),
+/// never ahead of a real store.
+fn pnpm_store_format_rank(name: &str) -> Option<u64> {
+    let digits = name.strip_prefix('v').unwrap_or(name);
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u64>().ok()
+}
+
+/// The observed family of pnpm's global store beside a resolved shim. A closed
+/// telemetry token — never a path — so a residual occurrence names the store
+/// layout it saw (`v11` vs a leftover numeric store vs both on a migrated Mac).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PnpmStoreFamily {
+    /// A pnpm 11 `v`-prefixed global store (`global/v11`).
+    V11Plus,
+    /// A pnpm <=10 bare-integer global store (`global/5`).
+    Numeric,
+    /// Both a `v`-prefixed and a bare-integer store present — a machine migrated
+    /// from pnpm 10, exactly the shape whose ordering defect this fix targets.
+    Mixed,
+    /// No recognizable global store directory (absent, empty, or unreadable).
+    Unknown,
+}
+
+impl PnpmStoreFamily {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::V11Plus => "v11-plus",
+            Self::Numeric => "numeric",
+            Self::Mixed => "mixed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify the pnpm global-store family under `pnpm_home` from its
+/// `global/<store>` directory names. One bounded `read_dir`; a missing store
+/// yields `Unknown`. Pure telemetry classification — the value is a closed token
+/// carrying no path.
+pub fn pnpm_store_family(pnpm_home: &str) -> PnpmStoreFamily {
+    if pnpm_home.is_empty() {
+        return PnpmStoreFamily::Unknown;
+    }
+    let global = Path::new(pnpm_home).join("global");
+    let mut has_v = false;
+    let mut has_numeric = false;
+    for entry in std::fs::read_dir(&global).into_iter().flatten().flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if name.starts_with('v') && pnpm_store_format_rank(&name).is_some() {
+            has_v = true;
+        } else if name.parse::<u64>().is_ok() {
+            has_numeric = true;
+        }
+    }
+    match (has_v, has_numeric) {
+        (true, true) => PnpmStoreFamily::Mixed,
+        (true, false) => PnpmStoreFamily::V11Plus,
+        (false, true) => PnpmStoreFamily::Numeric,
+        (false, false) => PnpmStoreFamily::Unknown,
+    }
+}
+
 /// package.json candidates inside pnpm's global store.
 ///
-/// pnpm keeps globals under `<pnpm-home>/global/<store-version>/node_modules`
-/// — a small integer directory that changes with pnpm's store format — so the
-/// versions present are enumerated (highest first) rather than guessed. One
-/// bounded `read_dir` of a directory holding a handful of entries; a missing
-/// `global/` simply yields nothing.
+/// pnpm keeps globals under `<pnpm-home>/global/<store>/…`. Two store shapes
+/// are enumerated so a pnpm 11 machine is not structurally blind to its own
+/// install:
+///   * pnpm <=10: `<store>/node_modules/@indigoai-us/hq-cli/package.json`, where
+///     `<store>` is a bare integer (`5`).
+///   * pnpm 11: `<store>/<opaque-hash>/node_modules/@indigoai-us/hq-cli/package.json`,
+///     where `<store>` is `v`-prefixed (`v11`) and the package sits one further
+///     level down under a per-install hash directory. One bounded single-level
+///     scan of the store reaches it without guessing the hash.
+///
+/// Stores are ordered newest-format-first by [`pnpm_store_format_rank`] so `v11`
+/// outranks a leftover `5` on a migrated machine. A missing `global/` yields
+/// nothing.
 fn pnpm_store_package_json_candidates(pnpm_home: &Path) -> Vec<std::path::PathBuf> {
     let global = pnpm_home.join("global");
     let suffix = Path::new("node_modules")
@@ -3367,20 +3573,38 @@ fn pnpm_store_package_json_candidates(pnpm_home: &Path) -> Vec<std::path::PathBu
         .filter(|path| path.is_dir())
         .collect();
     // Newest store format first, then by name so the order is deterministic
-    // regardless of how the filesystem enumerated the directory.
+    // regardless of how the filesystem enumerated the directory. `v11` parses to
+    // 11 (not 0), so it sorts ahead of a stale pnpm-10 `5` store.
     stores.sort_by_key(|path| {
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default()
             .to_string();
-        (std::cmp::Reverse(name.parse::<u64>().unwrap_or(0)), name)
+        (
+            std::cmp::Reverse(pnpm_store_format_rank(&name).unwrap_or(0)),
+            name,
+        )
     });
 
-    let mut candidates: Vec<std::path::PathBuf> = stores
-        .into_iter()
-        .map(|store| store.join(&suffix))
-        .collect();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    for store in &stores {
+        // pnpm <=10: the package sits directly under the store's node_modules.
+        candidates.push(store.join(&suffix));
+        // pnpm 11: the package sits one level down under a per-install opaque
+        // hash dir. A bounded single-level scan of the store reaches it; the
+        // name-guarded manifest read skips any hash dir that is not hq-cli.
+        if let Ok(entries) = std::fs::read_dir(store) {
+            let mut nested: Vec<std::path::PathBuf> = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .map(|hash_dir| hash_dir.join(&suffix))
+                .collect();
+            nested.sort();
+            candidates.extend(nested);
+        }
+    }
     // Some setups keep the store flat directly under `global/`.
     candidates.push(global.join(&suffix));
     candidates
@@ -3450,6 +3674,94 @@ pub fn installed_hq_cli_version_in_prefix(prefix: &str, hq_bin: &str) -> Option<
 /// which fails safe toward retrying rather than a durable block.
 pub fn installed_hq_cli_version_in_pnpm_store(pnpm_home: &str) -> Option<String> {
     pnpm_store_package_json_candidates(Path::new(pnpm_home))
+        .into_iter()
+        .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
+}
+
+/// The @indigoai-us/hq-cli entry pnpm itself reports for the global install,
+/// parsed from `pnpm ls -g --depth 0 --json`. This is the AUTHORITATIVE, layout
+/// agnostic delivery reader: it trusts pnpm's own answer instead of guessing a
+/// store path, so the pnpm 11 store-format change (`global/v11/<hash>`) cannot
+/// make delivery unreadable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PnpmGlobalListing {
+    pub version: String,
+    /// The install path pnpm reported, retained only for the caller's own use —
+    /// never sent to telemetry.
+    pub path: Option<String>,
+}
+
+/// Parse `pnpm ls -g --depth 0 --json` output and extract the installed
+/// @indigoai-us/hq-cli version (and pnpm's reported path for it). pnpm emits an
+/// array of project records; a bare object is tolerated defensively. Malformed,
+/// empty, non-UTF-8, or hq-cli-absent output yields `None` — a parse miss is "no
+/// evidence", which fails safe toward retrying, never a durable block.
+pub fn parse_pnpm_global_hq_cli(stdout: &[u8]) -> Option<PnpmGlobalListing> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    let projects: Vec<&serde_json::Value> = match &value {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(_) => vec![&value],
+        _ => return None,
+    };
+    for project in projects {
+        for section in ["dependencies", "devDependencies", "optionalDependencies"] {
+            let Some(entry) = project
+                .get(section)
+                .and_then(|deps| deps.get(HQ_CLI_PACKAGE_NAME))
+            else {
+                continue;
+            };
+            if let Some(version) = entry.get("version").and_then(|v| v.as_str()) {
+                let path = entry
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .map(str::to_string);
+                return Some(PnpmGlobalListing {
+                    version: version.to_string(),
+                    path,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// The @indigoai-us/hq-cli version under the root `pnpm root -g` reports, as a
+/// fallback for when the authoritative `pnpm ls` parse fails. Accepts BOTH the
+/// shapes seen in reproduction:
+///   * pnpm <=10: `pnpm root -g` is `<home>/global/<n>/node_modules`, so the
+///     manifest is a direct child.
+///   * pnpm 11: `pnpm root -g` is `<home>/global/v11` (no `node_modules`
+///     segment) and the package sits under a per-install hash dir beneath it.
+/// One bounded single-level scan of the reported root reaches either; a missing
+/// root yields `None`.
+pub fn hq_cli_version_under_pnpm_root(pnpm_root: &str) -> Option<String> {
+    if pnpm_root.trim().is_empty() {
+        return None;
+    }
+    let root = Path::new(pnpm_root.trim());
+    let pkg = Path::new("@indigoai-us")
+        .join("hq-cli")
+        .join("package.json");
+    let nm_pkg = Path::new("node_modules").join(&pkg);
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    // pnpm <=10: the root already ends in `node_modules`.
+    candidates.push(root.join(&pkg));
+    // Some builds report the store dir itself; the package is under its
+    // node_modules.
+    candidates.push(root.join(&nm_pkg));
+    // pnpm 11: the package sits under a per-install opaque hash dir.
+    if let Ok(entries) = std::fs::read_dir(root) {
+        let mut nested: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .map(|hash_dir| hash_dir.join(&nm_pkg))
+            .collect();
+        nested.sort();
+        candidates.extend(nested);
+    }
+    candidates
         .into_iter()
         .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
 }
@@ -3877,6 +4189,8 @@ mod tests {
             global_bin_dir_matches_shim_dir: Some(true),
             exit_status: "0".to_string(),
             output_len: 42,
+            store_family: PnpmStoreFamily::V11Plus,
+            authoritative_query_ok: true,
         };
         // `already_blocked = true`: a targeted defect stays loud across
         // episodes exactly like `NpmTargeted`.
@@ -3939,6 +4253,8 @@ mod tests {
                     global_bin_dir_matches_shim_dir: None,
                     exit_status: "0".to_string(),
                     output_len: 0,
+                    store_family: PnpmStoreFamily::Unknown,
+                    authoritative_query_ok: false,
                 }),
             });
             assert_eq!(
@@ -4101,6 +4417,8 @@ mod tests {
             global_bin_dir_matches_shim_dir: Some(false),
             exit_status: "0".to_string(),
             output_len: 1024,
+            store_family: PnpmStoreFamily::Numeric,
+            authoritative_query_ok: false,
         }
         .summary();
         assert_eq!(
@@ -4118,6 +4436,8 @@ mod tests {
             global_bin_dir_matches_shim_dir: None,
             exit_status: "0".to_string(),
             output_len: 0,
+            store_family: PnpmStoreFamily::Unknown,
+            authoritative_query_ok: false,
         }
         .summary();
         assert!(unprobed.contains("global_bin_dir_matches_shim_dir=unprobed"));
@@ -4230,6 +4550,8 @@ mod tests {
             global_bin_dir_matches_shim_dir: matches,
             exit_status: "0".to_string(),
             output_len: 96,
+            store_family: PnpmStoreFamily::V11Plus,
+            authoritative_query_ok: true,
         }
     }
 
@@ -6669,6 +6991,7 @@ mod tests {
                     captures.fetch_add(1, AtomicOrdering::SeqCst);
                 };
                 let record_failure = |_error| panic!("the marker write must succeed");
+                let record_capture_episode = |_keys: Vec<String>| Ok(());
                 apply_post_install_effects(
                     &outcome,
                     &PostInstallCoreEffects {
@@ -6676,6 +6999,8 @@ mod tests {
                         clear: &clear,
                         capture: &capture,
                         record_failure: &record_failure,
+                        capture_episode_reported_keys: &[],
+                        record_capture_episode: &record_capture_episode,
                     },
                 )
             }
@@ -7350,6 +7675,243 @@ mod tests {
         assert_eq!(
             hq_cli_package_json_candidates(prefix, Path::new("/prefix/hq.cmd")),
             vec![windows.to_path_buf(), unix.to_path_buf()]
+        );
+    }
+
+    /// HQ-DESKTOP-46 r3 base failure: on the base commit the store enumeration is
+    /// structurally blind to pnpm 11's `global/v11/<hash>` store, so delivery
+    /// reads `None` even though the package IS installed. The candidate reaches it
+    /// via the nested-hash scan — and the executed-binary reading reaches it too,
+    /// without depending on canonicalize()+ancestors (a pnpm shim is a script).
+    #[test]
+    fn pnpm_11_v11_store_delivery_and_shim_version_are_read() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let pkg = home
+            .join("global")
+            .join("v11")
+            .join("a1b2c3d4")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.98.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            installed_hq_cli_version_in_pnpm_store(home.to_str().unwrap()).as_deref(),
+            Some("5.98.0"),
+            "the pnpm 11 v11/<hash> store must be readable"
+        );
+        // The executed shim is a plain script beside the `global/` store, so the
+        // pnpm home is identified by that store, not by a directory named `pnpm`.
+        let shim = home.join("bin").join("hq");
+        std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        std::fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(
+            version_from_hq_binary(&shim).as_deref(),
+            Some("5.98.0"),
+            "the executed pnpm 11 shim resolves its delivered version"
+        );
+    }
+
+    /// A migrated machine carries a stale pnpm-10 numeric store AND a live pnpm-11
+    /// `v11` store. The live v11 delivery must win — on the base commit `v11`
+    /// parsed to 0 and sorted BEHIND the stale `5`.
+    #[test]
+    fn pnpm_store_orders_v11_ahead_of_a_leftover_numeric_store() {
+        fn write(home: &Path, store: &str, hashed: Option<&str>, version: &str) {
+            let mut base = home.join("global").join(store);
+            if let Some(hash) = hashed {
+                base = base.join(hash);
+            }
+            let pkg = base
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli");
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(
+                pkg.join("package.json"),
+                format!(r#"{{"name":"@indigoai-us/hq-cli","version":"{version}"}}"#),
+            )
+            .unwrap();
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        write(home, "5", None, "5.93.0");
+        write(home, "v11", Some("hashdir"), "5.98.0");
+        assert_eq!(
+            installed_hq_cli_version_in_pnpm_store(home.to_str().unwrap()).as_deref(),
+            Some("5.98.0"),
+            "v11 must outrank a leftover numeric store"
+        );
+        assert_eq!(
+            pnpm_store_family(home.to_str().unwrap()),
+            PnpmStoreFamily::Mixed
+        );
+    }
+
+    /// The authoritative `pnpm ls -g --json` parser handles both the pnpm 10 and
+    /// pnpm 11 shapes and fails soft (None = no evidence) on anything else.
+    #[test]
+    fn authoritative_pnpm_ls_parser_reads_both_shapes_and_fails_soft() {
+        let pnpm10 = br#"[{"name":"global","version":"5.0.0","path":"/h/global/5","private":true,"dependencies":{"@indigoai-us/hq-cli":{"from":"@indigoai-us/hq-cli","version":"5.98.0","resolved":"x","path":"/h/global/5/node_modules/@indigoai-us/hq-cli"}}}]"#;
+        let got = parse_pnpm_global_hq_cli(pnpm10).expect("pnpm 10 shape");
+        assert_eq!(got.version, "5.98.0");
+        assert_eq!(
+            got.path.as_deref(),
+            Some("/h/global/5/node_modules/@indigoai-us/hq-cli")
+        );
+
+        let pnpm11 = br#"[{"path":"/h/global/v11","dependencies":{"@indigoai-us/hq-cli":{"version":"5.98.0","path":"/h/global/v11/ab12/node_modules/@indigoai-us/hq-cli"}}}]"#;
+        assert_eq!(
+            parse_pnpm_global_hq_cli(pnpm11)
+                .expect("pnpm 11 shape")
+                .version,
+            "5.98.0"
+        );
+
+        // A bare object (not an array) is tolerated defensively.
+        let bare = br#"{"dependencies":{"@indigoai-us/hq-cli":{"version":"5.97.2"}}}"#;
+        assert_eq!(
+            parse_pnpm_global_hq_cli(bare).expect("bare object").version,
+            "5.97.2"
+        );
+
+        // hq-cli absent, malformed, empty, and non-UTF-8 all yield None.
+        assert!(
+            parse_pnpm_global_hq_cli(br#"[{"dependencies":{"other":{"version":"1.0.0"}}}]"#)
+                .is_none()
+        );
+        assert!(parse_pnpm_global_hq_cli(b"not json").is_none());
+        assert!(parse_pnpm_global_hq_cli(b"").is_none());
+        assert!(parse_pnpm_global_hq_cli(&[0xff, 0xfe, 0x00]).is_none());
+    }
+
+    /// The `pnpm root -g` fallback locates hq-cli under both root shapes and is
+    /// "no evidence" for a missing or empty root.
+    #[test]
+    fn pnpm_root_fallback_reads_both_layouts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // pnpm <=10: `pnpm root -g` IS `<...>/node_modules`.
+        let ten_root = tmp.path().join("global").join("5").join("node_modules");
+        let ten_pkg = ten_root.join("@indigoai-us").join("hq-cli");
+        std::fs::create_dir_all(&ten_pkg).unwrap();
+        std::fs::write(
+            ten_pkg.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.97.2"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_version_under_pnpm_root(ten_root.to_str().unwrap()).as_deref(),
+            Some("5.97.2")
+        );
+
+        // pnpm 11: `pnpm root -g` is `<...>/v11`, package under a hash dir.
+        let eleven_root = tmp.path().join("global").join("v11");
+        let eleven_pkg = eleven_root
+            .join("deadbeef")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&eleven_pkg).unwrap();
+        std::fs::write(
+            eleven_pkg.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.98.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_version_under_pnpm_root(eleven_root.to_str().unwrap()).as_deref(),
+            Some("5.98.0")
+        );
+
+        assert!(hq_cli_version_under_pnpm_root("").is_none());
+        assert!(
+            hq_cli_version_under_pnpm_root(tmp.path().join("nope").to_str().unwrap()).is_none()
+        );
+    }
+
+    /// The store-family classifier names the layout it observed as a closed token.
+    #[test]
+    fn pnpm_store_family_names_the_observed_layout() {
+        fn store(home: &Path, name: &str) {
+            std::fs::create_dir_all(home.join("global").join(name)).unwrap();
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let v = tmp.path().join("v");
+        store(&v, "v11");
+        assert_eq!(
+            pnpm_store_family(v.to_str().unwrap()),
+            PnpmStoreFamily::V11Plus
+        );
+        let n = tmp.path().join("n");
+        store(&n, "5");
+        store(&n, "4");
+        assert_eq!(
+            pnpm_store_family(n.to_str().unwrap()),
+            PnpmStoreFamily::Numeric
+        );
+        let m = tmp.path().join("m");
+        store(&m, "v11");
+        store(&m, "5");
+        assert_eq!(
+            pnpm_store_family(m.to_str().unwrap()),
+            PnpmStoreFamily::Mixed
+        );
+        assert_eq!(
+            pnpm_store_family(tmp.path().join("absent").to_str().unwrap()),
+            PnpmStoreFamily::Unknown
+        );
+        assert_eq!(pnpm_store_family(""), PnpmStoreFamily::Unknown);
+    }
+
+    /// Non-blocking captures are episode-bounded per (latest, kind, home_source);
+    /// blocking captures are not, and a new `latest` re-arms exactly one report.
+    #[test]
+    fn non_convergent_capture_episodes_bound_only_non_blocking_kinds() {
+        let shortfall = NonConvergentReport {
+            executor: InstallExecutor::Pnpm,
+            kind: NonConvergenceKind::ResolutionShortfall,
+            latest: "5.98.0".to_string(),
+            local: Some("5.93.0".to_string()),
+            hq_bin: "PATH".to_string(),
+            npm_prefix: None,
+            installer_bin: "/opt/homebrew/bin/pnpm".to_string(),
+            hq_bin_changed: false,
+            delivered_version: Some("5.93.0".to_string()),
+            pnpm: Some(PnpmRunDiagnostics {
+                home_source: PnpmHomeSource::NestedBinDir,
+                home_env_present: false,
+                path_has_shim_dir: true,
+                global_bin_dir_matches_shim_dir: Some(true),
+                exit_status: "0".to_string(),
+                output_len: 96,
+                store_family: PnpmStoreFamily::V11Plus,
+                authoritative_query_ok: true,
+            }),
+        };
+        let key = non_convergent_capture_episode_key(&shortfall).expect("shortfall is bounded");
+        assert_eq!(key, "5.98.0|resolution-shortfall|nested-bin-dir");
+        // A blocking (targeted) kind is never episode-bounded — it stays loud.
+        let targeted = NonConvergentReport {
+            kind: NonConvergenceKind::PnpmTargeted,
+            ..shortfall.clone()
+        };
+        assert!(non_convergent_capture_episode_key(&targeted).is_none());
+
+        // Membership + record: same latest suppresses, a new latest re-arms and
+        // drops the stale-prefix key.
+        assert!(!non_convergent_capture_episode_blocked(&[], &key));
+        let after = non_convergent_capture_episode_record(&[], &key, "5.98.0");
+        assert!(non_convergent_capture_episode_blocked(&after, &key));
+        let new_key = "5.99.0|resolution-shortfall|nested-bin-dir".to_string();
+        let after_new = non_convergent_capture_episode_record(&after, &new_key, "5.99.0");
+        assert!(non_convergent_capture_episode_blocked(&after_new, &new_key));
+        assert!(
+            !non_convergent_capture_episode_blocked(&after_new, &key),
+            "a new latest drops the old-latest key"
         );
     }
 }
