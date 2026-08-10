@@ -77,8 +77,34 @@ static LAST_MIRROR_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// A still-broken working tree must remain visible to triage, but reporting it
 /// every mirror pass turns one actionable condition into an event flood. This
-/// keeps a sustained refusal to one banner every six hours **per HQ root**.
+/// is the *floor* beneath the escalation ladder below: two banners for one HQ
+/// root are never emitted closer together than six hours, whatever the ladder
+/// asks for. Because every rung of that ladder is far coarser than this, the
+/// cooldown no longer paces an episode — it only guards against a burst.
 const REFUSAL_COOLDOWN: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// The finite report budget for a single refusal episode, expressed as the
+/// episode ages at which a still-open wedge is allowed to re-report.
+///
+/// The confirmation gate and the cooldown were both already correct; the
+/// remaining defect was that a *confirmed, unchanged, already-reported* wedge
+/// re-armed every [`REFUSAL_COOLDOWN`] for the life of the episode — four
+/// Sentry events a day per wedged root, with no terminating condition. The
+/// field data was unambiguous: one continuous episode emitted seven byte-
+/// identical banners over 36 hours, paced at exactly one per cooldown, every
+/// one carrying the same depth-1 deletion histogram.
+///
+/// A finite ladder rather than a hard one-and-done: a genuinely wedged root
+/// must stay visible at a cadence a human can act on, so a still-open episode
+/// re-reports once a day later and once a week later, then goes quiet. The
+/// result is at most `len() + 1` banners for one episode however long it lasts
+/// (the first confirmation, then one banner per rung crossed), versus four per
+/// day today. Re-tuning is a one-line change here, and the `episode_reports`
+/// payload tag gives the next round the real distribution instead of a guess.
+const REFUSAL_ESCALATION_AGES: [Duration; 2] = [
+    Duration::from_secs(24 * 60 * 60),
+    Duration::from_secs(7 * 24 * 60 * 60),
+];
 
 /// How many refusing passes an episode needs before it earns a Sentry event.
 ///
@@ -151,6 +177,11 @@ struct RefusalEpisode {
     last_digest: String,
     suppressed_since_report: usize,
     reported_at: Option<Instant>,
+    /// Banners this episode has already emitted, including its first
+    /// confirmation. Seeded from disk on an app relaunch so the finite report
+    /// budget survives an auto-update — the field whose absence let a confirmed
+    /// wedge re-report every cooldown forever.
+    reports: usize,
 }
 
 impl RefusalEpisode {
@@ -230,6 +261,19 @@ struct PersistedRefusalState {
     episode_occurrences: usize,
     #[serde(default)]
     episode_distinct_sets: usize,
+    /// How many banners the open episode has already emitted — its finite report
+    /// budget. `Option` so a record written by a build before this field existed
+    /// reads as *absent* (infer it, erring toward one extra banner) rather than
+    /// as a genuine zero (which would re-report a wedge already reported). This
+    /// is the field whose absence let three prior rounds' caps be wiped by the
+    /// same auto-update that wiped the state they keyed on. Cleared on recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    episode_reports: Option<usize>,
+    /// Refusing passes suppressed since the open episode's last banner, carried
+    /// across a restart so the `refusals_since_last_report` tag counts the whole
+    /// window rather than resetting to a few dozen at every auto-update.
+    #[serde(default)]
+    episode_suppressed_since_report: usize,
     /// Episodes that opened and then *recovered* since the last banner, and the
     /// longest lifetime among them. This is the discriminator all three rounds
     /// lacked: a genuine wedge reports zero recovered episodes, a recurring
@@ -389,23 +433,29 @@ enum RefusalReportAction {
     Suppress,
     /// The first report of this episode.
     ReportFirstConfirmed,
-    /// A sustained episode whose cooldown has now expired.
-    ReportCooldownRearm,
+    /// A still-open episode crossing the next rung of [`REFUSAL_ESCALATION_AGES`]
+    /// — the bounded re-report that replaces the old unbounded cooldown re-arm.
+    ReportEscalation,
 }
 
 impl RefusalReportAction {
     fn emits(self) -> bool {
         matches!(
             self,
-            RefusalReportAction::ReportFirstConfirmed | RefusalReportAction::ReportCooldownRearm
+            RefusalReportAction::ReportFirstConfirmed | RefusalReportAction::ReportEscalation
         )
     }
 
     /// Tag value, so triage can tell a fresh condition from a still-wedged one.
+    /// One explicit arm per variant on purpose: a catch-all silently renders any
+    /// newly added emitting variant as `first-confirmed`, which is exactly the
+    /// hazard this change would have walked into by adding [`Self::ReportEscalation`].
     fn source(self) -> &'static str {
         match self {
-            RefusalReportAction::ReportCooldownRearm => "cooldown-rearm",
-            _ => "first-confirmed",
+            RefusalReportAction::AwaitConfirmation => "await-confirmation",
+            RefusalReportAction::Suppress => "suppressed",
+            RefusalReportAction::ReportFirstConfirmed => "first-confirmed",
+            RefusalReportAction::ReportEscalation => "episode-escalation",
         }
     }
 }
@@ -423,29 +473,50 @@ impl RefusalReportAction {
 /// one — so neither an app restart nor a wall clock that moved can shorten the
 /// cooldown. Note what is deliberately absent: the deletion digest. A refusing
 /// tree churns, and keying on the churn is what produced the flood.
+///
+/// Past confirmation and past the cooldown *floor*, a finite budget decides.
+/// `reports_so_far` is how many banners this episode has already emitted; it too
+/// spans restarts, so an auto-update cannot reset the budget the way it once
+/// reset the report anchor. The first clearance always reports; after that the
+/// episode re-reports only as it crosses successive `escalation_ages`, and never
+/// more than `escalation_ages.len() + 1` times however long it stays wedged.
+/// This is the whole fix: a confirmed, unchanged, already-reported true positive
+/// stops re-arming once per cooldown for the life of the episode.
+///
+/// The thresholds stay explicit parameters, as the confirmation gate already did,
+/// so the whole decision is unit-testable without a git repo or a real clock.
+#[allow(clippy::too_many_arguments)]
 fn decide_refusal_report(
     occurrences: usize,
     episode_age: Duration,
-    already_reported_in_episode: bool,
+    reports_so_far: usize,
     since_last_report: Option<Duration>,
     confirm_after: usize,
     confirm_min_age: Duration,
     cooldown: Duration,
+    escalation_ages: &[Duration],
 ) -> RefusalReportAction {
     if occurrences < confirm_after || episode_age < confirm_min_age {
         return RefusalReportAction::AwaitConfirmation;
     }
-    match since_last_report {
-        None => RefusalReportAction::ReportFirstConfirmed,
-        Some(elapsed) if elapsed >= cooldown => {
-            if already_reported_in_episode {
-                RefusalReportAction::ReportCooldownRearm
-            } else {
-                RefusalReportAction::ReportFirstConfirmed
-            }
-        }
-        Some(_) => RefusalReportAction::Suppress,
+    // The cooldown is a floor, not the pacer: never emit two banners for one
+    // root closer together than this, whatever the ladder below would allow. A
+    // never-reported episode (`None`) has no anchor to floor against.
+    if since_last_report.is_some_and(|elapsed| elapsed < cooldown) {
+        return RefusalReportAction::Suppress;
     }
+    // The first confirmation is always reported.
+    if reports_so_far == 0 {
+        return RefusalReportAction::ReportFirstConfirmed;
+    }
+    // Afterwards this episode re-reports only as it crosses the next rung, and
+    // the ladder is finite by construction — once the budget is spent the wedge
+    // stays visible in the local log but stops billing Sentry.
+    if reports_so_far <= escalation_ages.len() && episode_age >= escalation_ages[reports_so_far - 1]
+    {
+        return RefusalReportAction::ReportEscalation;
+    }
+    RefusalReportAction::Suppress
 }
 
 /// Elapsed wall-clock time since a persisted stamp.
@@ -683,6 +754,12 @@ struct CarriedEpisode {
     age: Duration,
     occurrences: usize,
     distinct_sets: usize,
+    /// Banners the episode had already emitted — its report budget, recovered
+    /// so an auto-update cannot reset it.
+    reports: usize,
+    /// Refusing passes suppressed since the last banner, so the count the next
+    /// banner carries spans the restart instead of resetting.
+    suppressed: usize,
 }
 
 /// Recover the open episode from a persisted record, if it is still live.
@@ -722,10 +799,34 @@ fn carried_episode(
         path,
         "episode start stamp",
     )?;
+    // The report budget. A record written before `episode_reports` existed reads
+    // as `None`; bridge it so the fleet's already-wedged roots don't each earn an
+    // extra banner on upgrade. Infer a single prior report only when a usable
+    // report stamp exists and is not older than this episode's own start — i.e.
+    // the banner belongs to this episode, not a previous, recovered one. A
+    // missing, unparsable or future-dated stamp degrades to zero, erring toward
+    // one extra banner rather than toward silencing a real wedge.
+    let reports = match state.episode_reports {
+        Some(reports) => reports,
+        None => {
+            let reported_at = usable_stamp(
+                state.last_reported_at.as_ref(),
+                now,
+                path,
+                "report timestamp",
+            );
+            match reported_at {
+                Some(reported_at) if reported_at >= started => 1,
+                _ => 0,
+            }
+        }
+    };
     Some(CarriedEpisode {
         age: elapsed_since_wall(started, now)?,
         occurrences: state.episode_occurrences,
         distinct_sets: state.episode_distinct_sets,
+        reports,
+        suppressed: state.episode_suppressed_since_report,
     })
 }
 
@@ -1724,6 +1825,9 @@ struct RefusalOutcome {
     occurrences: usize,
     distinct_sets: usize,
     suppressed_since_report: usize,
+    /// Banners this episode has emitted, this pass included when it emits — the
+    /// finite report budget spent so far.
+    episode_reports: usize,
     episode_age: Duration,
     since_last_report: Option<Duration>,
     episode_opened_at_wall: DateTime<Utc>,
@@ -1790,8 +1894,9 @@ fn report_bulk_refusal_at(
                     occurrences: seed.occurrences,
                     distinct_sets: seed.distinct_sets,
                     last_digest: String::new(),
-                    suppressed_since_report: 0,
+                    suppressed_since_report: seed.suppressed,
                     reported_at: None,
+                    reports: seed.reports,
                 }
             });
 
@@ -1812,17 +1917,20 @@ fn report_bulk_refusal_at(
         let action = decide_refusal_report(
             episode.occurrences,
             episode_age,
-            episode.reported_at.is_some(),
+            episode.reports,
             since_last_report,
             REFUSAL_CONFIRM_OCCURRENCES,
             REFUSAL_CONFIRM_MIN_AGE,
             REFUSAL_COOLDOWN,
+            &REFUSAL_ESCALATION_AGES,
         );
 
         let suppressed_since_report = if action.emits() {
             let suppressed = episode.suppressed_since_report;
             episode.reported_at = Some(now);
             episode.suppressed_since_report = 0;
+            // One more of this episode's finite banner budget is now spent.
+            episode.reports += 1;
             suppressed
         } else {
             episode.suppressed_since_report += 1;
@@ -1834,6 +1942,7 @@ fn report_bulk_refusal_at(
             occurrences: episode.occurrences,
             distinct_sets: episode.distinct_sets,
             suppressed_since_report,
+            episode_reports: episode.reports,
             episode_age,
             since_last_report,
             // The wall-clock instant this episode opened, reconstructed from its
@@ -1865,8 +1974,21 @@ fn report_bulk_refusal_at(
         next.episode_last_refusal_at = Some(stamp.clone());
         next.episode_occurrences = outcome.occurrences;
         next.episode_distinct_sets = outcome.distinct_sets;
+        // Persist the running suppression counter so `refusals_since_last_report`
+        // spans a restart: it resets to zero exactly when a banner emits (which
+        // also carries the pre-reset value on the tag), and otherwise carries the
+        // running count forward untouched.
+        next.episode_suppressed_since_report = if outcome.action.emits() {
+            0
+        } else {
+            outcome.suppressed_since_report
+        };
         if outcome.action.emits() {
             next.last_reported_at = Some(stamp);
+            // The finite report budget is spent one rung at a time and must
+            // outlive an auto-update, so it rides the same persisted record and
+            // the same atomic write as the cooldown anchor.
+            next.episode_reports = Some(outcome.episode_reports);
             // A banner carries the recovered-episode evidence, so it also
             // consumes it: the next banner describes the window after this one.
             next.recovered_episodes_since_report = 0;
@@ -1942,6 +2064,11 @@ fn report_bulk_refusal_at(
                     .unwrap_or_else(|| "never".to_string()),
             );
             scope.set_tag("report_source", outcome.action.source());
+            // How many banners this episode has emitted, this one included. The
+            // cap is falsifiable in production from this tag alone: a working
+            // budget shows 1, 2, 3 and never 4, and a restart that still wiped
+            // the budget would show a stuck 1 beside a large episode_age_secs.
+            scope.set_tag("episode_reports", outcome.episode_reports.to_string());
             // The discriminator: how many times this root opened a refusal
             // episode and then *recovered* since the last banner, and how long
             // the longest of those windows lasted. Zero recovered episodes on a
@@ -2046,6 +2173,11 @@ fn note_mirror_recovered_at(
     state.episode_last_refusal_at = None;
     state.episode_occurrences = 0;
     state.episode_distinct_sets = 0;
+    // The report budget and the suppression counter belong to the episode that
+    // just closed, so a root that refuses again opens with a fresh budget — the
+    // cap is per-episode and can never latch a recovering root silent forever.
+    state.episode_reports = None;
+    state.episode_suppressed_since_report = 0;
     write_persisted_state(git_dir, &state);
 
     closed.is_some()
@@ -2398,28 +2530,32 @@ mod tests {
     /// Replaces the r1 predicate test. That predicate re-armed on a
     /// never-before-seen deletion digest after only `REFUSAL_MIN_SPACING`, which
     /// is the escape hatch the production flood came through; the digest is no
-    /// longer an input at all.
+    /// longer an input at all. This round replaces the *unbounded* cooldown
+    /// re-arm with a finite escalation ladder: a confirmed wedge reports once,
+    /// then only as it crosses each rung, and never more than `len() + 1` times.
     #[test]
-    fn refusal_gate_confirms_first_then_holds_one_banner_per_cooldown() {
+    fn refusal_gate_confirms_once_then_escalates_on_a_finite_ladder() {
         let confirm = REFUSAL_CONFIRM_OCCURRENCES;
         let cooldown = REFUSAL_COOLDOWN;
         let min_age = REFUSAL_CONFIRM_MIN_AGE;
+        let ladder = REFUSAL_ESCALATION_AGES;
         let sustained = min_age;
-        let gate = |occurrences, age, reported, since| {
+        let gate = |occurrences, age, reports, since| {
             decide_refusal_report(
                 occurrences,
                 age,
-                reported,
+                reports,
                 since,
                 confirm,
                 min_age,
                 cooldown,
+                &ladder,
             )
         };
 
         // A single refusing pass is a candidate, not a signal.
         assert_eq!(
-            gate(1, Duration::ZERO, false, None),
+            gate(1, Duration::ZERO, 0, None),
             RefusalReportAction::AwaitConfirmation
         );
         // Both halves of the gate are load-bearing, and each alone is a
@@ -2427,49 +2563,65 @@ mod tests {
         // episode is the exact production shape — every post-fix event was the
         // second pass of a ~70-second-old episode.
         assert_eq!(
-            gate(9_999, min_age - Duration::from_secs(1), false, None),
+            gate(9_999, min_age - Duration::from_secs(1), 0, None),
             RefusalReportAction::AwaitConfirmation,
             "pass count alone must not confirm a transient window"
         );
         // …and an old episode with too few passes is not a sustained refusal
         // either; it is one sample with a stale clock behind it.
         assert_eq!(
-            gate(confirm - 1, sustained, false, None),
+            gate(confirm - 1, sustained, 0, None),
             RefusalReportAction::AwaitConfirmation,
             "age alone must not confirm an episode that has barely refused"
         );
-        // Clearing both confirms it.
+        // Clearing both confirms it — the first banner of the episode.
         assert_eq!(
-            gate(confirm, sustained, false, None),
+            gate(confirm, sustained, 0, None),
             RefusalReportAction::ReportFirstConfirmed
         );
-        // Everything after it, however long the episode runs, is suppressed…
+        // Everything after the first report is suppressed while the episode is
+        // younger than the next rung, however long the cooldown has expired…
         assert_eq!(
-            gate(confirm + 1, sustained, true, Some(Duration::from_secs(1))),
+            gate(confirm + 1, sustained, 1, Some(Duration::from_secs(1))),
             RefusalReportAction::Suppress
         );
         assert_eq!(
-            gate(
-                9_999,
-                sustained,
-                true,
-                Some(cooldown - Duration::from_secs(1))
-            ),
-            RefusalReportAction::Suppress
+            gate(9_999, sustained, 1, Some(cooldown)),
+            RefusalReportAction::Suppress,
+            "past the cooldown but far short of the 24h rung: this is exactly the \
+             old defect, now suppressed instead of re-armed once per cooldown"
         );
-        // …until the cooldown expires, which re-arms exactly one banner.
+        // …until the episode crosses the next rung, which re-reports exactly once.
         assert_eq!(
-            gate(9_999, sustained, true, Some(cooldown)),
-            RefusalReportAction::ReportCooldownRearm
+            gate(9_999, ladder[0], 1, Some(cooldown)),
+            RefusalReportAction::ReportEscalation
+        );
+        assert_eq!(
+            gate(9_999, ladder[1], 2, Some(cooldown)),
+            RefusalReportAction::ReportEscalation
+        );
+        // The ladder is finite: once the budget is spent the wedge never bills
+        // Sentry again, however old it gets.
+        assert_eq!(
+            gate(9_999, ladder[1] * 4, ladder.len() + 1, Some(cooldown)),
+            RefusalReportAction::Suppress,
+            "an exhausted report budget never re-reports"
+        );
+        // The cooldown is still a floor beneath the ladder: a second banner is
+        // never emitted closer together than the cooldown even once a rung is due.
+        assert_eq!(
+            gate(9_999, ladder[0], 1, Some(cooldown - Duration::from_secs(1))),
+            RefusalReportAction::Suppress,
+            "the cooldown floor still binds under the ladder"
         );
         // A fresh episode whose root reported recently (a restart, or a tree
-        // that flapped) still waits out that root's cooldown.
+        // that flapped) still waits out that root's cooldown before its first.
         assert_eq!(
-            gate(confirm, sustained, false, Some(Duration::from_secs(30))),
+            gate(confirm, sustained, 0, Some(Duration::from_secs(30))),
             RefusalReportAction::Suppress
         );
         assert_eq!(
-            gate(confirm, sustained, false, Some(cooldown)),
+            gate(confirm, sustained, 0, Some(cooldown)),
             RefusalReportAction::ReportFirstConfirmed
         );
     }
@@ -2695,6 +2847,11 @@ mod tests {
         );
     }
 
+    /// Retains its name for continuity with the three prior rounds, but this
+    /// change inverts its contract: a still-wedged root no longer re-arms once
+    /// per cooldown. It confirms once, stays silent through the cooldown *and*
+    /// well past it, and re-reports only when it crosses the first escalation
+    /// rung a full day later.
     #[test]
     fn a_sustained_episode_rearms_one_banner_per_cooldown() {
         let _serial = serial();
@@ -2706,52 +2863,65 @@ mod tests {
         let wall = epoch();
 
         let confirming = confirming_passes();
-        let banner_at = confirming - 1;
+        let (banner_now, banner_wall) = pass_at(start, wall, confirming - 1);
         let events = sentry::test::with_captured_events(|| {
-            // The episode confirms on pass `banner_at`…
+            // The episode confirms on pass `confirming - 1`…
             sustain("/hq", &git_dir, &set, 100, start, wall, 0..confirming);
-            // …then four more refusing passes inside the cooldown. They emit
-            // nothing, but they must be *counted* — the rearm event is the only
-            // place triage learns how wedged this root was while it stayed quiet.
-            sustain(
-                "/hq",
-                &git_dir,
-                &set,
-                100,
-                start,
-                wall,
-                confirming..confirming + 4,
-            );
-            // Still wedged six hours after the banner.
-            let (now, wall_now) = pass_at(start, wall, banner_at);
+            // …and then keeps refusing for a full day. The hourly samples here
+            // stand in for the once-a-minute production cadence (each gap stays
+            // under the idle TTL, so the episode is never dropped and reopened).
+            // At +6h, +12h and +18h it is silent — the old defect re-armed at
+            // +6h, the ladder does not, because all three fall short of the rung.
+            for hours in [6i64, 12, 18] {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    100,
+                    banner_now + Duration::from_secs(hours as u64 * 3_600),
+                    banner_wall + chrono::Duration::hours(hours),
+                );
+            }
+            // A full day after the banner, still unchanged: the first rung fires
+            // exactly once.
             refuse_at(
                 "/hq",
                 &git_dir,
                 &set,
                 100,
-                now + REFUSAL_COOLDOWN,
-                wall_now + chrono::Duration::hours(6),
+                banner_now + Duration::from_secs(24 * 3_600),
+                banner_wall + chrono::Duration::hours(24),
             );
         });
         reset_refusal_report_state();
 
-        assert_eq!(events.len(), 2, "one banner per cooldown, not none");
+        assert_eq!(
+            events.len(),
+            2,
+            "one confirmation and one escalation a day later — not a banner per cooldown"
+        );
         assert_eq!(
             events[1].tags.get("report_source").map(String::as_str),
-            Some("cooldown-rearm")
+            Some("episode-escalation")
         );
         assert_eq!(
+            events[1].tags.get("episode_reports").map(String::as_str),
+            Some("2"),
+            "the escalation is the episode's second banner"
+        );
+        assert!(
             events[1]
                 .tags
-                .get("since_last_report_secs")
-                .map(String::as_str),
-            Some(REFUSAL_COOLDOWN.as_secs().to_string().as_str())
+                .get("episode_age_secs")
+                .and_then(|secs| secs.parse::<u64>().ok())
+                .is_some_and(|secs| secs >= REFUSAL_ESCALATION_AGES[0].as_secs()),
+            "the escalation must carry an age past the first rung, got {:?}",
+            events[1].tags.get("episode_age_secs")
         );
-        // Restores the coverage the r1 test `reported_refusal_carries_the_
-        // suppressed_occurrence_count` held before this change deleted it: the
-        // counter accumulates every suppressed pass and resets on each report.
-        // Without the reset the rearm would read 5 (the unconfirmed pass plus
-        // the four suppressed ones); without the accumulation it would read 0.
+        // Carried forward from the pre-change test: the counter accumulates every
+        // suppressed pass and resets on each report. Without the reset the
+        // escalation would also read the first banner's passes; without the
+        // accumulation it would read 0.
         assert_eq!(
             events[0]
                 .tags
@@ -2765,8 +2935,9 @@ mod tests {
                 .tags
                 .get("refusals_since_last_report")
                 .map(String::as_str),
-            Some("4"),
-            "the rearm carries the passes suppressed since the previous banner"
+            Some("3"),
+            "the escalation carries the passes suppressed since the previous \
+             banner — the +6h, +12h and +18h samples"
         );
     }
 
@@ -2896,7 +3067,8 @@ mod tests {
         assert_eq!(
             events[1].tags.get("report_source").map(String::as_str),
             Some("first-confirmed"),
-            "the relaunched process has no in-memory report of its own"
+            "the persisted episode is stale (older than the idle TTL), so a fresh \
+             one opens with a fresh report budget and earns a first-confirmed banner"
         );
     }
 
@@ -3242,9 +3414,10 @@ mod tests {
         reset_refusal_report_state();
     }
 
-    /// With the episode surviving on disk, `ReportCooldownRearm` becomes
-    /// reachable for a real wedge — it never fired once in production under the
-    /// previous fix, which is itself how we know no episode ever survived.
+    /// With the episode surviving on disk, a real wedge now reaches the
+    /// escalation ladder — under the previous fix `ReportCooldownRearm` never
+    /// fired once in production, which is itself how we knew no episode ever
+    /// survived. It escalates once at the first rung, not once per cooldown.
     #[test]
     fn a_confirmed_wedge_still_rearms_one_banner_per_cooldown() {
         let _serial = serial();
@@ -3255,18 +3428,30 @@ mod tests {
         let start = Instant::now();
         let wall = epoch();
         let confirming = confirming_passes();
+        let (banner_now, banner_wall) = pass_at(start, wall, confirming - 1);
 
         let events = sentry::test::with_captured_events(|| {
             sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
-            // Still wedged six hours after the first banner.
-            let (banner_now, banner_wall) = pass_at(start, wall, confirming - 1);
+            // Still wedged through the day, refusing at a cadence that keeps the
+            // episode alive: silent at +6h, +12h and +18h, all short of the rung.
+            for hours in [6i64, 12, 18] {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    1_356,
+                    banner_now + Duration::from_secs(hours as u64 * 3_600),
+                    banner_wall + chrono::Duration::hours(hours),
+                );
+            }
+            // Still wedged a full day later: the first rung fires exactly once.
             refuse_at(
                 "/hq",
                 &git_dir,
                 &set,
                 1_356,
-                banner_now + REFUSAL_COOLDOWN,
-                banner_wall + chrono::Duration::hours(6),
+                banner_now + Duration::from_secs(24 * 3_600),
+                banner_wall + chrono::Duration::hours(24),
             );
         });
         reset_refusal_report_state();
@@ -3274,11 +3459,378 @@ mod tests {
         assert_eq!(
             events.len(),
             2,
-            "a still-wedged root re-arms once per cooldown"
+            "a still-wedged root re-reports once at the first escalation rung, \
+             not once per cooldown"
         );
         assert_eq!(
             events[1].tags.get("report_source").map(String::as_str),
-            Some("cooldown-rearm")
+            Some("episode-escalation")
+        );
+        assert_eq!(
+            events[1].tags.get("episode_reports").map(String::as_str),
+            Some("2")
+        );
+    }
+
+    /// The whole fix on the injected clock: a confirmed wedge that never recovers
+    /// reports once, then only as it crosses each rung of the finite ladder, and
+    /// never again once the budget is spent. At base this billed one event per
+    /// cooldown for the life of the episode — four a day, forever.
+    #[test]
+    fn a_standing_episode_is_reported_once_and_then_escalates_on_a_ladder() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0.claude/b.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+        let confirming = confirming_passes();
+
+        let events = sentry::test::with_captured_events(|| {
+            // Confirm the episode: one banner at ~30 minutes.
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+            // Then keep refusing every six hours for nine days without ever
+            // recovering. Six hours is under the idle TTL, so this stays one
+            // continuous episode; +6h/+12h/+18h is the exact window the old
+            // defect re-armed in, now silent until a rung comes due.
+            for hours in (6..=9 * 24).step_by(6) {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    1_356,
+                    start + Duration::from_secs(hours as u64 * 3_600),
+                    wall + chrono::Duration::hours(hours as i64),
+                );
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            3,
+            "one confirmation plus one banner per escalation rung, and nothing \
+             more however long the wedge lasts"
+        );
+        let sources: Vec<&str> = events
+            .iter()
+            .map(|e| {
+                e.tags
+                    .get("report_source")
+                    .map(String::as_str)
+                    .unwrap_or("")
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                "first-confirmed",
+                "episode-escalation",
+                "episode-escalation"
+            ]
+        );
+        let reports: Vec<&str> = events
+            .iter()
+            .map(|e| {
+                e.tags
+                    .get("episode_reports")
+                    .map(String::as_str)
+                    .unwrap_or("")
+            })
+            .collect();
+        assert_eq!(reports, vec!["1", "2", "3"], "the budget is spent 1, 2, 3");
+        assert!(
+            events[1].tags["episode_age_secs"].parse::<u64>().unwrap()
+                >= REFUSAL_ESCALATION_AGES[0].as_secs(),
+            "the first escalation is at least a day into the episode"
+        );
+        assert!(
+            events[2].tags["episode_age_secs"].parse::<u64>().unwrap()
+                >= REFUSAL_ESCALATION_AGES[1].as_secs(),
+            "the second escalation is at least a week into the episode"
+        );
+    }
+
+    /// The report budget is on disk, not in the process. Confirm and emit, stand
+    /// in for an auto-update relaunch, advance the wall clock past the cooldown
+    /// but short of the first rung, and keep refusing: still exactly one event.
+    /// At base this is two — the relaunch relabels the second as first-confirmed,
+    /// the exact mislabelling measured on five of MacBookPro's seven banners.
+    #[test]
+    fn the_report_budget_survives_an_app_restart() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+        let confirming = confirming_passes();
+
+        let events = sentry::test::with_captured_events(|| {
+            // Confirm and emit the first banner.
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+            // The budget is on disk, not merely inferable — dropping the persist
+            // makes this read `None`.
+            assert_eq!(
+                persisted(&git_dir).episode_reports,
+                Some(1),
+                "the spent budget is written to disk on the emitting pass"
+            );
+            // An auto-update relaunch: the in-memory episode is gone, the disk
+            // record — including its spent report budget — is not.
+            reset_refusal_report_state();
+            // Eight hours later, still wedged: past the six-hour cooldown but far
+            // short of the 24h rung. A budget that survived the restart suppresses.
+            for k in 0..3u64 {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    1_356,
+                    start + Duration::from_secs(8 * 3_600 + k * 60),
+                    wall + chrono::Duration::hours(8) + chrono::Duration::seconds((k * 60) as i64),
+                );
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "the report budget survived the relaunch — the wedge is not re-reported"
+        );
+    }
+
+    /// The suppression counter is on disk too, so `refusals_since_last_report`
+    /// spans a relaunch. It has no inference to fall back on, so persisting it is
+    /// the only way the escalation banner can count passes from before *and*
+    /// after the restart rather than resetting to the post-restart tail.
+    #[test]
+    fn the_suppression_counter_survives_an_app_restart() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+        let confirming = confirming_passes();
+
+        let events = sentry::test::with_captured_events(|| {
+            // Confirm and emit, then three suppressed passes before the relaunch.
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                start,
+                wall,
+                confirming..confirming + 3,
+            );
+            assert_eq!(
+                persisted(&git_dir).episode_suppressed_since_report,
+                3,
+                "the three suppressed passes are counted on disk"
+            );
+            // Relaunch, then three more suppressed passes at a live cadence,
+            // then cross the first rung.
+            reset_refusal_report_state();
+            for hours in [6i64, 12, 18, 24] {
+                refuse_at(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    1_356,
+                    start + Duration::from_secs(hours as u64 * 3_600),
+                    wall + chrono::Duration::hours(hours),
+                );
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            2,
+            "confirmation plus one escalation at the rung"
+        );
+        assert_eq!(
+            events[1].tags.get("report_source").map(String::as_str),
+            Some("episode-escalation")
+        );
+        assert_eq!(
+            events[1]
+                .tags
+                .get("refusals_since_last_report")
+                .map(String::as_str),
+            Some("6"),
+            "the escalation counts all six suppressed passes — three from before \
+             the restart and three from after"
+        );
+    }
+
+    /// The one-time upgrade bridge. A record written by the current build has no
+    /// `episode_reports` field; a still-wedged root must not earn one extra
+    /// banner just because the field appeared. The inference is conservative — it
+    /// infers a prior report only from a usable stamp that is not older than the
+    /// episode, and any missing/unparsable/future-dated stamp degrades toward one
+    /// extra banner rather than toward silence, and never panics.
+    #[test]
+    fn an_upgraded_record_without_a_report_count_is_not_re_bannered() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // A long-open episode, refusing recently, with a usable report stamp that
+        // falls inside the episode — i.e. this episode already reported once — but
+        // no `episode_reports` field, exactly as the current build would leave it.
+        let base = PersistedRefusalState {
+            episode_started_at: stamp(wall - chrono::Duration::hours(8)),
+            episode_last_refusal_at: stamp(
+                wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+            ),
+            episode_occurrences: 500,
+            episode_distinct_sets: 1,
+            last_reported_at: stamp(wall - chrono::Duration::hours(7)),
+            ..PersistedRefusalState::default()
+        };
+        assert_eq!(
+            base.episode_reports, None,
+            "the field is absent by construction"
+        );
+
+        reset_refusal_report_state();
+        let git_dir = scratch_git_dir(&tmp, "inferred");
+        write_persisted_state(&git_dir, &base);
+        let inferred = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+        });
+        assert_eq!(
+            inferred.len(),
+            0,
+            "a usable report stamp inside the episode infers one prior report, so \
+             a still-wedged root short of the rung is not re-bannered on upgrade"
+        );
+
+        // A missing, unparsable, or future-dated report stamp cannot be trusted,
+        // so the bridge infers zero prior reports — one extra banner, never a
+        // silent latch — and never panics.
+        let bad_stamps: [Option<&str>; 3] = [None, Some("whenever"), Some("2126-08-06T10:00:00Z")];
+        for (index, raw) in bad_stamps.into_iter().enumerate() {
+            reset_refusal_report_state();
+            let git_dir = scratch_git_dir(&tmp, &format!("bad-{index}"));
+            let mut state = base.clone();
+            state.last_reported_at = raw.map(str::to_string);
+            write_persisted_state(&git_dir, &state);
+            let events = sentry::test::with_captured_events(|| {
+                refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+            });
+            assert_eq!(
+                events.len(),
+                1,
+                "case {index}: an unusable report stamp must degrade to one extra \
+                 banner, not to silence"
+            );
+        }
+        reset_refusal_report_state();
+    }
+
+    /// The cap is per-episode: a root that recovers and then refuses again opens
+    /// a new episode with a fresh budget, so a recovering root can never be
+    /// latched silent forever.
+    #[test]
+    fn a_recovered_root_that_refuses_again_earns_a_fresh_budget() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+        let confirming = confirming_passes();
+
+        // Episode one: confirmed and reported.
+        let first = sentry::test::with_captured_events(|| {
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+        });
+        assert_eq!(first.len(), 1);
+
+        // The tree heals, closing the episode and clearing its budget.
+        let (recovered_now, recovered_wall) = pass_at(start, wall, confirming);
+        assert!(note_mirror_recovered_at(
+            "/hq",
+            &git_dir,
+            recovered_now,
+            recovered_wall
+        ));
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            None,
+            "recovery clears the report budget"
+        );
+
+        // A new episode opens well past the per-root cooldown and confirms.
+        reset_refusal_report_state();
+        let later = recovered_now + Duration::from_secs(12 * 3_600);
+        let later_wall = recovered_wall + chrono::Duration::hours(12);
+        let second = sentry::test::with_captured_events(|| {
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                later,
+                later_wall,
+                0..confirming,
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            second.len(),
+            1,
+            "a fresh episode earns its own first banner"
+        );
+        assert_eq!(
+            second[0].tags.get("report_source").map(String::as_str),
+            Some("first-confirmed")
+        );
+        assert_eq!(
+            second[0].tags.get("episode_reports").map(String::as_str),
+            Some("1"),
+            "the new episode's budget starts from one, not from the old episode's"
+        );
+    }
+
+    /// Pins the catch-all removal: every action maps to its own string, so a
+    /// newly added emitting variant can never silently render as `first-confirmed`.
+    #[test]
+    fn report_source_is_explicit_for_every_action() {
+        use std::collections::HashSet;
+        let all = [
+            RefusalReportAction::AwaitConfirmation,
+            RefusalReportAction::Suppress,
+            RefusalReportAction::ReportFirstConfirmed,
+            RefusalReportAction::ReportEscalation,
+        ];
+        let sources: Vec<&'static str> = all.iter().map(|a| a.source()).collect();
+        let distinct: HashSet<&'static str> = sources.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            all.len(),
+            "every action must map to a distinct report_source, got {sources:?}"
+        );
+        assert_eq!(
+            RefusalReportAction::ReportEscalation.source(),
+            "episode-escalation"
+        );
+        assert_eq!(
+            RefusalReportAction::ReportFirstConfirmed.source(),
+            "first-confirmed"
         );
     }
 
@@ -4174,6 +4726,93 @@ mod tests {
             );
             reset_refusal_report_state();
         }
+    }
+
+    /// End to end through real git children and the real reporter: a standing
+    /// wedge at the field shape reports exactly once across confirmation and
+    /// three cooldowns, commits nothing, leaves the index clean, and records a
+    /// spent budget of one on disk. Proves the cap holds on the real run_mirror
+    /// path — refuse, reset, commit nothing — not only through the injected seam.
+    #[test]
+    fn run_mirror_on_a_real_repo_reports_a_standing_wedge_once() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 1_356);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..162);
+
+        // Two real passes through run_mirror prove the breaker refuses and
+        // commits nothing through genuine git children.
+        let inside = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        assert_eq!(
+            inside.len(),
+            0,
+            "two passes ~70s apart are far too short to confirm a wedge"
+        );
+        assert_eq!(rev_count(tmp.path()), before, "the breaker commits nothing");
+        assert!(index_is_clean(tmp.path()), "refusal must reset the index");
+
+        // Cross the confirmation window and then three cooldowns on the injected
+        // clock, handing the *genuine* staged set to the real reporter each pass.
+        let set = staged_deletions_now(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        let hq = tmp.path().to_str().unwrap();
+        let has_upstream = repo_has_upstream(hq);
+        let start = Instant::now();
+        let wall = Utc::now();
+        let events = sentry::test::with_captured_events(|| {
+            for index in 0..confirming_passes() {
+                let (now, wall_now) = pass_at(start, wall, index);
+                report_bulk_refusal_at(
+                    &RefusalReport {
+                        hq_folder: hq,
+                        git_dir: &git_dir,
+                        deletions: &set,
+                        tracked: 1_356,
+                        has_upstream,
+                    },
+                    now,
+                    wall_now,
+                );
+            }
+            // Still wedged three cooldowns later, all short of the 24h rung, at a
+            // cadence that keeps the episode alive.
+            let (banner_now, banner_wall) = pass_at(start, wall, confirming_passes() - 1);
+            for hours in [6i64, 12, 18] {
+                report_bulk_refusal_at(
+                    &RefusalReport {
+                        hq_folder: hq,
+                        git_dir: &git_dir,
+                        deletions: &set,
+                        tracked: 1_356,
+                        has_upstream,
+                    },
+                    banner_now + Duration::from_secs(hours as u64 * 3_600),
+                    banner_wall + chrono::Duration::hours(hours),
+                );
+            }
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "a standing wedge reports exactly once until the first rung is due"
+        );
+        assert_eq!(rev_count(tmp.path()), before, "still nothing committed");
+        assert!(index_is_clean(tmp.path()), "the index is still clean");
+        let state = read_persisted_state(&git_dir).expect("a refusal record exists");
+        assert_eq!(
+            state.episode_reports,
+            Some(1),
+            "the on-disk record shows the episode has spent one banner of its budget"
+        );
     }
 
     #[test]
