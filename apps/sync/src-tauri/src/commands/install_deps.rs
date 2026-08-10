@@ -707,6 +707,18 @@ fn parse_node_version(dir_name: &str) -> (u32, u32, u32) {
 /// runtime for npx/qmd/Claude Code, not the newest dist-tag.
 #[cfg(not(windows))]
 const MANAGED_NODE_VERSION: &str = "v22.17.0";
+
+/// Node's ABI (`process.versions.modules`) for HQ's managed Node major line. A
+/// prebuilt native module built for this ABI loads under the managed Node and only
+/// under it, so the hq-CLI updater's retry gate refuses a managed provision when
+/// the failing runtime ALREADY reports this ABI (a fresh Node 22 could not help).
+/// Node 22.x — both `MANAGED_NODE_VERSION` (macOS v22.17.0) and
+/// `WINDOWS_MANAGED_NODE_VERSION` (v22.12.0) — is ABI 127. Not platform-gated (the
+/// gate runs on every platform), and tied to those pins by
+/// `managed_node_abi_matches_pinned_versions` so a Node bump that changes the ABI
+/// cannot silently desync the gate.
+pub(crate) const MANAGED_NODE_ABI: u32 = 127;
+
 #[cfg(not(windows))]
 const MANAGED_NODE_SHA256_ARM64: &str =
     "615dda58b5fb41fad2be43940b6398ca56554cbe05800953afadc724729cb09e";
@@ -862,12 +874,14 @@ fn managed_node_bin_in(home: &std::path::Path) -> PathBuf {
 
 #[cfg(not(windows))]
 fn managed_npm_prefix_in(home: &std::path::Path) -> PathBuf {
-    managed_toolchain_dir_in(home).join("npm-global")
+    // Single source of truth shared with the hq-CLI updater's managed retry, so
+    // the first-run installer and the updater can never drift to different prefixes.
+    hq_desktop_core::paths::managed_npm_prefix_in(&managed_toolchain_dir_in(home))
 }
 
 #[cfg(not(windows))]
 fn managed_npm_bin_in(home: &std::path::Path) -> PathBuf {
-    managed_npm_prefix_in(home).join("bin")
+    hq_desktop_core::paths::managed_npm_bin_in(&managed_toolchain_dir_in(home))
 }
 
 #[cfg(not(windows))]
@@ -1098,7 +1112,7 @@ pub fn shell_path_block() -> String {
 /// Idempotent — checks for a marker comment before writing. Failures are
 /// non-fatal and logged via `emit_preflight_line`.
 #[cfg(not(windows))]
-fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
+pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
     let profile_path = shell_profile_path_in(home);
 
     if is_shell_path_configured(&profile_path) {
@@ -2605,12 +2619,14 @@ fn managed_git_mingw_bin() -> PathBuf {
 
 #[cfg(windows)]
 fn managed_npm_prefix() -> PathBuf {
-    managed_toolchain_dir().join("npm-prefix")
+    // Single source of truth shared with the hq-CLI updater's managed retry, so
+    // the first-run installer and the updater can never drift to different prefixes.
+    hq_desktop_core::paths::managed_npm_prefix_in(&managed_toolchain_dir())
 }
 
 #[cfg(windows)]
 fn managed_npm_bin() -> PathBuf {
-    managed_npm_prefix()
+    hq_desktop_core::paths::managed_npm_bin_in(&managed_toolchain_dir())
 }
 
 #[cfg(windows)]
@@ -4489,6 +4505,42 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn managed_node_abi_matches_pinned_versions() {
+        // The hq-CLI updater's retry gate compares a failing runtime's ABI against
+        // MANAGED_NODE_ABI; a Node bump that changes the ABI must update both
+        // together, or this fails.
+        let abi_for_major = |major: u32| -> Option<u32> {
+            match major {
+                20 => Some(115),
+                22 => Some(127),
+                24 => Some(137),
+                _ => None,
+            }
+        };
+        let major_of = |version: &str| -> u32 {
+            version
+                .trim_start_matches('v')
+                .split('.')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        assert_eq!(
+            abi_for_major(major_of(MANAGED_NODE_VERSION)),
+            Some(MANAGED_NODE_ABI),
+            "MANAGED_NODE_ABI is out of sync with MANAGED_NODE_VERSION"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            abi_for_major(major_of(WINDOWS_MANAGED_NODE_VERSION)),
+            Some(MANAGED_NODE_ABI),
+            "MANAGED_NODE_ABI is out of sync with WINDOWS_MANAGED_NODE_VERSION"
+        );
+    }
 
     fn ids(deps: Vec<&DepDef>) -> Vec<&'static str> {
         deps.into_iter().map(|dep| dep.id).collect()

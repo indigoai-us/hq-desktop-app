@@ -2079,7 +2079,12 @@ fn is_third_party_npm_lifecycle_failure(detail: &str) -> bool {
 /// prebuild miss that then falls through to a failing `node-gyp rebuild` should
 /// report the compiler as missing (the actionable cause) rather than the
 /// prebuild gap, so `toolchain-missing` is checked before `prebuild-unavailable`.
-fn npm_lifecycle_cause(detail: &str) -> &'static str {
+///
+/// Exposed (`pub`) because the desktop updater's managed-toolchain retry gate
+/// consumes the diagnosed cause to refuse a provision a different runtime cannot
+/// repair (`disk-space` / `network`). The return type stays a closed
+/// `&'static str`, so widening the visibility leaks no attacker-derived text.
+pub fn npm_lifecycle_cause(detail: &str) -> &'static str {
     let lower = detail.to_ascii_lowercase();
 
     // Disk exhaustion is unambiguous and dominates: a full disk can present as a
@@ -2253,13 +2258,30 @@ fn npm_lifecycle_builder(detail: &str) -> &'static str {
         return "prebuild-install";
     }
 
-    // A lifecycle script failed but no native builder emitted any output — the
-    // package's own (post)install script is what broke.
-    if has_npm_lifecycle_failure_marker(detail) {
+    // A lifecycle script failed but no native builder emitted any output. Attribute
+    // it to the package's own postinstall script ONLY with explicit evidence that
+    // the postinstall STAGE is what failed — never merely that some lifecycle
+    // script did. A bare `npm error command sh -c prebuild-install || node-gyp
+    // rebuild` echo carries the lifecycle marker but names no stage and shows no
+    // builder output, so it stays `unknown` rather than corrupting the builder
+    // telemetry this change exists to make reliable.
+    if has_npm_lifecycle_failure_marker(detail) && has_postinstall_stage_evidence(detail) {
         return "postinstall-script";
     }
 
     "unknown"
+}
+
+/// Explicit evidence that npm's POSTINSTALL lifecycle stage is what failed — not
+/// merely that a lifecycle script failed. npm attributes the postinstall stage
+/// three ways, and every one carries the literal `postinstall` token: its stage
+/// line (`Failed at the …postinstall script`), its `<pkg>@<ver> postinstall:`
+/// prefix, or the failing command echo when that command is itself the package's
+/// postinstall entrypoint (node-llama-cpp's `node ./dist/cli/cli.js postinstall`).
+/// A `sh -c prebuild-install || node-gyp rebuild` echo has no such token, so it
+/// is deliberately NOT treated as postinstall evidence.
+fn has_postinstall_stage_evidence(detail: &str) -> bool {
+    detail.to_ascii_lowercase().contains("postinstall")
 }
 
 /// A normalized local-log record for an npm attempt. It deliberately contains
@@ -5289,16 +5311,58 @@ mod tests {
             "postinstall-script"
         );
         // The command echo alone names node-gyp/prebuild-install but proves
-        // neither ran, so it must NOT be attributed to either builder.
+        // neither ran AND names no lifecycle stage, so it is attributed to no
+        // builder at all — `unknown`, never the postinstall residual (which would
+        // corrupt the builder telemetry this change makes reliable).
         assert_eq!(
             npm_lifecycle_builder(
                 "npm error command failed\nnpm error command sh -c prebuild-install || node-gyp rebuild"
             ),
-            "postinstall-script"
+            "unknown"
         );
         // No lifecycle marker at all -> unknown builder.
         assert_eq!(npm_lifecycle_builder("npm error code ENOTDIR"), "unknown");
         assert_eq!(npm_lifecycle_builder(""), "unknown");
+    }
+
+    #[test]
+    fn npm_lifecycle_builder_requires_explicit_postinstall_stage_evidence() {
+        // node-llama-cpp's reported shape: a postinstall entrypoint command with no
+        // native-builder output. The `postinstall` token is present, so it is the
+        // postinstall residual.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error code 1\n\
+                 npm error command failed\n\
+                 npm error command sh -c node ./dist/cli/cli.js postinstall"
+            ),
+            "postinstall-script"
+        );
+        // npm's explicit stage attribution line also counts (older-npm shape,
+        // which carries the ELIFECYCLE marker alongside the stage line).
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error code ELIFECYCLE\n\
+                 npm error Failed at the node-llama-cpp@3.18.1 postinstall script."
+            ),
+            "postinstall-script"
+        );
+        // The truncated better-sqlite3 echo carries the lifecycle marker but names
+        // no stage and shows no builder output. It MUST stay `unknown` — this is
+        // the P2 residual that used to mis-tag it postinstall-script.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\n\
+                 npm error command sh -c prebuild-install || node-gyp rebuild"
+            ),
+            "unknown"
+        );
+        // A lifecycle marker with neither builder output nor a postinstall token
+        // stays `unknown` too.
+        assert_eq!(
+            npm_lifecycle_builder("npm error code ELIFECYCLE\nnpm error errno 1"),
+            "unknown"
+        );
     }
 
     #[test]

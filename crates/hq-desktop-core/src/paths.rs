@@ -192,6 +192,44 @@ pub fn managed_npx_executable_in(root: &Path) -> PathBuf {
     }
 }
 
+/// Directory npm installs HQ's managed *global* packages into, under a toolchain
+/// root. This is the app-managed install TARGET for the `hq` CLI — distinct from
+/// the managed Node's own `node/bin`. It is the single source of truth shared by
+/// the first-run dependency installer and the hq-CLI updater's managed retry, so
+/// the two can never drift to different prefixes.
+///
+/// The installer lays it out per platform: `npm-global` on unix (npm's default
+/// `<prefix>/bin` shim layout) and a flat `npm-prefix` on Windows (npm writes its
+/// shims directly into the prefix, with no `bin/` subdirectory).
+pub fn managed_npm_prefix_in(root: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        root.join("npm-prefix")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        root.join("npm-global")
+    }
+}
+
+/// Directory the managed npm prefix places executable shims in — what goes on
+/// PATH. `<prefix>/bin` on unix; the prefix itself on Windows (its shims are
+/// written flat into the prefix, matching hq-installer-win's layout).
+pub fn managed_npm_bin_in(root: &Path) -> PathBuf {
+    let prefix = managed_npm_prefix_in(root);
+
+    #[cfg(target_os = "windows")]
+    {
+        prefix
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        prefix.join("bin")
+    }
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
@@ -936,6 +974,37 @@ mod tests {
     fn test_menubar_json_path() {
         let path = menubar_json_path().unwrap();
         assert!(path.ends_with("menubar.json"));
+    }
+
+    #[test]
+    fn managed_npm_prefix_and_bin_have_the_installer_layout() {
+        let root = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\me\AppData\Local\IndigoHQ\toolchain"
+        } else {
+            "/home/me/Library/Application Support/Indigo HQ/toolchain"
+        });
+
+        let prefix = managed_npm_prefix_in(&root);
+        let bin = managed_npm_bin_in(&root);
+
+        #[cfg(windows)]
+        {
+            // Flat `npm-prefix` with shims written directly into it (no `bin/`).
+            assert_eq!(prefix, root.join("npm-prefix"));
+            assert_eq!(bin, root.join("npm-prefix"));
+        }
+
+        #[cfg(not(windows))]
+        {
+            // `npm-global` with npm's default `<prefix>/bin` shim layout.
+            assert_eq!(prefix, root.join("npm-global"));
+            assert_eq!(bin, root.join("npm-global").join("bin"));
+        }
+
+        // The prefix sits directly under the toolchain root, next to the managed
+        // Node — never inside `node/`.
+        assert_eq!(prefix.parent().unwrap(), root.as_path());
+        assert_ne!(prefix, managed_node_dir_in(&root));
     }
 
     #[test]

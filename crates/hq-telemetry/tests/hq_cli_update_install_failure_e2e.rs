@@ -1176,4 +1176,18 @@ fn lifecycle_builder_tag_names_which_builder_ran() {
         tag(&event, "npm_lifecycle_builder"),
         Some("postinstall-script")
     );
+
+    // The truncated echo names builders in the failing command but shows no builder
+    // output and no postinstall stage, so it is attributed to NO builder —
+    // `unknown`, never the postinstall residual (the P2 the review flagged). The
+    // builder value is a static classification, so the event stays path-safe.
+    let echo_only = base(
+        "better-sqlite3",
+        "npm error command sh -c prebuild-install || node-gyp rebuild",
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &echo_only, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(tag(&event, "npm_lifecycle_builder"), Some("unknown"));
+    assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
 }

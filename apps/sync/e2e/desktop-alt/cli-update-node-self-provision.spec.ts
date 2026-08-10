@@ -17,15 +17,24 @@ import { readRepoFile } from './harness';
  * connect-node-self-provision.spec.ts (HQ-DESKTOP-49):
  *
  *   1. HQ reuses the EXISTING managed-Node installer via `repair_managed_node`,
- *      never a second installer and never the low-level Node installer directly
- *      (which would bypass the shared repair cooldown).
- *   2. Only a third-party native-build lifecycle failure under the user's OWN
- *      Node arms the retry — a pure, unit-tested gate.
+ *      never a second installer and never the low-level Node installer directly.
+ *   2. Only a REPAIRABLE third-party native-build lifecycle failure under the
+ *      user's OWN Node arms the retry — a pure, unit-tested gate that also
+ *      consults the diagnosed cause and the probed Node ABI (a full disk, a dead
+ *      network, or a run already on the managed ABI earns no provision).
  *   3. The retry is bounded to ONE provision and ONE re-run: no loop.
- *   4. A converged retry emits NO Sentry event; a failed retry reports once with
- *      managed provenance (`managed_toolchain_retry=true`).
- *   5. The retry reuses the already-pinned version + prefix and never re-resolves
- *      the `@latest` dist-tag (which would reopen the post-publish registry race).
+ *   4. The retry installs into HQ's OWN managed npm prefix (never the user's),
+ *      derived from the shared `paths::managed_npm_prefix_in` helper the first-run
+ *      installer also uses, so ABI-127 artifacts land in a prefix whose shim runs
+ *      under managed Node 22 — build ABI and execute ABI match by construction.
+ *   5. Convergence is ABI/runtime-aware, not version-only: the installed binary
+ *      must resolve INSIDE the managed prefix AND actually execute; anything short
+ *      routes through the shared non-convergent path, never a "healed" success.
+ *   6. A converged retry emits NO Sentry event; a failed retry reports once with
+ *      managed provenance (`managed_toolchain_retry=true`) and provenance-aware
+ *      user-facing wording that never re-blames the user's runtime.
+ *   7. The retry reuses the already-pinned version and never re-resolves the
+ *      `@latest` dist-tag (which would reopen the post-publish registry race).
  *
  * Source-contract harness, same style as connect-node-self-provision.spec.ts: it
  * runs inside the existing scripted "Desktop-alt E2E" CI job with no built binary.
@@ -40,7 +49,8 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
 
   // The retry helper body, sliced so "bounded to one attempt" assertions cannot
   // be satisfied by unrelated code elsewhere in the file (the background checker
-  // further down legitimately loops).
+  // further down legitimately loops). The convergence / failure-detail helpers are
+  // defined ABOVE managed_toolchain_retry, so they are outside this slice.
   const retryHelper = cli.slice(
     cli.indexOf('async fn managed_toolchain_retry('),
     cli.indexOf('fn record_non_convergent_version('),
@@ -56,22 +66,28 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(cli).toContain('crate::commands::sync::repair_managed_node(app)');
     expect(cli).not.toContain('install_deps::install_node');
     expect(cli).not.toContain('managed_node_url_for');
-    // The managed npm/PATH is derived only from the closed path helpers.
+    // The managed npm/PATH is derived only from the closed path helpers, and the
+    // install PREFIX comes from the SHARED helper the first-run installer uses.
     expect(cli).toContain('paths::managed_toolchain_roots()');
     expect(cli).toContain('paths::managed_node_executable_in(&root)');
+    expect(cli).toContain('paths::managed_npm_prefix_in(&root)');
   });
 
-  it('only self-repairs a third-party native-build failure under the user`s own Node', () => {
-    // A pure, unit-tested gate — no AppHandle, no real install — so the trigger
-    // condition cannot drift silently.
+  it('only self-repairs a repairable third-party failure under the user`s own Node', () => {
+    // A pure, unit-tested gate — no AppHandle, no real install — that now also
+    // consults the diagnosed cause and the probed Node ABI, so the trigger
+    // condition cannot drift silently into a wasted provision.
     expect(cli).toContain('fn install_failure_earns_managed_retry(');
-    expect(cli).toContain(
-      'kind == InstallFailureKind::UnexpectedLifecycle && source == NpmToolchainSource::UserPath',
-    );
-    // The failure path consults exactly that gate before any provisioning.
-    expect(cli).toContain(
-      'install_failure_earns_managed_retry(failure_kind, npm_toolchain_source(&npm))',
-    );
+    expect(cli).toContain('kind == InstallFailureKind::UnexpectedLifecycle');
+    expect(cli).toContain('source == NpmToolchainSource::UserPath');
+    expect(cli).toContain('!matches!(cause, "disk-space" | "network")');
+    expect(cli).toContain('failing_node_abi != Some(MANAGED_NODE_ABI)');
+    // The failure path probes the environment ONCE up front and consults exactly
+    // that gate — with cause + ABI evidence — before any provisioning.
+    expect(cli).toContain('let lifecycle_cause = npm_lifecycle_cause(&raw_detail);');
+    expect(cli).toContain('let failing_node_abi = install_env');
+    expect(cli).toContain('install_failure_earns_managed_retry(');
+    expect(cli).toContain('install_env.toolchain_source');
   });
 
   it('bounds the self-heal to one provision and one re-run — no loop', () => {
@@ -87,32 +103,59 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(occurrences(retryHelper, 'return None;')).toBeGreaterThanOrEqual(3);
   });
 
-  it('emits no Sentry event on a converged retry, and stops hardcoding managed_toolchain_retry=false', () => {
-    // A converged retry returns the success info directly — the normal cleared /
-    // convergence path already ran inside the shared finalize step, so NO
-    // install-failure capture happens.
+  it('installs into HQ`s managed prefix, never the user prefix, with ABI-aware convergence', () => {
+    // The retry rebuilds its argv against the MANAGED prefix and the pinned
+    // version, and hands the SAME managed prefix to the retry ladder (so the
+    // EEXIST/ENOTEMPTY cleanup scope is confined to the managed tree).
+    expect(retryHelper).toContain(
+      'install_argv(Some(managed_prefix.as_str()), Some(latest))',
+    );
+    expect(retryHelper).toContain('Some(managed_prefix.as_str())');
+    // The old user-prefix reuse is gone: the retry no longer replays base_args.
+    expect(retryHelper).not.toContain('base_args.to_vec()');
+    // Convergence is ABI/runtime-aware, not version-only: the resolved binary must
+    // live inside the managed prefix (b) AND actually execute (c).
+    expect(retryHelper).toContain('managed_retry_converged(');
+    expect(cli).toContain('async fn managed_retry_converged(');
+    expect(cli).toContain('.starts_with(managed_prefix)');
+    expect(cli).toContain('hq_version_string(Path::new(&hq))');
+    expect(cli).toContain('managed_retry_after_version(');
+    // Anything short routes through the SHARED decide_post_install path, never a
+    // healed success.
+    expect(cli).toContain('installed_hq_cli_version_in_prefix(&prefix, &hq)');
+    expect(cli).toContain('apply_post_install_with_app(app, &outcome)');
+  });
+
+  it('makes the managed CLI reachable from the user`s terminal too', () => {
+    // Idempotent, marker-guarded PATH configuration on the retry path so a terminal
+    // `hq` resolves the copy HQ just installed (unix profile / Windows user PATH).
+    expect(retryHelper).toContain('ensure_shell_path_configured');
+    expect(retryHelper).toContain('append_user_path');
+  });
+
+  it('emits no Sentry event on a converged retry, and reports a failed retry with managed provenance', () => {
+    // A converged retry returns the success info directly — the shared cleared /
+    // convergence path already ran, so NO install-failure capture happens.
     expect(cli).toContain('Some(Ok(info)) => return Ok(info)');
-    // The dead instrumentation is gone: the original user-path report still
-    // carries false, but a real managed retry now carries true. (Assert on the
-    // tokens rather than an exact call layout so rustfmt reflow can't defeat it.)
+    // The original user-path report carries managed_toolchain_retry=false, but a
+    // real managed retry now carries true. (Assert on the tokens rather than an
+    // exact call layout so rustfmt reflow can't defeat it.)
     expect(cli).toContain(
       'probe_install_environment(&npm, &path, /* managed_toolchain_retry */ false)',
     );
     expect(cli).toContain('/* managed_toolchain_retry */ true');
     expect(retryHelper).toContain('&managed_npm');
     expect(retryHelper).toContain('&managed_path');
+    // A failed managed retry uses provenance-aware wording, NEVER the user-path
+    // builder (which advises installing Node 22).
+    expect(retryHelper).toContain('managed_retry_failure_detail(');
+    expect(cli).toContain('fn managed_retry_failure_detail(');
   });
 
-  it('reuses the pinned version and prefix on the retry — never re-resolving @latest', () => {
-    // The retry re-runs the SAME pinned argv (base_args) under the managed
-    // toolchain; it must not call fetch_latest() again mid-episode.
-    expect(retryHelper).toContain('base_args.to_vec()');
+  it('reuses the pinned version on the retry — never re-resolving @latest', () => {
+    // The retry re-runs against the SAME pinned `latest`; it must not call
+    // fetch_latest() again mid-episode.
+    expect(retryHelper).toContain('Some(latest)');
     expect(retryHelper).not.toContain('fetch_latest');
-    // Convergence is judged by the SHARED finalize step (re-resolving the `hq`
-    // the app executes), so a managed retry that lands in an unreachable prefix
-    // is reported as non-convergent, never as success.
-    expect(cli).toContain('finalize_convergence(');
-    expect(cli).toContain('let post_install_hq = paths::resolve_bin("hq");');
-    expect(cli).toContain('installed_hq_cli_version_in_prefix(&prefix, &hq)');
   });
 });
