@@ -369,8 +369,10 @@
   /** Company owning the open channel (rows carry their company). */
   let activeCo = $state('indigo');
   let view = $state<'channel' | 'library' | 'marketplace' | 'meetings' | 'settings' | 'history' | 'profile' | 'notifications'>('channel');
-  /** Every screen but the daybook is full-bleed — the side pane folds away. */
-  const sidebarOpen = $derived(view === 'channel');
+  /** The reference surfaces go full-bleed; the day-to-day screens keep the
+   *  daybook beside them so you can hop straight back into a conversation. */
+  const FULL_BLEED = ['library', 'marketplace', 'settings', 'profile'];
+  const sidebarOpen = $derived(!FULL_BLEED.includes(view));
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
   let libCat = $state('skills');
@@ -1629,11 +1631,11 @@
   .v2 :where(button) { background: none; border: none; color: inherit; font: inherit; cursor: pointer; text-align: left; padding: 0; }
 
   /* ═══════════ Title bar ═══════════ */
-  .titlebar { display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .titlebar { display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
   .lights { display: flex; gap: 8px; }
   .lights span { width: 12px; height: 12px; border-radius: 50%; display: block; }
   .l-r { background: #ff5f57; } .l-y { background: #febc2e; } .l-g { background: #28c840; }
-  .brand { font-weight: 600; margin-left: 8px; }
+  .brand { font-weight: 600; margin-left: 12px; margin-right: 4px; }
   .date { font-size: 10px; letter-spacing: 0.08em; color: var(--t3); font-weight: 400; }
   /* Standard secondary button: borderless fill at rest, border on hover. */
   .core-btn { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 10px; font-weight: 500; font-size: 12px; color: var(--t2); }
@@ -1741,7 +1743,7 @@
   .chan-head { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
   .chan-title { font-weight: 600; font-size: 15px; white-space: nowrap; }
   .chan-sub { font-size: 12px; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .head-right { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+  .head-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
   .tabs { display: flex; gap: 2px; background: var(--raised); border: none; border-radius: 8px; padding: 2px; }
   .tab { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 10px; border-radius: 6px; transition: color 0.12s; }
   .tab:hover { color: var(--t1); }
@@ -1995,7 +1997,7 @@
   /* ::before, not ::after — ::after belongs to the shared tooltip. */
   .bar-ic.has-unread::before { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice-ink); z-index: 1; }
   /* The bell takes over auto-margin duty from Core; 12px flex gap + 4px = 16. */
-  .titlebar .bar-ic + .core-btn { margin-left: 4px; }
+  .titlebar .bar-ic + .core-btn { margin-left: 0; }
   .titlebar .bar-ic + .bar-ic { margin-left: 0; }
 
   /* Rows sit 12px inside their own box. 8px left pad + 12px = the head's 20px
