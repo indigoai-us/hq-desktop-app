@@ -67,6 +67,31 @@
     'secure-sidecar': { publisher: 'Community', updated: 'Jun 18', notes: 'Scoped secret access for untrusted workloads.', includes: [['worker', 'sidecar'], ['policy', 'secret scoping']] },
   };
 
+  /** Files tab → right-hand preview pane (same pattern as the board). */
+  let openFile = $state<[string, string, string] | null>(null);
+  const FILE_BODY: Record<string, string> = {
+    'library-ia-v2.md': `# Library IA v2\n\nCompany knowledge now lives one tab away instead of three menus deep.\n\n## Sections\n- Files\n- Knowledge\n- Docs & notes\n- Meetings\n- Policies\n\n## Open questions\n- Do skills and workers belong in the same tree?\n- Where does a pack's knowledge surface?`,
+    'daybook-interaction-notes.md': `# Daybook interaction notes\n\nDay groups collapse after a week into a single "Last week" row.\n\nPinned rows always sit above the day groups. Scope pills filter the\nwhole daybook, including the pinned block.`,
+    'concept-a-daybook.png': '',
+    'unified-shell-spec.md': `# Unified shell — specification\n\n## 1. Goals\nOne window that holds every company, every conversation, and every\nrunning agent, without the operator ever needing to know which surface\na thing came from.\n\n## 2. Shell anatomy\n\n### 2.1 Title bar\nCarries the HQ mark, today's date, the notification bell, and the Core\nmenu. The Core menu is the only system-level entry point: sync state,\nlibrary, packs, and the updater all hang off it.\n\n### 2.2 Side pane\nA company scope button, a search affordance, and a filter. Below that,\nthe daybook: pinned rows first, then conversations grouped by the day\nthey last moved. Groups older than a week fold into "Last week".\n\n### 2.3 Main pane\nWhatever the selected row is. Project channels carry Chat, Board, and\nFiles; plain channels and DMs carry only Chat.\n\n## 3. Scope rules\n- Default scope is every company the operator belongs to.\n- Picking a company narrows the daybook and the search palette.\n- Personal is always reachable, in its own section, under a shortcut.\n\n## 4. Filtering\nSort by recency or by kind. Narrow by kind (project channels, DMs and\ngroups) or by person — an owner can ask "what is Marcus working on?"\nand get exactly the channels he touches.\n\n## 5. Agents in the thread\nAgent runs are first-class messages. Every run that starts, finishes,\ndeploys, or opens a PR leaves an event line in the channel it belongs\nto, so the thread reads as one continuous record of human and agent\nwork rather than two parallel logs.\n\n## 6. Boards\nStories live in three columns. Selecting one slides a detail pane in\nfrom the right without taking the board away, so the operator keeps\ntheir place while reading acceptance criteria.\n\n## 7. Files\nEvery file shared in a channel is listed with who added it and when.\nSelecting one previews its contents in the same right-hand pane, with\nhandoffs to Claude Code and Finder.\n\n## 8. Open questions\n- Should the board columns be configurable per project?\n- Where do meeting recordings surface — Files, or their own tab?\n- Does the daybook need a manual "mark unread"?\n`,
+    'sidebar-research.md': `# Sidebar research\n\nInterviewed six operators. Everyone scans by recency first and only\nreaches for a company filter when something is missing.\n\nNobody used the old workspace rail more than twice a session.`,
+    'us-004-test-plan.md': `# US-004 test plan\n\n- Groups older than 7 days fold\n- Pinned rows stay above day groups\n- Scope changes preserve the fold state`,
+    'shell-conventions.md': `# Shell conventions\n\nOne segmented control style. One row rhythm. Alpha ink over glass.`,
+    'changelog.md': `# Changelog\n\n## 0.10.43\n- Drift detection in the menubar popover\n\n## 0.10.41\n- Daybook sidebar`,
+    'traffic-lights.png': '',
+    'prd-draft.json': `{\n  "id": "hq-desktop",\n  "title": "Unified shell",\n  "stories": 12,\n  "complete": 7\n}`,
+    'release-checklist.md': `# Release checklist\n\n- [x] Tag the release\n- [x] Notarize the build\n- [ ] Post the notes`,
+    'triage-report-aug4.md': `# Nightly triage — Aug 4\n\n12 boxes checked. 1 flagged for storage autoscale.`,
+    'brief-2026-08-03.html': '<h1>Standup brief</h1>\n<p>Posted to #hq-dev with the transcript-dated link.</p>',
+    'pricing-matrix.xlsx': '',
+    'batch-31-preview.png': '',
+    'flow-map.md': `# Flow map\n\nWelcome series v3 live for 2 brands.`,
+    'reading-list.md': `# Reading list\n\n52 books logged this year.`,
+    'trust-amendment.pdf': '',
+  };
+  const fileBody = $derived(openFile ? FILE_BODY[openFile[1]] ?? '' : '');
+  const filePath = $derived(openFile ? `companies/${activeCo}/files/${openFile[1]}` : '');
+
   const STORY_PANEL_W = 340;
   /** Slides the pane in from the right by animating its margin, so the board
    *  reflows around it. Deliberately avoids flex-basis/width: Svelte leaves the
@@ -164,7 +189,18 @@
             review: [['US-004 · day-group collapse', 'PR OPEN · CI GREEN', 'warn'], ['US-001 · unified shell frame', 'Marcus reviewing', '']],
             done: [['US-003 · remove messages app', 'SHIPPED', 'ok'], ['US-006 · title bar', 'SHIPPED', 'ok']],
           },
-          files: [['file', 'library-ia-v2.md', 'SOFIA · TODAY'], ['file', 'daybook-interaction-notes.md', 'COREY · TODAY'], ['image', 'concept-a-daybook.png', 'AGENT · YESTERDAY'], ['file', 'prd-draft.json', 'AGENT · AUG 1']],
+          files: [
+            ['file', 'library-ia-v2.md', 'SOFIA · TODAY'],
+            ['file', 'daybook-interaction-notes.md', 'COREY · TODAY'],
+            ['doc', 'unified-shell-spec.md', 'COREY · TODAY'],
+            ['image', 'concept-a-daybook.png', 'AGENT · YESTERDAY'],
+            ['file', 'prd-draft.json', 'AGENT · AUG 1'],
+            ['knowledge', 'sidebar-research.md', 'SOFIA · AUG 1'],
+            ['file', 'us-004-test-plan.md', 'AGENT · JUL 31'],
+            ['policy', 'shell-conventions.md', 'MARCUS · JUL 30'],
+            ['image', 'traffic-lights.png', 'COREY · JUL 29'],
+            ['file', 'changelog.md', 'AGENT · JUL 28'],
+          ],
         },
         'hq-sync': {
           type: 'project', title: '# hq-sync', sub: 'Indigo · project channel', people: ['Corey', 'Bryan'],
@@ -847,11 +883,45 @@
               </div>
             {:else if tab === 'files'}
               {#if chan.files}
-                <div class="listview">
-                  {#each chan.files as [i, n, m] (n)}
-                    {@const Glyph = GLYPHS[i] ?? FileText}
-                    <button class="lrow" onclick={() => toast(`${n} would open`)}><span class="lrow-ic"><Glyph size={15} /></span><span class="fn">{n}</span><span class="fm mono">{m}</span></button>
-                  {/each}
+                <div class="board-wrap">
+                  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                  <div class="listview compact" onclick={(e) => { if (!(e.target as HTMLElement).closest('.lrow')) openFile = null; }}>
+                    {#each chan.files as [i, n, m] (n)}
+                      {@const Glyph = GLYPHS[i] ?? FileText}
+                      <button class="lrow" class:sel={openFile?.[1] === n} onclick={() => (openFile = [i, n, m])}>
+                        <span class="lrow-ic"><Glyph size={14} /></span><span class="fn">{n}</span><span class="fm mono">{m}</span>
+                      </button>
+                    {/each}
+                  </div>
+                  {#if openFile}
+                    {@const FGlyph = GLYPHS[openFile[0]] ?? FileText}
+                    <aside class="story-panel file-pane" transition:slidePane>
+                      <div class="sd-head">
+                        <span class="sd-id mono">FILE</span>
+                        <button class="sd-close" aria-label="Close file" onclick={() => (openFile = null)}><X size={13} weight="bold" /></button>
+                      </div>
+                      <div class="file-title"><FGlyph size={15} /><span>{openFile[1]}</span></div>
+                      <div class="sd-status"><span class="pill mono">{openFile[2]}</span></div>
+
+                      <div class="file-body">
+                        {#if fileBody}
+                          <pre>{fileBody}</pre>
+                        {:else}
+                          <div class="file-empty">
+                            <FGlyph size={26} />
+                            <span>No text preview — open it in Claude Code or Finder.</span>
+                          </div>
+                        {/if}
+                      </div>
+
+                      <div class="file-actions">
+                        <button class="chip" onclick={() => toast(`${openFile?.[1]} would open in Claude Code`)}>Open in Claude Code</button>
+                        <button class="chip g" onclick={() => toast('Path copied')}>Copy path</button>
+                        <button class="chip g" onclick={() => toast('Revealing in Finder')}>Reveal in Finder</button>
+                      </div>
+                      <div class="file-path mono">{filePath}</div>
+                    </aside>
+                  {/if}
                 </div>
               {:else}
                 <div class="empty">No files shared here yet.</div>
@@ -1340,7 +1410,7 @@
       <span class="co-row-label">All companies</span>
       <span class="co-key mono">⌘0</span>
     </button>
-    {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label] as [string, string]), ...EXTRA_COMPANIES.map(([, label]) => [label, label] as [string, string])] as [key, label], i (key)}
+    {#each [...Object.entries(DATA).filter(([k]) => k !== 'personal').map(([k, c]) => [k, c.label] as [string, string]), ...EXTRA_COMPANIES.map(([, label]) => [label, label] as [string, string])] as [key, label], i (key)}
       <button
         class="p-item co-row"
         class:current={coFilter === key}
@@ -1351,6 +1421,12 @@
         <span class="co-key mono">⌘{i + 1}</span>
       </button>
     {/each}
+    <div class="p-divider" role="none"></div>
+    <button class="p-item co-row" class:current={coFilter === 'personal'} onclick={() => { coFilter = 'personal'; openPanel = null; }}>
+      <span class="co-tile" style={`background: ${CO_TILES.personal}`}>{coShort(DATA.personal.label)}</span>
+      <span class="co-row-label">{DATA.personal.label}</span>
+      <span class="co-key mono">⌘P</span>
+    </button>
   </div>
 
   <!-- Filter dropdown: sort, type scope, and people in one menu -->
@@ -1446,9 +1522,9 @@
     --border-active: rgba(255, 255, 255, 0.3);
     --line: rgba(255, 255, 255, 0.07);
     --line2: rgba(255, 255, 255, 0.11);
-    --t1: #f4f4f6;
-    --t2: #9a9aa2;
-    --t3: #64646c;
+    --t1: rgba(255, 255, 255, 0.95);
+    --t2: rgba(255, 255, 255, 0.56);
+    --t3: rgba(255, 255, 255, 0.32);
     --ice: #c9d6e4;
     --ice-ink: #c9d6e4;
     --ice-tile: #2c3d52;
@@ -1485,9 +1561,9 @@
     --border-active: rgba(0, 0, 0, 0.3);
     --line: rgba(0, 0, 0, 0.08);
     --line2: rgba(0, 0, 0, 0.12);
-    --t1: #1d1d1f;
-    --t2: #6e6e73;
-    --t3: #a1a1a6;
+    --t1: rgba(0, 0, 0, 0.88);
+    --t2: rgba(0, 0, 0, 0.55);
+    --t3: rgba(0, 0, 0, 0.34);
     --ice: #c9d6e4;
     --ice-ink: #3e5a75;
     --ice-tile: #d3e0ee;
@@ -1547,11 +1623,11 @@
   .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 28px; padding: 0; margin-bottom: 10px; flex-shrink: 0; }
   /* Naked, unpadded — the tile's left edge lines up with the row icons below.
      Hover just dims the label rather than drawing a box. */
-  .scope-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0; border-radius: 0; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: opacity 0.12s; }
+  .scope-btn { display: inline-flex; align-items: center; gap: 9px; padding: 0; border-radius: 0; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: opacity 0.12s; }
   .scope-btn:hover { opacity: 0.65; }
   .scope-actions { display: flex; gap: 2px; }
   /* Company tile: pastel gradient with the company's initials. */
-  .co-tile { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 7px; font: 700 9px var(--font-ui); color: #fff; letter-spacing: 0.02em; }
+  .co-tile { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex-shrink: 0; border-radius: 7px; font: 700 9px var(--font-ui); color: #fff; letter-spacing: 0.02em; }
   .co-tile.all { background: var(--btn-bg); color: var(--t2); }
   .scope-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-ic.filter-on { color: var(--ice-ink); }
@@ -1573,7 +1649,7 @@
   .sm-empty { padding: 24px 12px; text-align: center; font-size: 13px; color: var(--t3); }
 
   /* ═══════════ Sidebar ═══════════ */
-  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 11px 14px 10px; min-height: 0; }
+  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 14px 10px; min-height: 0; }
   .search-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 10px; }
   /* Standard secondary surface: borderless fill, border on hover, brighter
      border while focused/pressed. */
@@ -1762,12 +1838,12 @@
   .pack .pd { font-size: 12px; color: var(--t2); line-height: 17px; flex: 1; }
   .pack .pf { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
   /* Neutral is the base: light border + faint fill, like the tinted variants. */
-  .pill { font-size: 10px; font-weight: 500; border-radius: 6px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: var(--btn-bg); color: var(--t2); }
+  .pill { font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; border-radius: 6px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: var(--btn-bg); color: var(--t2); }
   /* Status tags: light tint fill + light border, toned ink. */
   .pill.inst { color: var(--ok-ink); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
   .pill.upd { color: var(--warn-ink); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
   /* Get = standard secondary small. */
-  .pill.get { font-family: var(--font-ui); font-size: 11px; font-weight: 500; color: var(--t1); background: var(--btn-bg); border: 1px solid transparent; border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: border-color 0.12s; }
+  .pill.get { font-family: var(--font-ui); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--t1); background: var(--btn-bg); border: 1px solid transparent; border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: border-color 0.12s; }
   .pill.get:hover { border-color: var(--line2); }
   .pill.get:active { border-color: var(--border-active); }
 
@@ -1864,6 +1940,24 @@
   .sd-event { margin: 0; padding: 3px 0; gap: 10px; }
   .sd-event .fe-ic { width: 15px; }
   .sd-actions { display: flex; gap: 8px; margin-top: 22px; }
+
+  /* ── File preview pane ── */
+  .listview.compact { gap: 2px; padding: 12px 8px; margin-right: 8px; }
+  .listview.compact .lrow { padding: 6px 12px; border: none; background: transparent; border-radius: 8px; }
+  .listview.compact .lrow:hover { background: var(--btn-bg); }
+  .listview.compact .lrow.sel { background: var(--sel); }
+  .listview.compact .fn { font-size: 12px; font-weight: 400; }
+  .file-title { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 14px; font-weight: 600; color: var(--t1); word-break: break-all; }
+  .file-title :global(svg) { flex-shrink: 0; color: var(--t3); }
+  .story-panel.file-pane { overflow: hidden; }
+  .file-body { flex: 1 1 auto; min-height: 0; margin-top: 14px; padding: 12px 6px 12px 12px; border-radius: 10px; background: var(--raised); overflow: auto; }
+  .file-body::-webkit-scrollbar { width: 4px; }
+  .file-body::-webkit-scrollbar-track { background: transparent; }
+  .file-body::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 999px; }
+  .file-body pre { margin: 0; padding-right: 8px; font: 400 11px/1.6 var(--font-mono); color: var(--t2); white-space: pre-wrap; word-break: break-word; }
+  .file-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 100%; padding: 20px 12px; text-align: center; font-size: 12px; color: var(--t3); }
+  .file-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+  .file-path { margin-top: 10px; font-size: 10px; color: var(--t3); word-break: break-all; }
   /* Pack contents list — mirrors the criteria rhythm. */
   .pk-row { display: flex; align-items: center; gap: 10px; padding: 4px 2px; }
   .pk-ic { display: flex; align-items: center; flex-shrink: 0; color: var(--t3); }
@@ -1918,7 +2012,7 @@
   .prof-static { font-size: 12px; color: var(--t2); }
   .co-row-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); }
-  .pill.role { border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: transparent; color: var(--t3); }
+  .pill.role { border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: transparent; color: var(--t3); letter-spacing: 0.04em; }
   /* Sync state reads as a word next to its switch. */
   .co-row-sync { display: flex; align-items: center; gap: 10px; }
   .sync-label { font-size: 12px; color: var(--t3); min-width: 44px; text-align: right; }
@@ -1938,6 +2032,7 @@
   .scope-panel { top: 91px; left: 14px; right: auto; width: 252px; min-width: 0; }
   .filter-panel { top: 91px; left: 14px; right: auto; width: 252px; min-width: 0; }
   .scope-panel .p-item.co-row { gap: 9px; padding: 6px 8px; }
+  .p-divider { height: 1px; margin: 5px 8px; background: var(--line); }
   .scope-panel .co-tile { width: 20px; height: 20px; border-radius: 6px; font-size: 8px; }
   .scope-panel .p-item.co-row.current { background: var(--hover); }
   .co-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
@@ -1952,7 +2047,7 @@
   .status-panel .p-item.static { cursor: default; }
   /* Filter dropdown: sort segmented control + type scope + people. */
   .fp-head { display: flex; align-items: center; justify-content: space-between; }
-  .fp-head:not(:first-child) { margin-top: 6px; }
+  .fp-head:not(:first-child) { margin-top: 7px; }
   .fp-reset { padding: 5px 8px; font-size: 10px; font-weight: 500; color: var(--t3); }
   .fp-reset:hover { color: var(--t1); }
   /* Same segmented control as the channel tabs. */
