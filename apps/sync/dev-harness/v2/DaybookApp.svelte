@@ -1573,7 +1573,7 @@
   .sm-empty { padding: 24px 12px; text-align: center; font-size: 13px; color: var(--t3); }
 
   /* ═══════════ Sidebar ═══════════ */
-  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 7px 10px 10px; min-height: 0; }
+  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 11px 14px 10px; min-height: 0; }
   .search-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 10px; }
   /* Standard secondary surface: borderless fill, border on hover, brighter
      border while focused/pressed. */
@@ -1935,8 +1935,8 @@
   .panel.open { display: flex; }
   /* Stays inside the 280px side pane. */
   /* Sidebar dropdowns span the pane's content width. */
-  .scope-panel { top: 86px; left: 10px; right: auto; width: 260px; min-width: 0; }
-  .filter-panel { top: 86px; left: 10px; right: auto; width: 260px; min-width: 0; }
+  .scope-panel { top: 91px; left: 14px; right: auto; width: 252px; min-width: 0; }
+  .filter-panel { top: 91px; left: 14px; right: auto; width: 252px; min-width: 0; }
   .scope-panel .p-item.co-row { gap: 9px; padding: 6px 8px; }
   .scope-panel .co-tile { width: 20px; height: 20px; border-radius: 6px; font-size: 8px; }
   .scope-panel .p-item.co-row.current { background: var(--hover); }
