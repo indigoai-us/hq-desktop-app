@@ -2154,10 +2154,109 @@ fn npm_lifecycle_cause(detail: &str) -> &'static str {
 
     // No prebuilt binary is published for this Node ABI / platform, so
     // prebuild-install reported a miss (its own message) or the download 404'd.
+    // cmake-js-built packages (node-llama-cpp) have their OWN miss vocabulary for
+    // the same underlying condition — no matching prebuilt for this runtime — so
+    // recognize it here too, guarded on cmake-js context so it can never fire on
+    // an unrelated "cmake not found" (that stays `toolchain-missing` above).
+    let cmake_js_prebuilt_miss = lower.contains("cmake-js")
+        && (lower.contains("no prebuilt")
+            || lower.contains("no precompiled")
+            || lower.contains("prebuilt binary not found")
+            || lower.contains("no compatible prebuilt"));
     if lower.contains("no prebuilt binaries found")
         || (lower.contains("prebuild") && lower.contains("404"))
+        || cmake_js_prebuilt_miss
     {
         return "prebuild-unavailable";
+    }
+
+    // A package's own (post)install script failed with NO native-builder output
+    // at all — node-llama-cpp's `node ./dist/cli/cli.js postinstall` is the
+    // reported node-llama-cpp shape. Requiring the `postinstall` lifecycle token
+    // (never a build-tool NAME in the echoed `sh -c` command) keeps a bare
+    // `prebuild-install || node-gyp rebuild` command echo classified as `unknown`,
+    // while giving the previously-undiagnosable postinstall failure a first-class
+    // cause. It drives only generic, tool-agnostic advice, so it can never
+    // mis-tell a user to install tools they already have.
+    if lower.contains("postinstall") && npm_lifecycle_builder(detail) == "postinstall-script" {
+        return "postinstall-script";
+    }
+
+    "unknown"
+}
+
+/// Which native builder emitted the failing lifecycle output, as a CLOSED
+/// enumeration: `prebuild-install | node-gyp | cmake-js | postinstall-script |
+/// unknown`. Companion to [`npm_lifecycle_cause`] — the cause is WHY the build
+/// failed, this is WHICH builder was running when it did. It closed the
+/// diagnostic dead end where node-llama-cpp's cmake-js/postinstall failures had
+/// no builder attribution and degraded to `cause=unknown`.
+///
+/// HARD rule: derived ONLY from a builder's own emitted output (its log prefix
+/// or a distinctive message), NEVER from the `sh -c …` command line npm echoes.
+/// `sh -c prebuild-install || node-gyp rebuild` names both prebuild-install and
+/// node-gyp but proves neither ran, so matching the echo would mis-attribute
+/// every such failure. `postinstall-script` is the residual: a lifecycle script
+/// failed but no native builder produced any output, so the package's own
+/// (post)install script is what broke. Returns `&'static str` so no path- or
+/// attacker-derived text can reach Sentry through this value.
+fn npm_lifecycle_builder(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+
+    // node-gyp's own leveled log prefix (`gyp <level>`), never the `node-gyp`
+    // token in the echoed command. A failing compile ends here even when a
+    // prebuild miss preceded it, since node-gyp is the builder that actually ran.
+    let node_gyp = [
+        "gyp err!",
+        "gyp info ",
+        "gyp warn ",
+        "gyp http ",
+        "gyp verb ",
+        "gyp sill ",
+    ]
+    .iter()
+    .any(|token| lower.contains(token));
+    if node_gyp {
+        return "node-gyp";
+    }
+
+    // cmake / cmake-js real build output (CMake's own diagnostics, or cmake-js's
+    // leveled log), never the echoed command. "cmake not found" is deliberately
+    // NOT matched here — that is a package's own message, handled as a cause
+    // (`toolchain-missing`) and left to the `postinstall-script` residual below.
+    let cmake_js = [
+        "cmake error",
+        "cmake warning",
+        "-- configuring",
+        "-- generating",
+        "cmake-js err",
+        "cmake-js info",
+        "cmake-js warn",
+    ]
+    .iter()
+    .any(|token| lower.contains(token));
+    if cmake_js {
+        return "cmake-js";
+    }
+
+    // prebuild-install's own leveled log prefix, or its distinctive miss message.
+    let prebuild = [
+        "prebuild-install warn",
+        "prebuild-install info",
+        "prebuild-install http",
+        "prebuild-install error",
+    ]
+    .iter()
+    .any(|token| lower.contains(token))
+        || lower.contains("no prebuilt binaries found");
+    if prebuild {
+        return "prebuild-install";
+    }
+
+    // A lifecycle script failed but no native builder emitted any output — the
+    // package's own (post)install script is what broke.
+    if has_npm_lifecycle_failure_marker(detail) {
+        return "postinstall-script";
     }
 
     "unknown"
@@ -2713,6 +2812,14 @@ pub fn report_install_failure_with_environment(
     } else {
         None
     };
+    // Which builder emitted the failure (closed enumeration), present exactly when
+    // a lifecycle failure was reported. This makes node-llama-cpp's cmake-js /
+    // postinstall failures self-diagnosing instead of degrading to `unknown`.
+    let lifecycle_builder = if npm_lifecycle.failed {
+        Some(npm_lifecycle_builder(detail))
+    } else {
+        None
+    };
     let node_version = sanitized_version_token(env.node_version.as_deref());
     let node_abi = sanitized_version_token(env.node_abi.as_deref());
     let npm_version = sanitized_version_token(env.npm_version.as_deref());
@@ -2769,6 +2876,9 @@ pub fn report_install_failure_with_environment(
             }
             if let Some(cause) = lifecycle_cause {
                 scope.set_tag("npm_lifecycle_cause", cause);
+            }
+            if let Some(builder) = lifecycle_builder {
+                scope.set_tag("npm_lifecycle_builder", builder);
             }
             // Toolchain provenance — the fields the reported 4R/4S events lacked,
             // which make the next occurrence self-diagnosing. Each is a closed
@@ -5074,6 +5184,7 @@ mod tests {
             "toolchain-missing",
             "network",
             "disk-space",
+            "postinstall-script",
             "unknown",
         ];
         for adversarial in [
@@ -5082,11 +5193,134 @@ mod tests {
             "ENOSPC ETIMEDOUT prebuild download https:// cmake not found xcode-select",
             "\u{0}\u{1}\u{2} No PREBUILT Binaries Found \u{7f}",
             "random build noise with no recognizable failure token",
+            "npm error command failed\nnpm error command sh -c node ./dist/cli/cli.js postinstall\ntoken=abc /Users/victim/secret",
         ] {
             let cause = npm_lifecycle_cause(adversarial);
             assert!(
                 allowed.contains(&cause),
                 "cause {cause:?} is not one of the closed constants"
+            );
+        }
+    }
+
+    #[test]
+    fn npm_lifecycle_cause_diagnoses_a_bare_postinstall_script_failure() {
+        // node-llama-cpp's reported shape WITHOUT a "cannot find cmake" line: a
+        // postinstall script that failed with no native-builder output. This is
+        // exactly the case that used to degrade to `unknown`.
+        let postinstall = "npm error code 1\n\
+            npm error path /usr/local/lib/node_modules/node-llama-cpp\n\
+            npm error command failed\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: postinstall failed while resolving the local binary";
+        assert_eq!(npm_lifecycle_cause(postinstall), "postinstall-script");
+
+        // But a "cannot find cmake" postinstall stays the more-actionable
+        // toolchain-missing (checked first), never downgraded to postinstall.
+        let cmake_missing = "npm error code 1\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: Cannot find cmake, please install cmake and try again";
+        assert_eq!(npm_lifecycle_cause(cmake_missing), "toolchain-missing");
+
+        // A command echo naming node-gyp is NOT a postinstall script failure and
+        // must stay `unknown` — the postinstall arm needs the postinstall token.
+        let command_echo_only = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c prebuild-install || node-gyp rebuild";
+        assert_eq!(npm_lifecycle_cause(command_echo_only), "unknown");
+    }
+
+    #[test]
+    fn npm_lifecycle_cause_recognizes_cmake_js_prebuilt_miss_vocabulary() {
+        // cmake-js reporting no matching prebuilt for this runtime is the same
+        // "your Node has no prebuild" condition as prebuild-install's own miss.
+        let cmake_js_miss = "npm error code 1\n\
+            npm error path /usr/local/lib/node_modules/node-llama-cpp\n\
+            npm error command failed\n\
+            cmake-js WARN No prebuilt binary available for this platform, building from source";
+        assert_eq!(npm_lifecycle_cause(cmake_js_miss), "prebuild-unavailable");
+
+        // The guard is real: a bare "no prebuilt" without cmake-js context must
+        // still go through the prebuild-install message path, and "cmake not
+        // found" (no cmake-js miss vocabulary) must NOT become prebuild-unavailable.
+        let cmake_not_found = "npm error code 1\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: Cannot find cmake, please install cmake and try again";
+        assert_eq!(npm_lifecycle_cause(cmake_not_found), "toolchain-missing");
+    }
+
+    #[test]
+    fn npm_lifecycle_builder_derives_only_from_builder_output_never_the_command_echo() {
+        // node-gyp's own leveled log prefix.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\ngyp ERR! stack Error: not found: make"
+            ),
+            "node-gyp"
+        );
+        // node-gyp wins over a preceding prebuild miss — it is the builder that
+        // actually ran and failed.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "prebuild-install warn install No prebuilt binaries found\ngyp ERR! build error"
+            ),
+            "node-gyp"
+        );
+        // cmake-js / CMake's own build output.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\nCMake Error: could not configure the project"
+            ),
+            "cmake-js"
+        );
+        // prebuild-install's own leveled log / miss message.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "prebuild-install warn install No prebuilt binaries found (target=23.0.0)"
+            ),
+            "prebuild-install"
+        );
+        // A lifecycle failure with NO native-builder output is the postinstall
+        // residual.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\nnpm error command sh -c node ./dist/cli/cli.js postinstall"
+            ),
+            "postinstall-script"
+        );
+        // The command echo alone names node-gyp/prebuild-install but proves
+        // neither ran, so it must NOT be attributed to either builder.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\nnpm error command sh -c prebuild-install || node-gyp rebuild"
+            ),
+            "postinstall-script"
+        );
+        // No lifecycle marker at all -> unknown builder.
+        assert_eq!(npm_lifecycle_builder("npm error code ENOTDIR"), "unknown");
+        assert_eq!(npm_lifecycle_builder(""), "unknown");
+    }
+
+    #[test]
+    fn npm_lifecycle_builder_only_ever_returns_a_closed_constant() {
+        let allowed = [
+            "prebuild-install",
+            "node-gyp",
+            "cmake-js",
+            "postinstall-script",
+            "unknown",
+        ];
+        for adversarial in [
+            "gyp ERR! /home/victim/secret token=abc123",
+            "cmake error /Users/attacker/../../etc/passwd",
+            "npm error command failed\nnpm error command sh -c node ./x.js postinstall\n\u{0}\u{7f}",
+            "random build noise with no recognizable builder token",
+            "",
+        ] {
+            let builder = npm_lifecycle_builder(adversarial);
+            assert!(
+                allowed.contains(&builder),
+                "builder {builder:?} is not one of the closed constants"
             );
         }
     }
