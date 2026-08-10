@@ -130,10 +130,9 @@ jobs:
             exit 1
           fi
 
-      - name: Validate versions.toml and stamped app versions
+      - name: Confirm the release tag exists
         env:
           TAG: ${{ steps.classify.outputs.tag }}
-          VERSION: ${{ steps.classify.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -142,57 +141,41 @@ jobs:
             exit 1
           }
 
-          node --input-type=module <<'NODE'
-          import fs from "node:fs";
+      - uses: pnpm/action-setup@v4
 
-          const tag = process.env.TAG;
-          const version = process.env.VERSION;
-          const versionsToml = fs.readFileSync("versions.toml", "utf8");
-          const versionsTomlMatch =
-            versionsToml.match(/^\[product\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
-          if (!versionsTomlMatch) {
-            console.error("::error file=versions.toml::Could not find [product] version");
-            process.exit(1);
-          }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-          const packageVersion =
-            JSON.parse(fs.readFileSync("apps/sync/package.json", "utf8")).version;
-          const tauriVersion =
-            JSON.parse(fs.readFileSync("apps/sync/src-tauri/tauri.conf.json", "utf8")).version;
+      # The tag is the source of truth for the version. This used to be a gate
+      # that failed unless a human had already bumped all five version files in
+      # a release pull request; now it derives them from the tag instead, so
+      # cutting a release is just `git push origin vX.Y.Z`. `version:check`
+      # re-reads the four generated files and fails if any did not land.
+      - name: Stamp app version from tag
+        env:
+          RELEASE_VERSION: ${{ steps.classify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm run version:app --set-version "$RELEASE_VERSION"
+          pnpm run version:check
 
-          const cargoToml = fs.readFileSync("apps/sync/src-tauri/Cargo.toml", "utf8");
-          const cargoTomlMatch =
-            cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
-          if (!cargoTomlMatch) {
-            console.error("::error file=apps/sync/src-tauri/Cargo.toml::Could not find package version");
-            process.exit(1);
-          }
-
-          const cargoLock = fs.readFileSync("apps/sync/src-tauri/Cargo.lock", "utf8");
-          const cargoLockMatch =
-            cargoLock.match(/^\[\[package\]\]\nname = "hq-sync-menubar"\nversion = "([^"]+)"/m);
-          if (!cargoLockMatch) {
-            console.error("::error file=apps/sync/src-tauri/Cargo.lock::Could not find hq-sync-menubar package entry");
-            process.exit(1);
-          }
-
-          const checks = [
-            ["versions.toml", versionsTomlMatch[1]],
-            ["apps/sync/package.json", packageVersion],
-            ["apps/sync/src-tauri/tauri.conf.json", tauriVersion],
-            ["apps/sync/src-tauri/Cargo.toml", cargoTomlMatch[1]],
-            ["apps/sync/src-tauri/Cargo.lock", cargoLockMatch[1]],
-          ];
-          const mismatches = checks.filter(([, actual]) => actual !== version);
-          if (mismatches.length > 0) {
-            for (const [file, actual] of mismatches) {
-              console.error(`::error file=${file}::Release tag ${tag} expects version ${version}, found ${actual}`);
-            }
-            process.exit(1);
-          }
-
-          console.log(`Release ${tag} matches versions.toml and all four stamped app version files`);
-          NODE
+      # Every build job consumes these exact bytes, so macOS and Windows can
+      # never disagree about the version they stamped into a bundle.
+      - name: Upload version stamp
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-version-stamp
+          if-no-files-found: error
+          include-hidden-files: false
+          path: |
+            versions.toml
+            apps/sync/package.json
+            apps/sync/src-tauri/tauri.conf.json
+            apps/sync/src-tauri/Cargo.toml
+            apps/sync/src-tauri/Cargo.lock
 
       - name: Validate Windows MSI ProductVersion
         id: msi-version
@@ -296,6 +279,28 @@ jobs:
 
       - name: Install Recall sidecar dependencies
         run: pnpm run sidecar:install
+
+      # The tag checkout still carries whatever version was committed. Overwrite
+      # the five version files with the bytes the validate job stamped from the
+      # tag, so the bundle, the updater archive and the DMG all carry it.
+      - name: Apply release version stamp
+        uses: actions/download-artifact@v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Verify stamped version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::tauri.conf.json is $actual, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Building version $actual"
 
       - name: Import Developer ID Application certificate
         env:
@@ -636,6 +641,28 @@ jobs:
 
       - name: Install Recall sidecar dependencies
         run: pnpm run sidecar:install
+
+      # The tag checkout still carries whatever version was committed. Overwrite
+      # the five version files with the bytes the validate job stamped from the
+      # tag, so both installers and the updater artifacts all carry it.
+      - name: Apply release version stamp
+        uses: actions/download-artifact@v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Verify stamped version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::tauri.conf.json is $actual, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Building version $actual"
 
       - name: Download native ARM64 Node runtime for Recall launcher
         if: matrix.target == 'aarch64-pc-windows-msvc'
@@ -1323,3 +1350,140 @@ jobs:
             --repository "$REPOSITORY" \
             --tag "$TAG" \
             --make-latest "$MAKE_LATEST"
+
+  # Replaces the release pull request. Cutting a release is `git push origin
+  # vX.Y.Z`; the version commit lands on main here, after the release is
+  # already public. Runs last on purpose — a branch this cannot push must never
+  # block shipping, and the published artifacts are correct either way.
+  sync-version:
+    name: Sync released version to main
+    needs: [validate, publish]
+    if: ${{ needs.publish.result == 'success' }}
+    concurrency:
+      # Serialize with itself so two releases finishing together cannot race
+      # each other's push and burn all the retries.
+      group: release-version-sync
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+
+    steps:
+      # Without the App credentials the sync cannot run at all. Report that as a
+      # loud warning rather than a failed job: the release is already public and
+      # correct, and a red job here would misrepresent a successful ship.
+      - name: Check App credentials
+        id: creds
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${HQ_AUDIT_BOT_APP_ID}" ] && [ -n "${HQ_AUDIT_BOT_PRIVATE_KEY}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::hq-audit-bot App credentials are not set on this repository, so the released version was not synced to main. The release itself is unaffected — main simply keeps the previous version until HQ_AUDIT_BOT_APP_ID and HQ_AUDIT_BOT_PRIVATE_KEY are configured."
+          fi
+
+      # main is protected: pull request required, no role bypass. The default
+      # GITHUB_TOKEN therefore cannot push, and GitHub does not accept the
+      # Actions identity as a ruleset bypass actor. The hq-audit-bot App is the
+      # bypass actor on the `main` ruleset — the same App and pattern hq-core
+      # uses to stamp its own release commits.
+      - name: Mint App token for the version commit
+        id: app-token
+        if: steps.creds.outputs.available == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Checkout main
+        if: steps.creds.outputs.available == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+
+      - uses: pnpm/action-setup@v4
+        if: steps.creds.outputs.available == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.available == 'true'
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        if: steps.creds.outputs.available == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Stamp the released version onto main
+        if: steps.creds.outputs.available == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "hq-audit-bot[bot]"
+          git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
+
+          outcome="failed"
+          for attempt in 1 2 3 4 5; do
+            # Re-derive from the remote every attempt so a merge that landed
+            # mid-release is rebased onto, never clobbered.
+            git reset --hard
+            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+            git checkout -B main refs/remotes/origin/main
+
+            # A retried old tag must never drag main backwards.
+            verdict="$(node scripts/release-version-order.mjs \
+              --versions-file versions.toml \
+              --candidate "$RELEASE_VERSION")"
+            if [ "$verdict" != "proceed" ]; then
+              echo "main is already at or ahead of ${RELEASE_VERSION} — nothing to sync."
+              outcome="clean"
+              break
+            fi
+
+            pnpm run version:app --set-version "$RELEASE_VERSION"
+            pnpm run version:check
+
+            git add -- \
+              versions.toml \
+              apps/sync/package.json \
+              apps/sync/src-tauri/tauri.conf.json \
+              apps/sync/src-tauri/Cargo.toml \
+              apps/sync/src-tauri/Cargo.lock
+
+            if git diff --cached --quiet; then
+              echo "main already records ${RELEASE_VERSION}."
+              outcome="clean"
+              break
+            fi
+
+            git commit \
+              -m "chore(release): bump app to ${RELEASE_TAG}" \
+              -m "Version stamped from tag ${RELEASE_TAG} by the release workflow."
+
+            if git push origin HEAD:refs/heads/main; then
+              echo "Synced ${RELEASE_VERSION} to main."
+              outcome="pushed"
+              break
+            fi
+
+            echo "Push to main rejected (attempt ${attempt}/5) — refetching."
+            sleep 3
+          done
+
+          if [ "$outcome" = "failed" ]; then
+            echo "::error::Released ${RELEASE_TAG} successfully, but could not sync the version commit to main. The GitHub Release and updater artifacts are live and correct; only main is behind. Check that the hq-audit-bot App is installed on this repository and is still a bypass actor on the 'main' ruleset, then run: pnpm run version:app --set-version ${RELEASE_VERSION} && git commit -am 'chore(release): bump app to ${RELEASE_TAG}' && git push origin main"
+            exit 1
+          fi

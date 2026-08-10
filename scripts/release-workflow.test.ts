@@ -181,8 +181,13 @@ describe("release workflow channel contract", () => {
     }
   });
 
-  it("gates both platform builds on versions.toml and all four stamped files", () => {
+  it("stamps versions.toml and all four generated files from the tag", () => {
     const validate = jobBody("validate");
+
+    // The tag is the source of truth: validate derives every version surface
+    // from it rather than requiring a human to have bumped them beforehand.
+    expect(validate).toContain('pnpm run version:app --set-version "$RELEASE_VERSION"');
+    expect(validate).toContain("pnpm run version:check");
 
     for (const file of [
       "versions.toml",
@@ -197,6 +202,40 @@ describe("release workflow channel contract", () => {
     expect(jobBody("macos")).toContain("needs: validate");
     expect(jobBody("windows")).toContain("needs: validate");
     expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(4);
+  });
+
+  it("hands both platform builds the same stamped version bytes", () => {
+    // One artifact, produced once, consumed by every builder — so macOS and
+    // Windows can never bundle different versions from the same tag.
+    expect(jobBody("validate")).toContain("name: release-version-stamp");
+
+    for (const job of ["macos", "windows"]) {
+      const body = jobBody(job);
+      expect(body).toContain("actions/download-artifact@v4");
+      expect(body).toContain("name: release-version-stamp");
+      expect(body).toContain("Verify stamped version");
+    }
+  });
+
+  it("syncs the released version back to main after publishing", () => {
+    const sync = jobBody("sync-version");
+
+    // Runs only after a successful publish, so a branch it cannot push never
+    // blocks or masks a shipped release.
+    expect(sync).toContain("needs: [validate, publish]");
+    expect(sync).toContain("needs.publish.result == 'success'");
+    expect(sync).toContain("ref: main");
+
+    // main is protected with no role bypass, and GitHub will not accept the
+    // Actions identity as a ruleset bypass actor — the push must go through the
+    // hq-audit-bot App, which is the bypass actor on the `main` ruleset.
+    expect(sync).toContain("actions/create-github-app-token@v1");
+    expect(sync).toContain("HQ_AUDIT_BOT_APP_ID");
+    expect(sync).toContain("token: ${{ steps.app-token.outputs.token }}");
+    expect(sync).toContain("scripts/release-version-order.mjs");
+    expect(sync).toContain("git push origin HEAD:refs/heads/main");
+    // Never `git add -A`: only the five version surfaces may be committed.
+    expect(sync).not.toContain("git add -A");
   });
 
   it("publishes prereleases without advancing the stable latest alias", () => {

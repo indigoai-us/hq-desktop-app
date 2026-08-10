@@ -19,7 +19,15 @@ export type VersionAppResult = {
 export type VersionAppOptions = {
   rootDir?: string;
   check?: boolean;
+  /**
+   * Set `[product] version` in versions.toml to this value before stamping the
+   * app files. Used by tag-driven releases, where the pushed tag — not the
+   * committed file — is the source of truth for the version.
+   */
+  setVersion?: string;
 };
+
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 
 const targets: VersionTarget[] = [
   {
@@ -56,8 +64,28 @@ export function readVersionFromVersionsToml(text: string): string {
 export async function runVersionApp(options: VersionAppOptions = {}): Promise<VersionAppResult> {
   const rootDir = resolve(options.rootDir ?? defaultRootDir);
   const versionFile = join(rootDir, VERSION_FILE);
-  const version = readVersionFromVersionsToml(await readFile(versionFile, "utf8"));
   const changes: string[] = [];
+  let version: string;
+
+  if (options.setVersion === undefined) {
+    version = readVersionFromVersionsToml(await readFile(versionFile, "utf8"));
+  } else {
+    if (!SEMVER.test(options.setVersion)) {
+      throw new Error(`--set-version expects X.Y.Z or X.Y.Z-prerelease, got: ${options.setVersion}`);
+    }
+
+    version = options.setVersion;
+    const original = await readFile(versionFile, "utf8");
+    const stamped = stampTomlTableVersion(original, "product", version);
+
+    if (stamped !== original) {
+      changes.push(VERSION_FILE);
+
+      if (!options.check) {
+        await writeFile(versionFile, stamped);
+      }
+    }
+  }
 
   for (const target of targets) {
     const file = join(rootDir, target.path);
@@ -81,14 +109,16 @@ export async function runVersionApp(options: VersionAppOptions = {}): Promise<Ve
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
-  const { check, rootDir, help } = parseArgs(argv);
+  const { check, rootDir, help, setVersion } = parseArgs(argv);
 
   if (help) {
-    console.log("Usage: tsx scripts/version-app.ts [--check] [--root <dir>]");
+    console.log(
+      "Usage: tsx scripts/version-app.ts [--check] [--set-version <x.y.z>] [--root <dir>]",
+    );
     return 0;
   }
 
-  const result = await runVersionApp({ check, rootDir });
+  const result = await runVersionApp({ check, rootDir, setVersion });
 
   if (check && !result.ok) {
     console.error(`App version files differ from ${VERSION_FILE} (${result.version}):`);
@@ -112,10 +142,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   return 0;
 }
 
-function parseArgs(argv: string[]): { check: boolean; help: boolean; rootDir?: string } {
+function parseArgs(argv: string[]): {
+  check: boolean;
+  help: boolean;
+  rootDir?: string;
+  setVersion?: string;
+} {
   let check = false;
   let help = false;
   let rootDir: string | undefined;
+  let setVersion: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -142,10 +178,22 @@ function parseArgs(argv: string[]): { check: boolean; help: boolean; rootDir?: s
       continue;
     }
 
+    if (arg === "--set-version") {
+      const next = argv[i + 1];
+
+      if (!next) {
+        throw new Error("--set-version requires a version");
+      }
+
+      setVersion = next;
+      i += 1;
+      continue;
+    }
+
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { check, help, rootDir };
+  return { check, help, rootDir, setVersion };
 }
 
 function stampJsonVersion(text: string, version: string): string {
