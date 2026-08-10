@@ -247,6 +247,19 @@ fn valid_runner_stack_pair(shape: &str, signature: &str) -> bool {
             && valid_runner_stack_signature(signature))
 }
 
+/// A content-safe libuv syscall token: the sentinel `other`, or a bare, bounded
+/// ASCII identifier (`[A-Za-z0-9_]{1,64}`). The producer only ever emits an
+/// allow-listed constant or `other`; this shape check is the independent egress
+/// backstop that rejects a path, space, symbol, or raw stderr fragment.
+fn is_content_safe_syscall_token(value: &str) -> bool {
+    value == "other"
+        || (!value.is_empty()
+            && value.len() <= 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -265,6 +278,25 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "scan" | "push" | "pull" | "idle" | "unknown"
         )),
+        // A libuv fatal-syscall identifier is only ever a fixed constant (the
+        // producer allow-lists it) or the sentinel `other`; the errno is a bare
+        // integer. This independent egress check requires a bare, bounded ASCII
+        // identifier so a producer bug that shipped a path, space, symbol, or raw
+        // stderr fragment degrades to `[Filtered]` instead.
+        "runner_fatal_syscall" => Some(is_content_safe_syscall_token(value)),
+        "runner_fatal_errno" => Some(value.parse::<i64>().is_ok()),
+        "watcher_job_peak_rss_bucket" => Some(matches!(
+            value,
+            "under_128mb"
+                | "128mb_to_512mb"
+                | "512mb_to_1gb"
+                | "1gb_to_2gb"
+                | "over_2gb"
+                | "unknown"
+        )),
+        "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
+        "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "direct_executable")),
+        "rss_scope" => Some(matches!(value, "shim" | "runner")),
         _ => None,
     }
 }
@@ -373,6 +405,7 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
         matches!(
             value,
             "libuv_assert"
+                | "libuv_fatal_syscall"
                 | "node_check_abort"
                 | "node_fatal"
                 | "heap_oom"
@@ -919,6 +952,32 @@ mod tests {
     }
 
     #[test]
+    fn every_libuv_fatal_syscall_token_survives_the_egress_shape_check() {
+        use hq_desktop_core::sync_outcome::LIBUV_FATAL_SYSCALLS;
+        // Enumerate the emitter's OWN allow-list so the independent egress shape
+        // check can never drift behind a newly-added syscall and blank a real tag.
+        for syscall in LIBUV_FATAL_SYSCALLS {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_fatal_syscall", syscall),
+                Some(true),
+                "allow-listed syscall {syscall:?} must survive egress"
+            );
+        }
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_fatal_syscall", "other"),
+            Some(true)
+        );
+        // A raw path / stderr fragment must never survive.
+        assert_eq!(
+            valid_runner_diagnostic_field(
+                "runner_fatal_syscall",
+                "ReadDirectoryChangesW: (5) /Users/Ada/secret.md"
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn test_runner_stderr_fixed_vocabulary_lookalikes_are_filtered() {
         let mut event = Event::default();
         for message in [
@@ -1350,6 +1409,14 @@ mod tests {
             ("sync_route", "manual-private"),
             ("sync_scope", "indigo"),
             ("runner_phase", "push:/secret"),
+            // A producer bug that shipped a raw word, a path, or a non-integer in
+            // any of the new libuv/job channels must degrade to `[Filtered]`.
+            ("runner_fatal_syscall", "ReadDirectoryChangesW /Users/Ada/secret.md"),
+            ("runner_fatal_errno", "5; rm -rf"),
+            ("watcher_job_peak_rss_bucket", "512mb_to_1gb:/Users/Ada"),
+            ("watcher_job_process_count", "2 processes /Users/Ada"),
+            ("watcher_child_kind", "cmd_shim:/Users/Ada"),
+            ("rss_scope", "shim/secret"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -1365,6 +1432,31 @@ mod tests {
                 result.extra[key],
                 Value::String("[Filtered]".to_string()),
                 "extra key={key} value={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn libuv_and_job_diagnostic_fields_survive_egress_when_valid() {
+        for (key, value) in [
+            ("runner_fatal_syscall", "ReadDirectoryChangesW"),
+            ("runner_fatal_syscall", "other"),
+            ("runner_fatal_errno", "5"),
+            ("watcher_job_peak_rss_bucket", "512mb_to_1gb"),
+            ("watcher_job_peak_rss_bucket", "unknown"),
+            ("watcher_job_process_count", "2"),
+            ("watcher_job_process_count", "unknown"),
+            ("watcher_child_kind", "cmd_shim"),
+            ("watcher_child_kind", "direct_executable"),
+            ("rss_scope", "shim"),
+            ("rss_scope", "runner"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
             );
         }
     }

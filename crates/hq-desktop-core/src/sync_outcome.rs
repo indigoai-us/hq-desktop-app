@@ -76,6 +76,15 @@ pub struct RunTotals {
     /// content-safe enum token used only as evidence on a termination event;
     /// it must never affect the capture or suppression decision.
     pub runner_fatal_class: RunnerFatalClass,
+    /// The allow-listed libuv syscall identifier and the integer errno parsed
+    /// from the same stderr line that set `runner_fatal_class`, present only
+    /// when that class is `LibuvFatalSyscall`. They move in lockstep with the
+    /// class (same last-wins line) so the three can never describe different
+    /// lines. Content-safe: the identifier is always a fixed allow-listed
+    /// constant, never copied runner bytes; the errno is a bare integer.
+    /// Read through `runner_fatal_syscall()` / `runner_fatal_errno()`.
+    runner_fatal_syscall: Option<&'static str>,
+    runner_fatal_errno: Option<i64>,
     /// Content-safe message-shape counts for the runner errors seen in this pass.
     /// A third attribution axis beside the class/op rollups: it discriminates the
     /// hq-cloud pull-leg prose that both of those axes collapse to `OTHER`/`other`
@@ -198,10 +207,29 @@ impl RunTotals {
         if is_fatal_runner_signature(line) {
             self.saw_fatal_runner_signature = true;
         }
-        let class = classify_runner_fatal_class(line);
-        if class != RunnerFatalClass::None {
-            self.runner_fatal_class = class;
+        // Class + syscall + errno are recorded together from the SAME line, so a
+        // later None line never leaves the class from one line and the syscall
+        // from another. Last non-None line wins, matching the class's existing
+        // sticky semantics.
+        let signature = classify_runner_fatal_signature(line);
+        if signature.class != RunnerFatalClass::None {
+            self.runner_fatal_class = signature.class;
+            self.runner_fatal_syscall = signature.syscall;
+            self.runner_fatal_errno = signature.errno;
         }
+    }
+
+    /// The allow-listed libuv syscall identifier for the last recognised
+    /// `LibuvFatalSyscall` line this pass, or `None`. Always a fixed constant
+    /// selected in code — never a copied runner byte — so it is safe as a
+    /// Sentry tag value.
+    pub fn runner_fatal_syscall(&self) -> Option<&'static str> {
+        self.runner_fatal_syscall
+    }
+
+    /// The integer errno parsed from that same line, or `None`.
+    pub fn runner_fatal_errno(&self) -> Option<i64> {
+        self.runner_fatal_errno
     }
 }
 
@@ -580,6 +608,11 @@ pub fn classify_runner_error_op(message: &str) -> RunnerErrorOp {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunnerFatalClass {
     LibuvAssert,
+    /// libuv's `uv_fatal_error` output — shape `<syscall>: (<errno>) <message>`
+    /// (e.g. `ReadDirectoryChangesW: (5) Access is denied.`). The leading token
+    /// must be an allow-listed libuv/Win32 syscall identifier plus an integer
+    /// errno; anything else stays `None`.
+    LibuvFatalSyscall,
     NodeCheckAbort,
     NodeFatal,
     HeapOom,
@@ -594,8 +627,9 @@ pub enum RunnerFatalClass {
 impl RunnerFatalClass {
     /// Every variant, so content-safety tests can enumerate the emitter's own
     /// fatal-class token set instead of a hand-copied list.
-    pub const ALL: [RunnerFatalClass; 9] = [
+    pub const ALL: [RunnerFatalClass; 10] = [
         Self::LibuvAssert,
+        Self::LibuvFatalSyscall,
         Self::NodeCheckAbort,
         Self::NodeFatal,
         Self::HeapOom,
@@ -610,6 +644,7 @@ impl RunnerFatalClass {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::LibuvAssert => "libuv_assert",
+            Self::LibuvFatalSyscall => "libuv_fatal_syscall",
             Self::NodeCheckAbort => "node_check_abort",
             Self::NodeFatal => "node_fatal",
             Self::HeapOom => "heap_oom",
@@ -626,20 +661,141 @@ impl RunnerFatalClass {
     }
 }
 
+/// The fatal class plus, for `LibuvFatalSyscall`, the allow-listed syscall
+/// identifier and integer errno parsed from the same line. Both extras are
+/// `None` for every other class. Content-safe by construction: `syscall` is
+/// always a fixed allow-listed constant (never copied runner bytes) and `errno`
+/// is a bare integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunnerFatalSignature {
+    pub class: RunnerFatalClass,
+    pub syscall: Option<&'static str>,
+    pub errno: Option<i64>,
+}
+
+/// Fixed allow-list of libuv/Win32 syscall identifiers that libuv's
+/// `uv_fatal_error` names in its `<syscall>: (<errno>) <message>` output. Only
+/// these canonical spellings may ever leave the process as a
+/// `runner_fatal_syscall` tag; an identifier outside the list keeps the line
+/// unclassified (`None`) and, defensively, renders as the constant `other`
+/// rather than the observed word.
+pub const LIBUV_FATAL_SYSCALLS: &[&str] = &[
+    "ReadDirectoryChangesW",
+    "CreateFileW",
+    "CreateIoCompletionPort",
+    "GetQueuedCompletionStatus",
+    "PostQueuedCompletionStatus",
+    "CancelIo",
+    "CancelIoEx",
+    "WSAStartup",
+    "WSARecv",
+    "WSASend",
+    "uv_fs_event",
+    "uv_pipe",
+    "uv_tcp",
+    "uv_loop_init",
+    "uv_thread_create",
+    "uv_async_send",
+    "uv_poll_start",
+    "uv_spawn",
+    "kevent",
+    "epoll_ctl",
+    "inotify_init",
+    "inotify_add_watch",
+];
+
+/// Canonicalise a candidate leading token to its allow-listed spelling, or
+/// `None` when it is not a recognised libuv/Win32 syscall identifier. The
+/// comparison is ASCII-case-insensitive but always returns the fixed constant,
+/// never the observed bytes, so no runner text can escape through this token.
+fn libuv_fatal_syscall_token(candidate: &str) -> Option<&'static str> {
+    LIBUV_FATAL_SYSCALLS
+        .iter()
+        .find(|known| candidate.eq_ignore_ascii_case(known))
+        .copied()
+}
+
+/// Parse libuv's `uv_fatal_error` line shape `<syscall>: (<errno>) <message>`.
+/// Returns the leading identifier mapped to its allow-listed canonical spelling
+/// (`"other"` when the shape matched but the identifier is unknown) and the
+/// parenthesised integer errno. Returns `None` unless the leading token is a
+/// single bare identifier and the errno is an integer — so ordinary prose,
+/// drive-letter paths, and messages that merely contain a colon and a number
+/// are rejected.
+fn parse_libuv_fatal_syscall(line: &str) -> Option<(&'static str, i64)> {
+    let line = line.trim();
+    let (head, rest) = line.split_once(':')?;
+    let head = head.trim();
+    // libuv names exactly one syscall here, never a phrase or a path. Requiring
+    // `[A-Za-z0-9_]+` keeps "Error: (5) x", "C:\\path", and "12:34" out.
+    if head.is_empty() || !head.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    let inner = rest.trim_start().strip_prefix('(')?;
+    let close = inner.find(')')?;
+    let errno: i64 = inner[..close].trim().parse().ok()?;
+    let token = libuv_fatal_syscall_token(head).unwrap_or("other");
+    Some((token, errno))
+}
+
+/// True only for a libuv `uv_fatal_error` line whose leading token is an
+/// allow-listed syscall identifier and whose errno is an integer. An unknown
+/// leading identifier (shape matches but token is `other`) is deliberately not
+/// enough — the line stays `None`.
+fn is_libuv_fatal_syscall_line(line: &str) -> bool {
+    matches!(parse_libuv_fatal_syscall(line), Some((token, _)) if token != "other")
+}
+
+/// True when an already-lowercased message names a libuv source file. Widened
+/// from the single `src\win\async.c` marker so an assertion raised from any
+/// libuv source (`fs-event.c`, `pipe.c`, `core.c`, …) still classifies as
+/// `LibuvAssert`. Kept conjoined with an `assertion failed` marker by the
+/// caller so a bare application assertion stays `None`.
+fn is_libuv_source_marker(lowercased: &str) -> bool {
+    lowercased.contains("libuv")
+        || lowercased.contains("uv_handle")
+        || lowercased.contains(r"deps\uv\")
+        || lowercased.contains("deps/uv/")
+        || lowercased.contains(r"src\win\")
+        || lowercased.contains("src/win/")
+        || lowercased.contains(r"src\unix\")
+        || lowercased.contains("src/unix/")
+}
+
+/// Classify untrusted runner stderr without retaining any of it, and, for a
+/// libuv `uv_fatal_error` line, also recover the allow-listed syscall and
+/// integer errno. The libuv-assert match deliberately requires both an
+/// assertion marker and a libuv-specific source/handle marker so ordinary
+/// application assertions remain `none`.
+pub fn classify_runner_fatal_signature(line: &str) -> RunnerFatalSignature {
+    let class = classify_runner_fatal_class(line);
+    if class == RunnerFatalClass::LibuvFatalSyscall {
+        if let Some((syscall, errno)) = parse_libuv_fatal_syscall(line) {
+            return RunnerFatalSignature {
+                class,
+                syscall: Some(syscall),
+                errno: Some(errno),
+            };
+        }
+    }
+    RunnerFatalSignature {
+        class,
+        syscall: None,
+        errno: None,
+    }
+}
+
 /// Classify untrusted runner stderr without retaining any of it. The libuv
 /// match deliberately requires both an assertion marker and a libuv-specific
-/// source/handle marker so ordinary application assertions remain `none`.
+/// source/handle marker so ordinary application assertions remain `none`. The
+/// libuv-fatal-syscall arm is intentionally last so no line that a prior arm
+/// already classifies can change class.
 pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
     let left_trimmed = line.trim_start();
     let msg = line.to_ascii_lowercase();
     if is_node_too_old_signature(&msg) {
         RunnerFatalClass::NodeTooOld
-    } else if msg.contains("assertion failed")
-        && (msg.contains("libuv")
-            || msg.contains("uv_handle")
-            || msg.contains("src\\win\\async.c")
-            || msg.contains("src/win/async.c"))
-    {
+    } else if msg.contains("assertion failed") && is_libuv_source_marker(&msg) {
         RunnerFatalClass::LibuvAssert
     } else if left_trimmed.starts_with('#') && msg.contains("assertion failed:") {
         RunnerFatalClass::NodeCheckAbort
@@ -658,6 +814,8 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
         || is_runner_exec_shell_failure(&msg, "command not found")
     {
         RunnerFatalClass::ExecNotFound
+    } else if is_libuv_fatal_syscall_line(line) {
+        RunnerFatalClass::LibuvFatalSyscall
     } else {
         RunnerFatalClass::None
     }
@@ -2444,6 +2602,161 @@ mod tests {
         assert_eq!(token, "libuv_assert");
         assert!(!token.contains("Ada"));
         assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn libuv_fatal_syscall_is_classified_with_allow_listed_syscall_and_integer_errno() {
+        // The exact live-event shape (HQ-DESKTOP-4X) that classified to `none`.
+        let signature =
+            classify_runner_fatal_signature("ReadDirectoryChangesW: (5) Access is denied.");
+        assert_eq!(signature.class, RunnerFatalClass::LibuvFatalSyscall);
+        assert_eq!(signature.syscall, Some("ReadDirectoryChangesW"));
+        assert_eq!(signature.errno, Some(5));
+        assert_eq!(signature.class.as_str(), "libuv_fatal_syscall");
+        // Case-insensitive identifier match still yields the canonical constant.
+        let lowercased = classify_runner_fatal_signature("readdirectorychangesw: (5) x");
+        assert_eq!(lowercased.syscall, Some("ReadDirectoryChangesW"));
+
+        // Near-misses all stay None — no parentheses, non-integer errno, unknown
+        // leading identifier, and an ordinary message with a colon and a number.
+        for near_miss in [
+            "ReadDirectoryChangesW: 5 Access is denied.",
+            "ReadDirectoryChangesW: (five) Access is denied.",
+            "TotallyMadeUpSyscall: (5) Access is denied.",
+            "Progress: 5 files copied",
+            "",
+        ] {
+            assert_eq!(
+                classify_runner_fatal_class(near_miss),
+                RunnerFatalClass::None,
+                "near-miss must stay None: {near_miss:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn libuv_fatal_syscall_shape_maps_unknown_identifiers_to_the_other_constant() {
+        // Defensive content-safety: even if the shape parses with an unknown
+        // identifier, the parser reports the fixed constant `other`, never the
+        // observed word — and the class still refuses to classify it.
+        let (token, errno) =
+            parse_libuv_fatal_syscall("SecretInternalCall: (13) /Users/ada/private")
+                .expect("shape parses");
+        assert_eq!(token, "other");
+        assert_eq!(errno, 13);
+        assert!(!is_libuv_fatal_syscall_line(
+            "SecretInternalCall: (13) /Users/ada/private"
+        ));
+        assert!(!token.contains("Secret"));
+    }
+
+    #[test]
+    fn widened_libuv_assert_arm_covers_all_libuv_sources_but_not_bare_assertions() {
+        for libuv_source in [
+            r"Assertion failed: ..., file c:\ws\deps\uv\src\win\fs-event.c, line 480",
+            "Assertion failed: cond, file deps/uv/src/unix/core.c, line 12",
+            r"Assertion failed: cond, file src\win\pipe.c, line 7",
+            "Assertion failed: cond, file src/unix/fs.c, line 3",
+        ] {
+            assert_eq!(
+                classify_runner_fatal_class(libuv_source),
+                RunnerFatalClass::LibuvAssert,
+                "libuv-source assertion must classify as libuv_assert: {libuv_source:?}"
+            );
+        }
+        // A bare application assertion with no libuv marker still stays None —
+        // the conjunction with an assertion marker is preserved.
+        assert_eq!(
+            classify_runner_fatal_class("Assertion failed: !(n > 0) || (ret != nullptr)"),
+            RunnerFatalClass::None
+        );
+    }
+
+    #[test]
+    fn previously_classified_fixtures_keep_their_class_after_the_new_arm() {
+        // Every arm that already classified must be unaffected by the new,
+        // last-position libuv-fatal-syscall arm.
+        for (line, expected) in [
+            (
+                "TypeError: diagnostics_channel.tracingChannel is not a function",
+                RunnerFatalClass::NodeTooOld,
+            ),
+            (
+                r"Assertion failed: cond, file src\win\async.c, line 76",
+                RunnerFatalClass::LibuvAssert,
+            ),
+            (
+                "  #  Assertion failed: !(n > 0) || (ret != nullptr)",
+                RunnerFatalClass::NodeCheckAbort,
+            ),
+            (
+                "FATAL ERROR: JavaScript heap out of memory",
+                RunnerFatalClass::HeapOom,
+            ),
+            (
+                "thread 'main' panicked at 'boom'",
+                RunnerFatalClass::RustPanic,
+            ),
+            ("uncaught exception: boom", RunnerFatalClass::NodeFatal),
+            (
+                "sh: hq-sync-runner: Permission denied",
+                RunnerFatalClass::ExecPermissionDenied,
+            ),
+            (
+                "sh: hq-sync-runner: command not found",
+                RunnerFatalClass::ExecNotFound,
+            ),
+        ] {
+            assert_eq!(
+                classify_runner_fatal_class(line),
+                expected,
+                "fixture changed class: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn record_stderr_line_moves_class_syscall_and_errno_in_lockstep() {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line("ReadDirectoryChangesW: (5) Access is denied.");
+        totals.record_stderr_line("    at fs.watch (node:fs:1:1)");
+        // A later unclassified continuation line never clears the winning line.
+        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvFatalSyscall);
+        assert_eq!(totals.runner_fatal_syscall(), Some("ReadDirectoryChangesW"));
+        assert_eq!(totals.runner_fatal_errno(), Some(5));
+
+        // A later, different libuv-fatal line wins as a whole triple.
+        totals.record_stderr_line("CreateIoCompletionPort: (1450) Insufficient resources.");
+        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvFatalSyscall);
+        assert_eq!(totals.runner_fatal_syscall(), Some("CreateIoCompletionPort"));
+        assert_eq!(totals.runner_fatal_errno(), Some(1450));
+
+        // A non-libuv fatal class leaves syscall/errno cleared for that line.
+        let mut assert_totals = RunTotals::default();
+        assert_totals.record_stderr_line(r"Assertion failed: cond, file src\win\async.c, line 1");
+        assert_eq!(assert_totals.runner_fatal_class, RunnerFatalClass::LibuvAssert);
+        assert_eq!(assert_totals.runner_fatal_syscall(), None);
+        assert_eq!(assert_totals.runner_fatal_errno(), None);
+    }
+
+    #[test]
+    fn runner_fatal_class_all_enumerates_a_fixed_content_safe_vocabulary() {
+        // The emitter's own vocabulary, so this content-safety guard cannot drift
+        // out of date and automatically covers the new variant.
+        let mut seen = std::collections::HashSet::new();
+        for class in RunnerFatalClass::ALL {
+            let token = class.as_str();
+            assert!(
+                !token.is_empty()
+                    && token
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "fatal-class token must be a fixed lower_snake constant: {token:?}"
+            );
+            assert!(seen.insert(token), "duplicate fatal-class token: {token:?}");
+        }
+        assert!(seen.contains("libuv_fatal_syscall"));
+        assert_eq!(seen.len(), RunnerFatalClass::ALL.len());
     }
 
     #[test]

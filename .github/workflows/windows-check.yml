@@ -96,6 +96,17 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests -- --nocapture
 
+      # Drives a real cmd.exe shim + descendant through the production registry
+      # and job-object path, then reads the whole-tree Job Object accounting
+      # (HQ-DESKTOP-4X). It proves the job query sees the Node-runner-class
+      # descendant the shim's own working set hides (>= 2 processes) and that a
+      # deregistered handle degrades to None rather than touching a closed
+      # handle. Its own bounded gate so the real-binary proof is a named check.
+      - name: Windows Job accounting attribution regression
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_degrades_to_none_after_teardown -- --nocapture
+
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync
       # decision seam to report capture for code 1/no signal.

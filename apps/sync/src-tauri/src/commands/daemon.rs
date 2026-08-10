@@ -34,7 +34,7 @@ use hq_desktop_core::daemon::{
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
 use hq_desktop_core::sync_outcome::{
-    classify_runner_fatal_class, classify_windows_exit_status, current_termination_host,
+    classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
     normalized_abort_description, runner_phase_elapsed_bucket, runner_phase_from_event,
     runner_stack_shape, session_end_grace_waited_bucket, should_capture_watcher_exit,
@@ -1017,6 +1017,18 @@ struct WatcherExitCaptureContext {
     cancelled: bool,
     fatal_runner_signature_seen: bool,
     runner_fatal_class: String,
+    /// Allow-listed libuv syscall identifier and integer errno for the last
+    /// recognised libuv fatal-syscall stderr line, when present. Content-safe:
+    /// the syscall is a fixed constant, the errno a bare integer.
+    runner_fatal_syscall: Option<String>,
+    runner_fatal_errno: Option<i64>,
+    /// Bucketed peak per-process working set and total process count read from
+    /// the watcher's retained Windows Job Object at the exit boundary. The job
+    /// sees the Node runner even though the registered child is the cmd.exe
+    /// shim whose own footprint hides it. `"unknown"` when unavailable
+    /// (non-Windows or a failed query); reporting-only, never gates capture.
+    watcher_job_peak_rss_bucket: String,
+    watcher_job_process_count: String,
     runner_error_rollup: Option<String>,
     runner_error_class: &'static str,
     runner_error_ops: Option<String>,
@@ -1077,6 +1089,10 @@ impl Default for WatcherExitCaptureContext {
             cancelled: false,
             fatal_runner_signature_seen: false,
             runner_fatal_class: "none".to_string(),
+            runner_fatal_syscall: None,
+            runner_fatal_errno: None,
+            watcher_job_peak_rss_bucket: "unknown".to_string(),
+            watcher_job_process_count: "unknown".to_string(),
             runner_error_rollup: None,
             runner_error_class: "none",
             runner_error_ops: None,
@@ -1147,6 +1163,10 @@ fn watcher_exit_capture_context(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let stack = runner_stack_shape(stderr_tail);
+    // Read the retained Job Object accounting for this exact watcher generation
+    // BEFORE `run_process_impl` deregisters (and closes) the handle. The read is
+    // strictly diagnostic — it never closes the handle or changes capture.
+    let job_accounting = crate::commands::process::watcher_job_accounting(DAEMON_HANDLE);
     finish_watcher_generation(generation);
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
@@ -1157,6 +1177,14 @@ fn watcher_exit_capture_context(
         cancelled,
         fatal_runner_signature_seen: totals.saw_fatal_runner_signature,
         runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
+        runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
+        runner_fatal_errno: totals.runner_fatal_errno(),
+        watcher_job_peak_rss_bucket: job_accounting
+            .map(|acc| watcher_job_peak_rss_bucket(acc.peak_process_mem_bytes).to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        watcher_job_process_count: job_accounting
+            .map(|acc| acc.total_processes.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
         runner_error_rollup: totals.runner_error_rollup.tag_value(),
         runner_error_class: totals.runner_error_rollup.fingerprint_token(),
         runner_error_ops: totals.runner_error_ops.tag_value(),
@@ -1681,6 +1709,52 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
     }
 }
 
+/// Fixed-vocabulary bucket for a Job Object's peak per-process working set.
+/// Buckets (never raw bytes) keep the memory channel content-safe and stable:
+/// a V8 heap-OOM abort lands in a high bucket while a small-footprint abort
+/// lands in `under_128mb`, so the two become separable in the aggregate even
+/// though the registered child is the cmd.exe shim.
+fn watcher_job_peak_rss_bucket(peak_process_mem_bytes: u64) -> &'static str {
+    const MB: u64 = 1024 * 1024;
+    match peak_process_mem_bytes / MB {
+        0..=127 => "under_128mb",
+        128..=511 => "128mb_to_512mb",
+        512..=1023 => "512mb_to_1gb",
+        1024..=2047 => "1gb_to_2gb",
+        _ => "over_2gb",
+    }
+}
+
+/// Whether the resolved watcher program is a batch shim (`.cmd`/`.bat`) that
+/// Rust's `std::process::Command` dispatches through `cmd.exe` — in which case
+/// the registered/waited/sampled child is the shim, not the Node runner —
+/// otherwise a direct executable. Derived from the spawn program (basename,
+/// matching `runner_exec_resolution`) so `last_rss` and the exit status are
+/// never silently read as the runner's own. Returns a fixed constant, so no
+/// command bytes can escape through it.
+fn watcher_child_kind(watcher_command: &str) -> &'static str {
+    let program = watcher_command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if program.ends_with(".cmd") || program.ends_with(".bat") {
+        "cmd_shim"
+    } else {
+        "direct_executable"
+    }
+}
+
+/// Which process the sampled RSS actually describes: the `cmd.exe` `shim`, or
+/// the `runner` directly. Reuses PR #360's token spelling so whichever lane
+/// lands first makes the other a no-op rather than a competing spelling.
+fn rss_scope(watcher_command: &str) -> &'static str {
+    match watcher_child_kind(watcher_command) {
+        "cmd_shim" => "shim",
+        _ => "runner",
+    }
+}
+
 fn handle_watcher_exit(
     code: Option<i32>,
     signal: Option<i32>,
@@ -1879,12 +1953,26 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         )
     };
 
-    let last_stderr_class = last_stderr
-        .map(classify_runner_fatal_class)
-        .filter(|class| class.seen())
-        .map(|class| class.as_str().to_string());
-    let runner_fatal_class =
-        last_stderr_class.unwrap_or_else(|| context.runner_fatal_class.clone());
+    // Prefer the last actual stderr line's signature (class + libuv syscall +
+    // errno) when it recognises a fatal shape, else fall back to the run's
+    // accumulated context. All three come from one source so they always
+    // describe the same line — the same discipline the manual route uses.
+    let last_stderr_signature = last_stderr
+        .map(classify_runner_fatal_signature)
+        .filter(|signature| signature.class.seen());
+    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) =
+        match last_stderr_signature {
+            Some(signature) => (
+                signature.class.as_str().to_string(),
+                signature.syscall.map(|syscall| syscall.to_string()),
+                signature.errno,
+            ),
+            None => (
+                context.runner_fatal_class.clone(),
+                context.runner_fatal_syscall.clone(),
+                context.runner_fatal_errno,
+            ),
+        };
     let runner_fatal_class_seen = runner_fatal_class != "none";
 
     let mut tags = vec![
@@ -1896,6 +1984,32 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             context.runner_stack_signature.clone(),
         ),
     ];
+    // Symmetric with the manual route: attach the libuv syscall + errno wherever
+    // runner_fatal_class is attached. Both are fixed/integer; absent when the
+    // fatal class is not a libuv fatal syscall.
+    if let Some(syscall) = runner_fatal_syscall {
+        tags.push(("runner_fatal_syscall", syscall));
+    }
+    if let Some(errno) = runner_fatal_errno {
+        tags.push(("runner_fatal_errno", errno.to_string()));
+    }
+    // Whole-tree Job Object memory + process count, plus the child-kind/rss-scope
+    // labels: a heap-OOM abort becomes separable from a small-footprint one, and
+    // last_rss / the exit status are never re-read as the runner's own. Fixed
+    // vocabulary throughout; `unknown` when the job query was unavailable.
+    tags.push((
+        "watcher_job_peak_rss_bucket",
+        context.watcher_job_peak_rss_bucket.clone(),
+    ));
+    tags.push((
+        "watcher_job_process_count",
+        context.watcher_job_process_count.clone(),
+    ));
+    tags.push((
+        "watcher_child_kind",
+        watcher_child_kind(watcher_command).to_string(),
+    ));
+    tags.push(("rss_scope", rss_scope(watcher_command).to_string()));
     if let (Some(code), Some(termination)) = (code, windows_termination) {
         tags.push(("windows_exit_status", windows_exit_status_hex(code)));
         tags.push(("windows_exit_class", termination.class_name().to_string()));
@@ -3931,6 +4045,184 @@ mod tests {
             .extras
             .iter()
             .all(|(name, _)| name != "termination_status_raw"));
+    }
+
+    #[test]
+    fn windows_fastfail_watcher_capture_attributes_libuv_fatal_syscall_and_labels_the_shim() {
+        // The exact live-event stderr (HQ-DESKTOP-4X): base classified this to
+        // `none`/`all_redacted`; the candidate recovers the syscall + errno.
+        let libuv_line = "ReadDirectoryChangesW: (5) Access is denied.";
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(libuv_line);
+        // The production builder computes the job buckets on Windows at exit; a
+        // unit test supplies the already-bucketed values it would carry.
+        let context = WatcherExitCaptureContext {
+            runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
+            runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
+            runner_fatal_errno: totals.runner_fatal_errno(),
+            watcher_job_peak_rss_bucket: "512mb_to_1gb".to_string(),
+            watcher_job_process_count: "2".to_string(),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd",
+            Some(libuv_line),
+            TerminationHost::Windows,
+            &context,
+        );
+        let capture = effects.captures.first().expect("fastfail captures");
+        // Grouping continuity: the family fingerprint is untouched — none of the
+        // new tokens may enter it, or the six-week history fragments again.
+        assert_eq!(
+            capture.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
+        );
+        assert_eq!(
+            recorded_tag(capture, "runner_fatal_class"),
+            "libuv_fatal_syscall"
+        );
+        assert_eq!(
+            recorded_tag(capture, "runner_fatal_syscall"),
+            "ReadDirectoryChangesW"
+        );
+        assert_eq!(recorded_tag(capture, "runner_fatal_errno"), "5");
+        assert_eq!(
+            recorded_tag(capture, "watcher_job_peak_rss_bucket"),
+            "512mb_to_1gb"
+        );
+        assert_eq!(recorded_tag(capture, "watcher_job_process_count"), "2");
+        assert_eq!(recorded_tag(capture, "watcher_child_kind"), "cmd_shim");
+        assert_eq!(recorded_tag(capture, "rss_scope"), "shim");
+        // Pre-existing channels are unchanged.
+        assert_eq!(recorded_tag(capture, "sync_route"), "watcher");
+        assert_eq!(recorded_tag(capture, "windows_exit_status"), "0xC0000409");
+    }
+
+    #[test]
+    fn watcher_capture_always_reports_job_and_child_channels_even_when_unknown() {
+        // A direct executable with no libuv line: the job/child channels are still
+        // present (as `unknown`/`direct_executable`) so `silent` is distinguishable
+        // from `spoke but unrecognised`, and no syscall/errno tags are attached.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Windows,
+            &WatcherExitCaptureContext::default(),
+        );
+        let capture = effects.captures.first().expect("captures");
+        assert_eq!(recorded_tag(capture, "watcher_job_peak_rss_bucket"), "unknown");
+        assert_eq!(recorded_tag(capture, "watcher_job_process_count"), "unknown");
+        assert_eq!(
+            recorded_tag(capture, "watcher_child_kind"),
+            "direct_executable"
+        );
+        assert_eq!(recorded_tag(capture, "rss_scope"), "runner");
+        assert!(
+            capture.tags.iter().all(|(k, _)| k != "runner_fatal_syscall"),
+            "no libuv line -> no syscall tag"
+        );
+        assert!(capture.tags.iter().all(|(k, _)| k != "runner_fatal_errno"));
+    }
+
+    #[test]
+    fn libuv_fatal_syscall_capture_never_leaks_raw_stderr_path_or_argv() {
+        // A machine-specific libuv line + a private argv. The class/syscall/errno
+        // are recovered, but only the allow-listed constant, the integer, and
+        // fixed labels escape — no path, message body, or argv reaches the wire.
+        let private_line =
+            r"ReadDirectoryChangesW: (5) C:\Users\Ada\companies\personal\secret-plan.md denied";
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd --private-secret-arg",
+            Some(private_line),
+            TerminationHost::Windows,
+            &WatcherExitCaptureContext::default(),
+        );
+        let capture = effects.captures.first().expect("captures");
+        assert_eq!(
+            recorded_tag(capture, "runner_fatal_class"),
+            "libuv_fatal_syscall"
+        );
+        assert_eq!(
+            recorded_tag(capture, "runner_fatal_syscall"),
+            "ReadDirectoryChangesW"
+        );
+        assert_eq!(recorded_tag(capture, "runner_fatal_errno"), "5");
+
+        let mut wire = vec![capture.message.as_str()];
+        wire.extend(capture.fingerprint.iter().map(String::as_str));
+        wire.extend(capture.tags.iter().map(|(_, value)| value.as_str()));
+        wire.extend(capture.extras.iter().filter_map(|(_, value)| match value {
+            sentry::protocol::Value::String(value) => Some(value.as_str()),
+            _ => None,
+        }));
+        for secret in [
+            "secret-plan",
+            "Ada",
+            "companies",
+            "personal",
+            "private-secret-arg",
+            r"C:\Users",
+        ] {
+            assert!(
+                wire.iter().all(|value| !value.contains(secret)),
+                "wire capture leaked {secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_job_and_child_helpers_are_fixed_vocabulary() {
+        assert_eq!(watcher_job_peak_rss_bucket(0), "under_128mb");
+        assert_eq!(
+            watcher_job_peak_rss_bucket(127 * 1024 * 1024),
+            "under_128mb"
+        );
+        assert_eq!(
+            watcher_job_peak_rss_bucket(128 * 1024 * 1024),
+            "128mb_to_512mb"
+        );
+        assert_eq!(
+            watcher_job_peak_rss_bucket(700 * 1024 * 1024),
+            "512mb_to_1gb"
+        );
+        assert_eq!(
+            watcher_job_peak_rss_bucket(1500 * 1024 * 1024),
+            "1gb_to_2gb"
+        );
+        assert_eq!(
+            watcher_job_peak_rss_bucket(4u64 * 1024 * 1024 * 1024),
+            "over_2gb"
+        );
+
+        assert_eq!(watcher_child_kind(r"C:\p\npx.cmd"), "cmd_shim");
+        assert_eq!(watcher_child_kind("/usr/local/bin/setup.BAT"), "cmd_shim");
+        assert_eq!(watcher_child_kind("/opt/homebrew/bin/npx"), "direct_executable");
+        assert_eq!(watcher_child_kind("node"), "direct_executable");
+        assert_eq!(rss_scope(r"C:\p\npx.cmd"), "shim");
+        assert_eq!(rss_scope("npx"), "runner");
     }
 
     #[cfg(unix)]

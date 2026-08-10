@@ -665,6 +665,88 @@ pub fn is_registered(handle: &str) -> bool {
         .contains_key(handle)
 }
 
+/// Content-neutral accounting read from a watcher's retained Job Object at the
+/// exit boundary. `peak_process_mem_bytes` is the job's peak single-process
+/// working set — which sees the Node runner even though the registered child is
+/// the `cmd.exe` shim whose own footprint hides it. `total_processes` counts
+/// every process that ran in the job, so a runner descendant is countable even
+/// after it has exited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherJobAccounting {
+    pub peak_process_mem_bytes: u64,
+    pub total_processes: u32,
+}
+
+/// Read-only Job Object accounting for the process registered under `handle`.
+///
+/// The retained job handle is read (and, on Windows, queried) while the process
+/// registry lock is held, so a concurrent `deregister`/`close_process_entry`
+/// cannot `CloseHandle` the job between the lookup and the query. It is only
+/// ever queried — never closed, terminated, duplicated out, or taken — so the
+/// registry's own teardown remains the sole owner. Returns `None` when the
+/// entry is absent (already deregistered), carries no job handle, the query
+/// fails, or the platform is not Windows. Diagnostic-only: it never mutates
+/// registry, containment, or lifecycle state.
+#[cfg(target_os = "windows")]
+pub fn watcher_job_accounting(handle: &str) -> Option<WatcherJobAccounting> {
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let job = registry.active.get(handle).and_then(|entry| entry.job_handle)?;
+    // SAFETY: `job` is this app's own retained Job Object handle and the registry
+    // lock is held for the duration of the read, so it cannot be closed here.
+    unsafe { query_job_accounting(job) }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn watcher_job_accounting(_handle: &str) -> Option<WatcherJobAccounting> {
+    None
+}
+
+/// Query a Job Object's peak per-process working set and total process count.
+/// Read-only: it issues two `QueryInformationJobObject` reads and closes
+/// nothing. A function-local `use` keeps the raw `windows-sys` job symbols out
+/// of module scope so they cannot collide with the high-level `windows` job
+/// imports used by the spawn/teardown path.
+#[cfg(target_os = "windows")]
+unsafe fn query_job_accounting(job: isize) -> Option<WatcherJobAccounting> {
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    };
+    let hjob = job as windows_sys::Win32::Foundation::HANDLE;
+
+    let mut extended: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+    if QueryInformationJobObject(
+        hjob,
+        JobObjectExtendedLimitInformation,
+        &mut extended as *mut _ as *mut core::ffi::c_void,
+        std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        core::ptr::null_mut(),
+    ) == 0
+    {
+        return None;
+    }
+
+    let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+    if QueryInformationJobObject(
+        hjob,
+        JobObjectBasicAccountingInformation,
+        &mut accounting as *mut _ as *mut core::ffi::c_void,
+        std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+        core::ptr::null_mut(),
+    ) == 0
+    {
+        return None;
+    }
+
+    Some(WatcherJobAccounting {
+        peak_process_mem_bytes: extended.PeakProcessMemoryUsed as u64,
+        total_processes: accounting.TotalProcesses,
+    })
+}
+
 /// Whether the process under `handle` was deliberately cancelled (SIGTERM sent
 /// via [`cancel_process_impl`], e.g. on app quit) rather than exiting on its own.
 ///
@@ -4321,6 +4403,98 @@ mod windows_job_attachment_failure_tests {
         assert_tree_gone(&fixture);
         let (code, signal, record) = join_runner(fixture);
         assert_cancelled_by_app(code, signal, record, SyncCancelCause::TimeoutWatchdog);
+    }
+
+    /// Start the production runner with a REAL Job Object attached (no forced
+    /// attachment failure), returning once a real root and descendant exist.
+    fn start_fixture_with_real_job(label: &str) -> RunningFixture {
+        let handle = format!("{label}-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("fresh probe handle");
+
+        let runner_handle = handle.clone();
+        let runner = thread::spawn(move || {
+            let mut terminal = None;
+            let _ = run_process_impl_for_generation(
+                &runner_handle,
+                generation,
+                &nested_fixture(),
+                |event| {
+                    if let ProcessEvent::Exit { code, signal, .. } = event {
+                        terminal = Some((
+                            code,
+                            signal,
+                            cancellation_record_for_generation(&runner_handle, generation),
+                        ));
+                    }
+                },
+            );
+            terminal
+        });
+
+        await_bounded("the real-job fixture root to register", || {
+            lookup_pid(&handle).is_some()
+        });
+        let root_pid = lookup_pid(&handle).expect("registered root pid");
+        await_bounded("the real-job fixture root to spawn a descendant", || {
+            !windows_descendants(root_pid).is_empty()
+        });
+        let descendants = windows_descendants(root_pid);
+
+        // The production spawn path must have attached a real Job Object for the
+        // accounting read to have something to query.
+        let attached = process_registry()
+            .lock()
+            .unwrap()
+            .active
+            .get(&handle)
+            .and_then(|entry| entry.job_handle);
+        assert!(
+            attached.is_some(),
+            "the real-job fixture must have an attached Job Object to query"
+        );
+
+        RunningFixture {
+            handle,
+            generation,
+            root_pid,
+            descendants,
+            runner,
+        }
+    }
+
+    #[test]
+    fn watcher_job_accounting_reads_the_live_tree_and_degrades_to_none_after_teardown() {
+        let fixture = start_fixture_with_real_job("watcher-job-accounting");
+        let handle = fixture.handle.clone();
+
+        // The job sees the whole watcher tree (the cmd.exe shim and its ping
+        // descendant), so a small-footprint fixture still reports >= 2 processes
+        // even though the registered child is the shim whose own working set
+        // hides the descendant. TotalProcesses is cumulative, so this is stable.
+        let accounting =
+            watcher_job_accounting(&handle).expect("a live job must report accounting");
+        assert!(
+            accounting.total_processes >= 2,
+            "job must count the shim and its descendant, got {}",
+            accounting.total_processes
+        );
+
+        // An absent handle is never fabricated into a reading.
+        assert!(watcher_job_accounting("watcher-job-accounting-absent-handle").is_none());
+
+        let attempt = cancel_process_for_generation(
+            &fixture.handle,
+            fixture.generation,
+            SyncCancelCause::UserStop,
+            Duration::ZERO,
+        );
+        assert!(attempt.executed, "the exact generation must be cancellable");
+        assert_tree_gone(&fixture);
+        let _ = join_runner(fixture);
+
+        // Once deregistered, the read degrades to None rather than touching a
+        // closed handle — diagnostics can never suppress or crash the exit path.
+        assert!(watcher_job_accounting(&handle).is_none());
     }
 
     #[test]
