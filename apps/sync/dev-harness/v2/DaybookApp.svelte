@@ -343,12 +343,12 @@
   let typeScope = $state<'all' | 'project' | 'people'>('all');
   /** Pastel two-colour tiles, one per company (Slack-style switcher). */
   const CO_TILES: Record<string, string> = {
-    indigo: 'linear-gradient(135deg, #7c6cf5 0%, #d472e8 100%)',
-    sender: 'linear-gradient(135deg, #f5a524 0%, #f2683c 100%)',
-    personal: 'linear-gradient(135deg, #2bb6a4 0%, #3ba9e6 100%)',
-    LiveRecover: 'linear-gradient(135deg, #3f8ff0 0%, #43c9a0 100%)',
-    Keptwork: 'linear-gradient(135deg, #f2647f 0%, #f79d4d 100%)',
-    'Holler Mgmt': 'linear-gradient(135deg, #8a7bef 0%, #4fa8e8 100%)',
+    indigo: 'linear-gradient(135deg, #6d5efc 0%, #c86bf0 100%)',
+    sender: 'linear-gradient(135deg, #ff9f43 0%, #ff5f6d 100%)',
+    personal: 'linear-gradient(135deg, #12c2a0 0%, #7ad86b 100%)',
+    LiveRecover: 'linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%)',
+    Keptwork: 'linear-gradient(135deg, #f2529b 0%, #f7b42c 100%)',
+    'Holler Mgmt': 'linear-gradient(135deg, #0f8fa8 0%, #6a5af9 100%)',
   };
   const coShort = (label: string) => label.replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
 
@@ -1544,14 +1544,14 @@
   /* No inset — the tile's left edge lines up with the row buttons' box. */
   /* Sidebar header zone: its own height, content inset to the same line as
      the row icons below (rows are 8px-padded inside their own box). */
-  .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 34px; padding: 0; margin-bottom: 6px; flex-shrink: 0; }
+  .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 28px; padding: 0; margin-bottom: 10px; flex-shrink: 0; }
   /* Naked, unpadded — the tile's left edge lines up with the row icons below.
      Hover just dims the label rather than drawing a box. */
   .scope-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0; border-radius: 0; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: opacity 0.12s; }
   .scope-btn:hover { opacity: 0.65; }
   .scope-actions { display: flex; gap: 2px; }
   /* Company tile: pastel gradient with the company's initials. */
-  .co-tile { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 7px; font: 700 9px var(--font-ui); color: #fff; letter-spacing: 0.02em; text-shadow: 0 1px 1px rgba(0, 0, 0, 0.18); }
+  .co-tile { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 7px; font: 700 9px var(--font-ui); color: #fff; letter-spacing: 0.02em; }
   .co-tile.all { background: var(--btn-bg); color: var(--t2); }
   .scope-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-ic.filter-on { color: var(--ice-ink); }
@@ -1573,7 +1573,7 @@
   .sm-empty { padding: 24px 12px; text-align: center; font-size: 13px; color: var(--t3); }
 
   /* ═══════════ Sidebar ═══════════ */
-  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 10px; min-height: 0; }
+  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 7px 10px 10px; min-height: 0; }
   .search-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 10px; }
   /* Standard secondary surface: borderless fill, border on hover, brighter
      border while focused/pressed. */
@@ -1935,8 +1935,8 @@
   .panel.open { display: flex; }
   /* Stays inside the 280px side pane. */
   /* Sidebar dropdowns span the pane's content width. */
-  .scope-panel { top: 92px; left: 10px; right: auto; width: 260px; min-width: 0; }
-  .filter-panel { top: 92px; left: 10px; right: auto; width: 260px; min-width: 0; }
+  .scope-panel { top: 86px; left: 10px; right: auto; width: 260px; min-width: 0; }
+  .filter-panel { top: 86px; left: 10px; right: auto; width: 260px; min-width: 0; }
   .scope-panel .p-item.co-row { gap: 9px; padding: 6px 8px; }
   .scope-panel .co-tile { width: 20px; height: 20px; border-radius: 6px; font-size: 8px; }
   .scope-panel .p-item.co-row.current { background: var(--hover); }
@@ -1952,6 +1952,7 @@
   .status-panel .p-item.static { cursor: default; }
   /* Filter dropdown: sort segmented control + type scope + people. */
   .fp-head { display: flex; align-items: center; justify-content: space-between; }
+  .fp-head:not(:first-child) { margin-top: 6px; }
   .fp-reset { padding: 5px 8px; font-size: 10px; font-weight: 500; color: var(--t3); }
   .fp-reset:hover { color: var(--t1); }
   /* Same segmented control as the channel tabs. */
