@@ -701,7 +701,6 @@
                 <span class="av" class:group={rowKind(c) === 'group'}>{c.members ?? c.av ?? c.title[0]}</span>
               {:else}<span class="ico"><Hash size={13} /></span>{/if}
               <span class="name">{c.title.replace('# ', '')}</span>
-              {#if coFilter === 'all'}<span class="row-co mono">{DATA[r.co].short}</span>{/if}
               {#if c.unread}<span class="badge mono">{c.unread}</span>{:else if c.live}<span class="pulse"></span>{/if}
             </button>
           {/if}
@@ -1490,9 +1489,6 @@
   .row .av { width: 16px; height: 16px; flex-shrink: 0; border-radius: 5px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
   .row .name { flex: 1; min-width: 0; font-size: 13px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
   .row.unread .name { font-weight: 500; color: var(--t1); }
-  /* Company tag on rows while the daybook aggregates all companies —
-     a muted circle sized to match the unread badge. */
-  .row-co { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 16px; height: 16px; padding: 0 6px; flex-shrink: 0; border-radius: 999px; background: var(--btn-bg); font-size: 8px; letter-spacing: 0.04em; color: var(--t3); }
   /* Single digits render as a perfect 16px circle; longer counts grow into a pill. */
   .badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 16px; height: 16px; margin-left: auto; flex-shrink: 0; font-size: 10px; font-weight: 500; line-height: 1; color: var(--badge-fg); background: var(--ice-ink); border-radius: 999px; padding: 0 5px; }
   /* Live dot occupies the badge's 16px box so both align down the column. */
