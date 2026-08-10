@@ -222,9 +222,11 @@ fn drive_success_path(ctx: &PostInstallContext<'_>) -> (usize, usize) {
 /// its block.
 #[test]
 fn a_misdirected_or_undelivered_pnpm_install_writes_no_durable_marker() {
-    // Misdirected: pnpm delivered to its store but wrote the shim to the wrong
-    // dir. No marker attempted, but still captured loudly.
-    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(false), Some("5.97.2")));
+    // Misdirected AND undelivered: pnpm's native global bin dir is not the shim
+    // dir and nothing reached the executed store. No marker attempted, but still
+    // captured loudly. (A delivered-but-stale install is instead genuine shadowing
+    // that blocks — the third case below — because blocking gates on delivery.)
+    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(false), None));
     assert_eq!(
         records, 0,
         "a misdirected install must write no durable marker"

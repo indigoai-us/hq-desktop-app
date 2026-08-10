@@ -961,56 +961,44 @@ async fn install_hq_cli_update_via_pnpm(
     // legitimately have moved which binary the app executes, and judging this
     // run against the stale pre-install shim would block an update that landed.
     let post_install_hq = paths::resolve_bin("hq");
-    // Binary-anchored convergence reading first. The corrected pnpm store
-    // candidates now reach the pnpm 11 `global/v11/<hash>` store, so a genuine
-    // convergence is seen here with no extra subprocess; `hq --version` on the
-    // executed shim is the last resort inside `resolved_hq_version`.
-    let binary_resolved = {
+    // Convergence is proved by the EXECUTED binary, never by a store reading — a
+    // shadowing copy earlier on PATH could put `latest` in the store while the app
+    // still runs the old CLI. `resolved_hq_version` reads the shim's own store
+    // manifest (now reaching the pnpm 11 `global/v11/<hash>` store) and falls back
+    // to `hq --version` on the executed shim; either reflects what the app runs.
+    let resolved = {
         let hq = post_install_hq.clone();
         tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
             .await
             .ok()
             .flatten()
     };
-    // Authoritative delivery reader: pnpm's own `ls -g --json`. Consulted ONLY
-    // when the binary reading did not already prove convergence, so the converged
-    // happy path pays no extra subprocess. It doubles as a convergence rescue for
-    // a store the guessed candidate scan could not reach (an opaque pnpm 11 hash
-    // dir), and as the primary delivery evidence below.
-    let listed = if install_converged(binary_resolved.as_deref(), latest) {
-        None
-    } else if let Some(env) = pnpm_env.as_ref() {
-        let pnpm = pnpm.clone();
-        let path = path.clone();
-        let home = env.home.clone();
-        tauri::async_runtime::spawn_blocking(move || pnpm_global_listing(&pnpm, &path, &home))
-            .await
-            .ok()
-            .flatten()
-    } else {
-        None
-    };
-    let authoritative_query_ok = listed.is_some();
-    // Convergence reading trusts pnpm's authoritative answer first (it reaches a
-    // store the guessed candidates cannot), then the binary-anchored reading. A
-    // stale `npm root -g` copy or a leftover pnpm-10 store manifest can never
-    // outrank what pnpm reports it installed.
-    let resolved = listed
-        .as_ref()
-        .map(|listing| listing.version.clone())
-        .filter(|version| install_converged(Some(version.as_str()), latest))
-        .or(binary_resolved);
-    // Installer-output evidence for the classifier, gathered ONLY when the run
-    // did not converge. `delivered` is the version pnpm reports it installed
-    // globally (authoritative `pnpm ls`, then `pnpm root -g`, then the corrected
-    // store enumeration); `matches` is pnpm's NATIVE global bin dir (an UNFORCED
-    // `pnpm bin -g`, demoted to a diagnostic) compared to the dir holding the
-    // executed shim. An underivable layout probes nothing and stays foreign-managed.
     let converged = install_converged(resolved.as_deref(), latest);
-    let (delivered_version, global_bin_dir_matches_shim_dir, store_family) =
+    // Installer-output evidence + diagnostics, gathered ONLY when the EXECUTED
+    // binary did not converge, so the converged happy path pays no extra
+    // subprocess. `delivered` is pnpm's own answer (authoritative `pnpm ls`, then
+    // `pnpm root -g`, then the corrected store enumeration) — the evidence that a
+    // stale executed binary is genuine shadowing (delivered==latest) rather than a
+    // transient shortfall (delivered<latest). `matches` is pnpm's NATIVE global bin
+    // dir (an UNFORCED `pnpm bin -g`) vs the shim dir: a self-diagnosing tag only,
+    // never a blocking input. An underivable layout probes nothing and stays
+    // foreign-managed.
+    let (delivered_version, global_bin_dir_matches_shim_dir, store_family, authoritative_query_ok) =
         match (converged, pnpm_env.as_ref()) {
             (false, Some(env)) => {
-                let delivered = match listed.as_ref().map(|listing| listing.version.clone()) {
+                let listed = {
+                    let pnpm = pnpm.clone();
+                    let path = path.clone();
+                    let home = env.home.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        pnpm_global_listing(&pnpm, &path, &home)
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                };
+                let authoritative_query_ok = listed.is_some();
+                let delivered = match listed.map(|listing| listing.version) {
                     Some(version) => Some(version),
                     None => {
                         let root_scan = {
@@ -1062,10 +1050,10 @@ async fn install_hq_cli_update_via_pnpm(
                         .await
                         .unwrap_or(PnpmStoreFamily::Unknown)
                 };
-                (delivered, matches, family)
+                (delivered, matches, family, authoritative_query_ok)
             }
             // Converged, or an underivable layout: nothing to probe or compare.
-            _ => (None, None, PnpmStoreFamily::Unknown),
+            _ => (None, None, PnpmStoreFamily::Unknown, false),
         };
     let outcome = decide_post_install(&PostInstallContext {
         executor: InstallExecutor::Pnpm,

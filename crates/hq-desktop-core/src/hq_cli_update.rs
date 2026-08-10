@@ -812,14 +812,17 @@ impl NonConvergenceKind {
 /// shortfall, not a layout defect — so it is classified as such and must not
 /// block.
 ///
-/// `pnpm_bin_dir_matches` is the direction evidence for the pnpm arm: whether the
-/// global bin dir pnpm ACTUALLY resolved (a bounded `pnpm bin -g` under the same
-/// env/config the install used) is the directory holding the executed shim. It is
-/// what breaks the old pnpm tautology — before this the pnpm class was derived
-/// only from the shim path and the updater's own PATH, observing nothing about
-/// the installer's output. A mismatch means pnpm wrote the new shim somewhere the
-/// app never executes (a build that ignored the forced `global-bin-dir`), which
-/// must stay loud but never block. It is ignored for the npm executor.
+/// `pnpm_bin_dir_matches` is the DIRECTION DIAGNOSTIC for the pnpm arm: whether the
+/// global bin dir pnpm natively resolves (a bounded, UNFORCED `pnpm bin -g`) is the
+/// directory holding the executed shim. The blocking decision never rides on it —
+/// `target_delivered` (the target actually landed in the store the app executes
+/// from) plus the still-stale executed binary is what proves genuine shadowing.
+/// The unforced probe omits the forced `--config.global-bin-dir` the install used,
+/// so its native resolution can legitimately differ from the forced dir; letting a
+/// mismatch downgrade a delivered-but-stale defect would leave real shadowing
+/// unblocked and retried forever. It therefore only names an UNDELIVERED mismatch
+/// (`PnpmMisdirected`) — still non-blocking — while a delivered target always
+/// classifies as the loud, blocking `PnpmTargeted`. It is ignored for npm.
 pub fn non_convergence_kind(
     executor: InstallExecutor,
     npm_prefix_passed: Option<&str>,
@@ -835,16 +838,20 @@ pub fn non_convergence_kind(
                 // dir: we could not aim pnpm, so this is the ambient-spawn
                 // foreign-managed shape, bounded to one capture per episode.
                 NonConvergenceKind::ForeignManaged
-            } else if !pnpm_bin_dir_matches {
-                // We forced `--config.global-bin-dir` at the dir holding the
-                // resolved shim, yet pnpm resolved a different global bin dir:
-                // the shim landed where the app never runs. Loud, never blocks.
-                NonConvergenceKind::PnpmMisdirected
             } else if target_delivered {
-                // pnpm aimed at the right dir AND delivered the target into its
-                // store, yet the executed shim still reports the old version:
-                // genuine shadowing, the same defect class as `NpmTargeted`.
+                // The target reached the store the app executes from, yet the
+                // executed shim still reports the old version: genuine shadowing,
+                // the same defect class as `NpmTargeted`. Blocking gates on this
+                // delivery evidence, NEVER on the direction probe — the unforced
+                // `pnpm bin -g` can report a native dir that differs from the
+                // forced install dir, so trusting it here would hide real
+                // shadowing behind a spurious `PnpmMisdirected`.
                 NonConvergenceKind::PnpmTargeted
+            } else if !pnpm_bin_dir_matches {
+                // Undelivered AND pnpm's native global bin dir is not the shim
+                // dir: name the mismatch for diagnostics. Non-blocking (nothing
+                // was delivered into the executed store to shadow).
+                NonConvergenceKind::PnpmMisdirected
             } else {
                 // Aimed at the right dir but the target was never delivered — a
                 // transient registry/resolution shortfall, exactly as the npm
@@ -4293,11 +4300,19 @@ mod tests {
                 NonConvergenceKind::PnpmTargeted,
                 "pnpm-targeted/{hq_bin}"
             );
-            // Aimed, but pnpm's effective global bin dir is NOT the shim dir (a
-            // build that ignored the forced setting): misdirected, never blocks —
-            // regardless of whether the store received the package.
+            // The target reached the store the app executes from, yet the shim is
+            // stale: genuine shadowing that BLOCKS — even though the unforced
+            // direction probe reports a mismatch. Blocking gates on delivery, not
+            // the probe, so real shadowing is never hidden behind PnpmMisdirected.
             assert_eq!(
                 non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, true),
+                NonConvergenceKind::PnpmTargeted,
+                "pnpm-targeted-despite-mismatch/{hq_bin}"
+            );
+            // Undelivered AND the native dir mismatched: a diagnostic label,
+            // never blocks (nothing was delivered into the executed store).
+            assert_eq!(
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, false),
                 NonConvergenceKind::PnpmMisdirected,
                 "pnpm-misdirected/{hq_bin}"
             );
@@ -4555,11 +4570,12 @@ mod tests {
         }
     }
 
-    /// The classifier no longer derives the pnpm class from the shim path and the
-    /// updater's own PATH alone. Same targeted inputs, three different real
-    /// observations of the installer's output, three different classes.
+    /// Blocking gates on DELIVERY evidence, never on the unforced direction probe.
+    /// The probe omits the forced `--config.global-bin-dir` the install used, so
+    /// its native dir can differ from the forced dir; a delivered-but-stale defect
+    /// must block regardless, or real shadowing hides behind a spurious mismatch.
     #[test]
-    fn pnpm_targeted_requires_delivery_evidence_and_a_matching_global_bin_dir() {
+    fn pnpm_blocking_gates_on_delivery_not_the_direction_probe() {
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
         // Matched dir + delivered => genuine shadowing (loud, blocks).
         assert_eq!(
@@ -4571,16 +4587,18 @@ mod tests {
             non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, false),
             NonConvergenceKind::ResolutionShortfall
         );
-        // Mismatched dir => misdirected (loud, never blocks), whatever the store.
+        // Mismatched dir but DELIVERED => still genuine shadowing that BLOCKS. The
+        // direction probe never downgrades a delivered defect.
         assert_eq!(
             non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, true),
-            NonConvergenceKind::PnpmMisdirected
+            NonConvergenceKind::PnpmTargeted
         );
+        // Mismatched dir AND undelivered => misdirected diagnostic, never blocks.
         assert_eq!(
             non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, false),
             NonConvergenceKind::PnpmMisdirected
         );
-        // Only the delivered-into-the-matching-dir class blocks.
+        // Only the delivered class blocks; the diagnostic mismatch never does.
         assert!(NonConvergenceKind::PnpmTargeted.may_block_auto_update());
         assert!(!NonConvergenceKind::PnpmMisdirected.may_block_auto_update());
         assert!(!NonConvergenceKind::PnpmMisdirected.is_installer_targeted());
@@ -4590,15 +4608,14 @@ mod tests {
         );
     }
 
-    /// The exact 2026-08-10 field shape: pnpm nested layout, PNPM_HOME derived
-    /// from the grandparent, the shim dir on PATH, the package delivered into the
-    /// pnpm store, but the executed shim unchanged because pnpm's effective global
-    /// bin dir is NOT the shim dir. On unmodified main this classifies PnpmTargeted
-    /// with `record_non_convergent = Some(latest)`, permanently wedging that
-    /// machine. Under the directed contract it is a misdirected install: loud on
-    /// every occurrence, but it writes NO durable marker.
+    /// A misdirected pnpm install that delivered NOTHING into the executed store
+    /// (pnpm's native global bin dir is not the shim dir AND the store never
+    /// received the target) is a non-blocking diagnostic: loud on every occurrence
+    /// but it writes NO durable marker. A delivered-but-stale install is instead
+    /// genuine shadowing that BLOCKS (covered by the shadowing tests), because
+    /// blocking gates on delivery evidence, never on the unforced direction probe.
     #[test]
-    fn a_misdirected_pnpm_install_is_loud_and_never_blocks_auto_install() {
+    fn an_undelivered_misdirected_pnpm_install_is_loud_and_never_blocks_auto_install() {
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
         let outcome = decide_post_install(&PostInstallContext {
             executor: InstallExecutor::Pnpm,
@@ -4608,12 +4625,11 @@ mod tests {
             after_version: Some("5.93.0"),
             latest: "5.97.2",
             npm_prefix_passed: None,
-            // pnpm delivered the package into its store (run B) ...
-            delivered_version: Some("5.97.2"),
+            // Nothing reached the executed store, and pnpm's native dir is not the
+            // shim dir: a misdirected install, not shadowing.
+            delivered_version: None,
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: false,
-            // ... but wrote the shim flat into PNPM_HOME, so the effective global
-            // bin dir is not the dir holding the executed shim.
             pnpm: Some(pnpm_field_diagnostics(Some(false))),
         });
         assert_eq!(
@@ -4626,7 +4642,6 @@ mod tests {
         );
         let report = outcome.capture.as_ref().expect("misdirected stays loud");
         assert_eq!(report.executor, InstallExecutor::Pnpm);
-        assert_eq!(report.delivered_version.as_deref(), Some("5.97.2"));
         assert_eq!(
             report
                 .pnpm
@@ -4635,8 +4650,8 @@ mod tests {
             Some(false)
         );
         assert!(!outcome.capture_requires_durable_record);
-        // And it stays loud even once an episode was already recorded — no
-        // bounding, because it is not the foreign-managed shape.
+        // decide_post_install still surfaces the capture on every occurrence; the
+        // once-per-episode bound lives in apply_post_install_effects.
         let repeat = decide_post_install(&PostInstallContext {
             executor: InstallExecutor::Pnpm,
             before_bin: hq_bin,
@@ -4645,7 +4660,7 @@ mod tests {
             after_version: Some("5.93.0"),
             latest: "5.97.2",
             npm_prefix_passed: None,
-            delivered_version: Some("5.97.2"),
+            delivered_version: None,
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: true,
             pnpm: Some(pnpm_field_diagnostics(Some(false))),
