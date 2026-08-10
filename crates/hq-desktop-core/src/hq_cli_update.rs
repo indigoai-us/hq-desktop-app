@@ -2079,7 +2079,12 @@ fn is_third_party_npm_lifecycle_failure(detail: &str) -> bool {
 /// prebuild miss that then falls through to a failing `node-gyp rebuild` should
 /// report the compiler as missing (the actionable cause) rather than the
 /// prebuild gap, so `toolchain-missing` is checked before `prebuild-unavailable`.
-fn npm_lifecycle_cause(detail: &str) -> &'static str {
+///
+/// Exposed (`pub`) because the desktop updater's managed-toolchain retry gate
+/// consumes the diagnosed cause to refuse a provision a different runtime cannot
+/// repair (`disk-space` / `network`). The return type stays a closed
+/// `&'static str`, so widening the visibility leaks no attacker-derived text.
+pub fn npm_lifecycle_cause(detail: &str) -> &'static str {
     let lower = detail.to_ascii_lowercase();
 
     // Disk exhaustion is unambiguous and dominates: a full disk can present as a
@@ -2154,13 +2159,129 @@ fn npm_lifecycle_cause(detail: &str) -> &'static str {
 
     // No prebuilt binary is published for this Node ABI / platform, so
     // prebuild-install reported a miss (its own message) or the download 404'd.
+    // cmake-js-built packages (node-llama-cpp) have their OWN miss vocabulary for
+    // the same underlying condition — no matching prebuilt for this runtime — so
+    // recognize it here too, guarded on cmake-js context so it can never fire on
+    // an unrelated "cmake not found" (that stays `toolchain-missing` above).
+    let cmake_js_prebuilt_miss = lower.contains("cmake-js")
+        && (lower.contains("no prebuilt")
+            || lower.contains("no precompiled")
+            || lower.contains("prebuilt binary not found")
+            || lower.contains("no compatible prebuilt"));
     if lower.contains("no prebuilt binaries found")
         || (lower.contains("prebuild") && lower.contains("404"))
+        || cmake_js_prebuilt_miss
     {
         return "prebuild-unavailable";
     }
 
+    // A package's own (post)install script failed with NO native-builder output
+    // at all — node-llama-cpp's `node ./dist/cli/cli.js postinstall` is the
+    // reported node-llama-cpp shape. Requiring the `postinstall` lifecycle token
+    // (never a build-tool NAME in the echoed `sh -c` command) keeps a bare
+    // `prebuild-install || node-gyp rebuild` command echo classified as `unknown`,
+    // while giving the previously-undiagnosable postinstall failure a first-class
+    // cause. It drives only generic, tool-agnostic advice, so it can never
+    // mis-tell a user to install tools they already have.
+    if lower.contains("postinstall") && npm_lifecycle_builder(detail) == "postinstall-script" {
+        return "postinstall-script";
+    }
+
     "unknown"
+}
+
+/// Which native builder emitted the failing lifecycle output, as a CLOSED
+/// enumeration: `prebuild-install | node-gyp | cmake-js | postinstall-script |
+/// unknown`. Companion to [`npm_lifecycle_cause`] — the cause is WHY the build
+/// failed, this is WHICH builder was running when it did. It closed the
+/// diagnostic dead end where node-llama-cpp's cmake-js/postinstall failures had
+/// no builder attribution and degraded to `cause=unknown`.
+///
+/// HARD rule: derived ONLY from a builder's own emitted output (its log prefix
+/// or a distinctive message), NEVER from the `sh -c …` command line npm echoes.
+/// `sh -c prebuild-install || node-gyp rebuild` names both prebuild-install and
+/// node-gyp but proves neither ran, so matching the echo would mis-attribute
+/// every such failure. `postinstall-script` is the residual: a lifecycle script
+/// failed but no native builder produced any output, so the package's own
+/// (post)install script is what broke. Returns `&'static str` so no path- or
+/// attacker-derived text can reach Sentry through this value.
+fn npm_lifecycle_builder(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+
+    // node-gyp's own leveled log prefix (`gyp <level>`), never the `node-gyp`
+    // token in the echoed command. A failing compile ends here even when a
+    // prebuild miss preceded it, since node-gyp is the builder that actually ran.
+    let node_gyp = [
+        "gyp err!",
+        "gyp info ",
+        "gyp warn ",
+        "gyp http ",
+        "gyp verb ",
+        "gyp sill ",
+    ]
+    .iter()
+    .any(|token| lower.contains(token));
+    if node_gyp {
+        return "node-gyp";
+    }
+
+    // cmake / cmake-js real build output (CMake's own diagnostics, or cmake-js's
+    // leveled log), never the echoed command. "cmake not found" is deliberately
+    // NOT matched here — that is a package's own message, handled as a cause
+    // (`toolchain-missing`) and left to the `postinstall-script` residual below.
+    let cmake_js = [
+        "cmake error",
+        "cmake warning",
+        "-- configuring",
+        "-- generating",
+        "cmake-js err",
+        "cmake-js info",
+        "cmake-js warn",
+    ]
+    .iter()
+    .any(|token| lower.contains(token));
+    if cmake_js {
+        return "cmake-js";
+    }
+
+    // prebuild-install's own leveled log prefix, or its distinctive miss message.
+    let prebuild = [
+        "prebuild-install warn",
+        "prebuild-install info",
+        "prebuild-install http",
+        "prebuild-install error",
+    ]
+    .iter()
+    .any(|token| lower.contains(token))
+        || lower.contains("no prebuilt binaries found");
+    if prebuild {
+        return "prebuild-install";
+    }
+
+    // A lifecycle script failed but no native builder emitted any output. Attribute
+    // it to the package's own postinstall script ONLY with explicit evidence that
+    // the postinstall STAGE is what failed — never merely that some lifecycle
+    // script did. A bare `npm error command sh -c prebuild-install || node-gyp
+    // rebuild` echo carries the lifecycle marker but names no stage and shows no
+    // builder output, so it stays `unknown` rather than corrupting the builder
+    // telemetry this change exists to make reliable.
+    if has_npm_lifecycle_failure_marker(detail) && has_postinstall_stage_evidence(detail) {
+        return "postinstall-script";
+    }
+
+    "unknown"
+}
+
+/// Explicit evidence that npm's POSTINSTALL lifecycle stage is what failed — not
+/// merely that a lifecycle script failed. npm attributes the postinstall stage
+/// three ways, and every one carries the literal `postinstall` token: its stage
+/// line (`Failed at the …postinstall script`), its `<pkg>@<ver> postinstall:`
+/// prefix, or the failing command echo when that command is itself the package's
+/// postinstall entrypoint (node-llama-cpp's `node ./dist/cli/cli.js postinstall`).
+/// A `sh -c prebuild-install || node-gyp rebuild` echo has no such token, so it
+/// is deliberately NOT treated as postinstall evidence.
+fn has_postinstall_stage_evidence(detail: &str) -> bool {
+    detail.to_ascii_lowercase().contains("postinstall")
 }
 
 /// A normalized local-log record for an npm attempt. It deliberately contains
@@ -2713,6 +2834,14 @@ pub fn report_install_failure_with_environment(
     } else {
         None
     };
+    // Which builder emitted the failure (closed enumeration), present exactly when
+    // a lifecycle failure was reported. This makes node-llama-cpp's cmake-js /
+    // postinstall failures self-diagnosing instead of degrading to `unknown`.
+    let lifecycle_builder = if npm_lifecycle.failed {
+        Some(npm_lifecycle_builder(detail))
+    } else {
+        None
+    };
     let node_version = sanitized_version_token(env.node_version.as_deref());
     let node_abi = sanitized_version_token(env.node_abi.as_deref());
     let npm_version = sanitized_version_token(env.npm_version.as_deref());
@@ -2769,6 +2898,9 @@ pub fn report_install_failure_with_environment(
             }
             if let Some(cause) = lifecycle_cause {
                 scope.set_tag("npm_lifecycle_cause", cause);
+            }
+            if let Some(builder) = lifecycle_builder {
+                scope.set_tag("npm_lifecycle_builder", builder);
             }
             // Toolchain provenance — the fields the reported 4R/4S events lacked,
             // which make the next occurrence self-diagnosing. Each is a closed
@@ -2834,6 +2966,29 @@ pub fn install_failure_episode_key(latest: &str, detail: &str) -> Option<String>
     let package = package.as_deref().unwrap_or("unrecognized");
     let cause = npm_lifecycle_cause(detail);
     Some(format!("{latest}|{package}|{cause}"))
+}
+
+/// The repeat-guard key including toolchain provenance. A managed-toolchain retry
+/// failure is a DISTINCT diagnostic episode from the user-path failure that
+/// preceded it: without the `|managed` discriminator, a prior user-path report for
+/// the same `(latest, package, cause)` — for example a run where provisioning was
+/// skipped (cooldown) or failed, then retried and reported the user-path failure —
+/// would suppress this managed-provenance event, and the whole point of retrying
+/// under a known runtime is the diagnostic it emits. Pure so it is unit-testable
+/// without sending anything; delegates the base key so the closed-set safety and
+/// third-party-only minting are unchanged.
+pub fn install_failure_episode_key_with_provenance(
+    latest: &str,
+    detail: &str,
+    managed_toolchain_retry: bool,
+) -> Option<String> {
+    install_failure_episode_key(latest, detail).map(|key| {
+        if managed_toolchain_retry {
+            format!("{key}|managed")
+        } else {
+            key
+        }
+    })
 }
 
 /// Whether a lifecycle-failure episode identical to one already reported on this
@@ -2923,7 +3078,7 @@ pub fn report_install_failure_episode(
     {
         return InstallFailureEpisode::NotReportable;
     }
-    match install_failure_episode_key(latest, detail) {
+    match install_failure_episode_key_with_provenance(latest, detail, env.managed_toolchain_retry) {
         // A non-lifecycle reportable failure: report every time, as before.
         None => {
             report_install_failure_with_environment(
@@ -5074,6 +5229,7 @@ mod tests {
             "toolchain-missing",
             "network",
             "disk-space",
+            "postinstall-script",
             "unknown",
         ];
         for adversarial in [
@@ -5082,11 +5238,176 @@ mod tests {
             "ENOSPC ETIMEDOUT prebuild download https:// cmake not found xcode-select",
             "\u{0}\u{1}\u{2} No PREBUILT Binaries Found \u{7f}",
             "random build noise with no recognizable failure token",
+            "npm error command failed\nnpm error command sh -c node ./dist/cli/cli.js postinstall\ntoken=abc /Users/victim/secret",
         ] {
             let cause = npm_lifecycle_cause(adversarial);
             assert!(
                 allowed.contains(&cause),
                 "cause {cause:?} is not one of the closed constants"
+            );
+        }
+    }
+
+    #[test]
+    fn npm_lifecycle_cause_diagnoses_a_bare_postinstall_script_failure() {
+        // node-llama-cpp's reported shape WITHOUT a "cannot find cmake" line: a
+        // postinstall script that failed with no native-builder output. This is
+        // exactly the case that used to degrade to `unknown`.
+        let postinstall = "npm error code 1\n\
+            npm error path /usr/local/lib/node_modules/node-llama-cpp\n\
+            npm error command failed\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: postinstall failed while resolving the local binary";
+        assert_eq!(npm_lifecycle_cause(postinstall), "postinstall-script");
+
+        // But a "cannot find cmake" postinstall stays the more-actionable
+        // toolchain-missing (checked first), never downgraded to postinstall.
+        let cmake_missing = "npm error code 1\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: Cannot find cmake, please install cmake and try again";
+        assert_eq!(npm_lifecycle_cause(cmake_missing), "toolchain-missing");
+
+        // A command echo naming node-gyp is NOT a postinstall script failure and
+        // must stay `unknown` — the postinstall arm needs the postinstall token.
+        let command_echo_only = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c prebuild-install || node-gyp rebuild";
+        assert_eq!(npm_lifecycle_cause(command_echo_only), "unknown");
+    }
+
+    #[test]
+    fn npm_lifecycle_cause_recognizes_cmake_js_prebuilt_miss_vocabulary() {
+        // cmake-js reporting no matching prebuilt for this runtime is the same
+        // "your Node has no prebuild" condition as prebuild-install's own miss.
+        let cmake_js_miss = "npm error code 1\n\
+            npm error path /usr/local/lib/node_modules/node-llama-cpp\n\
+            npm error command failed\n\
+            cmake-js WARN No prebuilt binary available for this platform, building from source";
+        assert_eq!(npm_lifecycle_cause(cmake_js_miss), "prebuild-unavailable");
+
+        // The guard is real: a bare "no prebuilt" without cmake-js context must
+        // still go through the prebuild-install message path, and "cmake not
+        // found" (no cmake-js miss vocabulary) must NOT become prebuild-unavailable.
+        let cmake_not_found = "npm error code 1\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: Cannot find cmake, please install cmake and try again";
+        assert_eq!(npm_lifecycle_cause(cmake_not_found), "toolchain-missing");
+    }
+
+    #[test]
+    fn npm_lifecycle_builder_derives_only_from_builder_output_never_the_command_echo() {
+        // node-gyp's own leveled log prefix.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\ngyp ERR! stack Error: not found: make"
+            ),
+            "node-gyp"
+        );
+        // node-gyp wins over a preceding prebuild miss — it is the builder that
+        // actually ran and failed.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "prebuild-install warn install No prebuilt binaries found\ngyp ERR! build error"
+            ),
+            "node-gyp"
+        );
+        // cmake-js / CMake's own build output.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\nCMake Error: could not configure the project"
+            ),
+            "cmake-js"
+        );
+        // prebuild-install's own leveled log / miss message.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "prebuild-install warn install No prebuilt binaries found (target=23.0.0)"
+            ),
+            "prebuild-install"
+        );
+        // A lifecycle failure with NO native-builder output is the postinstall
+        // residual.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\nnpm error command sh -c node ./dist/cli/cli.js postinstall"
+            ),
+            "postinstall-script"
+        );
+        // The command echo alone names node-gyp/prebuild-install but proves
+        // neither ran AND names no lifecycle stage, so it is attributed to no
+        // builder at all — `unknown`, never the postinstall residual (which would
+        // corrupt the builder telemetry this change makes reliable).
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\nnpm error command sh -c prebuild-install || node-gyp rebuild"
+            ),
+            "unknown"
+        );
+        // No lifecycle marker at all -> unknown builder.
+        assert_eq!(npm_lifecycle_builder("npm error code ENOTDIR"), "unknown");
+        assert_eq!(npm_lifecycle_builder(""), "unknown");
+    }
+
+    #[test]
+    fn npm_lifecycle_builder_requires_explicit_postinstall_stage_evidence() {
+        // node-llama-cpp's reported shape: a postinstall entrypoint command with no
+        // native-builder output. The `postinstall` token is present, so it is the
+        // postinstall residual.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error code 1\n\
+                 npm error command failed\n\
+                 npm error command sh -c node ./dist/cli/cli.js postinstall"
+            ),
+            "postinstall-script"
+        );
+        // npm's explicit stage attribution line also counts (older-npm shape,
+        // which carries the ELIFECYCLE marker alongside the stage line).
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error code ELIFECYCLE\n\
+                 npm error Failed at the node-llama-cpp@3.18.1 postinstall script."
+            ),
+            "postinstall-script"
+        );
+        // The truncated better-sqlite3 echo carries the lifecycle marker but names
+        // no stage and shows no builder output. It MUST stay `unknown` — this is
+        // the P2 residual that used to mis-tag it postinstall-script.
+        assert_eq!(
+            npm_lifecycle_builder(
+                "npm error command failed\n\
+                 npm error command sh -c prebuild-install || node-gyp rebuild"
+            ),
+            "unknown"
+        );
+        // A lifecycle marker with neither builder output nor a postinstall token
+        // stays `unknown` too.
+        assert_eq!(
+            npm_lifecycle_builder("npm error code ELIFECYCLE\nnpm error errno 1"),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn npm_lifecycle_builder_only_ever_returns_a_closed_constant() {
+        let allowed = [
+            "prebuild-install",
+            "node-gyp",
+            "cmake-js",
+            "postinstall-script",
+            "unknown",
+        ];
+        for adversarial in [
+            "gyp ERR! /home/victim/secret token=abc123",
+            "cmake error /Users/attacker/../../etc/passwd",
+            "npm error command failed\nnpm error command sh -c node ./x.js postinstall\n\u{0}\u{7f}",
+            "random build noise with no recognizable builder token",
+            "",
+        ] {
+            let builder = npm_lifecycle_builder(adversarial);
+            assert!(
+                allowed.contains(&builder),
+                "builder {builder:?} is not one of the closed constants"
             );
         }
     }
@@ -5137,6 +5458,61 @@ mod tests {
         assert_eq!(install_failure_episode_key("5.97.0", owned), None);
         assert_eq!(
             install_failure_episode_key("5.97.0", "npm error code ENOTDIR"),
+            None
+        );
+    }
+
+    #[test]
+    fn managed_toolchain_retry_is_a_distinct_repeat_guard_episode() {
+        let better_sqlite3 = "npm error code 1\n\
+            npm error command failed\n\
+            npm error path /usr/local/lib/node_modules/better-sqlite3\n\
+            prebuild-install warn install No prebuilt binaries found";
+
+        // Same (version, package, cause), but the managed retry carries a DISTINCT
+        // key so its provenance-bearing event can never collide with the user-path
+        // failure that preceded it.
+        let user_key = install_failure_episode_key_with_provenance("5.97.0", better_sqlite3, false);
+        let managed_key =
+            install_failure_episode_key_with_provenance("5.97.0", better_sqlite3, true);
+        assert_eq!(
+            user_key.as_deref(),
+            Some("5.97.0|better-sqlite3|prebuild-unavailable")
+        );
+        assert_eq!(
+            managed_key.as_deref(),
+            Some("5.97.0|better-sqlite3|prebuild-unavailable|managed")
+        );
+        assert_ne!(user_key, managed_key);
+
+        // A prior user-path report for this (version, package, cause) must NOT
+        // suppress the managed retry — otherwise the managed provenance the retry
+        // exists to emit is silently dropped.
+        let reported = [user_key.clone().unwrap()];
+        assert!(install_failure_episode_blocked(
+            &reported,
+            user_key.as_deref().unwrap()
+        ));
+        assert!(!install_failure_episode_blocked(
+            &reported,
+            managed_key.as_deref().unwrap()
+        ));
+
+        // A REPEATED managed failure is still suppressed — the guard keeps working
+        // within the managed provenance, so a permanent managed-build failure stops
+        // re-paging on every scheduled check.
+        let after =
+            install_failure_episode_record(&reported, managed_key.as_deref().unwrap(), "5.97.0");
+        assert!(after.contains(user_key.as_ref().unwrap()));
+        assert!(install_failure_episode_blocked(
+            &after,
+            managed_key.as_deref().unwrap()
+        ));
+
+        // A non-lifecycle failure gets no key regardless of provenance — it keeps
+        // paging every time, whichever toolchain ran it.
+        assert_eq!(
+            install_failure_episode_key_with_provenance("5.97.0", "npm error code ENOTDIR", true),
             None
         );
     }

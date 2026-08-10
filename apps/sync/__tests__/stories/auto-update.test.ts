@@ -234,7 +234,7 @@ describe('master automatic-updates switch', () => {
 
     // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
     // the version the app compares against is the version it installs.
-    const npmBranchStart = cliUpdate.indexOf('let prefix = npm_prefix_from_hq_bin(&hq);');
+    const npmBranchStart = cliUpdate.indexOf('let prefix = hq_cli_install_prefix(&npm, &hq);');
     const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retries(&npm');
     expect(npmBranchStart).toBeGreaterThan(-1);
     expect(npmBranchEnd).toBeGreaterThan(npmBranchStart);

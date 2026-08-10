@@ -499,7 +499,12 @@ fn lifecycle_output_with_transient_tokens_remains_captured() {
         "none",
         lifecycle_len.as_str(),
         Some("unrecognized"),
-        "unknown",
+        // `node postinstall.js` failed with no native-builder output, so the
+        // cause is now the first-class `postinstall-script` rather than the old
+        // `unknown` catch-all — a strict diagnostic improvement. The failure is
+        // still captured, still Unexpected (no attributable third-party package),
+        // and still path-safe.
+        "postinstall-script",
         // npm echoed the build script's own status as its code; a bare number
         // must collapse instead of re-keying the group on the exit status.
         "none:unknown:none",
@@ -1061,4 +1066,128 @@ fn repeat_guard_reports_once_per_key_and_survives_multi_package_interleave() {
         vec!["5.98.0|better-sqlite3|prebuild-unavailable".to_string()],
         "a new version resets the set to the current version's keys"
     );
+}
+
+/// HQ-DESKTOP-4V / HQ-DESKTOP-4W: after HQ self-heals its managed Node and the
+/// pinned install STILL fails under it, the single reported event carries the
+/// managed provenance (`npm_managed_toolchain_retry=true`,
+/// `npm_toolchain_source=managed`) AND the new `npm_lifecycle_builder`
+/// attribution — a strictly more diagnostic event than today's user-path one,
+/// still scrub-safe. This is the exact artifact a healed-but-still-broken
+/// machine would produce.
+#[test]
+fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
+    let stderr = lifecycle_stderr("1", "better-sqlite3");
+    let env = InstallEnvironment {
+        node_version: Some("v22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::Managed,
+        managed_toolchain_retry: true,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            &stderr,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+        )
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    for (key, value) in [
+        ("npm_lifecycle_package", "better-sqlite3"),
+        ("npm_lifecycle_cause", "prebuild-unavailable"),
+        ("npm_lifecycle_builder", "prebuild-install"),
+        ("npm_toolchain_source", "managed"),
+        ("npm_managed_toolchain_retry", "true"),
+        ("node_abi", "127"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    assert_path_safe(
+        &event,
+        &[
+            "/Users/",
+            "alice",
+            ".npm-global",
+            "npm error",
+            "No prebuilt",
+        ],
+    );
+}
+
+/// The builder attribution is a closed enumeration derived from each builder's
+/// own output, so a future node-llama-cpp occurrence no longer degrades to an
+/// un-attributable `unknown` group. Each fixture reports at Error (third-party
+/// lifecycle) and names which builder ran, from builder-emitted tokens only.
+#[test]
+fn lifecycle_builder_tag_names_which_builder_ran() {
+    let base = |package: &str, builder_output: &str| {
+        format!(
+            "npm error code 1\n\
+             npm error path {SELECTED_PREFIX}/lib/node_modules/{package}\n\
+             npm error command failed\n\
+             {builder_output}"
+        )
+    };
+
+    let node_gyp = base(
+        "better-sqlite3",
+        "gyp ERR! build error\ngyp ERR! stack Error: `make` failed with exit code 2",
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &node_gyp, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(tag(&event, "npm_lifecycle_builder"), Some("node-gyp"));
+
+    let cmake = base(
+        "node-llama-cpp",
+        "CMake Error: could not find a suitable generator",
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &cmake, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(tag(&event, "npm_lifecycle_builder"), Some("cmake-js"));
+    // The builder value `cmake-js` is a static classification, not leaked stderr;
+    // the raw home path and npm output still never reach the event.
+    assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
+
+    let prebuild = base(
+        "better-sqlite3",
+        "prebuild-install warn install No prebuilt binaries found (target=23.0.0)",
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &prebuild, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(
+        tag(&event, "npm_lifecycle_builder"),
+        Some("prebuild-install")
+    );
+
+    let postinstall = base(
+        "node-llama-cpp",
+        "npm error command sh -c node ./dist/cli/cli.js postinstall\nError: postinstall step failed",
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &postinstall, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(
+        tag(&event, "npm_lifecycle_builder"),
+        Some("postinstall-script")
+    );
+
+    // The truncated echo names builders in the failing command but shows no builder
+    // output and no postinstall stage, so it is attributed to NO builder —
+    // `unknown`, never the postinstall residual (the P2 the review flagged). The
+    // builder value is a static classification, so the event stays path-safe.
+    let echo_only = base(
+        "better-sqlite3",
+        "npm error command sh -c prebuild-install || node-gyp rebuild",
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &echo_only, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(tag(&event, "npm_lifecycle_builder"), Some("unknown"));
+    assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
 }
