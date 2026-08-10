@@ -786,58 +786,15 @@ fn carried_episode(
         "episode refusal stamp",
     )?;
     let idle = elapsed_since_wall(last_refusal, now)?;
-    if idle >= REFUSAL_EPISODE_IDLE_TTL {
-        // The episode has not refused for longer than the idle TTL. Two very
-        // different on-disk states reach here, and collapsing them is what let
-        // any machine off longer than the TTL reissue the whole `len() + 1`
-        // budget for an unchanged wedge:
-        //
-        //  * `episode_started_at` still present — the app stopped observing
-        //    (asleep, quit, or auto-updating) *while the root was still
-        //    refusing*. That is an unknown, not a recovery, so the finite report
-        //    budget must survive the gap. Open a fresh episode carrying only that
-        //    budget; age, occurrences and the distinct-set count are genuinely
-        //    unknown across the gap and reset to zero, so the root still has to
-        //    re-clear the confirmation window before it can emit anything.
-        //
-        //  * `episode_started_at` absent — [`note_mirror_recovered_at`] is the
-        //    only thing that nulls the start stamp, and it does so only on an
-        //    observed healthy pass. That is the one signal that refreshes the
-        //    budget, so keep today's behaviour and open a genuinely fresh episode.
-        if state.episode_started_at.is_some() {
-            log(
-                LOG_TAG,
-                &format!(
-                    "{}: persisted episode has not refused for {}s but was never observed to \
-                     recover — opening a fresh episode that carries its spent report budget \
-                     across the observation gap",
-                    path.display(),
-                    idle.as_secs()
-                ),
-            );
-            return Some(CarriedEpisode {
-                age: Duration::ZERO,
-                occurrences: 0,
-                distinct_sets: 0,
-                // Carry the spent budget so an observation gap cannot reissue it.
-                // A record predating `episode_reports` (`None`) has no count to
-                // carry; degrade to zero, which errs toward one extra banner and
-                // is behaviourally identical to opening a genuinely fresh episode.
-                reports: state.episode_reports.unwrap_or(0),
-                suppressed: 0,
-            });
-        }
-        log(
-            LOG_TAG,
-            &format!(
-                "{}: persisted episode has not refused for {}s and was cleared by a recovery — \
-                 abandoning it and opening a fresh one",
-                path.display(),
-                idle.as_secs()
-            ),
-        );
-        return None;
-    }
+    // The start stamp is what every branch below keys on, so it has to be usable
+    // before anything is inferred from the record. A *missing* start stamp is a
+    // recovered record — [`note_mirror_recovered_at`] is the only writer that
+    // nulls it, and only on an observed healthy pass — so recovery refreshes the
+    // budget by opening a genuinely fresh episode. An *unparsable or future-dated*
+    // start stamp is a corrupt record, and this module's standing policy for an
+    // unusable stamp is to re-arm rather than latch silent. Both resolve to `None`
+    // here, which is exactly the re-arm path — never a carried (possibly spent)
+    // budget keyed on a stamp we could not trust.
     let started = usable_stamp(
         state.episode_started_at.as_ref(),
         now,
@@ -855,8 +812,12 @@ fn carried_episode(
     // saturates at `len() + 1` on its own — exactly the budget a build that had
     // shipped the ladder from the start would already have spent, which is why an
     // already-wedged root earns no extra banner the moment it upgrades. A missing,
-    // unparsable or future-dated stamp degrades to zero, erring toward one extra
-    // banner rather than toward silencing a real wedge.
+    // unparsable or future-dated report stamp degrades to zero, erring toward one
+    // extra banner rather than toward silencing a real wedge. This inference is
+    // the same whether the record is still live or has gone idle across an
+    // observation gap: the spent budget is a property of the episode, not of
+    // whether the app happened to be watching, so a pre-field record that upgrades
+    // mid-episode resumes at the rung its age has reached in both cases.
     let reports = match state.episode_reports {
         Some(reports) => reports,
         None => {
@@ -874,6 +835,37 @@ fn carried_episode(
             }
         }
     };
+    if idle >= REFUSAL_EPISODE_IDLE_TTL {
+        // The episode has not refused for longer than the idle TTL, yet its start
+        // stamp is still present (a recovery would have nulled it). The app stopped
+        // observing — asleep, quit, or auto-updating — *while the root was still
+        // refusing*: an unknown, never an observed recovery. The finite report
+        // budget must therefore survive the gap, or a machine off longer than the
+        // TTL reissues the whole `len() + 1` budget for an unchanged wedge. Carry
+        // only that budget; age, occurrences and the distinct-set count are
+        // genuinely unknown across the gap and reset to zero, so the root still has
+        // to re-clear the confirmation window before it can emit anything. (A
+        // failed best-effort recovery write can leave this same shape; that is the
+        // pre-existing cost of best-effort persistence, self-healed by the next
+        // recovery write, and no worse than the live-record carry already applies.)
+        log(
+            LOG_TAG,
+            &format!(
+                "{}: persisted episode has not refused for {}s but was never observed to \
+                 recover — opening a fresh episode that carries its {reports}-banner report \
+                 budget across the observation gap",
+                path.display(),
+                idle.as_secs()
+            ),
+        );
+        return Some(CarriedEpisode {
+            age: Duration::ZERO,
+            occurrences: 0,
+            distinct_sets: 0,
+            reports,
+            suppressed: 0,
+        });
+    }
     Some(CarriedEpisode {
         age,
         occurrences: state.episode_occurrences,
@@ -4262,6 +4254,129 @@ mod tests {
             events[0].tags.get("episode_reports").map(String::as_str),
             Some("1")
         );
+    }
+
+    /// The upgrade bridge and the observation-gap carry compose: a pre-field
+    /// record (`episode_reports` absent) that upgrades *after* being off past the
+    /// idle TTL must still infer its spent budget from the episode's age, not drop
+    /// it to zero. Dropping it would let the gap re-arm a fresh `first-confirmed`
+    /// on a root that had already reported — the exact upgrade burst this change
+    /// exists to remove, merely delayed by one confirmation window.
+    #[test]
+    fn an_upgraded_record_that_went_idle_across_the_gap_still_infers_its_spent_budget() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let confirming = confirming_passes();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // A 48h episode that already reported (usable stamp inside it) but has no
+        // `episode_reports` field, and whose last refusal is past the idle TTL —
+        // the machine was off across the upgrade.
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_started_at: stamp(wall - chrono::Duration::hours(48)),
+                episode_last_refusal_at: stamp(wall - chrono::Duration::hours(13)),
+                episode_occurrences: 9_999,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(wall - chrono::Duration::hours(30)),
+                ..PersistedRefusalState::default()
+            },
+        );
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            None,
+            "the pre-field record has no report count by construction"
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                Instant::now(),
+                wall,
+                0..confirming,
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            0,
+            "the budget is bridged from the 48h age even across the gap, so the \
+             re-confirmed wedge is silent rather than re-armed"
+        );
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            Some(2),
+            "the bridged budget for a 48h episode is two, gap or no gap"
+        );
+    }
+
+    /// The observation-gap carry must trust `episode_started_at` only when it is a
+    /// usable stamp. A present-but-unparsable or future-dated start stamp is a
+    /// corrupt record, and this module's standing policy for an unusable stamp is
+    /// to re-arm, never to latch silent — so a spent budget behind such a stamp
+    /// must not suppress the new episode.
+    #[test]
+    fn an_idle_record_with_an_unusable_start_stamp_re_arms_not_carries() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let confirming = confirming_passes();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // Idle past the TTL, a fully spent budget, but a start stamp that cannot be
+        // trusted: unparsable, then future-dated. Either must re-arm, not carry.
+        let bad_starts: [Option<&str>; 2] = [Some("whenever"), Some("2126-08-06T10:00:00Z")];
+        for (index, raw) in bad_starts.into_iter().enumerate() {
+            reset_refusal_report_state();
+            let git_dir = scratch_git_dir(&tmp, &format!("bad-start-{index}"));
+            write_persisted_state(
+                &git_dir,
+                &PersistedRefusalState {
+                    episode_started_at: raw.map(str::to_string),
+                    episode_last_refusal_at: stamp(wall - chrono::Duration::hours(13)),
+                    episode_occurrences: 9_999,
+                    episode_distinct_sets: 1,
+                    episode_reports: Some(3),
+                    last_reported_at: stamp(wall - chrono::Duration::hours(30)),
+                    ..PersistedRefusalState::default()
+                },
+            );
+
+            let events = sentry::test::with_captured_events(|| {
+                sustain(
+                    "/hq",
+                    &git_dir,
+                    &set,
+                    1_356,
+                    Instant::now(),
+                    wall,
+                    0..confirming,
+                );
+            });
+            reset_refusal_report_state();
+
+            assert_eq!(
+                events.len(),
+                1,
+                "case {index}: an unusable start stamp must re-arm a fresh budget, \
+                 never carry the old spent one and latch silent"
+            );
+            assert_eq!(
+                events[0].tags.get("report_source").map(String::as_str),
+                Some("first-confirmed"),
+                "case {index}: the re-armed episode reports from scratch"
+            );
+        }
     }
 
     /// Pins the catch-all removal: every action maps to its own string, so a
