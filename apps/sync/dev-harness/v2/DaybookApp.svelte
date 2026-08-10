@@ -849,14 +849,17 @@
       aria-label="Add a reaction"
       onclick={(e) => { e.stopPropagation(); reactPickerFor = reactPickerFor === key ? null : key; }}
     ><Smiley size={14} /></button>
-    {#if reactPickerFor === key}
-      <div class="react-picker">
-        {#each REACT_PALETTE as emoji (emoji)}
-          <button class="rp-ic" aria-label={`React ${emoji}`} onclick={(e) => { e.stopPropagation(); toggleReact(key, emoji); }}>{emoji}</button>
-        {/each}
-      </div>
-    {/if}
   </div>
+{/snippet}
+
+{#snippet reactPicker(key: string)}
+  {#if reactPickerFor === key}
+    <div class="react-picker" data-panel-trigger>
+      {#each REACT_PALETTE as emoji (emoji)}
+        <button class="rp-ic" aria-label={`React ${emoji}`} onclick={(e) => { e.stopPropagation(); toggleReact(key, emoji); }}>{emoji}</button>
+      {/each}
+    </div>
+  {/if}
 {/snippet}
 
 <div class="v2" data-theme={theme}>
@@ -1116,6 +1119,7 @@
                       {/if}
                       <span class="fe-when mono">{m.event.when}</span>
                       {@render reactBar(key)}
+                      {@render reactPicker(key)}
                     </div>
                   {:else}
                     {@const key = rowKey(i)}
@@ -1148,6 +1152,7 @@
                         {#if reactList(key).length}
                           <div class="reacts">{@render reactChips(key)}</div>
                         {/if}
+                        {@render reactPicker(key)}
                       </div>
                       {@render reactBar(key)}
                     </div>
@@ -1635,7 +1640,6 @@
 
   <!-- User menu -->
   <div class="panel user-panel" class:open={openPanel === 'user'}>
-    <button class="p-item" onclick={() => { settingsTab = 'profile'; nav('settings'); }}><span class="pi"><UserCircle size={14} /></span>Profile</button>
     <button class="p-item" onclick={() => { settingsTab = 'general'; nav('settings'); }}><span class="pi"><GearSix size={14} /></span>Settings</button>
     <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
   </div>
@@ -1995,6 +1999,7 @@
   .cm-body textarea::placeholder { color: var(--t3); }
   .cm-foot { display: flex; align-items: center; gap: 2px; padding: 8px 12px 12px; flex-shrink: 0; }
   .cm-hint { margin-left: auto; margin-right: 10px; font-size: 10px; color: var(--t3); }
+  .cm-foot .cmp-send { margin-left: 0; }
   .cm-foot .cmp-send:disabled { opacity: 0.35; cursor: default; }
 
   /* ═══════════ Sidebar ═══════════ */
@@ -2120,10 +2125,12 @@
   .feed-event.picking .react-bar { opacity: 1; pointer-events: auto; }
   .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t2); }
   .rb-ic:hover { background: var(--hover); color: var(--t1); }
+  /* Opens below the row, on the message's own left edge — not tucked under
+     the hover bar in the far corner. */
   .react-picker {
     position: absolute;
-    top: calc(100% + 5px);
-    right: 0;
+    top: calc(100% + 6px);
+    left: 0;
     display: grid;
     grid-template-columns: repeat(8, 26px);
     gap: 1px;
@@ -2138,6 +2145,7 @@
   .rp-ic:hover { background: var(--hover); }
   .reacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .reacts.inline { margin-top: 0; margin-left: 8px; }
+  .feed-event > .react-picker { left: 23px; }
   .react { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--raised); transition: background 0.12s, border-color 0.12s; }
   .react:hover { border-color: var(--line2); }
   .react .re { font-size: 11px; line-height: 1; }
@@ -2145,7 +2153,7 @@
   /* Yours reads as a selected control, matching the ice tint elsewhere. */
   .react.mine { background: var(--ice-tile); border-color: transparent; }
   .react.mine .rn { color: var(--ice-ink); }
-  .msg-body { min-width: 0; flex: 1; }
+  .msg-body { position: relative; min-width: 0; flex: 1; }
   .pav { width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: var(--line2); display: flex; align-items: center; justify-content: center; font: 600 12px var(--font-ui); }
   /* Agent avatar: blue tint distinguishes it from humans; no ring, so it
      doesn't read as a selected control. */
