@@ -6455,7 +6455,8 @@ mod tests {
             false,
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
-            &[],
+            0,
+&[],
             None,
             None,
         );
@@ -6491,7 +6492,8 @@ mod tests {
             false,
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
-            &tail,
+            0,
+&tail,
             None,
             None,
         );
@@ -6589,7 +6591,8 @@ mod tests {
             false,
             &phase_context,
             &generation,
-            &tail,
+            0,
+&tail,
             None,
             None,
         );
@@ -6698,7 +6701,8 @@ mod tests {
                 observed_at: Instant::now(),
             }),
             &generation,
-            &[],
+            0,
+&[],
             None,
             None,
         );
