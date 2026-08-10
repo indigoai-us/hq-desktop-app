@@ -15,7 +15,6 @@
     ArrowLeft,
     ArrowRight,
     ArrowUpRight,
-    ArrowsDownUp,
     Bell,
     Books,
     BookOpen,
@@ -39,6 +38,7 @@
     Note,
     Package,
     Paperclip,
+    Plus,
     PaperPlaneRight,
     PushPin,
     User,
@@ -368,7 +368,7 @@
   let coFilter = $state<'all' | string>('all');
   /** Company owning the open channel (rows carry their company). */
   let activeCo = $state('indigo');
-  let view = $state<'channel' | 'library' | 'marketplace' | 'sync' | 'settings' | 'history' | 'profile' | 'notifications'>('channel');
+  let view = $state<'channel' | 'library' | 'marketplace' | 'settings' | 'history' | 'profile' | 'notifications'>('channel');
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
   let libCat = $state('files');
@@ -729,11 +729,15 @@
           <span class="caret"><CaretDown size={10} weight="bold" /></span>
         </button>
         <div class="scope-actions">
-          <button class="bar-ic" aria-label="Search (⌘K)" onclick={openSearch}><MagnifyingGlass size={15} /></button>
+          <button class="bar-ic" aria-label="New message" data-tip="New message" onclick={() => toast('New message composer would open')}>
+            <Plus size={15} />
+          </button>
+          <button class="bar-ic tip-host" aria-label="Search" onclick={openSearch}><MagnifyingGlass size={15} /><span class="tip">Search <em>⌘K</em></span></button>
           <button
             class="bar-ic"
             class:filter-on={openPanel === 'filter' || filterActive}
             aria-label="Filter conversations"
+            data-tip="Filter"
             data-panel-trigger
             onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}
           >
@@ -905,7 +909,7 @@
 
                       <div class="file-body">
                         {#if fileBody}
-                          <pre>{fileBody}</pre>
+                          <div class="file-scroll"><pre>{fileBody}</pre></div>
                         {:else}
                           <div class="file-empty">
                             <FGlyph size={26} />
@@ -1072,34 +1076,6 @@
               </div>
             </aside>
           {/if}
-        </div>
-      {:else if view === 'sync'}
-        <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
-          <span class="chan-title">Sync & conflicts</span>
-          <span class="chan-sub">cloud state for this machine</span>
-        </div>
-        <div class="syncview">
-          <div class="sync-card">
-            <div class="sync-line strong"><span class="dot"></span> Sync healthy <span class="m mono">LAST FULL SYNC 2M AGO</span></div>
-            <div class="sync-line">Vault <span class="m mono">1,204 FILES · UP TO DATE</span></div>
-            <div class="sync-line">Companies <span class="m mono">3 ACTIVE · ALL CLEAN</span></div>
-            <div class="sync-line">Journal <span class="m mono">STREAMING</span></div>
-          </div>
-          <div class="sync-card">
-            <div class="sync-line strong"><span class="dot w"></span> 1 conflict needs you</div>
-            <div class="conflict" class:resolved={resolvedConflict}>
-              <span class="conflict-ic"><Warning size={15} /></span>
-              <span class="conflict-path">companies/indigo/knowledge/pricing-notes.md — edited here and on cloud</span>
-              <button class="chip" onclick={() => { resolvedConflict = true; toast('Keep local — conflict resolved'); }}>Keep local</button>
-              <button class="chip g" onclick={() => { resolvedConflict = true; toast('Keep cloud — conflict resolved'); }}>Keep cloud</button>
-            </div>
-          </div>
-          <div class="sync-card">
-            <div class="sync-line strong">Versions</div>
-            <div class="sync-line">HQ core <span class="mono ver">v0.10.43</span> <span class="mono okc">NO DRIFT</span></div>
-            <div class="sync-line">Desktop app <span class="mono ver">v0.10.41</span> <button class="chip push-right" onclick={() => toast('Update would install v0.10.43')}>Check & update</button></div>
-          </div>
         </div>
       {:else if view === 'settings'}
         <div class="chan-head">
@@ -1359,12 +1335,30 @@
   <!-- Core dropdown -->
   <div class="panel core-panel" class:open={openPanel === 'core'}>
     <div class="p-card">
-      <div class="p-line head"><span class="dot"></span> Sync healthy <span class="p-meta mono">2M AGO</span></div>
+      <div class="p-line head">
+        <span class="dot" class:w={!resolvedConflict}></span>
+        {resolvedConflict ? 'Sync healthy' : '1 conflict needs you'}
+        <span class="p-meta mono">2M AGO</span>
+      </div>
+      {#if !resolvedConflict}
+        <div class="p-conflict">
+          <div class="pc-top">
+            <span class="conflict-ic"><Warning size={13} /></span>
+            <span class="pc-file">
+              <span class="pc-name">pricing-notes.md</span>
+              <span class="pc-dir mono">companies/indigo/knowledge</span>
+            </span>
+          </div>
+          <div class="pc-actions">
+            <button class="chip" onclick={() => { resolvedConflict = true; toast('Keep local — conflict resolved'); }}>Keep local</button>
+            <button class="chip g" onclick={() => { resolvedConflict = true; toast('Keep cloud — conflict resolved'); }}>Keep cloud</button>
+          </div>
+        </div>
+      {/if}
       <div class="p-line">HQ core <span class="v mono">v0.10.43</span> <span class="okc mono">NO DRIFT</span></div>
       <div class="p-line">Desktop app <span class="v mono">v0.10.41</span> <button class="upd-btn" onclick={() => toast('Update would download & install v0.10.43')}>Update</button></div>
     </div>
-    <button class="p-item" onclick={() => nav('sync')}><span class="pi"><ArrowsDownUp size={14} /></span>Sync &amp; conflicts</button>
-    <button class="p-item" onclick={() => nav('library')}><span class="pi"><Books size={14} /></span>Library — explore your HQ</button>
+    <button class="p-item" onclick={() => nav('library')}><span class="pi"><Books size={14} /></span>Library</button>
     <div class="packs-box" class:open={packsOpen}>
       <button class="p-item packs-toggle" onclick={(e) => { e.stopPropagation(); packsOpen = !packsOpen; }}>
         <span class="pi"><Package size={14} /></span><span class="packs-title">Packs</span>
@@ -1626,6 +1620,7 @@
   .scope-btn { display: inline-flex; align-items: center; gap: 9px; padding: 0; border-radius: 0; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: opacity 0.12s; }
   .scope-btn:hover { opacity: 0.65; }
   .scope-actions { display: flex; gap: 2px; }
+  .scope-actions :global([data-tip]:last-child::after) { left: auto; right: 0; transform: none; }
   /* Company tile: pastel gradient with the company's initials. */
   .co-tile { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex-shrink: 0; border-radius: 7px; font: 700 9px var(--font-ui); color: #fff; letter-spacing: 0.02em; }
   .co-tile.all { background: var(--btn-bg); color: var(--t2); }
@@ -1848,18 +1843,6 @@
   .pill.get:active { border-color: var(--border-active); }
 
   /* ═══════════ Sync ═══════════ */
-  .syncview { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
-  .sync-card { display: flex; flex-direction: column; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
-  .sync-line { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--t2); }
-  .v2[data-theme='dark'] .sync-line { color: #c6c6cc; }
-  .sync-line.strong { font-weight: 500; color: var(--t1); }
-  .sync-line .m { margin-left: auto; font-size: 10px; color: var(--t3); }
-  .sync-line .ver { font-size: 11px; color: var(--t2); }
-  .sync-line .okc { font-size: 10px; color: var(--ok-ink); }
-  .push-right { margin-left: auto; }
-  .conflict { display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--warn) 8%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-radius: 10px; padding: 10px 14px; transition: opacity 0.2s; }
-  .conflict.resolved { opacity: 0.4; pointer-events: none; }
-  .conflict-path { font-size: 12px; color: var(--warn-ink); flex: 1; }
 
   /* ═══════════ Settings ═══════════ */
   .settings { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
@@ -1950,11 +1933,14 @@
   .file-title { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 14px; font-weight: 600; color: var(--t1); word-break: break-all; }
   .file-title :global(svg) { flex-shrink: 0; color: var(--t3); }
   .story-panel.file-pane { overflow: hidden; }
-  .file-body { flex: 1 1 auto; min-height: 0; margin-top: 14px; padding: 12px 6px 12px 12px; border-radius: 10px; background: var(--raised); overflow: auto; }
-  .file-body::-webkit-scrollbar { width: 4px; }
-  .file-body::-webkit-scrollbar-track { background: transparent; }
-  .file-body::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 999px; }
-  .file-body pre { margin: 0; padding-right: 8px; font: 400 11px/1.6 var(--font-mono); color: var(--t2); white-space: pre-wrap; word-break: break-word; }
+  /* The box pads all round; the inner element scrolls, so the bar sits 10px
+     off the top, bottom and right edges instead of running edge-to-edge. */
+  .file-body { display: flex; flex: 1 1 auto; min-height: 0; margin-top: 14px; padding: 10px; border-radius: 10px; background: var(--raised); overflow: hidden; }
+  .file-scroll { flex: 1; min-width: 0; overflow-y: auto; padding: 2px 4px 2px 2px; }
+  .file-scroll::-webkit-scrollbar { width: 4px; }
+  .file-scroll::-webkit-scrollbar-track { background: transparent; }
+  .file-scroll::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 999px; }
+  .file-body pre { margin: 0; padding-right: 10px; font: 400 11px/1.6 var(--font-mono); color: var(--t2); white-space: pre-wrap; word-break: break-word; }
   .file-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 100%; padding: 20px 12px; text-align: center; font-size: 12px; color: var(--t3); }
   .file-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
   .file-path { margin-top: 10px; font-size: 10px; color: var(--t3); word-break: break-all; }
@@ -1974,8 +1960,15 @@
   /* The bell takes over auto-margin duty from Core; 12px flex gap + 4px = 16. */
   .titlebar .bar-ic + .core-btn { margin-left: 4px; }
 
-  .notif-list { flex: 1; padding: 12px 20px 20px; display: flex; flex-direction: column; overflow: auto; }
-  .notif-list .grp { padding: 14px 2px 4px; }
+  /* Rows sit 12px inside their own box. 8px left pad + 12px = the head's 20px
+     text inset; on the right, 4px pad + the 4px reserved scrollbar gutter + 12px
+     lands the row content on the same 20px edge, with the bar flush to the pane. */
+  .notif-list { flex: 1; padding: 12px 4px 20px 8px; display: flex; flex-direction: column; overflow: auto; scrollbar-gutter: stable; }
+  .notif-list::-webkit-scrollbar { width: 4px; }
+  .notif-list::-webkit-scrollbar-track { background: transparent; }
+  .notif-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+  .notif-list::-webkit-scrollbar-thumb:hover { background: var(--line2); }
+  .notif-list .grp { padding: 14px 12px 4px; }
   .notif { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid transparent; transition: background 0.12s, border-color 0.12s; }
   .notif:hover { background: var(--btn-bg); border-color: var(--line2); }
   .n-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--line2); font: 600 11px var(--font-ui); color: var(--t1); }
@@ -2080,6 +2073,25 @@
   .p-line { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--t2); }
   .p-line.head { font-size: 13px; color: var(--t1); font-weight: 500; }
   .p-line .v { font-size: 10px; color: var(--t1); }
+  /* Conflict, surfaced inline in the Core menu now that the standalone
+     Sync screen is gone. Path wraps to its own line so the two actions
+     always fit the narrow panel. */
+  .p-conflict {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 2px 0 6px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+  }
+  .pc-top { display: flex; align-items: flex-start; gap: 7px; }
+  .conflict-ic { margin-top: 1px; }
+  .pc-file { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .pc-name { font-size: 11px; line-height: 1.35; color: var(--warn-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-dir { font-size: 10px; line-height: 1.35; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-actions { display: flex; gap: 6px; }
   .p-line .okc { font-size: 10px; color: var(--ok-ink); }
   .upd-btn { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border: none; border-radius: 6px; padding: 3px 10px; }
   .upd-btn:hover { opacity: 0.88; }
@@ -2136,6 +2148,30 @@
     z-index: 80;
   }
   .v2 :global([data-tip]:hover::after) { opacity: 1; transition-delay: 0.35s; }
+  /* Element tooltip — same bubble, but lets the shortcut read muted. */
+  .tip-host { position: relative; }
+  .tip {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 3px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel-bg);
+    color: var(--t1);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.4;
+    white-space: nowrap;
+    box-shadow: var(--panel-shadow);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease 0s;
+    z-index: 80;
+  }
+  .tip em { font-style: normal; font-family: var(--font-mono); color: var(--t3); }
+  .tip-host:hover .tip { opacity: 1; transition-delay: 0.35s; }
 
   .toast { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 16px; font-size: 12px; color: var(--t1); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 99; white-space: nowrap; }
   .toast.show { opacity: 1; }
