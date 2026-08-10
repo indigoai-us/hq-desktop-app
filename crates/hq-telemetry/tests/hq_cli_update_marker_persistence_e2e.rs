@@ -130,6 +130,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 home_source: PnpmHomeSource::Undetermined,
                 home_env_present: false,
                 path_has_shim_dir: false,
+                // Not aimed => never probed.
+                global_bin_dir_matches_shim_dir: None,
                 exit_status: "0".to_string(),
                 output_len: 64,
             }),
@@ -142,4 +144,92 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
     let after_reset = captured_events(report_non_convergent_marker_unpersisted);
     assert_eq!(after_reset.len(), 1, "the test-only reset must re-arm once");
     reset_non_convergent_marker_unpersisted_capture_for_tests();
+}
+
+/// The pnpm >=11 nested field layout, varying only the two evidence signals the
+/// r2 classifier observes. `'static` so the fixtures need no caller-side locals.
+fn pnpm_marker_ctx(
+    matches: Option<bool>,
+    delivered: Option<&'static str>,
+) -> PostInstallContext<'static> {
+    PostInstallContext {
+        executor: InstallExecutor::Pnpm,
+        before_bin: "/Users/reviewer/Library/pnpm/bin/hq",
+        after_bin: "/Users/reviewer/Library/pnpm/bin/hq",
+        before_version: None,
+        after_version: Some("5.93.0"),
+        latest: "5.97.2",
+        npm_prefix_passed: None,
+        delivered_version: delivered,
+        installer_bin: "/opt/homebrew/bin/pnpm",
+        already_blocked: false,
+        pnpm: Some(PnpmRunDiagnostics {
+            home_source: PnpmHomeSource::NestedBinDir,
+            home_env_present: false,
+            path_has_shim_dir: true,
+            global_bin_dir_matches_shim_dir: matches,
+            exit_status: "0".to_string(),
+            output_len: 96,
+        }),
+    }
+}
+
+/// Drive the real decision seam and effects executor on the SUCCESS path (the
+/// marker write, if any, succeeds) and return `(record_attempts, captures)`.
+fn drive_success_path(ctx: &PostInstallContext<'_>) -> (usize, usize) {
+    let records = std::cell::Cell::new(0usize);
+    let captures = std::cell::Cell::new(0usize);
+    let outcome = decide_post_install(ctx);
+    let record = |_version: String| {
+        records.set(records.get() + 1);
+        Ok(())
+    };
+    let clear = || panic!("non-convergence must not clear the marker");
+    let capture = |_report: hq_desktop_core::hq_cli_update::NonConvergentReport| {
+        captures.set(captures.get() + 1);
+    };
+    let record_failure = |_error: String| panic!("record must succeed on this path");
+    let effects = PostInstallCoreEffects {
+        record: &record,
+        clear: &clear,
+        capture: &capture,
+        record_failure: &record_failure,
+    };
+    let result = apply_post_install_effects(&outcome, &effects);
+    assert!(matches!(
+        result,
+        Err(ref detail) if detail.starts_with(NON_CONVERGENT_ERROR_PREFIX)
+    ));
+    (records.get(), captures.get())
+}
+
+/// The r2 contract at the marker layer: a misdirected or undelivered pnpm install
+/// writes NO durable `cliUpdateNonConvergentVersion` marker — the decision never
+/// even attempts the record — while a genuine shadowing install still writes one.
+/// This is what keeps a mis-aimed install (a pnpm build that ignored the forced
+/// global-bin-dir) from permanently wedging auto-update while a real defect keeps
+/// its block.
+#[test]
+fn a_misdirected_or_undelivered_pnpm_install_writes_no_durable_marker() {
+    // Misdirected: pnpm delivered to its store but wrote the shim to the wrong
+    // dir. No marker attempted, but still captured loudly.
+    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(false), Some("5.97.2")));
+    assert_eq!(
+        records, 0,
+        "a misdirected install must write no durable marker"
+    );
+    assert_eq!(captures, 1, "but it stays loud on every occurrence");
+
+    // Undelivered (aimed at the right dir, store still N-1): a shortfall.
+    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(true), Some("5.93.0")));
+    assert_eq!(
+        records, 0,
+        "an undelivered target must write no durable marker"
+    );
+    assert_eq!(captures, 1);
+
+    // Genuine shadowing (aimed right AND delivered): the durable block IS written.
+    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(true), Some("5.97.2")));
+    assert_eq!(records, 1, "genuine shadowing keeps its durable marker");
+    assert_eq!(captures, 1);
 }

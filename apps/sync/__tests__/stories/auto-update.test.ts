@@ -229,7 +229,9 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).toContain(
       'pub fn install_argv(prefix: Option<&str>, target_version: Option<&str>)',
     );
-    expect(cliUpdateCore).toContain('pub fn pnpm_install_argv(target_version: Option<&str>)');
+    expect(normalize(cliUpdateCore)).toContain(
+      'pub fn pnpm_install_argv( target_version: Option<&str>, global_bin_dir: Option<&str>, ) -> Vec<String>',
+    );
     expect(cliUpdateCore).toContain('pub fn hq_cli_package_spec(version: Option<&str>)');
 
     // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
@@ -247,8 +249,12 @@ describe('master automatic-updates switch', () => {
       npmBranch.indexOf('install_argv(prefix.as_deref()'),
     );
 
-    // pnpm branch pins the same way, from the target already resolved for it.
-    expect(cliUpdate).toContain('let args = pnpm_install_argv(Some(latest));');
+    // pnpm branch pins the same way, from the target already resolved for it,
+    // AND forces pnpm's global bin dir at the directory holding the resolved
+    // shim so pnpm cannot write the new shim to a dir the app never executes.
+    expect(normalize(cliUpdate)).toContain(
+      'let args = pnpm_install_argv( Some(latest), pnpm_env.as_ref().map(|env| env.global_bin_dir.as_str()), );',
+    );
   });
 
   it('a version the registry has not propagated yet does not wedge auto-update', () => {
@@ -272,6 +278,48 @@ describe('master automatic-updates switch', () => {
     // The blocking marker is stamped with the pinned contract tag so it is never
     // mistaken for a recoverable legacy one.
     expect(cliUpdate).toContain('NON_CONVERGENT_CONTRACT_KEY');
+  });
+
+  it('a pnpm install that lands in the wrong global bin dir does not wedge auto-update', () => {
+    // HQ-DESKTOP-46 r2 reopen: the pnpm arm classified every non-convergence as
+    // pnpm-targeted from the shim path + the updater's own PATH alone — a
+    // tautology that wrote the durable block and permanently disabled
+    // auto-install on the pnpm >=11 nested layout. The class must now observe the
+    // installer's OUTPUT, and a new non-blocking class covers a pnpm build that
+    // ignored the forced global bin dir.
+    expect(cliUpdateCore).toContain('PnpmMisdirected');
+    expect(cliUpdateCore).toContain('"pnpm-misdirected"');
+    // Misdirected and resolution-shortfall never block; only a delivered-into-
+    // the-matching-dir shadowing defect may.
+    expect(normalize(cliUpdateCore)).toContain(
+      '!matches!(self, Self::ResolutionShortfall | Self::PnpmMisdirected)',
+    );
+
+    // The app threads REAL delivery evidence into the pnpm decision instead of
+    // the hardcoded `None` it used before, and probes pnpm's effective global
+    // bin dir to decide whether the shim landed where the app executes.
+    const pnpmBranch = cliUpdate.slice(
+      cliUpdate.indexOf('async fn install_hq_cli_update_via_pnpm('),
+      cliUpdate.indexOf('fn apply_post_install_with_app('),
+    );
+    expect(pnpmBranch).not.toContain('delivered_version: None,');
+    // Delivery evidence comes from the pnpm store specifically, so a stray
+    // npm-style manifest under the pnpm home cannot shadow the store reading.
+    expect(cliUpdateCore).toContain('pub fn installed_hq_cli_version_in_pnpm_store(');
+    expect(pnpmBranch).toContain('installed_hq_cli_version_in_pnpm_store(&home)');
+    expect(pnpmBranch).toContain('delivered_version: delivered_version.as_deref(),');
+    expect(pnpmBranch).toContain('pnpm_effective_global_bin_dir(');
+    expect(pnpmBranch).toContain('global_bin_dir_matches_shim_dir,');
+    // The `pnpm bin -g` probe runs only when the install did not converge, so
+    // the converged happy path pays no extra subprocess.
+    expect(pnpmBranch).toContain(
+      'let converged = install_converged(resolved.as_deref(), latest);',
+    );
+    // The delivery + bin-dir-match evidence rides into telemetry as closed
+    // values, so the next occurrence is self-diagnosing instead of ambiguous.
+    expect(normalize(cliUpdateCore)).toContain(
+      'scope.set_tag( "pnpm_global_bin_dir_matches_shim_dir",',
+    );
   });
 
   it('a non-convergent capture names which package manager ran', () => {

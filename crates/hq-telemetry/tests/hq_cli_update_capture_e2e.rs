@@ -61,13 +61,19 @@ fn npm_context<'a>(
     )
 }
 
-/// The pnpm-executor fixture context. `home_source`/`path_has_shim_dir` are the
-/// two knobs that decide whether pnpm was aimed at the shim we resolved.
+/// The pnpm-executor fixture context. `home_source`/`path_has_shim_dir` decide
+/// whether pnpm was aimed at the shim we resolved; `matches`/`delivered` are the
+/// installer-output evidence that now decides the pnpm class (matched dir +
+/// delivered => shadowing/blocking; mismatched dir => misdirected; undelivered =>
+/// shortfall; neither, whichever is None, stays foreign-managed when unaimed).
+#[allow(clippy::too_many_arguments)]
 fn pnpm_context<'a>(
     hq_bin: &'a str,
     pnpm_bin: &'a str,
     home_source: PnpmHomeSource,
     path_has_shim_dir: bool,
+    matches: Option<bool>,
+    delivered: Option<&'a str>,
     already_blocked: bool,
 ) -> PostInstallContext<'a> {
     PostInstallContext {
@@ -78,14 +84,14 @@ fn pnpm_context<'a>(
         after_version: Some("5.77.14"),
         latest: "5.84.0",
         npm_prefix_passed: None,
-        // npm-only; the pnpm executor's classification ignores it.
-        delivered_version: None,
+        delivered_version: delivered,
         installer_bin: pnpm_bin,
         already_blocked,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present: false,
             path_has_shim_dir,
+            global_bin_dir_matches_shim_dir: matches,
             exit_status: "0".to_string(),
             output_len: 128,
         }),
@@ -336,6 +342,10 @@ fn pnpm_non_convergence_names_its_executor_and_drops_the_npm_prefix_placeholder(
             "/opt/homebrew/bin/pnpm",
             PnpmHomeSource::NestedBinDir,
             true,
+            // Genuine shadowing: pnpm aimed at the right dir AND delivered the
+            // target, yet the shim is stale — the loud, blocking class.
+            Some(true),
+            Some("5.84.0"),
             false,
         ),
         true,
@@ -371,6 +381,13 @@ fn pnpm_non_convergence_names_its_executor_and_drops_the_npm_prefix_placeholder(
         ("pnpm_home_source", "nested-bin-dir"),
         ("pnpm_home_env_present", "false"),
         ("pnpm_path_has_shim_dir", "true"),
+        // The direction evidence that breaks the tautology: pnpm's effective
+        // global bin dir IS the dir holding the shim, so this is genuine
+        // shadowing rather than a misdirected write.
+        ("pnpm_global_bin_dir_matches_shim_dir", "true"),
+        // A pnpm run now names its requested and delivered versions too.
+        ("requested_version", "5.84.0"),
+        ("delivered_version", "5.84.0"),
     ] {
         assert_eq!(
             event.tags.get(tag).map(String::as_str),
@@ -382,7 +399,7 @@ fn pnpm_non_convergence_names_its_executor_and_drops_the_npm_prefix_placeholder(
         event.extra.get("pnpm_diagnostics").and_then(Value::as_str),
         Some(
             "home_source=nested-bin-dir home_env_present=false path_has_shim_dir=true \
-             exit_status=0 output_len=128"
+             global_bin_dir_matches_shim_dir=true exit_status=0 output_len=128"
         )
     );
     let serialized = serde_json::to_string(event).expect("serialize event");
@@ -417,6 +434,9 @@ fn undetermined_pnpm_home_is_reported_as_foreign_managed_and_stays_bounded() {
             "/opt/homebrew/bin/pnpm",
             PnpmHomeSource::Undetermined,
             false,
+            // Unaimed: no direction probe, no delivery evidence.
+            None,
+            None,
             false,
         ),
         true,
@@ -444,6 +464,8 @@ fn undetermined_pnpm_home_is_reported_as_foreign_managed_and_stays_bounded() {
             "/opt/homebrew/bin/pnpm",
             PnpmHomeSource::Undetermined,
             false,
+            None,
+            None,
             true,
         ),
         true,
@@ -905,5 +927,189 @@ fn the_2026_08_09_field_event_shape_reclassifies_under_the_new_contract() {
     assert_eq!(
         event.tags.get("hq_bin_changed").map(String::as_str),
         Some("false")
+    );
+}
+
+/// HQ-DESKTOP-46, era 3 (the r2 reopen). Replay the exact 2026-08-10 field event
+/// shape (event 766826e5): pnpm executor, nested pnpm >=11 layout, PNPM_HOME
+/// derived from the grandparent, the shim dir on PATH, the package delivered into
+/// the pnpm store, yet the executed shim never moved because pnpm's effective
+/// global bin dir is the flat home, not the nested bin dir. On the base commit
+/// this rendered as pnpm-targeted with a durable block, permanently wedging that
+/// machine. Under the directed contract it renders through `before_send` as a
+/// non-blocking misdirected install that names the mismatch.
+#[test]
+fn the_2026_08_10_pnpm_field_event_reclassifies_under_the_directed_contract() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let hq_bin = home
+        .join("Library/pnpm/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let ctx = PostInstallContext {
+        executor: InstallExecutor::Pnpm,
+        before_bin: &hq_bin,
+        after_bin: &hq_bin, // hq_bin_changed = false, as in the field event
+        before_version: None,
+        after_version: Some("5.93.0"), // local
+        latest: "5.97.2",
+        npm_prefix_passed: None,
+        // pnpm delivered the package into its global store ...
+        delivered_version: Some("5.97.2"),
+        installer_bin: "/opt/homebrew/bin/pnpm",
+        already_blocked: false,
+        pnpm: Some(PnpmRunDiagnostics {
+            home_source: PnpmHomeSource::NestedBinDir,
+            home_env_present: false,
+            path_has_shim_dir: true,
+            // ... but wrote the shim flat into PNPM_HOME, not the nested bin dir.
+            global_bin_dir_matches_shim_dir: Some(false),
+            exit_status: "0".to_string(),
+            output_len: 96,
+        }),
+    };
+
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(
+        records, 0,
+        "the field event must no longer wedge auto-update"
+    );
+    assert_eq!(captures, 1, "but it stays loud on every occurrence");
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    // Grouping does NOT split: the fingerprint is unchanged.
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    for (tag, expected) in [
+        ("install_executor", "pnpm"),
+        ("non_convergence_kind", "pnpm-misdirected"),
+        ("pnpm_home_source", "nested-bin-dir"),
+        ("pnpm_path_has_shim_dir", "true"),
+        ("pnpm_global_bin_dir_matches_shim_dir", "false"),
+        ("requested_version", "5.97.2"),
+        ("delivered_version", "5.97.2"),
+        ("hq_bin_changed", "false"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    // Still no npm placeholder for a pnpm run.
+    assert!(!event.extra.contains_key("npm_prefix"));
+    assert!(!event.tags.contains_key("prefix_known"));
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+    for forbidden in ["/Users/", "/home/"] {
+        assert!(
+            !serialized.contains(forbidden),
+            "misdirected pnpm event leaked {forbidden:?}"
+        );
+    }
+}
+
+/// The pnpm executor no longer hardcodes `delivered_version: None`. A
+/// non-convergence aimed at the right dir but delivered N-1 (the registry had not
+/// propagated the target) renders as a resolution shortfall that names both its
+/// requested and delivered versions plus the bounded bin-dir-match boolean, with
+/// no absolute path in any tag and home redaction intact.
+#[test]
+fn a_pnpm_non_convergence_names_its_requested_and_delivered_versions() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let hq_bin = home
+        .join("Library/pnpm/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let (events, records, captures, _record_failures) = composed_non_convergent_events(
+        &pnpm_context(
+            &hq_bin,
+            "/opt/homebrew/bin/pnpm",
+            PnpmHomeSource::NestedBinDir,
+            true,
+            Some(true),     // aimed at the right dir
+            Some("5.83.0"), // but the store still holds N-1
+            false,
+        ),
+        true,
+    );
+    assert_eq!(records, 0, "a shortfall must not wedge auto-update");
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    for (tag, expected) in [
+        ("non_convergence_kind", "resolution-shortfall"),
+        ("requested_version", "5.84.0"),
+        ("delivered_version", "5.83.0"),
+        ("pnpm_global_bin_dir_matches_shim_dir", "true"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    // Path-free after the real scrubber; home redaction intact on extras.
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+    for forbidden in ["/Users/", "/home/"] {
+        assert!(
+            !serialized.contains(forbidden),
+            "pnpm shortfall event leaked {forbidden:?}"
+        );
+    }
+}
+
+/// The invariant the fix must never break, end to end: a genuine pnpm shadowing
+/// defect — pnpm's effective global bin dir IS the dir holding the executed shim
+/// AND the target WAS delivered into the store, yet the shim still reports the old
+/// version — survives `before_send` unchanged and still writes its durable block,
+/// on every occurrence including an already-blocked episode.
+#[test]
+fn true_pnpm_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_block() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let hq_bin = home
+        .join("Library/pnpm/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let (events, records, captures, _record_failures) = composed_non_convergent_events(
+        &pnpm_context(
+            &hq_bin,
+            "/opt/homebrew/bin/pnpm",
+            PnpmHomeSource::NestedBinDir,
+            true,
+            Some(true),     // pnpm aimed at the right dir
+            Some("5.84.0"), // and delivered the target
+            true,           // already blocked — a real defect stays loud anyway
+        ),
+        true,
+    );
+    assert_eq!(records, 1, "genuine pnpm shadowing keeps the durable block");
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("pnpm-targeted")
+    );
+    assert_eq!(
+        event.tags.get("delivered_version").map(String::as_str),
+        Some("5.84.0")
+    );
+    assert_eq!(
+        event
+            .tags
+            .get("pnpm_global_bin_dir_matches_shim_dir")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
     );
 }
