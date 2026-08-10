@@ -21,7 +21,6 @@
     BookOpen,
     CaretDown,
     CaretRight,
-    CaretUp,
     ChatCircle,
     Check,
     CheckCircle,
@@ -31,6 +30,7 @@
     GearSix,
     GitPullRequest,
     Hash,
+    KeyReturn,
     Image,
     Lightning,
     MagnifyingGlass,
@@ -347,14 +347,45 @@
     return 'project';
   }
   let search = $state('');
-  let moreCompanies = $state(false);
+  /** Search lives in a centered jump palette (⌘K), not the sidebar. */
+  let searchOpen = $state(false);
+  let searchSel = $state(0);
+  function openSearch() {
+    searchOpen = true;
+    search = '';
+    searchSel = 0;
+    openPanel = null;
+    requestAnimationFrame(() => document.getElementById('v2-search')?.focus());
+  }
+  function closeSearch() {
+    searchOpen = false;
+    search = '';
+  }
+  const searchResults = $derived.by(() => {
+    const q = search.trim().toLowerCase();
+    const out: { co: string; id: string; c: Channel }[] = [];
+    for (const [k, comp] of Object.entries(DATA)) {
+      for (const [id, c] of Object.entries(comp.channels)) {
+        if (!q || c.title.toLowerCase().includes(q)) out.push({ co: k, id, c });
+      }
+    }
+    return out.slice(0, 12);
+  });
+  function pickResult(r: { co: string; id: string }) {
+    selectChannel(r.co, r.id);
+    closeSearch();
+  }
+  function searchKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') closeSearch();
+    else if (e.key === 'ArrowDown') { e.preventDefault(); searchSel = Math.min(searchSel + 1, searchResults.length - 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); searchSel = Math.max(searchSel - 1, 0); }
+    else if (e.key === 'Enter' && searchResults[searchSel]) pickResult(searchResults[searchSel]);
+  }
   const EXTRA_COMPANIES: [string, string][] = [
     ['LR', 'LiveRecover'],
     ['KW', 'Keptwork'],
     ['HM', 'Holler Mgmt'],
   ];
-  /** Collapsed strip shows this many company pills; the rest fold into +N. */
-  const COLLAPSED_COMPANIES = 2;
   let composerText = $state('');
 
   /* ── Story detail ── */
@@ -531,23 +562,6 @@
     return [...byDate.values()].sort((a, b) => dateRank(b.date) - dateRank(a.date));
   });
 
-  function toggleCompany(key: string) {
-    coFilter = coFilter === key ? 'all' : key;
-  }
-  // Collapsed: the first N companies, plus the selected one if it fell outside.
-  const stripCompanies = $derived.by(() => {
-    const all = Object.entries(DATA);
-    if (moreCompanies) return all;
-    const shown = all.slice(0, COLLAPSED_COMPANIES);
-    if (coFilter !== 'all' && !shown.some(([k]) => k === coFilter)) {
-      const active = all.find(([k]) => k === coFilter);
-      if (active) shown.push(active);
-    }
-    return shown;
-  });
-  const hiddenCompanyCount = $derived(
-    Object.keys(DATA).length + EXTRA_COMPANIES.length - stripCompanies.length,
-  );
   function selectChannel(coKey: string, id: string) {
     view = 'channel';
     activeCo = coKey;
@@ -568,7 +582,6 @@
     const c = DATA[coKey].channels[id];
     if (!c) return false;
     if (!filterTypes[rowKind(c)]) return false;
-    if (search && !c.title.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   }
   function sendMessage() {
@@ -589,7 +602,7 @@
     if (e.key === 'Escape') openPanel = null;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
-      document.getElementById('v2-search')?.focus();
+      openSearch();
     }
   }
   function onWindowClick(e: MouseEvent) {
@@ -626,65 +639,25 @@
   <div class="body">
     <!-- Daybook sidebar -->
     <div class="sidebar">
-      <div class="search-row">
-        <div class="search">
-          <span class="lead"><MagnifyingGlass size={13} /></span>
-          <input id="v2-search" placeholder="Search or jump to…" bind:value={search} />
-          <span class="kbd mono">⌘K</span>
-        </div>
-        <button
-          class="filter-btn"
-          class:on={filterActive}
-          aria-label="Filter conversations"
-          data-tip="Filter"
-          data-panel-trigger
-          onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}
-        >
-          <FunnelSimple size={14} />
+      <!-- Scope row: company picker on the left, search + filter icons on
+           the right. Search opens the jump palette. -->
+      <div class="scope-row">
+        <button class="scope-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('scope'); }}>
+          {coFilter === 'all' ? 'All' : DATA[coFilter].label}
+          <span class="caret"><CaretDown size={10} weight="bold" /></span>
         </button>
-      </div>
-
-      <!-- Company scope strip: everything by default, click a circle to
-           filter, hover stretches the pill to the full name. -->
-      <div class="co-strip" class:expanded={moreCompanies} role="group" aria-label="Filter by company">
-        <div class="co-scroll">
+        <div class="scope-actions">
+          <button class="bar-ic" aria-label="Search (⌘K)" onclick={openSearch}><MagnifyingGlass size={15} /></button>
           <button
-            class="co-chip"
-            class:active={coFilter === 'all'}
-            aria-pressed={coFilter === 'all'}
-            aria-label="All companies"
-            onclick={() => (coFilter = 'all')}
+            class="bar-ic"
+            class:filter-on={filterActive}
+            aria-label="Filter conversations"
+            data-panel-trigger
+            onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}
           >
-            <span class="co-ava">All</span>
+            <FunnelSimple size={15} />
           </button>
-          {#each stripCompanies as [key, c] (key)}
-            <button
-              class="co-chip"
-              class:active={coFilter === key}
-              aria-pressed={coFilter === key}
-              aria-label={c.label}
-              onclick={() => toggleCompany(key)}
-            >
-              <span class="co-ava">{c.label}</span>
-            </button>
-          {/each}
-          {#if moreCompanies}
-            {#each EXTRA_COMPANIES as [short, label] (short)}
-              <button class="co-chip" aria-label={label} onclick={() => toast(`${label} would load (not in prototype data)`)}>
-                <span class="co-ava">{label}</span>
-              </button>
-            {/each}
-          {/if}
         </div>
-        <button
-          class="co-chip more"
-          aria-expanded={moreCompanies}
-          data-tip={moreCompanies ? 'Show less' : 'More companies'}
-          aria-label={moreCompanies ? 'Show less' : 'More companies'}
-          onclick={() => (moreCompanies = !moreCompanies)}
-        >
-          <span class="co-ava">{#if moreCompanies}<CaretUp size={12} weight="bold" />{:else}+{hiddenCompanyCount}{/if}</span>
-        </button>
       </div>
 
       <div class="side-scroll">
@@ -1326,6 +1299,61 @@
     <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
   </div>
 
+  <!-- Company scope dropdown -->
+  <div class="panel scope-panel" class:open={openPanel === 'scope'}>
+    <button class="p-item" onclick={() => { coFilter = 'all'; openPanel = null; }}>
+      All companies
+      <span class="p-check">{#if coFilter === 'all'}<Check size={12} weight="bold" />{/if}</span>
+    </button>
+    {#each Object.entries(DATA) as [key, c] (key)}
+      <button class="p-item" onclick={() => { coFilter = key; openPanel = null; }}>
+        {c.label}
+        <span class="p-check">{#if coFilter === key}<Check size={12} weight="bold" />{/if}</span>
+      </button>
+    {/each}
+    {#each EXTRA_COMPANIES as [short, label] (short)}
+      <button class="p-item" onclick={() => { openPanel = null; toast(`${label} would load (not in prototype data)`); }}>
+        {label}
+        <span class="p-check"></span>
+      </button>
+    {/each}
+  </div>
+
+  <!-- Jump palette (⌘K) -->
+  {#if searchOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="search-overlay" onclick={(e) => { if (e.target === e.currentTarget) closeSearch(); }}>
+      <div class="search-modal" role="dialog" aria-label="Search">
+        <div class="sm-head">
+          <MagnifyingGlass size={16} />
+          <input
+            id="v2-search"
+            placeholder="Search or jump to…"
+            bind:value={search}
+            oninput={() => (searchSel = 0)}
+            onkeydown={searchKeydown}
+          />
+          <button class="sd-close" aria-label="Close search" onclick={closeSearch}><X size={13} weight="bold" /></button>
+        </div>
+        <div class="sm-list">
+          {#each searchResults as r, i (`${r.co}:${r.id}`)}
+            <button class="sm-row" class:sel={i === searchSel} onmouseenter={() => (searchSel = i)} onclick={() => pickResult(r)}>
+              <span class="sm-ic">
+                {#if r.c.type === 'dm'}{#if rowKind(r.c) === 'group'}<span class="av">{r.c.members}</span>{:else}<span class="av">{r.c.av ?? r.c.title[0]}</span>{/if}{:else}<Hash size={14} />{/if}
+              </span>
+              <span class="sm-title">{r.c.title.replace('# ', '')}</span>
+              <span class="sm-meta mono">{DATA[r.co].label}</span>
+              {#if i === searchSel}<span class="sm-return"><KeyReturn size={14} /></span>{/if}
+            </button>
+          {/each}
+          {#if searchResults.length === 0}
+            <div class="sm-empty">No matches for “{search}”</div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <div class="toast" class:show={toastShown}>{toastMsg}</div>
 </div>
 
@@ -1440,19 +1468,29 @@
 
   .body { flex: 1; display: flex; min-height: 0; }
 
-  /* ═══════════ Company strip (under the search bar) ═══════════ */
-  /* Collapsed: one row of whole pills + a pinned +N chip. Expanded: pills
-     wrap into as many rows as they need. */
-  .co-strip { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 6px; }
-  .co-scroll { display: flex; flex-wrap: wrap; min-width: 0; gap: 6px; }
-  /* Chips follow the secondary-button states: fill at rest, border on hover,
-     brighter border + primary ink when selected. */
-  .co-chip { display: inline-flex; flex-shrink: 0; border-radius: 999px; }
-  .co-ava { display: flex; align-items: center; justify-content: center; height: 24px; padding: 0 10px; flex-shrink: 0; border-radius: 999px; background: var(--btn-bg); border: 1px solid transparent; font: 500 11px var(--font-ui); color: var(--t2); white-space: nowrap; box-sizing: border-box; transition: border-color 0.12s; }
-  .co-chip:hover .co-ava { border-color: var(--line2); color: var(--t1); }
-  .co-chip.active .co-ava { background: var(--ice-tile); border-color: color-mix(in srgb, var(--ice-ink) 35%, transparent); color: var(--ice-ink); }
-  .co-chip.more .co-ava { border: 1px dashed var(--line2); background: transparent; color: var(--t3); font-size: 9px; padding: 0 8px; }
-  .co-chip.more:hover .co-ava { color: var(--t1); border-color: var(--border-active); }
+  /* ═══════════ Scope row (company picker + search/filter icons) ═══════════ */
+  .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+  .scope-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; background: var(--btn-bg); border: 1px solid transparent; font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
+  .scope-btn:hover { border-color: var(--line2); }
+  .scope-actions { display: flex; gap: 2px; }
+  .scope-panel { top: 96px; left: 14px; width: 220px; min-width: 0; }
+  .bar-ic.filter-on { color: var(--ice-ink); }
+
+  /* ═══════════ Jump palette (⌘K) ═══════════ */
+  .search-overlay { position: absolute; inset: 0; z-index: 90; display: flex; align-items: flex-start; justify-content: center; padding-top: 72px; background: rgba(0, 0, 0, 0.28); }
+  .search-modal { display: flex; flex-direction: column; width: min(560px, 86%); max-height: 62%; overflow: hidden; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; box-shadow: var(--panel-shadow); }
+  .sm-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--line); color: var(--t3); flex-shrink: 0; }
+  .sm-head input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--t1); font: 400 14px var(--font-ui); }
+  .sm-head input::placeholder { color: var(--t3); }
+  .sm-list { display: flex; flex-direction: column; gap: 1px; padding: 8px; overflow-y: auto; min-height: 0; }
+  .sm-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--t1); }
+  .sm-row.sel { background: var(--hover); }
+  .sm-ic { display: flex; align-items: center; justify-content: center; width: 18px; flex-shrink: 0; color: var(--t3); }
+  .sm-ic .av { width: 16px; height: 16px; border-radius: 5px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
+  .sm-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .sm-meta { flex-shrink: 0; font-size: 10px; color: var(--t3); }
+  .sm-return { display: flex; align-items: center; flex-shrink: 0; color: var(--t3); }
+  .sm-empty { padding: 24px 12px; text-align: center; font-size: 13px; color: var(--t3); }
 
   /* ═══════════ Sidebar ═══════════ */
   .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; min-height: 0; }
@@ -1906,9 +1944,6 @@
     z-index: 80;
   }
   .v2 :global([data-tip]:hover::after) { opacity: 1; transition-delay: 0.35s; }
-  /* Strip chips sit against the window edge — anchor left so a centered
-     bubble can't be clipped by the pane. */
-  .co-strip :global([data-tip]::after) { left: 0; transform: none; }
 
   .toast { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px 16px; font-size: 12px; color: var(--t1); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 99; white-space: nowrap; }
   .toast.show { opacity: 1; }
