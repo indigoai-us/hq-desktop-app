@@ -365,6 +365,25 @@ describe('master automatic-updates switch', () => {
     );
   });
 
+  it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {
+    // HQ-DESKTOP-4Y: an EEXIST on the package's second declared shim
+    // (`hq-auth-refresh`) classified as `EEXIST:unknown:other` and never armed
+    // npm's --force, so the update failed permanently. Recognition must be
+    // driven by the package's declared bin map, not a hard-coded `hq`.
+    const core = normalize(cliUpdateCore);
+    expect(cliUpdateCore).toContain('const HQ_CLI_BIN_NAMES');
+    expect(cliUpdateCore).toContain('"hq-auth-refresh"');
+    // The shape recognition iterates the declared names instead of matching `hq`.
+    expect(core).toContain('HQ_CLI_BIN_NAMES.iter()');
+    // The colliding shim is named on the event as a closed enumeration, kept out
+    // of the fingerprint so grouping stays stable.
+    expect(cliUpdateCore).toContain('fn npm_bin_target(');
+    expect(core).toContain('scope.set_tag("npm_bin_target"');
+    // The app side still just delegates to the core collision test, so widening
+    // the shape automatically arms the existing single `--force` rung.
+    expect(cliUpdate).toContain('is_npm_bin_collision(detail, prefix)');
+  });
+
   it('the non-convergent remedy reaches the user instead of the generic retry copy', () => {
     // The backend detail is the only place that names which `hq` the app
     // resolves and says to update it with the tool that installed it. The

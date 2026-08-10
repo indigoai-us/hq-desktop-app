@@ -1799,6 +1799,23 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
     );
 }
 
+/// The executable shims the desktop updater's own package,
+/// `@indigoai-us/hq-cli`, declares in its `bin` map. npm links one shim per
+/// entry into `<prefix>/bin` (plus the Windows `.cmd` / `.ps1` wrappers), so a
+/// pre-existing non-npm file at ANY of these names produces the same structured
+/// `EEXIST` bin collision that npm's documented `--force` remedy clears — not
+/// only the primary `hq` shim. Recognizing every declared shim is what arms the
+/// forced retry and keeps a second-shim collision from misclassifying as an
+/// unexpected updater defect.
+///
+/// This mirrors the `bin` map of `@indigoai-us/hq-cli` (verified against the
+/// published 5.98.1 manifest and `repos/private/hq-workspace/apps/hq-cli/
+/// package.json`). If that package ever declares a new bin, add it here so the
+/// updater recognizes a collision on it and arms the same remedy — the desktop
+/// repo cannot see that package.json at build time, so this constant is the
+/// single source of truth for the shim names.
+const HQ_CLI_BIN_NAMES: [&str; 2] = ["hq", "hq-auth-refresh"];
+
 /// Whether an npm install failure is the EXPECTED "global npm prefix needs
 /// sudo" condition. This is deliberately stricter than an `EACCES` string
 /// check: npm and lifecycle scripts can report permission failures for its
@@ -1807,8 +1824,9 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
 /// user-machine setup failure.
 ///
 /// npm uses `<prefix>/lib/node_modules` on Unix and `<prefix>/node_modules`
-/// on Windows. It can also fail while linking `<prefix>/bin/hq` or one of the
-/// Windows hq shim forms. Normalize separators so an event captured on either
+/// on Windows. It can also fail while linking any of the package's declared bin
+/// shims (`<prefix>/bin/<name>` or a Windows shim form) — see
+/// [`HQ_CLI_BIN_NAMES`]. Normalize separators so an event captured on either
 /// platform follows the same rule.
 pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool {
     let detail = detail.to_ascii_lowercase().replace('\\', "/");
@@ -1825,16 +1843,22 @@ pub fn is_prefix_permission_failure(detail: &str, prefix: Option<&str>) -> bool 
         return false;
     }
 
-    [
+    let node_modules_targets = [
         format!("{prefix}/lib/node_modules"),
         format!("{prefix}/node_modules"),
-        format!("{prefix}/bin/hq"),
-        format!("{prefix}/hq"),
-        format!("{prefix}/hq.cmd"),
-        format!("{prefix}/hq.ps1"),
-    ]
-    .iter()
-    .any(|target| detail.contains(target))
+    ];
+    let bin_targets = HQ_CLI_BIN_NAMES.iter().flat_map(|name| {
+        [
+            format!("{prefix}/bin/{name}"),
+            format!("{prefix}/{name}"),
+            format!("{prefix}/{name}.cmd"),
+            format!("{prefix}/{name}.ps1"),
+        ]
+    });
+    node_modules_targets
+        .into_iter()
+        .chain(bin_targets)
+        .any(|target| detail.contains(target.as_str()))
 }
 
 /// Keep the cache-specific diagnostic distinct from an expected selected-prefix
@@ -1935,15 +1959,16 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
             {
                 return NpmPathShape::SelectedPrefixNodeModules;
             }
-            if [
-                format!("{prefix}/bin/hq"),
-                format!("{prefix}/hq"),
-                format!("{prefix}/hq.cmd"),
-                format!("{prefix}/hq.ps1"),
-            ]
-            .iter()
-            .any(|target| path == *target)
-            {
+            if HQ_CLI_BIN_NAMES.iter().any(|name| {
+                [
+                    format!("{prefix}/bin/{name}"),
+                    format!("{prefix}/{name}"),
+                    format!("{prefix}/{name}.cmd"),
+                    format!("{prefix}/{name}.ps1"),
+                ]
+                .iter()
+                .any(|target| path == *target)
+            }) {
                 return NpmPathShape::BinHq;
             }
         }
@@ -1957,15 +1982,45 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     .any(|target| path.ends_with(target) || path.contains(&format!("{target}/hq-cli")))
     {
         NpmPathShape::GlobalLibNodeModules
-    } else if path.ends_with("/bin/hq")
-        || ["/npm/hq", "/npm/hq.cmd", "/npm/hq.ps1"]
-            .iter()
-            .any(|target| path.ends_with(target))
-    {
+    } else if HQ_CLI_BIN_NAMES.iter().any(|name| {
+        [
+            format!("/bin/{name}"),
+            format!("/npm/{name}"),
+            format!("/npm/{name}.cmd"),
+            format!("/npm/{name}.ps1"),
+        ]
+        .iter()
+        .any(|target| path.ends_with(target.as_str()))
+    }) {
         NpmPathShape::BinHq
     } else {
         NpmPathShape::Other
     }
+}
+
+/// The `@indigoai-us/hq-cli` shim a bin-collision or prefix-permission event
+/// names, reduced to a CLOSED enumeration: one of [`HQ_CLI_BIN_NAMES`] when the
+/// reported path's basename is that shim (with or without a Windows `.cmd` /
+/// `.ps1` wrapper), `other` when npm named some other path, or `none` when npm
+/// reported no path at all. This lets a merged collision group still record
+/// WHICH shim collided without adding a fingerprint dimension or leaking the
+/// path: only the fixed enum value is ever tagged, so it keeps the same
+/// scrub-safety guarantee as the other closed-enumeration tags.
+fn npm_bin_target(detail: &str) -> &'static str {
+    let Some(path) = normalized_npm_path(detail) else {
+        return "none";
+    };
+    let basename = path.rsplit('/').next().unwrap_or("");
+    let stem = basename
+        .strip_suffix(".cmd")
+        .or_else(|| basename.strip_suffix(".ps1"))
+        .unwrap_or(basename);
+    for name in HQ_CLI_BIN_NAMES {
+        if name == stem {
+            return name;
+        }
+    }
+    "other"
 }
 
 fn npm_error_code(detail: &str) -> String {
@@ -2900,6 +2955,11 @@ pub fn report_install_failure_with_environment(
     let eacces =
         has_eacces_evidence(detail) || kind == InstallFailureKind::ExpectedPrefixPermission;
     let npm_path_shape = npm_path_shape(detail, prefix);
+    // Which declared hq-cli shim the event's path names, as a closed
+    // enumeration. Kept OUT of the fingerprint (see `install_failure_signature`)
+    // so grouping stays stable while a merged collision group can still tell a
+    // `hq` collision from a `hq-auth-refresh` one.
+    let npm_bin_target = npm_bin_target(detail);
     let npm_prefix_known = prefix.is_some();
     let npm_error_code = npm_error_code(detail);
     let npm_lifecycle = npm_lifecycle_failure(detail);
@@ -2953,6 +3013,7 @@ pub fn report_install_failure_with_environment(
             scope.set_tag("npm_error_code", npm_error_code.as_str());
             scope.set_tag("npm_syscall", npm_syscall(detail));
             scope.set_tag("npm_path_shape", npm_path_shape.tag_value());
+            scope.set_tag("npm_bin_target", npm_bin_target);
             scope.set_tag(
                 "npm_final_attempt_forced",
                 if final_attempt_forced {
@@ -5110,6 +5171,209 @@ mod tests {
             ),
             InstallFailureKind::Unexpected
         );
+    }
+
+    #[test]
+    fn every_declared_hq_cli_shim_is_recognized_as_a_bin_collision() {
+        // Recognition must cover EVERY shim @indigoai-us/hq-cli declares, in all
+        // four link forms, both with a known prefix and via the prefix-free
+        // suffix path npm emits when the updater could not resolve a prefix.
+        // Adding a name to HQ_CLI_BIN_NAMES is then the only edit a new bin needs.
+        for name in HQ_CLI_BIN_NAMES {
+            let prefix = "/usr/local";
+            for path in [
+                format!("{prefix}/bin/{name}"),
+                format!("{prefix}/{name}"),
+                format!("{prefix}/{name}.cmd"),
+                format!("{prefix}/{name}.ps1"),
+            ] {
+                let detail = format!("npm error code EEXIST\nnpm error path {path}");
+                assert_eq!(
+                    npm_path_shape(&detail, Some(prefix)),
+                    NpmPathShape::BinHq,
+                    "prefix-anchored shape for {path}"
+                );
+                assert!(
+                    is_npm_bin_collision(&detail, Some(prefix)),
+                    "prefix-anchored collision for {path}"
+                );
+            }
+            for path in [
+                format!("/opt/homebrew/bin/{name}"),
+                format!("C:/Users/alice/AppData/Roaming/npm/{name}"),
+                format!("C:/Users/alice/AppData/Roaming/npm/{name}.cmd"),
+                format!("C:/Users/alice/AppData/Roaming/npm/{name}.ps1"),
+            ] {
+                let detail = format!("npm error code EEXIST\nnpm error path {path}");
+                assert_eq!(
+                    npm_path_shape(&detail, None),
+                    NpmPathShape::BinHq,
+                    "prefix-free shape for {path}"
+                );
+                assert!(
+                    is_npm_bin_collision(&detail, None),
+                    "prefix-free collision for {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn undeclared_neighbour_shims_do_not_widen_into_a_collision() {
+        // The widening is strict: it must not swallow unrelated binaries whose
+        // names merely start with `hq` or extend a declared name.
+        for prefix in [Some("/usr/local"), None] {
+            for path in [
+                "/usr/local/bin/hq-other",
+                "/usr/local/bin/hqx",
+                "/usr/local/bin/hq-auth",
+                "/usr/local/bin/hq-auth-refresh-2",
+            ] {
+                let detail = format!("npm error code EEXIST\nnpm error path {path}");
+                assert_eq!(
+                    npm_path_shape(&detail, prefix),
+                    NpmPathShape::Other,
+                    "path {path} with prefix {prefix:?} must stay Other"
+                );
+                assert!(
+                    !is_npm_bin_collision(&detail, prefix),
+                    "path {path} with prefix {prefix:?} must not be a collision"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn second_shim_bin_collision_arms_the_same_forced_remedy() {
+        // HQ-DESKTOP-4Y: the reported collision was on the package's SECOND
+        // declared shim, `hq-auth-refresh`, not `hq`. It must classify exactly
+        // like a `hq` collision — Unexpected until npm's `--force` remedy ran,
+        // ExpectedBinCollision once it did — and title on the recognized
+        // `bin-hq` signature rather than the reported `EEXIST:unknown:other`.
+        let second_shim = "npm error code EEXIST\n\
+            npm error path /usr/local/bin/hq-auth-refresh";
+        assert!(is_npm_bin_collision(second_shim, Some("/usr/local")));
+        // The reported event carried no prefix; the prefix-free suffix path must
+        // recognize it just the same.
+        assert!(is_npm_bin_collision(second_shim, None));
+
+        assert_eq!(
+            classify_install_failure(Some(1), second_shim, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                Some(1),
+                second_shim,
+                Some("/usr/local"),
+                true,
+            ),
+            InstallFailureKind::ExpectedBinCollision
+        );
+        assert_eq!(
+            install_failure_report_with_final_attempt(
+                Some(1),
+                second_shim,
+                Some("/usr/local"),
+                true,
+            ),
+            Some("[hq-cli-update] hq shim collision survived npm --force".to_string())
+        );
+        assert_eq!(
+            install_failure_signature(
+                InstallFailureKind::ExpectedBinCollision,
+                second_shim,
+                Some("/usr/local"),
+            ),
+            "EEXIST:unknown:bin-hq"
+        );
+
+        // An EACCES while linking the same second shim is the sudo case, not a
+        // fresh page: it joins the existing prefix-permission bucket, with a
+        // known prefix and via the global-target fallback when none was resolved.
+        let second_shim_eacces = "npm error code EACCES\n\
+            npm error path /usr/local/bin/hq-auth-refresh";
+        assert!(is_prefix_permission_failure(
+            second_shim_eacces,
+            Some("/usr/local")
+        ));
+        assert_eq!(
+            classify_install_failure(Some(243), second_shim_eacces, Some("/usr/local")),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+        assert!(is_global_prefix_permission_failure(
+            Some(243),
+            second_shim_eacces
+        ));
+        assert_eq!(
+            classify_install_failure(Some(243), second_shim_eacces, None),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+
+        // A bare EEXIST token in lifecycle build output must still NOT be treated
+        // as a bin collision — only npm's structured code+path pair may arm force.
+        let lifecycle_output = "npm error code 1\n\
+            npm error command failed\n\
+            npm error path /usr/local/bin/hq-auth-refresh\n\
+            script output contains EEXIST";
+        assert!(!is_npm_bin_collision(lifecycle_output, Some("/usr/local")));
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                Some(1),
+                lifecycle_output,
+                Some("/usr/local"),
+                true,
+            ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn npm_bin_target_is_a_closed_path_free_enumeration() {
+        // Each declared shim resolves to its own name, in every link form, so a
+        // merged collision group can still say WHICH shim collided.
+        for name in HQ_CLI_BIN_NAMES {
+            for path in [
+                format!("/usr/local/bin/{name}"),
+                format!("/usr/local/{name}"),
+                format!("C:/Users/alice/AppData/Roaming/npm/{name}.cmd"),
+                format!("C:/Users/alice/AppData/Roaming/npm/{name}.ps1"),
+            ] {
+                let detail = format!("npm error code EEXIST\nnpm error path {path}");
+                assert_eq!(npm_bin_target(&detail), name, "path {path}");
+            }
+        }
+        // An unrelated path is `other`; no path line at all is `none`.
+        assert_eq!(
+            npm_bin_target("npm error code EEXIST\nnpm error path /usr/local/bin/hq-other"),
+            "other"
+        );
+        assert_eq!(
+            npm_bin_target(
+                "npm error code ENOTDIR\n\
+                 npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli"
+            ),
+            "other"
+        );
+        assert_eq!(npm_bin_target("npm error code EEXIST"), "none");
+        // The value is ALWAYS one of the closed set and never a raw path — even
+        // when the reported path itself sits under a sensitive directory.
+        for detail in [
+            "npm error code EEXIST\nnpm error path /usr/local/bin/hq",
+            "npm error code EEXIST\nnpm error path /Users/alice/secret/hq-auth-refresh.cmd",
+            "npm error code ENOTDIR\nnpm error path /Users/alice/.npm/_cacache",
+            "",
+        ] {
+            let target = npm_bin_target(detail);
+            assert!(
+                HQ_CLI_BIN_NAMES.contains(&target) || target == "other" || target == "none",
+                "npm_bin_target returned an out-of-enum value: {target:?}"
+            );
+            assert!(
+                !target.contains('/'),
+                "npm_bin_target leaked a path: {target:?}"
+            );
+        }
     }
 
     #[test]

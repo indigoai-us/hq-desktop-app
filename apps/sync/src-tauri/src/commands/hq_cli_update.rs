@@ -2271,6 +2271,89 @@ exit 0
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn second_shim_eexist_arms_one_force_retry_and_stays_a_warning() {
+        // HQ-DESKTOP-4Y: the collision npm reported was on the package's SECOND
+        // declared shim, `hq-auth-refresh`. It must arm the SAME single `--force`
+        // rung the `hq` collision uses — one retry, still within the hard cap,
+        // the app-owned cache on every attempt — and, once force is exhausted,
+        // classify as the visible-at-Warning ExpectedBinCollision rather than a
+        // loud unexpected page.
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let script = format!(
+            r#"#!/bin/sh
+state="{}"
+attempts="{}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s|%s\n' "$NPM_CONFIG_CACHE" "$*" >> "$attempts"
+case "$count" in
+  1) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq-auth-refresh' >&2; exit 1 ;;
+  2) printf '%s\n' 'npm error code EEXIST' 'npm error path /tmp/bin/hq-auth-refresh' >&2; exit 1 ;;
+esac
+exit 0
+"#,
+            state.display(),
+            attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), None),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        assert!(run.final_attempt_forced);
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "exactly one forced retry, within the hard cap"
+        );
+        assert!(!lines[0].contains("--force"));
+        assert!(lines[1].contains("--force"));
+        for line in &lines {
+            assert!(
+                line.starts_with(&format!("{}|", npm_cache.display())),
+                "second-shim retry lost its app-owned npm cache: {line}"
+            );
+        }
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                run.output.status.code(),
+                &npm_output_detail(&run.output),
+                Some(prefix.to_str().unwrap()),
+                run.final_attempt_forced,
+            ),
+            InstallFailureKind::ExpectedBinCollision
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn eexist_after_windows_backoff_is_not_silently_forced_or_suppressed() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
