@@ -339,20 +339,20 @@
   });
 
   const LIBRARY = {
-    cats: [
-      ['files', 'Files', 412], ['knowledge', 'Knowledge', 128], ['docs', 'Docs & notes', 54],
-      ['meetings', 'Meetings', 31], ['policies', 'Policies', 17], ['skills', 'Skills', 46], ['workers', 'Workers', 18],
-    ] as [string, string, number][],
+    cats: [['skills', 'Skills', 46], ['workers', 'Workers', 18]] as [string, string, number][],
     items: {
-      files: [['file', 'library-ia-v2.md', 'FILES · TODAY'], ['image', 'concept-a-daybook.png', 'MOCKUPS · TODAY'], ['file', 'pricing-matrix.xlsx', 'AUG 1'], ['file', 'brief-2026-08-03.html', 'AUG 3']],
-      knowledge: [['knowledge', 'design-styles pack v3', 'UPDATED 2H AGO · SOFIA'], ['knowledge', 'pricing objection handling', 'YESTERDAY · BRYAN'], ['knowledge', 'agent-box provisioning guide', 'AUG 1 · AGENT']],
-      docs: [['doc', 'library-ia-v2.md', 'SOFIA · TODAY'], ['doc', 'daybook-interaction-notes.md', 'COREY · TODAY']],
-      meetings: [['meeting', 'GTM standup — Aug 4', 'RECAP + TRANSCRIPT'], ['meeting', 'Nestlé demo prep — Aug 1', 'NOTES']],
-      policies: [['policy', 'deploy account mapping', 'HARD'], ['policy', 'tauri2 api detection', 'HARD'], ['policy', 'docs sync on material change', 'HARD']],
       skills: [['skill', '/storyboard', 'DESIGN GATE'], ['skill', '/deploy', 'SHIP ARTIFACTS'], ['skill', '/standup-brief', 'DAILY BRIEF'], ['skill', '/crm-management', 'GTM']],
       workers: [['worker', 'paper-designer', 'DESIGN'], ['worker', 'build-agent', 'ENGINEERING'], ['worker', 'signal-agent', 'INSIGHTS']],
     } as Record<string, string[][]>,
   };
+
+  const MEETINGS: [string, string, string][] = [
+    ['GTM standup — Aug 4', 'Indigo · 8 attendees', 'RECAP + TRANSCRIPT'],
+    ['Nestlé demo prep — Aug 1', 'Indigo · 4 attendees', 'NOTES'],
+    ['Daybook design review — Jul 31', 'Indigo · 3 attendees', 'RECAP + TRANSCRIPT'],
+    ['Sender weekly — Jul 30', 'Sender Agency · 6 attendees', 'RECAP'],
+    ['Pricing workshop — Jul 28', 'Indigo · 5 attendees', 'NOTES'],
+  ];
 
   const MARKET: [string, string, string, string][] = [
     ['engineering', 'Investigate, review, land, ship — the full engineering loop.', 'inst', 'v2.1 INSTALLED'],
@@ -368,10 +368,12 @@
   let coFilter = $state<'all' | string>('all');
   /** Company owning the open channel (rows carry their company). */
   let activeCo = $state('indigo');
-  let view = $state<'channel' | 'library' | 'marketplace' | 'settings' | 'history' | 'profile' | 'notifications'>('channel');
+  let view = $state<'channel' | 'library' | 'marketplace' | 'meetings' | 'settings' | 'history' | 'profile' | 'notifications'>('channel');
+  /** Every screen but the daybook is full-bleed — the side pane folds away. */
+  const sidebarOpen = $derived(view === 'channel');
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
-  let libCat = $state('files');
+  let libCat = $state('skills');
   let openPanel = $state<string | null>(null);
   let packsOpen = $state(false);
   let sortMode = $state<'chrono' | 'type'>('chrono');
@@ -699,6 +701,9 @@
     <div class="lights" aria-hidden="true"><span class="l-r"></span><span class="l-y"></span><span class="l-g"></span></div>
     <span class="brand">HQ</span>
     <span class="date mono">{todayLabel}</span>
+    <button class="bar-ic" aria-label="Meetings" data-tip="Meetings" onclick={() => nav('meetings')}>
+      <VideoCamera size={15} />
+    </button>
     <button
       class="bar-ic"
       class:has-unread={unreadNotifs > 0}
@@ -714,7 +719,8 @@
   </div>
 
   <div class="body">
-    <!-- Daybook sidebar -->
+    <!-- Daybook sidebar — only on the daybook itself -->
+    {#if sidebarOpen}
     <div class="sidebar">
       <!-- Scope row: company picker on the left, search + filter icons on
            the right. Search opens the jump palette. -->
@@ -796,6 +802,7 @@
         <span class="caret"><CaretDown size={10} weight="bold" /></span>
       </button>
     </div>
+    {/if}
 
     <!-- Main -->
     <div class="main">
@@ -995,13 +1002,15 @@
         <div class="chan-head">
           <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">Library</span>
-          <span class="chan-sub">{company.label} · everything in your HQ</span>
+          <span class="chan-sub">{company.label} · skills, workers, and packs</span>
         </div>
         <div class="library">
           <div class="lib-nav">
             {#each LIBRARY.cats as [k, n, c] (k)}
               <button class="lib-cat" class:on={libCat === k} onclick={() => (libCat = k)}>{n}<span class="c mono">{c}</span></button>
             {/each}
+            <div class="lib-divider" role="none"></div>
+            <button class="lib-cat" onclick={() => nav('marketplace')}>Marketplace<span class="c"><ArrowRight size={12} /></span></button>
           </div>
           <div class="lib-main">
             <div class="lib-head">
@@ -1017,6 +1026,22 @@
               {/each}
             </div>
           </div>
+        </div>
+      {:else if view === 'meetings'}
+        <div class="chan-head">
+          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
+          <span class="chan-title">Meetings</span>
+          <span class="chan-sub">recordings, recaps, and transcripts</span>
+        </div>
+        <div class="listview">
+          {#each MEETINGS as [name, who, meta] (name)}
+            <button class="lrow" onclick={() => toast(`${name} would open`)}>
+              <span class="lrow-ic"><VideoCamera size={15} /></span>
+              <span class="fn">{name}</span>
+              <span class="fm who">{who}</span>
+              <span class="fm mono">{meta}</span>
+            </button>
+          {/each}
         </div>
       {:else if view === 'marketplace'}
         <div class="chan-head">
@@ -1398,6 +1423,13 @@
     {/each}
   </div>
 
+  <!-- User menu -->
+  <div class="panel user-panel" class:open={openPanel === 'user'}>
+    <button class="p-item" onclick={() => nav('profile')}><span class="pi"><UserCircle size={14} /></span>Profile</button>
+    <button class="p-item" onclick={() => nav('settings')}><span class="pi"><GearSix size={14} /></span>Settings</button>
+    <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
+  </div>
+
   <!-- Company scope dropdown -->
   <div class="panel scope-panel" class:open={openPanel === 'scope'}>
     <button class="p-item co-row" class:current={coFilter === 'all'} onclick={() => { coFilter = 'all'; openPanel = null; }}>
@@ -1579,6 +1611,7 @@
   .caret { display: inline-flex; align-items: center; color: var(--t3); }
   .lead { display: inline-flex; align-items: center; color: var(--t3); }
   .lrow-ic { display: inline-flex; align-items: center; color: var(--t2); }
+  .lib-divider { height: 1px; margin: 6px 8px; background: var(--line); }
   .conflict-ic { display: inline-flex; align-items: center; color: var(--warn-ink); }
   .sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 5px; }
   .grp .t, .p-meta, .accent { display: inline-flex; align-items: center; gap: 4px; }
@@ -1661,7 +1694,7 @@
   .filter-btn.on { color: var(--ice-ink); border-color: var(--ice-ink); }
   /* Thin, light scrollbar tucked against the pane edge (content keeps its
      gutter via the offsetting padding). */
-  .side-scroll { flex: 1; overflow-y: auto; min-height: 0; margin-right: -8px; padding-right: 8px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .side-scroll { flex: 1; overflow-y: auto; min-height: 0; margin-right: -8px; padding-right: 8px; }
   .side-scroll::-webkit-scrollbar { width: 4px; }
   .side-scroll::-webkit-scrollbar-track { background: transparent; }
   .side-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
@@ -1721,7 +1754,7 @@
   .content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
   /* ═══════════ Feed ═══════════ */
-  .feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 24px 24px 12px; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 24px 24px 12px; min-height: 0; }
   .feed::-webkit-scrollbar { width: 4px; }
   .feed::-webkit-scrollbar-track { background: transparent; }
   .feed::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
@@ -1813,6 +1846,8 @@
   .lrow:hover { background: var(--btn-bg); border-color: var(--line2); }
   .lrow .fn { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lrow .fm { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--t3); }
+  /* Sits with the name, not pinned right — only the trailing meta pins. */
+  .lrow .fm.who { margin-left: 0; font-size: 11px; }
 
   .library { flex: 1; display: flex; min-height: 0; }
   .lib-nav { width: 210px; flex-shrink: 0; border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
@@ -1936,11 +1971,12 @@
   .story-panel.file-pane { overflow: hidden; }
   /* The box pads all round; the inner element scrolls, so the bar sits 10px
      off the top, bottom and right edges instead of running edge-to-edge. */
-  .file-body { display: flex; flex: 1 1 auto; min-height: 0; margin-top: 14px; padding: 10px; border-radius: 10px; background: var(--raised); overflow: hidden; }
-  .file-scroll { flex: 1; min-width: 0; overflow-y: auto; padding: 2px 4px 2px 2px; }
+  .file-body { display: flex; flex: 1 1 auto; min-height: 0; margin-top: 14px; padding: 7px; border-radius: 10px; background: var(--raised); overflow: hidden; }
+  .file-scroll { flex: 1; min-width: 0; overflow-y: auto; padding: 3px 3px 3px 5px; }
   .file-scroll::-webkit-scrollbar { width: 4px; }
   .file-scroll::-webkit-scrollbar-track { background: transparent; }
-  .file-scroll::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 999px; }
+  .file-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+  .file-scroll::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .file-body pre { margin: 0; padding-right: 10px; font: 400 11px/1.6 var(--font-mono); color: var(--t2); white-space: pre-wrap; word-break: break-word; }
   .file-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 100%; padding: 20px 12px; text-align: center; font-size: 12px; color: var(--t3); }
   .file-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
@@ -1960,6 +1996,7 @@
   .bar-ic.has-unread::before { content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice-ink); z-index: 1; }
   /* The bell takes over auto-margin duty from Core; 12px flex gap + 4px = 16. */
   .titlebar .bar-ic + .core-btn { margin-left: 4px; }
+  .titlebar .bar-ic + .bar-ic { margin-left: 0; }
 
   /* Rows sit 12px inside their own box. 8px left pad + 12px = the head's 20px
      text inset; on the right, 4px pad + the 4px reserved scrollbar gutter + 12px
