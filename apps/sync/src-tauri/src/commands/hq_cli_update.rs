@@ -1809,13 +1809,14 @@ mod tests {
             argv.get(prefix_pos + 1).map(String::as_str),
             Some(managed_prefix)
         );
-        // The pinned version is requested exactly; the mutable @latest tag never is.
-        assert!(argv
-            .iter()
-            .any(|arg| arg == &format!("{HQ_CLI_PACKAGE}@{pinned}")));
-        assert!(argv
-            .iter()
-            .all(|arg| arg != &format!("{HQ_CLI_PACKAGE}@latest")));
+        // The pinned version is requested exactly (name@version); the mutable
+        // @latest spec (HQ_CLI_PACKAGE already carries `@latest`) never is.
+        let pinned_spec = format!(
+            "{}@{pinned}",
+            hq_desktop_core::hq_cli_update::HQ_CLI_PACKAGE_NAME
+        );
+        assert!(argv.iter().any(|arg| arg == &pinned_spec));
+        assert!(argv.iter().all(|arg| arg != HQ_CLI_PACKAGE));
         // The user's own prefix appears nowhere in the retry argv.
         assert!(argv.iter().all(|arg| !arg.contains(user_prefix)));
     }
