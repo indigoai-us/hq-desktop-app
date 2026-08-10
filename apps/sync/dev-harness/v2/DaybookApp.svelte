@@ -346,13 +346,36 @@
     } as Record<string, string[][]>,
   };
 
-  const MEETINGS: [string, string, string][] = [
-    ['GTM standup — Aug 4', 'Indigo · 8 attendees', 'RECAP + TRANSCRIPT'],
-    ['Nestlé demo prep — Aug 1', 'Indigo · 4 attendees', 'NOTES'],
+  type Agenda = { time: string; name: string; co: string; dur: string; state: 'live' | 'next' | 'invited' | 'scheduled'; signals?: number };
+  const MEETING_LIVE = { name: 'GTM standup', co: 'Indigo', running: '12:04', attendees: 8 };
+  const MEETING_DAYS: { label: string; rows: Agenda[] }[] = [
+    {
+      label: 'TODAY',
+      rows: [
+        { time: '9:30 AM', name: 'GTM standup', co: 'Indigo', dur: '30m', state: 'live', signals: 3 },
+        { time: '11:00 AM', name: 'Nestlé demo prep', co: 'Indigo', dur: '45m', state: 'next' },
+        { time: '2:00 PM', name: 'Pricing workshop', co: 'Indigo', dur: '60m', state: 'invited' },
+        { time: '4:30 PM', name: 'Sender weekly', co: 'Sender Agency', dur: '30m', state: 'scheduled' },
+      ],
+    },
+    {
+      label: 'TOMORROW',
+      rows: [
+        { time: '10:00 AM', name: 'Daybook design review', co: 'Indigo', dur: '45m', state: 'invited' },
+        { time: '1:00 PM', name: 'Agent box provisioning', co: 'Indigo', dur: '30m', state: 'scheduled' },
+      ],
+    },
+  ];
+  const MEETING_STATE_LABEL: Record<Agenda['state'], string> = {
+    live: 'Live', next: 'Next', invited: 'Notetaker in', scheduled: 'Scheduled',
+  };
+  const MEETINGS_PAST: [string, string, string][] = [
+    ['Nestlé demo prep — Aug 1', 'Indigo · 4 attendees', 'RECAP + TRANSCRIPT'],
     ['Daybook design review — Jul 31', 'Indigo · 3 attendees', 'RECAP + TRANSCRIPT'],
     ['Sender weekly — Jul 30', 'Sender Agency · 6 attendees', 'RECAP'],
     ['Pricing workshop — Jul 28', 'Indigo · 5 attendees', 'NOTES'],
   ];
+  let mtgLive = $state(true);
 
   const MARKET: [string, string, string, string][] = [
     ['engineering', 'Investigate, review, land, ship — the full engineering loop.', 'inst', 'v2.1 INSTALLED'],
@@ -368,10 +391,10 @@
   let coFilter = $state<'all' | string>('all');
   /** Company owning the open channel (rows carry their company). */
   let activeCo = $state('indigo');
-  let view = $state<'channel' | 'library' | 'marketplace' | 'meetings' | 'settings' | 'history' | 'profile' | 'notifications'>('channel');
+  let view = $state<'channel' | 'library' | 'marketplace' | 'meetings' | 'settings' | 'history' | 'notifications'>('channel');
   /** The reference surfaces go full-bleed; the day-to-day screens keep the
    *  daybook beside them so you can hop straight back into a conversation. */
-  const FULL_BLEED = ['library', 'marketplace', 'settings', 'profile'];
+  const FULL_BLEED = ['library', 'marketplace', 'settings'];
   const sidebarOpen = $derived(!FULL_BLEED.includes(view));
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
@@ -441,6 +464,114 @@
     else if (e.key === 'ArrowUp') { e.preventDefault(); searchSel = Math.max(searchSel - 1, 0); }
     else if (e.key === 'Enter' && searchResults[searchSel]) pickResult(searchResults[searchSel]);
   }
+  /* ── New message composer ──────────────────────────────────────────
+     Recipients are chips, so a message can go to several people or land
+     in an existing channel. Everything is picked from one query field —
+     the same jump-palette muscle memory, one surface up. */
+  type Recipient = { kind: 'person' | 'channel'; label: string; co: string; id?: string };
+  let composeOpen = $state(false);
+  let composeQuery = $state('');
+  let composeSel = $state(0);
+  let composeBody = $state('');
+  let composeTo = $state<Recipient[]>([]);
+
+  function openCompose() {
+    composeOpen = true;
+    composeQuery = '';
+    composeBody = '';
+    composeTo = [];
+    composeSel = 0;
+    openPanel = null;
+    requestAnimationFrame(() => document.getElementById('v2-compose-to')?.focus());
+  }
+  function closeCompose() {
+    composeOpen = false;
+  }
+
+  /** People and channels the query matches, minus whatever is already a chip. */
+  const composeResults = $derived.by(() => {
+    const q = composeQuery.trim().toLowerCase();
+    const taken = new Set(composeTo.map((r) => `${r.kind}:${r.co}:${r.label}`));
+    const out: Recipient[] = [];
+    for (const [k, comp] of Object.entries(DATA)) {
+      for (const [id, c] of Object.entries(comp.channels)) {
+        if (c.type === 'dm' && rowKind(c) === 'dm') {
+          out.push({ kind: 'person', label: c.title, co: k, id });
+        } else if (c.type !== 'dm') {
+          out.push({ kind: 'channel', label: c.title.replace('# ', ''), co: k, id });
+        }
+      }
+    }
+    for (const name of PEOPLE) {
+      if (!out.some((r) => r.kind === 'person' && r.label === name)) {
+        out.push({ kind: 'person', label: name, co: 'indigo' });
+      }
+    }
+    return out
+      .filter((r) => !taken.has(`${r.kind}:${r.co}:${r.label}`))
+      .filter((r) => !q || r.label.toLowerCase().includes(q))
+      .slice(0, 8);
+  });
+
+  const composeReady = $derived(composeTo.length > 0 && composeBody.trim().length > 0);
+
+  function addRecipient(r: Recipient) {
+    composeTo = [...composeTo, r];
+    composeQuery = '';
+    composeSel = 0;
+    requestAnimationFrame(() => document.getElementById('v2-compose-to')?.focus());
+  }
+  function dropRecipient(i: number) {
+    composeTo = composeTo.filter((_, n) => n !== i);
+  }
+  function composeToKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') { closeCompose(); return; }
+    if (e.key === 'Backspace' && composeQuery === '' && composeTo.length) {
+      e.preventDefault();
+      dropRecipient(composeTo.length - 1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault(); composeSel = Math.min(composeSel + 1, composeResults.length - 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); composeSel = Math.max(composeSel - 1, 0);
+    } else if ((e.key === 'Enter' || e.key === 'Tab') && composeResults[composeSel]) {
+      e.preventDefault(); addRecipient(composeResults[composeSel]);
+    }
+  }
+  function sendCompose() {
+    if (!composeReady) return;
+    const first = composeTo[0];
+    const names = composeTo.map((r) => r.label).join(', ');
+    closeCompose();
+    // Land the operator where the message went, when that already exists.
+    if (first.id && DATA[first.co]?.channels[first.id]) selectChannel(first.co, first.id);
+    toast(`Message sent to ${names}`);
+  }
+
+  /* ── Reactions ────────────────────────────────────────────────────
+     Hovering a message or event reveals a floating bar: three one-click
+     emoji plus a picker. Keyed by company|channel|row, since the fixture
+     feed rows carry no ids of their own. */
+  const QUICK_REACTS = ['👍', '🎉', '👀'];
+  const REACT_PALETTE = [
+    '👍', '🎉', '👀', '✅', '🔥', '😄', '🙌', '💜',
+    '🚀', '🤝', '💡', '🧠', '☕️', '🐛', '📌', '🙏',
+  ];
+  let reacts = $state<Record<string, Record<string, number>>>({});
+  let myReacts = $state<Record<string, Record<string, boolean>>>({});
+  let reactPickerFor = $state<string | null>(null);
+
+  const rowKey = (i: number) => `${activeCo}|${channelId}|${i}`;
+  const reactList = (key: string) => Object.entries(reacts[key] ?? {}).filter(([, n]) => n > 0);
+
+  function toggleReact(key: string, emoji: string) {
+    const mine = myReacts[key]?.[emoji] ?? false;
+    const at = reacts[key] ?? {};
+    const next = (at[emoji] ?? 0) + (mine ? -1 : 1);
+    reacts = { ...reacts, [key]: { ...at, [emoji]: next } };
+    myReacts = { ...myReacts, [key]: { ...(myReacts[key] ?? {}), [emoji]: !mine } };
+    reactPickerFor = null;
+  }
+
   const EXTRA_COMPANIES: [string, string][] = [
     ['LR', 'LiveRecover'],
     ['KW', 'Keptwork'],
@@ -529,6 +660,8 @@
   /* ── Settings (split view) — desktop-app concerns only; everything else
      lives in HQ Console. Mirrors the production settings inventory. ── */
   const SETTINGS_TABS: [string, string][] = [
+    ['profile', 'Profile'],
+    ['companies', 'Companies'],
     ['general', 'General'],
     ['sync', 'Sync'],
     ['notifications', 'Notifications'],
@@ -698,6 +831,34 @@
 
 <svelte:window onkeydown={onWindowKeydown} onclick={onWindowClick} />
 
+{#snippet reactChips(key: string)}
+  {#each reactList(key) as [emoji, n] (emoji)}
+    <button class="react" class:mine={myReacts[key]?.[emoji]} onclick={() => toggleReact(key, emoji)}>
+      <span class="re">{emoji}</span><span class="rn mono">{n}</span>
+    </button>
+  {/each}
+{/snippet}
+
+{#snippet reactBar(key: string)}
+  <div class="react-bar" data-panel-trigger>
+    {#each QUICK_REACTS as emoji (emoji)}
+      <button class="rb-ic" aria-label={`React ${emoji}`} onclick={(e) => { e.stopPropagation(); toggleReact(key, emoji); }}>{emoji}</button>
+    {/each}
+    <button
+      class="rb-ic glyph"
+      aria-label="Add a reaction"
+      onclick={(e) => { e.stopPropagation(); reactPickerFor = reactPickerFor === key ? null : key; }}
+    ><Smiley size={14} /></button>
+    {#if reactPickerFor === key}
+      <div class="react-picker">
+        {#each REACT_PALETTE as emoji (emoji)}
+          <button class="rp-ic" aria-label={`React ${emoji}`} onclick={(e) => { e.stopPropagation(); toggleReact(key, emoji); }}>{emoji}</button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 <div class="v2" data-theme={theme}>
   <div class="titlebar">
     <div class="lights" aria-hidden="true"><span class="l-r"></span><span class="l-y"></span><span class="l-g"></span></div>
@@ -737,7 +898,7 @@
           <span class="caret"><CaretDown size={10} weight="bold" /></span>
         </button>
         <div class="scope-actions">
-          <button class="bar-ic" aria-label="New message" data-tip="New message" onclick={() => toast('New message composer would open')}>
+          <button class="bar-ic" aria-label="New message" data-tip="New message" onclick={openCompose}>
             <Plus size={15} />
           </button>
           <button class="bar-ic tip-host" aria-label="Search" onclick={openSearch}><MagnifyingGlass size={15} /><span class="tip">Search <em>⌘K</em></span></button>
@@ -946,13 +1107,19 @@
                     <div class="daysep"><hr /><span class="mono">{m.sep}</span><hr /></div>
                   {:else if m.event}
                     {@const EventIcon = EVENT_ICONS[m.event.kind]}
-                    <div class="feed-event">
+                    {@const key = rowKey(i)}
+                    <div class="feed-event" class:picking={reactPickerFor === key}>
                       <span class="fe-ic"><EventIcon size={11} /></span>
                       <span class="fe-text"><span class="fe-who">{m.event.who}</span> {m.event.what}</span>
+                      {#if reactList(key).length}
+                        <span class="reacts inline">{@render reactChips(key)}</span>
+                      {/if}
                       <span class="fe-when mono">{m.event.when}</span>
+                      {@render reactBar(key)}
                     </div>
                   {:else}
-                    <div class="msg">
+                    {@const key = rowKey(i)}
+                    <div class="msg" class:picking={reactPickerFor === key}>
                       {#if m.ai}<div class="pav ai"><User size={16} /></div>{:else}<div class="pav">{m.av}</div>{/if}
                       <div class="msg-body">
                         <div class="msg-head">
@@ -978,7 +1145,11 @@
                             <span class="lrow-ic"><FileText size={15} /></span><span class="ct small">{m.file.n}</span><span class="cs mono tiny">{m.file.m}</span>
                           </div>
                         {/if}
+                        {#if reactList(key).length}
+                          <div class="reacts">{@render reactChips(key)}</div>
+                        {/if}
                       </div>
+                      {@render reactBar(key)}
                     </div>
                   {/if}
                 {/each}
@@ -1033,17 +1204,63 @@
         <div class="chan-head">
           <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
           <span class="chan-title">Meetings</span>
-          <span class="chan-sub">recordings, recaps, and transcripts</span>
+          <span class="chan-sub">agenda, notetaker, and recaps</span>
+          <div class="head-right">
+            <button class="chip g" onclick={() => toast('HQ Console would open to connect a calendar')}>Connect calendar</button>
+            <button class="chip" onclick={() => toast('Calendars synced')}>Sync now</button>
+          </div>
         </div>
-        <div class="listview">
-          {#each MEETINGS as [name, who, meta] (name)}
-            <button class="lrow" onclick={() => toast(`${name} would open`)}>
+        <div class="listview mtg-view">
+          <!-- Live detection, mirroring the production Live-now card: what is
+               being recorded, for how long, and the two actions that matter. -->
+          {#if mtgLive}
+            <div class="mtg-live">
+              <span class="ml-dot"></span>
+              <div class="ml-copy">
+                <div class="ml-title">Live now — {MEETING_LIVE.name}</div>
+                <div class="ml-sub">{MEETING_LIVE.co} · {MEETING_LIVE.attendees} people · recording <span class="mono">{MEETING_LIVE.running}</span></div>
+              </div>
+              <button class="chip g" onclick={() => toast('Meeting would open')}>Join</button>
+              <button class="chip" onclick={() => { mtgLive = false; toast('Recording stopped — recap will land in #gtm-standup'); }}>Stop recording</button>
+            </div>
+          {/if}
+
+          {#each MEETING_DAYS as day (day.label)}
+            <div class="grp mtg-day"><span class="t mono">{day.label}</span><span class="t mono dim">{day.rows.length}</span></div>
+            {#each day.rows as r (r.name)}
+              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+              <div class="lrow mtg-row" onclick={() => toast(`${r.name} would open`)}>
+                <span class="mtg-time mono">{r.time}</span>
+                <span class="fn">{r.name}</span>
+                <span class="fm who">{r.co} · {r.dur}</span>
+                {#if r.signals}<span class="fm mono sig">{r.signals} SIGNALS</span>{/if}
+                <span class="pill mtg-state {r.state}">{MEETING_STATE_LABEL[r.state]}</span>
+                <span class="mtg-actions">
+                  <button class="mtg-ic" aria-label="Join" data-tip="Join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}><VideoCamera size={14} /></button>
+                  {#if r.state === 'invited' || r.state === 'live'}
+                    <button class="mtg-ic on" aria-label="Notetaker joining" data-tip="Notetaker is in" onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}><CheckCircle size={14} /></button>
+                  {:else}
+                    <button class="mtg-ic" aria-label="Send the notetaker" data-tip="Send the notetaker" onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}><Plus size={14} /></button>
+                  {/if}
+                </span>
+              </div>
+            {/each}
+          {/each}
+
+          <div class="grp mtg-day"><span class="t mono">RECENT</span></div>
+          {#each MEETINGS_PAST as [name, who, meta] (name)}
+            <button class="lrow mtg-row" onclick={() => toast(`${name} would open`)}>
               <span class="lrow-ic"><VideoCamera size={15} /></span>
               <span class="fn">{name}</span>
               <span class="fm who">{who}</span>
               <span class="fm mono">{meta}</span>
             </button>
           {/each}
+
+          <div class="mtg-foot">
+            <span>2 calendars connected · last synced <span class="mono">2M AGO</span></span>
+            <button class="chip g" onclick={() => toast('HQ Console would open to manage calendars')}>Manage <ArrowUpRight size={11} /></button>
+          </div>
         </div>
       {:else if view === 'marketplace'}
         <div class="chan-head">
@@ -1150,7 +1367,56 @@
           </div>
           <div class="lib-main">
             <div class="settings">
-              {#if settingsTab === 'general'}
+              {#if settingsTab === 'profile'}
+                <!-- Identity card: the one place your name, handle, and avatar live. -->
+                <div class="prof-card">
+                  <span class="prof-ava">C</span>
+                  <div class="prof-id">
+                    <div class="prof-name">Corey Epstein</div>
+                    <div class="prof-mail">corey@getindigo.ai</div>
+                  </div>
+                  <button class="chip push-right" onclick={() => toast('Photo picker would open')}>Change photo</button>
+                </div>
+                <div class="prof-sec mono">ABOUT YOU</div>
+                <div class="set-row">
+                  <div><div class="sn">Display name</div><div class="sd">Shown on your messages and runs</div></div>
+                  <input class="prof-input push-right" value="Corey Epstein" aria-label="Display name" />
+                </div>
+                <div class="prof-sec mono">ACCOUNT</div>
+                <div class="set-row">
+                  <div><div class="sn">Email</div><div class="sd mono">corey@getindigo.ai</div></div>
+                  <span class="mono okc push-right">Verified</span>
+                </div>
+                <div class="set-row">
+                  <div><div class="sn">Manage account</div><div class="sd">Billing, teammates, and company settings live in HQ Console</div></div>
+                  <button class="chip push-right" onclick={() => toast('HQ Console would open in your browser')}>Open console <ArrowUpRight size={11} /></button>
+                </div>
+                <div class="set-row">
+                  <div><div class="sn">Sign out</div><div class="sd">Ends this session on this machine</div></div>
+                  <button class="chip g push-right" onclick={() => toast('Sign out')}>Sign out</button>
+                </div>
+              {:else if settingsTab === 'companies'}
+                {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label, c.short] as [string, string, string]), ...EXTRA_COMPANIES.map(([short, label]) => [label, label, short] as [string, string, string])] as [key, label, short] (key)}
+                  <div class="set-row">
+                    <div class="co-row-id">
+                      <span class="co-row-ava">{short}</span>
+                      <span class="sn">{label}</span>
+                      <span class="pill role">{CO_ROLES[key] ?? 'Member'}</span>
+                    </div>
+                    <div class="co-row-sync push-right">
+                      <span class="sync-label" class:on={coSync[key]}>{coSync[key] ? 'Synced' : 'Local'}</span>
+                      <button
+                        class="toggle"
+                        class:on={coSync[key]}
+                        role="switch"
+                        aria-checked={coSync[key]}
+                        aria-label={`Sync ${label}`}
+                        onclick={() => { coSync[key] = !coSync[key]; toast(coSync[key] ? `${label} will sync here` : `${label} stopped syncing here`); }}
+                      ></button>
+                    </div>
+                  </div>
+                {/each}
+              {:else if settingsTab === 'general'}
                 {@render setToggle('login', 'Launch at login', 'Start HQ when you sign in to your Mac')}
                 {@render setToggle('dock', 'Show in Dock', 'Keep HQ in the Dock and ⌘-Tab switcher')}
                 {@render setToggle('menubar', 'Menubar quick access', 'Keep the compact popover in the menu bar')}
@@ -1275,64 +1541,6 @@
             <div class="empty">Nothing unread — you're all caught up.</div>
           {/if}
         </div>
-      {:else if view === 'profile'}
-        <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
-          <span class="chan-title">Profile</span>
-          <span class="chan-sub">how you appear across HQ</span>
-        </div>
-        <div class="settings profile">
-          <!-- Identity card: the one place your name, handle, and avatar live. -->
-          <div class="prof-card">
-            <span class="prof-ava">C</span>
-            <div class="prof-id">
-              <div class="prof-name">Corey Epstein</div>
-              <div class="prof-mail">corey@getindigo.ai</div>
-            </div>
-            <button class="chip push-right" onclick={() => toast('Photo picker would open')}>Change photo</button>
-          </div>
-
-          <div class="prof-sec mono">ABOUT YOU</div>
-          <div class="set-row">
-            <div><div class="sn">Display name</div><div class="sd">Shown on your messages and runs</div></div>
-            <input class="prof-input push-right" value="Corey Epstein" aria-label="Display name" />
-          </div>
-          <div class="prof-sec mono">COMPANIES</div>
-          {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label, c.short] as [string, string, string]), ...EXTRA_COMPANIES.map(([short, label]) => [label, label, short] as [string, string, string])] as [key, label, short] (key)}
-            <div class="set-row">
-              <div class="co-row-id">
-                <span class="co-row-ava">{short}</span>
-                <span class="sn">{label}</span>
-                <span class="pill role">{CO_ROLES[key] ?? 'Member'}</span>
-              </div>
-              <div class="co-row-sync push-right">
-                <span class="sync-label" class:on={coSync[key]}>{coSync[key] ? 'Synced' : 'Local'}</span>
-                <button
-                  class="toggle"
-                  class:on={coSync[key]}
-                  role="switch"
-                  aria-checked={coSync[key]}
-                  aria-label={`Sync ${label}`}
-                  onclick={() => { coSync[key] = !coSync[key]; toast(coSync[key] ? `${label} will sync here` : `${label} stopped syncing here`); }}
-                ></button>
-              </div>
-            </div>
-          {/each}
-
-          <div class="prof-sec mono">ACCOUNT</div>
-          <div class="set-row">
-            <div><div class="sn">Email</div><div class="sd mono">corey@getindigo.ai</div></div>
-            <span class="mono okc push-right">Verified</span>
-          </div>
-          <div class="set-row">
-            <div><div class="sn">Manage account</div><div class="sd">Billing, teammates, and company settings live in HQ Console</div></div>
-            <button class="chip push-right" onclick={() => toast('HQ Console would open in your browser')}>Open console <ArrowUpRight size={11} /></button>
-          </div>
-          <div class="set-row">
-            <div><div class="sn">Sign out</div><div class="sd">Ends this session on this machine</div></div>
-            <button class="chip g push-right" onclick={() => toast('Sign out')}>Sign out</button>
-          </div>
-        </div>
       {:else if view === 'history'}
         {@const histLabel = coFilter === 'all' ? 'All companies' : DATA[coFilter].label}
         <div class="chan-head">
@@ -1427,8 +1635,8 @@
 
   <!-- User menu -->
   <div class="panel user-panel" class:open={openPanel === 'user'}>
-    <button class="p-item" onclick={() => nav('profile')}><span class="pi"><UserCircle size={14} /></span>Profile</button>
-    <button class="p-item" onclick={() => nav('settings')}><span class="pi"><GearSix size={14} /></span>Settings</button>
+    <button class="p-item" onclick={() => { settingsTab = 'profile'; nav('settings'); }}><span class="pi"><UserCircle size={14} /></span>Profile</button>
+    <button class="p-item" onclick={() => { settingsTab = 'general'; nav('settings'); }}><span class="pi"><GearSix size={14} /></span>Settings</button>
     <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
   </div>
 
@@ -1495,6 +1703,69 @@
       </button>
     {/each}
   </div>
+
+  <!-- New message composer -->
+  {#if composeOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="search-overlay" onclick={(e) => { if (e.target === e.currentTarget) closeCompose(); }}>
+      <div class="search-modal compose-modal" role="dialog" aria-label="New message">
+        <div class="sm-head">
+          <span class="cm-title">New message</span>
+          <button class="sd-close" aria-label="Close composer" onclick={closeCompose}><X size={13} weight="bold" /></button>
+        </div>
+
+        <div class="cm-to">
+          <span class="cm-label">To</span>
+          <div class="cm-chips">
+            {#each composeTo as r, i (`${r.kind}:${r.co}:${r.label}`)}
+              <span class="cm-chip">
+                {#if r.kind === 'person'}<span class="cm-chip-av">{r.label[0]}</span>{:else}<span class="cm-chip-ic"><Hash size={11} /></span>{/if}
+                {r.label}
+                <button class="cm-chip-x" aria-label={`Remove ${r.label}`} onclick={() => dropRecipient(i)}><X size={9} weight="bold" /></button>
+              </span>
+            {/each}
+            <input
+              id="v2-compose-to"
+              placeholder={composeTo.length ? 'Add another…' : 'Type a name or channel…'}
+              bind:value={composeQuery}
+              oninput={() => (composeSel = 0)}
+              onkeydown={composeToKeydown}
+            />
+          </div>
+        </div>
+
+        {#if composeResults.length && (composeQuery || !composeTo.length)}
+          <div class="sm-list cm-list">
+            {#each composeResults as r, i (`${r.kind}:${r.co}:${r.label}`)}
+              <button class="sm-row" class:sel={i === composeSel} onmouseenter={() => (composeSel = i)} onclick={() => addRecipient(r)}>
+                <span class="sm-ic">
+                  {#if r.kind === 'person'}<span class="av">{r.label[0]}</span>{:else}<Hash size={14} />{/if}
+                </span>
+                <span class="sm-title">{r.label}</span>
+                <span class="sm-meta mono">{DATA[r.co]?.label ?? ''}</span>
+                {#if i === composeSel}<span class="sm-return"><KeyReturn size={14} /></span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="cm-body">
+          <textarea
+            placeholder={composeTo.length ? `Write to ${composeTo.map((r) => r.label).join(', ')}…` : 'Write your message…'}
+            bind:value={composeBody}
+            onkeydown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendCompose(); if (e.key === 'Escape') closeCompose(); }}
+          ></textarea>
+        </div>
+
+        <div class="cm-foot">
+          <button class="cmp-ic" aria-label="Attach a file" onclick={() => toast('File picker would open')}><Paperclip size={15} /></button>
+          <button class="cmp-ic" aria-label="Add emoji" onclick={() => toast('Emoji picker would open')}><Smiley size={15} /></button>
+          <span class="cm-hint mono">⌘↵ TO SEND</span>
+          <button class="cmp-send" aria-label="Send message" disabled={!composeReady} onclick={sendCompose}><PaperPlaneRight size={13} weight="fill" /></button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <!-- Jump palette (⌘K) -->
   {#if searchOpen}
@@ -1613,7 +1884,33 @@
   .caret { display: inline-flex; align-items: center; color: var(--t3); }
   .lead { display: inline-flex; align-items: center; color: var(--t3); }
   .lrow-ic { display: inline-flex; align-items: center; color: var(--t2); }
-  .lib-divider { height: 1px; margin: 6px 8px; background: var(--line); }
+  .lib-divider { height: 1px; margin: 6px 0; background: var(--line); }
+
+  /* ── Meetings ───────────────────────────────────────────────────── */
+  .mtg-view { gap: 4px; }
+  .mtg-live { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent); }
+  .ml-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--ok-ink); }
+  .ml-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .ml-title { font-size: 13px; font-weight: 500; color: var(--t1); }
+  .ml-sub { font-size: 11px; color: var(--t2); }
+  .mtg-day { padding: 14px 2px 2px; }
+  .mtg-row { gap: 12px; }
+  /* The company line ends the left group; everything after it rides right. */
+  .mtg-row .fm.who { margin-right: auto; }
+  .mtg-time { flex-shrink: 0; width: 62px; font-size: 11px; color: var(--t2); }
+  .mtg-row .sig { color: var(--ice-ink); }
+  .mtg-state { flex-shrink: 0; margin-left: 4px; }
+  .mtg-state.live { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .mtg-state.next { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 30%, transparent); background: var(--ice-tile); }
+  /* Row actions stay hidden until the row is hovered, so a long agenda
+     reads as a calm list rather than a wall of buttons. */
+  .mtg-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.12s; }
+  .mtg-row:hover .mtg-actions { opacity: 1; }
+  .mtg-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--t2); }
+  .mtg-ic:hover { background: var(--hover); color: var(--t1); }
+  .mtg-ic.on { color: var(--ok-ink); }
+  .mtg-foot { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 11px; color: var(--t3); }
+  .mtg-foot .chip { margin-left: auto; }
   .conflict-ic { display: inline-flex; align-items: center; color: var(--warn-ink); }
   .sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 5px; }
   .grp .t, .p-meta, .accent { display: inline-flex; align-items: center; gap: 4px; }
@@ -1678,6 +1975,27 @@
   .sm-meta { flex-shrink: 0; font-size: 10px; color: var(--t3); }
   .sm-return { display: flex; align-items: center; flex-shrink: 0; color: var(--t3); }
   .sm-empty { padding: 24px 12px; text-align: center; font-size: 13px; color: var(--t3); }
+
+  /* New message — the palette's shell, with a recipient row and a body. */
+  .compose-modal { max-height: 76%; }
+  .cm-title { flex: 1; font-size: 13px; font-weight: 600; color: var(--t1); }
+  .cm-to { display: flex; align-items: flex-start; gap: 10px; padding: 11px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .cm-label { flex-shrink: 0; padding-top: 5px; font-size: 12px; color: var(--t3); }
+  .cm-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; flex: 1; min-width: 0; }
+  .cm-chips input { flex: 1; min-width: 120px; padding: 4px 0; background: none; border: none; outline: none; color: var(--t1); font: 400 13px var(--font-ui); }
+  .cm-chips input::placeholder { color: var(--t3); }
+  .cm-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 5px 3px 4px; border-radius: 6px; background: var(--btn-bg); font-size: 12px; color: var(--t1); }
+  .cm-chip-av { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); }
+  .cm-chip-ic { display: flex; align-items: center; color: var(--t3); }
+  .cm-chip-x { display: grid; place-items: center; width: 14px; height: 14px; border-radius: 4px; color: var(--t3); }
+  .cm-chip-x:hover { background: var(--hover); color: var(--t1); }
+  .cm-list { max-height: 208px; border-bottom: 1px solid var(--line); }
+  .cm-body { display: flex; flex: 1 1 auto; min-height: 0; padding: 14px 16px 4px; }
+  .cm-body textarea { flex: 1; min-height: 88px; resize: none; background: none; border: none; outline: none; color: var(--t1); font: 400 13px/1.6 var(--font-ui); }
+  .cm-body textarea::placeholder { color: var(--t3); }
+  .cm-foot { display: flex; align-items: center; gap: 2px; padding: 8px 12px 12px; flex-shrink: 0; }
+  .cm-hint { margin-left: auto; margin-right: 10px; font-size: 10px; color: var(--t3); }
+  .cm-foot .cmp-send:disabled { opacity: 0.35; cursor: default; }
 
   /* ═══════════ Sidebar ═══════════ */
   .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 14px 10px; min-height: 0; }
@@ -1767,14 +2085,66 @@
   /* Inline thread event: one quiet 11px line — dimmed icon on the avatar
      column, everything in the faintest ink so it reads as connective tissue,
      not another message. */
-  .feed-event { display: flex; align-items: center; gap: 12px; margin: -8px 0; }
+  .feed-event { position: relative; display: flex; align-items: center; gap: 12px; margin: -8px 0; }
   .fe-ic { display: flex; align-items: center; justify-content: center; width: 32px; flex-shrink: 0; color: var(--t3); opacity: 0.7; }
   .fe-text { flex: 1; font-size: 11px; color: var(--t3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fe-who { font-weight: 500; }
   .fe-when { flex-shrink: 0; margin-left: auto; font-size: 10px; color: var(--t3); opacity: 0; transition: opacity 0.12s; }
   .feed-event:hover .fe-when { opacity: 1; }
 
-  .msg { display: flex; gap: 12px; }
+  .msg { position: relative; display: flex; gap: 12px; }
+
+  /* ── Reactions ──────────────────────────────────────────────────────
+     The bar floats over the row's top-right corner, appearing on hover
+     and staying put while its picker is open. */
+  .react-bar {
+    position: absolute;
+    top: -14px;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    padding: 2px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    background: var(--panel-bg);
+    box-shadow: var(--panel-shadow);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s;
+    z-index: 20;
+  }
+  .msg:hover .react-bar,
+  .feed-event:hover .react-bar,
+  .msg.picking .react-bar,
+  .feed-event.picking .react-bar { opacity: 1; pointer-events: auto; }
+  .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t2); }
+  .rb-ic:hover { background: var(--hover); color: var(--t1); }
+  .react-picker {
+    position: absolute;
+    top: calc(100% + 5px);
+    right: 0;
+    display: grid;
+    grid-template-columns: repeat(8, 26px);
+    gap: 1px;
+    padding: 5px;
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    background: var(--panel-bg);
+    box-shadow: var(--panel-shadow);
+    z-index: 30;
+  }
+  .rp-ic { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; font-size: 14px; line-height: 1; }
+  .rp-ic:hover { background: var(--hover); }
+  .reacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .reacts.inline { margin-top: 0; margin-left: 8px; }
+  .react { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--raised); transition: background 0.12s, border-color 0.12s; }
+  .react:hover { border-color: var(--line2); }
+  .react .re { font-size: 11px; line-height: 1; }
+  .react .rn { font-size: 10px; color: var(--t2); }
+  /* Yours reads as a selected control, matching the ice tint elsewhere. */
+  .react.mine { background: var(--ice-tile); border-color: transparent; }
+  .react.mine .rn { color: var(--ice-ink); }
   .msg-body { min-width: 0; flex: 1; }
   .pav { width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: var(--line2); display: flex; align-items: center; justify-content: center; font: 600 12px var(--font-ui); }
   /* Agent avatar: blue tint distinguishes it from humans; no ring, so it
@@ -1852,7 +2222,7 @@
   .lrow .fm.who { margin-left: 0; font-size: 11px; }
 
   .library { flex: 1; display: flex; min-height: 0; }
-  .lib-nav { width: 210px; flex-shrink: 0; border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
+  .lib-nav { width: 210px; flex-shrink: 0; border-right: 1px solid var(--line); padding: 16px 20px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
   .lib-cat { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--t2); width: 100%; }
   .lib-cat:hover { background: var(--hover); }
   .lib-cat.on { background: var(--sel); color: var(--t1); font-weight: 500; }
