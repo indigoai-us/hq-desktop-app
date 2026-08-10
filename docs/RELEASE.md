@@ -16,30 +16,40 @@ selection is isolated so a prerelease cannot replace stable latest.
 
 ## Cut a Release
 
-1. Change `[product].version` in `versions.toml`.
-2. Stamp and verify the four generated version files:
+Push a tag. That is the whole release:
 
-   ```bash
-   pnpm version:app
-   pnpm version:check
-   ```
+```bash
+git tag -a vX.Y.Z -m "HQ vX.Y.Z"
+git push origin vX.Y.Z
+```
 
-   This synchronizes `apps/sync/package.json`,
-   `apps/sync/src-tauri/tauri.conf.json`, `apps/sync/src-tauri/Cargo.toml`,
-   and the `hq-sync-menubar` entry in `apps/sync/src-tauri/Cargo.lock`.
-3. Commit and merge the version bump to `main`.
-4. Create and push a fresh annotated release tag. Supported forms are
-   `vX.Y.Z`, `vX.Y.Z-beta.N`, and `vX.Y.Z-alpha.N`:
+Supported tag forms are `vX.Y.Z`, `vX.Y.Z-beta.N`, and `vX.Y.Z-alpha.N`.
 
-   ```bash
-   git tag -a vX.Y.Z -m "HQ vX.Y.Z"
-   git push origin vX.Y.Z
-   ```
+There is no version bump to make first and no release pull request. The tag is
+the single source of truth for the version: the `validate` job stamps
+`[product].version` in `versions.toml` and the four files generated from it —
+`apps/sync/package.json`, `apps/sync/src-tauri/tauri.conf.json`,
+`apps/sync/src-tauri/Cargo.toml`, and the `hq-sync-menubar` entry in
+`apps/sync/src-tauri/Cargo.lock` — then publishes those exact bytes as an
+artifact that both platform builds apply before bundling. After the release is
+public, the `sync-version` job pushes a `chore(release)` commit with the same
+stamp to `main`.
 
-The workflow requires the tag commit to be contained in `main` and validates
-the tag against `versions.toml` plus all four generated version files. Never
+Two consequences worth knowing:
+
+- The tag itself points at a commit whose `versions.toml` still shows the
+  *previous* version. The published artifacts carry the tag's version, and
+  `main` converges immediately afterwards.
+- Re-running an older tag will not drag `main` backwards —
+  `scripts/release-version-order.mjs` skips the sync when `main` is already at
+  or ahead of the released version.
+
+The workflow still requires the tag commit to be contained in `main`. Never
 move a pushed tag after a failed release; fix the release path and cut a fresh
 SemVer tag.
+
+`pnpm version:app` and `pnpm version:check` remain available for local work —
+`pnpm version:app --set-version X.Y.Z` is exactly what CI runs.
 
 `workflow_dispatch` accepts an existing tag for a retry. It builds the immutable
 tag contents while loading the reviewed publication helpers from the workflow
