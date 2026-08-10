@@ -105,7 +105,7 @@ jobs:
       - name: Windows Job accounting attribution regression
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_degrades_to_none_after_teardown -- --nocapture
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
 
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync

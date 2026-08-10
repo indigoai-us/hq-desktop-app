@@ -746,20 +746,21 @@ fn is_libuv_fatal_syscall_line(line: &str) -> bool {
     matches!(parse_libuv_fatal_syscall(line), Some((token, _)) if token != "other")
 }
 
-/// True when an already-lowercased message names a libuv source file. Widened
-/// from the single `src\win\async.c` marker so an assertion raised from any
-/// libuv source (`fs-event.c`, `pipe.c`, `core.c`, …) still classifies as
-/// `LibuvAssert`. Kept conjoined with an `assertion failed` marker by the
-/// caller so a bare application assertion stays `None`.
+/// True when an already-lowercased message carries an UNAMBIGUOUS libuv marker.
+/// Widened from the single `src\win\async.c` marker to the libuv vendor path
+/// (`deps/uv/`), which Node's bundled libuv prints for any of its sources
+/// (`fs-event.c`, `pipe.c`, `core.c`, …), so those assertions still classify as
+/// `LibuvAssert`. Generic `src\win\` / `src/unix/` fragments are deliberately
+/// NOT accepted on their own: other trees are organised the same way, so an
+/// assertion from Node, a dependency, or a native addon must not be mislabeled
+/// libuv. Kept conjoined with an `assertion failed` marker by the caller.
 fn is_libuv_source_marker(lowercased: &str) -> bool {
     lowercased.contains("libuv")
         || lowercased.contains("uv_handle")
         || lowercased.contains(r"deps\uv\")
         || lowercased.contains("deps/uv/")
-        || lowercased.contains(r"src\win\")
-        || lowercased.contains("src/win/")
-        || lowercased.contains(r"src\unix\")
-        || lowercased.contains("src/unix/")
+        || lowercased.contains(r"src\win\async.c")
+        || lowercased.contains("src/win/async.c")
 }
 
 /// Classify untrusted runner stderr without retaining any of it, and, for a
@@ -2651,12 +2652,15 @@ mod tests {
     }
 
     #[test]
-    fn widened_libuv_assert_arm_covers_all_libuv_sources_but_not_bare_assertions() {
+    fn widened_libuv_assert_arm_covers_libuv_sources_but_not_generic_paths() {
+        // Node's bundled libuv prints its vendor path (`deps/uv/`) for every
+        // source, so fs-event.c / pipe.c / core.c assertions still classify —
+        // and the back-compat `src\win\async.c` marker is preserved.
         for libuv_source in [
             r"Assertion failed: ..., file c:\ws\deps\uv\src\win\fs-event.c, line 480",
             "Assertion failed: cond, file deps/uv/src/unix/core.c, line 12",
-            r"Assertion failed: cond, file src\win\pipe.c, line 7",
-            "Assertion failed: cond, file src/unix/fs.c, line 3",
+            r"Assertion failed: cond, file ..\deps\uv\src\win\pipe.c, line 7",
+            r"Assertion failed: cond, file src\win\async.c, line 1",
         ] {
             assert_eq!(
                 classify_runner_fatal_class(libuv_source),
@@ -2664,12 +2668,20 @@ mod tests {
                 "libuv-source assertion must classify as libuv_assert: {libuv_source:?}"
             );
         }
-        // A bare application assertion with no libuv marker still stays None —
-        // the conjunction with an assertion marker is preserved.
-        assert_eq!(
-            classify_runner_fatal_class("Assertion failed: !(n > 0) || (ret != nullptr)"),
-            RunnerFatalClass::None
-        );
+        // A generic src\win\ / src/unix/ path with no unambiguous libuv marker
+        // must NOT be mislabeled libuv_assert (other trees are organised the same
+        // way), and a bare application assertion still stays None.
+        for non_libuv in [
+            r"Assertion failed: cond, file src\win\pipe.c, line 7",
+            "Assertion failed: cond, file src/unix/fs.c, line 3",
+            "Assertion failed: !(n > 0) || (ret != nullptr)",
+        ] {
+            assert_eq!(
+                classify_runner_fatal_class(non_libuv),
+                RunnerFatalClass::None,
+                "a non-libuv assertion must stay None: {non_libuv:?}"
+            );
+        }
     }
 
     #[test]

@@ -901,6 +901,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             cancelled,
                             &watcher_phase,
                             &watcher_generation,
+                            daemon_generation,
                             &stderr_tail,
                             current_windows_terminator_attribution(&app, code, signal),
                             cancellation_record,
@@ -1022,12 +1023,12 @@ struct WatcherExitCaptureContext {
     /// the syscall is a fixed constant, the errno a bare integer.
     runner_fatal_syscall: Option<String>,
     runner_fatal_errno: Option<i64>,
-    /// Bucketed peak per-process working set and total process count read from
-    /// the watcher's retained Windows Job Object at the exit boundary. The job
-    /// sees the Node runner even though the registered child is the cmd.exe
+    /// Bucketed peak per-process COMMITTED memory and total process count read
+    /// from the watcher's retained Windows Job Object at the exit boundary. The
+    /// job sees the Node runner even though the registered child is the cmd.exe
     /// shim whose own footprint hides it. `"unknown"` when unavailable
     /// (non-Windows or a failed query); reporting-only, never gates capture.
-    watcher_job_peak_rss_bucket: String,
+    watcher_job_peak_commit_bucket: String,
     watcher_job_process_count: String,
     runner_error_rollup: Option<String>,
     runner_error_class: &'static str,
@@ -1091,7 +1092,7 @@ impl Default for WatcherExitCaptureContext {
             runner_fatal_class: "none".to_string(),
             runner_fatal_syscall: None,
             runner_fatal_errno: None,
-            watcher_job_peak_rss_bucket: "unknown".to_string(),
+            watcher_job_peak_commit_bucket: "unknown".to_string(),
             watcher_job_process_count: "unknown".to_string(),
             runner_error_rollup: None,
             runner_error_class: "none",
@@ -1152,6 +1153,7 @@ fn watcher_exit_capture_context(
     cancelled: bool,
     phase_context: &Mutex<WatcherPhaseContext>,
     generation: &WatcherGeneration,
+    process_generation: u64,
     stderr_tail: &[String],
     windows_terminator: Option<WindowsTerminatorAttribution>,
     cancellation_record: Option<CancellationRecord>,
@@ -1163,10 +1165,15 @@ fn watcher_exit_capture_context(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let stack = runner_stack_shape(stderr_tail);
-    // Read the retained Job Object accounting for this exact watcher generation
-    // BEFORE `run_process_impl` deregisters (and closes) the handle. The read is
-    // strictly diagnostic — it never closes the handle or changes capture.
-    let job_accounting = crate::commands::process::watcher_job_accounting(DAEMON_HANDLE);
+    // Read the retained Job Object accounting for THIS exact watcher generation
+    // BEFORE `run_process_impl` deregisters (and closes) the handle. Resolving by
+    // generation means a replacement that already re-acquired DAEMON_HANDLE can
+    // never have its memory reported for this exit. Strictly diagnostic — it
+    // never closes the handle or changes capture.
+    let job_accounting = crate::commands::process::watcher_job_accounting_for_generation(
+        DAEMON_HANDLE,
+        process_generation,
+    );
     finish_watcher_generation(generation);
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
@@ -1179,8 +1186,8 @@ fn watcher_exit_capture_context(
         runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
         runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
         runner_fatal_errno: totals.runner_fatal_errno(),
-        watcher_job_peak_rss_bucket: job_accounting
-            .map(|acc| watcher_job_peak_rss_bucket(acc.peak_process_mem_bytes).to_string())
+        watcher_job_peak_commit_bucket: job_accounting
+            .map(|acc| watcher_job_peak_commit_bucket(acc.peak_process_commit_bytes).to_string())
             .unwrap_or_else(|| "unknown".to_string()),
         watcher_job_process_count: job_accounting
             .map(|acc| acc.total_processes.to_string())
@@ -1709,14 +1716,15 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
     }
 }
 
-/// Fixed-vocabulary bucket for a Job Object's peak per-process working set.
-/// Buckets (never raw bytes) keep the memory channel content-safe and stable:
-/// a V8 heap-OOM abort lands in a high bucket while a small-footprint abort
-/// lands in `under_128mb`, so the two become separable in the aggregate even
-/// though the registered child is the cmd.exe shim.
-fn watcher_job_peak_rss_bucket(peak_process_mem_bytes: u64) -> &'static str {
+/// Fixed-vocabulary bucket for a Job Object's peak per-process COMMITTED memory
+/// (`PeakProcessMemoryUsed` is the peak commit charge, not the working set —
+/// see `WatcherJobAccounting`). Buckets (never raw bytes) keep the channel
+/// content-safe and stable: a V8 heap-OOM abort commits a large charge and lands
+/// in a high bucket while a small-footprint abort lands in `under_128mb`, so the
+/// two become separable even though the registered child is the cmd.exe shim.
+fn watcher_job_peak_commit_bucket(peak_process_commit_bytes: u64) -> &'static str {
     const MB: u64 = 1024 * 1024;
-    match peak_process_mem_bytes / MB {
+    match peak_process_commit_bytes / MB {
         0..=127 => "under_128mb",
         128..=511 => "128mb_to_512mb",
         512..=1023 => "512mb_to_1gb",
@@ -1725,13 +1733,19 @@ fn watcher_job_peak_rss_bucket(peak_process_mem_bytes: u64) -> &'static str {
     }
 }
 
-/// Whether the resolved watcher program is a batch shim (`.cmd`/`.bat`) that
-/// Rust's `std::process::Command` dispatches through `cmd.exe` — in which case
-/// the registered/waited/sampled child is the shim, not the Node runner —
-/// otherwise a direct executable. Derived from the spawn program (basename,
-/// matching `runner_exec_resolution`) so `last_rss` and the exit status are
-/// never silently read as the runner's own. Returns a fixed constant, so no
-/// command bytes can escape through it.
+/// What the registered/waited/sampled watcher process actually is, relative to
+/// the Node runner it stands in for. Derived from the spawn program basename
+/// (matching `runner_exec_resolution`):
+/// - `cmd_shim`: a `.cmd`/`.bat` batch shim (e.g. `npx.cmd`) that Rust's
+///   `std::process::Command` dispatches through `cmd.exe` — the registered child
+///   is the shim, not the runner.
+/// - `launcher`: a direct `npx` executable. `build_watch_runner_args` always
+///   launches `npx`, which resolves and spawns `hq-sync-runner` as a DESCENDANT,
+///   so the registered PID is still not the runner itself.
+/// - `direct_executable`: anything else (a hypothetical direct runner binary).
+///
+/// So `last_rss` and the exit status are never read as the runner's own for the
+/// npx-based watcher. Returns a fixed constant; no command bytes escape.
 fn watcher_child_kind(watcher_command: &str) -> &'static str {
     let program = watcher_command
         .rsplit(['/', '\\'])
@@ -1740,17 +1754,21 @@ fn watcher_child_kind(watcher_command: &str) -> &'static str {
         .to_ascii_lowercase();
     if program.ends_with(".cmd") || program.ends_with(".bat") {
         "cmd_shim"
+    } else if program == "npx" || program == "npx.exe" {
+        "launcher"
     } else {
         "direct_executable"
     }
 }
 
-/// Which process the sampled RSS actually describes: the `cmd.exe` `shim`, or
-/// the `runner` directly. Reuses PR #360's token spelling so whichever lane
-/// lands first makes the other a no-op rather than a competing spelling.
+/// Which process the sampled RSS actually describes: the `cmd.exe` `shim`, a
+/// direct npx `launcher`, or the `runner` directly. `shim`/`launcher` both mean
+/// the sampled PID is not the runner. Reuses PR #360's `shim`/`runner` spelling
+/// and extends it for the launcher case.
 fn rss_scope(watcher_command: &str) -> &'static str {
     match watcher_child_kind(watcher_command) {
         "cmd_shim" => "shim",
+        "launcher" => "launcher",
         _ => "runner",
     }
 }
@@ -1998,8 +2016,8 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // last_rss / the exit status are never re-read as the runner's own. Fixed
     // vocabulary throughout; `unknown` when the job query was unavailable.
     tags.push((
-        "watcher_job_peak_rss_bucket",
-        context.watcher_job_peak_rss_bucket.clone(),
+        "watcher_job_peak_commit_bucket",
+        context.watcher_job_peak_commit_bucket.clone(),
     ));
     tags.push((
         "watcher_job_process_count",
@@ -4060,7 +4078,7 @@ mod tests {
             runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
             runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
             runner_fatal_errno: totals.runner_fatal_errno(),
-            watcher_job_peak_rss_bucket: "512mb_to_1gb".to_string(),
+            watcher_job_peak_commit_bucket: "512mb_to_1gb".to_string(),
             watcher_job_process_count: "2".to_string(),
             ..Default::default()
         };
@@ -4098,7 +4116,7 @@ mod tests {
         );
         assert_eq!(recorded_tag(capture, "runner_fatal_errno"), "5");
         assert_eq!(
-            recorded_tag(capture, "watcher_job_peak_rss_bucket"),
+            recorded_tag(capture, "watcher_job_peak_commit_bucket"),
             "512mb_to_1gb"
         );
         assert_eq!(recorded_tag(capture, "watcher_job_process_count"), "2");
@@ -4127,13 +4145,14 @@ mod tests {
             &WatcherExitCaptureContext::default(),
         );
         let capture = effects.captures.first().expect("captures");
-        assert_eq!(recorded_tag(capture, "watcher_job_peak_rss_bucket"), "unknown");
-        assert_eq!(recorded_tag(capture, "watcher_job_process_count"), "unknown");
         assert_eq!(
-            recorded_tag(capture, "watcher_child_kind"),
-            "direct_executable"
+            recorded_tag(capture, "watcher_job_peak_commit_bucket"),
+            "unknown"
         );
-        assert_eq!(recorded_tag(capture, "rss_scope"), "runner");
+        assert_eq!(recorded_tag(capture, "watcher_job_process_count"), "unknown");
+        // `npx` is a direct launcher, not the runner, so its RSS is scoped away.
+        assert_eq!(recorded_tag(capture, "watcher_child_kind"), "launcher");
+        assert_eq!(recorded_tag(capture, "rss_scope"), "launcher");
         assert!(
             capture.tags.iter().all(|(k, _)| k != "runner_fatal_syscall"),
             "no libuv line -> no syscall tag"
@@ -4195,34 +4214,37 @@ mod tests {
 
     #[test]
     fn watcher_job_and_child_helpers_are_fixed_vocabulary() {
-        assert_eq!(watcher_job_peak_rss_bucket(0), "under_128mb");
+        assert_eq!(watcher_job_peak_commit_bucket(0), "under_128mb");
         assert_eq!(
-            watcher_job_peak_rss_bucket(127 * 1024 * 1024),
+            watcher_job_peak_commit_bucket(127 * 1024 * 1024),
             "under_128mb"
         );
         assert_eq!(
-            watcher_job_peak_rss_bucket(128 * 1024 * 1024),
+            watcher_job_peak_commit_bucket(128 * 1024 * 1024),
             "128mb_to_512mb"
         );
         assert_eq!(
-            watcher_job_peak_rss_bucket(700 * 1024 * 1024),
+            watcher_job_peak_commit_bucket(700 * 1024 * 1024),
             "512mb_to_1gb"
         );
         assert_eq!(
-            watcher_job_peak_rss_bucket(1500 * 1024 * 1024),
+            watcher_job_peak_commit_bucket(1500 * 1024 * 1024),
             "1gb_to_2gb"
         );
         assert_eq!(
-            watcher_job_peak_rss_bucket(4u64 * 1024 * 1024 * 1024),
+            watcher_job_peak_commit_bucket(4u64 * 1024 * 1024 * 1024),
             "over_2gb"
         );
 
+        // Batch shim, direct npx launcher, and a hypothetical direct runner.
         assert_eq!(watcher_child_kind(r"C:\p\npx.cmd"), "cmd_shim");
         assert_eq!(watcher_child_kind("/usr/local/bin/setup.BAT"), "cmd_shim");
-        assert_eq!(watcher_child_kind("/opt/homebrew/bin/npx"), "direct_executable");
+        assert_eq!(watcher_child_kind("/opt/homebrew/bin/npx"), "launcher");
+        assert_eq!(watcher_child_kind("npx.exe"), "launcher");
         assert_eq!(watcher_child_kind("node"), "direct_executable");
         assert_eq!(rss_scope(r"C:\p\npx.cmd"), "shim");
-        assert_eq!(rss_scope("npx"), "runner");
+        assert_eq!(rss_scope("/opt/homebrew/bin/npx"), "launcher");
+        assert_eq!(rss_scope("node"), "runner");
     }
 
     #[cfg(unix)]

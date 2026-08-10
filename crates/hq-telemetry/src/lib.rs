@@ -285,7 +285,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // stderr fragment degrades to `[Filtered]` instead.
         "runner_fatal_syscall" => Some(is_content_safe_syscall_token(value)),
         "runner_fatal_errno" => Some(value.parse::<i64>().is_ok()),
-        "watcher_job_peak_rss_bucket" => Some(matches!(
+        "watcher_job_peak_commit_bucket" => Some(matches!(
             value,
             "under_128mb"
                 | "128mb_to_512mb"
@@ -295,8 +295,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unknown"
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
-        "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "direct_executable")),
-        "rss_scope" => Some(matches!(value, "shim" | "runner")),
+        "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
+        "rss_scope" => Some(matches!(value, "shim" | "launcher" | "runner")),
         _ => None,
     }
 }
@@ -1413,9 +1413,9 @@ mod tests {
             // any of the new libuv/job channels must degrade to `[Filtered]`.
             ("runner_fatal_syscall", "ReadDirectoryChangesW /Users/Ada/secret.md"),
             ("runner_fatal_errno", "5; rm -rf"),
-            ("watcher_job_peak_rss_bucket", "512mb_to_1gb:/Users/Ada"),
+            ("watcher_job_peak_commit_bucket", "512mb_to_1gb:/Users/Ada"),
             ("watcher_job_process_count", "2 processes /Users/Ada"),
-            ("watcher_child_kind", "cmd_shim:/Users/Ada"),
+            ("watcher_child_kind", "launcher:/Users/Ada"),
             ("rss_scope", "shim/secret"),
         ] {
             let mut event = Event::default();
@@ -1442,13 +1442,15 @@ mod tests {
             ("runner_fatal_syscall", "ReadDirectoryChangesW"),
             ("runner_fatal_syscall", "other"),
             ("runner_fatal_errno", "5"),
-            ("watcher_job_peak_rss_bucket", "512mb_to_1gb"),
-            ("watcher_job_peak_rss_bucket", "unknown"),
+            ("watcher_job_peak_commit_bucket", "512mb_to_1gb"),
+            ("watcher_job_peak_commit_bucket", "unknown"),
             ("watcher_job_process_count", "2"),
             ("watcher_job_process_count", "unknown"),
             ("watcher_child_kind", "cmd_shim"),
+            ("watcher_child_kind", "launcher"),
             ("watcher_child_kind", "direct_executable"),
             ("rss_scope", "shim"),
+            ("rss_scope", "launcher"),
             ("rss_scope", "runner"),
         ] {
             let mut event = Event::default();
