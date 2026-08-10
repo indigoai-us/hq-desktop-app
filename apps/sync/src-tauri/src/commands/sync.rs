@@ -302,6 +302,16 @@ fn runner_exit_telemetry_context(
         "runner_fatal_class",
         totals.runner_fatal_class.as_str().to_string(),
     ));
+    // Symmetric with the watcher route: the libuv syscall + errno attach wherever
+    // runner_fatal_class is, so the two routes read the same source and cannot
+    // drift. Present only for a libuv fatal-syscall class; both are content-safe
+    // (fixed constant + bare integer).
+    if let Some(syscall) = totals.runner_fatal_syscall() {
+        tags.push(("runner_fatal_syscall", syscall.to_string()));
+    }
+    if let Some(errno) = totals.runner_fatal_errno() {
+        tags.push(("runner_fatal_errno", errno.to_string()));
+    }
     tags.push((
         "sync_termination_reason",
         sync_termination_reason.to_string(),
@@ -3561,6 +3571,42 @@ mod tests {
         );
         assert!(!serialized.contains(private_path));
         assert!(!serialized.contains("UV_HANDLE_CLOSING"));
+    }
+
+    #[test]
+    fn manual_runner_capture_attributes_libuv_fatal_syscall_and_errno_symmetric_with_watcher() {
+        const WINDOWS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409u32 as i32;
+        // A libuv line carrying a machine-specific tail: the class/syscall/errno
+        // are recovered on the manual route exactly as on the watcher route, and
+        // the tail never reaches the wire.
+        let raw_stderr = r"ReadDirectoryChangesW: (5) C:\Users\Ada\personal\secret.md denied";
+        let totals = Mutex::new(RunTotals::default());
+
+        let captures = sentry::test::with_captured_events(|| {
+            assert!(update_runner_stderr_totals(&totals, raw_stderr).is_none());
+            let totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            capture_runner_exit_error(
+                Some(WINDOWS_STACK_BUFFER_OVERRUN),
+                None,
+                &totals,
+                &SyncErrorEvent {
+                    company: None,
+                    path: "(runner)".to_string(),
+                    message: "hq-sync-runner exited abnormally".to_string(),
+                },
+                &ManualRunnerExitContext::default(),
+            );
+        });
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("manual runner event remains sendable");
+        assert_eq!(event.tags["sync_route"], "manual");
+        assert_eq!(event.tags["runner_fatal_class"], "libuv_fatal_syscall");
+        assert_eq!(event.tags["runner_fatal_syscall"], "ReadDirectoryChangesW");
+        assert_eq!(event.tags["runner_fatal_errno"], "5");
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+        assert!(!serialized.contains("secret.md"));
+        assert!(!serialized.contains("Ada"));
     }
 
     #[test]
