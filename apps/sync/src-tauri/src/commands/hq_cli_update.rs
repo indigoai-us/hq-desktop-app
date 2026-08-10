@@ -74,24 +74,25 @@ pub use hq_desktop_core::hq_cli_update::{
     decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
     hq_version_string, install_argv, install_converged, install_failure_detail,
     install_failure_detail_with_final_attempt, install_failure_report,
-    installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_npm_bin_collision,
-    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
-    legacy_marker_needs_recovery, non_convergent_cli_contract, non_convergent_cli_version,
-    non_convergent_detail, non_convergent_episode_blocked, npm_install_attempt_summary,
-    npm_lifecycle_cause, npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path,
-    pnpm_global_env, pnpm_install_argv, read_installed_version, redact_home, redact_home_in,
-    report_install_failure, report_install_failure_episode,
-    report_install_failure_with_environment, report_install_failure_with_final_attempt,
-    report_non_convergent_install, report_non_convergent_marker_unpersisted,
-    report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
-    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo,
-    InstallEnvironment, InstallExecutor, InstallFailureEpisode, InstallFailureKind,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
-    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
+    installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
+    is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
+    is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
+    non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
+    non_convergent_episode_blocked, npm_install_attempt_summary, npm_lifecycle_cause,
+    npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv,
+    read_installed_version, redact_home, redact_home_in, report_install_failure,
+    report_install_failure_episode, report_install_failure_with_environment,
+    report_install_failure_with_final_attempt, report_non_convergent_install,
+    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
+    version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    InstallFailureEpisode, InstallFailureKind, LocalVersionProbeDiagnostics,
+    LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport, NpmLatest,
+    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PostInstallContext,
+    PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome, DISMISSED_VERSION_KEY,
+    HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX,
+    NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -743,6 +744,39 @@ fn record_install_failure_episode_markers(keys: &[String]) -> Result<(), String>
     })
 }
 
+/// The global bin directory pnpm actually resolves under the same environment
+/// and config the install used — a bounded, non-mutating `pnpm bin -g`. When the
+/// install forced `--config.global-bin-dir`, the probe carries the same flag, so
+/// a build that honoured it echoes the forced dir (a match) and one that ignored
+/// it falls back to `PNPM_HOME` (a mismatch), faithfully reporting where the
+/// install landed. Spawned only on the non-convergent path, so the converged
+/// happy path pays no extra subprocess. `None` on any spawn, non-zero exit, or
+/// non-UTF-8 output — the classifier treats that as "not confirmed matched",
+/// failing safe toward retrying rather than a durable block. Only the directory
+/// string is returned; nothing here is retained in telemetry.
+fn pnpm_effective_global_bin_dir(
+    pnpm_bin: &str,
+    path: &str,
+    pnpm_home: Option<&str>,
+    global_bin_dir: Option<&str>,
+) -> Option<String> {
+    let mut args: Vec<String> = vec!["bin".to_string(), "-g".to_string()];
+    if let Some(dir) = global_bin_dir.filter(|dir| !dir.is_empty()) {
+        args.push(format!("--config.global-bin-dir={dir}"));
+    }
+    let mut cmd = paths::spawn_command(pnpm_bin, &[]);
+    cmd.args(&args).env("PATH", path);
+    if let Some(home) = pnpm_home {
+        cmd.env("PNPM_HOME", home);
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let dir = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!dir.is_empty()).then_some(dir)
+}
+
 /// Update a pnpm-managed `hq` with pnpm itself. npm cannot replace a shim in
 /// pnpm's flat global dir — `npm install -g` writes an unrelated prefix, exits
 /// 0, and the shim on PATH stays stale, which is exactly the non-convergent
@@ -784,7 +818,15 @@ async fn install_hq_cli_update_via_pnpm(
         .is_some_and(|dir| path_contains_dir(&path, dir));
     // Pin the exact resolved version, mirroring the npm path: pnpm is asked for
     // the same string the app compared against, never the mutable `@latest` tag.
-    let args = pnpm_install_argv(Some(latest));
+    // Force pnpm's global bin dir at the directory that actually holds the
+    // resolved shim — left to itself pnpm treats PNPM_HOME AS the global bin dir,
+    // so for the pnpm >=11 nested layout it writes the new shim flat into the
+    // grandparent and never touches the nested shim the app executes. An
+    // underivable layout passes `None` and spawns pnpm exactly as before.
+    let args = pnpm_install_argv(
+        Some(latest),
+        pnpm_env.as_ref().map(|env| env.global_bin_dir.as_str()),
+    );
     log(
         "hq-cli-update",
         &format!(
@@ -845,6 +887,55 @@ async fn install_hq_cli_update_via_pnpm(
             .ok()
             .flatten()
     };
+    // Installer-output evidence for the classifier, gathered ONLY when the run
+    // did not converge so the converged happy path pays no extra subprocess.
+    // `delivered` is the version pnpm actually wrote into its global store;
+    // `matches` is whether the global bin dir pnpm ACTUALLY resolved (a bounded
+    // `pnpm bin -g` under the same env/config the install used) is the directory
+    // holding the resolved shim. A mismatch means pnpm ignored the forced dir and
+    // wrote the shim where the app never runs — misdirected, loud but never
+    // blocking. An underivable layout probes nothing and stays foreign-managed.
+    let converged = install_converged(resolved.as_deref(), latest);
+    let (delivered_version, global_bin_dir_matches_shim_dir) = match (converged, pnpm_env.as_ref())
+    {
+        (false, Some(env)) => {
+            let delivered = {
+                // Read delivery evidence from the pnpm store specifically, so a
+                // stray npm-style manifest under the pnpm home cannot shadow the
+                // store reading and misreport a genuine pnpm delivery.
+                let home = env.home.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    installed_hq_cli_version_in_pnpm_store(&home)
+                })
+                .await
+                .ok()
+                .flatten()
+            };
+            let effective = {
+                let pnpm = pnpm.clone();
+                let path = path.clone();
+                let home = env.home.clone();
+                let dir = env.global_bin_dir.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    pnpm_effective_global_bin_dir(
+                        &pnpm,
+                        &path,
+                        Some(home.as_str()),
+                        Some(dir.as_str()),
+                    )
+                })
+                .await
+                .ok()
+                .flatten()
+            };
+            let matches = effective
+                .as_deref()
+                .map(|dir| std::path::Path::new(dir) == std::path::Path::new(&env.global_bin_dir));
+            (delivered, matches)
+        }
+        // Converged, or an underivable layout: nothing to probe or compare.
+        _ => (None, None),
+    };
     let outcome = decide_post_install(&PostInstallContext {
         executor: InstallExecutor::Pnpm,
         before_bin: hq,
@@ -858,15 +949,17 @@ async fn install_hq_cli_update_via_pnpm(
         after_version: resolved.as_deref(),
         latest,
         npm_prefix_passed: None,
-        // Delivery evidence is the npm-targeted arm's concern; the pnpm executor
-        // is targeted via its own shim-derived home, so this stays None.
-        delivered_version: None,
+        // Delivery evidence now gates the pnpm arm too: the version pnpm wrote
+        // into its store, read straight from the manifest. `None` on the
+        // converged happy path, where the decision never consults it.
+        delivered_version: delivered_version.as_deref(),
         installer_bin: &pnpm,
         already_blocked,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present,
             path_has_shim_dir,
+            global_bin_dir_matches_shim_dir,
             exit_status: pnpm_exit_status,
             output_len: pnpm_output_len,
         }),

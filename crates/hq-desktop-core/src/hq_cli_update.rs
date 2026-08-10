@@ -746,6 +746,14 @@ pub enum NonConvergenceKind {
     /// installer was pointed at the right place and the update still did not
     /// land, so it stays loud instead of being bounded like a foreign layout.
     PnpmTargeted,
+    /// pnpm's home was derivable and forced (`--config.global-bin-dir`), but the
+    /// global bin directory pnpm ACTUALLY resolved is still not the directory
+    /// holding the executed shim — a pnpm build that ignored the forced setting,
+    /// so it wrote the new shim flat into `PNPM_HOME` and left the nested one
+    /// stale. Unlike `PnpmTargeted` the installer did NOT land where the app
+    /// executes, so this must never wedge auto-update; it stays loud on every
+    /// occurrence and names the mismatch so the next event is self-diagnosing.
+    PnpmMisdirected,
     ForeignManaged,
     /// npm was aimed at the resolved binary's own prefix, yet the target version
     /// was never delivered INTO that prefix — the manifest there does not report
@@ -762,6 +770,7 @@ impl NonConvergenceKind {
         match self {
             Self::NpmTargeted => "npm-targeted",
             Self::PnpmTargeted => "pnpm-targeted",
+            Self::PnpmMisdirected => "pnpm-misdirected",
             Self::ForeignManaged => "foreign-managed",
             Self::ResolutionShortfall => "resolution-shortfall",
         }
@@ -779,11 +788,13 @@ impl NonConvergenceKind {
 
     /// May a non-convergence of this kind persist the durable marker that stops
     /// the background auto-installer? Only a defect backed by evidence that the
-    /// installer actually delivered the target may block; a resolution shortfall
-    /// never can, or a transient registry race would permanently disable
-    /// auto-update.
+    /// installer actually delivered the target INTO the directory the app
+    /// executes may block. A resolution shortfall never delivered the target, and
+    /// a misdirected pnpm install delivered it to the wrong global bin dir — both
+    /// stay loud but must never block, or a transient shortfall or a flag pnpm
+    /// ignored would permanently disable auto-update.
     pub fn may_block_auto_update(self) -> bool {
-        !matches!(self, Self::ResolutionShortfall)
+        !matches!(self, Self::ResolutionShortfall | Self::PnpmMisdirected)
     }
 }
 
@@ -793,27 +804,52 @@ impl NonConvergenceKind {
 /// never execute. The pnpm executor is targeted exactly when we derived its
 /// global environment from the resolved shim and handed it to the child.
 ///
-/// `target_delivered` is the delivery evidence for the npm-targeted arm: whether
-/// the manifest inside the passed prefix reports the version we asked for. When
-/// npm was aimed at the resolved binary's prefix but the target was never
-/// delivered there, the "targeted" match is a tautology (the passed prefix was
-/// itself derived from that same binary) covering a transient resolution
+/// `target_delivered` is the delivery evidence for BOTH targeted arms: whether a
+/// manifest inside the store the installer wrote reports the version we asked
+/// for. When an installer was aimed at the resolved binary's location but the
+/// target was never delivered, the "targeted" match is a tautology (the location
+/// was itself derived from that same binary) covering a transient resolution
 /// shortfall, not a layout defect — so it is classified as such and must not
-/// block. It is ignored for the pnpm executor, whose `pnpm_targeted` signal is
-/// derived independently from the shim's own home.
+/// block.
+///
+/// `pnpm_bin_dir_matches` is the direction evidence for the pnpm arm: whether the
+/// global bin dir pnpm ACTUALLY resolved (a bounded `pnpm bin -g` under the same
+/// env/config the install used) is the directory holding the executed shim. It is
+/// what breaks the old pnpm tautology — before this the pnpm class was derived
+/// only from the shim path and the updater's own PATH, observing nothing about
+/// the installer's output. A mismatch means pnpm wrote the new shim somewhere the
+/// app never executes (a build that ignored the forced `global-bin-dir`), which
+/// must stay loud but never block. It is ignored for the npm executor.
 pub fn non_convergence_kind(
     executor: InstallExecutor,
     npm_prefix_passed: Option<&str>,
     pnpm_targeted: bool,
+    pnpm_bin_dir_matches: bool,
     post_install_hq_bin: &str,
     target_delivered: bool,
 ) -> NonConvergenceKind {
     match executor {
         InstallExecutor::Pnpm => {
-            if pnpm_targeted {
+            if !pnpm_targeted {
+                // Underivable layout, or a child PATH that never saw the shim
+                // dir: we could not aim pnpm, so this is the ambient-spawn
+                // foreign-managed shape, bounded to one capture per episode.
+                NonConvergenceKind::ForeignManaged
+            } else if !pnpm_bin_dir_matches {
+                // We forced `--config.global-bin-dir` at the dir holding the
+                // resolved shim, yet pnpm resolved a different global bin dir:
+                // the shim landed where the app never runs. Loud, never blocks.
+                NonConvergenceKind::PnpmMisdirected
+            } else if target_delivered {
+                // pnpm aimed at the right dir AND delivered the target into its
+                // store, yet the executed shim still reports the old version:
+                // genuine shadowing, the same defect class as `NpmTargeted`.
                 NonConvergenceKind::PnpmTargeted
             } else {
-                NonConvergenceKind::ForeignManaged
+                // Aimed at the right dir but the target was never delivered — a
+                // transient registry/resolution shortfall, exactly as the npm
+                // arm treats an undelivered matching prefix.
+                NonConvergenceKind::ResolutionShortfall
             }
         }
         InstallExecutor::Npm => match (
@@ -991,6 +1027,16 @@ pub struct PnpmRunDiagnostics {
     /// Did the PATH we handed the child contain the directory holding the
     /// resolved shim?
     pub path_has_shim_dir: bool,
+    /// Did the global bin dir pnpm ACTUALLY resolved (a bounded `pnpm bin -g`
+    /// under the same env/config the install used) equal the directory holding
+    /// the executed shim? `Some(true)` means pnpm honoured the forced
+    /// `--config.global-bin-dir` and wrote where the app runs; `Some(false)`
+    /// means it wrote elsewhere (a build that ignored the flag) — the misdirected
+    /// shape. `None` means the direction was not probed (a converged run, an
+    /// underivable layout, or a failed probe), which the classifier treats as
+    /// "not confirmed matched" so it fails safe toward retrying, never a block.
+    /// Only the closed boolean is retained — never the path pnpm printed.
+    pub global_bin_dir_matches_shim_dir: Option<bool>,
     /// Bounded exit-status rendering, e.g. `0` or `signal/none`.
     pub exit_status: String,
     /// Length of pnpm's combined output. The text itself is never sent — only
@@ -1003,10 +1049,12 @@ impl PnpmRunDiagnostics {
     /// both executors expose a scrubber-proof diagnostic extra.
     pub fn summary(&self) -> String {
         format!(
-            "home_source={} home_env_present={} path_has_shim_dir={} exit_status={} output_len={}",
+            "home_source={} home_env_present={} path_has_shim_dir={} \
+             global_bin_dir_matches_shim_dir={} exit_status={} output_len={}",
             self.home_source.telemetry_value(),
             self.home_env_present,
             self.path_has_shim_dir,
+            global_bin_dir_match_tag(self.global_bin_dir_matches_shim_dir),
             self.exit_status,
             self.output_len,
         )
@@ -1312,8 +1360,16 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
     let pnpm_targeted = pnpm.as_ref().is_some_and(|diagnostics| {
         diagnostics.home_source != PnpmHomeSource::Undetermined && diagnostics.path_has_shim_dir
     });
+    // Direction evidence: did pnpm's effective global bin dir (a bounded
+    // `pnpm bin -g` under the same env/config the install used, measured only on
+    // the non-convergent path) equal the dir holding the executed shim? Only a
+    // confirmed match keeps a non-convergence in a blocking class; `None`
+    // (unprobed or failed) reads as not-confirmed, failing safe toward retrying.
+    let pnpm_bin_dir_matches = pnpm
+        .as_ref()
+        .is_some_and(|diagnostics| diagnostics.global_bin_dir_matches_shim_dir == Some(true));
     // Delivery evidence: did the installer write the target version INTO the
-    // prefix it was aimed at? Only that separates genuine shadowing (delivered,
+    // store it was aimed at? Only that separates genuine shadowing (delivered,
     // but a copy earlier on PATH still wins) from a transient resolution
     // shortfall (never delivered). A missing manifest reads as not delivered,
     // which fails safe toward retrying rather than toward a durable block.
@@ -1323,6 +1379,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         executor,
         npm_prefix_passed,
         pnpm_targeted,
+        pnpm_bin_dir_matches,
         after_bin,
         target_delivered,
     );
@@ -1581,6 +1638,16 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                         "pnpm_path_has_shim_dir",
                         bool_tag(diagnostics.is_some_and(|d| d.path_has_shim_dir)),
                     );
+                    // The direction evidence that breaks the old pnpm tautology:
+                    // did pnpm's effective global bin dir equal the dir holding
+                    // the executed shim? A closed enum (`true`/`false`/`unprobed`)
+                    // — never the path pnpm printed.
+                    scope.set_tag(
+                        "pnpm_global_bin_dir_matches_shim_dir",
+                        global_bin_dir_match_tag(
+                            diagnostics.and_then(|d| d.global_bin_dir_matches_shim_dir),
+                        ),
+                    );
                     if let Some(diagnostics) = diagnostics {
                         scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());
                     }
@@ -1601,6 +1668,18 @@ fn bool_tag(value: bool) -> &'static str {
         "true"
     } else {
         "false"
+    }
+}
+
+/// Closed rendering of the `pnpm bin -g` direction probe. `None` (a converged
+/// run, an underivable layout, or a failed probe) is its own value rather than
+/// collapsing into `false`, so telemetry never conflates "pnpm wrote the wrong
+/// dir" with "we did not measure the dir".
+fn global_bin_dir_match_tag(matches: Option<bool>) -> &'static str {
+    match matches {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unprobed",
     }
 }
 
@@ -3220,17 +3299,30 @@ pub fn is_pnpm_global_shim(hq_bin: &str) -> bool {
     parent.join("global").is_dir()
 }
 
-/// argv for updating a pnpm-managed global install. pnpm resolves the right
-/// global dir itself from its own config/PNPM_HOME — no `--prefix` juggling.
+/// argv for updating a pnpm-managed global install.
+///
+/// `global_bin_dir` forces pnpm to write the new shim into the directory that
+/// actually holds the resolved shim. Left to its own devices, pnpm treats
+/// `PNPM_HOME` AS the global bin dir, so for the pnpm >=11 nested layout
+/// (`<home>/bin/hq`, PNPM_HOME derived as the grandparent `<home>`) it writes the
+/// shim flat into `<home>` and never touches the nested `<home>/bin/hq` the app
+/// executes — the install exits 0 and nothing converges. `--config.global-bin-dir`
+/// pins that dir explicitly. `None` (an underivable layout) omits the flag and
+/// spawns pnpm exactly as before, inventing nothing. For the flat layout the home
+/// and the global bin dir are the same directory, so the flag is a no-op.
 ///
 /// `target_version` pins the exact resolved version, mirroring [`install_argv`]:
 /// both executors ask the package manager for the same string the app resolved.
-pub fn pnpm_install_argv(target_version: Option<&str>) -> Vec<String> {
-    vec![
-        "add".to_string(),
-        "-g".to_string(),
-        hq_cli_package_spec(target_version),
-    ]
+pub fn pnpm_install_argv(
+    target_version: Option<&str>,
+    global_bin_dir: Option<&str>,
+) -> Vec<String> {
+    let mut argv = vec!["add".to_string(), "-g".to_string()];
+    if let Some(dir) = global_bin_dir.filter(|dir| !dir.is_empty()) {
+        argv.push(format!("--config.global-bin-dir={dir}"));
+    }
+    argv.push(hq_cli_package_spec(target_version));
+    argv
 }
 
 /// pnpm's global home for a resolved pnpm shim.
@@ -3339,6 +3431,25 @@ fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path
 pub fn installed_hq_cli_version_in_prefix(prefix: &str, hq_bin: &str) -> Option<String> {
     let hq_path = Path::new(hq_bin);
     hq_cli_package_json_candidates(Path::new(prefix), hq_path)
+        .into_iter()
+        .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
+}
+
+/// The hq-cli version pnpm delivered into its OWN global store, read straight
+/// from the store manifest with no subprocess.
+///
+/// Unlike [`installed_hq_cli_version_in_prefix`], this consults ONLY the pnpm
+/// store candidates (`<pnpm-home>/global/<n>/node_modules/@indigoai-us/hq-cli`).
+/// The shared reader enumerates npm-style candidates (`<prefix>/lib/node_modules`,
+/// `<prefix>/node_modules`) BEFORE the pnpm store and stops at the first readable
+/// manifest, so a stray npm-style manifest that happens to sit under the pnpm home
+/// (e.g. a manual `npm install --prefix <pnpm-home>`) would shadow the store
+/// reading and misreport delivery — turning a genuine pnpm delivery into an
+/// apparent shortfall. The pnpm executor therefore reads its delivery evidence
+/// from the store directly. Returns `None` when no store manifest is readable,
+/// which fails safe toward retrying rather than a durable block.
+pub fn installed_hq_cli_version_in_pnpm_store(pnpm_home: &str) -> Option<String> {
+    pnpm_store_package_json_candidates(Path::new(pnpm_home))
         .into_iter()
         .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
 }
@@ -3749,11 +3860,12 @@ mod tests {
         assert!(!path_contains_dir(&base, ""));
     }
 
-    /// Era 2 of HQ-DESKTOP-46. pnpm ran, exited 0, and the shim did not move.
-    /// With pnpm aimed at that shim's own home this is a genuine updater
-    /// defect, so it must stay as loud as an npm-targeted non-convergence
-    /// rather than being bounded like a foreign layout — and it must say
-    /// "pnpm", not borrow npm's wording.
+    /// Era 2 of HQ-DESKTOP-46, updated for the delivery/direction-gated contract
+    /// (NOT weakened). Genuine pnpm shadowing — pnpm's effective global bin dir IS
+    /// the dir holding the executed shim (`global_bin_dir_matches_shim_dir =
+    /// Some(true)`) AND the target WAS delivered into the store — stays as loud as
+    /// an npm-targeted non-convergence and keeps its durable block, on every
+    /// occurrence, and it must say "pnpm", not borrow npm's wording.
     #[test]
     fn targeted_pnpm_non_convergence_is_its_own_loud_class() {
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
@@ -3761,6 +3873,8 @@ mod tests {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
             path_has_shim_dir: true,
+            // pnpm honoured the forced dir and wrote where the app runs.
+            global_bin_dir_matches_shim_dir: Some(true),
             exit_status: "0".to_string(),
             output_len: 42,
         };
@@ -3774,8 +3888,9 @@ mod tests {
             after_version: Some("5.93.0"),
             latest: "5.94.1",
             npm_prefix_passed: None,
-            // npm-only; the pnpm executor's classification ignores it.
-            delivered_version: None,
+            // Delivery evidence now gates the pnpm arm too: the target reached the
+            // store, yet the executed shim is still stale — genuine shadowing.
+            delivered_version: Some("5.94.1"),
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: true,
             pnpm: Some(pnpm.clone()),
@@ -3794,9 +3909,9 @@ mod tests {
         assert!(outcome.log_line.starts_with("pnpm completed,"));
     }
 
-    /// Either half of "targeted" missing — no derivable home, or a child PATH
-    /// that never contained the shim's directory — means pnpm may have written
-    /// somewhere else, which is the foreign-managed shape.
+    /// An underivable home, or a child PATH that never contained the shim's
+    /// directory, means we could not aim pnpm at all — the ambient-spawn
+    /// foreign-managed shape, bounded to one capture per episode.
     #[test]
     fn untargeted_pnpm_non_convergence_is_foreign_managed_and_bounded() {
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
@@ -3812,7 +3927,7 @@ mod tests {
                 after_version: Some("5.93.0"),
                 latest: "5.94.1",
                 npm_prefix_passed: None,
-                // npm-only; the pnpm executor's classification ignores it.
+                // npm-only; the untargeted pnpm arm never reaches the delivery gate.
                 delivered_version: None,
                 installer_bin: "/opt/homebrew/bin/pnpm",
                 already_blocked: false,
@@ -3820,6 +3935,8 @@ mod tests {
                     home_source,
                     home_env_present: false,
                     path_has_shim_dir,
+                    // Not aimed => never probed.
+                    global_bin_dir_matches_shim_dir: None,
                     exit_status: "0".to_string(),
                     output_len: 0,
                 }),
@@ -3849,19 +3966,36 @@ mod tests {
             // them: npm has nowhere safe to aim. Delivery evidence is irrelevant
             // — the prefix never matched, so it never reaches the delivery gate.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Npm, None, false, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Npm, None, false, false, hq_bin, false),
                 NonConvergenceKind::ForeignManaged,
                 "npm/{hq_bin}"
             );
-            // pnpm is targeted only when we actually aimed it; its targeting is
-            // derived independently, so the npm delivery flag is ignored.
+            // pnpm aimed at the right dir (match=true) AND the target delivered
+            // into the store, yet the shim is stale: genuine shadowing.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, true),
                 NonConvergenceKind::PnpmTargeted,
                 "pnpm-targeted/{hq_bin}"
             );
+            // Aimed, but pnpm's effective global bin dir is NOT the shim dir (a
+            // build that ignored the forced setting): misdirected, never blocks —
+            // regardless of whether the store received the package.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, true),
+                NonConvergenceKind::PnpmMisdirected,
+                "pnpm-misdirected/{hq_bin}"
+            );
+            // Aimed at the right dir but the target was never delivered: a
+            // transient resolution shortfall, exactly like the npm arm.
+            assert_eq!(
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, false),
+                NonConvergenceKind::ResolutionShortfall,
+                "pnpm-shortfall/{hq_bin}"
+            );
+            // Not aimed at all (underivable / PATH without the shim dir): the
+            // ambient-spawn foreign-managed shape.
+            assert_eq!(
+                non_convergence_kind(InstallExecutor::Pnpm, None, false, false, hq_bin, false),
                 NonConvergenceKind::ForeignManaged,
                 "pnpm-untargeted/{hq_bin}"
             );
@@ -3872,6 +4006,7 @@ mod tests {
             non_convergence_kind(
                 InstallExecutor::Npm,
                 Some("/Users/t/.npm-global"),
+                false,
                 false,
                 "/Users/t/.npm-global/bin/hq",
                 true,
@@ -3890,14 +4025,29 @@ mod tests {
     fn npm_targeted_requires_delivery_evidence_and_is_no_longer_a_prefix_tautology() {
         let prefix = "/Users/t/.npm-global";
         let hq_bin = "/Users/t/.npm-global/bin/hq";
-        // Same tautological (prefix, bin) pair, opposite delivery evidence.
+        // Same tautological (prefix, bin) pair, opposite delivery evidence. The
+        // pnpm direction flag is ignored for the npm executor (pass false).
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, true),
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some(prefix),
+                false,
+                false,
+                hq_bin,
+                true
+            ),
             NonConvergenceKind::NpmTargeted,
             "delivered target in a matching prefix is genuine shadowing"
         );
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, false),
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some(prefix),
+                false,
+                false,
+                hq_bin,
+                false
+            ),
             NonConvergenceKind::ResolutionShortfall,
             "an undelivered target in a matching prefix is a resolution shortfall"
         );
@@ -3948,6 +4098,7 @@ mod tests {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: true,
             path_has_shim_dir: false,
+            global_bin_dir_matches_shim_dir: Some(false),
             exit_status: "0".to_string(),
             output_len: 1024,
         }
@@ -3955,18 +4106,30 @@ mod tests {
         assert_eq!(
             summary,
             "home_source=nested-bin-dir home_env_present=true path_has_shim_dir=false \
-             exit_status=0 output_len=1024"
+             global_bin_dir_matches_shim_dir=false exit_status=0 output_len=1024"
         );
         assert!(!summary.contains('/'));
+
+        // The `None` (unprobed) rendering is its own closed value, never a path.
+        let unprobed = PnpmRunDiagnostics {
+            home_source: PnpmHomeSource::Undetermined,
+            home_env_present: false,
+            path_has_shim_dir: false,
+            global_bin_dir_matches_shim_dir: None,
+            exit_status: "0".to_string(),
+            output_len: 0,
+        }
+        .summary();
+        assert!(unprobed.contains("global_bin_dir_matches_shim_dir=unprobed"));
+        assert!(!unprobed.contains('/'));
     }
 
     /// The pnpm executor pins the exact resolved version too, so both executors
-    /// ask the package manager for the same string the app compared against. On
-    /// unmodified main `pnpm_install_argv()` took no version and always emitted
-    /// `@latest`, so this fails there for the right reason.
+    /// ask the package manager for the same string the app compared against. With
+    /// no global bin dir passed the argv keeps its historical shape.
     #[test]
     fn pnpm_install_argv_pins_the_exact_resolved_version() {
-        let argv = pnpm_install_argv(Some("5.97.1"));
+        let argv = pnpm_install_argv(Some("5.97.1"), None);
         assert_eq!(
             argv,
             vec![
@@ -3979,14 +4142,311 @@ mod tests {
             !argv.iter().any(|arg| arg.ends_with("@latest")),
             "a pinned pnpm install must not request the @latest dist-tag: {argv:?}"
         );
-        // The `None` arm keeps the dist-tag fallback for versionless callers.
+        // The `None` arms keep the dist-tag fallback for versionless callers and
+        // add no global-bin-dir flag.
         assert_eq!(
-            pnpm_install_argv(None),
+            pnpm_install_argv(None, None),
             vec![
                 "add".to_string(),
                 "-g".to_string(),
                 HQ_CLI_PACKAGE.to_string(),
             ]
+        );
+    }
+
+    /// The core of the r2 fix: pnpm must be aimed at the directory that actually
+    /// holds the resolved shim. On unmodified main `pnpm_install_argv` took only a
+    /// version and never emitted `--config.global-bin-dir`, so the child pnpm
+    /// resolved a different global bin dir than the app did — this fails there for
+    /// the right reason.
+    #[test]
+    fn pnpm_install_is_aimed_at_the_directory_holding_the_resolved_shim() {
+        // Nested pnpm >=11 layout: `<H>/bin/hq`. The home is the grandparent,
+        // but the shim — and therefore the dir pnpm must write — is `<H>/bin`.
+        let nested = pnpm_global_env("/Users/t/Library/pnpm/bin/hq").expect("nested layout");
+        assert_eq!(nested.global_bin_dir, "/Users/t/Library/pnpm/bin");
+        let nested_argv = pnpm_install_argv(Some("5.97.2"), Some(&nested.global_bin_dir));
+        assert_eq!(
+            nested_argv,
+            vec![
+                "add".to_string(),
+                "-g".to_string(),
+                "--config.global-bin-dir=/Users/t/Library/pnpm/bin".to_string(),
+                "@indigoai-us/hq-cli@5.97.2".to_string(),
+            ]
+        );
+
+        // Flat pre-11 layout: home == global bin dir, so the forced dir is the
+        // home itself and the flag is behaviour-preserving.
+        let flat = pnpm_global_env("/Users/t/Library/pnpm/hq").expect("flat layout");
+        assert_eq!(flat.global_bin_dir, "/Users/t/Library/pnpm");
+        let flat_argv = pnpm_install_argv(Some("5.97.2"), Some(&flat.global_bin_dir));
+        assert_eq!(
+            flat_argv[2],
+            "--config.global-bin-dir=/Users/t/Library/pnpm".to_string()
+        );
+    }
+
+    /// The safety rail on the aiming change: an underivable layout
+    /// (`pnpm_global_env` -> None) must invent no directory. The child is spawned
+    /// exactly as before, with no `--config.global-bin-dir` flag at all.
+    #[test]
+    fn an_underivable_pnpm_layout_pins_no_global_bin_dir() {
+        for hq_bin in [
+            "hq",
+            "/opt/homebrew/bin/hq",
+            "/Users/t/.asdf/shims/hq",
+            "/usr/local/bin/hq",
+        ] {
+            assert_eq!(
+                pnpm_global_env(hq_bin),
+                None,
+                "{hq_bin} must not derive a home"
+            );
+        }
+        // With no derivable dir the app passes `None`, and the argv carries no
+        // config flag — inventing nothing.
+        let argv = pnpm_install_argv(Some("5.97.2"), None);
+        assert!(
+            !argv
+                .iter()
+                .any(|arg| arg.starts_with("--config.global-bin-dir")),
+            "an underivable layout must not force a global bin dir: {argv:?}"
+        );
+        // An empty string is treated the same as absent — never an empty flag.
+        let empty = pnpm_install_argv(Some("5.97.2"), Some(""));
+        assert!(!empty
+            .iter()
+            .any(|arg| arg.starts_with("--config.global-bin-dir")));
+    }
+
+    /// A pnpm run diagnostics builder for the nested pnpm >=11 field layout,
+    /// varying only the two evidence signals the new classifier observes.
+    fn pnpm_field_diagnostics(matches: Option<bool>) -> PnpmRunDiagnostics {
+        PnpmRunDiagnostics {
+            home_source: PnpmHomeSource::NestedBinDir,
+            home_env_present: false,
+            path_has_shim_dir: true,
+            global_bin_dir_matches_shim_dir: matches,
+            exit_status: "0".to_string(),
+            output_len: 96,
+        }
+    }
+
+    /// The classifier no longer derives the pnpm class from the shim path and the
+    /// updater's own PATH alone. Same targeted inputs, three different real
+    /// observations of the installer's output, three different classes.
+    #[test]
+    fn pnpm_targeted_requires_delivery_evidence_and_a_matching_global_bin_dir() {
+        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
+        // Matched dir + delivered => genuine shadowing (loud, blocks).
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, true),
+            NonConvergenceKind::PnpmTargeted
+        );
+        // Matched dir + NOT delivered => transient shortfall (loud, never blocks).
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, false),
+            NonConvergenceKind::ResolutionShortfall
+        );
+        // Mismatched dir => misdirected (loud, never blocks), whatever the store.
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, true),
+            NonConvergenceKind::PnpmMisdirected
+        );
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, false),
+            NonConvergenceKind::PnpmMisdirected
+        );
+        // Only the delivered-into-the-matching-dir class blocks.
+        assert!(NonConvergenceKind::PnpmTargeted.may_block_auto_update());
+        assert!(!NonConvergenceKind::PnpmMisdirected.may_block_auto_update());
+        assert!(!NonConvergenceKind::PnpmMisdirected.is_installer_targeted());
+        assert_eq!(
+            NonConvergenceKind::PnpmMisdirected.telemetry_value(),
+            "pnpm-misdirected"
+        );
+    }
+
+    /// The exact 2026-08-10 field shape: pnpm nested layout, PNPM_HOME derived
+    /// from the grandparent, the shim dir on PATH, the package delivered into the
+    /// pnpm store, but the executed shim unchanged because pnpm's effective global
+    /// bin dir is NOT the shim dir. On unmodified main this classifies PnpmTargeted
+    /// with `record_non_convergent = Some(latest)`, permanently wedging that
+    /// machine. Under the directed contract it is a misdirected install: loud on
+    /// every occurrence, but it writes NO durable marker.
+    #[test]
+    fn a_misdirected_pnpm_install_is_loud_and_never_blocks_auto_install() {
+        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
+        let outcome = decide_post_install(&PostInstallContext {
+            executor: InstallExecutor::Pnpm,
+            before_bin: hq_bin,
+            after_bin: hq_bin, // hq_bin_changed = false, as in the field event
+            before_version: None,
+            after_version: Some("5.93.0"),
+            latest: "5.97.2",
+            npm_prefix_passed: None,
+            // pnpm delivered the package into its store (run B) ...
+            delivered_version: Some("5.97.2"),
+            installer_bin: "/opt/homebrew/bin/pnpm",
+            already_blocked: false,
+            // ... but wrote the shim flat into PNPM_HOME, so the effective global
+            // bin dir is not the dir holding the executed shim.
+            pnpm: Some(pnpm_field_diagnostics(Some(false))),
+        });
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::PnpmMisdirected)
+        );
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "a misdirected install must never wedge auto-update"
+        );
+        let report = outcome.capture.as_ref().expect("misdirected stays loud");
+        assert_eq!(report.executor, InstallExecutor::Pnpm);
+        assert_eq!(report.delivered_version.as_deref(), Some("5.97.2"));
+        assert_eq!(
+            report
+                .pnpm
+                .as_ref()
+                .and_then(|d| d.global_bin_dir_matches_shim_dir),
+            Some(false)
+        );
+        assert!(!outcome.capture_requires_durable_record);
+        // And it stays loud even once an episode was already recorded — no
+        // bounding, because it is not the foreign-managed shape.
+        let repeat = decide_post_install(&PostInstallContext {
+            executor: InstallExecutor::Pnpm,
+            before_bin: hq_bin,
+            after_bin: hq_bin,
+            before_version: None,
+            after_version: Some("5.93.0"),
+            latest: "5.97.2",
+            npm_prefix_passed: None,
+            delivered_version: Some("5.97.2"),
+            installer_bin: "/opt/homebrew/bin/pnpm",
+            already_blocked: true,
+            pnpm: Some(pnpm_field_diagnostics(Some(false))),
+        });
+        assert!(
+            repeat.capture.is_some(),
+            "misdirected is loud on every occurrence"
+        );
+        assert_eq!(repeat.record_non_convergent, None);
+    }
+
+    /// A pnpm install aimed at the right dir that delivered nothing (the registry
+    /// had not propagated the target yet) mirrors the npm arm's shortfall: loud,
+    /// self-healing, and never a durable block.
+    #[test]
+    fn an_undelivered_pnpm_target_is_a_resolution_shortfall() {
+        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
+        let outcome = decide_post_install(&PostInstallContext {
+            executor: InstallExecutor::Pnpm,
+            before_bin: hq_bin,
+            after_bin: hq_bin,
+            before_version: None,
+            after_version: Some("5.93.0"),
+            latest: "5.97.2",
+            npm_prefix_passed: None,
+            // Aimed at the right dir (match=true) but the store still has N-1.
+            delivered_version: Some("5.93.0"),
+            installer_bin: "/opt/homebrew/bin/pnpm",
+            already_blocked: false,
+            pnpm: Some(pnpm_field_diagnostics(Some(true))),
+        });
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ResolutionShortfall)
+        );
+        assert_eq!(outcome.record_non_convergent, None);
+        assert!(outcome.capture.is_some());
+        assert!(!outcome.capture_requires_durable_record);
+    }
+
+    /// The invariant the fix must never break: a genuine pnpm shadowing defect —
+    /// pnpm's effective global bin dir IS the dir holding the executed shim AND
+    /// the target WAS delivered into the store, yet the shim still reports the old
+    /// version — keeps reporting on every occurrence and keeps writing the durable
+    /// block, even for an already-blocked episode.
+    #[test]
+    fn a_delivered_pnpm_target_in_the_matching_bin_dir_stays_loud_and_blocking() {
+        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
+        let outcome = decide_post_install(&PostInstallContext {
+            executor: InstallExecutor::Pnpm,
+            before_bin: hq_bin,
+            after_bin: hq_bin,
+            before_version: None,
+            after_version: Some("5.93.0"),
+            latest: "5.97.2",
+            npm_prefix_passed: None,
+            delivered_version: Some("5.97.2"), // delivered == target
+            installer_bin: "/opt/homebrew/bin/pnpm",
+            already_blocked: true, // still loud + blocking anyway
+            pnpm: Some(pnpm_field_diagnostics(Some(true))),
+        });
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::PnpmTargeted)
+        );
+        assert_eq!(
+            outcome.record_non_convergent.as_deref(),
+            Some("5.97.2"),
+            "genuine shadowing keeps its durable block"
+        );
+        assert!(outcome.capture.is_some());
+        assert!(!outcome.capture_requires_durable_record);
+    }
+
+    /// The pnpm delivery read must consult the pnpm store, never a stray
+    /// npm-style manifest that happens to sit under the pnpm home. A manual
+    /// `npm install --prefix <pnpm-home>` can leave `<home>/lib/node_modules`
+    /// with an older version; the shared `installed_hq_cli_version_in_prefix`
+    /// enumerates that npm candidate BEFORE the store and stops at the first hit,
+    /// so it would misreport delivery. The pnpm executor reads the store directly.
+    #[test]
+    fn pnpm_store_delivery_read_ignores_a_stray_npm_manifest_under_the_pnpm_home() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        // The pnpm store manifest carries the freshly-delivered target.
+        let store = home
+            .join("global")
+            .join("5")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(
+            store.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.97.2"}"#,
+        )
+        .unwrap();
+        // A stray npm-style manifest under the same home holds an OLD version.
+        let stray = home
+            .join("lib")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&stray).unwrap();
+        std::fs::write(
+            stray.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.93.0"}"#,
+        )
+        .unwrap();
+
+        // The pnpm-store reader returns the STORE version, ignoring the stray.
+        assert_eq!(
+            installed_hq_cli_version_in_pnpm_store(home.to_str().unwrap()).as_deref(),
+            Some("5.97.2")
+        );
+        // The shared reader, given the same home, is shadowed by the stray npm
+        // manifest — which is exactly why the pnpm branch uses the store reader.
+        let shim = home.join("bin").join("hq");
+        assert_eq!(
+            installed_hq_cli_version_in_prefix(home.to_str().unwrap(), shim.to_str().unwrap())
+                .as_deref(),
+            Some("5.93.0"),
+            "the shared reader is shadowed by the stray npm manifest"
         );
     }
 
