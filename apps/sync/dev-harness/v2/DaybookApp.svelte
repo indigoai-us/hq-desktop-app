@@ -1368,6 +1368,7 @@
         <button class="sub-item" onclick={() => nav('marketplace')}>engineering<span class="p-meta mono">v2.1</span></button>
         <button class="sub-item" onclick={() => nav('marketplace')}>design-styles<span class="p-meta mono new">v3.0 · NEW</span></button>
         <button class="sub-item" onclick={() => nav('marketplace')}>parker<span class="p-meta mono">v1.4</span></button>
+        <button class="sub-item" onclick={() => nav('marketplace')}>slack-bot<span class="p-meta mono">v1.0</span></button>
         <button class="sub-item muted" onclick={() => nav('marketplace')}>Open marketplace <ArrowRight size={11} /></button>
       {/if}
     </div>
@@ -2106,7 +2107,7 @@
   .packs-box.open .packs-toggle { padding: 8px; }
   .packs-box.open .packs-toggle:hover { background: transparent; }
   .packs-box.open:has(.packs-toggle:hover) { background: var(--btn-bg); }
-  .packs-title { font-weight: 500; color: var(--t1); }
+  .packs-title { color: var(--t1); }
   /* Side gutter keeps the sub-row hover pill inset from the box edges. */
   .sub-item { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 4px 8px 4px 24px; font-size: 12px; color: var(--t1); width: calc(100% - 12px); border-radius: 6px; }
   .sub-item:hover { background: var(--hover); }
