@@ -1983,12 +1983,16 @@ fn report_bulk_refusal_at(
         } else {
             outcome.suppressed_since_report
         };
+        // The finite report budget rides the same persisted record and atomic
+        // write as the cooldown anchor, and is written on *every* refreshing pass
+        // — not only on an emit — so a fresh episode overwrites any spent budget
+        // an abandoned (idle-but-never-recovered) predecessor left on disk.
+        // Writing it on emit only would let that stale count be reloaded by a
+        // restart inside the new episode's confirmation window, skipping — or,
+        // with a spent budget, permanently silencing — its first banner.
+        next.episode_reports = Some(outcome.episode_reports);
         if outcome.action.emits() {
             next.last_reported_at = Some(stamp);
-            // The finite report budget is spent one rung at a time and must
-            // outlive an auto-update, so it rides the same persisted record and
-            // the same atomic write as the cooldown anchor.
-            next.episode_reports = Some(outcome.episode_reports);
             // A banner carries the recovered-episode evidence, so it also
             // consumes it: the next banner describes the window after this one.
             next.recovered_episodes_since_report = 0;
@@ -3803,6 +3807,77 @@ mod tests {
             second[0].tags.get("episode_reports").map(String::as_str),
             Some("1"),
             "the new episode's budget starts from one, not from the old episode's"
+        );
+    }
+
+    /// A new episode that opens after the previous one went *idle* — abandoned
+    /// past the TTL without a recovery pass ever clearing its budget — must not
+    /// inherit that spent budget. The stale count has to be reset on disk the
+    /// moment the fresh episode first writes, or a restart inside its
+    /// confirmation window would reload it and skip (or, with a spent budget,
+    /// permanently silence) the new episode's first banner.
+    #[test]
+    fn a_fresh_episode_after_an_idle_one_does_not_inherit_the_stale_budget() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let confirming = confirming_passes();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // A record left by a previous episode that spent its whole budget and
+        // then went idle past the TTL *without* a recovery pass, so nothing ever
+        // cleared its budget.
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_started_at: stamp(wall - chrono::Duration::hours(48)),
+                episode_last_refusal_at: stamp(wall - chrono::Duration::hours(24)),
+                episode_occurrences: 9_999,
+                episode_distinct_sets: 1,
+                episode_reports: Some(3),
+                last_reported_at: stamp(wall - chrono::Duration::hours(30)),
+                ..PersistedRefusalState::default()
+            },
+        );
+
+        // The root refuses again: a brand-new episode B, since the old record is
+        // stale. Its very first write must reset the abandoned budget to zero.
+        let b_start = Instant::now();
+        let opened = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, b_start, wall);
+        });
+        assert_eq!(opened.len(), 0, "B's first pass only awaits confirmation");
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            Some(0),
+            "the fresh episode resets the abandoned budget on its very first write, \
+             so a restart in its confirmation window cannot reload the spent count"
+        );
+
+        // A relaunch inside B's confirmation window must not reload the old spent
+        // budget: B still earns its first banner when it confirms.
+        reset_refusal_report_state();
+        let events = sentry::test::with_captured_events(|| {
+            sustain("/hq", &git_dir, &set, 1_356, b_start, wall, 0..confirming);
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "B is a fresh episode and must report on confirmation, not stay \
+             silenced by the abandoned episode's spent budget"
+        );
+        assert_eq!(
+            events[0].tags.get("report_source").map(String::as_str),
+            Some("first-confirmed")
+        );
+        assert_eq!(
+            events[0].tags.get("episode_reports").map(String::as_str),
+            Some("1")
         );
     }
 
