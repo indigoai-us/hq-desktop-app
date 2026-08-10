@@ -320,6 +320,41 @@ describe('master automatic-updates switch', () => {
     expect(normalize(cliUpdateCore)).toContain(
       'scope.set_tag( "pnpm_global_bin_dir_matches_shim_dir",',
     );
+
+    // HQ-DESKTOP-46 r3 reopen: the r2 fix aimed pnpm correctly, but every path
+    // that VERIFIES the result still guessed pnpm <=10's store layout, so on
+    // pnpm 11 (`global/v11/<hash>`) delivery read `none` and the shortfall
+    // re-fired forever. Delivery + convergence now come from pnpm's OWN answer
+    // (`pnpm ls -g --json`), with a `pnpm root -g` scan and the corrected store
+    // enumeration only as fallbacks.
+    expect(cliUpdateCore).toContain('pub fn parse_pnpm_global_hq_cli(');
+    expect(cliUpdateCore).toContain('pub fn hq_cli_version_under_pnpm_root(');
+    expect(pnpmBranch).toContain('pnpm_global_listing(');
+    expect(normalize(cliUpdate)).toContain(
+      'cmd.args(["ls", "-g", "--depth", "0", "--json"])',
+    );
+    // The authoritative answer is consulted BEFORE the guessed store read, which
+    // is now only the last-resort fallback.
+    expect(pnpmBranch.indexOf('pnpm_global_listing(')).toBeGreaterThan(-1);
+    expect(pnpmBranch.indexOf('pnpm_global_listing(')).toBeLessThan(
+      pnpmBranch.indexOf('installed_hq_cli_version_in_pnpm_store(&home)'),
+    );
+
+    // r3: the `pnpm bin -g` direction probe is spawned WITHOUT the forced
+    // `--config.global-bin-dir`, so it reports pnpm's own native resolution
+    // rather than echoing back the value the install handed it (the r2
+    // tautology). Only the INSTALL argv keeps the forced dir (aiming retained).
+    const binProbe = cliUpdate.slice(
+      cliUpdate.indexOf('fn pnpm_effective_global_bin_dir('),
+      cliUpdate.indexOf('fn pnpm_global_listing('),
+    );
+    expect(binProbe).toContain('cmd.args(["bin", "-g"])');
+    expect(binProbe).not.toContain('--config.global-bin-dir');
+
+    // The persistent-shape re-fire is bounded: a non-blocking capture reports
+    // once per (latest, kind, home) episode instead of once per check/restart.
+    expect(cliUpdate).toContain('non_convergent_capture_episode_markers()');
+    expect(cliUpdateCore).toContain('pub fn non_convergent_capture_episode_key(');
   });
 
   it('a non-convergent capture names which package manager ran', () => {

@@ -5,8 +5,8 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_install_failure,
     report_non_convergent_install, report_unreadable_version, BinaryAnchorShape, InstallExecutor,
     LocalVersionProbeDiagnostics, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics,
-    PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind, VersionProbeOutcome,
-    NON_CONVERGENT_ERROR_PREFIX,
+    PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind,
+    VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -94,6 +94,8 @@ fn pnpm_context<'a>(
             global_bin_dir_matches_shim_dir: matches,
             exit_status: "0".to_string(),
             output_len: 128,
+            store_family: PnpmStoreFamily::V11Plus,
+            authoritative_query_ok: true,
         }),
     }
 }
@@ -126,6 +128,7 @@ fn composed_non_convergent_events(
         let record_failure = |_error: String| {
             record_failures.set(record_failures.get() + 1);
         };
+        let record_capture_episode = |_keys: Vec<String>| Ok(());
         let result = apply_post_install_effects(
             &outcome,
             &PostInstallCoreEffects {
@@ -133,6 +136,8 @@ fn composed_non_convergent_events(
                 clear: &clear,
                 capture: &capture,
                 record_failure: &record_failure,
+                capture_episode_reported_keys: &[],
+                record_capture_episode: &record_capture_episode,
             },
         );
         assert!(matches!(
@@ -930,87 +935,79 @@ fn the_2026_08_09_field_event_shape_reclassifies_under_the_new_contract() {
     );
 }
 
-/// HQ-DESKTOP-46, era 3 (the r2 reopen). Replay the exact 2026-08-10 field event
-/// shape (event 766826e5): pnpm executor, nested pnpm >=11 layout, PNPM_HOME
-/// derived from the grandparent, the shim dir on PATH, the package delivered into
-/// the pnpm store, yet the executed shim never moved because pnpm's effective
-/// global bin dir is the flat home, not the nested bin dir. On the base commit
-/// this rendered as pnpm-targeted with a durable block, permanently wedging that
-/// machine. Under the directed contract it renders through `before_send` as a
-/// non-blocking misdirected install that names the mismatch.
+/// HQ-DESKTOP-46, era 3 (the r2 reopen), at the reporting boundary. On the base
+/// commit the exact 2026-08-10 field event (event f52ef13b) could not see pnpm
+/// 11's `global/v11/<hash>` store, so the post-install reading froze at a stale
+/// 5.93.0, classified a ResolutionShortfall, and captured on EVERY occurrence —
+/// the 16:13:33/16:14:27 double-fire across an app self-update. Under the
+/// candidate the corrected store candidates plus the authoritative `pnpm ls`
+/// reader make the executed shim read `latest`, so the install CONVERGES: the
+/// durable marker is cleared and NO Sentry event is emitted. The recurrence is
+/// closed at the reporting boundary.
 #[test]
-fn the_2026_08_10_pnpm_field_event_reclassifies_under_the_directed_contract() {
+fn the_2026_08_10_pnpm_11_field_event_converges_and_emits_no_capture() {
     let home = hq_desktop_core::paths::home_dir().expect("test home directory");
-    let home_text = home.to_string_lossy().to_string();
     let hq_bin = home
         .join("Library/pnpm/bin/hq")
         .to_string_lossy()
         .to_string();
+    // The candidate's reading now reaches the v11 store, so the executed shim
+    // reports `latest`. Nested-bin-dir, PNPM_HOME absent, shim dir on PATH —
+    // exactly the field shape, but now READ correctly.
     let ctx = PostInstallContext {
         executor: InstallExecutor::Pnpm,
         before_bin: &hq_bin,
         after_bin: &hq_bin, // hq_bin_changed = false, as in the field event
         before_version: None,
-        after_version: Some("5.93.0"), // local
-        latest: "5.97.2",
+        after_version: Some("5.98.0"),
+        latest: "5.98.0",
         npm_prefix_passed: None,
-        // pnpm delivered the package into its global store ...
-        delivered_version: Some("5.97.2"),
+        delivered_version: None, // the converged path never consults delivery
         installer_bin: "/opt/homebrew/bin/pnpm",
         already_blocked: false,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
             path_has_shim_dir: true,
-            // ... but wrote the shim flat into PNPM_HOME, not the nested bin dir.
-            global_bin_dir_matches_shim_dir: Some(false),
+            global_bin_dir_matches_shim_dir: None,
             exit_status: "0".to_string(),
             output_len: 96,
+            store_family: PnpmStoreFamily::V11Plus,
+            authoritative_query_ok: true,
         }),
     };
 
-    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
-    assert_eq!(
-        records, 0,
-        "the field event must no longer wedge auto-update"
-    );
-    assert_eq!(captures, 1, "but it stays loud on every occurrence");
-    assert_eq!(record_failures, 0);
-    assert_eq!(events.len(), 1);
-    let event = &events[0];
-    assert_eq!(event.level, sentry::Level::Warning);
-    // Grouping does NOT split: the fingerprint is unchanged.
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
-    for (tag, expected) in [
-        ("install_executor", "pnpm"),
-        ("non_convergence_kind", "pnpm-misdirected"),
-        ("pnpm_home_source", "nested-bin-dir"),
-        ("pnpm_path_has_shim_dir", "true"),
-        ("pnpm_global_bin_dir_matches_shim_dir", "false"),
-        ("requested_version", "5.97.2"),
-        ("delivered_version", "5.97.2"),
-        ("hq_bin_changed", "false"),
-    ] {
-        assert_eq!(
-            event.tags.get(tag).map(String::as_str),
-            Some(expected),
-            "unexpected {tag} tag"
+    let cleared = Cell::new(0usize);
+    let captured = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(&ctx);
+        let record = |_version: String| Ok(());
+        let clear = || cleared.set(cleared.get() + 1);
+        let capture = |report: NonConvergentReport| {
+            captured.set(captured.get() + 1);
+            report_non_convergent_install(&report);
+        };
+        let record_failure = |_error: String| panic!("no marker write on the converged path");
+        let record_capture_episode = |_keys: Vec<String>| Ok(());
+        let result = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+                capture_episode_reported_keys: &[],
+                record_capture_episode: &record_capture_episode,
+            },
         );
-    }
-    // Still no npm placeholder for a pnpm run.
-    assert!(!event.extra.contains_key("npm_prefix"));
-    assert!(!event.tags.contains_key("prefix_known"));
-    let serialized = serde_json::to_string(event).expect("serialize event");
-    assert!(!serialized.contains(&home_text));
-    for forbidden in ["/Users/", "/home/"] {
-        assert!(
-            !serialized.contains(forbidden),
-            "misdirected pnpm event leaked {forbidden:?}"
-        );
-    }
+        assert!(result.is_ok(), "a converged field event must succeed");
+    });
+    assert!(
+        events.is_empty(),
+        "a converged field event must emit NO Sentry event"
+    );
+    assert_eq!(captured.get(), 0, "no capture on the converged path");
+    assert_eq!(cleared.get(), 1, "convergence clears the durable marker");
 }
 
 /// The pnpm executor no longer hardcodes `delivered_version: None`. A
@@ -1112,4 +1109,91 @@ fn true_pnpm_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_
         fingerprint(event),
         ["hq-cli-update", "install-non-convergent"]
     );
+}
+
+/// HQ-DESKTOP-46 r3: a persistent, genuinely undelivered pnpm shortfall must
+/// report ONCE per `latest` — not once per scheduled check and once per app
+/// restart. That once-per-check firing is the 16:13:33 (0.10.94) / 16:14:27
+/// (0.10.95) double-fire across an app self-update. The episode marker carried
+/// across checks collapses it to a single event, and a new CLI publish (a new
+/// `latest`) re-arms exactly one report.
+#[test]
+fn a_persistent_pnpm_shortfall_captures_once_per_latest_across_checks() {
+    fn shortfall_ctx<'a>(hq_bin: &'a str, latest: &'a str) -> PostInstallContext<'a> {
+        PostInstallContext {
+            executor: InstallExecutor::Pnpm,
+            before_bin: hq_bin,
+            after_bin: hq_bin,
+            before_version: None,
+            after_version: Some("5.93.0"),
+            latest,
+            npm_prefix_passed: None,
+            // Aimed at the right dir but the store still holds N-1: undelivered.
+            delivered_version: Some("5.93.0"),
+            installer_bin: "/opt/homebrew/bin/pnpm",
+            already_blocked: false,
+            pnpm: Some(PnpmRunDiagnostics {
+                home_source: PnpmHomeSource::NestedBinDir,
+                home_env_present: false,
+                path_has_shim_dir: true,
+                global_bin_dir_matches_shim_dir: Some(true),
+                exit_status: "0".to_string(),
+                output_len: 96,
+                store_family: PnpmStoreFamily::V11Plus,
+                authoritative_query_ok: true,
+            }),
+        }
+    }
+
+    // A machine-persisted episode-key set that survives across checks and app
+    // updates, exactly like the menubar.json marker in production.
+    let persisted: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let drive = |latest: &'static str| -> usize {
+        let hq_bin = "/Users/reviewer/Library/pnpm/bin/hq";
+        let captured = Cell::new(0usize);
+        let snapshot = persisted.borrow().clone();
+        captured_events(|| {
+            let ctx = shortfall_ctx(hq_bin, latest);
+            let outcome = decide_post_install(&ctx);
+            let record = |_version: String| Ok(());
+            let clear = || panic!("a shortfall must not clear the marker");
+            let capture = |report: NonConvergentReport| {
+                captured.set(captured.get() + 1);
+                report_non_convergent_install(&report);
+            };
+            let record_failure = |_error: String| {};
+            let record_capture_episode = |keys: Vec<String>| {
+                *persisted.borrow_mut() = keys;
+                Ok(())
+            };
+            let _ = apply_post_install_effects(
+                &outcome,
+                &PostInstallCoreEffects {
+                    record: &record,
+                    clear: &clear,
+                    capture: &capture,
+                    record_failure: &record_failure,
+                    capture_episode_reported_keys: &snapshot,
+                    record_capture_episode: &record_capture_episode,
+                },
+            );
+        });
+        captured.get()
+    };
+
+    // Two scheduled checks on the same `latest` across an app self-update: one
+    // capture total, not two.
+    assert_eq!(
+        drive("5.98.0"),
+        1,
+        "first shortfall for this latest reports"
+    );
+    assert_eq!(
+        drive("5.98.0"),
+        0,
+        "the same-latest repeat is suppressed (the double-fire is collapsed)"
+    );
+    // A new CLI publish re-arms exactly one report.
+    assert_eq!(drive("5.99.0"), 1, "a new latest reports again");
+    assert_eq!(drive("5.99.0"), 0, "and is then bounded once more");
 }
