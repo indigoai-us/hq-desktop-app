@@ -23,6 +23,7 @@
     CaretRight,
     ChatCircle,
     Check,
+    Clock,
     CheckCircle,
     Circle,
     FileText,
@@ -45,6 +46,9 @@
     ShieldCheck,
     Smiley,
     SignOut,
+    Stack,
+    Users,
+    UsersThree,
     UserCircle,
     VideoCamera,
     Warning,
@@ -116,6 +120,8 @@
     av?: string;
     /** Group threads carry their member count instead of an initial. */
     members?: number;
+    /** Humans active in a project channel — drives the People filter. */
+    people?: string[];
     status?: { dot: string; label: string };
     feed: FeedItem[];
     board?: { inprog: string[][]; review: string[][]; done: string[][] };
@@ -141,7 +147,7 @@
       ],
       channels: {
         'hq-desktop': {
-          type: 'project', title: '# hq-desktop', sub: 'Indigo · project channel', unread: 4,
+          type: 'project', title: '# hq-desktop', sub: 'Indigo · project channel', unread: 4, people: ['Corey', 'Bryan', 'Sofia', 'Marcus'],
           status: { dot: 'ok', label: 'Agent running' },
           feed: [
             { sep: 'TODAY' },
@@ -162,7 +168,7 @@
           files: [['file', 'library-ia-v2.md', 'SOFIA · TODAY'], ['file', 'daybook-interaction-notes.md', 'COREY · TODAY'], ['image', 'concept-a-daybook.png', 'AGENT · YESTERDAY'], ['file', 'prd-draft.json', 'AGENT · AUG 1']],
         },
         'hq-sync': {
-          type: 'project', title: '# hq-sync', sub: 'Indigo · project channel',
+          type: 'project', title: '# hq-sync', sub: 'Indigo · project channel', people: ['Corey', 'Bryan'],
           status: { dot: 'ok', label: 'Idle' },
           feed: [
             { sep: 'YESTERDAY' },
@@ -173,7 +179,7 @@
           files: [['file', 'release-checklist.md', 'AGENT · AUG 3']],
         },
         'agent-orchestrator': {
-          type: 'project', title: '# agent-orchestrator', sub: 'Indigo · project channel', live: true,
+          type: 'project', title: '# agent-orchestrator', sub: 'Indigo · project channel', live: true, people: ['Corey'],
           status: { dot: 'ok', label: 'Agent running' },
           feed: [
             { sep: 'TODAY' },
@@ -209,7 +215,7 @@
           ],
         },
         'standup-brief': {
-          type: 'project', title: '# standup-brief', sub: 'Indigo · project channel',
+          type: 'project', title: '# standup-brief', sub: 'Indigo · project channel', people: ['Bryan', 'Priya'],
           status: { dot: 'ok', label: 'Idle' },
           feed: [{ sep: 'YESTERDAY' }, { who: 'Deploy Agent', ai: true, when: '5:02 PM', card: { t: 'Brief deployed', s: 'Posted to #hq-dev with the transcript-dated link.', actions: ['Open brief'] } }],
           board: { inprog: [], review: [], done: [['US-001 · recall pull', 'SHIPPED', 'ok']] },
@@ -220,7 +226,7 @@
           feed: [{ sep: 'YESTERDAY' }, { who: 'Signal Agent', ai: true, when: '3:40 PM', card: { t: '3 new insight clusters', s: 'Setup friction, pricing questions, and a feature ask around Slack digests.', actions: ['Open insights'] } }],
         },
         'enterprise-pricing': {
-          type: 'project', title: '# enterprise-pricing', sub: 'Indigo · project channel',
+          type: 'project', title: '# enterprise-pricing', sub: 'Indigo · project channel', people: ['Corey', 'Marcus'],
           status: { dot: 'w', label: 'Review waiting' },
           feed: [
             { sep: 'SATURDAY' },
@@ -243,7 +249,7 @@
       ],
       channels: {
         'creative-pipeline': {
-          type: 'project', title: '# creative-pipeline', sub: 'Sender Agency · project channel',
+          type: 'project', title: '# creative-pipeline', sub: 'Sender Agency · project channel', people: ['Kayla', 'Sofia'],
           status: { dot: 'ok', label: 'Agent running' },
           feed: [{ sep: 'TODAY' }, { who: 'Creative Agent', ai: true, when: 'RUNNING · 9:00 AM', card: { t: 'Weekly batch — 12 statics', s: '6 approved, 4 in iteration, 2 queued for review.', actions: ['Open batch'] } }],
           board: { inprog: [['CR-31 · statics batch', 'AGENT · 50%', 'ok']], review: [['CR-29 · UGC scripts', 'CLIENT REVIEW', 'warn']], done: [['CR-28 · hooks test', 'SHIPPED', 'ok']] },
@@ -258,7 +264,7 @@
           feed: [{ sep: 'TODAY' }, { who: 'Radar Agent', ai: true, when: '7:00 AM', card: { t: 'Competitor sweep', s: '3 new angles spotted in the ad library overnight.', actions: ['Open radar'] } }],
         },
         'email-os': {
-          type: 'project', title: '# email-os', sub: 'Sender Agency · project channel',
+          type: 'project', title: '# email-os', sub: 'Sender Agency · project channel', people: ['Kayla'],
           status: { dot: 'ok', label: 'Idle' },
           feed: [{ sep: 'MONDAY' }, { who: 'Email Agent', ai: true, when: '4:12 PM', card: { t: 'Flow refresh shipped', s: 'Welcome series v3 live for 2 brands.', actions: ['Open flows'] } }],
           board: { inprog: [], review: [], done: [['EM-14 · welcome v3', 'SHIPPED', 'ok']] },
@@ -276,7 +282,7 @@
       ],
       channels: {
         'book-tracker': {
-          type: 'project', title: '# book-tracker', sub: 'Personal · project channel',
+          type: 'project', title: '# book-tracker', sub: 'Personal · project channel', people: ['Corey'],
           status: { dot: 'ok', label: 'Idle' },
           feed: [{ sep: 'LAST WEEK' }, { who: 'Build Agent', ai: true, when: 'JUL 29', card: { t: 'Reading stats page shipped', s: '52 books logged this year.', actions: ['Open app'] } }],
           board: { inprog: [], review: [], done: [['BT-08 · stats page', 'SHIPPED', 'ok']] },
@@ -340,6 +346,30 @@
     ['dm', 'DMs'],
     ['group', 'Groups'],
   ];
+  /** Pastel two-colour tiles, one per company (Slack-style switcher). */
+  const CO_TILES: Record<string, string> = {
+    indigo: 'linear-gradient(140deg, #a5b4fc, #f0abfc)',
+    sender: 'linear-gradient(140deg, #fcd34d, #fb923c)',
+    personal: 'linear-gradient(140deg, #a7f3d0, #67e8f9)',
+    LiveRecover: 'linear-gradient(140deg, #93c5fd, #6ee7b7)',
+    Keptwork: 'linear-gradient(140deg, #fda4af, #fdba74)',
+    'Holler Mgmt': 'linear-gradient(140deg, #c4b5fd, #93c5fd)',
+  };
+  const coShort = (label: string) => label.replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+
+  const KIND_SHORT: Record<string, string> = { project: 'Projects', dm: 'DMs', group: 'Groups' };
+  /** The filter icon toggles a Notion-style bar of sort/type/people chips. */
+  let filterOpen = $state(false);
+  const PEOPLE = ['Corey', 'Bryan', 'Sofia', 'Marcus', 'Priya', 'Kayla'];
+  let peopleFilter = $state<Record<string, boolean>>({});
+  const peopleSelected = $derived(PEOPLE.filter((p) => peopleFilter[p]));
+  const typeNarrowed = $derived(Object.values(filterTypes).some((v) => !v));
+  const typeLabel = $derived(
+    typeNarrowed ? FILTER_KINDS.filter(([k]) => filterTypes[k]).map(([k]) => KIND_SHORT[k]).join(', ') || 'None' : 'Type',
+  );
+  const peopleLabel = $derived(
+    peopleSelected.length === 0 ? 'People' : peopleSelected.length === 1 ? peopleSelected[0] : `${peopleSelected.length} people`,
+  );
   /** A group message is a DM with more than one peer; every # channel —
    *  project-backed or not — filters as one kind. */
   function rowKind(c: Channel): string {
@@ -525,6 +555,22 @@
   let toastMsg = $state('');
   let toastShown = $state(false);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 'By type' sort regroups the daybook by kind instead of by day. */
+  const sideByType = $derived.by(() => {
+    const groups: { label: string; items: SideRow[] }[] = [
+      { label: 'PROJECT CHANNELS', items: [] },
+      { label: 'DMS', items: [] },
+      { label: 'GROUPS', items: [] },
+    ];
+    for (const k of scopeKeys) {
+      for (const [id, c] of Object.entries(DATA[k].channels)) {
+        const kind = rowKind(c);
+        (kind === 'project' ? groups[0] : kind === 'dm' ? groups[1] : groups[2]).items.push({ co: k, id });
+      }
+    }
+    return groups.filter((g) => g.items.length > 0);
+  });
+
   function toast(msg: string) {
     toastMsg = msg;
     toastShown = true;
@@ -534,7 +580,7 @@
 
   const company = $derived(DATA[activeCo]);
   const chan = $derived(company.channels[channelId] as Channel | undefined);
-  const filterActive = $derived(Object.values(filterTypes).some((v) => !v));
+  const filterActive = $derived(Object.values(filterTypes).some((v) => !v) || PEOPLE.some((p) => peopleFilter[p]) || sortMode !== 'chrono');
   /** Companies in the current daybook scope. */
   const scopeKeys = $derived(coFilter === 'all' ? Object.keys(DATA) : [coFilter]);
 
@@ -582,6 +628,9 @@
     const c = DATA[coKey].channels[id];
     if (!c) return false;
     if (!filterTypes[rowKind(c)]) return false;
+    if (peopleSelected.length > 0) {
+      if (!c.people || !c.people.some((p) => peopleSelected.includes(p))) return false;
+    }
     return true;
   }
   function sendMessage() {
@@ -643,22 +692,41 @@
            the right. Search opens the jump palette. -->
       <div class="scope-row">
         <button class="scope-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('scope'); }}>
-          {coFilter === 'all' ? 'All companies' : DATA[coFilter].label}
+          {#if coFilter === 'all'}
+            <span class="co-tile all"><Stack size={11} weight="bold" /></span>
+          {:else}
+            <span class="co-tile" style={`background: ${CO_TILES[coFilter]}`}>{coShort(DATA[coFilter].label)}</span>
+          {/if}
+          <span class="scope-name">{coFilter === 'all' ? 'All companies' : DATA[coFilter].label}</span>
           <span class="caret"><CaretDown size={10} weight="bold" /></span>
         </button>
         <div class="scope-actions">
           <button class="bar-ic" aria-label="Search (⌘K)" onclick={openSearch}><MagnifyingGlass size={15} /></button>
           <button
             class="bar-ic"
-            class:filter-on={filterActive}
+            class:filter-on={filterOpen || filterActive}
             aria-label="Filter conversations"
-            data-panel-trigger
-            onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}
+            aria-pressed={filterOpen}
+            onclick={() => (filterOpen = !filterOpen)}
           >
             <FunnelSimple size={15} />
           </button>
         </div>
       </div>
+
+      {#if filterOpen}
+        <div class="filter-bar">
+          <button class="f-chip" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('fsort'); }}>
+            <ArrowsDownUp size={11} /> {sortMode === 'chrono' ? 'Recent' : 'By type'} <CaretDown size={9} weight="bold" />
+          </button>
+          <button class="f-chip" class:on={typeNarrowed} data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('ftype'); }}>
+            <Stack size={11} /> {typeLabel} <CaretDown size={9} weight="bold" />
+          </button>
+          <button class="f-chip" class:on={peopleSelected.length > 0} data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('fpeople'); }}>
+            <Users size={11} /> {peopleLabel} <CaretDown size={9} weight="bold" />
+          </button>
+        </div>
+      {/if}
 
       <div class="side-scroll">
         {#snippet sideRow(r: SideRow)}
@@ -682,12 +750,21 @@
         {#each sidePinned as r (`${r.co}:${r.id}`)}
           {@render sideRow(r)}
         {/each}
-        {#each sideDays as d (d.date)}
-          <div class="grp"><span class="t mono">{d.label}</span><span class="d mono">{d.date}</span></div>
-          {#each d.items as r (`${r.co}:${r.id}`)}
-            {@render sideRow(r)}
+        {#if sortMode === 'type'}
+          {#each sideByType as g (g.label)}
+            <div class="grp"><span class="t mono">{g.label}</span></div>
+            {#each g.items as r (`${r.co}:${r.id}`)}
+              {@render sideRow(r)}
+            {/each}
           {/each}
-        {/each}
+        {:else}
+          {#each sideDays as d (d.date)}
+            <div class="grp"><span class="t mono">{d.label}</span><span class="d mono">{d.date}</span></div>
+            {#each d.items as r (`${r.co}:${r.id}`)}
+              {@render sideRow(r)}
+            {/each}
+          {/each}
+        {/if}
         <button class="grp fold" onclick={() => toast('Last week would expand — 6 quiet conversations')}>
           <span class="t mono dim">LAST WEEK <CaretRight size={8} weight="bold" /></span>
         </button>
@@ -1276,20 +1353,37 @@
     {/each}
   </div>
 
-  <!-- Filter dropdown -->
-  <div class="panel filter-panel" class:open={openPanel === 'filter'}>
-    <div class="p-sec mono">SORT</div>
-    {#each [['chrono', 'Chronological'], ['type', 'By type']] as [k, label] (k)}
-      <button class="p-item" onclick={(e) => { e.stopPropagation(); sortMode = k as typeof sortMode; toast(k === 'type' ? 'Sorted by type' : 'Sorted chronologically'); }}>
-        {label}<span class="p-check">{#if sortMode === k}<Check size={12} weight="bold" />{/if}</span>
+  <!-- Sort dropdown (filter bar) -->
+  <div class="panel fbar-panel" class:open={openPanel === 'fsort'}>
+    {#each [['chrono', 'Chronological', Clock], ['type', 'By type', Stack]] as [k, label, Icon] (k)}
+      <button class="p-item" onclick={() => { sortMode = k as typeof sortMode; openPanel = null; }}>
+        <span class="pi"><Icon size={14} /></span>{label}
+        <span class="p-check">{#if sortMode === k}<Check size={12} weight="bold" />{/if}</span>
       </button>
     {/each}
-    <div class="p-sec mono">SHOW</div>
-    {#each FILTER_KINDS as [k, label] (k)}
-      <button class="p-item" onclick={(e) => { e.stopPropagation(); filterTypes[k] = !filterTypes[k]; }}>
-        {label}<span class="p-check">{#if filterTypes[k]}<Check size={12} weight="bold" />{/if}</span>
+  </div>
+
+  <!-- Type dropdown (filter bar) -->
+  <div class="panel fbar-panel" class:open={openPanel === 'ftype'}>
+    {#each [['project', 'Project channels', Hash], ['dm', 'DMs', ChatCircle], ['group', 'Groups', UsersThree]] as [k, label, Icon] (k)}
+      <button class="p-item" onclick={(e) => { e.stopPropagation(); filterTypes[k as string] = !filterTypes[k as string]; }}>
+        <span class="pi"><Icon size={14} /></span>{label}
+        <span class="p-check">{#if filterTypes[k as string]}<Check size={12} weight="bold" />{/if}</span>
       </button>
     {/each}
+  </div>
+
+  <!-- People dropdown (filter bar) -->
+  <div class="panel fbar-panel" class:open={openPanel === 'fpeople'}>
+    {#each PEOPLE as person (person)}
+      <button class="p-item" onclick={(e) => { e.stopPropagation(); peopleFilter[person] = !peopleFilter[person]; }}>
+        <span class="m-ava">{person[0]}</span>{person}{#if person === 'Corey'}<span class="p-dim you">you</span>{/if}
+        <span class="p-check">{#if peopleFilter[person]}<Check size={12} weight="bold" />{/if}</span>
+      </button>
+    {/each}
+    {#if peopleSelected.length > 0}
+      <button class="p-item clear" onclick={() => (peopleFilter = {})}>Clear selection</button>
+    {/if}
   </div>
 
   <!-- User menu -->
@@ -1301,20 +1395,20 @@
 
   <!-- Company scope dropdown -->
   <div class="panel scope-panel" class:open={openPanel === 'scope'}>
-    <button class="p-item" onclick={() => { coFilter = 'all'; openPanel = null; }}>
-      All companies
-      <span class="p-check">{#if coFilter === 'all'}<Check size={12} weight="bold" />{/if}</span>
+    <button class="p-item co-row" class:current={coFilter === 'all'} onclick={() => { coFilter = 'all'; openPanel = null; }}>
+      <span class="co-tile all"><Stack size={11} weight="bold" /></span>
+      <span class="co-row-label">All companies</span>
+      <span class="co-key mono">⌘0</span>
     </button>
-    {#each Object.entries(DATA) as [key, c] (key)}
-      <button class="p-item" onclick={() => { coFilter = key; openPanel = null; }}>
-        {c.label}
-        <span class="p-check">{#if coFilter === key}<Check size={12} weight="bold" />{/if}</span>
-      </button>
-    {/each}
-    {#each EXTRA_COMPANIES as [short, label] (short)}
-      <button class="p-item" onclick={() => { openPanel = null; toast(`${label} would load (not in prototype data)`); }}>
-        {label}
-        <span class="p-check"></span>
+    {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label] as [string, string]), ...EXTRA_COMPANIES.map(([, label]) => [label, label] as [string, string])] as [key, label], i (key)}
+      <button
+        class="p-item co-row"
+        class:current={coFilter === key}
+        onclick={() => { if (DATA[key]) { coFilter = key; } else { toast(`${label} would load (not in prototype data)`); } openPanel = null; }}
+      >
+        <span class="co-tile" style={`background: ${CO_TILES[key] ?? 'linear-gradient(140deg, #cbd5e1, #94a3b8)'}`}>{coShort(label)}</span>
+        <span class="co-row-label">{label}</span>
+        <span class="co-key mono">⌘{i + 1}</span>
       </button>
     {/each}
   </div>
@@ -1469,12 +1563,16 @@
   .body { flex: 1; display: flex; min-height: 0; }
 
   /* ═══════════ Scope row (company picker + search/filter icons) ═══════════ */
-  .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
-  /* Naked at rest, like the title-bar icon buttons. */
-  .scope-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: background 0.12s; }
-  .scope-btn:hover { background: var(--hover); }
+  .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 8px; margin-bottom: 10px; }
+  /* Naked, unpadded — the tile's left edge lines up with the row icons below.
+     Hover just dims the label rather than drawing a box. */
+  .scope-btn { display: inline-flex; align-items: center; gap: 8px; padding: 0; border-radius: 0; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: opacity 0.12s; }
+  .scope-btn:hover { opacity: 0.65; }
   .scope-actions { display: flex; gap: 2px; }
-  .scope-panel { top: 96px; left: 14px; width: 220px; min-width: 0; }
+  /* Company tile: pastel gradient with the company's initials. */
+  .co-tile { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; border-radius: 6px; font: 700 8px var(--font-ui); color: rgba(20, 20, 28, 0.72); letter-spacing: 0.02em; }
+  .co-tile.all { background: var(--btn-bg); color: var(--t2); }
+  .scope-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-ic.filter-on { color: var(--ice-ink); }
 
   /* ═══════════ Jump palette (⌘K) ═══════════ */
@@ -1854,6 +1952,12 @@
   /* Dropdowns float as frosted glass: translucent white over a backdrop blur. */
   .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 6px; box-shadow: var(--panel-shadow); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); display: none; flex-direction: column; gap: 0; z-index: 50; min-width: 270px; }
   .panel.open { display: flex; }
+  /* Stays inside the 280px side pane. */
+  .scope-panel { top: 96px; left: 14px; width: 224px; min-width: 0; }
+  .scope-panel .p-item.co-row { gap: 9px; padding: 6px 8px; }
+  .scope-panel .p-item.co-row.current { background: var(--hover); }
+  .co-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .co-key { flex-shrink: 0; font-size: 10px; color: var(--t3); }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
   /* Member / agent list marks — thread-avatar shape at menu scale. */
@@ -1862,10 +1966,15 @@
   /* Condensed key-value rows: Branch / Repo / Preview. */
   .status-panel .p-item.kv { padding: 5px 10px; }
   .status-panel .p-item.static { cursor: default; }
-  /* Compact menu: tight rows, check column on the right. */
-  .filter-panel { top: 96px; left: 250px; width: 185px; min-width: 0; padding: 6px; gap: 0; }
-  .filter-panel .p-item { padding: 5px 8px; gap: 7px; font-size: 12px; }
-  .filter-panel .p-sec { padding: 5px 8px 2px; }
+  /* Filter bar: Notion-style chips under the scope row. */
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .f-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px; background: var(--btn-bg); border: 1px solid transparent; font-size: 11px; font-weight: 500; color: var(--t2); transition: border-color 0.12s; }
+  .f-chip:hover { border-color: var(--line2); }
+  .f-chip.on { background: var(--ice-tile); color: var(--ice-ink); }
+  .fbar-panel { top: 172px; left: 14px; width: 210px; min-width: 0; }
+  .fbar-panel .p-item .you { margin-left: -4px; font-size: 10px; }
+  .fbar-panel .p-item.clear { color: var(--t3); justify-content: center; }
+  .fbar-panel .p-item.clear:hover { color: var(--t1); }
   .p-check { display: inline-flex; align-items: center; justify-content: flex-end; width: 13px; margin-left: auto; flex-shrink: 0; color: var(--t2); }
   /* Stays inside the side pane; condensed like the filter menu. */
   .user-panel { bottom: 56px; left: 10px; width: 260px; min-width: 0; padding: 6px; gap: 0; }
