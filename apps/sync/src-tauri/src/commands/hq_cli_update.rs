@@ -2770,12 +2770,15 @@ exit 0
             let clear = || panic!("a non-convergent install must not clear its marker");
             let capture = |_| captures.set(captures.get() + 1);
             let record_failure = |_error: String| failures.set(failures.get() + 1);
+            let record_capture_episode = |_keys: Vec<String>| Ok(());
             let emit = |_| panic!("a non-convergent install must not emit cleared");
             let effects = PostInstallEffects {
                 record: &record,
                 clear: &clear,
                 capture: &capture,
                 record_failure: &record_failure,
+                capture_episode_reported_keys: &[],
+                record_capture_episode: &record_capture_episode,
                 emit_cleared: &emit,
             };
 
@@ -2809,6 +2812,7 @@ exit 0
         let clear = || clears.set(clears.get() + 1);
         let capture = |_| panic!("a converged install must not capture non-convergence");
         let record_failure = |_error: String| panic!("a converged install has no marker failure");
+        let record_capture_episode = |_keys: Vec<String>| Ok(());
         let emit = |info: HqCliUpdateInfo| {
             emits.set(emits.get() + 1);
             assert_eq!(info.local.as_deref(), Some("5.84.0"));
@@ -2819,6 +2823,8 @@ exit 0
             clear: &clear,
             capture: &capture,
             record_failure: &record_failure,
+            capture_episode_reported_keys: &[],
+            record_capture_episode: &record_capture_episode,
             emit_cleared: &emit,
         };
 
