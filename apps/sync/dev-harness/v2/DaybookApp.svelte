@@ -643,7 +643,7 @@
            the right. Search opens the jump palette. -->
       <div class="scope-row">
         <button class="scope-btn" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('scope'); }}>
-          {coFilter === 'all' ? 'All' : DATA[coFilter].label}
+          {coFilter === 'all' ? 'All companies' : DATA[coFilter].label}
           <span class="caret"><CaretDown size={10} weight="bold" /></span>
         </button>
         <div class="scope-actions">
@@ -1470,8 +1470,9 @@
 
   /* ═══════════ Scope row (company picker + search/filter icons) ═══════════ */
   .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
-  .scope-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; background: var(--btn-bg); border: 1px solid transparent; font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
-  .scope-btn:hover { border-color: var(--line2); }
+  /* Naked at rest, like the title-bar icon buttons. */
+  .scope-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: background 0.12s; }
+  .scope-btn:hover { background: var(--hover); }
   .scope-actions { display: flex; gap: 2px; }
   .scope-panel { top: 96px; left: 14px; width: 220px; min-width: 0; }
   .bar-ic.filter-on { color: var(--ice-ink); }
