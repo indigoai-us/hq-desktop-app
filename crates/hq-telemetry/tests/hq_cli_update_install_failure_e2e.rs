@@ -710,6 +710,67 @@ fn force_exhausted_structured_bin_collision_stays_visible_as_a_warning() {
 }
 
 #[test]
+fn second_shim_collision_is_recognized_and_names_the_shim() {
+    // HQ-DESKTOP-4Y reported `install failed (EEXIST:unknown:other)` with
+    // npm_final_attempt_forced=false because the collision was on the package's
+    // SECOND declared shim, `hq-auth-refresh`, which the updater did not
+    // recognize. The emitted artifact must now be the RECOGNIZED collision, and
+    // the new npm_bin_target tag must name which shim collided — without leaking
+    // the path.
+    let second_shim = "npm error code EEXIST\n\
+        npm error path /usr/local/bin/hq-auth-refresh";
+
+    // Unforced: still loud (Error), but titled on the recognized `bin-hq`
+    // signature — no longer the reported `EEXIST:unknown:other`.
+    let unforced = single_event(captured_events(|| {
+        report_install_failure(Some(1), second_shim, Some("/usr/local"))
+    }));
+    assert_unexpected_install_event(
+        &unforced,
+        "EEXIST",
+        "false",
+        "other",
+        "bin-hq",
+        second_shim.len().to_string().as_str(),
+        None,
+        "none",
+        "EEXIST:unknown:bin-hq",
+    );
+    assert_eq!(tag(&unforced, "npm_bin_target"), Some("hq-auth-refresh"));
+    assert_eq!(tag(&unforced, "npm_final_attempt_forced"), Some("false"));
+    assert_path_safe(&unforced, &["/usr/local", "npm error"]);
+
+    // Forced survivor: the same visible-at-Warning collision as the `hq` shim,
+    // sharing its fingerprint so both shims consolidate into one issue while
+    // npm_bin_target keeps them discriminable inside it.
+    let forced = single_event(captured_events(|| {
+        report_install_failure_with_final_attempt(Some(1), second_shim, Some("/usr/local"), true)
+    }));
+    assert_eq!(forced.level, sentry::Level::Warning);
+    assert_eq!(
+        forced.message.as_deref(),
+        Some("[hq-cli-update] hq shim collision survived npm --force")
+    );
+    assert_eq!(
+        fingerprint(&forced),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "expected-bin-collision",
+            "EEXIST:unknown:bin-hq"
+        ]
+    );
+    assert_eq!(
+        tag(&forced, "install_failure_kind"),
+        Some("expected-bin-collision")
+    );
+    assert_eq!(tag(&forced, "npm_final_attempt_forced"), Some("true"));
+    assert_eq!(tag(&forced, "npm_path_shape"), Some("bin-hq"));
+    assert_eq!(tag(&forced, "npm_bin_target"), Some("hq-auth-refresh"));
+    assert_path_safe(&forced, &["/usr/local", "npm error"]);
+}
+
+#[test]
 fn third_party_lifecycle_failure_is_separately_grouped_while_owned_and_unknown_are_loud() {
     let third_party = "npm error code 1\n\
         npm error command failed\n\
