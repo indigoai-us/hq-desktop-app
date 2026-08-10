@@ -31,6 +31,7 @@
     GearSix,
     GitPullRequest,
     Hash,
+    Kanban,
     KeyReturn,
     Image,
     Lightning,
@@ -47,8 +48,6 @@
     Smiley,
     SignOut,
     Stack,
-    Users,
-    UsersThree,
     UserCircle,
     VideoCamera,
     Warning,
@@ -340,36 +339,27 @@
   let openPanel = $state<string | null>(null);
   let packsOpen = $state(false);
   let sortMode = $state<'chrono' | 'type'>('chrono');
-  let filterTypes = $state<Record<string, boolean>>({ project: true, dm: true, group: true });
-  const FILTER_KINDS: [string, string][] = [
-    ['project', 'Project channels'],
-    ['dm', 'DMs'],
-    ['group', 'Groups'],
-  ];
+  /** One-click type scope instead of per-kind checkboxes. */
+  let typeScope = $state<'all' | 'project' | 'people'>('all');
   /** Pastel two-colour tiles, one per company (Slack-style switcher). */
   const CO_TILES: Record<string, string> = {
-    indigo: 'linear-gradient(140deg, #a5b4fc, #f0abfc)',
-    sender: 'linear-gradient(140deg, #fcd34d, #fb923c)',
-    personal: 'linear-gradient(140deg, #a7f3d0, #67e8f9)',
-    LiveRecover: 'linear-gradient(140deg, #93c5fd, #6ee7b7)',
-    Keptwork: 'linear-gradient(140deg, #fda4af, #fdba74)',
-    'Holler Mgmt': 'linear-gradient(140deg, #c4b5fd, #93c5fd)',
+    indigo: 'linear-gradient(135deg, #7c6cf5 0%, #d472e8 100%)',
+    sender: 'linear-gradient(135deg, #f5a524 0%, #f2683c 100%)',
+    personal: 'linear-gradient(135deg, #2bb6a4 0%, #3ba9e6 100%)',
+    LiveRecover: 'linear-gradient(135deg, #3f8ff0 0%, #43c9a0 100%)',
+    Keptwork: 'linear-gradient(135deg, #f2647f 0%, #f79d4d 100%)',
+    'Holler Mgmt': 'linear-gradient(135deg, #8a7bef 0%, #4fa8e8 100%)',
   };
   const coShort = (label: string) => label.replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
 
-  const KIND_SHORT: Record<string, string> = { project: 'Projects', dm: 'DMs', group: 'Groups' };
-  /** The filter icon toggles a Notion-style bar of sort/type/people chips. */
-  let filterOpen = $state(false);
   const PEOPLE = ['Corey', 'Bryan', 'Sofia', 'Marcus', 'Priya', 'Kayla'];
   let peopleFilter = $state<Record<string, boolean>>({});
   const peopleSelected = $derived(PEOPLE.filter((p) => peopleFilter[p]));
-  const typeNarrowed = $derived(Object.values(filterTypes).some((v) => !v));
-  const typeLabel = $derived(
-    typeNarrowed ? FILTER_KINDS.filter(([k]) => filterTypes[k]).map(([k]) => KIND_SHORT[k]).join(', ') || 'None' : 'Type',
-  );
-  const peopleLabel = $derived(
-    peopleSelected.length === 0 ? 'People' : peopleSelected.length === 1 ? peopleSelected[0] : `${peopleSelected.length} people`,
-  );
+  function resetFilters() {
+    typeScope = 'all';
+    peopleFilter = {};
+    sortMode = 'chrono';
+  }
   /** A group message is a DM with more than one peer; every # channel —
    *  project-backed or not — filters as one kind. */
   function rowKind(c: Channel): string {
@@ -580,7 +570,7 @@
 
   const company = $derived(DATA[activeCo]);
   const chan = $derived(company.channels[channelId] as Channel | undefined);
-  const filterActive = $derived(Object.values(filterTypes).some((v) => !v) || PEOPLE.some((p) => peopleFilter[p]) || sortMode !== 'chrono');
+  const filterActive = $derived(typeScope !== 'all' || PEOPLE.some((p) => peopleFilter[p]) || sortMode !== 'chrono');
   /** Companies in the current daybook scope. */
   const scopeKeys = $derived(coFilter === 'all' ? Object.keys(DATA) : [coFilter]);
 
@@ -627,7 +617,9 @@
   function rowVisible(coKey: string, id: string): boolean {
     const c = DATA[coKey].channels[id];
     if (!c) return false;
-    if (!filterTypes[rowKind(c)]) return false;
+    const kind = rowKind(c);
+    if (typeScope === 'project' && kind !== 'project') return false;
+    if (typeScope === 'people' && kind === 'project') return false;
     if (peopleSelected.length > 0) {
       if (!c.people || !c.people.some((p) => peopleSelected.includes(p))) return false;
     }
@@ -697,36 +689,22 @@
           {:else}
             <span class="co-tile" style={`background: ${CO_TILES[coFilter]}`}>{coShort(DATA[coFilter].label)}</span>
           {/if}
-          <span class="scope-name">{coFilter === 'all' ? 'All companies' : DATA[coFilter].label}</span>
+          <span class="scope-name">{coFilter === 'all' ? 'All' : DATA[coFilter].label}</span>
           <span class="caret"><CaretDown size={10} weight="bold" /></span>
         </button>
         <div class="scope-actions">
           <button class="bar-ic" aria-label="Search (⌘K)" onclick={openSearch}><MagnifyingGlass size={15} /></button>
           <button
             class="bar-ic"
-            class:filter-on={filterOpen || filterActive}
+            class:filter-on={openPanel === 'filter' || filterActive}
             aria-label="Filter conversations"
-            aria-pressed={filterOpen}
-            onclick={() => (filterOpen = !filterOpen)}
+            data-panel-trigger
+            onclick={(e) => { e.stopPropagation(); togglePanel('filter'); }}
           >
             <FunnelSimple size={15} />
           </button>
         </div>
       </div>
-
-      {#if filterOpen}
-        <div class="filter-bar">
-          <button class="f-chip" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('fsort'); }}>
-            <ArrowsDownUp size={11} /> {sortMode === 'chrono' ? 'Recent' : 'By type'} <CaretDown size={9} weight="bold" />
-          </button>
-          <button class="f-chip" class:on={typeNarrowed} data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('ftype'); }}>
-            <Stack size={11} /> {typeLabel} <CaretDown size={9} weight="bold" />
-          </button>
-          <button class="f-chip" class:on={peopleSelected.length > 0} data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('fpeople'); }}>
-            <Users size={11} /> {peopleLabel} <CaretDown size={9} weight="bold" />
-          </button>
-        </div>
-      {/if}
 
       <div class="side-scroll">
         {#snippet sideRow(r: SideRow)}
@@ -768,7 +746,7 @@
         <button class="grp fold" onclick={() => toast('Last week would expand — 6 quiet conversations')}>
           <span class="t mono dim">LAST WEEK <CaretRight size={8} weight="bold" /></span>
         </button>
-        <button class="hist" onclick={() => nav('history')}><MagnifyingGlass size={14} /><span>Show all history…</span></button>
+        <button class="hist" onclick={() => nav('history')}><span class="ico"><MagnifyingGlass size={14} /></span><span>Show all history…</span></button>
       </div>
       <div class="footer-divider" aria-hidden="true"></div>
       <button class="footer" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('user'); }}>
@@ -789,8 +767,10 @@
             {#if chan.type === 'project'}
               <div class="head-right">
                 <div class="tabs">
-                  {#each ['chat', 'board', 'files'] as t (t)}
-                    <button class="tab" class:on={tab === t} onclick={() => (tab = t as typeof tab)}>{t[0].toUpperCase() + t.slice(1)}</button>
+                  {#each [['chat', 'Chat', ChatCircle], ['board', 'Board', Kanban], ['files', 'Files', FileText]] as [t, label, Icon] (t)}
+                    <button class="tab" class:on={tab === t} onclick={() => (tab = t as typeof tab)}>
+                      <Icon size={13} /> {label}
+                    </button>
                   {/each}
                 </div>
                 {#if chan.status}
@@ -1353,46 +1333,6 @@
     {/each}
   </div>
 
-  <!-- Sort dropdown (filter bar) -->
-  <div class="panel fbar-panel" class:open={openPanel === 'fsort'}>
-    {#each [['chrono', 'Chronological', Clock], ['type', 'By type', Stack]] as [k, label, Icon] (k)}
-      <button class="p-item" onclick={() => { sortMode = k as typeof sortMode; openPanel = null; }}>
-        <span class="pi"><Icon size={14} /></span>{label}
-        <span class="p-check">{#if sortMode === k}<Check size={12} weight="bold" />{/if}</span>
-      </button>
-    {/each}
-  </div>
-
-  <!-- Type dropdown (filter bar) -->
-  <div class="panel fbar-panel" class:open={openPanel === 'ftype'}>
-    {#each [['project', 'Project channels', Hash], ['dm', 'DMs', ChatCircle], ['group', 'Groups', UsersThree]] as [k, label, Icon] (k)}
-      <button class="p-item" onclick={(e) => { e.stopPropagation(); filterTypes[k as string] = !filterTypes[k as string]; }}>
-        <span class="pi"><Icon size={14} /></span>{label}
-        <span class="p-check">{#if filterTypes[k as string]}<Check size={12} weight="bold" />{/if}</span>
-      </button>
-    {/each}
-  </div>
-
-  <!-- People dropdown (filter bar) -->
-  <div class="panel fbar-panel" class:open={openPanel === 'fpeople'}>
-    {#each PEOPLE as person (person)}
-      <button class="p-item" onclick={(e) => { e.stopPropagation(); peopleFilter[person] = !peopleFilter[person]; }}>
-        <span class="m-ava">{person[0]}</span>{person}{#if person === 'Corey'}<span class="p-dim you">you</span>{/if}
-        <span class="p-check">{#if peopleFilter[person]}<Check size={12} weight="bold" />{/if}</span>
-      </button>
-    {/each}
-    {#if peopleSelected.length > 0}
-      <button class="p-item clear" onclick={() => (peopleFilter = {})}>Clear selection</button>
-    {/if}
-  </div>
-
-  <!-- User menu -->
-  <div class="panel user-panel" class:open={openPanel === 'user'}>
-    <button class="p-item" onclick={() => nav('profile')}><span class="pi"><UserCircle size={14} /></span>Profile</button>
-    <button class="p-item" onclick={() => nav('settings')}><span class="pi"><GearSix size={14} /></span>Settings</button>
-    <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
-  </div>
-
   <!-- Company scope dropdown -->
   <div class="panel scope-panel" class:open={openPanel === 'scope'}>
     <button class="p-item co-row" class:current={coFilter === 'all'} onclick={() => { coFilter = 'all'; openPanel = null; }}>
@@ -1406,9 +1346,47 @@
         class:current={coFilter === key}
         onclick={() => { if (DATA[key]) { coFilter = key; } else { toast(`${label} would load (not in prototype data)`); } openPanel = null; }}
       >
-        <span class="co-tile" style={`background: ${CO_TILES[key] ?? 'linear-gradient(140deg, #cbd5e1, #94a3b8)'}`}>{coShort(label)}</span>
+        <span class="co-tile" style={`background: ${CO_TILES[key] ?? 'linear-gradient(135deg, #94a3b8, #64748b)'}`}>{coShort(label)}</span>
         <span class="co-row-label">{label}</span>
         <span class="co-key mono">⌘{i + 1}</span>
+      </button>
+    {/each}
+  </div>
+
+  <!-- Filter dropdown: sort, type scope, and people in one menu -->
+  <div class="panel filter-panel" class:open={openPanel === 'filter'}>
+    <div class="fp-head">
+      <span class="p-sec mono">SORT BY</span>
+      {#if filterActive}
+        <button class="fp-reset" onclick={resetFilters}>Reset</button>
+      {/if}
+    </div>
+    <div class="fp-seg">
+      {#each [['chrono', 'Recent', Clock], ['type', 'Type', Stack]] as [k, label, Icon] (k)}
+        <button class="fp-seg-btn" class:on={sortMode === k} onclick={(e) => { e.stopPropagation(); sortMode = k as typeof sortMode; }}>
+          <Icon size={12} /> {label}
+        </button>
+      {/each}
+    </div>
+
+    <span class="p-sec mono">SHOW</span>
+    {#each [['all', 'All', Stack], ['project', 'Project channels', Hash], ['people', 'DMs & groups', ChatCircle]] as [k, label, Icon] (k)}
+      <button class="p-item" onclick={(e) => { e.stopPropagation(); typeScope = k as typeof typeScope; }}>
+        <span class="pi"><Icon size={14} /></span>{label}
+        <span class="p-check">{#if typeScope === k}<Check size={12} weight="bold" />{/if}</span>
+      </button>
+    {/each}
+
+    <div class="fp-head">
+      <span class="p-sec mono">PEOPLE</span>
+      {#if peopleSelected.length > 0}
+        <button class="fp-reset" onclick={(e) => { e.stopPropagation(); peopleFilter = {}; }}>Clear</button>
+      {/if}
+    </div>
+    {#each PEOPLE as person (person)}
+      <button class="p-item" onclick={(e) => { e.stopPropagation(); peopleFilter[person] = !peopleFilter[person]; }}>
+        <span class="pi"><span class="m-ava sm">{person[0]}</span></span>{person}{#if person === 'Corey'}<span class="p-dim you">you</span>{/if}
+        <span class="p-check">{#if peopleFilter[person]}<Check size={12} weight="bold" />{/if}</span>
       </button>
     {/each}
   </div>
@@ -1537,7 +1515,7 @@
   /* Settings company selector: secondary-style select with a company tile. */
   .co-select { display: inline-flex; align-items: center; gap: 7px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; font-size: 12px; font-weight: 500; color: var(--t1); transition: opacity 0.12s; }
   .co-select:hover { opacity: 0.7; }
-  .co-select-ava { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--line2); font: 600 8px var(--font-ui); color: var(--t2); }
+  .co-select-ava { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; background: var(--line2); font: 600 8px var(--font-ui); color: var(--t2); }
   .co-select-wrap { position: relative; }
   .co-picker-panel { bottom: calc(100% + 6px); right: 0; width: 210px; min-width: 0; padding: 6px; gap: 0; }
   .co-picker-panel .p-item { padding: 5px 8px; gap: 8px; font-size: 12px; }
@@ -1563,14 +1541,17 @@
   .body { flex: 1; display: flex; min-height: 0; }
 
   /* ═══════════ Scope row (company picker + search/filter icons) ═══════════ */
-  .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 8px; margin-bottom: 10px; }
+  /* No inset — the tile's left edge lines up with the row buttons' box. */
+  /* Sidebar header zone: its own height, content inset to the same line as
+     the row icons below (rows are 8px-padded inside their own box). */
+  .scope-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 34px; padding: 0; margin-bottom: 6px; flex-shrink: 0; }
   /* Naked, unpadded — the tile's left edge lines up with the row icons below.
      Hover just dims the label rather than drawing a box. */
-  .scope-btn { display: inline-flex; align-items: center; gap: 8px; padding: 0; border-radius: 0; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: opacity 0.12s; }
+  .scope-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0; border-radius: 0; background: transparent; border: none; font-size: 13px; font-weight: 600; color: var(--t1); transition: opacity 0.12s; }
   .scope-btn:hover { opacity: 0.65; }
   .scope-actions { display: flex; gap: 2px; }
   /* Company tile: pastel gradient with the company's initials. */
-  .co-tile { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; border-radius: 6px; font: 700 8px var(--font-ui); color: rgba(20, 20, 28, 0.72); letter-spacing: 0.02em; }
+  .co-tile { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 7px; font: 700 9px var(--font-ui); color: #fff; letter-spacing: 0.02em; text-shadow: 0 1px 1px rgba(0, 0, 0, 0.18); }
   .co-tile.all { background: var(--btn-bg); color: var(--t2); }
   .scope-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-ic.filter-on { color: var(--ice-ink); }
@@ -1585,14 +1566,14 @@
   .sm-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--t1); }
   .sm-row.sel { background: var(--hover); }
   .sm-ic { display: flex; align-items: center; justify-content: center; width: 18px; flex-shrink: 0; color: var(--t3); }
-  .sm-ic .av { width: 16px; height: 16px; border-radius: 5px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
+  .sm-ic .av { width: 16px; height: 16px; border-radius: 50%; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
   .sm-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
   .sm-meta { flex-shrink: 0; font-size: 10px; color: var(--t3); }
   .sm-return { display: flex; align-items: center; flex-shrink: 0; color: var(--t3); }
   .sm-empty { padding: 24px 12px; text-align: center; font-size: 13px; color: var(--t3); }
 
   /* ═══════════ Sidebar ═══════════ */
-  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; min-height: 0; }
+  .sidebar { width: 280px; flex-shrink: 0; background: var(--side-bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 10px; min-height: 0; }
   .search-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 10px; }
   /* Standard secondary surface: borderless fill, border on hover, brighter
      border while focused/pressed. */
@@ -1621,9 +1602,9 @@
   .row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; width: 100%; }
   .row:hover { background: var(--hover); }
   .row.sel { background: var(--sel); }
-  .row .ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; color: var(--t3); }
+  .row .ico, .hist .ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; color: var(--t3); }
   /* DM + group marks echo the thread avatars: rounded squares, not circles. */
-  .row .av { width: 16px; height: 16px; flex-shrink: 0; border-radius: 5px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
+  .row .av { width: 16px; height: 16px; flex-shrink: 0; border-radius: 50%; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); display: flex; align-items: center; justify-content: center; }
   .row .name { flex: 1; min-width: 0; font-size: 13px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
   .row.unread .name { font-weight: 500; color: var(--t1); }
   /* Single digits render as a perfect 16px circle; longer counts grow into a pill. */
@@ -1638,7 +1619,7 @@
   @media (prefers-reduced-motion: reduce) {
     .pulse::after { animation: none; }
   }
-  .hist { display: flex; align-items: center; gap: 8px; padding: 8px; margin-top: 8px; color: var(--t2); font-weight: 500; font-size: 12px; border-radius: 8px; width: 100%; }
+  .hist { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin-top: 8px; color: var(--t2); font-weight: 500; font-size: 12px; border-radius: 8px; width: 100%; }
   .hist:hover { background: var(--hover); }
   .footer-divider { height: 1px; margin-top: 8px; background: var(--line); flex-shrink: 0; }
   /* Hover reads as a clean rounded pill under the divider, secondary-style. */
@@ -1656,8 +1637,8 @@
   .chan-title { font-weight: 600; font-size: 15px; white-space: nowrap; }
   .chan-sub { font-size: 12px; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .head-right { display: flex; align-items: center; gap: 12px; margin-left: auto; }
-  .tabs { display: flex; gap: 2px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
-  .tab { font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 12px; border-radius: 6px; transition: color 0.12s; }
+  .tabs { display: flex; gap: 2px; background: var(--raised); border: none; border-radius: 8px; padding: 2px; }
+  .tab { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; font-size: 12px; color: var(--t2); padding: 4px 10px; border-radius: 6px; transition: color 0.12s; }
   .tab:hover { color: var(--t1); }
   .tab.on { color: var(--t1); background: var(--sel); }
   .status-btn { display: flex; align-items: center; gap: 6px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; font-weight: 500; font-size: 12px; color: var(--t2); white-space: nowrap; }
@@ -1688,7 +1669,7 @@
 
   .msg { display: flex; gap: 12px; }
   .msg-body { min-width: 0; flex: 1; }
-  .pav { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; background: var(--line2); display: flex; align-items: center; justify-content: center; font: 600 12px var(--font-ui); }
+  .pav { width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: var(--line2); display: flex; align-items: center; justify-content: center; font: 600 12px var(--font-ui); }
   /* Agent avatar: blue tint distinguishes it from humans; no ring, so it
      doesn't read as a selected control. */
   .pav.ai { background: var(--ice-tile); border: none; font-size: 10px; font-weight: 600; color: var(--ice-ink); }
@@ -1903,7 +1884,7 @@
   .notif-list .grp { padding: 14px 2px 4px; }
   .notif { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid transparent; transition: background 0.12s, border-color 0.12s; }
   .notif:hover { background: var(--btn-bg); border-color: var(--line2); }
-  .n-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px; background: var(--line2); font: 600 11px var(--font-ui); color: var(--t1); }
+  .n-ava { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--line2); font: 600 11px var(--font-ui); color: var(--t1); }
   .n-ava.ai { background: var(--ice-tile); color: var(--ice-ink); }
   .n-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; text-align: left; }
   .n-line { font-size: 13px; color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1936,7 +1917,7 @@
   .prof-input:focus { border-color: var(--border-active); }
   .prof-static { font-size: 12px; color: var(--t2); }
   .co-row-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); }
+  .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); }
   .pill.role { border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: transparent; color: var(--t3); }
   /* Sync state reads as a word next to its switch. */
   .co-row-sync { display: flex; align-items: center; gap: 10px; }
@@ -1953,28 +1934,33 @@
   .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 6px; box-shadow: var(--panel-shadow); backdrop-filter: blur(40px) saturate(1.5); -webkit-backdrop-filter: blur(40px) saturate(1.5); display: none; flex-direction: column; gap: 0; z-index: 50; min-width: 270px; }
   .panel.open { display: flex; }
   /* Stays inside the 280px side pane. */
-  .scope-panel { top: 96px; left: 14px; width: 224px; min-width: 0; }
+  /* Sidebar dropdowns span the pane's content width. */
+  .scope-panel { top: 92px; left: 10px; right: auto; width: 260px; min-width: 0; }
+  .filter-panel { top: 92px; left: 10px; right: auto; width: 260px; min-width: 0; }
   .scope-panel .p-item.co-row { gap: 9px; padding: 6px 8px; }
+  .scope-panel .co-tile { width: 20px; height: 20px; border-radius: 6px; font-size: 8px; }
   .scope-panel .p-item.co-row.current { background: var(--hover); }
   .co-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
   .co-key { flex-shrink: 0; font-size: 10px; color: var(--t3); }
   .core-panel { top: 52px; right: 16px; width: 300px; }
   .status-panel { top: 104px; right: 20px; width: 300px; }
   /* Member / agent list marks — thread-avatar shape at menu scale. */
-  .m-ava { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; border-radius: 6px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t1); }
+  .m-ava { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t1); }
   .m-ava.ai { background: var(--ice-tile); color: var(--ice-ink); }
   /* Condensed key-value rows: Branch / Repo / Preview. */
   .status-panel .p-item.kv { padding: 5px 10px; }
   .status-panel .p-item.static { cursor: default; }
-  /* Filter bar: Notion-style chips under the scope row. */
-  .filter-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-  .f-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px; background: var(--btn-bg); border: 1px solid transparent; font-size: 11px; font-weight: 500; color: var(--t2); transition: border-color 0.12s; }
-  .f-chip:hover { border-color: var(--line2); }
-  .f-chip.on { background: var(--ice-tile); color: var(--ice-ink); }
-  .fbar-panel { top: 172px; left: 14px; width: 210px; min-width: 0; }
-  .fbar-panel .p-item .you { margin-left: -4px; font-size: 10px; }
-  .fbar-panel .p-item.clear { color: var(--t3); justify-content: center; }
-  .fbar-panel .p-item.clear:hover { color: var(--t1); }
+  /* Filter dropdown: sort segmented control + type scope + people. */
+  .fp-head { display: flex; align-items: center; justify-content: space-between; }
+  .fp-reset { padding: 5px 8px; font-size: 10px; font-weight: 500; color: var(--t3); }
+  .fp-reset:hover { color: var(--t1); }
+  /* Same segmented control as the channel tabs. */
+  .fp-seg { display: flex; gap: 2px; margin: 2px 8px 6px; padding: 2px; border-radius: 8px; background: var(--raised); }
+  .fp-seg-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: 1; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; color: var(--t2); transition: color 0.12s; }
+  .fp-seg-btn:hover { color: var(--t1); }
+  .fp-seg-btn.on { background: var(--sel); color: var(--t1); }
+  .p-item .you { margin-left: -4px; font-size: 10px; color: var(--t3); }
+  .m-ava.sm { width: 18px; height: 18px; font-size: 8px; }
   .p-check { display: inline-flex; align-items: center; justify-content: flex-end; width: 13px; margin-left: auto; flex-shrink: 0; color: var(--t2); }
   /* Stays inside the side pane; condensed like the filter menu. */
   .user-panel { bottom: 56px; left: 10px; width: 260px; min-width: 0; padding: 6px; gap: 0; }
