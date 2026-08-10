@@ -1372,6 +1372,21 @@ jobs:
       HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
 
     steps:
+      # Without the App credentials the sync cannot run at all. Report that as a
+      # loud warning rather than a failed job: the release is already public and
+      # correct, and a red job here would misrepresent a successful ship.
+      - name: Check App credentials
+        id: creds
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${HQ_AUDIT_BOT_APP_ID}" ] && [ -n "${HQ_AUDIT_BOT_PRIVATE_KEY}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::hq-audit-bot App credentials are not set on this repository, so the released version was not synced to main. The release itself is unaffected — main simply keeps the previous version until HQ_AUDIT_BOT_APP_ID and HQ_AUDIT_BOT_PRIVATE_KEY are configured."
+          fi
+
       # main is protected: pull request required, no role bypass. The default
       # GITHUB_TOKEN therefore cannot push, and GitHub does not accept the
       # Actions identity as a ruleset bypass actor. The hq-audit-bot App is the
@@ -1379,6 +1394,7 @@ jobs:
       # uses to stamp its own release commits.
       - name: Mint App token for the version commit
         id: app-token
+        if: steps.creds.outputs.available == 'true'
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
@@ -1388,6 +1404,7 @@ jobs:
             ${{ github.event.repository.name }}
 
       - name: Checkout main
+        if: steps.creds.outputs.available == 'true'
         uses: actions/checkout@v4
         with:
           ref: main
@@ -1396,15 +1413,19 @@ jobs:
           persist-credentials: true
 
       - uses: pnpm/action-setup@v4
+        if: steps.creds.outputs.available == 'true'
 
       - uses: actions/setup-node@v4
+        if: steps.creds.outputs.available == 'true'
         with:
           node-version: 22
 
       - name: Install dependencies
+        if: steps.creds.outputs.available == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Stamp the released version onto main
+        if: steps.creds.outputs.available == 'true'
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
