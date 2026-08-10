@@ -2968,6 +2968,29 @@ pub fn install_failure_episode_key(latest: &str, detail: &str) -> Option<String>
     Some(format!("{latest}|{package}|{cause}"))
 }
 
+/// The repeat-guard key including toolchain provenance. A managed-toolchain retry
+/// failure is a DISTINCT diagnostic episode from the user-path failure that
+/// preceded it: without the `|managed` discriminator, a prior user-path report for
+/// the same `(latest, package, cause)` — for example a run where provisioning was
+/// skipped (cooldown) or failed, then retried and reported the user-path failure —
+/// would suppress this managed-provenance event, and the whole point of retrying
+/// under a known runtime is the diagnostic it emits. Pure so it is unit-testable
+/// without sending anything; delegates the base key so the closed-set safety and
+/// third-party-only minting are unchanged.
+pub fn install_failure_episode_key_with_provenance(
+    latest: &str,
+    detail: &str,
+    managed_toolchain_retry: bool,
+) -> Option<String> {
+    install_failure_episode_key(latest, detail).map(|key| {
+        if managed_toolchain_retry {
+            format!("{key}|managed")
+        } else {
+            key
+        }
+    })
+}
+
 /// Whether a lifecycle-failure episode identical to one already reported on this
 /// machine should be suppressed: the `current_key` is already in the machine's
 /// reported-key set. Mirrors [`non_convergent_episode_blocked`], but over a SET
@@ -3055,7 +3078,7 @@ pub fn report_install_failure_episode(
     {
         return InstallFailureEpisode::NotReportable;
     }
-    match install_failure_episode_key(latest, detail) {
+    match install_failure_episode_key_with_provenance(latest, detail, env.managed_toolchain_retry) {
         // A non-lifecycle reportable failure: report every time, as before.
         None => {
             report_install_failure_with_environment(
@@ -5435,6 +5458,61 @@ mod tests {
         assert_eq!(install_failure_episode_key("5.97.0", owned), None);
         assert_eq!(
             install_failure_episode_key("5.97.0", "npm error code ENOTDIR"),
+            None
+        );
+    }
+
+    #[test]
+    fn managed_toolchain_retry_is_a_distinct_repeat_guard_episode() {
+        let better_sqlite3 = "npm error code 1\n\
+            npm error command failed\n\
+            npm error path /usr/local/lib/node_modules/better-sqlite3\n\
+            prebuild-install warn install No prebuilt binaries found";
+
+        // Same (version, package, cause), but the managed retry carries a DISTINCT
+        // key so its provenance-bearing event can never collide with the user-path
+        // failure that preceded it.
+        let user_key = install_failure_episode_key_with_provenance("5.97.0", better_sqlite3, false);
+        let managed_key =
+            install_failure_episode_key_with_provenance("5.97.0", better_sqlite3, true);
+        assert_eq!(
+            user_key.as_deref(),
+            Some("5.97.0|better-sqlite3|prebuild-unavailable")
+        );
+        assert_eq!(
+            managed_key.as_deref(),
+            Some("5.97.0|better-sqlite3|prebuild-unavailable|managed")
+        );
+        assert_ne!(user_key, managed_key);
+
+        // A prior user-path report for this (version, package, cause) must NOT
+        // suppress the managed retry — otherwise the managed provenance the retry
+        // exists to emit is silently dropped.
+        let reported = [user_key.clone().unwrap()];
+        assert!(install_failure_episode_blocked(
+            &reported,
+            user_key.as_deref().unwrap()
+        ));
+        assert!(!install_failure_episode_blocked(
+            &reported,
+            managed_key.as_deref().unwrap()
+        ));
+
+        // A REPEATED managed failure is still suppressed — the guard keeps working
+        // within the managed provenance, so a permanent managed-build failure stops
+        // re-paging on every scheduled check.
+        let after =
+            install_failure_episode_record(&reported, managed_key.as_deref().unwrap(), "5.97.0");
+        assert!(after.contains(user_key.as_ref().unwrap()));
+        assert!(install_failure_episode_blocked(
+            &after,
+            managed_key.as_deref().unwrap()
+        ));
+
+        // A non-lifecycle failure gets no key regardless of provenance — it keeps
+        // paging every time, whichever toolchain ran it.
+        assert_eq!(
+            install_failure_episode_key_with_provenance("5.97.0", "npm error code ENOTDIR", true),
             None
         );
     }

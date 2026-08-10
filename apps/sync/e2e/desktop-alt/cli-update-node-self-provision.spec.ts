@@ -126,11 +126,42 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(cli).toContain('apply_post_install_with_app(app, &outcome)');
   });
 
-  it('makes the managed CLI reachable from the user`s terminal too', () => {
-    // Idempotent, marker-guarded PATH configuration on the retry path so a terminal
-    // `hq` resolves the copy HQ just installed (unix profile / Windows user PATH).
-    expect(retryHelper).toContain('ensure_shell_path_configured');
-    expect(retryHelper).toContain('append_user_path');
+  it('defers the persistent PATH change until the retry has converged', () => {
+    // The raw shell-profile / Windows-PATH mutation lives in a dedicated helper...
+    expect(cli).toContain('fn configure_managed_shell_path(');
+    const pathHelper = cli.slice(
+      cli.indexOf('fn configure_managed_shell_path('),
+      cli.indexOf('async fn managed_toolchain_retry('),
+    );
+    expect(pathHelper).toContain('ensure_shell_path_configured');
+    expect(pathHelper).toContain('append_user_path');
+    // ...and the retry invokes it ONLY on a converged install, guarded by the
+    // convergence result — so a FAILED retry never persists a PATH change that could
+    // shadow the user's still-working CLI under a mismatched Node.
+    expect(retryHelper).toContain('configure_managed_shell_path(app, &managed_prefix)');
+    expect(retryHelper).toContain('if converged.is_ok()');
+    // The PATH call appears AFTER the convergence decision (deferred, not up front)...
+    expect(retryHelper.indexOf('configure_managed_shell_path(')).toBeGreaterThan(
+      retryHelper.indexOf('managed_retry_converged('),
+    );
+    // ...and the raw mutation never runs inside the retry body before the install.
+    expect(retryHelper).not.toContain('ensure_shell_path_configured');
+    expect(retryHelper).not.toContain('append_user_path');
+  });
+
+  it('keeps the ordinary install prefix on the resolved npm`s runtime', () => {
+    // The first-attempt install derives its prefix from the RUNTIME of the resolved
+    // npm, not `hq` alone. After a prior episode provisioned managed Node but left no
+    // managed `hq`, npm is managed (Node 22) while `hq` still resolves the user's
+    // Node-20 shim — a user-derived prefix would then receive ABI-127 artifacts that
+    // runtime cannot load, the very corruption the managed-retry fix prevents.
+    expect(cli).toContain('let prefix = hq_cli_install_prefix(&npm, &hq);');
+    expect(cli).toContain('fn hq_cli_install_prefix(');
+    expect(cli).toContain('fn prefer_managed_prefix(');
+    // A managed npm (living inside a managed toolchain root) routes to the SHARED
+    // managed prefix helper — never a user-derived prefix under a managed npm.
+    expect(cli).toContain('Path::new(npm).starts_with(&root)');
+    expect(cli).toContain('paths::managed_npm_prefix_in(&root)');
   });
 
   it('emits no Sentry event on a converged retry, and reports a failed retry with managed provenance', () => {

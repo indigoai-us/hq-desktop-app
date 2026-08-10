@@ -962,7 +962,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
         return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;
     }
-    let prefix = npm_prefix_from_hq_bin(&hq);
+    // Derive the prefix from the RUNTIME of the resolved npm, not `hq` alone: if a
+    // prior episode provisioned HQ's managed Node but left no managed `hq`, npm is
+    // now managed (Node 22) while `hq` still resolves the user's Node-20 shim, and a
+    // user-derived prefix would receive ABI-127 artifacts that runtime cannot load.
+    let prefix = hq_cli_install_prefix(&npm, &hq);
     // Pin the target BEFORE building the install argv. The app resolved `latest`
     // from the registry's /latest endpoint; it must ask npm for THAT EXACT
     // version, not the `@latest` dist-tag. npm re-resolves that tag through its
@@ -1150,6 +1154,52 @@ fn install_failure_earns_managed_retry(
         && source == NpmToolchainSource::UserPath
         && !matches!(cause, "disk-space" | "network")
         && failing_node_abi != Some(MANAGED_NODE_ABI)
+}
+
+/// Pure selection of the ordinary install prefix from the RUNTIME of the resolved
+/// `npm`. When npm is HQ's managed npm the install MUST target the managed prefix —
+/// installing under managed Node (ABI 127) into the user's own prefix would write
+/// native artifacts a user runtime (Node 20, ABI 115) cannot load. Otherwise use the
+/// `hq`-derived prefix, exactly as before. Pure so the decision is unit-testable
+/// without touching the filesystem.
+fn prefer_managed_prefix(
+    npm_is_managed: bool,
+    managed_prefix: Option<String>,
+    hq_derived_prefix: Option<String>,
+) -> Option<String> {
+    if npm_is_managed {
+        managed_prefix.or(hq_derived_prefix)
+    } else {
+        hq_derived_prefix
+    }
+}
+
+/// The install prefix for the ORDINARY (first-attempt) install, kept consistent with
+/// the runtime of the resolved `npm`. This closes the cross-runtime corruption that
+/// reopens on the run AFTER a managed provision leaves no usable managed `hq`: on
+/// that run `resolve_bin("npm")` is already HQ's managed npm (Node 22) while
+/// `resolve_bin("hq")` still selects the user's Node-20 shim, so deriving the prefix
+/// from `hq` alone would install ABI-127 artifacts into the user's prefix — the very
+/// corruption the managed-retry fix prevents. Detecting a managed npm (it lives
+/// inside a managed toolchain root) and routing to the shared managed prefix keeps
+/// build runtime and execute runtime matched on the ordinary path too. A healthy
+/// user-path install (managed npm absent, or `hq` already in the managed prefix) is
+/// unchanged.
+fn hq_cli_install_prefix(npm: &str, hq: &str) -> Option<String> {
+    let mut npm_is_managed = false;
+    let mut managed_prefix: Option<String> = None;
+    for root in paths::managed_toolchain_roots() {
+        if Path::new(npm).starts_with(&root) {
+            npm_is_managed = true;
+            managed_prefix = Some(
+                paths::managed_npm_prefix_in(&root)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            break;
+        }
+    }
+    prefer_managed_prefix(npm_is_managed, managed_prefix, npm_prefix_from_hq_bin(hq))
 }
 
 /// Convergence gate + post-install effects shared by the first install attempt
@@ -1397,6 +1447,37 @@ fn managed_retry_failure_detail(exit_code: Option<i32>, raw_detail: &str) -> Str
     }
 }
 
+/// Make HQ's managed npm bin dir reachable from the user's interactive shell so a
+/// terminal `hq` resolves the copy HQ just installed. Called ONLY after the managed
+/// retry has CONVERGED. Deferring the persistent PATH change until convergence is a
+/// correctness requirement, not a nicety: on a Mac without the profile marker,
+/// prepending the managed Node 22 bin dir before a SUCCESSFUL managed CLI install
+/// would make the user's still-working Node-20 `hq` shim resolve managed Node via
+/// `#!/usr/bin/env node` and fail with an ABI mismatch — turning a working terminal
+/// CLI into a broken one on a failed repair. Idempotent, marker-guarded and
+/// append-only; a run whose PATH is already configured is a no-op.
+fn configure_managed_shell_path(app: &AppHandle, managed_prefix: &str) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = managed_prefix;
+        if let Some(home) = paths::home_dir() {
+            crate::commands::install_deps::ensure_shell_path_configured(&home, app);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        if let Err(e) =
+            crate::commands::install_deps::append_user_path(std::path::Path::new(managed_prefix))
+        {
+            log(
+                "hq-cli-update",
+                &format!("managed-toolchain retry could not update the user PATH: {e}"),
+            );
+        }
+    }
+}
+
 /// Bounded, one-shot managed-toolchain self-heal for a third-party native-build
 /// lifecycle failure under the user's own Node (HQ-DESKTOP-4V / HQ-DESKTOP-4W).
 ///
@@ -1451,24 +1532,6 @@ async fn managed_toolchain_retry(
 
     let (managed_npm, managed_path, managed_prefix) = managed_toolchain_npm_and_path()?;
 
-    // Make the managed npm bin dir reachable from the user's interactive shell too,
-    // so a terminal `hq` resolves the copy HQ just installed. Idempotent,
-    // marker-guarded and append-only — it never rewrites or reorders existing
-    // profile content, and a run whose PATH is already configured is a no-op.
-    #[cfg(not(target_os = "windows"))]
-    if let Some(home) = paths::home_dir() {
-        crate::commands::install_deps::ensure_shell_path_configured(&home, app);
-    }
-    #[cfg(target_os = "windows")]
-    if let Err(e) =
-        crate::commands::install_deps::append_user_path(std::path::Path::new(&managed_prefix))
-    {
-        log(
-            "hq-cli-update",
-            &format!("managed-toolchain retry could not update the user PATH: {e}"),
-        );
-    }
-
     log(
         "hq-cli-update",
         "managed Node provisioned — retrying the pinned install once under HQ's managed toolchain, into HQ's managed npm prefix",
@@ -1503,18 +1566,24 @@ async fn managed_toolchain_retry(
         // installed binary must resolve INSIDE the managed prefix AND actually start
         // under the app's child PATH. Anything short routes through the shared
         // non-convergent path, never a "healed" success.
-        return Some(
-            managed_retry_converged(
-                app,
-                hq,
-                &managed_npm,
-                &managed_prefix,
-                before_version,
-                latest,
-                already_blocked,
-            )
-            .await,
-        );
+        let converged = managed_retry_converged(
+            app,
+            hq,
+            &managed_npm,
+            &managed_prefix,
+            before_version,
+            latest,
+            already_blocked,
+        )
+        .await;
+        if converged.is_ok() {
+            // Only NOW — with a managed CLI proven installed AND runnable — make its
+            // bin dir reachable from the user's interactive shell. Deferring the
+            // persistent PATH change until convergence means a FAILED retry never
+            // shadows the user's still-working CLI under a mismatched Node.
+            configure_managed_shell_path(app, &managed_prefix);
+        }
+        return Some(converged);
     }
 
     // The retry failed under the managed toolchain. Report exactly once, carrying
@@ -1819,6 +1888,27 @@ mod tests {
         assert!(argv.iter().all(|arg| arg != HQ_CLI_PACKAGE));
         // The user's own prefix appears nowhere in the retry argv.
         assert!(argv.iter().all(|arg| !arg.contains(user_prefix)));
+    }
+
+    #[test]
+    fn ordinary_install_prefix_follows_the_npm_runtime_not_hq_alone() {
+        let managed = "/managed/toolchain/npm-global".to_string();
+        let user = "/Users/me/.nvm/versions/node/v20.19.5/lib/node_modules".to_string();
+
+        // A MANAGED npm must install into the managed prefix, never the user's — the
+        // guard against the run-after-provision cross-runtime corruption (ABI-127
+        // artifacts landing in a Node-20 prefix the user runtime cannot load).
+        assert_eq!(
+            prefer_managed_prefix(true, Some(managed.clone()), Some(user.clone())),
+            Some(managed.clone())
+        );
+        // A user-path npm keeps deriving the prefix from `hq`, exactly as before.
+        assert_eq!(
+            prefer_managed_prefix(false, Some(managed.clone()), Some(user.clone())),
+            Some(user.clone())
+        );
+        // npm's default prefix (no `--prefix`) stays None on the user path.
+        assert_eq!(prefer_managed_prefix(false, Some(managed), None), None);
     }
 
     #[test]
