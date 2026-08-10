@@ -13,11 +13,13 @@
    */
   import {
     ArrowLeft,
+    ArrowsDownUp,
     ArrowRight,
     ArrowUpRight,
     Bell,
     Books,
     BookOpen,
+    Buildings,
     CaretDown,
     CaretRight,
     ChatCircle,
@@ -25,6 +27,7 @@
     Clock,
     CheckCircle,
     Circle,
+    DownloadSimple,
     FileText,
     FunnelSimple,
     GearSix,
@@ -37,6 +40,7 @@
     MagnifyingGlass,
     Note,
     Package,
+    PaintBrush,
     Paperclip,
     Plus,
     PaperPlaneRight,
@@ -48,6 +52,7 @@
     Smiley,
     SignOut,
     Stack,
+    Storefront,
     UserCircle,
     VideoCamera,
     Warning,
@@ -399,6 +404,17 @@
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
   let libCat = $state('skills');
+  const LIB_ICONS: Record<string, typeof FileText> = { skills: Lightning, workers: UserCircle };
+  const SETTINGS_ICONS: Record<string, typeof FileText> = {
+    profile: UserCircle,
+    companies: Buildings,
+    general: GearSix,
+    sync: ArrowsDownUp,
+    notifications: Bell,
+    appearance: PaintBrush,
+    meetings: VideoCamera,
+    updates: DownloadSimple,
+  };
   let openPanel = $state<string | null>(null);
   let packsOpen = $state(false);
   let sortMode = $state<'chrono' | 'type'>('chrono');
@@ -1185,10 +1201,15 @@
         <div class="library">
           <div class="lib-nav">
             {#each LIBRARY.cats as [k, n, c] (k)}
-              <button class="lib-cat" class:on={libCat === k} onclick={() => (libCat = k)}>{n}<span class="c mono">{c}</span></button>
+              {@const CatIcon = LIB_ICONS[k] ?? FileText}
+              <button class="lib-cat" class:on={libCat === k} onclick={() => (libCat = k)}>
+                <span class="lc-ic"><CatIcon size={14} /></span>{n}<span class="c mono">{c}</span>
+              </button>
             {/each}
             <div class="lib-divider" role="none"></div>
-            <button class="lib-cat" onclick={() => nav('marketplace')}>Marketplace<span class="c"><ArrowRight size={12} /></span></button>
+            <button class="lib-cat" onclick={() => nav('marketplace')}>
+              <span class="lc-ic"><Storefront size={14} /></span>Marketplace<span class="c"><ArrowRight size={12} /></span>
+            </button>
           </div>
           <div class="lib-main">
             <div class="lib-head">
@@ -1367,7 +1388,10 @@
         <div class="library">
           <div class="lib-nav">
             {#each SETTINGS_TABS as [k, label] (k)}
-              <button class="lib-cat" class:on={settingsTab === k} onclick={() => (settingsTab = k)}>{label}</button>
+              {@const TabIcon = SETTINGS_ICONS[k] ?? GearSix}
+              <button class="lib-cat" class:on={settingsTab === k} onclick={() => (settingsTab = k)}>
+                <span class="lc-ic"><TabIcon size={14} /></span>{label}
+              </button>
             {/each}
           </div>
           <div class="lib-main">
@@ -1900,7 +1924,7 @@
   .mtg-day { padding: 14px 2px 2px; }
   .mtg-row { gap: 12px; }
   /* The company line ends the left group; everything after it rides right. */
-  .mtg-row .fm.who { margin-right: auto; }
+  .mtg-row .fm.who { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mtg-time { flex-shrink: 0; width: 62px; font-size: 11px; color: var(--t2); }
   .mtg-row .sig { color: var(--ice-ink); }
   .mtg-state { flex-shrink: 0; margin-left: 4px; }
@@ -1930,6 +1954,7 @@
   /* :where keeps the reset at class-level specificity so component button
      styles below (.chip, .send, .core-btn, …) win on source order. */
   .v2 :where(button) { background: none; border: none; color: inherit; font: inherit; cursor: pointer; text-align: left; padding: 0; }
+  .v2 :where(*, *::before, *::after) { box-sizing: border-box; }
 
   /* ═══════════ Title bar ═══════════ */
   .titlebar { display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
@@ -2021,7 +2046,7 @@
      gutter via the offsetting padding). */
   .side-scroll { flex: 1; overflow-y: auto; min-height: 0; margin-right: -8px; padding-right: 8px; }
   .side-scroll::-webkit-scrollbar { width: 4px; }
-  .side-scroll::-webkit-scrollbar-track { background: transparent; }
+  .side-scroll::-webkit-scrollbar-track { background: transparent; margin: 10px 0; }
   .side-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
   .side-scroll::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .grp { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; width: 100%; }
@@ -2081,7 +2106,7 @@
   /* ═══════════ Feed ═══════════ */
   .feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 24px 24px 12px; min-height: 0; }
   .feed::-webkit-scrollbar { width: 4px; }
-  .feed::-webkit-scrollbar-track { background: transparent; }
+  .feed::-webkit-scrollbar-track { background: transparent; margin: 10px 0; }
   .feed::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
   .feed::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .daysep { display: flex; align-items: center; gap: 12px; }
@@ -2217,21 +2242,23 @@
      the reserved gutter. 8px margin + 4px gutter + 8px padding keeps the rows
      on the heads' 20px edge while the bar floats 8px off the pane edge,
      matching the side pane's scrollbar. */
-  .listview { flex: 1; margin-right: 8px; padding: 20px 8px 20px 20px; display: flex; flex-direction: column; gap: 8px; overflow: auto; scrollbar-gutter: stable; }
+  .listview { flex: 1; margin-right: 8px; padding: 20px 8px 20px 20px; display: flex; flex-direction: column; gap: 8px; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
   .listview::-webkit-scrollbar { width: 4px; }
-  .listview::-webkit-scrollbar-track { background: transparent; }
+  .listview::-webkit-scrollbar-track { background: transparent; margin: 10px 0; }
   .listview::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
   .listview::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .lrow { display: flex; align-items: center; gap: 10px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; width: 100%; transition: background 0.12s, border-color 0.12s; }
   .lrow:hover { background: var(--btn-bg); border-color: var(--line2); }
-  .lrow .fn { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lrow .fn { flex: 1; min-width: 0; font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lrow .fm { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--t3); }
   /* Sits with the name, not pinned right — only the trailing meta pins. */
   .lrow .fm.who { margin-left: 0; font-size: 11px; }
 
   .library { flex: 1; display: flex; min-height: 0; }
   .lib-nav { width: 210px; flex-shrink: 0; border-right: 1px solid var(--line); padding: 16px 20px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
-  .lib-cat { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--t2); width: 100%; }
+  .lc-ic { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--t3); }
+  .lib-cat.on .lc-ic { color: var(--t2); }
+  .lib-cat { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--t2); width: 100%; }
   .lib-cat:hover { background: var(--hover); }
   .lib-cat.on { background: var(--sel); color: var(--t1); font-weight: 500; }
   .lib-cat .c { margin-left: auto; font-size: 10px; color: var(--t3); }
@@ -2383,7 +2410,7 @@
      lands the row content on the same 20px edge, with the bar flush to the pane. */
   .notif-list { flex: 1; padding: 12px 4px 20px 8px; display: flex; flex-direction: column; overflow: auto; scrollbar-gutter: stable; }
   .notif-list::-webkit-scrollbar { width: 4px; }
-  .notif-list::-webkit-scrollbar-track { background: transparent; }
+  .notif-list::-webkit-scrollbar-track { background: transparent; margin: 10px 0; }
   .notif-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
   .notif-list::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .notif-list .grp { padding: 14px 12px 4px; }
