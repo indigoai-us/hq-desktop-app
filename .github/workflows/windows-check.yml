@@ -107,6 +107,43 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
 
+      # HQ-DESKTOP-4X. The pure fault-attribution core: the faulting-binary
+      # allow-list, the WER Application Error 1000 XML parse, the pid/window/
+      # no_record/unavailable provenance decision, and the unmatched-stderr shape
+      # rollup — all content-safe and platform-independent, so they run as their
+      # own named gate rather than being buried in the full core run.
+      - name: Watcher fault provenance core tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml watcher_fault::tests
+
+      # The independent hq-telemetry egress allow-list for every new fault field:
+      # each survives before_send when valid and degrades to [Filtered] when a
+      # producer bug would ship a path or raw byte (the PR #397 blanking failure
+      # mode), with a cross-crate anti-drift pin on the token vocabulary.
+      - name: Watcher fault telemetry egress tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml watcher_fault
+
+      # The capture wiring: the new watcher_fault_* tags + runner_stderr_line_count
+      # ride the watcher exit capture, additive to the untouched classifier
+      # channels and fingerprint. Compiled and run on the msvc target (cargo check
+      # never builds #[cfg(test)] code, so without this the wiring ships unrun).
+      - name: Windows watcher fault capture tests
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins watcher_capture_reports -- --nocapture
+
+      # HQ-DESKTOP-4X artifact E2E: run the REAL wevtapi reader against the REAL
+      # Windows Application log (content-safe + bounded, panic-free) and reproduce
+      # a genuine abort through the production cmd.exe batch-shim shape. WER's async
+      # crash capture is not guaranteed on a headless CI host, so this proves the
+      # reader's determinism and content-safety against real OS output; a captured
+      # node.exe 0xC0000409 is surfaced in the log as the strong signal.
+      - name: Windows watcher fault provenance artifact E2E
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::watcher_fault_e2e_tests -- --nocapture --include-ignored
+
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync
       # decision seam to report capture for code 1/no signal.
