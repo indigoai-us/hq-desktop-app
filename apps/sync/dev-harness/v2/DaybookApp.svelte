@@ -1611,7 +1611,7 @@
                   <button class="chip g push-right" onclick={() => toast('Sign out')}>Sign out</button>
                 </div>
               {:else if settingsTab === 'companies'}
-                {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label, c.short] as [string, string, string]), ...EXTRA_COMPANIES.map(([short, label]) => [label, label, short] as [string, string, string])] as [key, label, short] (key)}
+                {#snippet companyRow(key: string, label: string)}
                   <div class="set-row">
                     <div class="co-row-id">
                       <button
@@ -1639,7 +1639,13 @@
                       ></button>
                     </div>
                   </div>
+                {/snippet}
+                {#each [...Object.entries(DATA).filter(([k]) => k !== 'personal').map(([k, c]) => [k, c.label] as [string, string]), ...EXTRA_COMPANIES.map(([, label]) => [label, label] as [string, string])] as [key, label] (key)}
+                  {@render companyRow(key, label)}
                 {/each}
+                <!-- Personal is your own vault, not a company you belong to. -->
+                <div class="set-divider" role="none"></div>
+                {@render companyRow('personal', DATA.personal.label)}
               {:else if settingsTab === 'general'}
                 {@render setToggle('login', 'Launch at login', 'Start HQ when you sign in to your Mac')}
                 {@render setToggle('dock', 'Show in Dock', 'Keep HQ in the Dock and ⌘-Tab switcher')}
@@ -2674,6 +2680,7 @@
   /* Used throughout Settings but never declared, so every trailing control
      sat wherever the text left it instead of on the row's right edge. */
   .push-right { margin-left: auto; }
+  .set-divider { height: 1px; margin: 10px 2px; background: var(--line); }
   .prof-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 10px 2px 0; }
   .prof-input { width: 280px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 8px 12px; color: var(--t1); font: 500 13px var(--font-ui); outline: none; transition: border-color 0.12s; }
   .prof-input:hover { border-color: var(--line2); }
