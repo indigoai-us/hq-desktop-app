@@ -142,7 +142,7 @@ jobs:
       - name: Windows watcher fault provenance artifact E2E
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::watcher_fault_e2e_tests -- --nocapture
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::watcher_fault_e2e_tests -- --nocapture --include-ignored
 
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync

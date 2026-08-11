@@ -5238,29 +5238,32 @@ mod watcher_fault_e2e_tests {
         );
     }
 
+    // These two spawn real processes and query the live Windows Application log,
+    // so they are `#[ignore]`d out of the parallel `cargo test --bins` pool (where
+    // they would starve the 30s-bounded real-process teardown regression) and run
+    // only in their own isolated windows-check step via `--include-ignored`.
     #[test]
+    #[ignore = "real-process + live-event-log E2E; run in the dedicated windows-check step"]
     fn the_real_reader_reads_the_real_application_log_content_safely() {
         assert_reader_is_content_safe_and_bounded();
     }
 
     #[test]
-    fn a_cmd_shim_child_aborts_and_the_reader_stays_content_safe_afterward() {
-        // Reproduce the production mechanism: a Node runner dispatched through the
-        // cmd.exe batch shim that hard-aborts. `process.abort()` terminates the
-        // child abnormally; the exact status varies by CRT/Node version, so the
-        // deterministic assertion is only that it did NOT exit cleanly. The abort
-        // script is a temp file so no fragile cmd quoting can break the spawn.
-        let script = std::env::temp_dir().join("hq_watcher_fault_e2e_abort.js");
-        std::fs::write(&script, b"process.abort();\n").expect("write abort script");
-        let payload = format!("node \"{}\"", script.display());
-        let status = Command::new("cmd.exe")
-            .args(["/d", "/c"])
-            .arg(&payload)
+    #[ignore = "real-process + live-event-log E2E; run in the dedicated windows-check step"]
+    fn a_node_child_aborts_and_the_reader_stays_content_safe_afterward() {
+        // Reproduce the production mechanism: a Node runner that hard-aborts.
+        // `process.abort()` terminates the child abnormally with a 0xC0000409-class
+        // status; the exact code varies by CRT/Node version, so the deterministic
+        // assertion is only that it did NOT exit cleanly. Node is invoked with
+        // separate argv (no shell), so no fragile cmd quoting can turn a genuine
+        // abort into a vacuous "module not found" pass.
+        let status = Command::new("node")
+            .args(["-e", "process.abort()"])
             .status()
-            .expect("spawn cmd.exe shim child");
+            .expect("spawn node abort child");
         assert!(
             !status.success(),
-            "the shimmed child must abort abnormally, got a clean exit"
+            "the child must abort abnormally, got a clean exit"
         );
         eprintln!(
             "watcher-fault E2E: cmd-shim child aborted with status {:?}",
