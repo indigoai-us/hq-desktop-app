@@ -49,12 +49,18 @@ pub fn read_watcher_fault_attribution(
         crate::commands::process::watcher_job_sampled_pids_for_generation(handle, generation);
 
     // Run the event-log read OFF this thread and join under a hard deadline, so a
-    // slow or wedged Application channel can never stall the exit path.
+    // slow or wedged Application channel can never stall the exit path. The reader
+    // is handed this generation's sampled pid set so it can prefer a pid-matching
+    // record anywhere in the window rather than the newest one.
     let (tx, rx) = std::sync::mpsc::sync_channel::<WerQueryOutcome>(1);
+    let sampled_for_query = sampled.clone();
     std::thread::Builder::new()
         .name("watcher-fault-wer".into())
         .spawn(move || {
-            let _ = tx.send(read_application_error_record(lifetime));
+            let _ = tx.send(read_application_error_record(
+                lifetime,
+                sampled_for_query.as_ref(),
+            ));
         })
         .ok();
 
@@ -85,17 +91,30 @@ enum WerQueryOutcome {
     Failed,
 }
 
-/// Query the Application log for the most recent in-window `Application Error`
-/// (Event ID 1000) record. Newest-first; stops at the first record whose
-/// timestamp falls inside the generation lifetime, and bounds total work with a
-/// small event cap so it always returns promptly.
+/// Query the Application log for this generation's `Application Error`
+/// (Event ID 1000) record. Collects every in-window candidate (newest-first,
+/// bounded by a small event cap) and lets the core selector prefer one whose
+/// faulting pid is in the sampled Job Object set — so a newer unrelated crash
+/// never masks this generation's own record — falling back to the newest
+/// in-window record otherwise.
 #[cfg(target_os = "windows")]
-fn read_application_error_record(lifetime: Duration) -> WerQueryOutcome {
-    use hq_desktop_core::watcher_fault::{parse_wer_application_error, wer_record_in_window};
+fn read_application_error_record(
+    lifetime: Duration,
+    sampled_pids: Option<&std::collections::HashSet<u32>>,
+) -> WerQueryOutcome {
+    use hq_desktop_core::watcher_fault::{
+        parse_wer_application_error, select_watcher_fault_record, wer_record_in_window,
+        WerApplicationError,
+    };
     use std::time::SystemTime;
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::EventLog::{
         EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryReverseDirection,
     };
+    // The single non-error reason EvtNext returns FALSE: results exhausted. Any
+    // other last-error means iteration itself failed and must degrade to
+    // `unavailable`, never a false `no_record`.
+    const ERROR_NO_MORE_ITEMS: u32 = 259;
 
     let channel = to_wide("Application");
     // Provider + event id filter, resolved to the newest matching records first.
@@ -121,25 +140,32 @@ fn read_application_error_record(lifetime: Duration) -> WerQueryOutcome {
         // the very newest matching records. This also caps work if the machine is
         // producing many unrelated crashes.
         const MAX_EVENTS: usize = 64;
-        let mut best = None;
+        let mut candidates: Vec<WerApplicationError> = Vec::new();
         for _ in 0..MAX_EVENTS {
             let mut event: isize = 0;
             let mut returned: u32 = 0;
             // Short per-batch timeout so the whole read stays well under the outer
             // bound even if the channel is momentarily slow.
-            if EvtNext(results, 1, &mut event, 200, 0, &mut returned) == 0 || returned == 0 {
+            if EvtNext(results, 1, &mut event, 200, 0, &mut returned) == 0 {
+                let error = GetLastError();
+                if error != ERROR_NO_MORE_ITEMS {
+                    // A genuine iteration failure: the log is unreadable, not empty.
+                    EvtClose(results);
+                    return WerQueryOutcome::Failed;
+                }
+                break; // no more matching records
+            }
+            if returned == 0 {
                 break;
             }
             let parsed = render_event_xml(event).and_then(|xml| parse_wer_application_error(&xml));
             EvtClose(event);
             if let Some(record) = parsed {
                 if wer_record_in_window(record.created, now, lifetime) {
-                    best = Some(record);
-                    break; // newest-first: the first in-window record is the one
-                }
-                // Records are newest-first; once we pass a record that is provably
-                // older than the window, nothing further can be in-window.
-                if let Some(created) = record.created {
+                    candidates.push(record);
+                } else if let Some(created) = record.created {
+                    // Newest-first: once a record is provably older than the
+                    // window, nothing further can be in-window.
                     if now
                         .duration_since(created)
                         .map(|age| age > lifetime + Duration::from_secs(60))
@@ -151,6 +177,8 @@ fn read_application_error_record(lifetime: Duration) -> WerQueryOutcome {
             }
         }
         EvtClose(results);
+        // Prefer a sampled-pid match anywhere in the window; else the newest.
+        let best = select_watcher_fault_record(&candidates, sampled_pids).cloned();
         WerQueryOutcome::Read(best)
     }
 }

@@ -888,17 +888,22 @@ unsafe fn query_job_process_ids(job: isize) -> Option<std::collections::HashSet<
     };
     let hjob = job as windows_sys::Win32::Foundation::HANDLE;
     // The header carries a one-element `ProcessIdList` flexible array; over-
-    // allocate a byte buffer for the header plus CAP additional pid slots. CAP
-    // bounds a pathological tree — the watcher's is a handful of processes.
+    // allocate for the header plus CAP additional pid slots. CAP bounds a
+    // pathological tree — the watcher's is a handful of processes. Back the buffer
+    // with `usize` (not `u8`) so it is aligned for JOBOBJECT_BASIC_PROCESS_ID_LIST:
+    // a `Vec<u8>` guarantees only byte alignment, and reading the header through an
+    // aligned reference off a misaligned allocation would be undefined behaviour.
     const CAP: usize = 512;
     let header_size = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
     let slot_size = std::mem::size_of::<usize>();
-    let mut buffer = vec![0u8; header_size + CAP * slot_size];
+    let byte_len = header_size + CAP * slot_size;
+    let word_len = (byte_len + slot_size - 1) / slot_size;
+    let mut buffer: Vec<usize> = vec![0usize; word_len];
     if QueryInformationJobObject(
         hjob,
         JobObjectBasicProcessIdList,
         buffer.as_mut_ptr() as *mut core::ffi::c_void,
-        buffer.len() as u32,
+        (buffer.len() * slot_size) as u32,
         core::ptr::null_mut(),
     ) == 0
     {

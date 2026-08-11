@@ -104,17 +104,21 @@ pub struct RunTotals {
     runner_error_discovery_scope: u32,
     /// Count of per-file errors (any other `path`) seen this pass.
     runner_error_file_scope: u32,
-    /// Total raw stderr lines this pass received, counted at the single
+    /// Total raw stderr lines this GENERATION received, counted at the single
     /// `record_stderr_line` funnel so it is INDEPENDENT of the bounded 8-line
     /// tail ring. On the watcher route this closes the blind spot the manual
     /// route already covered (HQ-DESKTOP-4X): a silent runner and a
     /// noisy-but-unrecognised one are otherwise indistinguishable, because
-    /// `runner_fatal_class=none` alone cannot tell them apart.
+    /// `runner_fatal_class=none` alone cannot tell them apart. Generation-scoped:
+    /// preserved across the per-pass reset (see `reset_for_next_watch_pass`) so a
+    /// long watch whose only stderr arrived on an earlier pass still reports it at
+    /// its fast-fail exit.
     pub stderr_line_count: u32,
     /// Content-safe structural rollup of stderr lines that matched NO fatal
     /// class — the recurring, comparable descriptor of the unknown-line family.
     /// Every rendered token is a fixed constant chosen in code; no runner byte is
     /// retained. Read via its `tag_value()` / `unmatched_line_count()`.
+    /// Generation-scoped alongside `stderr_line_count`.
     pub runner_stderr_shapes: RunnerStderrShapeRollup,
 }
 
@@ -137,6 +141,24 @@ impl RunTotals {
             SyncEvent::Error(e) => self.record_error(e),
             _ => {}
         }
+    }
+
+    /// Reset the per-pass accumulators for the next watch pass while PRESERVING
+    /// the generation-scoped stderr metrics. Watch mode emits a full
+    /// Complete/AllComplete cycle on every instant-sync pass; the fatal-class,
+    /// error, and conflict rollups are per-pass by design and must start clean.
+    /// But `stderr_line_count` and `runner_stderr_shapes` answer "did ANY stderr
+    /// line reach the app across the WHOLE generation?" (HQ-DESKTOP-4X) — zeroing
+    /// them each pass would reproduce the exact blind spot the fix closes, since a
+    /// long generation whose only stderr arrived on an earlier pass would report
+    /// zero at its fast-fail exit. So those two carry across the reset; use this
+    /// in place of `*self = RunTotals::default()` at every AllComplete.
+    pub fn reset_for_next_watch_pass(&mut self) {
+        let stderr_line_count = self.stderr_line_count;
+        let runner_stderr_shapes = std::mem::take(&mut self.runner_stderr_shapes);
+        *self = RunTotals::default();
+        self.stderr_line_count = stderr_line_count;
+        self.runner_stderr_shapes = runner_stderr_shapes;
     }
 
     /// Record a single runner error event toward the exit-alert decision,
@@ -2837,6 +2859,38 @@ mod tests {
         assert_eq!(fatal.stderr_line_count, 1);
         assert_eq!(fatal.runner_stderr_shapes.unmatched_line_count(), 0);
         assert_eq!(fatal.runner_stderr_shapes.tag_value(), None);
+    }
+
+    #[test]
+    fn reset_for_next_watch_pass_preserves_generation_scoped_stderr_metrics() {
+        // Simulate a long watch generation: stderr arrives on an early pass, then
+        // the pass ends (AllComplete → reset) and a later pass fast-fails silent.
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line("[chokidar] ready");
+        totals.record_stderr_line("watching for changes");
+        // A per-pass signal that MUST be cleared by the reset.
+        totals.conflicts = 3;
+        assert_eq!(totals.stderr_line_count, 2);
+        assert_eq!(totals.runner_stderr_shapes.unmatched_line_count(), 2);
+
+        totals.reset_for_next_watch_pass();
+
+        // Per-pass accumulator is back to clean...
+        assert_eq!(totals.conflicts, 0);
+        // ...but the generation-scoped stderr evidence survives, so a fast-fail
+        // exit on a LATER pass still reports the stderr the generation actually
+        // received (HQ-DESKTOP-4X). Without this carry, the exit would falsely
+        // report zero stderr lines.
+        assert_eq!(totals.stderr_line_count, 2);
+        assert_eq!(totals.runner_stderr_shapes.unmatched_line_count(), 2);
+        assert!(totals.runner_stderr_shapes.tag_value().is_some());
+
+        // The carry accumulates, not overwrites: a second pass adds to the total.
+        totals.record_stderr_line("Downloaded: 4 files");
+        assert_eq!(totals.stderr_line_count, 3);
+        totals.reset_for_next_watch_pass();
+        assert_eq!(totals.stderr_line_count, 3);
+        assert_eq!(totals.runner_stderr_shapes.unmatched_line_count(), 3);
     }
 
     #[test]

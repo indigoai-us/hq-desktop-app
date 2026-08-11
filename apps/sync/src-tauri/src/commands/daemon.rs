@@ -81,6 +81,12 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// wedged indefinitely.
 const DAEMON_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+/// First Job Object pid sample is taken on this short delay rather than after a
+/// full heartbeat interval, so a watcher that fast-fails during startup — the
+/// primary unattributed scenario in HQ-DESKTOP-4X — still has a
+/// generation-scoped pid set to bind its Windows Error Reporting fault record
+/// against, instead of being sampled for the first time only after 15s.
+const DAEMON_INITIAL_JOB_SAMPLE_DELAY: Duration = Duration::from_secs(2);
 
 /// How long the singleton "starting" guard may be held with no live daemon
 /// before the supervisor treats it as wedged and force-clears it. A healthy
@@ -239,8 +245,13 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
         // in-flight guard skips overlapping runs.
         crate::commands::git_mirror::spawn_mirror_after_sync(hq_folder);
         let _ = app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone());
-        // Reset for the next pass — watch mode loops indefinitely.
-        *totals.lock().unwrap_or_else(|e| e.into_inner()) = RunTotals::default();
+        // Reset for the next pass — watch mode loops indefinitely. The
+        // watcher-route stderr metrics are generation-scoped and carry across
+        // this per-pass reset (HQ-DESKTOP-4X); everything else starts clean.
+        totals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reset_for_next_watch_pass();
     }
     true
 }
@@ -250,8 +261,12 @@ fn start_daemon_heartbeat_watchdog(
     last_heartbeat: Arc<Mutex<Instant>>,
     finished: Arc<AtomicBool>,
 ) {
+    // The first pass fires on a short delay so a fast-fail watcher exit still has
+    // a sampled pid set; subsequent passes settle to the normal heartbeat cadence.
+    let mut sample_delay = DAEMON_INITIAL_JOB_SAMPLE_DELAY;
     thread::spawn(move || loop {
-        thread::sleep(DAEMON_HEARTBEAT_CHECK_INTERVAL);
+        thread::sleep(sample_delay);
+        sample_delay = DAEMON_HEARTBEAT_CHECK_INTERVAL;
         if finished.load(Ordering::Acquire) {
             return;
         }

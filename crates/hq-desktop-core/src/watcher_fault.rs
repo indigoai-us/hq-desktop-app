@@ -447,6 +447,25 @@ impl WatcherFaultAttribution {
     }
 }
 
+/// Choose the best fault record from a set of in-window `Application Error`
+/// candidates ordered newest-first. Prefers the newest record whose faulting pid
+/// is a member of this generation's sampled Job Object set — so an unrelated
+/// application's *newer* crash inside a long-running watcher's lifetime never
+/// masks this generation's own (older) record and downgrades a real
+/// `pid_matched` to `window_only` — and falls back to the newest in-window
+/// record when none match.
+pub fn select_watcher_fault_record<'a>(
+    candidates: &'a [WerApplicationError],
+    sampled_pids: Option<&HashSet<u32>>,
+) -> Option<&'a WerApplicationError> {
+    if let Some(pids) = sampled_pids {
+        if let Some(matched) = candidates.iter().find(|record| record.pid_in_set(pids)) {
+            return Some(matched);
+        }
+    }
+    candidates.first()
+}
+
 /// Resolve the final attribution from the query outcome. This is the single
 /// decision seam and is fully platform-neutral, so the pid-match / window-only /
 /// no-record / unavailable logic is unit-tested on the Linux fix host even though
@@ -561,7 +580,13 @@ pub fn classify_runner_stderr_shape(line: &str) -> RunnerStderrShape {
         b'#' => return RunnerStderrShape::HashFrame,
         _ => {}
     }
-    if trimmed.len() >= 3 && trimmed[..3].eq_ignore_ascii_case("at ") {
+    // Byte-slice via `get` so a line whose third byte lands inside a multibyte
+    // UTF-8 character (e.g. runner output containing a Unicode path) is never a
+    // panic — it simply is not the `at ` frame prefix.
+    if trimmed
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("at "))
+    {
         return RunnerStderrShape::StackFrameAt;
     }
     let has_space = trimmed.chars().any(|c| c.is_whitespace());
@@ -914,6 +939,35 @@ mod tests {
             classify_runner_stderr_shape("bareword"),
             RunnerStderrShape::Token
         );
+        // A line whose third byte is inside a multibyte UTF-8 character must
+        // classify without panicking on the `at ` prefix probe.
+        assert_eq!(classify_runner_stderr_shape("a€"), RunnerStderrShape::Token);
+        assert_eq!(
+            classify_runner_stderr_shape("/€/x path here"),
+            RunnerStderrShape::Prose
+        );
+    }
+
+    #[test]
+    fn select_prefers_a_pid_matching_record_over_a_newer_unrelated_one() {
+        // Candidates are newest-first: a newer unrelated crash, then this
+        // generation's own (older) record.
+        let unrelated = record_with_pid(9001);
+        let mine = record_with_pid(4242);
+        let candidates = vec![unrelated, mine];
+        let pids: HashSet<u32> = [4242].into_iter().collect();
+        // The selector reaches past the newer unrelated record to the pid match.
+        let selected = select_watcher_fault_record(&candidates, Some(&pids)).unwrap();
+        assert_eq!(selected.faulting_pid, 4242);
+        // With no sampled set, fall back to the newest in-window record.
+        let selected = select_watcher_fault_record(&candidates, None).unwrap();
+        assert_eq!(selected.faulting_pid, 9001);
+        // No sampled match either: newest record wins as window_only.
+        let others: HashSet<u32> = [1, 2, 3].into_iter().collect();
+        let selected = select_watcher_fault_record(&candidates, Some(&others)).unwrap();
+        assert_eq!(selected.faulting_pid, 9001);
+        // Empty candidate set yields nothing.
+        assert!(select_watcher_fault_record(&[], Some(&pids)).is_none());
     }
 
     #[test]
