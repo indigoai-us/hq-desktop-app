@@ -72,11 +72,11 @@ const FIXTURE_PROJECTS: Project[] = [
 ];
 
 describe('desktop-alt Board surface (US-007)', () => {
-  it('has no top-level Board route — ⌘1 is Inbox in the US-008 IA', () => {
+  it('has no top-level Board route — hotkeys only switch workspaces (US-002)', () => {
     const companies = [workspace({ slug: 'indigo', displayName: 'Indigo' })];
 
-    // No hotkey resolves to a 'board' kind anywhere on ⌘1–⌘9.
-    for (let key = 1; key <= 9; key += 1) {
+    // No hotkey resolves to a 'board' kind anywhere on ⌘0–⌘9.
+    for (let key = 0; key <= 9; key += 1) {
       const resolved = getDesktopHotkeyRoute(
         { key: String(key), metaKey: true, ctrlKey: false },
         companies,
@@ -84,14 +84,13 @@ describe('desktop-alt Board surface (US-007)', () => {
       expect(resolved?.kind).not.toBe('board');
     }
 
-    // ⌘1 maps to Inbox; ⌘2 to Meetings (US-008 order: Inbox/Meetings/
-    // Marketplace/Library — Home and Mission Control are palette-only).
+    // ⌘1 maps to the first company; ⌘2 past the company count is quiet.
     expect(
       getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'inbox' } satisfies DesktopRoute);
+    ).toEqual({ kind: 'company', slug: 'indigo' } satisfies DesktopRoute);
     expect(
       getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'meetings' } satisfies DesktopRoute);
+    ).toBeNull();
   });
 
   it('classifies projects to effective list status and honours the status pills', () => {

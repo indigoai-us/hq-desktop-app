@@ -206,15 +206,13 @@ describe('US-008: navigation intents resolve to their complete surfaces', () => 
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
   });
 
-  it('⌘1 is Inbox and no hotkey resolves to messages or notifications', () => {
+  it('workspace hotkeys never resolve to messages or notifications (US-002)', () => {
     const companies = getDesktopCompanies(workspaces);
-    expect(
-      getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'inbox' });
-    for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
+    for (const key of ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       const routed = getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
       expect(routed?.kind).not.toBe('messages');
       expect(routed?.kind).not.toBe('notifications');
+      expect(routed?.kind).not.toBe('inbox');
     }
   });
 });

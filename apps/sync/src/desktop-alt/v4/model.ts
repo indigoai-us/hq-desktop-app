@@ -347,12 +347,11 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
   };
 }
 
-/* ── V2 shell (hq-desktop-v2 US-001) ────────────────────────────────────────
-   The V2 sidebar is workspace-first: a WORKSPACE switcher placeholder (full
-   switcher lands in US-002), the active workspace's sections, then a GENERAL
-   group. Per-company rows and the sidebar Settings entry are gone — Settings
-   opens from the footer user card. Marketplace stays routable (palette /
-   hotkeys) but is not a V2 sidebar row. */
+/* ── V2 shell (hq-desktop-v2 US-001 + US-002) ───────────────────────────────
+   The V2 sidebar is workspace-first: a WORKSPACE switcher dropdown, the
+   active workspace's sections, then a GENERAL group. Per-company rows and the
+   sidebar Settings entry are gone — Settings opens from the footer user card.
+   Marketplace stays routable (palette) but is not a V2 sidebar row. */
 
 /** Workspace sections shown under the switcher (no More row in V2). */
 export const V2_WORKSPACE_SECTION_ITEMS: ReadonlyArray<{
@@ -377,7 +376,7 @@ export interface V2SidebarSectionRow {
 }
 
 export interface V2SidebarModel {
-  /** Active workspace for the switcher placeholder; null with no companies. */
+  /** Active workspace shown in the switcher; null with no companies. */
   workspace: V2SidebarWorkspace | null;
   /** Workspace section rows (Overview … Team), active per company tab. */
   sections: V2SidebarSectionRow[];
@@ -441,6 +440,82 @@ export function getV2SidebarModel(route: V4Route, workspaces: Workspace[]): V2Si
     })),
     settingsActive,
   };
+}
+
+/** Human relative timestamp ("just now", "5m ago") for status meta lines. */
+export function formatRelativeTime(
+  iso: string | null | undefined,
+  now: number = Date.now(),
+): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const secs = Math.max(0, Math.round((now - then) / 1000));
+  if (secs < 60) return 'just now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
+/** One row in the V2 workspace switcher menu (US-002). */
+export interface V2WorkspaceSwitcherItem {
+  slug: string;
+  label: string;
+  tone: V4DotTone;
+  isPersonal: boolean;
+  syncAgeLabel: string | null;
+  hotkey: string | null;
+  active: boolean;
+  pendingInvite: boolean;
+}
+
+/**
+ * Pure switcher model: non-personal companies first (connected-first order),
+ * then Personal last. Companies get ⌘1–⌘9 by list position; Personal is ⌘0.
+ */
+export function getV2WorkspaceSwitcherItems(
+  workspaces: Workspace[],
+  activeSlug: string | null,
+  now: number = Date.now(),
+): V2WorkspaceSwitcherItem[] {
+  const rows = sortV4CompaniesConnectedFirst(workspaces);
+  const bySlug = new Map<string, Workspace>();
+  for (const workspace of workspaces) {
+    if (!bySlug.has(workspace.slug)) bySlug.set(workspace.slug, workspace);
+  }
+
+  const companies = rows.filter((row) => !row.isPersonal);
+  const personal = rows.find((row) => row.isPersonal) ?? null;
+
+  const toItem = (
+    row: (typeof rows)[number],
+    hotkey: string | null,
+  ): V2WorkspaceSwitcherItem => {
+    const workspace = bySlug.get(row.slug);
+    const age = formatRelativeTime(workspace?.lastSyncedAt, now);
+    // Personal with no sync timestamp is local-first — show "local", not blank.
+    const syncAgeLabel =
+      row.isPersonal && age == null ? 'local' : age;
+    return {
+      slug: row.slug,
+      label: row.label,
+      tone: row.tone,
+      isPersonal: row.isPersonal,
+      syncAgeLabel,
+      hotkey,
+      active: activeSlug != null && activeSlug === row.slug,
+      pendingInvite:
+        workspace?.kind === 'company' && workspace.membershipStatus === 'pending',
+    };
+  };
+
+  const items: V2WorkspaceSwitcherItem[] = companies.map((row, index) =>
+    toItem(row, index < 9 ? `⌘${index + 1}` : null),
+  );
+  if (personal) items.push(toItem(personal, '⌘0'));
+  return items;
 }
 
 /** Secondary-sidebar item (contextual menu row). */

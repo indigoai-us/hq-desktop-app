@@ -78,7 +78,8 @@ describe('US-016: V4 connective tissue stays complete', () => {
     expect(desktopApp).toContain('COMPANY_SECTIONS');
     // Every company root stays reachable, while deep destinations are limited
     // to the active company so large installs do not multiply commands.
-    expect(desktopApp).toContain('...orderedCompanies.map((row, index) => ({');
+    // US-002: workspace numbering (⌘1–⌘9 companies, ⌘0 Personal) wraps the map.
+    expect(desktopApp).toContain('orderedCompanies.map((row) => {');
     expect(desktopApp).toContain('label: `Go to ${row.label}`');
     expect(app).toContain('...(activeCompany ? COMPANY_SECTIONS.filter');
     expect(desktopApp).toContain(

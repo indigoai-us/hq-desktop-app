@@ -7,6 +7,7 @@ import {
   companyPrimarySectionForTab,
   companyTabForPrimarySection,
   fromV4Route,
+  getAddWorkspaceRoute,
   getDesktopCompanies,
   getDesktopHotkeyRoute,
   getDesktopLandingRoute,
@@ -196,60 +197,107 @@ describe('US-002 V4 desktop routes', () => {
   });
 });
 
-describe('US-008 hotkeys — ⌘1..9 renumbered after Inbox merge, no dead slots', () => {
+describe('US-002 hotkeys — single-active-workspace numbering (⌘1–⌘9 companies, ⌘0 personal)', () => {
   const companies = getDesktopCompanies([
     company({ slug: 'first', displayName: 'First', state: 'synced' }),
     company({ slug: 'second', displayName: 'Second', state: 'synced' }),
+    {
+      ...baseCompany,
+      slug: 'personal',
+      displayName: 'Personal',
+      kind: 'personal',
+      state: 'personal',
+    },
   ]);
 
-  it('maps ⌘1–⌘4 to the four primary destinations in sidebar order (Inbox merged; no Home / Mission Control / Companies slots)', () => {
-    const meta = (key: string) => getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
-    expect(meta('1')).toEqual({ kind: 'inbox' });
-    expect(meta('2')).toEqual({ kind: 'meetings' });
-    expect(meta('3')).toEqual({ kind: 'marketplace' });
-    expect(meta('4')).toEqual({ kind: 'library' });
+  it('maps ⌘1 / ⌘2 to the first / second non-personal company in connected-first order', () => {
+    const meta = (key: string) =>
+      getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
+    expect(meta('1')).toEqual({ kind: 'company', slug: 'first' });
+    expect(meta('2')).toEqual({ kind: 'company', slug: 'second' });
   });
 
-  it('maps ⌘5+ to companies in sidebar (connected-first) order, ctrl works too, and unmodified keys do nothing', () => {
+  it('maps ⌘0 to Personal; ctrl works too; keys past the company count and unmodified keys stay quiet', () => {
     expect(
-      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'company', slug: 'first' });
+      getDesktopHotkeyRoute({ key: '0', metaKey: true, ctrlKey: false }, companies),
+    ).toEqual({ kind: 'company', slug: 'personal' });
     expect(
-      getDesktopHotkeyRoute({ key: '6', metaKey: false, ctrlKey: true }, companies),
+      getDesktopHotkeyRoute({ key: '2', metaKey: false, ctrlKey: true }, companies),
     ).toEqual({ kind: 'company', slug: 'second' });
-    // Only two companies exist — ⌘7+ stay quiet rather than misfiring.
-    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toBeNull();
+    // Only two non-personal companies — ⌘3+ stay quiet rather than misfiring.
+    expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toBeNull();
     expect(getDesktopHotkeyRoute({ key: '1', metaKey: false, ctrlKey: false }, companies)).toBeNull();
   });
 
-  it('leaves no dead slot: with five companies every ⌘1–⌘9 key resolves', () => {
-    const five = getDesktopCompanies([
-      company({ slug: 'a', displayName: 'A', state: 'synced' }),
-      company({ slug: 'b', displayName: 'B', state: 'synced' }),
-      company({ slug: 'c', displayName: 'C', state: 'synced' }),
-      company({ slug: 'd', displayName: 'D', state: 'synced' }),
-      company({ slug: 'e', displayName: 'E', state: 'synced' }),
-    ]);
-    for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
-      expect(getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, five)).not.toBeNull();
-    }
-  });
-
-  it('orders company hotkeys by the rendered sidebar rows, not the raw workspace list', () => {
+  it('orders company hotkeys by connected-first sidebar rows, not the raw workspace list', () => {
     const unsorted = getDesktopCompanies([
       company({ slug: 'zeta', displayName: 'Zeta', state: 'local-only', cloudUid: null }),
       company({ slug: 'alpha', displayName: 'Alpha', state: 'synced' }),
     ]);
-    // Alpha (connected) is the first sidebar row even though Zeta leads the list.
+    // Alpha (connected) is the first non-personal row even though Zeta leads the list.
     expect(
-      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, unsorted),
+      getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, unsorted),
     ).toEqual({ kind: 'company', slug: 'alpha' });
+    expect(
+      getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, unsorted),
+    ).toEqual({ kind: 'company', slug: 'zeta' });
   });
 
-  it('labels company hotkeys ⌘5–⌘9 and none past the ninth slot (US-008 renumber)', () => {
-    expect(companyHotkey(0)).toBe('⌘5');
-    expect(companyHotkey(4)).toBe('⌘9');
-    expect(companyHotkey(5)).toBeUndefined();
+  it('labels company hotkeys ⌘1–⌘9 and none past the ninth slot', () => {
+    expect(companyHotkey(0)).toBe('⌘1');
+    expect(companyHotkey(8)).toBe('⌘9');
+    expect(companyHotkey(9)).toBeUndefined();
+  });
+
+  it('returns null for ⌘0 when no personal workspace is present', () => {
+    const noPersonal = getDesktopCompanies([
+      company({ slug: 'only', displayName: 'Only', state: 'synced' }),
+    ]);
+    expect(
+      getDesktopHotkeyRoute({ key: '0', metaKey: true, ctrlKey: false }, noPersonal),
+    ).toBeNull();
+  });
+});
+
+describe('US-002 getAddWorkspaceRoute', () => {
+  it('routes to the first pending-invite company', () => {
+    expect(
+      getAddWorkspaceRoute([
+        company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+        company({
+          slug: 'invite',
+          displayName: 'Invite Co',
+          state: 'cloud-only',
+          membershipStatus: 'pending',
+        }),
+        company({ slug: 'local', displayName: 'Local', state: 'local-only', cloudUid: null }),
+      ]),
+    ).toEqual({ kind: 'company', slug: 'invite' });
+  });
+
+  it('routes to the first local-only or broken company when there is no pending invite', () => {
+    expect(
+      getAddWorkspaceRoute([
+        company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+        company({ slug: 'broken', displayName: 'Broken', state: 'broken' }),
+        company({ slug: 'local', displayName: 'Local', state: 'local-only', cloudUid: null }),
+      ]),
+    ).toEqual({ kind: 'company', slug: 'broken' });
+    expect(
+      getAddWorkspaceRoute([
+        company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+        company({ slug: 'local', displayName: 'Local', state: 'local-only', cloudUid: null }),
+      ]),
+    ).toEqual({ kind: 'company', slug: 'local' });
+  });
+
+  it('falls back to Settings → Sync when every company is already connected', () => {
+    expect(
+      getAddWorkspaceRoute([
+        company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+        company({ slug: 'cloud', displayName: 'Cloud', state: 'cloud-only' }),
+      ]),
+    ).toEqual({ kind: 'settings', tab: 'sync' });
   });
 });
 

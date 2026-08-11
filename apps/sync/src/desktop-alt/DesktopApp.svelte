@@ -61,6 +61,7 @@
     DEFAULT_SETTINGS_TAB,
     formatRelativeTime,
     fromV4Route,
+    getAddWorkspaceRoute,
     getDesktopActiveCompany,
     getDesktopCompanies,
     getDesktopHotkeyRoute,
@@ -452,7 +453,6 @@
       id: 'command-go-inbox',
       label: 'Go to Inbox',
       detail: 'Notifications, mentions, shares, and activity',
-      shortcut: '⌘1',
       action: () => navigate({ kind: 'inbox' }),
     },
     {
@@ -465,21 +465,18 @@
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘2',
       action: () => navigate({ kind: 'meetings' }),
     },
     {
       id: 'command-go-marketplace',
       label: 'Go to Marketplace',
       detail: 'Discover and install skills and workers',
-      shortcut: '⌘3',
       action: () => navigate({ kind: 'marketplace' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
       detail: 'Skills, workers, and installed packs',
-      shortcut: '⌘4',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -522,15 +519,23 @@
           },
         ]
       : []),
-    // Companies start at ⌘5 (after the four primary destinations), in sidebar
-    // (connected-first) order.
-    ...orderedCompanies.map((row, index) => ({
-      id: `command-go-company-${row.slug}`,
-      label: `Go to ${row.label}`,
-      detail: 'Show company overview',
-      shortcut: companyHotkey(index),
-      action: () => navigate({ kind: 'company', slug: row.slug }),
-    })),
+    // US-002 workspace numbering: ⌘1–⌘9 non-personal companies (connected-first
+    // order); Personal is ⌘0.
+    ...(() => {
+      const nonPersonal = orderedCompanies.filter((row) => !row.isPersonal);
+      return orderedCompanies.map((row) => {
+        const shortcut = row.isPersonal
+          ? '⌘0'
+          : companyHotkey(nonPersonal.findIndex((entry) => entry.slug === row.slug));
+        return {
+          id: `command-go-company-${row.slug}`,
+          label: `Go to ${row.label}`,
+          detail: 'Show company overview',
+          shortcut,
+          action: () => navigate({ kind: 'company', slug: row.slug }),
+        };
+      });
+    })(),
     // Keep the palette useful with hundreds of companies: expose every company
     // root, but only materialize deep section commands for the active company.
     ...(activeCompany
@@ -1743,6 +1748,12 @@
           {accountEmail}
           {brand}
           onnavigate={(next) => navigate(fromV4Route(next))}
+          onaddworkspace={() => {
+            userNavigated = true;
+            navigate(
+              getAddWorkspaceRoute(workspaces.length > 0 ? workspaces : cachedWorkspaces),
+            );
+          }}
         />
       {/if}
     {/if}

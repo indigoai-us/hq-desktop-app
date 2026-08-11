@@ -12,11 +12,11 @@ import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
 
 /**
- * US-006 — US-007 sidebar IA (behavioral route helpers + source contracts).
+ * US-006 — US-007 sidebar IA (behavioral route helpers + source contracts),
+ * updated for hq-desktop-v2 US-002 single-active-workspace hotkeys.
  *
  * Locks the V4 primary-nav shape and landing rules:
- *  - ⌘1–⌘4 = Inbox / Meetings / Marketplace / Library; company digits map
- *    connected-first order.
+ *  - ⌘1–⌘9 = non-personal companies in connected-first order; ⌘0 = Personal.
  *  - Legacy intents resolve (messages → Messages, notifications → Inbox,
  *    home/sync → home,
  *    mission-control palette-only, library:marketplace → top-level marketplace).
@@ -49,13 +49,15 @@ function hotkey(key: string): Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>
   return { key, metaKey: true, ctrlKey: false };
 }
 
-describe('US-006 / US-007: sidebar IA — hotkeys (behavioral)', () => {
-  it("⌘1 → inbox, ⌘3 → marketplace", () => {
+describe('US-006 / US-007 / US-002: sidebar IA — hotkeys (behavioral)', () => {
+  it('⌘1 → first company; keys past the company count stay quiet', () => {
     const companies = [workspace({})];
-    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({ kind: 'inbox' });
-    expect(getDesktopHotkeyRoute(hotkey('3'), companies)).toEqual({ kind: 'marketplace' });
-    expect(getDesktopHotkeyRoute(hotkey('2'), companies)).toEqual({ kind: 'meetings' });
-    expect(getDesktopHotkeyRoute(hotkey('4'), companies)).toEqual({ kind: 'library' });
+    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+    });
+    expect(getDesktopHotkeyRoute(hotkey('2'), companies)).toBeNull();
+    expect(getDesktopHotkeyRoute(hotkey('3'), companies)).toBeNull();
   });
 
   it('company digits map into connected-first sidebar order', () => {
@@ -65,16 +67,16 @@ describe('US-006 / US-007: sidebar IA — hotkeys (behavioral)', () => {
       workspace({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
       workspace({ slug: 'beta', displayName: 'Beta', state: 'synced' }),
     ];
-    // ⌘5 = first connected company (Acme before Beta alphabetically).
-    expect(getDesktopHotkeyRoute(hotkey('5'), companies)).toEqual({
+    // ⌘1 = first connected company (Acme before Beta alphabetically).
+    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({
       kind: 'company',
       slug: 'acme',
     });
-    expect(getDesktopHotkeyRoute(hotkey('6'), companies)).toEqual({
+    expect(getDesktopHotkeyRoute(hotkey('2'), companies)).toEqual({
       kind: 'company',
       slug: 'beta',
     });
-    expect(getDesktopHotkeyRoute(hotkey('7'), companies)).toEqual({
+    expect(getDesktopHotkeyRoute(hotkey('3'), companies)).toEqual({
       kind: 'company',
       slug: 'zebra',
     });

@@ -4,6 +4,7 @@ import {
   accountIdentityFromWorkspaces,
   getV2ActiveWorkspace,
   getV2SidebarModel,
+  getV2WorkspaceSwitcherItems,
   getV4SidebarModel,
   getV4TitleBarModel,
   sortV4CompaniesConnectedFirst,
@@ -516,5 +517,76 @@ describe('hq-desktop-v2 US-001: Cloud Off titlebar state', () => {
     expect(syncing.sentence).toBe('Syncing…');
     const error = getV4TitleBarModel({ syncState: 'error', watchedCount: 3, cloudPaused: true });
     expect(error.sentence).toBe('Sync failed');
+  });
+});
+
+describe('hq-desktop-v2 US-002: workspace switcher items', () => {
+  const now = Date.parse('2026-08-11T12:00:00.000Z');
+
+  it('orders non-personal companies first (connected-first), Personal last with ⌘0', () => {
+    const workspaces: Workspace[] = [
+      personal,
+      company({
+        slug: 'zeta',
+        displayName: 'Zeta',
+        state: 'local-only',
+        cloudUid: null,
+        lastSyncedAt: null,
+      }),
+      company({
+        slug: 'acme',
+        displayName: 'Acme',
+        state: 'synced',
+        lastSyncedAt: new Date(now - 5 * 60_000).toISOString(),
+      }),
+      company({
+        slug: 'pending',
+        displayName: 'Pending Co',
+        state: 'cloud-only',
+        membershipStatus: 'pending',
+        lastSyncedAt: null,
+      }),
+    ];
+    const items = getV2WorkspaceSwitcherItems(workspaces, 'acme', now);
+    // Connected companies first (Acme), then idle/pending (Pending Co, Zeta), Personal last.
+    expect(items.map((item) => item.slug)).toEqual(['acme', 'pending', 'zeta', 'personal']);
+    expect(items.map((item) => item.hotkey)).toEqual(['⌘1', '⌘2', '⌘3', '⌘0']);
+    expect(items.find((item) => item.slug === 'personal')).toMatchObject({
+      isPersonal: true,
+      label: 'Personal',
+      syncAgeLabel: 'local',
+      hotkey: '⌘0',
+    });
+  });
+
+  it('sets sync age labels, active flag, pending invite, and tones', () => {
+    const workspaces: Workspace[] = [
+      company({
+        slug: 'acme',
+        displayName: 'Acme',
+        state: 'synced',
+        lastSyncedAt: new Date(now - 5 * 60_000).toISOString(),
+      }),
+      company({
+        slug: 'invite',
+        displayName: 'Invite',
+        state: 'cloud-only',
+        membershipStatus: 'pending',
+      }),
+      personal,
+    ];
+    const items = getV2WorkspaceSwitcherItems(workspaces, 'invite', now);
+    expect(items.find((item) => item.slug === 'acme')).toMatchObject({
+      syncAgeLabel: '5m ago',
+      active: false,
+      pendingInvite: false,
+      tone: 'ok',
+    });
+    expect(items.find((item) => item.slug === 'invite')).toMatchObject({
+      active: true,
+      pendingInvite: true,
+      tone: 'idle',
+    });
+    expect(items.find((item) => item.slug === 'personal')?.active).toBe(false);
   });
 });

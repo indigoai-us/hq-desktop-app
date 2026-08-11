@@ -295,14 +295,12 @@ export function getDesktopActiveCompany(
   return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
-/** First ⌘ hotkey assigned to a company row (after the four primary destinations). */
-const COMPANY_HOTKEY_BASE = 5;
-
 /**
- * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
- * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
- * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
- * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
+ * Single-active-workspace hotkeys (hq-desktop-v2 US-002):
+ *   ⌘0 → Personal workspace (if present)
+ *   ⌘1–⌘9 → Nth non-personal company in connected-first sidebar order
+ * Primary destinations (Inbox / Meetings / Marketplace / Library) no longer
+ * own number chords — they stay palette- and sidebar-reachable.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -310,24 +308,53 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'inbox' };
-  if (event.key === '2') return { kind: 'meetings' };
-  if (event.key === '3') return { kind: 'marketplace' };
-  if (event.key === '4') return { kind: 'library' };
+  const rows = sortV4CompaniesConnectedFirst(companies);
 
-  const companyIndex = Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE;
-  if (companyIndex >= 0 && companyIndex <= 9 - COMPANY_HOTKEY_BASE) {
-    const company = sortV4CompaniesConnectedFirst(companies)[companyIndex];
+  if (event.key === '0') {
+    const personal = rows.find((row) => row.isPersonal);
+    return personal ? { kind: 'company', slug: personal.slug } : null;
+  }
+
+  const companyIndex = Number.parseInt(event.key, 10) - 1;
+  if (companyIndex >= 0 && companyIndex <= 8) {
+    const nonPersonal = rows.filter((row) => !row.isPersonal);
+    const company = nonPersonal[companyIndex];
     if (company) return { kind: 'company', slug: company.slug };
   }
 
   return null;
 }
 
-/** ⌘ hotkey label for the company at `index` (sidebar order), or undefined past ⌘9. */
+/**
+ * ⌘ hotkey label for the non-personal company at `index` (connected-first
+ * order, 0-based): ⌘1–⌘9 for indexes 0–8, undefined past the ninth slot.
+ * Personal uses ⌘0 separately (see getV2WorkspaceSwitcherItems).
+ */
 export function companyHotkey(index: number): string | undefined {
-  const hotkeyNumber = COMPANY_HOTKEY_BASE + index;
-  return hotkeyNumber <= 9 ? `⌘${hotkeyNumber}` : undefined;
+  return index >= 0 && index <= 8 ? `⌘${index + 1}` : undefined;
+}
+
+/**
+ * Destination for the switcher "+ Add a workspace" action (US-002):
+ * pending invite → that company page (claim_pending_company_invite),
+ * else local-only/broken company → that company page (connect_workspace_to_cloud),
+ * else Settings → Sync tab.
+ */
+export function getAddWorkspaceRoute(workspaces: Workspace[]): DesktopRoute {
+  const pendingInvite = workspaces.find(
+    (workspace) =>
+      workspace.kind === 'company' && workspace.membershipStatus === 'pending',
+  );
+  if (pendingInvite) return { kind: 'company', slug: pendingInvite.slug };
+
+  const needsConnect = workspaces.find(
+    (workspace) =>
+      workspace.kind === 'company' &&
+      (workspace.state === 'local-only' || workspace.state === 'broken'),
+  );
+  if (needsConnect) return { kind: 'company', slug: needsConnect.slug };
+
+  return { kind: 'settings', tab: 'sync' };
 }
 
 /**
@@ -541,16 +568,5 @@ export function formatHqFolderMeta(path: string | null | undefined): string {
   return trimmed.replace(/^\/Users\/[^/]+/, '~');
 }
 
-/** Human relative timestamp ("just now", "5m ago") for status meta lines. */
-export function formatRelativeTime(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return null;
-  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (secs < 60) return 'just now';
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
-}
+/** Re-export — implementation lives in v4/model.ts (US-002 switcher model). */
+export { formatRelativeTime } from './v4/model';

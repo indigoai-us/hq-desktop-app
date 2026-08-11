@@ -39,8 +39,9 @@ describe('desktop-alt command palette coverage', () => {
   });
 
   it('keeps Marketplace, Home, and Mission Control reachable from the palette (US-007)', () => {
-    // Marketplace is a top-level destination with the ⌘4 slot; Home and
-    // Mission Control lost their sidebar rows + hotkeys but stay routable.
+    // Marketplace is a top-level destination; Home and Mission Control lost
+    // their sidebar rows + hotkeys but stay routable (workspace hotkeys are
+    // ⌘0–⌘9 since US-002).
     expect(desktopApp).toContain("id: 'command-go-marketplace'");
     expect(desktopApp).toContain("navigate({ kind: 'marketplace' })");
     expect(desktopApp).toContain("id: 'command-go-home'");

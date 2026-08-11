@@ -143,14 +143,15 @@ describe('US-007: last-visited company landing (persisted)', () => {
 });
 
 describe('US-007: Marketplace is a top-level destination', () => {
-  it('has a sidebar row, the ⌘3 hotkey, and its own route key', () => {
+  it('has a sidebar row and its own route key (hotkeys are workspace-only since US-002)', () => {
     expect(V4_NAV_ITEMS.some((item) => item.id === 'marketplace')).toBe(true);
+    // Number chords no longer land on Marketplace — they switch workspaces.
     expect(
       getDesktopHotkeyRoute(
         { key: '3', metaKey: true, ctrlKey: false },
         getDesktopCompanies(workspaces),
-      ),
-    ).toEqual({ kind: 'marketplace' });
+      )?.kind,
+    ).not.toBe('marketplace');
     expect(fromV4Route({ kind: 'marketplace' })).toEqual({ kind: 'marketplace' });
     expect(getDesktopRouteKey({ kind: 'marketplace' })).toBe('marketplace');
     // Exactly one active row when the Marketplace route is on screen.
@@ -179,24 +180,20 @@ describe('US-007: Marketplace is a top-level destination', () => {
   });
 });
 
-describe('US-007: hotkeys and palette rebalance with no dead slots', () => {
-  it('⌘1..⌘4 cover the four primaries (Inbox merged) and ⌘5..⌘8 cover companies in sidebar order', () => {
+describe('US-007 / US-002: hotkeys cover workspaces in connected-first order', () => {
+  it('⌘1..⌘N cover non-personal companies; keys past the count stay quiet', () => {
     const companies = getDesktopCompanies([
       ...workspaces,
       workspace({ slug: 'zed', displayName: 'Zed', state: 'synced' }),
     ]);
     const meta = (key: string) =>
       getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
-    expect(meta('1')).toEqual({ kind: 'inbox' });
-    expect(meta('2')).toEqual({ kind: 'meetings' });
-    expect(meta('3')).toEqual({ kind: 'marketplace' });
-    expect(meta('4')).toEqual({ kind: 'library' });
-    // Connected-first + alpha: Acme, Indigo, Zed, then the local-only row.
-    expect(meta('5')).toEqual({ kind: 'company', slug: 'acme' });
-    expect(meta('6')).toEqual({ kind: 'company', slug: 'indigo' });
-    expect(meta('7')).toEqual({ kind: 'company', slug: 'zed' });
-    expect(meta('8')).toEqual({ kind: 'company', slug: 'local-co' });
-    // Only four companies — ⌘9 stays quiet.
-    expect(meta('9')).toBeNull();
+    // Connected-first + alpha non-personal: Acme, Indigo, Zed, then local-only.
+    expect(meta('1')).toEqual({ kind: 'company', slug: 'acme' });
+    expect(meta('2')).toEqual({ kind: 'company', slug: 'indigo' });
+    expect(meta('3')).toEqual({ kind: 'company', slug: 'zed' });
+    expect(meta('4')).toEqual({ kind: 'company', slug: 'local-co' });
+    // Only four non-personal companies — ⌘5 stays quiet.
+    expect(meta('5')).toBeNull();
   });
 });

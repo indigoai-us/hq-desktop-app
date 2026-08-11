@@ -471,8 +471,8 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   it('gives company skills and workers context without multiplying every deep command', () => {
     expect(companyLibrary).toContain('class="company-library-header"');
     expect(companyLibrary).toContain('Company-scoped workflows and operating knowledge');
-    expect(desktop).toContain('...orderedCompanies.map');
-    expect(desktop).not.toContain('...orderedCompanies.flatMap');
+    expect(desktop).toContain('orderedCompanies.map');
+    expect(desktop).not.toContain('orderedCompanies.flatMap');
     expect(desktop).toContain('only materialize deep section commands for the active company');
   });
 });
