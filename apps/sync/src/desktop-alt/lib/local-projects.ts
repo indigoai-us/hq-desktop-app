@@ -572,6 +572,19 @@ export async function saveLocalProjectStatus(
 }
 
 /**
+ * Create a minimal local project scaffold in-app (US-006 "New project"):
+ * `companies/<slug>/projects/<name-slug>/prd.json` with an empty story list.
+ * Resolves to the HQ-relative prd.json path of the new project; throws on an
+ * empty/unusable name, an existing project folder, or any write failure.
+ */
+export async function createLocalProject(
+  companySlug: string,
+  name: string,
+): Promise<string> {
+  return invoke<string>('create_local_project', { companySlug, name });
+}
+
+/**
  * Persist a story's `passes` toggle to the project's prd.json (US-010). Same
  * throw-on-failure contract as {@link saveLocalProjectStatus}.
  */
@@ -581,4 +594,37 @@ export async function saveLocalStoryPasses(
   passes: boolean,
 ): Promise<void> {
   await invoke('set_local_story_passes', { prdPath, storyId, passes });
+}
+
+/**
+ * Persist a goal ↔ project association (US-005 "Link goal / Connect"). Writes
+ * the project ref into the goal's own durable store — the objective's
+ * `initiative_ids` in the company `board.json` (vault-synced) — via the Rust
+ * `link_local_goal_project` command. Throws on failure (rollback signal).
+ */
+export async function saveGoalProjectLink(
+  companySlug: string,
+  goalId: string,
+  projectRef: string,
+): Promise<void> {
+  await invoke('link_local_goal_project', { companySlug, goalId, projectRef });
+}
+
+/**
+ * Create a new goal in-app (US-005 "New goal") — appends an objective with
+ * title/description/target year to the company `board.json` (seeding the file
+ * for a company with no goals yet). Resolves to the created goal's id.
+ */
+export async function createCompanyGoal(
+  companySlug: string,
+  title: string,
+  description: string,
+  timeframe: string,
+): Promise<string> {
+  return invoke<string>('create_local_company_goal', {
+    companySlug,
+    title,
+    description,
+    timeframe,
+  });
 }

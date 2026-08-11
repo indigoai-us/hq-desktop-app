@@ -1973,6 +1973,317 @@ pub fn write_story_passes(
     )
 }
 
+/// Slugify a project display name into a `projects/<dir>` directory name:
+/// lowercase, alphanumerics preserved, every other run collapsed to a single
+/// `-`, trimmed, capped at 64 chars. Errors when nothing usable remains.
+pub fn project_dir_slug(name: &str) -> Result<String, String> {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.push(ch.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+        if slug.len() >= 64 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        return Err(format!(
+            "project name {name:?} has no usable characters for a folder name"
+        ));
+    }
+    Ok(slug)
+}
+
+/// Create a minimal local project scaffold under
+/// `companies/<slug>/projects/<name-slug>/prd.json` (US-006 "New project").
+///
+/// Same gate + lock discipline as the other writers: callers hold the tenant
+/// authorization (the Tauri wrapper authorizes the company slug first); this
+/// pure body validates the lexical path, refuses to clobber an existing
+/// project directory, and writes the prd with `create_new` so a concurrent
+/// creation loses cleanly instead of truncating. Returns the HQ-relative
+/// `prd.json` path so the frontend can select/open the new project.
+pub fn create_local_project(
+    hq_root: &Path,
+    company_slug: &str,
+    name: &str,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("project name is required".to_string());
+    }
+    let dir_slug = project_dir_slug(name)?;
+    let relative = validate_hq_relative_path(
+        &format!("companies/{company_slug}/projects/{dir_slug}/prd.json"),
+        false,
+    )?;
+    if company_slug_for_hq_path(&relative)?.as_deref() != Some(company_slug) {
+        return Err(format!("invalid company_slug: {company_slug:?}"));
+    }
+
+    let _write_lock = acquire_project_write_lock(hq_root)?;
+    let company_dir = hq_root.join("companies").join(company_slug);
+    if !company_dir.is_dir() {
+        return Err(format!("company folder not found for {company_slug:?}"));
+    }
+    let project_dir = company_dir.join("projects").join(&dir_slug);
+    if project_dir.exists() {
+        return Err(format!(
+            "a project folder named {dir_slug:?} already exists in {company_slug:?}"
+        ));
+    }
+    std::fs::create_dir_all(&project_dir)
+        .map_err(|e| format!("could not create project folder {dir_slug:?}: {e}"))?;
+
+    let now = now_iso8601();
+    let prd = serde_json::json!({
+        "name": name,
+        "description": "",
+        "userStories": [],
+        "metadata": { "createdAt": now, "updatedAt": now },
+    });
+    let bytes = serde_json::to_vec_pretty(&prd)
+        .map_err(|e| format!("could not serialize new prd.json: {e}"))?;
+
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(project_dir.join("prd.json"))
+        .map_err(|e| format!("could not create prd.json for {dir_slug:?}: {e}"))?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("could not write prd.json for {dir_slug:?}: {e}"))?;
+    Ok(relative)
+}
+
+/// Validate a goals company slug exactly the way `read_company_goals` does —
+/// a single directory name, no separators or traversal components.
+fn validate_goals_company_slug(company_slug: &str) -> Result<String, String> {
+    let slug = company_slug.trim();
+    if slug.is_empty() {
+        return Err("company_slug is required".to_string());
+    }
+    if slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
+        return Err(format!("invalid company_slug: {company_slug:?}"));
+    }
+    Ok(slug.to_string())
+}
+
+/// Persist a durable goal ↔ project association (US-005 "Link goal / Connect").
+///
+/// The association is written into the goal's own store: the objective's
+/// `initiative_ids` array inside `companies/<slug>/board.json` — the exact
+/// field `read_company_goals` already returns and the frontend link matcher
+/// (goal-links helper, Overview rollup) already consumes, and board.json is a
+/// vault-synced file, so the link is durable and travels with the company.
+/// `project_ref` is the project's directory id (a single path-free token).
+///
+/// Same lock + atomic-exchange discipline as `write_project_status`. The
+/// objective is matched by `id`, falling back to `title` for legacy id-less
+/// entries (mirrors the frontend's `goalKey`). Idempotent: linking an already
+/// linked project is a quiet no-op write.
+pub fn write_goal_project_link(
+    hq_root: &Path,
+    company_slug: &str,
+    goal_id: &str,
+    project_ref: &str,
+) -> Result<(), String> {
+    let slug = validate_goals_company_slug(company_slug)?;
+    let goal_id = goal_id.trim();
+    if goal_id.is_empty() {
+        return Err("goal_id is required".to_string());
+    }
+    let project_ref = project_ref.trim();
+    if project_ref.is_empty() {
+        return Err("project_ref is required".to_string());
+    }
+    if project_ref.contains('/') || project_ref.contains('\\') {
+        return Err(format!("invalid project_ref: {project_ref:?}"));
+    }
+
+    run_project_write_start_hook();
+    let _write_lock = acquire_project_write_lock(hq_root)?;
+    let board_rel = format!("companies/{slug}/board.json");
+    if !hq_root.join(&board_rel).exists() {
+        return Err(format!("no goals file (board.json) for {slug:?} yet"));
+    }
+    let target = resolve_project_write_path(hq_root, &board_rel, "board.json")?;
+    if target.company_slug.as_deref() != Some(slug.as_str()) {
+        return Err("goals path resolves across HQ company boundaries".to_string());
+    }
+    let write_anchor = ProjectWriteAnchor::open(&target)?;
+    require_same_project_write_target(hq_root, &target, "board.json")?;
+    let snapshot = write_anchor
+        .read_bytes()
+        .map_err(|e| format!("could not read board.json for {slug:?}: {e}"))?;
+    commit_json_mutation_with_exchange(
+        &write_anchor,
+        snapshot,
+        |base| {
+            let mut tree: serde_json::Value = serde_json::from_slice(base)
+                .map_err(|e| format!("board.json for {slug:?} is not valid JSON: {e}"))?;
+            let objectives = tree
+                .get_mut("objectives")
+                .and_then(|value| value.as_array_mut())
+                .ok_or_else(|| "board.json has no `objectives` array".to_string())?;
+            let objective = objectives
+                .iter_mut()
+                .find(|objective| {
+                    objective.get("id").and_then(|value| value.as_str()) == Some(goal_id)
+                        || (objective
+                            .get("id")
+                            .and_then(|value| value.as_str())
+                            .map(str::trim)
+                            .unwrap_or("")
+                            .is_empty()
+                            && objective.get("title").and_then(|value| value.as_str())
+                                == Some(goal_id))
+                })
+                .ok_or_else(|| format!("no goal with id {goal_id:?} in board.json"))?;
+            let obj = objective
+                .as_object_mut()
+                .ok_or_else(|| "matched goal is not a JSON object".to_string())?;
+            let ids = obj
+                .entry("initiative_ids".to_string())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            let ids = ids
+                .as_array_mut()
+                .ok_or_else(|| "goal `initiative_ids` is not an array".to_string())?;
+            let already_linked = ids
+                .iter()
+                .any(|value| value.as_str() == Some(project_ref));
+            if !already_linked {
+                ids.push(serde_json::Value::String(project_ref.to_string()));
+                obj.insert(
+                    "updated_at".to_string(),
+                    serde_json::Value::String(now_iso8601()),
+                );
+            }
+            Ok(tree)
+        },
+        || require_same_project_write_target(hq_root, &target, "board.json"),
+    )
+}
+
+/// Create a new goal in-app (US-005 "New goal") — appends an objective to the
+/// company's `companies/<slug>/board.json` `objectives[]` (creating a minimal
+/// board file when the company has none yet). Returns the new goal's id.
+///
+/// The new objective carries `title` / `description` / `timeframe` (target
+/// year), `status: "on-track"`, empty `key_results` and `initiative_ids` —
+/// on-disk snake_case, matching what `read_company_goals` parses.
+pub fn create_local_goal(
+    hq_root: &Path,
+    company_slug: &str,
+    title: &str,
+    description: &str,
+    timeframe: &str,
+) -> Result<String, String> {
+    let slug = validate_goals_company_slug(company_slug)?;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("goal title is required".to_string());
+    }
+    let base_id = project_dir_slug(title)?;
+
+    run_project_write_start_hook();
+    let _write_lock = acquire_project_write_lock(hq_root)?;
+    let company_dir = hq_root.join("companies").join(&slug);
+    if !company_dir.is_dir() {
+        return Err(format!("company folder not found for {slug:?}"));
+    }
+    let board_rel = format!("companies/{slug}/board.json");
+    let board_path = hq_root.join(&board_rel);
+    if !board_path.exists() {
+        // First goal for this company: seed a minimal board under the lock.
+        // `create_new` makes a concurrent creation lose cleanly.
+        use std::io::Write as _;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&board_path)
+        {
+            Ok(mut file) => {
+                file.write_all(b"{\n  \"objectives\": []\n}\n")
+                    .and_then(|()| file.sync_all())
+                    .map_err(|e| format!("could not seed board.json for {slug:?}: {e}"))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!("could not create board.json for {slug:?}: {error}"))
+            }
+        }
+    }
+    let target = resolve_project_write_path(hq_root, &board_rel, "board.json")?;
+    if target.company_slug.as_deref() != Some(slug.as_str()) {
+        return Err("goals path resolves across HQ company boundaries".to_string());
+    }
+    let write_anchor = ProjectWriteAnchor::open(&target)?;
+    require_same_project_write_target(hq_root, &target, "board.json")?;
+    let snapshot = write_anchor
+        .read_bytes()
+        .map_err(|e| format!("could not read board.json for {slug:?}: {e}"))?;
+
+    let description = description.trim().to_string();
+    let timeframe = timeframe.trim().to_string();
+    let assigned_id = std::cell::RefCell::new(String::new());
+    commit_json_mutation_with_exchange(
+        &write_anchor,
+        snapshot,
+        |base| {
+            let mut tree: serde_json::Value = serde_json::from_slice(base)
+                .map_err(|e| format!("board.json for {slug:?} is not valid JSON: {e}"))?;
+            let root = tree
+                .as_object_mut()
+                .ok_or_else(|| "board.json is not a JSON object".to_string())?;
+            let objectives = root
+                .entry("objectives".to_string())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            let objectives = objectives
+                .as_array_mut()
+                .ok_or_else(|| "board.json `objectives` is not an array".to_string())?;
+
+            // Uniquify the id against existing objectives.
+            let existing: std::collections::HashSet<String> = objectives
+                .iter()
+                .filter_map(|objective| objective.get("id").and_then(|value| value.as_str()))
+                .map(str::to_string)
+                .collect();
+            let mut goal_id = base_id.clone();
+            let mut suffix = 2;
+            while existing.contains(&goal_id) {
+                goal_id = format!("{base_id}-{suffix}");
+                suffix += 1;
+            }
+            let now = now_iso8601();
+            objectives.push(serde_json::json!({
+                "id": goal_id,
+                "title": title,
+                "description": description,
+                "status": "on-track",
+                "timeframe": timeframe,
+                "key_results": [],
+                "initiative_ids": [],
+                "created_at": now,
+                "updated_at": now,
+            }));
+            *assigned_id.borrow_mut() = goal_id;
+            Ok(tree)
+        },
+        || require_same_project_write_target(hq_root, &target, "board.json"),
+    )?;
+    Ok(assigned_id.into_inner())
+}
+
 struct PreparedAtomicJsonWrite {
     temp_path: PathBuf,
     temp_name: std::ffi::OsString,
@@ -3443,6 +3754,113 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn write_goal_project_link_persists_and_is_idempotent() {
+        let root = make_goals_fixture_tree();
+
+        write_goal_project_link(&root, "indigo", "in-obj-002", "hq-desktop-v2")
+            .expect("link write");
+        let goals = read_company_goals(&root, "indigo").expect("goals reread");
+        let obj2 = goals
+            .objectives
+            .iter()
+            .find(|objective| objective.id == "in-obj-002")
+            .expect("objective survives");
+        assert_eq!(obj2.initiative_ids, vec!["in-init-002", "hq-desktop-v2"]);
+
+        // Idempotent: linking again does not duplicate the ref.
+        write_goal_project_link(&root, "indigo", "in-obj-002", "hq-desktop-v2")
+            .expect("relink write");
+        let goals = read_company_goals(&root, "indigo").expect("goals reread 2");
+        let obj2 = goals
+            .objectives
+            .iter()
+            .find(|objective| objective.id == "in-obj-002")
+            .expect("objective survives");
+        assert_eq!(obj2.initiative_ids, vec!["in-init-002", "hq-desktop-v2"]);
+
+        // Sibling objectives and initiatives are untouched.
+        assert_eq!(goals.objectives[0].initiative_ids, vec!["in-init-001"]);
+        assert_eq!(goals.initiatives.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_goal_project_link_rejects_bad_targets() {
+        let root = make_goals_fixture_tree();
+        assert!(
+            write_goal_project_link(&root, "indigo", "missing-goal", "proj").is_err(),
+            "unknown goal id fails"
+        );
+        assert!(
+            write_goal_project_link(&root, "indigo", "in-obj-001", "a/b").is_err(),
+            "path-shaped project ref fails"
+        );
+        assert!(
+            write_goal_project_link(&root, "indigo", "in-obj-001", "  ").is_err(),
+            "empty project ref fails"
+        );
+        assert!(
+            write_goal_project_link(&root, "../indigo", "in-obj-001", "proj").is_err(),
+            "traversal slug fails"
+        );
+        assert!(
+            write_goal_project_link(&root, "no-board-co", "in-obj-001", "proj").is_err(),
+            "missing board fails"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_local_goal_appends_and_round_trips() {
+        let root = make_goals_fixture_tree();
+        let id = create_local_goal(&root, "indigo", "Ship V2 Desktop", "All-new shell", "2026")
+            .expect("goal create");
+        assert_eq!(id, "ship-v2-desktop");
+
+        let goals = read_company_goals(&root, "indigo").expect("goals reread");
+        assert_eq!(goals.objectives.len(), 3);
+        let created = goals
+            .objectives
+            .iter()
+            .find(|objective| objective.id == id)
+            .expect("created goal present");
+        assert_eq!(created.title, "Ship V2 Desktop");
+        assert_eq!(created.description, "All-new shell");
+        assert_eq!(created.timeframe, "2026");
+        assert_eq!(created.status, "on-track");
+        assert!(created.key_results.is_empty());
+        assert!(created.initiative_ids.is_empty());
+
+        // Duplicate title uniquifies the id.
+        let id2 = create_local_goal(&root, "indigo", "Ship V2 Desktop", "", "2027")
+            .expect("second create");
+        assert_eq!(id2, "ship-v2-desktop-2");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_local_goal_seeds_missing_board_and_links_round_trip() {
+        let root = make_goals_fixture_tree();
+        fs::create_dir_all(root.join("companies").join("fresh")).unwrap();
+
+        let id = create_local_goal(&root, "fresh", "First Goal", "", "2026")
+            .expect("goal create on empty company");
+        let goals = read_company_goals(&root, "fresh").expect("fresh goals read");
+        assert_eq!(goals.objectives.len(), 1);
+        assert_eq!(goals.objectives[0].id, id);
+
+        // The freshly seeded board accepts links immediately.
+        write_goal_project_link(&root, "fresh", &id, "some-project").expect("link on seed board");
+        let goals = read_company_goals(&root, "fresh").expect("fresh goals reread");
+        assert_eq!(goals.objectives[0].initiative_ids, vec!["some-project"]);
+
+        // A company with no folder still fails closed.
+        assert!(create_local_goal(&root, "ghost", "Nope", "", "2026").is_err());
+        assert!(create_local_goal(&root, "indigo", "   ", "", "2026").is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // ---- CRM projection (hq-native-crm US-010) -----------------------------
 
     fn make_crm_fixture_tree() -> PathBuf {
@@ -3520,6 +3938,36 @@ mod tests {
     }
 
     // ---- writes (US-010) ---------------------------------------------------
+
+    #[test]
+    fn create_local_project_scaffolds_minimal_prd() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("companies/indigo")).unwrap();
+
+        let rel = create_local_project(root, "indigo", "  Billing Revamp V2  ").unwrap();
+        assert_eq!(rel, "companies/indigo/projects/billing-revamp-v2/prd.json");
+        let bytes = std::fs::read(root.join(&rel)).unwrap();
+        let prd: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(prd["name"], "Billing Revamp V2");
+        assert_eq!(prd["userStories"], serde_json::json!([]));
+        assert!(prd["metadata"]["createdAt"].as_str().unwrap().contains('T'));
+
+        // The scanner picks the new scaffold up as a real project.
+        let projects =
+            scan_local_projects_for_companies(root, &HashSet::from(["indigo".to_string()]));
+        assert!(projects
+            .iter()
+            .any(|p| p.title == "Billing Revamp V2" && p.company == "indigo"));
+
+        // Refuses to clobber, rejects empty/unusable names and traversal.
+        assert!(create_local_project(root, "indigo", "Billing Revamp V2").is_err());
+        assert!(create_local_project(root, "indigo", "   ").is_err());
+        assert!(create_local_project(root, "indigo", "···").is_err());
+        assert!(create_local_project(root, "../indigo", "ok name").is_err());
+        assert!(create_local_project(root, "missing", "ok name").is_err());
+        assert_eq!(project_dir_slug("HQ — Desktop App!").unwrap(), "hq-desktop-app");
+    }
 
     #[test]
     fn write_project_status_persists_and_round_trips() {
