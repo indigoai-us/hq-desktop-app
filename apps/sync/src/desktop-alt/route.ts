@@ -26,9 +26,10 @@ import {
  * sidebar; `submit` is owned by its persistent Publish footer. They all share
  * the `library` page + LibraryBrowser body, differing only by which tab is
  * forced. Defaults to 'skills' when a library route carries no tab.
- * Marketplace is top-level now (US-007), not a Library tab.
+ * Marketplace is folded back into the Library sub-nav (US-015) while the
+ * top-level `marketplace` route stays alive as the palette destination.
  */
-export type LibraryTab = 'skills' | 'workers' | 'installed' | 'submit' | 'profile';
+export type LibraryTab = 'skills' | 'workers' | 'marketplace' | 'installed' | 'submit' | 'profile';
 
 export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
@@ -222,10 +223,16 @@ export const COMPANY_PRIMARY_SECTIONS: ReadonlyArray<{
   { id: 'more', label: 'More' },
 ];
 
-/** The four Library secondary-sidebar rows, in SPEC display order. */
+/**
+ * Library secondary-sidebar rows in SPEC display order: the four V2 tabs
+ * (Skills / Workers / Installed / Profile) plus the Marketplace fold-in entry
+ * (US-015) so browse / detail / install-scope / install-log are reachable from
+ * the Library without leaving the surface.
+ */
 export const LIBRARY_SECTIONS: ReadonlyArray<{ id: LibraryTab; label: string }> = [
   { id: 'skills', label: 'Skills' },
   { id: 'workers', label: 'Workers' },
+  { id: 'marketplace', label: 'Marketplace' },
   { id: 'installed', label: 'Installed' },
   { id: 'profile', label: 'Profile' },
 ];
@@ -390,7 +397,7 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
   }
 
   if (kind === 'library') {
-    if (first === 'marketplace') return { kind: 'marketplace' }; // legacy Library tab alias — Marketplace is top-level now (US-007)
+    // `library:marketplace` is a live Library tab again (US-015 fold-in).
     const tab = isLibraryTab(first) ? first : undefined;
     return tab ? { kind: 'library', tab } : { kind: 'library' };
   }

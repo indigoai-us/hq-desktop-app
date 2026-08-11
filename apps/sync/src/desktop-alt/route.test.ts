@@ -164,10 +164,11 @@ describe('US-002 V4 desktop routes', () => {
     });
   });
 
-  it('declares the four library sections in SPEC order — Marketplace is top-level now (US-007)', () => {
+  it('declares the library sections in SPEC order with the Marketplace fold-in entry (US-015)', () => {
     expect(LIBRARY_SECTIONS.map((section) => section.id)).toEqual([
       'skills',
       'workers',
+      'marketplace',
       'installed',
       'profile',
     ]);
@@ -343,9 +344,11 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
       kind: 'company',
       slug: 'indigo',
     });
-    // Legacy Library-tab alias — Marketplace is a top-level destination now (US-007).
+    // Marketplace folded back into the Library sub-nav (US-015); the top-level
+    // `marketplace` route stays alive as the palette destination.
     expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
-      kind: 'marketplace',
+      kind: 'library',
+      tab: 'marketplace',
     });
     expect(resolvePendingDesktopRoute('library:installed')).toEqual({
       kind: 'library',
@@ -432,7 +435,7 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
   });
 
-  it('shows the four library sections — without Marketplace — with the routed tab active', () => {
+  it('shows the library sections — including the Marketplace fold-in — with the routed tab active', () => {
     const configuredPath = ['', 'Users', 'corey', 'Documents', 'HQ'].join('/');
     const model = getDesktopSecondarySidebar(
       { kind: 'library', tab: 'installed' },
@@ -442,7 +445,7 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(model?.surface).toBe('library');
     expect(model?.meta).toBe('~/Documents/HQ');
     expect(model?.items.map((item) => item.id)).toEqual(LIBRARY_SECTIONS.map((s) => s.id));
-    expect(model?.items.some((item) => item.label === 'Marketplace')).toBe(false);
+    expect(model?.items.some((item) => item.label === 'Marketplace')).toBe(true);
     expect(model?.activeId).toBe('installed');
     expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.activeId).toBe('skills');
 

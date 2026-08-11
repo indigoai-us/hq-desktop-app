@@ -19,7 +19,7 @@ import { readRepoFile } from './harness';
  *  - ⌘1–⌘9 = non-personal companies in connected-first order; ⌘0 = Personal.
  *  - Legacy intents resolve (messages → Messages, notifications → Inbox,
  *    home/sync → home,
- *    mission-control palette-only, library:marketplace → top-level marketplace).
+ *    mission-control palette-only, library:marketplace → Library marketplace tab, US-015).
  *  - getDesktopLandingRoute uses last-visited company then first sidebar row.
  *  - Source: no Home / Mission Control / Companies primary rows; Marketplace
  *    is top-level; Library secondary tabs drop Marketplace; last-company key.
@@ -99,9 +99,10 @@ describe('US-006 / US-007: sidebar IA — legacy intent resolution (behavioral)'
     });
   });
 
-  it("legacy library:marketplace alias → top-level marketplace", () => {
+  it("library:marketplace routes to the Library marketplace tab (US-015 fold-in)", () => {
     expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
-      kind: 'marketplace',
+      kind: 'library',
+      tab: 'marketplace',
     });
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
   });
@@ -161,24 +162,23 @@ describe('US-006 / US-007: sidebar IA — source contracts', () => {
     expect(sidebar).toContain('id="v4-companies-label">Companies</div>');
   });
 
-  it('Library secondary tabs no longer include Marketplace', () => {
+  it('Library secondary tabs include the Marketplace fold-in entry (US-015)', () => {
     expect(LIBRARY_SECTIONS.map((s) => s.id)).toEqual([
       'skills',
       'workers',
+      'marketplace',
       'installed',
       'profile',
     ]);
-    expect(LIBRARY_SECTIONS.map((s) => s.id)).not.toContain('marketplace');
 
     const route = readRepoFile('src/desktop-alt/route.ts');
-    expect(route).toContain("Marketplace is top-level now (US-007), not a Library tab");
+    expect(route).toContain('Marketplace is folded back into the Library sub-nav (US-015)');
 
     const libraryPage = readRepoFile('src/desktop-alt/pages/LibraryPage.svelte');
     expect(libraryPage).toContain(
-      'Skills / Workers / Installed / Profile tabs plus the routed',
+      'Skills / Workers / Marketplace / Installed / Profile tabs',
     );
-    expect(libraryPage).toContain('Publish-a-pack footer surface (Marketplace is');
-    expect(libraryPage).toContain('top-level now — US-007)');
+    expect(libraryPage).toContain('the Library sub-nav — US-015)');
   });
 
   it('landing persistence key lives in DesktopApp', () => {
