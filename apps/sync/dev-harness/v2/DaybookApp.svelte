@@ -513,7 +513,11 @@
     Keptwork: 'linear-gradient(135deg, #f2529b 0%, #f7b42c 100%)',
     'Holler Mgmt': 'linear-gradient(135deg, #0f8fa8 0%, #6a5af9 100%)',
   };
-  const coShort = (label: string) => label.replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const coShort = (label: string) => {
+    const words = label.replace(/[^A-Za-z ]/g, '').split(' ').filter(Boolean);
+    const initials = words.length > 1 ? words.map((w) => w[0]).join('') : (words[0] ?? '').slice(0, 2);
+    return initials.slice(0, 2).toUpperCase();
+  };
 
   const PEOPLE = ['Corey', 'Bryan', 'Sofia', 'Marcus', 'Priya', 'Kayla'];
   let peopleFilter = $state<Record<string, boolean>>({});
@@ -762,10 +766,11 @@
   const SETTINGS_TABS: [string, string][] = [
     ['profile', 'Profile'],
     ['companies', 'Companies'],
+    ['--', ''],
     ['general', 'General'],
-    ['sync', 'Sync'],
-    ['notifications', 'Notifications'],
     ['appearance', 'Appearance'],
+    ['notifications', 'Notifications'],
+    ['sync', 'Sync'],
     ['meetings', 'Meetings'],
     ['updates', 'Updates'],
   ];
@@ -1564,10 +1569,14 @@
         <div class="library">
           <div class="lib-nav">
             {#each SETTINGS_TABS as [k, label] (k)}
-              {@const TabIcon = SETTINGS_ICONS[k] ?? GearSix}
-              <button class="lib-cat" class:on={settingsTab === k} onclick={() => (settingsTab = k)}>
-                <span class="lc-ic"><TabIcon size={14} /></span>{label}
-              </button>
+              {#if k === '--'}
+                <div class="lib-divider" role="none"></div>
+              {:else}
+                {@const TabIcon = SETTINGS_ICONS[k] ?? GearSix}
+                <button class="lib-cat" class:on={settingsTab === k} onclick={() => (settingsTab = k)}>
+                  <span class="lc-ic"><TabIcon size={14} /></span>{label}
+                </button>
+              {/if}
             {/each}
           </div>
           <div class="lib-main">
@@ -1585,7 +1594,7 @@
                 <div class="prof-sec mono">ABOUT YOU</div>
                 <div class="set-row">
                   <div><div class="sn">Display name</div><div class="sd">Shown on your messages and runs</div></div>
-                  <input class="prof-input push-right" value="Corey Epstein" aria-label="Display name" />
+                  <input class="prof-input push-right" value="Corey" aria-label="Display name" />
                 </div>
                 <div class="prof-sec mono">ACCOUNT</div>
                 <div class="set-row">
@@ -1604,7 +1613,7 @@
                 {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label, c.short] as [string, string, string]), ...EXTRA_COMPANIES.map(([short, label]) => [label, label, short] as [string, string, string])] as [key, label, short] (key)}
                   <div class="set-row">
                     <div class="co-row-id">
-                      <span class="co-row-ava">{short}</span>
+                      <span class="co-row-ava" style={`background: ${CO_TILES[key] ?? 'linear-gradient(140deg, #cbd5e1, #94a3b8)'}`}>{coShort(label)}</span>
                       <span class="sn">{label}</span>
                       <span class="pill role">{CO_ROLES[key] ?? 'Member'}</span>
                     </div>
@@ -2652,13 +2661,16 @@
   .prof-name { font-size: 15px; font-weight: 600; color: var(--t1); }
   .prof-mail { font-size: 12px; color: var(--t3); }
   .prof-tags { display: flex; gap: 6px; margin-top: 4px; }
+  /* Used throughout Settings but never declared, so every trailing control
+     sat wherever the text left it instead of on the row's right edge. */
+  .push-right { margin-left: auto; }
   .prof-sec { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; color: var(--t3); padding: 10px 2px 0; }
   .prof-input { width: 280px; background: var(--btn-bg); border: 1px solid transparent; border-radius: 8px; padding: 8px 12px; color: var(--t1); font: 500 13px var(--font-ui); outline: none; transition: border-color 0.12s; }
   .prof-input:hover { border-color: var(--line2); }
   .prof-input:focus { border-color: var(--border-active); }
   .prof-static { font-size: 12px; color: var(--t2); }
   .co-row-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; background: var(--line2); font: 600 9px var(--font-ui); color: var(--t2); }
+  .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; font: 600 9px var(--font-ui); color: #fff; }
   .pill.role { border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: transparent; color: var(--t3); letter-spacing: 0.04em; }
   /* Sync state reads as a word next to its switch. */
   .co-row-sync { display: flex; align-items: center; gap: 10px; }
