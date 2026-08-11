@@ -260,6 +260,59 @@ fn is_content_safe_syscall_token(value: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
 }
 
+/// The closed faulting-binary allow-list, mirrored from
+/// `hq_desktop_core::watcher_fault::WatcherFaultBinary` plus the `unavailable`
+/// sentinel. Kept in lockstep by the anti-drift test below; an independent egress
+/// check so a producer bug cannot ship a path or product string here.
+fn is_watcher_fault_binary_token(value: &str) -> bool {
+    matches!(
+        value,
+        "node_exe"
+            | "npx_cmd"
+            | "cmd_exe"
+            | "hq_sync_menubar_exe"
+            | "ntdll_dll"
+            | "kernelbase_dll"
+            | "ucrtbase_dll"
+            | "msvcrt_dll"
+            | "other"
+            | "unavailable"
+    )
+}
+
+/// A bare unsigned decimal integer of bounded length: no sign, no separators, no
+/// path bytes. Independent egress shape check for the fault code/offset.
+fn is_bounded_decimal(value: &str, max_len: usize) -> bool {
+    !value.is_empty() && value.len() <= max_len && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// A `token:count(,token:count)*` rollup whose tokens are the closed
+/// unmatched-stderr shape vocabulary (mirrored from
+/// `hq_desktop_core::watcher_fault::UnmatchedStderrShape`) and whose counts are
+/// bare integers. Bounded so a malformed producer value can never carry a
+/// runner byte through.
+fn is_unmatched_stderr_shape_rollup(value: &str) -> bool {
+    const SHAPES: &[&str] = &[
+        "ndjson_record",
+        "stack_frame",
+        "hash_frame",
+        "key_colon",
+        "path_like",
+        "blank",
+        "word",
+        "other",
+    ];
+    !value.is_empty()
+        && value.len() <= 128
+        && value.split(',').all(|entry| {
+            entry.split_once(':').is_some_and(|(token, count)| {
+                SHAPES.contains(&token)
+                    && !count.is_empty()
+                    && count.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -297,6 +350,20 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
         "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
         "rss_scope" => Some(matches!(value, "shim" | "launcher" | "runner")),
+        // Windows fault provenance (HQ-DESKTOP-4X). The producer already emits
+        // fixed vocabulary and bare integers; these independent checks make a
+        // future producer bug that shipped a path, product string, or raw record
+        // byte degrade to `[Filtered]` instead.
+        "watcher_fault_provenance" => Some(matches!(
+            value,
+            "pid_matched" | "window_only" | "no_record" | "unavailable"
+        )),
+        "watcher_fault_faulting_image" | "watcher_fault_faulting_module" => {
+            Some(is_watcher_fault_binary_token(value))
+        }
+        "watcher_fault_exception_code" => Some(is_bounded_decimal(value, 10)),
+        "watcher_fault_offset" => Some(is_bounded_decimal(value, 20)),
+        "runner_unmatched_stderr_shapes" => Some(is_unmatched_stderr_shape_rollup(value)),
         _ => None,
     }
 }
@@ -974,6 +1041,142 @@ mod tests {
                 "ReadDirectoryChangesW: (5) /Users/Ada/secret.md"
             ),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn every_watcher_fault_token_survives_and_lookalikes_fail_closed() {
+        use hq_desktop_core::watcher_fault::{
+            UnmatchedStderrShape, WatcherFaultBinary, WatcherFaultProvenance,
+            WATCHER_FAULT_UNAVAILABLE,
+        };
+        // Cross-crate anti-drift: enumerate the emitter's OWN vocabularies so the
+        // independent egress checks can never fall behind a newly-added token and
+        // blank a real attribution tag.
+        for binary in WatcherFaultBinary::ALL {
+            for key in ["watcher_fault_faulting_image", "watcher_fault_faulting_module"] {
+                assert_eq!(
+                    valid_runner_diagnostic_field(key, binary.as_str()),
+                    Some(true),
+                    "allow-listed binary {:?} must survive egress on {key}",
+                    binary.as_str()
+                );
+            }
+        }
+        for key in ["watcher_fault_faulting_image", "watcher_fault_faulting_module"] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, WATCHER_FAULT_UNAVAILABLE),
+                Some(true)
+            );
+        }
+        for provenance in WatcherFaultProvenance::ALL {
+            assert_eq!(
+                valid_runner_diagnostic_field("watcher_fault_provenance", provenance.as_str()),
+                Some(true),
+                "provenance {:?} must survive egress",
+                provenance.as_str()
+            );
+        }
+        for shape in UnmatchedStderrShape::ALL {
+            assert_eq!(
+                valid_runner_diagnostic_field(
+                    "runner_unmatched_stderr_shapes",
+                    &format!("{}:7", shape.as_str())
+                ),
+                Some(true),
+                "shape {:?} must survive egress",
+                shape.as_str()
+            );
+        }
+        assert_eq!(
+            valid_runner_diagnostic_field("watcher_fault_exception_code", "3221226505"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("watcher_fault_offset", "172467"),
+            Some(true)
+        );
+
+        // Fail-closed: a producer bug that shipped a path, product string, hex,
+        // sign, or an unknown token must be rejected so it degrades to [Filtered].
+        for (key, value) in [
+            ("watcher_fault_provenance", "pid_matched;/Users/Ada"),
+            ("watcher_fault_faulting_image", r"C:\Users\Ada\node.exe"),
+            ("watcher_fault_faulting_module", "kernelbase"),
+            ("watcher_fault_exception_code", "0xC0000409"),
+            ("watcher_fault_exception_code", "-5"),
+            ("watcher_fault_offset", "2a1b3"),
+            ("runner_unmatched_stderr_shapes", "ndjson_record:6,/Users/Ada:1"),
+            ("runner_unmatched_stderr_shapes", "not_a_shape:1"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "lookalike {key}={value:?} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_fault_fields_survive_and_malformed_fail_closed_before_send() {
+        let mut event = Event::default();
+        for (key, value) in [
+            ("watcher_fault_provenance", "pid_matched"),
+            ("watcher_fault_faulting_image", "node_exe"),
+            ("watcher_fault_faulting_module", "ntdll_dll"),
+            (
+                "runner_unmatched_stderr_shapes",
+                "ndjson_record:6,stack_frame:2",
+            ),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        event.extra.insert(
+            "watcher_fault_exception_code".to_string(),
+            Value::String("3221226505".to_string()),
+        );
+        event.extra.insert(
+            "watcher_fault_offset".to_string(),
+            Value::String("172467".to_string()),
+        );
+        // A watcher-route line count as a bare number is content-safe by type.
+        event
+            .extra
+            .insert("runner_stderr_line_count".to_string(), Value::Number(8.into()));
+
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(result.tags["watcher_fault_provenance"], "pid_matched");
+        assert_eq!(result.tags["watcher_fault_faulting_image"], "node_exe");
+        assert_eq!(result.tags["watcher_fault_faulting_module"], "ntdll_dll");
+        assert_eq!(
+            result.tags["runner_unmatched_stderr_shapes"],
+            "ndjson_record:6,stack_frame:2"
+        );
+        assert_eq!(
+            result.extra["watcher_fault_exception_code"],
+            Value::String("3221226505".to_string())
+        );
+        assert_eq!(
+            result.extra["runner_stderr_line_count"],
+            Value::Number(8.into())
+        );
+
+        // A poisoned producer value degrades to [Filtered] rather than shipping.
+        // Non-path lookalikes so only the runner-diagnostic scrubber is exercised.
+        let mut bad = Event::default();
+        bad.tags.insert(
+            "watcher_fault_faulting_image".to_string(),
+            "kernelbase".to_string(),
+        );
+        bad.extra.insert(
+            "watcher_fault_exception_code".to_string(),
+            Value::String("0xC0000409".to_string()),
+        );
+        let result = before_send(bad).expect("event remains sendable");
+        assert_eq!(result.tags["watcher_fault_faulting_image"], "[Filtered]");
+        assert_eq!(
+            result.extra["watcher_fault_exception_code"],
+            Value::String("[Filtered]".to_string())
         );
     }
 
