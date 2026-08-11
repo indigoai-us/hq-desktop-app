@@ -1651,6 +1651,49 @@ pub(crate) enum ToolchainRepair {
     Skipped,
 }
 
+/// The daemon-facing result of a managed-Node provisioning attempt.
+///
+/// Unlike the `Result<(), String>` this replaces at the daemon reporting seam,
+/// it keeps a single-flight *deferral* (the shared 15-minute repair slot was
+/// already held by another lane — `ToolchainRepair::Skipped`) distinct from a
+/// genuine *failure*. Flattening the two is exactly HQ-DESKTOP-4Z: the daemon
+/// paged #hq-alerts for a cooldown deferral because, as a bare `Err(String)`,
+/// it was indistinguishable from a repair that actually failed.
+///
+/// `start_sync` does not need the distinction — its popover shows one message —
+/// so it collapses this back to `Result<(), String>` through
+/// `into_start_sync_result`, byte-for-byte as before.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ProvisionAttempt {
+    /// HQ installed its managed Node and the runtime is usable — the self-heal
+    /// worked. Not a fault.
+    Provisioned,
+    /// No attempt ran because the shared repair slot was already held by another
+    /// lane. A single-flight deferral, not a fault: an install is in flight and
+    /// the supervisor will re-preflight on its next cadence.
+    Deferred(String),
+    /// An attempt ran and did not leave a usable runtime — the one arm that pages.
+    Failed(String),
+}
+
+impl ProvisionAttempt {
+    /// Collapse to the user-facing `start_sync` result.
+    ///
+    /// `start_sync` surfaces a single popover message where a deferral and a
+    /// failure read the same — "sync can't start right now" — so both bail with
+    /// their message. This preserves the exact base strings and the invariant
+    /// that neither `Skipped` nor `Failed` ever resolves to `Ok` (a watcher
+    /// spawned on a false success would crash-loop).
+    pub(crate) fn into_start_sync_result(self) -> Result<(), String> {
+        match self {
+            ProvisionAttempt::Provisioned => Ok(()),
+            ProvisionAttempt::Deferred(message) | ProvisionAttempt::Failed(message) => {
+                Err(message)
+            }
+        }
+    }
+}
+
 static LAST_TOOLCHAIN_REPAIR: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 /// Pure cooldown decision, extracted so it is testable without a clock.
@@ -1708,32 +1751,38 @@ pub(crate) async fn repair_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -
 /// preflight the runner will use before the next supervisor cycle can spawn.
 pub(crate) async fn provision_unprovisioned_node<R: tauri::Runtime>(
     app: &AppHandle<R>,
-) -> Result<(), String> {
+) -> ProvisionAttempt {
     let repair = repair_managed_node(app).await;
     // Only re-probe when something was actually installed: the preflight costs
     // two spawns and cannot have changed for Skipped or Failed.
     let usable_after =
         repair == ToolchainRepair::Repaired && matches!(preflight_node(), NodePreflight::Usable);
-    provision_outcome(repair, usable_after)
+    provision_attempt(repair, usable_after)
 }
 
 /// Pure mapping from a repair attempt to the daemon-facing outcome, extracted
 /// so every arm is unit-testable without an `AppHandle` or a real download.
 ///
-/// Every failure arm must stay actionable *and* must never hand the work back
-/// to the user: this whole path exists because HQ can install the runtime
-/// itself, so "install Node 20 yourself" is exactly the message it replaces.
-fn provision_outcome(repair: ToolchainRepair, usable_after: bool) -> Result<(), String> {
+/// The three `ToolchainRepair` arms map to three distinct `ProvisionAttempt`
+/// variants. In particular a cooldown `Skipped` becomes `Deferred`, never
+/// `Failed`, so the daemon can page for a genuine failure without paging for a
+/// single-flight deferral (HQ-DESKTOP-4Z). Every failure arm stays actionable
+/// *and* never hands the work back to the user: this whole path exists because
+/// HQ can install the runtime itself, so "install Node 20 yourself" is exactly
+/// the message it replaces.
+fn provision_attempt(repair: ToolchainRepair, usable_after: bool) -> ProvisionAttempt {
     match repair {
-        ToolchainRepair::Repaired if usable_after => Ok(()),
-        ToolchainRepair::Repaired => Err(
+        ToolchainRepair::Repaired if usable_after => ProvisionAttempt::Provisioned,
+        ToolchainRepair::Repaired => ProvisionAttempt::Failed(
             "HQ installed its Node runtime, but it still is not usable by the sync engine"
                 .to_string(),
         ),
-        ToolchainRepair::Skipped => Err(
+        ToolchainRepair::Skipped => ProvisionAttempt::Deferred(
             "HQ skipped Node provisioning because an attempt was already made recently".to_string(),
         ),
-        ToolchainRepair::Failed(reason) => Err(unprovisioned_node_repair_failed_message(&reason)),
+        ToolchainRepair::Failed(reason) => {
+            ProvisionAttempt::Failed(unprovisioned_node_repair_failed_message(&reason))
+        }
     }
 }
 
@@ -1838,7 +1887,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 "sync",
                 "no Node runtime found — provisioning HQ managed Node",
             );
-            if let Err(message) = provision_unprovisioned_node(&app).await {
+            if let Err(message) = provision_unprovisioned_node(&app).await.into_start_sync_result()
+            {
                 log("sync", &format!("BAIL: {message}"));
                 let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
                 return Err(message);
@@ -3956,13 +4006,22 @@ mod tests {
 
     #[test]
     fn every_provisioning_outcome_is_distinct_and_never_blames_the_user() {
-        assert_eq!(provision_outcome(ToolchainRepair::Repaired, true), Ok(()));
+        // Exercised through the start_sync adapter: the popover shows one string,
+        // and a deferral and a failure both bail there — but with distinct,
+        // honest messages, and never one that shifts the work back to the user.
+        assert_eq!(
+            provision_attempt(ToolchainRepair::Repaired, true).into_start_sync_result(),
+            Ok(())
+        );
 
-        let installed_but_unusable = provision_outcome(ToolchainRepair::Repaired, false)
+        let installed_but_unusable = provision_attempt(ToolchainRepair::Repaired, false)
+            .into_start_sync_result()
             .expect_err("an install that did not take must not report success");
-        let skipped = provision_outcome(ToolchainRepair::Skipped, false)
+        let skipped = provision_attempt(ToolchainRepair::Skipped, false)
+            .into_start_sync_result()
             .expect_err("a cooldown-suppressed attempt is not a success");
-        let failed = provision_outcome(ToolchainRepair::Failed("no space left".into()), false)
+        let failed = provision_attempt(ToolchainRepair::Failed("no space left".into()), false)
+            .into_start_sync_result()
             .expect_err("a failed install is not a success");
 
         assert!(
@@ -3972,7 +4031,7 @@ mod tests {
         assert!(skipped.contains("already made recently"), "{skipped}");
         assert!(failed.contains("no space left"), "{failed}");
 
-        // Distinct, so the captured Sentry message says which arm happened.
+        // Distinct, so the surfaced message says which arm happened.
         assert_ne!(installed_but_unusable, skipped);
         assert_ne!(skipped, failed);
         assert_ne!(installed_but_unusable, failed);
@@ -3987,12 +4046,58 @@ mod tests {
     }
 
     #[test]
+    fn the_three_repair_arms_map_to_three_distinct_provision_attempts() {
+        // HQ-DESKTOP-4Z. The shared-slot cooldown (`Skipped`) is a single-flight
+        // deferral, NOT a provisioning failure — the daemon relies on this
+        // distinction to page for a real failure without paging for a deferral.
+        assert_eq!(
+            provision_attempt(ToolchainRepair::Repaired, true),
+            ProvisionAttempt::Provisioned
+        );
+        assert_eq!(
+            provision_attempt(ToolchainRepair::Skipped, false),
+            ProvisionAttempt::Deferred(
+                "HQ skipped Node provisioning because an attempt was already made recently"
+                    .to_string()
+            )
+        );
+        assert!(matches!(
+            provision_attempt(ToolchainRepair::Failed("no disk".into()), false),
+            ProvisionAttempt::Failed(_)
+        ));
+        // A cooldown deferral must never be conflated with a failure.
+        assert_ne!(
+            provision_attempt(ToolchainRepair::Skipped, false),
+            provision_attempt(ToolchainRepair::Failed("no disk".into()), false)
+        );
+
+        // The start_sync adapter still bails with byte-identical strings for
+        // both Skipped and Failed, so the popover message is unchanged from base.
+        assert_eq!(
+            provision_attempt(ToolchainRepair::Skipped, false).into_start_sync_result(),
+            Err(
+                "HQ skipped Node provisioning because an attempt was already made recently"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            provision_attempt(ToolchainRepair::Failed("no disk".into()), false)
+                .into_start_sync_result(),
+            Err(unprovisioned_node_repair_failed_message("no disk"))
+        );
+    }
+
+    #[test]
     fn a_repair_that_did_not_run_is_never_reported_as_provisioned() {
         // `usable_after` is only meaningful for Repaired. Even if a stale probe
         // said the runtime was fine, Skipped/Failed must not resolve to Ok — a
         // watcher spawned on that basis would crash-loop instead of backing off.
-        assert!(provision_outcome(ToolchainRepair::Skipped, true).is_err());
-        assert!(provision_outcome(ToolchainRepair::Failed("boom".into()), true).is_err());
+        assert!(provision_attempt(ToolchainRepair::Skipped, true)
+            .into_start_sync_result()
+            .is_err());
+        assert!(provision_attempt(ToolchainRepair::Failed("boom".into()), true)
+            .into_start_sync_result()
+            .is_err());
     }
 
     #[test]

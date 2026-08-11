@@ -97,7 +97,12 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
     // sentry::Level::Error on the fix WORKING, and would advance the
     // consecutive-failure counter should_capture_crash rate-limits on — so a
     // fleet HQ healed would suppress alerts for machines it could not heal.
-    expect(daemonRs).toContain('fn provisioning_bail_to_report(outcome: Result<(), String>)');
+    //
+    // The seam now takes the three-way ProvisionAttempt, not the Result<(),
+    // String> that could not tell a cooldown deferral from a repair failure —
+    // that conflation was HQ-DESKTOP-4Z. Naming the new type is strictly
+    // stronger than the old signature it replaces.
+    expect(daemonRs).toContain('fn provisioning_bail_to_report(outcome: ProvisionAttempt)');
     expect(daemonRs).toContain('fn a_successful_self_provision_is_not_a_preflight_failure');
     expect(daemonRs).toContain('fn a_failed_self_provision_still_reports_its_reason');
     // Failure is still alertable, and still rate-limited.
@@ -109,6 +114,56 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
       'PreflightFailure::RunnerUnresolvable | PreflightFailure::NodeTooOld',
     );
     expect(daemonRs).toContain('fn each_preflight_failure_has_an_explicit_capture_policy');
+  });
+
+  it('treats the shared-slot cooldown as a deferral, not a failure (HQ-DESKTOP-4Z)', () => {
+    // The reported alert: the auto-sync daemon captured the 15-minute Node
+    // repair-slot cooldown — a deliberate single-flight deferral (another lane
+    // is already installing) — to Sentry at Level::Error as "auto-sync watcher
+    // cannot start (NodeUnprovisioned)". The fix keeps the deferral distinct
+    // from a genuine repair failure end to end.
+
+    // sync.rs produces a three-way outcome; a Skipped repair maps to Deferred,
+    // never Failed, and start_sync still collapses both to its popover bail.
+    expect(syncRs).toContain('enum ProvisionAttempt');
+    expect(syncRs).toContain('Deferred(String)');
+    expect(syncRs).toContain('fn provision_attempt(');
+    expect(syncRs).toContain('ToolchainRepair::Skipped => ProvisionAttempt::Deferred');
+    expect(syncRs).toContain('fn into_start_sync_result');
+    expect(syncRs).toContain(
+      'fn the_three_repair_arms_map_to_three_distinct_provision_attempts',
+    );
+
+    // daemon.rs consumes the new type. Only Failed is Some(...) — the arm that
+    // reaches report_preflight_bail, which is the ONLY caller of
+    // note_runner_preflight_failure and capture_sync_error on this seam.
+    expect(daemonRs).toContain('fn report_provisioning_outcome(outcome: ProvisionAttempt)');
+    const bailFn = daemonRs.slice(
+      daemonRs.indexOf('fn provisioning_bail_to_report(outcome: ProvisionAttempt)'),
+      daemonRs.indexOf('fn report_provisioning_outcome(outcome: ProvisionAttempt)'),
+    );
+    expect(bailFn).toBeTruthy();
+    expect(bailFn).toContain(
+      'ProvisionAttempt::Provisioned | ProvisionAttempt::Deferred(_) => None',
+    );
+    expect(bailFn).toContain('ProvisionAttempt::Failed(reason) => Some(reason)');
+
+    // So a Deferred (like a Provisioned) reaches neither the rate-limiting
+    // streak nor a capture: report_provisioning_outcome touches neither
+    // note_runner_preflight_failure nor capture_sync_error directly — both live
+    // behind the Failed-only report_preflight_bail call.
+    const reportFn = daemonRs.slice(
+      daemonRs.indexOf('fn report_provisioning_outcome(outcome: ProvisionAttempt)'),
+      daemonRs.indexOf('fn report_preflight_bail('),
+    );
+    expect(reportFn).toBeTruthy();
+    expect(reportFn).not.toContain('note_runner_preflight_failure');
+    expect(reportFn).not.toContain('capture_sync_error');
+
+    // The Rust regression proof of the deferral contract lives in this test.
+    expect(daemonRs).toContain(
+      'fn a_cooldown_deferral_is_not_a_preflight_failure_and_does_not_advance_the_streak',
+    );
   });
 
   it('never tells the user to install Node for a state HQ can repair', () => {
