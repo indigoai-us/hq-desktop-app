@@ -162,3 +162,71 @@ describe('desktop-alt project detail view source contract (US-009)', () => {
     expect(withoutShadows).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
+
+describe('desktop-alt project detail V2 (US-007)', () => {
+  const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
+  const store = readRepoFile('src/desktop-alt/lib/projects-store.svelte.ts');
+  const localProjects = readRepoFile('src/desktop-alt/lib/local-projects.ts');
+
+  it('renders the four workspace tabs and the writable status dropdown persists via set_local_project_status', () => {
+    expect(detail).toContain('data-testid="tab-overview"');
+    expect(detail).toContain('data-testid="tab-board"');
+    expect(detail).toContain('data-testid="tab-files"');
+    expect(detail).toContain('data-testid="tab-activity"');
+    expect(detail).toContain('data-testid="status-menu"');
+    // The status write path reaches the registered Rust command.
+    expect(detail).toContain('setProjectStatus');
+    expect(store).toContain('saveLocalProjectStatus');
+    expect(localProjects).toContain("'set_local_project_status'");
+  });
+
+  it('preserves the Open in Claude Code / PRD / README actions', () => {
+    expect(detail).toContain('data-testid="open-project-claude"');
+    expect(detail).toContain('data-testid="open-project-prd"');
+    expect(detail).toContain('data-testid="open-project-readme"');
+    // PRD/README open into the in-workspace Files preview, not an external app.
+    expect(detail).toContain("openProjectDoc('prd.json')");
+    expect(detail).toContain("openProjectDoc('README.md')");
+  });
+
+  it('Files tab shows the scoped project tree + preview empty state', () => {
+    expect(detail).toContain('data-testid="detail-files"');
+    expect(detail).toContain('<CompanyFileTree');
+    expect(detail).toContain('<FilePreviewPane');
+    expect(detail).toContain(
+      'Select a project file to read it without leaving the workspace.',
+    );
+  });
+
+  it('Activity tab lists project-matched sessions with model, runtime, elapsed, and cwd (mission-control-local)', () => {
+    expect(detail).toContain('data-testid="detail-activity"');
+    expect(detail).toContain(
+      'Live sessions matched to this project · contextual, not a global dashboard',
+    );
+    // Session cards carry the e2e-required fields.
+    expect(detail).toContain('data-testid="project-session-card"');
+    expect(detail).toContain('data-testid="session-model"');
+    expect(detail).toContain('data-testid="session-runtime"');
+    expect(detail).toContain('data-testid="session-elapsed"');
+    expect(detail).toContain('data-testid="session-cwd"');
+    // Matching helper: cwd/repo/project-token matching over the LOCAL fleet
+    // (sessions store is fed by list_agent_sessions → local Claude/Codex readers).
+    expect(detail).toContain('liveSessionsForProject(project, sessions)');
+    expect(detail).toContain('sessionActivityCardView');
+    const model = readRepoFile('src/desktop-alt/lib/projects-model.ts');
+    expect(model).toContain('export function sessionActivityCardView');
+    const sessionsStoreSrc = readRepoFile('src/desktop-alt/lib/sessions-store.svelte.ts');
+    expect(sessionsStoreSrc).toContain("invoke<MissionControlSnapshot>('list_agent_sessions')");
+  });
+
+  it('task board keeps the V2 column captions with dependency-waiting sublabels', () => {
+    const model = readRepoFile('src/desktop-alt/lib/projects-model.ts');
+    expect(model).toContain("'not-started': 'Ready or waiting to begin'");
+    expect(model).toContain("complete: 'Task-level checks passed'");
+    expect(model).toContain("'Waiting on dependencies'");
+    const kanban = readRepoFile('src/desktop-alt/components/StoryKanban.svelte');
+    expect(kanban).toContain('data-testid="view-toggle-board"');
+    expect(kanban).toContain('data-testid="view-toggle-list"');
+    expect(kanban).toContain('TASK_COLUMN_CAPTION');
+  });
+});

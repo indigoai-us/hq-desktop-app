@@ -1244,6 +1244,52 @@ export function taskStateContext(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Activity tab session cards (US-007 V2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Presentation-ready view of one Activity-tab session card. All fields come
+ * from real AgentSession data — missing values stay null so the UI can omit
+ * them honestly instead of inventing telemetry. This is the mission-control-
+ * local guarantee surface: LOCAL Claude/Codex sessions matched to the project
+ * by cwd/repo tokens render here (the console Telescope cannot see them).
+ */
+export interface SessionActivityCard {
+  /** Model the session runs (e.g. `claude-opus-4-8`), or null when unknown. */
+  model: string | null;
+  /** The agent runtime — `claude` / `codex` — or null when unreported. */
+  runtime: string | null;
+  /** Elapsed wall time since startedAt (mm:ss or h:mm:ss), or null. */
+  elapsed: string | null;
+  /** Working directory the session runs in, or null when unknown. */
+  cwd: string | null;
+  /** Raw session status (running / awaiting_input). */
+  status: string;
+}
+
+/**
+ * Build the Activity card view for a live session. Pure + deterministic;
+ * `now` is injected for tests. Never fabricates values — empty strings map to
+ * null so the card omits the field.
+ */
+export function sessionActivityCardView(
+  session: PortfolioSessionRef,
+  now: number = Date.now(),
+): SessionActivityCard {
+  const clean = (value: string | null | undefined): string | null => {
+    const trimmed = (value ?? '').trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  return {
+    model: clean(session.model),
+    runtime: clean(session.tool)?.toLowerCase() ?? null,
+    elapsed: formatLiveElapsed(session.startedAt, now),
+    cwd: clean(session.cwd),
+    status: session.status,
+  };
+}
+
 /**
  * Derive an HQ-relative project directory from a prdPath for Files scoping.
  * Returns null when the path cannot be resolved to a companies/.../projects/...

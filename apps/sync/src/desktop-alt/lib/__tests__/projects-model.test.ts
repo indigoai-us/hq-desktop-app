@@ -34,6 +34,7 @@ import {
   classifyTasks,
   groupByTaskColumn,
   projectFilesRootFromPrdPath,
+  sessionActivityCardView,
   TASK_COLUMNS,
   TASK_COLUMN_LABEL,
   type Story,
@@ -682,6 +683,38 @@ describe('DESKTOP-005 task columns + live match', () => {
     const groups = groupByTaskColumn(classifyTasks(stories, sessions));
     expect(groups.complete.map((c) => c.story.id)).toEqual(['done']);
     expect(groups.active.map((c) => c.story.id)).toEqual(['live']);
+  });
+
+  it('builds Activity session cards with model, runtime, elapsed, and cwd (US-007 V2)', () => {
+    const session = (overrides: Partial<PortfolioSessionRef> = {}): PortfolioSessionRef => ({
+      project: 'hq-desktop-app',
+      company: 'indigo',
+      cwd: '/Users/x/HQ/companies/indigo/projects/hq-desktop-app',
+      status: 'running',
+      startedAt: '2026-07-18T12:00:00Z',
+      lastActivityAt: '2026-07-18T12:05:00Z',
+      ...overrides,
+    });
+    const now = Date.parse('2026-07-18T12:10:00Z');
+    const card = sessionActivityCardView(
+      session({ model: 'claude-opus-4-8', tool: 'Claude', startedAt: '2026-07-18T12:00:00Z' }),
+      now,
+    );
+    expect(card.model).toBe('claude-opus-4-8');
+    expect(card.runtime).toBe('claude');
+    expect(card.elapsed).toBe('10:00');
+    expect(card.cwd).toBe('/Users/x/HQ/companies/indigo/projects/hq-desktop-app');
+    expect(card.status).toBe('running');
+
+    // Missing fields stay null — never fabricated.
+    const sparse = sessionActivityCardView(
+      session({ model: '', tool: undefined, startedAt: undefined, cwd: ' ' }),
+      now,
+    );
+    expect(sparse.model).toBeNull();
+    expect(sparse.runtime).toBeNull();
+    expect(sparse.elapsed).toBeNull();
+    expect(sparse.cwd).toBeNull();
   });
 
   it('derives project files root from prdPath without inventing paths', () => {
