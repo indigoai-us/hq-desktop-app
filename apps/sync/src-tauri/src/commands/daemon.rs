@@ -839,10 +839,6 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                 // the timestamp of the last manual `Sync Now` click.
                 match event {
                     ProcessEvent::Stdout(line) => {
-                        // Count every protocol line the runner emitted this
-                        // generation before it (possibly) died.
-                        watcher_stdout_line_count =
-                            watcher_stdout_line_count.saturating_add(1);
                         if handle_watch_stdout_line(
                             &app,
                             &hq_folder,
@@ -850,6 +846,11 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             &process_watcher_phase,
                             &line,
                         ) {
+                            // Count only parsed protocol lines (mirrors the
+                            // manual route): a blank or unparseable teardown line
+                            // is not protocol output, so it must not read as work.
+                            watcher_stdout_line_count =
+                                watcher_stdout_line_count.saturating_add(1);
                             *process_heartbeat
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
@@ -862,6 +863,12 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // in the local log; the capture path receives only the
                         // fixed-vocabulary rollup recorded from parsed errors.
                         crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
+                        // A protocol event delivered on stderr still proves the
+                        // runner emitted protocol; route it through the phase
+                        // observer so the never-observed sentinel is cleared.
+                        if let Ok(event) = serde_json::from_str::<SyncEvent>(line.trim()) {
+                            observe_watcher_phase_from_event(&process_watcher_phase, &event);
+                        }
                     }
                     ProcessEvent::Exit {
                         code,
@@ -1170,16 +1177,26 @@ impl Default for WatcherPhaseContext {
 }
 
 fn observe_watcher_phase_from_event(phase_context: &Mutex<WatcherPhaseContext>, event: &SyncEvent) {
-    let Some(phase) = runner_phase_from_event(event) else {
-        return;
-    };
     let now = Instant::now();
     let mut context = phase_context
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if context.phase != phase {
-        context.phase = phase;
-        context.observed_at = now;
+    match runner_phase_from_event(event) {
+        Some(phase) => {
+            if context.phase != phase {
+                context.phase = phase;
+                context.observed_at = now;
+            }
+        }
+        // A parsed protocol event that maps to no work phase still proves the
+        // runner emitted protocol, so leave the never-observed sentinel behind
+        // (mirrors the manual route): `pre_protocol` means no protocol at all.
+        None => {
+            if context.phase == RUNNER_PHASE_PRE_PROTOCOL {
+                context.phase = "unknown";
+                context.observed_at = now;
+            }
+        }
     }
 }
 

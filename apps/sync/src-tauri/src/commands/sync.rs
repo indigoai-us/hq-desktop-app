@@ -193,16 +193,28 @@ impl Default for RunnerPhaseContext {
 }
 
 fn observe_manual_runner_phase(phase_context: &Mutex<RunnerPhaseContext>, event: &SyncEvent) {
-    let Some(phase) = runner_phase_from_event(event) else {
-        return;
-    };
     let now = Instant::now();
     let mut context = phase_context
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if context.phase != phase {
-        context.phase = phase;
-        context.observed_at = now;
+    match runner_phase_from_event(event) {
+        Some(phase) => {
+            if context.phase != phase {
+                context.phase = phase;
+                context.observed_at = now;
+            }
+        }
+        // A parsed protocol event that maps to no work phase (Complete,
+        // NewFiles, an error record, …) still proves the runner emitted
+        // protocol, so it must leave the never-observed sentinel behind:
+        // `pre_protocol` means no protocol event was seen at all, while
+        // `unknown` means protocol was seen but no work phase was pinned.
+        None => {
+            if context.phase == RUNNER_PHASE_PRE_PROTOCOL {
+                context.phase = "unknown";
+                context.observed_at = now;
+            }
+        }
     }
 }
 
@@ -1001,6 +1013,9 @@ pub fn build_sync_spawn_args(
 /// `all-complete`, the aggregated totals are persisted to
 /// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
 /// `lastSyncAt` and conflict count instead of "never" / zero.
+/// Returns `true` when the line parsed as a protocol `SyncEvent` and was
+/// processed, `false` for a blank or unparseable line — so callers can count
+/// only genuine protocol output.
 fn handle_sync_line<R: tauri::Runtime>(
     app: &AppHandle<R>,
     hq_folder: &str,
@@ -1008,12 +1023,12 @@ fn handle_sync_line<R: tauri::Runtime>(
     phase_context: &Mutex<RunnerPhaseContext>,
     jwt: &str,
     line: &str,
-) {
+) -> bool {
     // The runner can emit blank lines at process teardown. Skip those cheaply
     // rather than logging a parse error.
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return;
+        return false;
     }
 
     let event: SyncEvent = match serde_json::from_str(trimmed) {
@@ -1024,7 +1039,7 @@ fn handle_sync_line<R: tauri::Runtime>(
                 "[sync] skipping unparseable line: {} | line: {}",
                 _e, trimmed
             );
-            return;
+            return false;
         }
     };
 
@@ -1166,6 +1181,7 @@ fn handle_sync_line<R: tauri::Runtime>(
         #[cfg(debug_assertions)]
         eprintln!("[sync] failed to emit event: {}", _e);
     }
+    true
 }
 
 /// Return the re-authentication signal encoded in a runner stderr line.
@@ -1831,12 +1847,30 @@ pub(crate) async fn repair_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -
 pub(crate) async fn provision_unprovisioned_node<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> ProvisionAttempt {
+    provision_unprovisioned_node_with_major(app).await.0
+}
+
+/// As [`provision_unprovisioned_node`], but also returns the runner's Node major
+/// from the SAME post-provision preflight (present only when the runtime became
+/// usable), so `start_sync` can name the freshly provisioned runtime in an abort
+/// capture without an extra spawn.
+pub(crate) async fn provision_unprovisioned_node_with_major<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> (ProvisionAttempt, Option<u32>) {
     let repair = repair_managed_node(app).await;
     // Only re-probe when something was actually installed: the preflight costs
-    // two spawns and cannot have changed for Skipped or Failed.
-    let usable_after =
-        repair == ToolchainRepair::Repaired && matches!(preflight_node(), NodePreflight::Usable);
-    provision_attempt(repair, usable_after)
+    // two spawns and cannot have changed for Skipped or Failed. Reuse that same
+    // probe's major so the newly provisioned runtime is named in telemetry.
+    let (usable_after, node_major) = if repair == ToolchainRepair::Repaired {
+        let (preflight, major) = preflight_node_with_major();
+        (matches!(preflight, NodePreflight::Usable), major)
+    } else {
+        (false, None)
+    };
+    (
+        provision_attempt(repair, usable_after),
+        if usable_after { node_major } else { None },
+    )
 }
 
 /// Pure mapping from a repair attempt to the daemon-facing outcome, extracted
@@ -1976,12 +2010,16 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 "sync",
                 "no Node runtime found — provisioning HQ managed Node",
             );
-            if let Err(message) = provision_unprovisioned_node(&app).await.into_start_sync_result()
-            {
+            let (attempt, provisioned_major) =
+                provision_unprovisioned_node_with_major(&app).await;
+            if let Err(message) = attempt.into_start_sync_result() {
                 log("sync", &format!("BAIL: {message}"));
                 let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
                 return Err(message);
             }
+            // The runner now runs under the freshly provisioned managed Node, so
+            // name it rather than reporting the pre-provision `unknown`.
+            runner_node_major = provisioned_major;
             log("sync", "managed Node runtime provisioned — continuing");
         }
         NodePreflight::TooOld { major, path } => {
@@ -2328,19 +2366,21 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // ndjson protocol stream and the only durable record of what
                     // the runner did. The eprintln! is dev-only / verbose.
                     log("runner.stdout", &line);
-                    // Count every protocol line so the exit capture can report
-                    // whether the runner produced any output before dying.
-                    runner_stdout_sequence = runner_stdout_sequence.saturating_add(1);
                     #[cfg(debug_assertions)]
                     eprintln!("[sync stdout] {}", line);
-                    handle_sync_line(
+                    if handle_sync_line(
                         &app_bg,
                         &hq_folder_for_handler,
                         &totals,
                         &runner_phase,
                         &jwt_for_handler,
                         &line,
-                    );
+                    ) {
+                        // Count only parsed protocol lines, so the field reports
+                        // whether the runner did real work before dying — a blank
+                        // or unparseable teardown line is not protocol output.
+                        runner_stdout_sequence = runner_stdout_sequence.saturating_add(1);
+                    }
                 }
                 ProcessEvent::Stderr(line) => {
                     // Always log runner stderr — when sync gets stuck this is the
@@ -2363,6 +2403,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // emits the re-authentication signal even though the runner
                     // intentionally exits 0 after a failed token refresh.
                     handle_runner_stderr_line(&app_bg, &totals, &line);
+                    // Modern runners emit error/auth protocol records on stderr.
+                    // A parsed one still proves the runner emitted protocol, so
+                    // route it through the phase observer to clear pre_protocol.
+                    if let Ok(event) = serde_json::from_str::<SyncEvent>(line.trim()) {
+                        observe_manual_runner_phase(&runner_phase, &event);
+                    }
                     #[cfg(debug_assertions)]
                     eprintln!("[sync stderr] {}", line);
                 }
@@ -4528,5 +4574,36 @@ mod tests {
         // never-observed sentinel, not `unknown` (which now means "observed a
         // directionless Progress"), and is not polluted by `first`'s observation.
         assert_eq!(second_context.runner_phase, "pre_protocol");
+    }
+
+    #[test]
+    fn a_parsed_unmapped_protocol_event_clears_the_pre_protocol_sentinel() {
+        let ctx = Mutex::new(RunnerPhaseContext::default());
+        assert_eq!(
+            ctx.lock().unwrap_or_else(|e| e.into_inner()).phase,
+            "pre_protocol"
+        );
+
+        // An error record maps to no work phase, but it still proves the runner
+        // emitted protocol, so pre_protocol must fall to unknown — otherwise a
+        // run that clearly did protocol work would claim it never started.
+        let error: SyncEvent = serde_json::from_str(
+            r#"{"type":"error","company":"acme","path":"knowledge/a.md","message":"boom"}"#,
+        )
+        .expect("error event");
+        observe_manual_runner_phase(&ctx, &error);
+        assert_eq!(ctx.lock().unwrap_or_else(|e| e.into_inner()).phase, "unknown");
+
+        // A later phase-bearing event still wins and pins the real phase.
+        let push: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"acme","path":"p","bytes":1,"direction":"up"}"#,
+        )
+        .expect("progress event");
+        observe_manual_runner_phase(&ctx, &push);
+        assert_eq!(ctx.lock().unwrap_or_else(|e| e.into_inner()).phase, "push");
+
+        // From a real phase, an unmapped event must NOT downgrade it back.
+        observe_manual_runner_phase(&ctx, &error);
+        assert_eq!(ctx.lock().unwrap_or_else(|e| e.into_inner()).phase, "push");
     }
 }
