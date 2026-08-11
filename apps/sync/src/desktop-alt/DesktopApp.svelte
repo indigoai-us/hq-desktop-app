@@ -73,8 +73,10 @@
     type LibraryTab,
     type SettingsTab,
   } from './route';
+  import { readCloudPaused, writeCloudPaused } from './lib/cloud-connection';
   import {
     accountIdentityFromWorkspaces,
+    getV2ActiveWorkspace,
     sortV4CompaniesConnectedFirst,
     type V4HydrationIssue,
     V4_CHROME_LAYOUT,
@@ -84,7 +86,7 @@
     HomeCoreState,
     HomeDeleteRefusal,
   } from './v4/home-model';
-  import V4Sidebar from './v4/V4Sidebar.svelte';
+  import V2Sidebar from './v4/V2Sidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
@@ -298,6 +300,26 @@
   );
   const watchedWorkspaceCount = $derived(watchedCompanies.length);
   const accountIdentity = $derived(accountIdentityFromWorkspaces(shellCompanies));
+  // V2 shell (US-001): active workspace for the titlebar name + sidebar
+  // switcher placeholder, footer email, and the Cloud Connected/Off flag.
+  const activeWorkspaceChrome = $derived(getV2ActiveWorkspace(route, renderCompanies));
+  let accountEmail = $state<string | null>(null);
+  let cloudPaused = $state(readCloudPaused());
+
+  onMount(() => {
+    void invoke<string | null>('get_account_email')
+      .then((email) => {
+        accountEmail = email && email.trim() ? email.trim() : null;
+      })
+      .catch(() => {
+        accountEmail = null;
+      });
+  });
+
+  function handleCloudToggle(paused: boolean) {
+    cloudPaused = paused;
+    writeCloudPaused(paused);
+  }
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
   const activeCompanySyncEnabled = $derived(isWorkspaceSyncEnabled(activeCompany));
@@ -928,6 +950,12 @@
 
   async function handleSyncAll() {
     if (syncState === 'syncing') return;
+    // Cloud Off (V2 US-001): sync is paused on this device. The titlebar
+    // switch is the way back on; a manual Sync press is a no-op with a toast.
+    if (cloudPaused) {
+      flashToast('Cloud is off — turn it on to sync', 'error');
+      return;
+    }
     resetRunState();
     manualSyncTelemetryPending = true;
     try {
@@ -1680,6 +1708,9 @@
     conflictCompany={syncConflictCompany}
     {hqFolderPath}
     accountInitials={accountIdentity.initials}
+    companyName={activeWorkspaceChrome?.label ?? null}
+    {cloudPaused}
+    oncloudtoggle={handleCloudToggle}
     {sidebarCollapsed}
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
@@ -1705,13 +1736,12 @@
           onexit={exitFilesMode}
         />
       {:else}
-        <V4Sidebar
+        <V2Sidebar
           {route}
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
+          {accountEmail}
           {brand}
-          {cloudReachable}
-          onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
           onnavigate={(next) => navigate(fromV4Route(next))}
         />
       {/if}

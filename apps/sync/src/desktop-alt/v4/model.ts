@@ -347,6 +347,102 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
   };
 }
 
+/* ── V2 shell (hq-desktop-v2 US-001) ────────────────────────────────────────
+   The V2 sidebar is workspace-first: a WORKSPACE switcher placeholder (full
+   switcher lands in US-002), the active workspace's sections, then a GENERAL
+   group. Per-company rows and the sidebar Settings entry are gone — Settings
+   opens from the footer user card. Marketplace stays routable (palette /
+   hotkeys) but is not a V2 sidebar row. */
+
+/** Workspace sections shown under the switcher (no More row in V2). */
+export const V2_WORKSPACE_SECTION_ITEMS: ReadonlyArray<{
+  id: V4CompanyPrimaryId;
+  label: string;
+}> = V4_COMPANY_PRIMARY_ITEMS.filter((item) => item.id !== 'more');
+
+/** GENERAL group — global destinations. Marketplace is intentionally absent. */
+export const V2_GENERAL_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> =
+  V4_NAV_ITEMS.filter((item) => item.id !== 'marketplace');
+
+export interface V2SidebarWorkspace {
+  slug: string;
+  label: string;
+  tone: V4DotTone;
+}
+
+export interface V2SidebarSectionRow {
+  id: V4CompanyPrimaryId;
+  label: string;
+  active: boolean;
+}
+
+export interface V2SidebarModel {
+  /** Active workspace for the switcher placeholder; null with no companies. */
+  workspace: V2SidebarWorkspace | null;
+  /** Workspace section rows (Overview … Team), active per company tab. */
+  sections: V2SidebarSectionRow[];
+  /** GENERAL rows (Inbox / Messages / Meetings / Library / Files). */
+  general: V4SidebarNavRow[];
+  /** Footer user card highlights on the Settings route. */
+  settingsActive: boolean;
+}
+
+/**
+ * Resolve the V2 active workspace: the routed company when on a company route,
+ * otherwise the first connected non-personal company, otherwise the first
+ * sidebar row (connected-first order), otherwise null.
+ */
+export function getV2ActiveWorkspace(
+  route: V4Route,
+  workspaces: Workspace[],
+): V2SidebarWorkspace | null {
+  const rows = sortV4CompaniesConnectedFirst(
+    workspaces,
+    route.kind === 'company' ? route.slug : null,
+  );
+  const row =
+    (route.kind === 'company' ? rows.find((r) => r.active) : null) ??
+    rows.find((r) => !r.isPersonal) ??
+    rows[0] ??
+    null;
+  return row ? { slug: row.slug, label: row.label, tone: row.tone } : null;
+}
+
+/**
+ * Derive the V2 sidebar render model. Invariant: at most one active row across
+ * workspace sections, the GENERAL group, and the Settings footer card.
+ */
+export function getV2SidebarModel(route: V4Route, workspaces: Workspace[]): V2SidebarModel {
+  const settingsActive = route.kind === 'settings';
+  const workspace = getV2ActiveWorkspace(route, workspaces);
+  const activePrimary =
+    route.kind === 'company' && workspace != null && route.slug === workspace.slug
+      ? v4CompanyPrimaryForTab(route.tab)
+      : null;
+
+  const activeNavId: V4NavId | null =
+    !settingsActive &&
+    activePrimary == null &&
+    V2_GENERAL_NAV_ITEMS.some((item) => item.id === route.kind)
+      ? (route.kind as V4NavId)
+      : null;
+
+  return {
+    workspace,
+    sections: V2_WORKSPACE_SECTION_ITEMS.map((item) => ({
+      id: item.id,
+      label: item.label,
+      active: item.id === activePrimary,
+    })),
+    general: V2_GENERAL_NAV_ITEMS.map((item) => ({
+      id: item.id,
+      label: item.label,
+      active: item.id === activeNavId,
+    })),
+    settingsActive,
+  };
+}
+
 /** Secondary-sidebar item (contextual menu row). */
 export interface V4SecondaryItem {
   id: string;
@@ -402,6 +498,8 @@ export interface V4TitleBarInput {
   errorSummary?: string | null;
   /** Independent desktop-state hydration failure; cached data may still render. */
   hydrationIssue?: V4HydrationIssue | null;
+  /** V2 Cloud Off — sync is paused on this device (hq-desktop-v2 US-001). */
+  cloudPaused?: boolean;
 }
 
 /**
@@ -416,6 +514,17 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
     input.syncState === 'error' ||
     input.syncState === 'auth-error' ||
     input.syncState === 'conflict';
+
+  // Cloud Off (V2): the paused state outranks idle/healthy copy but never an
+  // authoritative operational state or a hydration failure.
+  if (input.cloudPaused && !hasAuthoritativeOperationalState && !input.hydrationIssue) {
+    return {
+      tone: 'idle',
+      sentence: 'Cloud Off',
+      meta: 'sync paused on this device',
+      action: syncNow,
+    };
+  }
 
   if (input.hydrationIssue && !hasAuthoritativeOperationalState) {
     const sentenceByKind: Record<V4HydrationIssueKind, string> = {
@@ -475,11 +584,13 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
         action: syncNow,
       };
     default: {
+      // V2: the synced-age reads in the sentence ("Synced 5m ago") next to the
+      // green dot; watched count stays as trailing meta.
       const watched = `${input.watchedCount} watched`;
       return {
         tone: 'ok',
-        sentence: 'All synced',
-        meta: input.lastSyncLabel ? `${watched} · ${input.lastSyncLabel}` : watched,
+        sentence: input.lastSyncLabel ? `Synced ${input.lastSyncLabel}` : 'All synced',
+        meta: watched,
         action: syncNow,
       };
     }

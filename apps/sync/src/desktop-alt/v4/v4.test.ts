@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
   accountIdentityFromWorkspaces,
+  getV2ActiveWorkspace,
+  getV2SidebarModel,
   getV4SidebarModel,
   getV4TitleBarModel,
   sortV4CompaniesConnectedFirst,
@@ -400,10 +402,11 @@ describe('US-001 V4 title bar model', () => {
       watchedCount: 12,
       lastSyncLabel: 'just now',
     });
+    // V2 (US-001): the synced-age reads in the sentence next to the green dot.
     expect(model).toEqual({
       tone: 'ok',
-      sentence: 'All synced',
-      meta: '12 watched · just now',
+      sentence: 'Synced just now',
+      meta: '12 watched',
       action: { id: 'sync', label: 'Sync Now' },
     });
   });
@@ -441,5 +444,77 @@ describe('US-001 V4 title bar model', () => {
     const model = getV4TitleBarModel({ syncState: 'conflict', watchedCount: 3 });
     expect(model.tone).toBe('warn');
     expect(model.action).toEqual({ id: 'resolve', label: 'Resolve' });
+  });
+});
+
+describe('hq-desktop-v2 US-001: V2 sidebar model', () => {
+  const companies = [
+    company({ slug: 'indigo', displayName: 'Indigo', state: 'synced' }),
+    company({ slug: 'acme', displayName: 'Acme', state: 'local-only' }),
+  ];
+
+  it('renders the seven workspace sections and the GENERAL group without Marketplace or Settings rows', () => {
+    const model = getV2SidebarModel({ kind: 'inbox' }, companies);
+    expect(model.sections.map((row) => row.label)).toEqual([
+      'Overview',
+      'Goals',
+      'Projects',
+      'Skills',
+      'Workers',
+      'Knowledge',
+      'Team',
+    ]);
+    expect(model.general.map((row) => row.label)).toEqual([
+      'Inbox',
+      'Messages',
+      'Meetings',
+      'Library',
+      'Files',
+    ]);
+    expect(model.general.some((row) => row.id === 'marketplace')).toBe(false);
+  });
+
+  it('resolves the active workspace: routed company first, then first connected non-personal', () => {
+    expect(getV2ActiveWorkspace({ kind: 'company', slug: 'acme' }, companies)?.slug).toBe('acme');
+    expect(getV2ActiveWorkspace({ kind: 'inbox' }, companies)?.slug).toBe('indigo');
+    expect(getV2ActiveWorkspace({ kind: 'inbox' }, [])).toBeNull();
+  });
+
+  it('lights exactly one row: a workspace section on company tabs, a GENERAL row on globals, the footer on settings', () => {
+    const onGoals = getV2SidebarModel({ kind: 'company', slug: 'indigo', tab: 'goals' }, companies);
+    expect(onGoals.sections.filter((row) => row.active).map((row) => row.id)).toEqual(['goals']);
+    expect(onGoals.general.every((row) => !row.active)).toBe(true);
+    expect(onGoals.settingsActive).toBe(false);
+
+    const onInbox = getV2SidebarModel({ kind: 'inbox' }, companies);
+    expect(onInbox.general.filter((row) => row.active).map((row) => row.id)).toEqual(['inbox']);
+    expect(onInbox.sections.every((row) => !row.active)).toBe(true);
+
+    const onSettings = getV2SidebarModel({ kind: 'settings' }, companies);
+    expect(onSettings.settingsActive).toBe(true);
+    expect(onSettings.general.every((row) => !row.active)).toBe(true);
+    expect(onSettings.sections.every((row) => !row.active)).toBe(true);
+  });
+});
+
+describe('hq-desktop-v2 US-001: Cloud Off titlebar state', () => {
+  it('shows the paused sentence with an idle dot while keeping Sync Now available', () => {
+    const model = getV4TitleBarModel({
+      syncState: 'idle',
+      watchedCount: 3,
+      lastSyncLabel: '5m ago',
+      cloudPaused: true,
+    });
+    expect(model.tone).toBe('idle');
+    expect(model.sentence).toBe('Cloud Off');
+    expect(model.meta).toBe('sync paused on this device');
+    expect(model.action).toEqual({ id: 'sync', label: 'Sync Now' });
+  });
+
+  it('never masks authoritative operational states', () => {
+    const syncing = getV4TitleBarModel({ syncState: 'syncing', watchedCount: 3, cloudPaused: true });
+    expect(syncing.sentence).toBe('Syncing…');
+    const error = getV4TitleBarModel({ syncState: 'error', watchedCount: 3, cloudPaused: true });
+    expect(error.sentence).toBe('Sync failed');
   });
 });

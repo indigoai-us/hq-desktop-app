@@ -81,7 +81,9 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
     expect(desktopApp).toContain('<V4TitleBar');
-    expect(desktopApp).toContain('<V4Sidebar');
+    // hq-desktop-v2 US-001: the mounted primary sidebar is the V2 shell;
+    // V4Sidebar remains an unmounted legacy component until US-002.
+    expect(desktopApp).toContain('<V2Sidebar');
     expect(desktopApp).toContain('let companies = $state<Workspace[]>(cachedCompanies)');
     expect(desktopApp).toContain('const nextCompanies = getDesktopCompanies(nextWorkspaces)');
     expect(desktopApp).toContain('companies = nextCompanies');

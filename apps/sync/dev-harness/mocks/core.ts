@@ -1127,6 +1127,8 @@ This final paragraph verifies spacing after a thematic break.
     return null;
   },
   get_hq_version: () => harnessCoreVersion,
+  // V2 sidebar footer user card (hq-desktop-v2 US-001).
+  get_account_email: () => 'corey@getindigo.ai',
   install_hq_core_update: () => runHarnessCoreInstall(),
   run_replace_from_staging: () => runHarnessCoreInstall(),
   list_displays: () =>

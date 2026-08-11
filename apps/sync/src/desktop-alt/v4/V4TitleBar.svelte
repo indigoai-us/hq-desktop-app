@@ -39,6 +39,11 @@
     hqFolderPath?: string | null;
     /** Account initials for the profile control (e.g. "CE"). */
     accountInitials?: string | null;
+    /** Active workspace/company name shown next to the sync status (V2). */
+    companyName?: string | null;
+    /** V2 Cloud Connected/Off switch — true when sync is paused here. */
+    cloudPaused?: boolean;
+    oncloudtoggle?: (paused: boolean) => void;
     sidebarCollapsed?: boolean;
     onsync?: () => void | Promise<void>;
     oncancel?: () => void | Promise<void>;
@@ -68,6 +73,9 @@
     conflictCompany = null,
     hqFolderPath = null,
     accountInitials = null,
+    companyName = null,
+    cloudPaused = false,
+    oncloudtoggle,
     sidebarCollapsed = false,
     onsync,
     oncancel,
@@ -90,6 +98,7 @@
       fanoutTotal,
       errorSummary,
       hydrationIssue,
+      cloudPaused,
     }),
   );
 
@@ -222,6 +231,10 @@
     </button>
   </div>
 
+  {#if companyName}
+    <span class="v4-company-name" data-testid="titlebar-company-name">{companyName}</span>
+  {/if}
+
   <div class="v4-status" aria-live="polite">
     <span
       class={`v4-dot ${model.tone}`}
@@ -254,6 +267,21 @@
         <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.25" />
         <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
       </svg>
+    </button>
+    <button
+      type="button"
+      class="v4-cloud-switch"
+      class:off={cloudPaused}
+      role="switch"
+      aria-checked={!cloudPaused}
+      data-testid="cloud-connected-switch"
+      title={cloudPaused
+        ? 'Cloud is off — sync is paused on this device'
+        : 'Cloud connected — click to pause sync on this device'}
+      onclick={() => oncloudtoggle?.(!cloudPaused)}
+    >
+      <span class={`v4-dot ${cloudPaused ? 'idle' : 'ok'}`} aria-hidden="true"></span>
+      {cloudPaused ? 'Cloud Off' : 'Cloud Connected'}
     </button>
     {#if model.recovery === 'hydration'}
       <button
@@ -423,6 +451,53 @@
   .v4-drag-flex {
     flex: 1 1 auto;
     min-width: 12px;
+  }
+
+  .v4-company-name {
+    flex: 0 0 auto;
+    overflow: hidden;
+    max-width: 160px;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, var(--text-base));
+    font-weight: 600;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* Display-only — do not steal drag or clicks. */
+    pointer-events: none;
+  }
+
+  .v4-cloud-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--type-secondary, var(--text-xs));
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .v4-cloud-switch.off {
+    color: var(--v4-text-2);
+  }
+
+  .v4-cloud-switch:hover {
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
+  }
+
+  .v4-cloud-switch:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: var(--v4-focus-offset, 2px);
   }
 
   .v4-status {
