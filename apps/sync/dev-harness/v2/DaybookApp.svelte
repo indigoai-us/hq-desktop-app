@@ -1222,8 +1222,8 @@
                           <div class="reacts">{@render reactChips(key)}</div>
                         {/if}
                         {@render reactPicker(key)}
+                        {@render reactBar(key)}
                       </div>
-                      {@render reactBar(key)}
                     </div>
                   {/if}
                 {/each}
@@ -1303,12 +1303,13 @@
                 <span class="fn">{r.name}</span>
                 <span class="fm who">{r.co} · {r.dur}</span>
                 <span class="mtg-actions">
-                  <button class="btn-join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}>Join</button>
+                  <button class="chip g btn-join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}>Join</button>
                   {#if r.state === 'live' || r.state === 'invited'}
                     <button
                       class="mtg-ic on"
                       aria-label="Notetaker is in — remove it"
                       data-tip="Notetaker is in. Click to remove."
+                      data-tip-align="right"
                       onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}
                     ><CheckCircle size={16} weight="fill" /></button>
                   {:else}
@@ -1316,6 +1317,7 @@
                       class="mtg-ic"
                       aria-label="Send the notetaker"
                       data-tip="Send the notetaker"
+                      data-tip-align="right"
                       onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}
                     ><Plus size={16} /></button>
                   {/if}
@@ -1925,15 +1927,13 @@
   .mtg-row.live .mtg-time, .mtg-row.live .fn { color: var(--ok-ink); }
   .mtg-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   /* Join is an affordance; the notetaker toggle is state, so it always shows. */
-  .btn-join { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 6px; font-size: 11px; font-weight: 500; color: var(--t2); opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s; }
-  .btn-join:hover { background: var(--hover); color: var(--t1); }
+  .btn-join { opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s, border-color 0.12s; }
   .mtg-row:hover .btn-join, .mtg-row.live .btn-join { opacity: 1; }
   .mtg-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--t3); }
   .mtg-ic:hover { background: var(--hover); color: var(--t2); }
   .mtg-ic.on { color: var(--ok-ink); }
   .mtg-ic.on:hover { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-ink); }
   /* Anchored to the right edge so the long notetaker tip stays in the pane. */
-  .mtg-actions :global([data-tip]::after) { left: auto; right: 0; transform: none; }
   .mtg-foot { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 12px 20px; border-top: 1px solid var(--line); font-size: 10px; letter-spacing: 0.04em; color: var(--t3); }
   .mtg-foot .chip { margin-left: auto; }
   .conflict-ic { display: inline-flex; align-items: center; color: var(--warn-ink); }
@@ -2126,8 +2126,8 @@
      and staying put while its picker is open. */
   .react-bar {
     position: absolute;
-    top: -14px;
-    right: 0;
+    bottom: -16px;
+    left: 0;
     display: flex;
     align-items: center;
     gap: 1px;
@@ -2145,7 +2145,8 @@
   .feed-event:hover .react-bar,
   .msg.picking .react-bar,
   .feed-event.picking .react-bar { opacity: 1; pointer-events: auto; }
-  .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t2); }
+  .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t1); }
+  .rb-ic.glyph { color: var(--t2); }
   .rb-ic:hover { background: var(--hover); color: var(--t1); }
   /* Opens below the row, on the message's own left edge — not tucked under
      the hover bar in the far corner. */
@@ -2167,7 +2168,7 @@
   .rp-ic:hover { background: var(--hover); }
   .reacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .reacts.inline { margin-top: 0; margin-left: 8px; }
-  .feed-event > .react-picker { left: 23px; }
+  .feed-event > .react-picker, .feed-event > .react-bar { left: 23px; }
   .react { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--raised); transition: background 0.12s, border-color 0.12s; }
   .react:hover { border-color: var(--line2); }
   .react .re { font-size: 11px; line-height: 1; }
@@ -2593,6 +2594,7 @@
     transition: opacity 0.12s ease 0s;
     z-index: 80;
   }
+  .v2 :global([data-tip][data-tip-align='right']::after) { left: auto; right: 0; transform: none; }
   .v2 :global([data-tip]:hover::after) { opacity: 1; transition-delay: 0.35s; }
   /* Element tooltip — same bubble, but lets the shortcut read muted. */
   .tip-host { position: relative; }
