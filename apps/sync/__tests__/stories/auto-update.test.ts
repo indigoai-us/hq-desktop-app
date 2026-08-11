@@ -234,8 +234,9 @@ describe('master automatic-updates switch', () => {
     );
     expect(cliUpdateCore).toContain('pub fn hq_cli_package_spec(version: Option<&str>)');
 
-    // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
-    // the version the app compares against is the version it installs.
+    // npm branch: resolve `latest` FIRST, then build the pinned argv against the
+    // selected live-or-staging prefix, so the version the app compares against
+    // is the version it installs without sacrificing managed-prefix isolation.
     const npmBranchStart = cliUpdate.indexOf('let prefix = hq_cli_install_prefix(&npm, &hq);');
     const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retries(&npm');
     expect(npmBranchStart).toBeGreaterThan(-1);
@@ -243,10 +244,11 @@ describe('master automatic-updates switch', () => {
     const npmBranch = cliUpdate.slice(npmBranchStart, npmBranchEnd);
     expect(npmBranch).toContain('let latest = fetch_latest().await?;');
     expect(npmBranch).toContain(
-      'let base_args = install_argv(prefix.as_deref(), Some(latest.as_str()));',
+      'let base_args = install_argv(install_prefix, Some(latest.as_str()));',
     );
+    expect(npmBranch).toContain('ManagedCliInstallStage::prepare');
     expect(npmBranch.indexOf('fetch_latest()')).toBeLessThan(
-      npmBranch.indexOf('install_argv(prefix.as_deref()'),
+      npmBranch.indexOf('install_argv(install_prefix'),
     );
 
     // pnpm branch pins the same way, from the target already resolved for it,
