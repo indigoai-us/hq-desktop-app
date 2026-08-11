@@ -614,13 +614,20 @@ impl ManagedCliInstallStage {
             })?;
         }
         if let Err(error) = std::fs::rename(&staged_package, &target_package) {
-            if had_previous_package {
-                let _ = std::fs::rename(&backup_package, &target_package);
-            }
-            return Err(format!(
+            let promotion_error = format!(
                 "promote staged managed CLI package {}: {error}",
                 target_package.display()
-            ));
+            );
+            if !had_previous_package {
+                return Err(promotion_error);
+            }
+            return match std::fs::rename(&backup_package, &target_package) {
+                Ok(()) => Err(promotion_error),
+                Err(rollback_error) => Err(format!(
+                    "{promotion_error}; rollback failed: restore previous package {}: {rollback_error}",
+                    target_package.display()
+                )),
+            };
         }
 
         // Existing npm shims resolve through the stable package path and do not
