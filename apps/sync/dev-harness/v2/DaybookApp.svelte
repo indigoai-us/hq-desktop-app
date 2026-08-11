@@ -1308,8 +1308,10 @@
                 <div class="ml-title">Live now — {MEETING_LIVE.name}</div>
                 <div class="ml-sub">{MEETING_LIVE.co} · {MEETING_LIVE.attendees} people · recording <span class="mono">{MEETING_LIVE.running}</span></div>
               </div>
-              <button class="chip g" onclick={() => toast('Meeting would open')}>Join</button>
-              <button class="chip" onclick={() => { mtgLive = false; toast('Recording stopped — recap will land in #gtm-standup'); }}>Stop recording</button>
+              <div class="ml-actions">
+                <button class="chip g" onclick={() => toast('Meeting would open')}>Join</button>
+                <button class="chip" onclick={() => { mtgLive = false; toast('Recording stopped — recap will land in #gtm-standup'); }}>Stop recording</button>
+              </div>
             </div>
           {/if}
 
@@ -1928,6 +1930,7 @@
   .mtg-view { gap: 4px; }
   .mtg-live { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent); }
   .ml-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--ok-ink); }
+  .ml-actions { display: flex; gap: 8px; flex-shrink: 0; }
   .ml-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .ml-title { font-size: 13px; font-weight: 500; color: var(--t1); }
   .ml-sub { font-size: 11px; color: var(--t2); }
@@ -2551,7 +2554,7 @@
   .pc-file { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .pc-name { font-size: 11px; line-height: 1.35; color: var(--warn-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pc-dir { font-size: 10px; line-height: 1.35; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pc-actions { display: flex; gap: 6px; }
+  .pc-actions { display: flex; gap: 8px; }
   .p-line .okc { font-size: 10px; color: var(--ok-ink); }
   .upd-btn { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--badge-fg); background: var(--ice-ink); border: none; border-radius: 6px; padding: 3px 10px; }
   .upd-btn:hover { opacity: 0.88; }
