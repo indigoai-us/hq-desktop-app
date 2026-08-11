@@ -308,7 +308,8 @@
 /// 6.14.x, but an install holding a cached `~6.14.24` resolution keeps
 /// serving the old runner. Raising the floor changes the npx cache key, which
 /// is what actually delivers the fix to existing users.
-pub const HQ_CLOUD_VERSION: &str = "~6.14.47";
+/// `~6.14.47` -> `~6.14.49`: floor the pin at hq-cloud 6.14.49, which ships the session-log capture fix that matches a harness-recorded cwd against the realpath'd HQ root (so symlinked / case-aliased roots capture correctly). Raising the floor also changes the npx cache key so an existing `~6.14.47` resolution can't keep serving the older runner (hq-cloud#298).
+pub const HQ_CLOUD_VERSION: &str = "~6.14.49";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
