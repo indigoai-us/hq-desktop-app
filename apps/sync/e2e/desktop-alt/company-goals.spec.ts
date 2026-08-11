@@ -60,6 +60,37 @@ describe('desktop-alt company Goals view source contract (US-006 / DESKTOP-007)'
     expect(page).toContain('No goals yet');
   });
 
+  it('US-005: Link goal / Connect writes a durable association through the shared helper', () => {
+    const helper = readRepoFile('src/desktop-alt/lib/goal-links.ts');
+    // Shared association matcher — the Overview rollup reads the same helper.
+    expect(helper).toContain('export function goalLinkedProjects');
+    expect(helper).toContain('export function goalLinkRef');
+    expect(helper).toContain('export function isProjectLinkedToGoal');
+    expect(page).toContain("from '../lib/goal-links'");
+    expect(page).toContain('goalLinkedProjects(objective, companyProjects)');
+    // Connect action + picker persist through the goals writer command.
+    expect(page).toContain('data-testid="link-goal-button"');
+    expect(page).toContain('data-testid="link-project-picker"');
+    expect(page).toContain('data-testid="link-project-option"');
+    expect(page).toContain('onclick={() => connectProject(project)}');
+    expect(page).toContain('await saveGoalProjectLink(slug, goalId, ref)');
+    expect(adapter).toContain("invoke('link_local_goal_project', { companySlug, goalId, projectRef })");
+    // Optimistic update rolls back on a failed write.
+    expect(page).toContain('objectives = previous;');
+  });
+
+  it('US-005: New goal creates a goal in-app with title/description/year', () => {
+    expect(page).toContain('data-testid="new-goal-form"');
+    expect(page).toContain('data-testid="new-goal-title"');
+    expect(page).toContain('data-testid="new-goal-description"');
+    expect(page).toContain('data-testid="new-goal-year"');
+    expect(page).toContain('data-testid="new-goal-create"');
+    expect(page).toContain('data-testid="new-goal-error"');
+    expect(page).toContain('await createCompanyGoal(');
+    expect(page).toContain('selectedGoalId = goalId;');
+    expect(adapter).toContain("invoke<string>('create_local_company_goal'");
+  });
+
   it('DESKTOP-007: list + detail portfolio without card-grid dashboard', () => {
     expect(page).toContain('data-testid="goals-workspace"');
     expect(page).toContain('data-testid="goal-list-row"');
