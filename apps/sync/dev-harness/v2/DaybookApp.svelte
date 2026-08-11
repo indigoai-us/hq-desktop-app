@@ -21,6 +21,7 @@
     Books,
     BookOpen,
     Buildings,
+    Camera,
     CaretDown,
     CaretRight,
     ChatCircle,
@@ -1613,7 +1614,16 @@
                 {#each [...Object.entries(DATA).map(([k, c]) => [k, c.label, c.short] as [string, string, string]), ...EXTRA_COMPANIES.map(([short, label]) => [label, label, short] as [string, string, string])] as [key, label, short] (key)}
                   <div class="set-row">
                     <div class="co-row-id">
-                      <span class="co-row-ava" style={`background: ${CO_TILES[key] ?? 'linear-gradient(140deg, #cbd5e1, #94a3b8)'}`}>{coShort(label)}</span>
+                      <button
+                        class="co-row-ava"
+                        style={`background: ${CO_TILES[key] ?? 'linear-gradient(140deg, #cbd5e1, #94a3b8)'}`}
+                        aria-label={`Change ${label} logo`}
+                        data-tip="Change logo"
+                        onclick={() => toast(`Logo picker would open for ${label}`)}
+                      >
+                        {coShort(label)}
+                        <span class="co-logo-edit"><Camera size={13} /></span>
+                      </button>
                       <span class="sn">{label}</span>
                       <span class="pill role">{CO_ROLES[key] ?? 'Member'}</span>
                     </div>
@@ -2670,7 +2680,10 @@
   .prof-input:focus { border-color: var(--border-active); }
   .prof-static { font-size: 12px; color: var(--t2); }
   .co-row-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .co-row-ava { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; font: 600 9px var(--font-ui); color: #fff; }
+  .co-row-ava { position: relative; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px; font: 600 11px var(--font-ui); color: #fff; overflow: hidden; }
+  /* Hover reveals the swap affordance over the tile itself. */
+  .co-logo-edit { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); color: #fff; opacity: 0; transition: opacity 0.12s; }
+  .co-row-ava:hover .co-logo-edit { opacity: 1; }
   .pill.role { border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: transparent; color: var(--t3); letter-spacing: 0.04em; }
   /* Sync state reads as a word next to its switch. */
   .co-row-sync { display: flex; align-items: center; gap: 10px; }
