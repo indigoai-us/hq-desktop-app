@@ -230,38 +230,6 @@ pub fn managed_npm_bin_in(root: &Path) -> PathBuf {
     }
 }
 
-/// Find an app-managed hq-cli package that survived an interrupted npm
-/// replacement but can no longer run. The package directory is the proof that
-/// this is a broken managed install rather than a machine where the CLI was
-/// never installed.
-pub fn managed_partial_hq_cli_prefix() -> Option<PathBuf> {
-    managed_partial_hq_cli_prefix_in(&managed_toolchain_roots())
-}
-
-pub fn managed_partial_hq_cli_prefix_in(roots: &[PathBuf]) -> Option<PathBuf> {
-    roots.iter().find_map(|root| {
-        let prefix = managed_npm_prefix_in(root);
-        let node_modules = if cfg!(target_os = "windows") {
-            prefix.join("node_modules")
-        } else {
-            prefix.join("lib").join("node_modules")
-        };
-        let package = node_modules.join("@indigoai-us").join("hq-cli");
-        let bin_dir = managed_npm_bin_in(root);
-        let shim_names: &[&str] = if cfg!(target_os = "windows") {
-            &["hq.exe", "hq.cmd", "hq.bat", "hq"]
-        } else {
-            &["hq"]
-        };
-        let shim_exists = shim_names.iter().any(|name| bin_dir.join(name).exists());
-        let package_is_partial = package.is_dir()
-            && (!package.join("package.json").is_file()
-                || !package.join("dist").join("index.js").is_file()
-                || !shim_exists);
-        package_is_partial.then_some(prefix)
-    })
-}
-
 pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
@@ -1037,56 +1005,6 @@ mod tests {
         // Node — never inside `node/`.
         assert_eq!(prefix.parent().unwrap(), root.as_path());
         assert_ne!(prefix, managed_node_dir_in(&root));
-    }
-
-    #[test]
-    fn half_wiped_managed_cli_recovers_its_stable_prefix() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("toolchain");
-        let prefix = managed_npm_prefix_in(&root);
-        let node_modules = if cfg!(target_os = "windows") {
-            prefix.join("node_modules")
-        } else {
-            prefix.join("lib").join("node_modules")
-        };
-        let package = node_modules.join("@indigoai-us").join("hq-cli");
-
-        // Exact field signature: package subtrees survive, but the manifest,
-        // entry point, and executable link are gone.
-        std::fs::create_dir_all(package.join("dist/commands")).unwrap();
-        std::fs::create_dir_all(package.join("dist/utils")).unwrap();
-
-        assert_eq!(managed_partial_hq_cli_prefix_in(&[root]), Some(prefix));
-    }
-
-    #[test]
-    fn healthy_or_never_installed_managed_cli_does_not_arm_repair() {
-        let temp = tempfile::tempdir().unwrap();
-        let healthy_root = temp.path().join("healthy-toolchain");
-        let healthy_prefix = managed_npm_prefix_in(&healthy_root);
-        let node_modules = if cfg!(target_os = "windows") {
-            healthy_prefix.join("node_modules")
-        } else {
-            healthy_prefix.join("lib").join("node_modules")
-        };
-        let package = node_modules.join("@indigoai-us").join("hq-cli");
-        let bin_dir = managed_npm_bin_in(&healthy_root);
-        let shim = if cfg!(target_os = "windows") {
-            "hq.cmd"
-        } else {
-            "hq"
-        };
-        std::fs::create_dir_all(package.join("dist")).unwrap();
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(package.join("package.json"), "{}").unwrap();
-        std::fs::write(package.join("dist/index.js"), "").unwrap();
-        std::fs::write(bin_dir.join(shim), "").unwrap();
-
-        assert_eq!(managed_partial_hq_cli_prefix_in(&[healthy_root]), None);
-        assert_eq!(
-            managed_partial_hq_cli_prefix_in(&[temp.path().join("never-installed")]),
-            None
-        );
     }
 
     #[test]

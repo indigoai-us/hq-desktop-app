@@ -113,10 +113,6 @@ struct PendingUpdateTransition {
     cleared_pending: bool,
 }
 
-/// One process-wide lease shared by the desktop, hard-gate, and managed CLI
-/// installers. A desktop install ends by restarting this process, so letting it
-/// overlap an npm install can kill npm after it has removed the old hq-cli but
-/// before it has linked the replacement.
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
@@ -178,7 +174,7 @@ fn sync_in_progress() -> bool {
 /// Process-wide lease preventing separate app surfaces from starting the same
 /// download concurrently. Dropping the lease resets the flag on every returning
 /// path; a successful `app.restart()` terminates the process instead.
-pub(crate) struct UpdateInstallGuard<'a> {
+struct UpdateInstallGuard<'a> {
     in_progress: &'a AtomicBool,
 }
 
@@ -189,15 +185,6 @@ impl<'a> UpdateInstallGuard<'a> {
             .ok()
             .map(|_| Self { in_progress })
     }
-}
-
-/// Acquire the shared desktop/toolchain install lease.
-///
-/// Callers hold the returned guard until their install has failed or fully
-/// converged, preventing a desktop restart from interrupting npm's live package
-/// replacement.
-pub(crate) fn acquire_update_install_guard() -> Option<UpdateInstallGuard<'static>> {
-    UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
 }
 
 impl Drop for UpdateInstallGuard<'_> {
@@ -522,8 +509,8 @@ pub fn get_pending_update(app: AppHandle) -> PendingUpdateStatus {
 
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
-    let _install_guard = acquire_update_install_guard()
-        .ok_or_else(|| "An app or CLI update installation is already in progress".to_string())?;
+    let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
+        .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
     let ticket = begin_app_check(&app)?;
 
@@ -647,7 +634,9 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         silent_install_supported(),
                                     ) {
                                         BackgroundUpdateAction::Install => {
-                                            match acquire_update_install_guard() {
+                                            match UpdateInstallGuard::acquire(
+                                                &UPDATE_INSTALL_IN_PROGRESS,
+                                            ) {
                                                 Some(_install_guard) => {
                                                     log(
                                                         "updater",
@@ -849,13 +838,14 @@ mod tests {
     }
 
     #[test]
-    fn shared_install_guard_is_single_flight_and_resets_when_dropped() {
-        let first = acquire_update_install_guard().expect("first installer acquires");
+    fn install_guard_is_single_flight_and_resets_when_dropped() {
+        let in_progress = AtomicBool::new(false);
+        let first = UpdateInstallGuard::acquire(&in_progress).expect("first install acquires");
 
-        assert!(acquire_update_install_guard().is_none());
+        assert!(UpdateInstallGuard::acquire(&in_progress).is_none());
         drop(first);
 
-        assert!(acquire_update_install_guard().is_some());
+        assert!(UpdateInstallGuard::acquire(&in_progress).is_some());
     }
 
     #[test]

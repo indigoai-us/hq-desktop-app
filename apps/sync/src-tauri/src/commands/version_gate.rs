@@ -154,8 +154,6 @@ pub(crate) async fn fetch_decision(
 /// `download_and_install`; the explicit restart() is a cross-platform
 /// safety net.
 async fn force_install(app: &AppHandle) -> Result<(), String> {
-    let _install_guard = crate::updater::acquire_update_install_guard()
-        .ok_or_else(|| "another app or CLI update installation is in progress".to_string())?;
     let updater = app.updater().map_err(|e| e.to_string())?;
     match updater.check().await {
         Ok(Some(update)) => {
