@@ -395,11 +395,31 @@
     toast(`Notetaker will join — saving to ${where}`);
   }
 
-  const MEETINGS_PAST: [string, string, string][] = [
-    ['Nestlé demo prep — Aug 1', 'Indigo · 4 attendees', 'RECAP + TRANSCRIPT'],
-    ['Daybook design review — Jul 31', 'Indigo · 3 attendees', 'RECAP + TRANSCRIPT'],
-    ['Sender weekly — Jul 30', 'Sender Agency · 6 attendees', 'RECAP'],
-    ['Pricing workshop — Jul 28', 'Indigo · 5 attendees', 'NOTES'],
+  const MEETINGS_PAST: { label: string; rows: [string, string, string][] }[] = [
+    {
+      label: 'LAST 7 DAYS',
+      rows: [
+        ['Nestlé demo prep — Aug 1', 'Indigo · 4 attendees', 'RECAP + TRANSCRIPT'],
+        ['Daybook design review — Jul 31', 'Indigo · 3 attendees', 'RECAP + TRANSCRIPT'],
+        ['Sender weekly — Jul 30', 'Sender Agency · 6 attendees', 'RECAP'],
+        ['Pricing workshop — Jul 28', 'Indigo · 5 attendees', 'NOTES'],
+      ],
+    },
+    {
+      label: 'LAST 30 DAYS',
+      rows: [
+        ['Agent box provisioning — Jul 22', 'Indigo · 3 attendees', 'RECAP'],
+        ['Nestlé kickoff — Jul 18', 'Indigo · 7 attendees', 'RECAP + TRANSCRIPT'],
+        ['Creative review — Jul 15', 'Sender Agency · 4 attendees', 'NOTES'],
+      ],
+    },
+    {
+      label: 'EARLIER',
+      rows: [
+        ['Q3 planning — Jun 30', 'Indigo · 9 attendees', 'RECAP + TRANSCRIPT'],
+        ['Holler onboarding — Jun 24', 'Holler Mgmt · 5 attendees', 'NOTES'],
+      ],
+    },
   ];
 
   const MARKET: [string, string, string, string][] = [
@@ -1324,7 +1344,7 @@
           </div>
           {#if mtgUrl.trim()}
             <div class="co-select-wrap">
-              <button class="co-select" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('mtg-url-co'); }}>
+              <button class="co-select btn-ghost" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('mtg-url-co'); }}>
                 {mtgUrlCo ? DATA[mtgUrlCo].label : 'Personal'}
                 <span class="caret"><CaretDown size={10} weight="bold" /></span>
               </button>
@@ -1385,13 +1405,16 @@
             {/each}
           {/each}
           {:else}
-          {#each MEETINGS_PAST as [name, who, meta] (name)}
-            <button class="lrow mtg-row" onclick={() => toast(`${name} would open`)}>
-              <span class="lrow-ic"><VideoCamera size={15} /></span>
-              <span class="fn">{name}</span>
-              <span class="fm sub">{who}</span>
-              <span class="fm mono">{meta}</span>
-            </button>
+          {#each MEETINGS_PAST as group (group.label)}
+            <div class="grp mtg-day"><span class="t mono">{group.label}</span><span class="t mono dim">{group.rows.length}</span></div>
+            {#each group.rows as [name, who, meta] (name)}
+              <button class="lrow mtg-row" onclick={() => toast(`${name} would open`)}>
+                <span class="lrow-ic"><VideoCamera size={15} /></span>
+                <span class="fn">{name}</span>
+                <span class="fm sub">{who}</span>
+                <span class="fm mono">{meta}</span>
+              </button>
+            {/each}
           {/each}
           {/if}
         </div>
@@ -1974,16 +1997,13 @@
   .lib-divider { height: 1px; margin: 6px 0; background: var(--line); }
 
   /* ── Meetings ───────────────────────────────────────────────────── */
-  .mtg-view { gap: 4px; }
+  .listview.mtg-view { padding-top: 8px; }
   /* Ad-hoc invite bar, above the agenda and outside its scroller. */
   .mtg-tabbar { display: flex; flex-shrink: 0; padding: 12px 20px 0; }
   .url-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--line); }
   .url-field { flex: 1; min-width: 0; }
   .url-bar .co-select-wrap { position: relative; flex-shrink: 0; }
   .url-bar .co-picker-panel { top: calc(100% + 6px); bottom: auto; right: 0; }
-  /* Naked control: no fill, text dims on hover — the scope-button treatment. */
-  .url-bar .co-select { padding: 4px 2px; background: transparent; border-color: transparent; color: var(--t2); transition: color 0.12s; }
-  .url-bar .co-select:hover { background: transparent; color: var(--t1); }
   .mtg-day { padding: 14px 2px 2px; }
   .mtg-row { gap: 10px; }
   .mtg-time { flex-shrink: 0; width: 52px; white-space: nowrap; font-size: 10px; letter-spacing: 0.03em; color: var(--t3); }
@@ -2196,7 +2216,7 @@
   .react-bar {
     position: absolute;
     top: calc(100% + 4px);
-    left: 0;
+    right: 0;
     display: flex;
     align-items: center;
     gap: 1px;
@@ -2220,7 +2240,7 @@
   .react-picker {
     position: absolute;
     top: calc(100% + 40px);
-    left: 0;
+    right: 0;
     display: grid;
     grid-template-columns: repeat(8, 26px);
     gap: 1px;
@@ -2499,6 +2519,9 @@
   .btn-tertiary { display: inline-flex; align-items: center; gap: 6px; height: 31px; padding: 0 12px; border: 1px solid var(--line2); border-radius: 8px; background: transparent; font-size: 12px; font-weight: 500; color: var(--t2); transition: background 0.12s, color 0.12s; }
   .btn-tertiary:hover:not(:disabled) { background: var(--hover); color: var(--t1); }
   .btn-tertiary:disabled { opacity: 0.45; cursor: default; }
+  .btn-ghost { display: inline-flex; align-items: center; gap: 6px; height: 31px; padding: 0 12px; border: 1px solid transparent; border-radius: 8px; background: transparent; font-size: 12px; font-weight: 500; color: var(--t2); transition: background 0.12s, color 0.12s; }
+  .btn-ghost:hover:not(:disabled) { background: var(--hover); color: var(--t1); }
+  .btn-ghost:disabled { opacity: 0.45; cursor: default; }
 
   .chip:disabled { opacity: 0.45; cursor: default; }
   .chip:disabled:hover { background: transparent; border-color: var(--line2); color: var(--t2); }
