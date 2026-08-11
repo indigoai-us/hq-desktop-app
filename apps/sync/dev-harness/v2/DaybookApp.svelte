@@ -45,6 +45,7 @@
     PaintBrush,
     Paperclip,
     Plus,
+    PlusCircle,
     PaperPlaneRight,
     PushPin,
     User,
@@ -1311,7 +1312,7 @@
                       data-tip="Notetaker is in. Click to remove."
                       data-tip-align="right"
                       onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}
-                    ><CheckCircle size={16} weight="fill" /></button>
+                    ><CheckCircle size={16} /></button>
                   {:else}
                     <button
                       class="mtg-ic"
@@ -1319,7 +1320,7 @@
                       data-tip="Send the notetaker"
                       data-tip-align="right"
                       onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}
-                    ><Plus size={16} /></button>
+                    ><PlusCircle size={16} /></button>
                   {/if}
                 </span>
               </div>
