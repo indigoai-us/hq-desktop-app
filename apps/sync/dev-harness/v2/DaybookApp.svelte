@@ -353,13 +353,13 @@
     } as Record<string, string[][]>,
   };
 
-  type Agenda = { time: string; name: string; co: string; dur: string; state: 'live' | 'next' | 'invited' | 'scheduled'; signals?: number };
+  type Agenda = { time: string; name: string; co: string; dur: string; state: 'live' | 'next' | 'invited' | 'scheduled' };
   const MEETING_LIVE = { name: 'GTM standup', co: 'Indigo', running: '12:04', attendees: 8 };
   const MEETING_DAYS: { label: string; rows: Agenda[] }[] = [
     {
       label: 'TODAY',
       rows: [
-        { time: '9:30 AM', name: 'GTM standup', co: 'Indigo', dur: '30m', state: 'live', signals: 3 },
+        { time: '9:30 AM', name: 'GTM standup', co: 'Indigo', dur: '30m', state: 'live' },
         { time: '11:00 AM', name: 'Nestlé demo prep', co: 'Indigo', dur: '45m', state: 'next' },
         { time: '2:00 PM', name: 'Pricing workshop', co: 'Indigo', dur: '60m', state: 'invited' },
         { time: '4:30 PM', name: 'Sender weekly', co: 'Sender Agency', dur: '30m', state: 'scheduled' },
@@ -1323,7 +1323,6 @@
                 <span class="mtg-time mono">{r.time}</span>
                 <span class="fn">{r.name}</span>
                 <span class="fm who">{r.co} · {r.dur}</span>
-                {#if r.signals}<span class="fm mono sig">{r.signals} SIGNALS</span>{/if}
                 <span class="mtg-actions">
                   <button class="mtg-ic" aria-label="Join" data-tip="Join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}><VideoCamera size={14} /></button>
                   {#if r.state === 'invited' || r.state === 'live'}
@@ -1349,7 +1348,7 @@
 
           <div class="mtg-foot">
             <span class="mono">2 CALENDARS CONNECTED · LAST SYNCED 2M AGO</span>
-            <button class="chip g" onclick={() => toast('HQ Console would open to manage calendars')}>Manage <ArrowUpRight size={11} /></button>
+            <button class="chip g" onclick={() => toast('HQ Console would open to manage calendars')}>Manage <ArrowUpRight size={11} weight="bold" /></button>
           </div>
         </div>
       {:else if view === 'marketplace'}
@@ -1430,7 +1429,7 @@
                 </div>
                 <div class="set-row">
                   <div><div class="sn">Manage account</div><div class="sd">Billing, teammates, and company settings live in HQ Console</div></div>
-                  <button class="chip push-right" onclick={() => toast('HQ Console would open in your browser')}>Open console <ArrowUpRight size={11} /></button>
+                  <button class="chip push-right" onclick={() => toast('HQ Console would open in your browser')}>Open console <ArrowUpRight size={11} weight="bold" /></button>
                 </div>
                 <div class="set-row">
                   <div><div class="sn">Sign out</div><div class="sd">Ends this session on this machine</div></div>
@@ -1940,7 +1939,6 @@
   .lrow.mtg-row .fn { flex: 0 1 auto; }
   .mtg-row .fm.who { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mtg-time { flex-shrink: 0; width: 62px; font-size: 11px; color: var(--t2); }
-  .mtg-row .sig { color: var(--ice-ink); }
   .mtg-state { flex-shrink: 0; margin-left: 4px; }
   .mtg-state.live { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
   .mtg-state.next { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 30%, transparent); background: var(--ice-tile); }
@@ -2217,7 +2215,7 @@
        border on hover, brighter border on press.
      tertiary small (.chip.g): border, no fill; slight fill on hover.
      primary small (.upd-btn): standard primary, smaller. */
-  .chip { font-weight: 500; font-size: 11px; color: var(--t1); background: var(--btn-bg); border: 1px solid transparent; border-radius: 6px; padding: 3px 10px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; font-size: 11px; color: var(--t1); background: var(--btn-bg); border: 1px solid transparent; border-radius: 6px; padding: 3px 10px; }
   .chip:hover { border-color: var(--line2); }
   .chip:active { border-color: var(--border-active); }
   .chip.g { color: var(--t2); background: transparent; border-color: var(--line2); }
