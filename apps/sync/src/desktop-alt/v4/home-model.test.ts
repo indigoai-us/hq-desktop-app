@@ -480,10 +480,12 @@ describe('getHomePortfolioStats', () => {
         project({ id: 'c', company: 'amass', storiesTotal: 0 }), // active (no stories tracked)
       ],
     });
+    // 2+3=5 passed of 6+3=9 total → 56% checks (includes terminal project stories)
     expect(stats).toEqual([
       { label: 'Companies', value: '2' },
       { label: 'Active projects', value: '2' },
       { label: 'Open stories', value: '4' },
+      { label: 'Checks passing', value: '56%' },
     ]);
   });
 
@@ -528,11 +530,81 @@ describe('getHomePortfolioStats', () => {
         }),
       ],
     });
+    // Only indigo (5 stories, 2 complete) → 40% checks; pending/unknown excluded
     expect(stats).toEqual([
       { label: 'Company', value: '1' },
       { label: 'Active projects', value: '1' },
       { label: 'Open stories', value: '3' },
+      { label: 'Checks passing', value: '40%' },
     ]);
+  });
+
+  it('shows checks-passing percent from mixed pass states via the shared formula', () => {
+    const stats = getHomePortfolioStats({
+      workspaces: [workspace({ slug: 'indigo' }), workspace({ slug: 'amass' })],
+      projects: [
+        project({ id: 'a', company: 'indigo', storiesTotal: 4, storiesComplete: 2 }),
+        project({ id: 'b', company: 'amass', storiesTotal: 6, storiesComplete: 3 }),
+      ],
+    });
+    // Shared checksPassing: 5/10 → 50%
+    expect(stats.find((s) => s.label === 'Checks passing')).toEqual({
+      label: 'Checks passing',
+      value: '50%',
+    });
+  });
+
+  it('omits checks-passing entirely when the denominator is 0 — never "0%"', () => {
+    const empty = getHomePortfolioStats({
+      workspaces: [workspace({ slug: 'indigo' })],
+      projects: [],
+    });
+    expect(empty.map((s) => s.label)).toEqual([
+      'Company',
+      'Active projects',
+      'Open stories',
+    ]);
+    expect(empty.some((s) => s.label === 'Checks passing')).toBe(false);
+    expect(empty.map((s) => s.value).join(' ')).not.toMatch(/0%/);
+
+    const zeroStories = getHomePortfolioStats({
+      workspaces: [workspace({ slug: 'indigo' })],
+      projects: [project({ company: 'indigo', storiesTotal: 0, storiesComplete: 0 })],
+    });
+    expect(zeroStories.some((s) => s.label === 'Checks passing')).toBe(false);
+  });
+
+  it('counts checks only on accepted-portfolio projects (not pending/unknown)', () => {
+    const stats = getHomePortfolioStats({
+      workspaces: [
+        workspace({ slug: 'indigo', membershipStatus: 'active' }),
+        workspace({
+          slug: 'pending-co',
+          membershipStatus: 'pending',
+          state: 'cloud-only',
+          hasLocalFolder: false,
+        }),
+      ],
+      projects: [
+        // Accepted: 2/4 = would alone be 50%
+        project({ id: 'ok', company: 'indigo', storiesTotal: 4, storiesComplete: 2 }),
+        // Pending invite — must not dilute or inflate checks
+        project({
+          id: 'pend',
+          company: 'pending-co',
+          storiesTotal: 100,
+          storiesComplete: 100,
+        }),
+        // Unknown/revoked company — excluded
+        project({
+          id: 'gone',
+          company: 'revoked',
+          storiesTotal: 10,
+          storiesComplete: 0,
+        }),
+      ],
+    });
+    expect(stats.find((s) => s.label === 'Checks passing')?.value).toBe('50%');
   });
 
   it('never invents storage / latency / sparkline tiles', () => {
@@ -622,6 +694,23 @@ describe('getHomeTodayAgenda', () => {
     expect(agenda[0].title).toBe('Kickoff');
     expect(agenda[0].company).toBe('Personal'); // no source company uid
     expect(agenda[1].company).toBe('Indigo');
+  });
+
+  it('excludes cancelled events from the Today agenda', () => {
+    const agenda = getHomeTodayAgenda({
+      events: [
+        meeting({ id: 'live', summary: 'Standup', startISO: '2026-06-15T10:00:00' }),
+        meeting({
+          id: 'cancelled',
+          summary: 'Scrubbed',
+          startISO: '2026-06-15T11:00:00',
+          status: 'cancelled',
+        }),
+      ],
+      companyNamesByUid: new Map(),
+      now: NOW,
+    });
+    expect(agenda.map((a) => a.id)).toEqual(['live']);
   });
 
   it('falls back to a placeholder title and caps the list', () => {
