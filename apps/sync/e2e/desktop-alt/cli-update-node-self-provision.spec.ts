@@ -128,6 +128,15 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(cli).toContain('apply_post_install_with_app(app, &outcome)');
   });
 
+  it('reports a failed package restore instead of swallowing the rollback error', () => {
+    expect(cli).toContain('fn package_promotion_failure_detail(');
+    expect(cli).toContain('Some(Err(rollback_error)) => format!(');
+    expect(cli).toContain('rollback failed: restore previous package');
+    expect(cli).not.toContain(
+      'let _ = std::fs::rename(&backup_package, &target_package)',
+    );
+  });
+
   it('defers the persistent PATH change until the retry has converged', () => {
     // The raw shell-profile / Windows-PATH mutation lives in a dedicated helper...
     expect(cli).toContain('fn configure_managed_shell_path(');

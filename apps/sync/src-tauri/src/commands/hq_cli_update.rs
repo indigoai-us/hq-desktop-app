@@ -405,6 +405,24 @@ fn complete_hq_cli_package_version(package: &Path) -> Option<String> {
         .flatten()
 }
 
+fn package_promotion_failure_detail(
+    target_package: &Path,
+    promotion_error: &std::io::Error,
+    rollback_result: Option<std::io::Result<()>>,
+) -> String {
+    let detail = format!(
+        "promote staged managed CLI package {}: {promotion_error}",
+        target_package.display()
+    );
+    match rollback_result {
+        Some(Err(rollback_error)) => format!(
+            "{detail}; rollback failed: restore previous package {}: {rollback_error}",
+            target_package.display()
+        ),
+        Some(Ok(())) | None => detail,
+    }
+}
+
 /// A staged update for the app-owned managed CLI prefix.
 ///
 /// The expensive and failure-prone npm work happens below
@@ -614,20 +632,13 @@ impl ManagedCliInstallStage {
             })?;
         }
         if let Err(error) = std::fs::rename(&staged_package, &target_package) {
-            let promotion_error = format!(
-                "promote staged managed CLI package {}: {error}",
-                target_package.display()
-            );
-            if !had_previous_package {
-                return Err(promotion_error);
-            }
-            return match std::fs::rename(&backup_package, &target_package) {
-                Ok(()) => Err(promotion_error),
-                Err(rollback_error) => Err(format!(
-                    "{promotion_error}; rollback failed: restore previous package {}: {rollback_error}",
-                    target_package.display()
-                )),
-            };
+            let rollback_result =
+                had_previous_package.then(|| std::fs::rename(&backup_package, &target_package));
+            return Err(package_promotion_failure_detail(
+                &target_package,
+                &error,
+                rollback_result,
+            ));
         }
 
         // Existing npm shims resolve through the stable package path and do not
@@ -3369,6 +3380,25 @@ exit 0
             Some("5.93.0")
         );
         assert!(!hq_cli_backup_dir_for(&prefix, false).exists());
+    }
+
+    #[test]
+    fn package_promotion_failure_reports_a_failed_rollback() {
+        let target = Path::new("/managed/node_modules/@indigoai-us/hq-cli");
+        let promotion_error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "promotion denied");
+        let rollback_error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "restore denied");
+
+        let detail =
+            package_promotion_failure_detail(target, &promotion_error, Some(Err(rollback_error)));
+
+        assert_eq!(
+            detail,
+            "promote staged managed CLI package /managed/node_modules/@indigoai-us/hq-cli: \
+             promotion denied; rollback failed: restore previous package \
+             /managed/node_modules/@indigoai-us/hq-cli: restore denied"
+        );
     }
 
     #[test]
