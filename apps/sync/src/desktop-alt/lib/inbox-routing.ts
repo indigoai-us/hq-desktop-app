@@ -10,7 +10,8 @@
  *                     the conversation target via lib/pendingConversation).
  *  - Share rows     → Files mode, previewing the shared path when the share
  *                     names a single concrete file, else the Files root.
- *  - Workspace rows → the relevant company screen (Activity under More).
+ *  - Workspace rows → the relevant company overview (US-021: Activity is
+ *                     console-only; overview is the nearest V2 screen).
  */
 
 import type { DmEvent, ShareEvent } from '../../lib/notificationGroups';
@@ -39,7 +40,8 @@ export function shareFilesRoute(share: Pick<ShareEvent, 'paths'>): DesktopRoute 
 export function workspaceActivityRoute(company: string): DesktopRoute {
   const slug = company.trim();
   if (!slug) return { kind: 'inbox' };
-  return { kind: 'company', slug, tab: 'activity' };
+  // US-021: company Activity is console-only; land on overview.
+  return { kind: 'company', slug, tab: 'overview' };
 }
 
 /** Conversation target for a DM row — consumed by the Messages shell. */

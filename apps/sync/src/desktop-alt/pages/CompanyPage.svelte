@@ -3,27 +3,21 @@
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../../lib/workspaces';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
-  import { companyInviteUrl, companySettingsUrl } from '../lib/hq-console';
+  import { companyInviteUrl, companyConsoleUrl } from '../lib/hq-console';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
   import CompanyProjectsPage from './CompanyProjectsPage.svelte';
-  import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte';
   import CompanySkillsPage from './CompanySkillsPage.svelte';
   import CompanyWorkersPage from './CompanyWorkersPage.svelte';
   import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
   import TeamPanel from '../panels/TeamPanel.svelte';
-  import {
-    DEFAULT_COMPANY_TAB,
-    isCompanyOperationsTab,
-    type CompanyOperationsTab,
-    type CompanyTab,
-  } from '../route';
+  import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
   interface Props {
     company: Workspace;
     /**
      * Which company section to show — driven by the primary sidebar children
-     * (DESKTOP-001) and operations deep links (DESKTOP-010). Defaults to Overview.
+     * (DESKTOP-001). Defaults to Overview.
      */
     tab?: CompanyTab;
     /** Switch to the Projects section before handing project creation to HQ. */
@@ -32,11 +26,6 @@
     onopengoals?: () => void;
     /** Open the global Inbox (overview recent activity). */
     onopeninbox?: () => void;
-    /**
-     * Switch operations internal destination (Activity / Deployments / Secrets /
-     * Settings) while staying under More (DESKTOP-010).
-     */
-    onopenoperations?: (destination: CompanyOperationsTab) => void;
     /** Called after a successful Connect so the parent re-fetches workspaces. */
     onworkspaceschanged?: () => void;
     /** Vault reachability — while offline, Connect is disabled (it can only
@@ -50,7 +39,6 @@
     onopenprojects,
     onopengoals,
     onopeninbox,
-    onopenoperations,
     onworkspaceschanged,
     cloudReachable = true,
   }: Props = $props();
@@ -74,11 +62,6 @@
   const connectionIssue = $derived(company.state === 'broken');
   // Local runner pause — suppress resource polling without rewriting connectivity.
   const syncEnabled = $derived(company.syncEnabled !== false);
-
-  /** Active operations destination when the company tab is under More. */
-  const operationsDestination = $derived<CompanyOperationsTab>(
-    isCompanyOperationsTab(tab) ? tab : 'activity',
-  );
 
   const connectable = $derived(company.state === 'local-only' || company.state === 'broken');
   const pendingInvite = $derived(company.membershipStatus === 'pending');
@@ -108,14 +91,12 @@
     }
   }
 
-  // Company settings (sync rules, members, roles) live in the HQ web console,
-  // not the in-app Settings route. DESKTOP-010 surfaces the open-console action
-  // from the operations Settings destination; this helper remains for deep
-  // links / callers that still open console settings by slug.
-  function openCompanySettings() {
+  // Deeper company ops (settings, activity, secrets, …) live in the HQ web
+  // console (US-021) — desktop keeps local work surfaces only.
+  function openInHqConsole() {
     actionError = null;
     actionNotice = null;
-    void openExternal(companySettingsUrl(company.slug));
+    void openExternal(companyConsoleUrl(company.slug));
   }
 
   async function handleConnect() {
@@ -246,7 +227,7 @@
         </button>
       {/if}
       {#if !pendingInvite}
-        <!-- DESKTOP-003: Invite + New project stay visible; Settings / ops live under More. -->
+        <!-- DESKTOP-003 + US-021: Invite + New project; ops live in HQ Console. -->
         <button
           type="button"
           onclick={openInvite}
@@ -254,6 +235,13 @@
           aria-busy={inviteOpening}
         >
           {inviteOpening ? 'Opening…' : 'Invite'}
+        </button>
+        <button
+          type="button"
+          title="Open this company in the HQ web console"
+          onclick={openInHqConsole}
+        >
+          Open in HQ Console
         </button>
         <button
           type="button"
@@ -324,15 +312,6 @@
           <CompanyKnowledgePanel slug={company.slug} />
         {:else if tab === 'team'}
           <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
-        {:else if isCompanyOperationsTab(tab)}
-          <!-- DESKTOP-010: Activity / Deployments / Secrets / Settings under More. -->
-          <CompanyOperationsPanel
-            slug={company.slug}
-            {cloudBacked}
-            {syncEnabled}
-            destination={operationsDestination}
-            ondestinationchange={(destination) => onopenoperations?.(destination)}
-          />
         {/if}
       </div>
     {/key}

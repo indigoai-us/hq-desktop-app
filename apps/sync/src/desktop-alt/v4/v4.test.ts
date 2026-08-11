@@ -127,7 +127,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       'workers',
       'knowledge',
       'team',
-      'more',
+      
     ]);
     expect(hpo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
     expect(model.companies.filter((row) => row.slug !== 'hpo').every((row) => !row.expanded)).toBe(
@@ -202,7 +202,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
   it('lights no row on palette-only and unknown routes (US-007: at most one active row)', () => {
     const routes: V4Route[] = [
       { kind: 'home' },
-      { kind: 'mission-control' },
+      
       { kind: 'moderation' },
       { kind: 'company', slug: 'missing' },
       { kind: 'some-future-kind' },

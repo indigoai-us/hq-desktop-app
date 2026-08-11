@@ -85,26 +85,21 @@ describe('US-006 / US-007 / US-002: sidebar IA — hotkeys (behavioral)', () => 
 
 describe('US-006 / US-007: sidebar IA — legacy intent resolution (behavioral)', () => {
   it("messages → Messages; notifications → Inbox", () => {
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ mode: 'internal', route: { kind: 'messages' } });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
   });
 
-  it("home / sync → home; mission-control stays reachable", () => {
-    expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
-    expect(resolvePendingDesktopRoute('sync')).toEqual({ kind: 'home' });
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({
-      kind: 'mission-control',
-    });
+  it("home / sync → home; mission-control remaps to console/home (US-021)", () => {
+    expect(resolvePendingDesktopRoute('home')).toEqual({ mode: 'internal', route: { kind: 'home' } });
+    expect(resolvePendingDesktopRoute('sync')).toEqual({ mode: 'internal', route: { kind: 'home' } });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ mode: 'internal', route: { kind: 'home' } });
   });
 
   it("library:marketplace routes to the Library marketplace tab (US-015 fold-in)", () => {
-    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
-      kind: 'library',
-      tab: 'marketplace',
-    });
-    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
+    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({ mode: 'internal', route: { kind: 'library', tab: 'marketplace' } });
+    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ mode: 'internal', route: { kind: 'marketplace' } });
   });
 });
 

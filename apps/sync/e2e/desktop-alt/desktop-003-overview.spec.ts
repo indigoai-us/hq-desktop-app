@@ -86,13 +86,13 @@ describe('DESKTOP-003: actionable company overview', () => {
     expect(companyPage).toContain("{inviteOpening ? 'Opening…' : 'Invite'}");
     expect(companyPage).toContain("New project");
     expect(companyPage).toContain('onclick={() => void startNewProject()}');
-    // Toolbar no longer surfaces Settings; ops live under sidebar More.
+    // Toolbar no longer surfaces Settings; ops live in HQ Console (US-021).
     expect(companyPage).not.toContain(
       '<button type="button" onclick={openCompanySettings}>Settings</button>',
     );
     expect(companyPage).toContain('DESKTOP-003');
-    // Console settings helper remains available for deep links / future More.
-    expect(companyPage).toContain('void openExternal(companySettingsUrl(company.slug));');
+    expect(companyPage).toContain('void openExternal(companyConsoleUrl(company.slug));');
+    expect(companyPage).toContain('Open in HQ Console');
   });
 
   it('preserves real actions: review/inspect/connect, goal/project nav, sync honesty, invites, errors', () => {

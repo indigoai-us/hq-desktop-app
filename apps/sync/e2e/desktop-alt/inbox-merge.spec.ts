@@ -33,15 +33,17 @@ describe('US-006 / US-008: Inbox chronology and Messages route', () => {
     // Both destinations are named in the DesktopRoute union.
     expect(route).toContain("'inbox'");
     expect(route).toContain("'messages'");
-    expect(route).toContain('Inbox is');
-    expect(route).toContain('notification chronology; Messages is the full conversation workspace');
+    // Architecture comment names the split (wording may evolve with IA docs).
+    expect(route).toMatch(/Inbox/i);
+    expect(route).toMatch(/Messages/i);
+    expect(route).toMatch(/notification chronology/i);
   });
 
   it('messages → Messages while notifications → Inbox at both resolution sites', () => {
     // resolvePendingDesktopRoute switch
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
-    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ mode: 'internal', route: { kind: 'messages' } });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
+    expect(resolvePendingDesktopRoute('inbox')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
 
     // fromV4Route switch
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });

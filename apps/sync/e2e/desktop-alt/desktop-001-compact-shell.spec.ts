@@ -93,7 +93,7 @@ describe('DESKTOP-001: compact native shell', () => {
     ]);
   });
 
-  it('selected company expands Overview / Goals / Projects / Skills / Workers / Knowledge / Team / More', () => {
+  it('selected company expands Overview / Goals / Projects / Skills / Workers / Knowledge / Team (US-021 no More)', () => {
     expect(COMPANY_PRIMARY_SECTIONS.map((s) => s.id)).toEqual([
       'overview',
       'goals',
@@ -102,7 +102,6 @@ describe('DESKTOP-001: compact native shell', () => {
       'workers',
       'knowledge',
       'team',
-      'more',
     ]);
     expect(V4_COMPANY_PRIMARY_ITEMS.map((s) => s.id)).toEqual(
       COMPANY_PRIMARY_SECTIONS.map((s) => s.id),
@@ -119,7 +118,6 @@ describe('DESKTOP-001: compact native shell', () => {
       'workers',
       'knowledge',
       'team',
-      'more',
     ]);
     expect(active?.children.find((c) => c.id === 'overview')?.active).toBe(true);
 
@@ -136,39 +134,29 @@ describe('DESKTOP-001: compact native shell', () => {
     }
   });
 
-  it('operational tabs light More while Skills and Workers light visible primary children', () => {
-    expect(v4CompanyPrimaryForTab('activity')).toBe('more');
-    expect(v4CompanyPrimaryForTab('deployments')).toBe('more');
-    expect(v4CompanyPrimaryForTab('secrets')).toBe('more');
-    expect(v4CompanyPrimaryForTab('settings')).toBe('more');
+  it('Skills and Workers light primary children; dropped ops tabs light nothing (US-021)', () => {
+    expect(v4CompanyPrimaryForTab('activity')).toBeNull();
+    expect(v4CompanyPrimaryForTab('deployments')).toBeNull();
+    expect(v4CompanyPrimaryForTab('secrets')).toBeNull();
+    expect(v4CompanyPrimaryForTab('settings')).toBeNull();
     expect(v4CompanyPrimaryForTab('skills')).toBe('skills');
     expect(v4CompanyPrimaryForTab('workers')).toBe('workers');
-    expect(companyPrimarySectionForTab('secrets')).toBe('more');
-    expect(companyPrimarySectionForTab('settings')).toBe('more');
     expect(companyPrimarySectionForTab('skills')).toBe('skills');
     expect(companyPrimarySectionForTab('workers')).toBe('workers');
-    expect(companyTabForPrimarySection('more')).toBe('activity');
 
-    const model = getV4SidebarModel(
-      { kind: 'company', slug: 'indigo', tab: 'deployments' },
-      companies,
-    );
-    expect(model.companies.find((r) => r.slug === 'indigo')?.children.find((c) => c.id === 'more')
-      ?.active).toBe(true);
-
-    // Full operational + skills/workers routes resolve.
-    for (const tab of ['skills', 'workers', 'activity', 'deployments', 'secrets', 'settings'] as const) {
+    // Live skills/workers routes resolve internally.
+    for (const tab of ['skills', 'workers'] as const) {
       expect(resolvePendingDesktopRoute(`company:indigo:${tab}`)).toEqual({
-        kind: 'company',
-        slug: 'indigo',
-        tab,
+        mode: 'internal',
+        route: { kind: 'company', slug: 'indigo', tab },
       });
       expect(COMPANY_SECTIONS.some((s) => s.id === tab)).toBe(true);
     }
+    // Legacy more → overview.
     expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'more' })).toEqual({
       kind: 'company',
       slug: 'indigo',
-      tab: 'activity',
+      tab: 'overview',
     });
   });
 
@@ -227,7 +215,7 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(sidebar).toContain('v4-company-children');
     expect(sidebar).toContain('goCompanySection');
     expect(sidebar).toContain("data-testid={`company-children-${row.slug}`}");
-    expect(sidebar).toContain("child.id === 'more'");
+    expect(sidebar).not.toContain("child.id === 'more'");
   });
 
   it('light-mode material roles stay visibly translucent with weighted hierarchy', () => {

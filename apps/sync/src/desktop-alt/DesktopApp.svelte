@@ -28,8 +28,8 @@
     type CachedBrand,
   } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
-  import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
+  import { companyConsoleUrl, HQ_CONSOLE_BASE } from './lib/hq-console';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
   import InboxPage from './pages/InboxPage.svelte';
@@ -70,6 +70,7 @@
     getDesktopLandingRoute,
     getDesktopRouteKey,
     getDesktopSecondarySidebar,
+    landOnRouteForResolution,
     resolvePendingDesktopRoute,
     type CompanyTab,
     type DesktopRoute,
@@ -332,12 +333,10 @@
   const companyTab = $derived<CompanyTab>(
     route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
   );
+  // US-021: only overview keeps a polled cloud resource (summary). Ops panels
+  // (activity/deployments/secrets) no longer exist as desktop surfaces.
   const polledCompanyResource = $derived<CompanyResource | null>(
-    companyTab === 'activity' || companyTab === 'deployments' || companyTab === 'secrets'
-      ? companyTab
-      : companyTab === 'overview'
-        ? 'summary'
-        : null,
+    companyTab === 'overview' ? 'summary' : null,
   );
   $effect(() => {
     setActiveCompanyResource(
@@ -446,10 +445,18 @@
       action: () => navigate({ kind: 'home' }),
     },
     {
+      // US-021: fleet Mission Control is console Telescope, not an in-app page.
       id: 'command-go-mission-control',
-      label: 'Go to Mission Control',
-      detail: 'Live + historical view of running agent sessions',
-      action: () => navigate({ kind: 'mission-control' }),
+      label: 'Open Mission Control (Telescope) in HQ Console',
+      detail: activeCompany
+        ? `Opens Telescope for ${activeCompany.displayName} in the HQ web console (browser)`
+        : 'Opens the HQ web console in the browser',
+      action: () =>
+        openExternal(
+          activeCompany
+            ? `${companyConsoleUrl(activeCompany.slug)}/telescope`
+            : HQ_CONSOLE_BASE,
+        ),
     },
     {
       id: 'command-go-inbox',
@@ -1320,11 +1327,20 @@
     // already-open case is handled live by the `desktop:navigate` listener below.
     void invoke<string | null>('desktop_alt_consume_pending_route')
       .then((pending) => {
-        // Legacy aliases stay functional ('sync' → Home); unknown intents are
-        // ignored so a stale queue entry can't strand the window.
-        const pendingRoute = resolvePendingDesktopRoute(pending);
-        if (mounted && pendingRoute) {
-          navigate(pendingRoute);
+        // US-021: legacy ops / mission-control intents open the HQ console in
+        // the system browser and land on the nearest V2 screen. Unknown intents
+        // are ignored so a stale queue entry can't strand the window.
+        const resolved = resolvePendingDesktopRoute(pending, {
+          activeCompanySlug: activeCompany?.slug ?? null,
+        });
+        if (mounted && resolved) {
+          if (resolved.mode === 'console') {
+            void openExternal(resolved.url).catch((err) => {
+              console.error('open console deep link failed:', err);
+            });
+          }
+          const landOn = landOnRouteForResolution(resolved);
+          if (landOn) navigate(landOn);
           return;
         }
         // No backend pending route — restore a persisted Files-mode route so a
@@ -1670,7 +1686,15 @@
       // specific screen. The fresh-window case is handled by the
       // `desktop_alt_consume_pending_route` consume above.
       listen<string>('desktop:navigate', (event) => {
-        const nextRoute = resolvePendingDesktopRoute(event.payload);
+        const resolved = resolvePendingDesktopRoute(event.payload, {
+          activeCompanySlug: activeCompany?.slug ?? null,
+        });
+        if (resolved?.mode === 'console') {
+          void openExternal(resolved.url).catch((err) => {
+            console.error('open console deep link failed:', err);
+          });
+        }
+        const nextRoute = landOnRouteForResolution(resolved);
         if (nextRoute) {
           navigate(nextRoute);
         }
@@ -1831,10 +1855,6 @@
                 onopenlog={handleOpenActivityLog}
               />
             </div>
-          {:else if route.kind === 'mission-control'}
-            <div class="page">
-              <MissionControlPage />
-            </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
@@ -1911,9 +1931,6 @@
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: 'goals' })
                 }
                 onopeninbox={() => navigate({ kind: 'inbox' })}
-                onopenoperations={(destination) =>
-                  navigate({ kind: 'company', slug: activeCompany.slug, tab: destination })
-                }
                 onworkspaceschanged={() => void refreshRealState()}
               />
             </div>

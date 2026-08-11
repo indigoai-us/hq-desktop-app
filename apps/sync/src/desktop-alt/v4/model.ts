@@ -12,8 +12,9 @@ import type { SyncState } from '../lib/sync-model';
 /**
  * The primary-nav destinations, in display order. Inbox owns notification
  * chronology; Messages owns complete conversations, channels, requests, and
- * shares. Home, Mission Control, and the Companies page are palette-only /
- * company-row surfaces — not sidebar nav items.
+ * shares. Home and the Companies page are palette-only / company-row surfaces
+ * — not sidebar nav items. (Mission Control was removed in US-021; Telescope
+ * lives in the HQ web console.)
  */
 export type V4NavId =
   | 'inbox'
@@ -35,7 +36,7 @@ export interface V4Route {
   tab?: string;
 }
 
-/** Primary company children expanded under the selected company (DESKTOP-001). */
+/** Primary company children expanded under the selected company (DESKTOP-001 / US-021). */
 export type V4CompanyPrimaryId =
   | 'overview'
   | 'goals'
@@ -43,8 +44,7 @@ export type V4CompanyPrimaryId =
   | 'skills'
   | 'workers'
   | 'knowledge'
-  | 'team'
-  | 'more';
+  | 'team';
 
 export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   id: V4CompanyPrimaryId;
@@ -57,7 +57,6 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'team', label: 'Team' },
-  { id: 'more', label: 'More' },
 ];
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
@@ -140,7 +139,7 @@ export interface V4SidebarModel {
 
 /**
  * Map a company route tab onto the primary sidebar child that should light.
- * Operational tabs highlight More; content tabs light their matching child.
+ * US-021: operational tabs / More are gone — unknown tabs light nothing.
  */
 export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4CompanyPrimaryId | null {
   switch (tab) {
@@ -156,13 +155,6 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
     case 'knowledge':
     case 'team':
       return tab;
-    case 'activity':
-    case 'deployments':
-    case 'secrets':
-    case 'settings':
-    case 'more':
-      // DESKTOP-010: all four operations destinations light More.
-      return 'more';
     default:
       return null;
   }
@@ -353,11 +345,11 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
    sidebar Settings entry are gone — Settings opens from the footer user card.
    Marketplace stays routable (palette) but is not a V2 sidebar row. */
 
-/** Workspace sections shown under the switcher (no More row in V2). */
+/** Workspace sections shown under the switcher. */
 export const V2_WORKSPACE_SECTION_ITEMS: ReadonlyArray<{
   id: V4CompanyPrimaryId;
   label: string;
-}> = V4_COMPANY_PRIMARY_ITEMS.filter((item) => item.id !== 'more');
+}> = V4_COMPANY_PRIMARY_ITEMS;
 
 /** GENERAL group — global destinations. Marketplace is intentionally absent. */
 export const V2_GENERAL_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> =

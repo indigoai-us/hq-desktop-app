@@ -38,14 +38,15 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).toContain("navigate({ kind: 'settings', tab: section.id })");
   });
 
-  it('keeps Marketplace, Home, and Mission Control reachable from the palette (US-007)', () => {
-    // Marketplace is a top-level destination; Home and Mission Control lost
-    // their sidebar rows + hotkeys but stay routable (workspace hotkeys are
-    // ⌘0–⌘9 since US-002).
+  it('keeps Marketplace, Home, and Mission Control (console) reachable from the palette (US-007 / US-021)', () => {
+    // Marketplace is a top-level destination; Home stays in-app; Mission Control
+    // is the HQ Console Telescope deep link (US-021).
     expect(desktopApp).toContain("id: 'command-go-marketplace'");
     expect(desktopApp).toContain("navigate({ kind: 'marketplace' })");
     expect(desktopApp).toContain("id: 'command-go-home'");
     expect(desktopApp).toContain("id: 'command-go-mission-control'");
+    expect(desktopApp).toContain('Open Mission Control (Telescope) in HQ Console');
+    expect(desktopApp).not.toContain("navigate({ kind: 'mission-control' })");
     expect(desktopApp).not.toContain("id: 'command-go-companies'");
   });
 

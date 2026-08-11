@@ -56,7 +56,6 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
       'Workers',
       'Knowledge',
       'Team',
-      'More',
     ]);
     expect(indigo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
   });

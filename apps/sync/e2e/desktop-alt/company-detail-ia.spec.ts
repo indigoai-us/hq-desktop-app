@@ -19,10 +19,6 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'workers',
       'knowledge',
       'team',
-      'activity',
-      'deployments',
-      'secrets',
-      'settings',
     ]);
     expect(ids).not.toContain('accounts');
     expect(ids).not.toContain('tasks');
@@ -30,30 +26,24 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
   });
 
   it('redirects legacy company deep-links', () => {
-    expect(resolvePendingDesktopRoute('company:indigo:accounts')?.kind).toBe('company');
-    expect(
-      resolvePendingDesktopRoute('company:indigo:accounts') &&
-        'tab' in (resolvePendingDesktopRoute('company:indigo:accounts') as object)
-        ? (resolvePendingDesktopRoute('company:indigo:accounts') as { tab?: string }).tab
-        : undefined,
-    ).toBe('overview');
+    expect(resolvePendingDesktopRoute('company:indigo:accounts')).toEqual({
+      mode: 'internal',
+      route: { kind: 'company', slug: 'indigo', tab: 'overview' },
+    });
     expect(resolvePendingDesktopRoute('company:indigo:tasks')).toEqual({
-      kind: 'company',
-      slug: 'indigo',
-      tab: 'projects',
+      mode: 'internal',
+      route: { kind: 'company', slug: 'indigo', tab: 'projects' },
     });
     expect(resolvePendingDesktopRoute('company:indigo:library')).toEqual({
-      kind: 'company',
-      slug: 'indigo',
-      tab: 'skills',
+      mode: 'internal',
+      route: { kind: 'company', slug: 'indigo', tab: 'skills' },
     });
   });
 
   it('maps Knowledge deep-link to inline company knowledge tab', () => {
     expect(resolvePendingDesktopRoute('company:indigo:knowledge')).toEqual({
-      kind: 'company',
-      slug: 'indigo',
-      tab: 'knowledge',
+      mode: 'internal',
+      route: { kind: 'company', slug: 'indigo', tab: 'knowledge' },
     });
   });
 

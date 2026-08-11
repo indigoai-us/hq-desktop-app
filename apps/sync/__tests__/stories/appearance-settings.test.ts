@@ -16,8 +16,11 @@ describe('Settings > Appearance', () => {
       label: 'Appearance',
     });
     expect(resolvePendingDesktopRoute('settings:appearance')).toEqual({
-      kind: 'settings',
-      tab: 'appearance',
+      mode: 'internal',
+      route: {
+    kind: 'settings',
+    tab: 'appearance',
+      },
     });
   });
 

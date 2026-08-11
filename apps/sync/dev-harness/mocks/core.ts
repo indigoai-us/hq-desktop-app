@@ -780,23 +780,9 @@ This final paragraph verifies spacing after a thematic break.
     { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
-  get_company_secrets: () => [
-    {
-      env: 'production',
-      count: 2,
-      items: [
-        { key: 'DATABASE_URL', upd: '2d ago', rot: '21d' },
-        { key: 'SENTRY_AUTH_TOKEN', upd: '8d ago', rot: '90d' },
-      ],
-    },
-    {
-      env: 'staging',
-      count: 1,
-      items: [{ key: 'API_BASE_URL', upd: '1d ago', rot: '—' }],
-    },
-  ],
+  // US-021: get_company_secrets removed — desktop never fetches company secrets.
   desktop_alt_is_admin: () => true,
-  get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
+  get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 0 }),
   // Creator per project (from the cloud board's S3 created-by). Some projects
   // intentionally omitted → they stay honestly "Unassigned" in the Lead column.
   get_company_project_creators: () => [

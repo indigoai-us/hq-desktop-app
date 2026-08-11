@@ -40,11 +40,11 @@ describe('US-012 inbox-routing: shareFilesRoute', () => {
 });
 
 describe('US-012 inbox-routing: workspaceActivityRoute', () => {
-  it('routes workspace events to the company Activity screen', () => {
+  it('routes workspace events to the company overview (US-021)', () => {
     expect(workspaceActivityRoute('indigo')).toEqual({
       kind: 'company',
       slug: 'indigo',
-      tab: 'activity',
+      tab: 'overview',
     });
   });
 

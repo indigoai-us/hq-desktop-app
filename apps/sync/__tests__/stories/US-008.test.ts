@@ -193,12 +193,15 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
 
 describe('US-008: navigation intents resolve to their complete surfaces', () => {
   it('routes messages to Messages and notifications/inbox to Inbox', () => {
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ mode: 'internal', route: { kind: 'messages' } });
+    expect(resolvePendingDesktopRoute('inbox')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
     expect(resolvePendingDesktopRoute('settings:notifications')).toEqual({
-      kind: 'settings',
-      tab: 'notifications',
+      mode: 'internal',
+      route: {
+    kind: 'settings',
+    tab: 'notifications',
+      },
     });
   });
 

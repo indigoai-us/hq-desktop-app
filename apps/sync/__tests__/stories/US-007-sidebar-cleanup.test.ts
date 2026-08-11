@@ -86,8 +86,8 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
   });
 
   it('Home and Mission Control stay reachable via the command palette only — no hotkey slots', () => {
-    expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
+    expect(resolvePendingDesktopRoute('home')).toEqual({ mode: 'internal', route: { kind: 'home' } });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ mode: 'internal', route: { kind: 'home' } });
     const companies = getDesktopCompanies(workspaces);
     for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       const routed = getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
@@ -96,6 +96,7 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
     }
     expect(desktopApp).toContain("id: 'command-go-home'");
     expect(desktopApp).toContain("id: 'command-go-mission-control'");
+    expect(desktopApp).toContain('Open Mission Control (Telescope) in HQ Console');
     // Their palette entries carry no ⌘ shortcut anymore.
     const homeEntry = desktopApp.slice(
       desktopApp.indexOf("id: 'command-go-home'"),
@@ -179,10 +180,13 @@ describe('US-007: Marketplace is a top-level destination', () => {
     const library = getDesktopSecondarySidebar({ kind: 'library' }, workspaces);
     expect(library?.items.some((item) => item.label === 'Marketplace')).toBe(true);
     expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
-      kind: 'library',
-      tab: 'marketplace',
+      mode: 'internal',
+      route: {
+    kind: 'library',
+    tab: 'marketplace',
+      },
     });
-    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
+    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ mode: 'internal', route: { kind: 'marketplace' } });
   });
 });
 

@@ -152,10 +152,10 @@ describe('desktop-alt Board surface (US-007)', () => {
 
     // Route kind union no longer carries 'board' (the US-008 IA is Inbox /
     // Meetings / Marketplace / Library plus settings, the palette-only
-    // home / mission-control / moderation surfaces, and per-company routes
+    // home / moderation surfaces, and per-company routes (US-021 drops mission-control)
     // — see route.ts).
     expect(route).toContain(
-      "{ kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
+      "{ kind: 'home' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
     );
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
@@ -238,9 +238,10 @@ describe('desktop-alt Board surface (US-007)', () => {
     expect(company).toContain('slug={company.slug}');
     expect(company).toContain('{cloudBacked}');
     // Other sections remain wired below it.
-    // DESKTOP-010: operational panels mount inside CompanyOperationsPanel under More.
-    expect(company).toContain('CompanyOperationsPanel');
-    expect(company).toContain('isCompanyOperationsTab(tab)');
-    expect(company).toContain('destination={operationsDestination}');
+    // US-021: operations workspace removed — console deep links instead.
+    expect(company).not.toContain('CompanyOperationsPanel');
+    expect(company).not.toContain('isCompanyOperationsTab');
+    expect(company).toContain('Open in HQ Console');
+    expect(company).not.toContain('destination={operationsDestination}');
   });
 });
