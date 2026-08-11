@@ -182,12 +182,30 @@ struct RefusalEpisode {
     /// budget survives an auto-update — the field whose absence let a confirmed
     /// wedge re-report every cooldown forever.
     reports: usize,
+    /// Wall-clock anchor of the wedge this episode belongs to — the durable clock
+    /// the escalation ladder is measured against. Resolved once (from the persisted
+    /// `wedge_started_at`, from the earliest same-wedge anchor on a legacy record,
+    /// or from this episode's own open time when it is genuinely fresh) and then
+    /// carried verbatim. For a live never-gapped episode it equals the episode's
+    /// open time, so [`Self::wedge_age`] equals [`Self::age`]; after an observation
+    /// gap the episode clock resets but this one does not, so the wedge age keeps
+    /// climbing toward the next rung.
+    wedge_started_at: DateTime<Utc>,
 }
 
 impl RefusalEpisode {
-    /// How long this episode has been refusing, across process restarts.
+    /// How long this episode has been refusing *continuously*, across process
+    /// restarts — the confirmation clock, reset to zero after an observation gap.
     fn age(&self, now: Instant) -> Duration {
         now.duration_since(self.opened_at) + self.carried_age
+    }
+
+    /// How long the underlying *wedge* has been standing, across observation gaps
+    /// as well as restarts — the durable clock the escalation ladder reads. `None`
+    /// only if the anchor is somehow dated after `wall_now` (a backwards clock),
+    /// which every caller treats as "fall back to the continuous episode age".
+    fn wedge_age(&self, wall_now: DateTime<Utc>) -> Option<Duration> {
+        elapsed_since_wall(self.wedge_started_at, wall_now)
     }
 }
 
@@ -269,6 +287,21 @@ struct PersistedRefusalState {
     /// same auto-update that wiped the state they keyed on. Cleared on recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     episode_reports: Option<usize>,
+    /// Wall clock, RFC3339: when the *wedge* underlying the currently open episode
+    /// first began refusing — the **durable** clock the finite escalation ladder is
+    /// measured against, distinct from [`Self::episode_started_at`], the
+    /// continuous-observation clock the confirmation gate uses. Unlike the episode
+    /// clock (reset to the resume time after every observation gap), this anchor is
+    /// carried verbatim across gaps, restarts and auto-updates, so a standing wedge
+    /// on a machine that sleeps nightly still reaches the 24h and 7d rungs instead
+    /// of restarting the ladder from each wake. Its **absence** is the one-time
+    /// legacy-migration discriminator: every record written by a build before this
+    /// field existed lacks it and is repaired on its first pass under the fixed
+    /// build, after which the persisted budget is trusted verbatim rather than
+    /// inferred from age. Cleared on an observed recovery, exactly like
+    /// [`Self::episode_reports`], so a genuinely fresh wedge opens a fresh ladder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wedge_started_at: Option<String>,
     /// Refusing passes suppressed since the open episode's last banner, carried
     /// across a restart so the `refusals_since_last_report` tag counts the whole
     /// window rather than resetting to a few dozen at every auto-update.
@@ -483,12 +516,24 @@ impl RefusalReportAction {
 /// This is the whole fix: a confirmed, unchanged, already-reported true positive
 /// stops re-arming once per cooldown for the life of the episode.
 ///
+/// Two distinct clocks feed the decision. `episode_age` is the *continuous*
+/// refusal span and gates confirmation — a window that resets after every
+/// observation gap, exactly as it must, since a just-woken root has to prove it
+/// is still wedged before it earns anything. `wedge_age` is the *durable* age of
+/// the underlying wedge, spanning gaps, and it — not the episode age — is what
+/// each escalation rung is compared against. The earlier fix conflated the two:
+/// it measured the rungs against the resettable episode age, so a standing wedge
+/// on a machine that slept nightly could never reach the 24h rung. For a live,
+/// never-gapped episode the two are equal, so the confirmation-and-ladder suite
+/// is a behavioural pin on that identity.
+///
 /// The thresholds stay explicit parameters, as the confirmation gate already did,
 /// so the whole decision is unit-testable without a git repo or a real clock.
 #[allow(clippy::too_many_arguments)]
 fn decide_refusal_report(
     occurrences: usize,
     episode_age: Duration,
+    wedge_age: Duration,
     reports_so_far: usize,
     since_last_report: Option<Duration>,
     confirm_after: usize,
@@ -496,6 +541,9 @@ fn decide_refusal_report(
     cooldown: Duration,
     escalation_ages: &[Duration],
 ) -> RefusalReportAction {
+    // Confirmation is gated on the CONTINUOUS episode age, never the wedge age: a
+    // root just resumed after a gap must re-clear this window before any banner,
+    // including a rung that came due while it slept.
     if occurrences < confirm_after || episode_age < confirm_min_age {
         return RefusalReportAction::AwaitConfirmation;
     }
@@ -511,9 +559,11 @@ fn decide_refusal_report(
     }
     // Afterwards this episode re-reports only as it crosses the next rung, and
     // the ladder is finite by construction — once the budget is spent the wedge
-    // stays visible in the local log but stops billing Sentry.
-    if reports_so_far <= escalation_ages.len() && episode_age >= escalation_ages[reports_so_far - 1]
-    {
+    // stays visible in the local log but stops billing Sentry. The rung is
+    // measured against the DURABLE wedge age so a nightly-sleeping wedge still
+    // reaches it; the `reports_so_far -> escalation_ages[reports_so_far - 1]`
+    // mapping is unchanged, so the ladder stays finite and each rung emits once.
+    if reports_so_far <= escalation_ages.len() && wedge_age >= escalation_ages[reports_so_far - 1] {
         return RefusalReportAction::ReportEscalation;
     }
     RefusalReportAction::Suppress
@@ -760,6 +810,12 @@ struct CarriedEpisode {
     /// Refusing passes suppressed since the last banner, so the count the next
     /// banner carries spans the restart instead of resetting.
     suppressed: usize,
+    /// The durable wedge-clock anchor resolved from the record — from the
+    /// persisted `wedge_started_at` (steady state) or the earliest same-wedge
+    /// stamp (legacy migration). Always `Some` when [`carried_episode`] returns
+    /// `Some`; `None` only in the `Default` a genuinely fresh episode seeds from,
+    /// where the caller substitutes the episode's own open time.
+    wedge_started: Option<DateTime<Utc>>,
 }
 
 /// Recover the open episode from a persisted record, if it is still live.
@@ -802,37 +858,84 @@ fn carried_episode(
         "episode start stamp",
     )?;
     let age = elapsed_since_wall(started, now)?;
-    // The report budget. A record written before `episode_reports` existed reads
-    // as `None`; bridge it so the fleet's already-wedged roots don't each earn an
-    // extra banner on upgrade. When a usable report stamp falls at or after this
-    // episode's start, the episode has banked at least its first confirmation —
-    // so infer *how far up the finite ladder that episode had already climbed*
-    // from its age: one for the first confirmation, plus one for every escalation
-    // rung the age has already crossed. The ladder is ascending, so this
-    // saturates at `len() + 1` on its own — exactly the budget a build that had
-    // shipped the ladder from the start would already have spent, which is why an
-    // already-wedged root earns no extra banner the moment it upgrades. A missing,
-    // unparsable or future-dated report stamp degrades to zero, erring toward one
-    // extra banner rather than toward silencing a real wedge. This inference is
-    // the same whether the record is still live or has gone idle across an
-    // observation gap: the spent budget is a property of the episode, not of
-    // whether the app happened to be watching, so a pre-field record that upgrades
-    // mid-episode resumes at the rung its age has reached in both cases.
-    let reports = match state.episode_reports {
-        Some(reports) => reports,
-        None => {
-            let reported_at = usable_stamp(
-                state.last_reported_at.as_ref(),
-                now,
-                path,
-                "report timestamp",
-            );
-            match reported_at {
-                Some(reported_at) if reported_at >= started => {
-                    1 + escalation_ages.iter().filter(|rung| age >= **rung).count()
-                }
-                _ => 0,
+    // Resolve the durable wedge-clock anchor and this episode's spent report
+    // budget on two tracks, discriminated by whether a durable `wedge_started_at`
+    // is already on disk. The usable report stamp and the recovered-episode count
+    // are read once and feed both.
+    let usable_report_at = usable_stamp(
+        state.last_reported_at.as_ref(),
+        now,
+        path,
+        "report timestamp",
+    );
+    let recovered = state.recovered_episodes_since_report;
+    let usable_wedge_started = usable_stamp(
+        state.wedge_started_at.as_ref(),
+        now,
+        path,
+        "wedge start stamp",
+    );
+
+    let (wedge_started, reports) = match usable_wedge_started {
+        // STEADY track: a durable wedge clock is already persisted, so this record
+        // was written by the fixed build. Trust the persisted budget verbatim —
+        // NEVER infer a rung from age (the pre-spend that suppressed the very
+        // emissions the tests require) — raising it only to the minimum of one when
+        // a usable report stamp at or after the wedge start proves this wedge has
+        // already bannered. A never-bannered wedge (whose report anchor, if any,
+        // belongs to an earlier recovered wedge and predates this stamp) keeps a
+        // zero budget and still earns its first banner.
+        Some(wedge_started) => {
+            let mut reports = state.episode_reports.unwrap_or(0);
+            if usable_report_at.is_some_and(|at| at >= wedge_started) {
+                reports = reports.max(1);
             }
+            (wedge_started, reports)
+        }
+        // MIGRATION track (one-time legacy repair, keyed on the absent field): no
+        // durable wedge clock yet. Anchor the wedge at the earliest usable
+        // same-wedge stamp, and — only here — infer how far up the finite ladder
+        // this wedge had already climbed from its TRUE age. This both subsumes the
+        // r1 pre-field upgrade bridge (identical results for its cases) and repairs
+        // the poisoned `Some(0)` a gap-as-recovery re-mint left behind on the
+        // 0.10.96–0.10.99 builds.
+        None => {
+            // A report stamp belongs to the still-standing wedge when there have
+            // been zero recoveries since it (so the banner is this wedge's, even if
+            // a gap re-minted a younger episode start after it) or when it falls at
+            // or after the episode start (so it fired inside this episode). The
+            // former is the reopening-event shape the r1 `>= started` test missed.
+            let same_wedge_report = usable_report_at.filter(|at| recovered == 0 || *at >= started);
+            // The wedge started no later than the episode did; when a zero-recovery
+            // report predates the (gap-re-minted) episode start, that older banner
+            // is the true wedge origin, so the anchor moves back to it.
+            let wedge_started = match usable_report_at {
+                Some(at) if recovered == 0 => started.min(at),
+                _ => started,
+            };
+            let reports = match same_wedge_report {
+                Some(_) => {
+                    // Infer one for the first confirmation plus one per rung the
+                    // wedge's true age has already crossed; the ascending ladder
+                    // saturates this at `len() + 1` on its own — the budget a build
+                    // that had shipped the ladder from the start would already have
+                    // spent. `max` so a record that legitimately climbed higher
+                    // than its age suggests is never walked back into a live rung.
+                    let wedge_age = elapsed_since_wall(wedge_started, now).unwrap_or(age);
+                    let inferred = 1 + escalation_ages
+                        .iter()
+                        .filter(|rung| wedge_age >= **rung)
+                        .count();
+                    state.episode_reports.unwrap_or(0).max(inferred)
+                }
+                // No same-wedge anchor: a never-reported wedge (or one whose only
+                // report belongs to a recovered predecessor) migrates to its
+                // persisted count — zero for `Some(0)`/`None`, a missing/unparsable/
+                // future report stamp degrading the same way — and still earns its
+                // first banner rather than being silenced by an inferred spend.
+                None => state.episode_reports.unwrap_or(0),
+            };
+            (wedge_started, reports)
         }
     };
     if idle >= REFUSAL_EPISODE_IDLE_TTL {
@@ -840,20 +943,22 @@ fn carried_episode(
         // stamp is still present (a recovery would have nulled it). The app stopped
         // observing — asleep, quit, or auto-updating — *while the root was still
         // refusing*: an unknown, never an observed recovery. The finite report
-        // budget must therefore survive the gap, or a machine off longer than the
-        // TTL reissues the whole `len() + 1` budget for an unchanged wedge. Carry
-        // only that budget; age, occurrences and the distinct-set count are
-        // genuinely unknown across the gap and reset to zero, so the root still has
-        // to re-clear the confirmation window before it can emit anything. (A
-        // failed best-effort recovery write can leave this same shape; that is the
-        // pre-existing cost of best-effort persistence, self-healed by the next
-        // recovery write, and no worse than the live-record carry already applies.)
+        // budget AND the durable wedge clock must therefore survive the gap, or a
+        // machine off longer than the TTL reissues the whole `len() + 1` budget for
+        // an unchanged wedge and restarts its ladder. Carry both unchanged; age,
+        // occurrences and the distinct-set count are genuinely unknown across the
+        // gap and reset to zero, so the root still has to re-clear the confirmation
+        // window before it can emit anything. A gap moves neither the budget nor
+        // the wedge clock: it stays unknown-not-recovery. (A failed best-effort
+        // recovery write can leave this same shape; that is the pre-existing cost
+        // of best-effort persistence, self-healed by the next recovery write, and
+        // no worse than the live-record carry already applies.)
         log(
             LOG_TAG,
             &format!(
                 "{}: persisted episode has not refused for {}s but was never observed to \
                  recover — opening a fresh episode that carries its {reports}-banner report \
-                 budget across the observation gap",
+                 budget and durable wedge clock across the observation gap",
                 path.display(),
                 idle.as_secs()
             ),
@@ -864,6 +969,7 @@ fn carried_episode(
             distinct_sets: 0,
             reports,
             suppressed: 0,
+            wedge_started: Some(wedge_started),
         });
     }
     Some(CarriedEpisode {
@@ -872,6 +978,7 @@ fn carried_episode(
         distinct_sets: state.episode_distinct_sets,
         reports,
         suppressed: state.episode_suppressed_since_report,
+        wedge_started: Some(wedge_started),
     })
 }
 
@@ -1874,8 +1981,15 @@ struct RefusalOutcome {
     /// finite report budget spent so far.
     episode_reports: usize,
     episode_age: Duration,
+    /// The durable wedge age — what the escalation rungs are measured against, and
+    /// what the `wedge_age_secs` tag carries so triage can separate an on-cadence
+    /// rung from a ladder restart mechanically.
+    wedge_age: Duration,
     since_last_report: Option<Duration>,
     episode_opened_at_wall: DateTime<Utc>,
+    /// The durable wedge-clock anchor, carried verbatim (never re-derived from an
+    /// age) so it can be persisted unchanged on every writing pass.
+    wedge_started_at: DateTime<Utc>,
 }
 
 /// One banner-grade signal per HQ root per [`REFUSAL_COOLDOWN`]. B1 was found by
@@ -1942,6 +2056,10 @@ fn report_bulk_refusal_at(
                     suppressed_since_report: seed.suppressed,
                     reported_at: None,
                     reports: seed.reports,
+                    // A carried record resolves the durable wedge anchor; a
+                    // genuinely fresh episode (no carry) starts its wedge clock
+                    // now, so the wedge age equals the episode age for it.
+                    wedge_started_at: seed.wedge_started.unwrap_or(wall_now),
                 }
             });
 
@@ -1959,9 +2077,15 @@ fn report_bulk_refusal_at(
             persisted_report_at.and_then(|at| elapsed_since_wall(at, wall_now)),
         );
         let episode_age = episode.age(now);
+        // The durable wedge age drives the escalation rungs; it equals the episode
+        // age for a live never-gapped wedge and exceeds it after an observation
+        // gap. A backwards-dated anchor falls back to the episode age — one extra
+        // banner at worst, never a silenced rung.
+        let wedge_age = episode.wedge_age(wall_now).unwrap_or(episode_age);
         let action = decide_refusal_report(
             episode.occurrences,
             episode_age,
+            wedge_age,
             episode.reports,
             since_last_report,
             REFUSAL_CONFIRM_OCCURRENCES,
@@ -1989,12 +2113,16 @@ fn report_bulk_refusal_at(
             suppressed_since_report,
             episode_reports: episode.reports,
             episode_age,
+            wedge_age,
             since_last_report,
             // The wall-clock instant this episode opened, reconstructed from its
             // age — which now spans restarts, so this is the true start.
             episode_opened_at_wall: wall_now
                 - chrono::Duration::from_std(episode_age)
                     .unwrap_or_else(|_| chrono::Duration::zero()),
+            // The durable wedge anchor, carried verbatim from the episode so it is
+            // persisted unchanged rather than re-derived from `wedge_age`.
+            wedge_started_at: episode.wedge_started_at,
         }
     };
 
@@ -2036,6 +2164,17 @@ fn report_bulk_refusal_at(
         // restart inside the new episode's confirmation window, skipping — or,
         // with a spent budget, permanently silencing — its first banner.
         next.episode_reports = Some(outcome.episode_reports);
+        // The durable wedge clock rides the same record. It is copied forward
+        // verbatim from the resolved anchor — never reconstructed from an age the
+        // way `episode_started_at` is — so an observation gap that resets the
+        // episode clock leaves the wedge clock untouched, and the ladder keeps
+        // measuring true wedge age. Written on every refreshing pass, like the
+        // budget, so a fresh episode overwrites any anchor a predecessor left.
+        next.wedge_started_at = Some(
+            outcome
+                .wedge_started_at
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
+        );
         if outcome.action.emits() {
             next.last_reported_at = Some(stamp);
             // A banner carries the recovered-episode evidence, so it also
@@ -2105,6 +2244,12 @@ fn report_bulk_refusal_at(
                 "episode_age_secs",
                 outcome.episode_age.as_secs().to_string(),
             );
+            // The durable wedge age beside the continuous episode age. When the two
+            // agree the wedge has been observed continuously; when wedge_age_secs
+            // is much larger the episode clock was reset by an observation gap, so
+            // triage can tell an on-cadence rung from a ladder restart mechanically
+            // rather than by guessing at since_last_report_secs.
+            scope.set_tag("wedge_age_secs", outcome.wedge_age.as_secs().to_string());
             scope.set_tag(
                 "since_last_report_secs",
                 outcome
@@ -2222,10 +2367,13 @@ fn note_mirror_recovered_at(
     state.episode_last_refusal_at = None;
     state.episode_occurrences = 0;
     state.episode_distinct_sets = 0;
-    // The report budget and the suppression counter belong to the episode that
-    // just closed, so a root that refuses again opens with a fresh budget — the
-    // cap is per-episode and can never latch a recovering root silent forever.
+    // The report budget, the durable wedge clock, and the suppression counter all
+    // belong to the wedge that just closed, so a root that refuses again opens a
+    // genuinely fresh wedge with a fresh ladder — an observed recovery is the sole
+    // clearer of the wedge clock, and the cap can never latch a recovering root
+    // silent forever.
     state.episode_reports = None;
+    state.wedge_started_at = None;
     state.episode_suppressed_since_report = 0;
     write_persisted_state(git_dir, &state);
 
@@ -2589,9 +2737,14 @@ mod tests {
         let min_age = REFUSAL_CONFIRM_MIN_AGE;
         let ladder = REFUSAL_ESCALATION_AGES;
         let sustained = min_age;
+        // These cases pin the live, never-gapped identity `wedge_age == age`, where
+        // the rung and confirmation clocks coincide; the split is exercised by
+        // `a_woken_wedge_with_a_due_rung_must_reconfirm_before_escalating` and the
+        // post-gap escalation tests below.
         let gate = |occurrences, age, reports, since| {
             decide_refusal_report(
                 occurrences,
+                age,
                 age,
                 reports,
                 since,
@@ -4379,6 +4532,639 @@ mod tests {
         }
     }
 
+    /// The reopening event 7709816d in the flesh: a poisoned `Some(0)` budget (the
+    /// 0.10.96–0.10.99 gap-as-recovery re-mint left it there) behind a young episode
+    /// start, a ~24.8h-old report stamp, and zero recoveries since it — the record
+    /// itself proving no recovery was ever observed since that banner. At the shipped
+    /// v0.10.100 base, `Some(reports) => reports` trusts the zero and re-emits
+    /// `first-confirmed`; the durable-clock migration reads the true wedge age off
+    /// the surviving report anchor, resumes the ladder at budget two, stays silent,
+    /// and persists the repaired budget and a durable wedge clock.
+    #[test]
+    fn a_poisoned_zero_budget_record_with_a_prior_report_migrates_silent() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // The exact on-disk shape of event 7709816d: budget poisoned to Some(0), a
+        // young (still-live, not idle) episode start, a 24.8h-old report stamp, zero
+        // recoveries since it, and no durable wedge clock yet.
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_reports: Some(0),
+                episode_started_at: stamp(wall - chrono::Duration::minutes(45)),
+                episode_last_refusal_at: stamp(
+                    wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                ),
+                episode_occurrences: 500,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(
+                    wall - chrono::Duration::hours(24) - chrono::Duration::minutes(48),
+                ),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+        assert!(
+            persisted(&git_dir).wedge_started_at.is_none(),
+            "a legacy record has no durable wedge clock by construction"
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            0,
+            "the poisoned Some(0) migrates to its true rung off the report anchor, so \
+             the standing wedge is not re-first-confirmed"
+        );
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            Some(2),
+            "24.8h across one rung migrates the budget to two, not zero"
+        );
+        assert!(
+            persisted(&git_dir).wedge_started_at.is_some(),
+            "the migration pass persists a durable wedge clock, so later passes are \
+             steady-state and never re-infer the budget from age"
+        );
+    }
+
+    /// Review obligation (a): a legacy `Some(0)` whose wedge is 25h old, resumed
+    /// across an observation gap, is silent and persists the migrated budget. At
+    /// base the gap carries the zero verbatim and re-arms a fresh `first-confirmed`.
+    #[test]
+    fn the_legacy_zero_budget_25h_record_is_silent_and_persists_the_migrated_budget() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let confirming = confirming_passes();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // A legacy Some(0), wedge 25h old, gone idle across the gap (last refusal
+        // past the idle TTL, start stamp still present), with a report stamp at its
+        // start and zero recoveries.
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_reports: Some(0),
+                episode_started_at: stamp(wall - chrono::Duration::hours(25)),
+                episode_last_refusal_at: stamp(wall - chrono::Duration::hours(13)),
+                episode_occurrences: 9_999,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(wall - chrono::Duration::hours(25)),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                Instant::now(),
+                wall,
+                0..confirming,
+            );
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            0,
+            "a legacy Some(0) wedge past its first rung re-confirms across the gap but \
+             migrates to the rung its true age reached — silent, not re-armed"
+        );
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            Some(2),
+            "25h across the 24h rung migrates the budget to two"
+        );
+        assert!(
+            persisted(&git_dir).wedge_started_at.is_some(),
+            "the migrated wedge clock is persisted so later passes stay steady-state"
+        );
+    }
+
+    /// Review obligation (b): a one-report wedge that slept past the idle TTL and
+    /// woke with a true age past 24h escalates exactly once and persists two. This
+    /// fails at base — the zeroed carried age keeps the 24h rung unreachable, so the
+    /// wedge is silent then and forever.
+    #[test]
+    fn a_one_report_wedge_crossing_24h_after_a_gap_escalates_once_and_persists_two() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let confirming = confirming_passes();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // A wedge the fixed build already first-confirmed (budget one, durable clock
+        // present), then slept past the idle TTL. Its true age is now 25h — one rung
+        // due — but the continuous episode clock is about to reset across the gap. At
+        // base the zeroed episode age is what the rung is measured against, so the
+        // 24h rung is unreachable; the durable clock reaches it exactly once.
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_reports: Some(1),
+                wedge_started_at: stamp(wall - chrono::Duration::hours(25)),
+                episode_started_at: stamp(wall - chrono::Duration::hours(25)),
+                episode_last_refusal_at: stamp(wall - chrono::Duration::hours(13)),
+                episode_occurrences: 9_999,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(
+                    wall - chrono::Duration::hours(24) - chrono::Duration::minutes(30),
+                ),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+
+        let start = Instant::now();
+        let events = sentry::test::with_captured_events(|| {
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+        });
+
+        assert_eq!(
+            events.len(),
+            1,
+            "the slept wedge re-confirms, then its durable age crosses the 24h rung \
+             exactly once"
+        );
+        assert_eq!(
+            events[0].tags.get("report_source").map(String::as_str),
+            Some("episode-escalation"),
+            "crossing the rung after a gap is an escalation, not a fresh confirm"
+        );
+        assert_eq!(
+            events[0].tags.get("episode_reports").map(String::as_str),
+            Some("2"),
+            "the one-report budget spends its second banner on the 24h rung"
+        );
+        assert!(
+            events[0]
+                .tags
+                .get("wedge_age_secs")
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|secs| secs >= REFUSAL_ESCALATION_AGES[0].as_secs()),
+            "the escalation carries a durable wedge age past the 24h rung, {:?}",
+            events[0].tags.get("wedge_age_secs")
+        );
+
+        // A further pass the same day does not spend a third: the 7-day rung is not
+        // due, and the budget rests at two.
+        let (later_now, later_wall) = pass_at(start, wall, confirming + 2);
+        let after = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, later_now, later_wall);
+        });
+        reset_refusal_report_state();
+        assert_eq!(after.len(), 0, "no third banner before the 7-day rung");
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            Some(2),
+            "the persisted budget rests at two until the 7-day rung"
+        );
+    }
+
+    /// Review obligation (c), across repeated nightly gaps and relaunches: a wedge
+    /// that sleeps every night stays silent between rungs, escalates once at the 24h
+    /// rung and once at the 7-day rung, and never banners a fourth time. At base the
+    /// gap zeroes the episode clock every morning, so only the day-zero confirmation
+    /// ever fires — the whole ladder past the first banner is unreachable.
+    #[test]
+    fn the_same_wedge_stays_silent_to_7d_escalates_once_more_and_never_banners_a_fourth_time() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall0 = epoch();
+        let start0 = Instant::now();
+        let confirming = confirming_passes();
+
+        // A machine that wedges once and then sleeps every night: each morning is a
+        // relaunch (in-memory episode gone) after an observation gap (>12h), so the
+        // continuous episode clock resets and the confirmation window is re-cleared,
+        // but the durable wedge clock keeps climbing. Ten nightly wake-ups.
+        let mut sources: Vec<String> = Vec::new();
+        let mut budgets: Vec<String> = Vec::new();
+        for day in 0..10u64 {
+            reset_refusal_report_state();
+            let m_now = start0 + Duration::from_secs(day * 24 * 3_600);
+            let m_wall = wall0 + chrono::Duration::hours((day * 24) as i64);
+            let ev = sentry::test::with_captured_events(|| {
+                sustain("/hq", &git_dir, &set, 1_356, m_now, m_wall, 0..confirming);
+            });
+            for e in &ev {
+                sources.push(e.tags.get("report_source").cloned().unwrap_or_default());
+                budgets.push(e.tags.get("episode_reports").cloned().unwrap_or_default());
+            }
+        }
+        reset_refusal_report_state();
+
+        assert_eq!(
+            sources,
+            vec![
+                "first-confirmed".to_string(),
+                "episode-escalation".to_string(),
+                "episode-escalation".to_string(),
+            ],
+            "one confirmation on day zero, the 24h rung on day one, the 7-day rung a \
+             week later, and never a fourth banner across ten nightly gaps"
+        );
+        assert_eq!(
+            budgets,
+            vec!["1".to_string(), "2".to_string(), "3".to_string()],
+            "the finite budget is spent 1, 2, 3 and no further, gaps notwithstanding"
+        );
+        assert_eq!(
+            persisted(&git_dir).episode_reports,
+            Some(REFUSAL_ESCALATION_AGES.len() + 1),
+            "the persisted budget saturates at len() + 1"
+        );
+    }
+
+    /// The confirmation gate reads the CONTINUOUS episode age, the escalation rung
+    /// the DURABLE wedge age — never the reverse. A wedge just woken from a gap has a
+    /// rung long overdue by wedge age but a zero episode age: it must re-clear the
+    /// full confirmation window before ANY banner, including that due rung. Feeding
+    /// wedge_age into the confirmation gate (the mutation this kills) would let it
+    /// escalate the instant it woke, before proving it is still wedged.
+    #[test]
+    fn a_woken_wedge_with_a_due_rung_must_reconfirm_before_escalating() {
+        let confirm = REFUSAL_CONFIRM_OCCURRENCES;
+        let cooldown = REFUSAL_COOLDOWN;
+        let min_age = REFUSAL_CONFIRM_MIN_AGE;
+        let ladder = REFUSAL_ESCALATION_AGES;
+        let overdue = ladder[0] + Duration::from_secs(3_600);
+        let gate = |occurrences, episode_age, wedge_age, reports, since| {
+            decide_refusal_report(
+                occurrences,
+                episode_age,
+                wedge_age,
+                reports,
+                since,
+                confirm,
+                min_age,
+                cooldown,
+                &ladder,
+            )
+        };
+
+        // Too few passes since the wake: awaiting confirmation, not escalating,
+        // however overdue the wedge-age rung is.
+        assert_eq!(
+            gate(confirm - 1, min_age, overdue, 1, Some(cooldown)),
+            RefusalReportAction::AwaitConfirmation,
+            "a just-woken wedge with too few passes must re-confirm before its overdue \
+             rung, not escalate on wedge age alone"
+        );
+        // Enough passes but a young continuous episode: still awaiting — the gate is
+        // the episode age, never the wedge age.
+        assert_eq!(
+            gate(
+                9_999,
+                min_age - Duration::from_secs(1),
+                overdue,
+                1,
+                Some(cooldown)
+            ),
+            RefusalReportAction::AwaitConfirmation,
+            "the confirmation window is measured on the continuous episode age; a large \
+             wedge age must not satisfy it"
+        );
+        // Both halves of the continuous gate cleared: now the overdue rung fires.
+        assert_eq!(
+            gate(confirm, min_age, overdue, 1, Some(cooldown)),
+            RefusalReportAction::ReportEscalation,
+            "once the wedge re-confirms, the durable rung it slept past is due"
+        );
+        // And the rung compares the durable wedge age: a freshly re-confirmed episode
+        // (young episode age) whose wedge age is at the rung still escalates.
+        assert_eq!(
+            gate(confirm, min_age, ladder[0], 1, Some(cooldown)),
+            RefusalReportAction::ReportEscalation,
+            "the rung compares wedge age, so a young re-confirmed episode at the durable \
+             rung escalates"
+        );
+        // The mirror image kills the inverse mutation: a live episode whose EPISODE
+        // age is past the rung but whose wedge age is short of it must NOT escalate.
+        assert_eq!(
+            gate(9_999, ladder[0], min_age, 1, Some(cooldown)),
+            RefusalReportAction::Suppress,
+            "with the rung on the wedge clock, a large episode age short of the durable \
+             rung must not escalate"
+        );
+    }
+
+    /// A wedge asleep so long that BOTH rungs are due by wedge age emits at most the
+    /// single next rung per pass, and the 6h cooldown floor spaces the second behind
+    /// the first — so even a 9-day catch-up can never burst the remaining budget at
+    /// once.
+    #[test]
+    fn two_due_rungs_after_a_long_sleep_emit_one_banner_then_wait_out_the_floor() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let confirming = confirming_passes();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // A one-report wedge, durable clock present, nine days old and idle across a
+        // gap: both the 24h and 7-day rungs are due by wedge age.
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_reports: Some(1),
+                wedge_started_at: stamp(wall - chrono::Duration::days(9)),
+                episode_started_at: stamp(wall - chrono::Duration::days(9)),
+                episode_last_refusal_at: stamp(wall - chrono::Duration::hours(13)),
+                episode_occurrences: 9_999,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(wall - chrono::Duration::days(8)),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+
+        let start = Instant::now();
+        // Re-confirm: exactly one escalation despite two rungs being due.
+        let first = sentry::test::with_captured_events(|| {
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+        });
+        assert_eq!(
+            first.len(),
+            1,
+            "two rungs are due, but at most one banner is emitted per pass"
+        );
+        assert_eq!(
+            first[0].tags.get("episode_reports").map(String::as_str),
+            Some("2"),
+            "the immediate catch-up spends the 24h rung first"
+        );
+
+        // A pass ~5h after that banner (short of the 6h floor) is suppressed, even
+        // though the 7-day rung is due by wedge age.
+        let within_floor = sentry::test::with_captured_events(|| {
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                start + Duration::from_secs(5 * 3_600 + 40 * 60),
+                wall + chrono::Duration::seconds(5 * 3_600 + 40 * 60),
+            );
+        });
+        assert_eq!(
+            within_floor.len(),
+            0,
+            "the 6h cooldown floor spaces the second catch-up rung behind the first"
+        );
+
+        // Past the floor, the 7-day rung finally fires — one more, and the budget is
+        // spent.
+        let past_floor = sentry::test::with_captured_events(|| {
+            refuse_at(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                start + Duration::from_secs(6 * 3_600 + 50 * 60),
+                wall + chrono::Duration::seconds(6 * 3_600 + 50 * 60),
+            );
+        });
+        reset_refusal_report_state();
+        assert_eq!(past_floor.len(), 1, "past the floor the second rung fires");
+        assert_eq!(
+            past_floor[0]
+                .tags
+                .get("episode_reports")
+                .map(String::as_str),
+            Some("3"),
+            "the 7-day rung spends the final banner of the finite budget"
+        );
+    }
+
+    /// A `Some(0)` budget with no same-wedge report anchor is a never-reported wedge,
+    /// not a poisoned one: migration must NOT infer a spend from age, so its first
+    /// banner is preserved. Covers the anchorless record and the one whose only
+    /// report belongs to an already-recovered predecessor.
+    #[test]
+    fn an_anchorless_zero_budget_record_still_first_confirms() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // (a) no report stamp at all — a 40h wedge that never reported; (b) a report
+        // stamp that predates the episode with recoveries since it — belonging to a
+        // recovered predecessor, not this wedge.
+        let cases: [(&str, Option<String>, usize); 2] = [
+            ("anchorless", None, 0),
+            (
+                "recovered-predecessor",
+                stamp(wall - chrono::Duration::hours(60)),
+                2,
+            ),
+        ];
+        for (name, last_reported_at, recovered) in cases {
+            reset_refusal_report_state();
+            let git_dir = scratch_git_dir(&tmp, name);
+            write_persisted_state(
+                &git_dir,
+                &PersistedRefusalState {
+                    episode_reports: Some(0),
+                    episode_started_at: stamp(wall - chrono::Duration::hours(40)),
+                    episode_last_refusal_at: stamp(
+                        wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                    ),
+                    episode_occurrences: 9_999,
+                    episode_distinct_sets: 1,
+                    last_reported_at,
+                    recovered_episodes_since_report: recovered,
+                    ..PersistedRefusalState::default()
+                },
+            );
+
+            let events = sentry::test::with_captured_events(|| {
+                refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+            });
+            assert_eq!(
+                events.len(),
+                1,
+                "case {name}: a never-reported Some(0) wedge earns its first banner \
+                 rather than being silenced by an inferred spend"
+            );
+            assert_eq!(
+                events[0].tags.get("report_source").map(String::as_str),
+                Some("first-confirmed"),
+                "case {name}: the preserved banner is a first confirmation"
+            );
+            assert_eq!(
+                events[0].tags.get("episode_reports").map(String::as_str),
+                Some("1"),
+                "case {name}: the first banner spends budget one"
+            );
+        }
+        reset_refusal_report_state();
+    }
+
+    /// An observed recovery is the sole clearer of the durable wedge clock, exactly
+    /// as it is of the report budget. After it, a genuinely fresh wedge opens a fresh
+    /// ladder and first-confirms on normal cadence.
+    #[test]
+    fn a_recovery_still_clears_the_wedge_clock_and_a_fresh_wedge_first_confirms() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let start = Instant::now();
+        let wall = epoch();
+        let confirming = confirming_passes();
+
+        // A wedge confirms, so a durable wedge clock is now on disk.
+        let first = sentry::test::with_captured_events(|| {
+            sustain("/hq", &git_dir, &set, 1_356, start, wall, 0..confirming);
+        });
+        assert_eq!(first.len(), 1, "the wedge first-confirms");
+        assert!(
+            persisted(&git_dir).wedge_started_at.is_some(),
+            "confirming a wedge persists its durable clock"
+        );
+
+        // The tree heals: recovery must null the wedge clock alongside the budget.
+        let (rec_now, rec_wall) = pass_at(start, wall, confirming);
+        assert!(note_mirror_recovered_at("/hq", &git_dir, rec_now, rec_wall));
+        let recovered = persisted(&git_dir);
+        assert_eq!(
+            recovered.wedge_started_at, None,
+            "an observed recovery clears the durable wedge clock"
+        );
+        assert_eq!(
+            recovered.episode_reports, None,
+            "an observed recovery clears the report budget"
+        );
+        assert_eq!(
+            recovered.episode_started_at, None,
+            "an observed recovery nulls the episode start too"
+        );
+
+        // A fresh wedge past the cooldown opens a fresh ladder and first-confirms.
+        reset_refusal_report_state();
+        let later = rec_now + Duration::from_secs(12 * 3_600);
+        let later_wall = rec_wall + chrono::Duration::hours(12);
+        let second = sentry::test::with_captured_events(|| {
+            sustain(
+                "/hq",
+                &git_dir,
+                &set,
+                1_356,
+                later,
+                later_wall,
+                0..confirming,
+            );
+        });
+        reset_refusal_report_state();
+        assert_eq!(
+            second.len(),
+            1,
+            "a genuinely fresh wedge first-confirms again"
+        );
+        assert_eq!(
+            second[0].tags.get("report_source").map(String::as_str),
+            Some("first-confirmed")
+        );
+        assert_eq!(
+            second[0].tags.get("episode_reports").map(String::as_str),
+            Some("1"),
+            "the fresh wedge's budget starts from one"
+        );
+    }
+
+    /// The durable wedge clock obeys the module's standing usable-stamp policy: a
+    /// present-but-unparsable or future-dated `wedge_started_at` is discarded, and
+    /// the record re-derives its budget via the migration track rather than trusting
+    /// a stamp it cannot read — degrading toward one extra banner, never toward
+    /// silence, and never panicking.
+    #[test]
+    fn an_unusable_wedge_stamp_rederives_via_migration_not_silence() {
+        let _serial = serial();
+        let tmp = TempDir::new().unwrap();
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // An unparsable and a future-dated wedge stamp, over a never-reported wedge:
+        // discarding the bad stamp re-derives a zero budget through migration, so the
+        // wedge still earns its first banner.
+        let bad: [Option<&str>; 2] = [Some("whenever"), Some("2126-08-06T10:00:00Z")];
+        for (index, raw) in bad.into_iter().enumerate() {
+            reset_refusal_report_state();
+            let git_dir = scratch_git_dir(&tmp, &format!("bad-wedge-{index}"));
+            write_persisted_state(
+                &git_dir,
+                &PersistedRefusalState {
+                    episode_reports: Some(0),
+                    wedge_started_at: raw.map(str::to_string),
+                    episode_started_at: stamp(wall - chrono::Duration::hours(40)),
+                    episode_last_refusal_at: stamp(
+                        wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                    ),
+                    episode_occurrences: 9_999,
+                    episode_distinct_sets: 1,
+                    ..PersistedRefusalState::default()
+                },
+            );
+
+            let events = sentry::test::with_captured_events(|| {
+                refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+            });
+            assert_eq!(
+                events.len(),
+                1,
+                "case {index}: an unusable wedge stamp must re-derive via migration and \
+                 still banner, never latch silent"
+            );
+            assert_eq!(
+                events[0].tags.get("report_source").map(String::as_str),
+                Some("first-confirmed"),
+                "case {index}: the re-derived wedge reports from scratch"
+            );
+            assert!(
+                usable_stamp(
+                    persisted(&git_dir).wedge_started_at.as_ref(),
+                    wall + chrono::Duration::hours(1),
+                    &refusal_state_path(&git_dir),
+                    "wedge start stamp",
+                )
+                .is_some(),
+                "case {index}: the writing pass replaces the unusable wedge stamp with a \
+                 usable one"
+            );
+        }
+        reset_refusal_report_state();
+    }
+
     /// Pins the catch-all removal: every action maps to its own string, so a
     /// newly added emitting variant can never silently render as `first-confirmed`.
     #[test]
@@ -5615,6 +6401,239 @@ mod tests {
             again[0].tags.get("report_source").map(String::as_str),
             Some("first-confirmed")
         );
+    }
+
+    /// The durable-clock migration end to end through real git children: an already-
+    /// wedged root whose on-disk record was poisoned to `episode_reports=Some(0)` by
+    /// the gap-as-recovery re-mint (young start, ~25h-old report stamp, zero
+    /// recoveries) earns NO banner the moment it upgrades to the fixed build — the
+    /// migration reads its true wedge age off the report anchor, resumes the ladder
+    /// at budget two, then escalates only at the 7-day rung. This replays reopening
+    /// event 7709816d, which fired a surplus `first-confirmed` on v0.10.100.
+    #[test]
+    fn run_mirror_on_a_real_repo_migrates_a_poisoned_legacy_record_silently() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 1_356);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..162);
+
+        // Real passes: the breaker refuses through genuine git children, commits
+        // nothing, and cannot confirm in ~70s.
+        let inside = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        assert_eq!(inside.len(), 0, "two passes cannot confirm a wedge");
+        assert_eq!(rev_count(tmp.path()), before, "the breaker commits nothing");
+        assert!(index_is_clean(tmp.path()), "refusal must reset the index");
+
+        // The poisoned legacy record a gap-as-recovery re-mint would have left: a
+        // young episode start, a ~25h-old report stamp, zero recoveries, budget
+        // poisoned to Some(0), and no durable wedge clock.
+        let set = staged_deletions_now(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        let hq = tmp.path().to_str().unwrap();
+        let has_upstream = repo_has_upstream(hq);
+        reset_refusal_report_state();
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_reports: Some(0),
+                episode_started_at: stamp(wall - chrono::Duration::minutes(45)),
+                episode_last_refusal_at: stamp(
+                    wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                ),
+                episode_occurrences: 500,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(wall - chrono::Duration::hours(25)),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+        assert!(
+            read_persisted_state(&git_dir)
+                .unwrap()
+                .wedge_started_at
+                .is_none(),
+            "the poisoned legacy record has no durable wedge clock"
+        );
+
+        let start = Instant::now();
+        let drive = |hours: i64| {
+            report_bulk_refusal_at(
+                &RefusalReport {
+                    hq_folder: hq,
+                    git_dir: &git_dir,
+                    deletions: &set,
+                    tracked: 1_356,
+                    has_upstream,
+                },
+                start + Duration::from_secs(hours.max(0) as u64 * 3_600),
+                wall + chrono::Duration::hours(hours),
+            )
+        };
+
+        // The migration pass and the next few cooldowns are silent, and the repaired
+        // budget of two lands on disk beside a durable wedge clock.
+        let migrated = sentry::test::with_captured_events(|| {
+            for hours in [0i64, 6, 12, 18] {
+                drive(hours);
+            }
+        });
+        assert_eq!(
+            migrated.len(),
+            0,
+            "the poisoned Some(0) migrates to its true rung and is not re-confirmed"
+        );
+        let after_migration = read_persisted_state(&git_dir).unwrap();
+        assert_eq!(
+            after_migration.episode_reports,
+            Some(2),
+            "the migrated budget for a 25h wedge is two"
+        );
+        assert!(
+            after_migration.wedge_started_at.is_some(),
+            "the migration persists a durable wedge clock"
+        );
+        assert_eq!(rev_count(tmp.path()), before, "still nothing committed");
+        assert!(index_is_clean(tmp.path()), "the index is still clean");
+
+        // Refusing continuously (<=6h gaps keep the one episode alive) until the
+        // durable wedge age reaches the 7-day rung: it escalates exactly once, then
+        // never again.
+        let escalated = sentry::test::with_captured_events(|| {
+            for hours in (24..=192).step_by(6) {
+                drive(hours as i64);
+            }
+        });
+        assert_eq!(
+            escalated.len(),
+            1,
+            "the standing wedge crosses the 7-day rung exactly once"
+        );
+        assert_eq!(
+            escalated[0].tags.get("report_source").map(String::as_str),
+            Some("episode-escalation")
+        );
+        assert_eq!(
+            escalated[0].tags.get("episode_reports").map(String::as_str),
+            Some("3"),
+            "the 7-day rung spends the final banner of the finite budget"
+        );
+        assert_eq!(rev_count(tmp.path()), before, "still nothing committed");
+        assert!(index_is_clean(tmp.path()), "the index is still clean");
+        reset_refusal_report_state();
+    }
+
+    /// The durable-clock rung end to end: a one-report wedge that slept past the idle
+    /// TTL re-confirms through the real breaker, then escalates exactly once at the
+    /// 24h rung its DURABLE age reached — tagged with a wedge_age_secs past a day —
+    /// where the pre-fix zeroed episode clock would have kept the rung forever
+    /// unreachable and stayed silent. A later pass spends nothing more.
+    #[test]
+    fn run_mirror_on_a_real_repo_escalates_a_slept_wedge_at_the_wedge_age() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 100);
+        let before = rev_count(tmp.path());
+        delete_files(tmp.path(), 0..50);
+
+        // Real passes: the breaker refuses and commits nothing.
+        let inside = sentry::test::with_captured_events(|| {
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+            run_mirror_at(tmp.path()).expect("a refusal is not an error");
+        });
+        assert_eq!(inside.len(), 0, "two passes cannot confirm a wedge");
+        assert_eq!(rev_count(tmp.path()), before, "the breaker commits nothing");
+        assert!(index_is_clean(tmp.path()), "refusal must reset the index");
+
+        // A fixed-build record (durable wedge clock present) for a one-report wedge
+        // now 25h old, gone idle past the TTL without recovering.
+        let set = staged_deletions_now(tmp.path());
+        let git_dir = git_dir_of(tmp.path());
+        let hq = tmp.path().to_str().unwrap();
+        let has_upstream = repo_has_upstream(hq);
+        reset_refusal_report_state();
+        let wall = Utc::now();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_reports: Some(1),
+                wedge_started_at: stamp(wall - chrono::Duration::hours(25)),
+                episode_started_at: stamp(wall - chrono::Duration::hours(25)),
+                episode_last_refusal_at: stamp(wall - chrono::Duration::hours(13)),
+                episode_occurrences: 9_999,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(
+                    wall - chrono::Duration::hours(24) - chrono::Duration::minutes(30),
+                ),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+
+        let start = Instant::now();
+        let drive = |now: Instant, wall_now: DateTime<Utc>| {
+            report_bulk_refusal_at(
+                &RefusalReport {
+                    hq_folder: hq,
+                    git_dir: &git_dir,
+                    deletions: &set,
+                    tracked: 100,
+                    has_upstream,
+                },
+                now,
+                wall_now,
+            )
+        };
+
+        // Re-confirm across the gap: exactly one escalation at the 24h rung the
+        // durable clock reached, tagged with a wedge age past a day.
+        let escalated = sentry::test::with_captured_events(|| {
+            for index in 0..confirming_passes() {
+                let (now, wall_now) = pass_at(start, wall, index);
+                drive(now, wall_now);
+            }
+        });
+        assert_eq!(
+            escalated.len(),
+            1,
+            "the slept wedge re-confirms and escalates once at its durable rung"
+        );
+        assert_eq!(
+            escalated[0].tags.get("episode_reports").map(String::as_str),
+            Some("2"),
+            "the one-report budget spends its second banner"
+        );
+        assert!(
+            escalated[0]
+                .tags
+                .get("wedge_age_secs")
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|secs| secs >= 86_400),
+            "the escalation is tagged with a durable wedge age past a day, {:?}",
+            escalated[0].tags.get("wedge_age_secs")
+        );
+        assert_eq!(rev_count(tmp.path()), before, "still nothing committed");
+        assert!(index_is_clean(tmp.path()), "the index is still clean");
+
+        // A later pass the same day spends nothing more.
+        let (next_now, next_wall) = pass_at(start, wall, confirming_passes() + 5);
+        let after = sentry::test::with_captured_events(|| {
+            drive(next_now, next_wall);
+        });
+        reset_refusal_report_state();
+        assert_eq!(after.len(), 0, "no third banner before the 7-day rung");
     }
 
     #[test]
