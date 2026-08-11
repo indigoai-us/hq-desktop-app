@@ -1301,7 +1301,7 @@
               <div class="lrow mtg-row" class:live={r.state === 'live'} onclick={() => toast(`${r.name} would open`)}>
                 <span class="mtg-time mono">{r.time}</span>
                 <span class="fn">{r.name}</span>
-                <span class="fm who">{r.co} · {r.dur}</span>
+                <span class="fm sub">{r.co} · {r.dur}</span>
                 <span class="mtg-actions">
                   <button class="chip g btn-join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}>Join</button>
                   {#if r.state === 'live' || r.state === 'invited'}
@@ -1331,7 +1331,7 @@
             <button class="lrow mtg-row" onclick={() => toast(`${name} would open`)}>
               <span class="lrow-ic"><VideoCamera size={15} /></span>
               <span class="fn">{name}</span>
-              <span class="fm who">{who}</span>
+              <span class="fm sub">{who}</span>
               <span class="fm mono">{meta}</span>
             </button>
           {/each}
@@ -1918,9 +1918,10 @@
   .mtg-view { gap: 4px; }
   .mtg-day { padding: 14px 2px 2px; }
   .mtg-row { gap: 12px; }
+  .mtg-time { flex-shrink: 0; width: 62px; font-size: 10px; letter-spacing: 0.03em; color: var(--t3); }
   .lrow.mtg-row .fn { flex: 0 1 auto; }
   /* The company line ends the left group; the actions ride right. */
-  .mtg-row .fm.who { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mtg-row .fm.sub { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* A live meeting is the row itself — green fill, actions always showing. */
   .mtg-row.live { border-color: color-mix(in srgb, var(--ok) 32%, transparent); background: color-mix(in srgb, var(--ok) 9%, transparent); }
   .mtg-row.live:hover { background: color-mix(in srgb, var(--ok) 14%, transparent); }
@@ -2250,7 +2251,7 @@
   .lrow .fn { flex: 1; min-width: 0; font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lrow .fm { margin-left: auto; flex-shrink: 0; font-size: 10px; color: var(--t3); }
   /* Sits with the name, not pinned right — only the trailing meta pins. */
-  .lrow .fm.who { margin-left: 0; font-size: 11px; }
+  .lrow .fm.sub { margin-left: 0; font-size: 11px; font-weight: 400; }
 
   .library { flex: 1; display: flex; min-height: 0; }
   .lib-nav { width: 210px; flex-shrink: 0; border-right: 1px solid var(--line); padding: 16px 20px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
