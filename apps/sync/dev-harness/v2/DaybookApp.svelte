@@ -1408,6 +1408,8 @@
           {/if}
           <button class="btn-secondary" disabled={!mtgUrlValid} onclick={sendUrlInvite}>Invite</button>
         </div>
+        <div class="board-wrap">
+        <div class="mtg-col">
         <div class="mtg-tabbar">
           <div class="tabs">
             {#each [['upcoming', 'Upcoming'], ['past', 'Past']] as [k, label] (k)}
@@ -1415,7 +1417,6 @@
             {/each}
           </div>
         </div>
-        <div class="board-wrap">
         <div class="listview mtg-view">
           {#if mtgTab === 'upcoming'}
           {#each MEETING_DAYS as day (day.label)}
@@ -1463,6 +1464,7 @@
           {/each}
           {/if}
         </div>
+        </div>
         {#if openPast && mtgTab === 'past'}
           {@const m = PAST_DETAIL[openPast] ?? { name: openPast, when: '—', length: '—', company: '—', status: 'processing' as const, attendees: [], signals: [] as [string, string][], recap: 'No recap saved yet.', who: '', meta: '' }}
           <aside class="story-panel" transition:slidePane>
@@ -1490,9 +1492,9 @@
 
             <div class="grp"><span class="t mono">WHAT HQ PICKED UP</span><span class="d mono">{m.signals.length}</span></div>
             {#each m.signals as [kind, text], i (i)}
-              <div class="pk-row sig-row">
+              <div class="sig-row">
                 <span class="pill mono sig-{kind}">{SIGNAL_KIND_LABEL[kind] ?? kind}</span>
-                <span class="pk-name sig-text">{text}</span>
+                <span class="sig-text">{text}</span>
               </div>
             {/each}
 
@@ -2089,8 +2091,10 @@
   .listview.mtg-view .lrow.sel { border-color: var(--line2); background: var(--btn-bg); }
   .pk-people { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
   .pk-person { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 4px; border-radius: 999px; background: var(--raised); font-size: 11px; color: var(--t2); }
-  .sig-row { align-items: flex-start; gap: 8px; }
-  .sig-text { font-size: 12px; line-height: 1.45; color: var(--t2); }
+  .sig-row { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .sig-row:last-of-type { border-bottom: none; }
+  .grp + .sd-desc { margin-top: 2px; }
+  .sig-text { font-size: 12px; line-height: 1.5; color: var(--t2); }
   .pill.sig-action { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 28%, transparent); background: var(--ice-tile); }
   .pill.sig-decision { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 32%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
   .pill.sig-risk { color: var(--warn-ink); border-color: color-mix(in srgb, var(--warn) 32%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
@@ -2099,7 +2103,7 @@
   .url-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--line); }
   .url-field { flex: 1; min-width: 0; }
   .url-bar .co-select-wrap { position: relative; flex-shrink: 0; }
-  .url-bar .co-picker-panel { top: calc(100% + 6px); bottom: auto; right: 0; }
+  .url-bar .panel.co-picker-panel { top: calc(100% + 6px); bottom: auto; right: 0; }
   .mtg-day { padding: 14px 2px 2px; }
   .mtg-row { gap: 10px; }
   .mtg-time { flex-shrink: 0; width: 52px; white-space: nowrap; font-size: 10px; letter-spacing: 0.03em; color: var(--t3); }
@@ -2130,7 +2134,7 @@
   .co-select:hover { opacity: 0.7; }
   .co-select-ava { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; background: var(--line2); font: 600 8px var(--font-ui); color: var(--t2); }
   .co-select-wrap { position: relative; }
-  .co-picker-panel { bottom: calc(100% + 6px); right: 0; width: 210px; min-width: 0; padding: 6px; gap: 0; }
+  .panel.co-picker-panel { bottom: calc(100% + 6px); right: 0; width: 190px; min-width: 0; padding: 6px; gap: 0; }
   .co-picker-panel .p-item { padding: 5px 8px; gap: 8px; font-size: 12px; }
   .co-picker-panel .p-item .pi { width: 18px; }
   /* :where keeps the reset at class-level specificity so component button
@@ -2331,7 +2335,8 @@
   .msg.picking .react-bar,
   .react-bar:hover { opacity: 1; pointer-events: auto; }
   /* Bridges the 4px offset so the pointer never crosses dead space. */
-  .react-bar::before { content: ''; position: absolute; inset: -6px -4px -4px; }
+  .react-bar::before { content: ''; position: absolute; inset: -6px -4px -4px; z-index: -1; }
+  .msg-body:has(.reacts) .react-bar { top: auto; bottom: -4px; margin-top: 0; }
   .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t1); }
   .rb-ic.glyph { color: var(--t2); }
   .rb-ic:hover { background: var(--hover); color: var(--t1); }
@@ -2515,9 +2520,15 @@
   /* ── Story detail (right side panel; board stays visible) ── */
   .board-wrap { flex: 1; display: flex; min-height: 0; overflow: hidden; }
   .board-wrap > .board,
-  .board-wrap > .listview { flex: 1; min-width: 0; }
+  .board-wrap > .listview,
+  .board-wrap > .mtg-col { flex: 1; min-width: 0; }
+  .mtg-col { display: flex; flex-direction: column; min-height: 0; }
   /* A real pane, styled exactly like the daybook sidebar: side tint, one
      hairline edge, no shadow — it takes space rather than floating over. */
+  .story-panel::-webkit-scrollbar { width: 4px; }
+  .story-panel::-webkit-scrollbar-track { background: transparent; margin: 10px 0; }
+  .story-panel::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+  .story-panel::-webkit-scrollbar-thumb:hover { background: var(--line2); }
   .story-panel {
     flex: 0 0 auto;
     width: 340px;
