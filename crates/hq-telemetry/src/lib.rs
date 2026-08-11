@@ -276,7 +276,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "sync_scope" => Some(matches!(value, "all" | "single_company")),
         "runner_phase" => Some(matches!(
             value,
-            "scan" | "push" | "pull" | "idle" | "unknown"
+            "scan" | "push" | "pull" | "idle" | "unknown" | "pre_protocol"
         )),
         // A libuv fatal-syscall identifier is only ever a fixed constant (the
         // producer allow-lists it) or the sentinel `other`; the errno is a bare
@@ -285,6 +285,26 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // stderr fragment degrades to `[Filtered]` instead.
         "runner_fatal_syscall" => Some(is_content_safe_syscall_token(value)),
         "runner_fatal_errno" => Some(value.parse::<i64>().is_ok()),
+        // libuv/CRT assertion identity. `runner_assert_source` is the libuv
+        // subset of the frame vocabulary plus the `other` sentinel;
+        // `runner_assert_signature` is the same 16-hex-or-`unknown` digest shape
+        // as the stack signature. The producer emits only these; this is the
+        // independent egress backstop against a leaked path or expression.
+        "runner_assert_source" => Some(matches!(
+            value,
+            "libuv_win_async" | "libuv_unix_core" | "libuv_handle" | "other"
+        )),
+        "runner_assert_signature" => Some(valid_runner_stack_signature(value)),
+        // Bare-integer counters. They are emitted as JSON numbers, which reach
+        // this scrubber as an empty-string proxy (see scrub_runner_diagnostic_fields):
+        // accept that proxy, and validate any string form as a bounded unsigned
+        // integer so a stray non-numeric value still degrades to `[Filtered]`.
+        "runner_assert_line" | "runner_stdout_line_count" => {
+            Some(value.is_empty() || value.parse::<u32>().is_ok())
+        }
+        // The runner's Node major version, or the `unknown` sentinel — a
+        // low-cardinality grouping tag emitted as a string.
+        "runner_node_major" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
         "watcher_job_peak_commit_bucket" => Some(matches!(
             value,
             "under_128mb"
@@ -973,6 +993,88 @@ mod tests {
                 "runner_fatal_syscall",
                 "ReadDirectoryChangesW: (5) /Users/Ada/secret.md"
             ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn every_runner_phase_vocabulary_token_survives_the_egress_shape_check() {
+        use hq_desktop_core::sync_outcome::RUNNER_PHASE_VOCABULARY;
+        // Enumerate the emitter's OWN phase vocabulary so the validator's
+        // runner_phase arm can never drift behind it and scrub a real token to
+        // [Filtered]. This is the Rust leg of the tri-source vocabulary guard;
+        // the E2E source-contract spec pins the TypeScript union to the same set.
+        for token in RUNNER_PHASE_VOCABULARY {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_phase", token),
+                Some(true),
+                "phase token {token:?} must survive egress"
+            );
+        }
+        // Near-miss non-members must be rejected, so the guard is not vacuous.
+        for near_miss in ["pre_protocoll", "scan2", "preprotocol", "PUSH", ""] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_phase", near_miss),
+                Some(false),
+                "non-member {near_miss:?} must not survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn new_runner_diagnostic_fields_are_registered_and_validated() {
+        // pre_protocol is accepted by the phase arm.
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_phase", "pre_protocol"),
+            Some(true)
+        );
+        // Assertion source: the libuv subset + the `other` sentinel only.
+        for source in ["libuv_win_async", "libuv_unix_core", "libuv_handle", "other"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_assert_source", source),
+                Some(true)
+            );
+        }
+        for leaked in [r"C:\Users\Ada\async.c", "node_fs", "app", "src/win/async.c"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_assert_source", leaked),
+                Some(false),
+                "{leaked:?} must not survive as an assert source"
+            );
+        }
+        // Assertion signature: 16-hex or `unknown`.
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_assert_signature", "a09c1747e44b2a4a"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_assert_signature", "unknown"),
+            Some(true)
+        );
+        for bad in ["a09c1747e44b2a4", "NOTHEXNOTHEX0000", "!(handle)"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_assert_signature", bad),
+                Some(false)
+            );
+        }
+        // Bare-integer diagnostics: well-formed accepted, malformed filtered.
+        for key in ["runner_assert_line", "runner_stdout_line_count"] {
+            assert_eq!(valid_runner_diagnostic_field(key, "76"), Some(true));
+            assert_eq!(valid_runner_diagnostic_field(key, "0"), Some(true));
+            assert_eq!(valid_runner_diagnostic_field(key, "abc"), Some(false));
+            assert_eq!(valid_runner_diagnostic_field(key, "-1"), Some(false));
+        }
+        // Node major: bare integer or the `unknown` sentinel.
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_node_major", "22"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_node_major", "unknown"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_node_major", "v22"),
             Some(false)
         );
     }

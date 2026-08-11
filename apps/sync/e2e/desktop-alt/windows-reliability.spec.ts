@@ -250,6 +250,13 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     expect(manualFault.windowsExitStatus).toBe(watcherFault.windowsExitStatus);
     expect(manualFault.windowsFaultSymbol).toBe(watcherFault.windowsFaultSymbol);
 
+    // Always-present provenance rides every termination diagnostic; assertion
+    // identity stays absent for a non-assertion class.
+    expect(manualFault.stdoutLineCount).toBe(0);
+    expect(manualFault.nodeMajor).toBe('unknown');
+    expect(manualFault.assertSource).toBeUndefined();
+    expect(watcherFault.assertSource).toBeUndefined();
+
     for (const diagnostic of [watcherExec, watcherFault, manualFault]) {
       assertContentSafeDiagnostics(diagnostic);
       const serialized = JSON.stringify(diagnostic);
@@ -259,6 +266,72 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
         '/.npm/_npx/',
         'private-company',
         'UV_HANDLE_CLOSING',
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it('pins the libuv assertion identity as fixed-vocabulary artifact diagnostics', async () => {
+    // HQ-DESKTOP-50: base reported only "a libuv assertion fired" — not which
+    // assertion, which Node, or whether any protocol ran. The candidate recovers
+    // all three as fixed-vocabulary, content-safe diagnostics.
+    const harness = track(new WindowsReliabilityHarness({ forceScripted: true }));
+    await harness.launch();
+
+    const privatePath = 'C:\\Users\\Ada\\hq\\companies\\private-company\\secret-plan.md';
+    const closing = harness.simulateRunnerTerminationDiagnostics({
+      route: 'manual',
+      phase: 'pre_protocol',
+      exitCode: 0xc0000409,
+      stderr: [
+        `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76: ${privatePath}`,
+      ],
+      stdoutLineCount: 0,
+      nodeMajor: 20,
+    });
+
+    // Assertion identity present, fixed-vocabulary, content-safe.
+    expect(closing.fatalClass).toBe('libuv_assert');
+    expect(closing.assertSource).toBe('libuv_win_async');
+    expect(closing.assertLine).toBe(76);
+    expect(closing.assertSignature).toMatch(/^[0-9a-f]{16}$/);
+    // Phase distinction, protocol counter, and Node major all land.
+    expect(closing.phase).toBe('pre_protocol');
+    expect(closing.stdoutLineCount).toBe(0);
+    expect(closing.nodeMajor).toBe(20);
+
+    // A DIFFERENT async.c assertion yields a DIFFERENT signature while keeping
+    // the same fixed source token — the discrimination base could not make.
+    const asyncSent = harness.simulateRunnerTerminationDiagnostics({
+      route: 'watcher',
+      origin: 'supervisor_respawn',
+      phase: 'pre_protocol',
+      exitCode: 0xc0000409,
+      stderr: ['Assertion failed: handle->async_sent == 0, file src\\win\\async.c, line 112'],
+      stdoutLineCount: 3,
+      nodeMajor: 22,
+    });
+    expect(asyncSent.assertSource).toBe('libuv_win_async');
+    expect(asyncSent.assertLine).toBe(112);
+    expect(asyncSent.assertSignature).toMatch(/^[0-9a-f]{16}$/);
+    expect(asyncSent.assertSignature).not.toBe(closing.assertSignature);
+    expect(asyncSent.stdoutLineCount).toBe(3);
+    expect(asyncSent.nodeMajor).toBe(22);
+
+    // No raw byte escapes, including through the new fields.
+    for (const diagnostic of [closing, asyncSent]) {
+      assertContentSafeDiagnostics(diagnostic);
+      const serialized = JSON.stringify(diagnostic);
+      for (const forbidden of [
+        'async.c',
+        'UV_HANDLE_CLOSING',
+        'async_sent',
+        'secret-plan',
+        'Ada',
+        'private-company',
+        'hq-sync-runner',
+        '/.npm/_npx/',
       ]) {
         expect(serialized).not.toContain(forbidden);
       }
