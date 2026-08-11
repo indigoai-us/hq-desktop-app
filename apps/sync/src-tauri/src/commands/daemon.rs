@@ -6317,12 +6317,6 @@ mod tests {
         }
     }
 
-    /// Serializes the tests that reset and assert exact counts on the shared
-    /// `crash_state()` preflight-failure streak. cargo runs tests in parallel,
-    /// so without this two streak tests would clobber each other's counter.
-    /// Same idiom as `GUARD_TEST_LOCK` above.
-    static PROVISION_STREAK_TEST_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn a_successful_self_provision_is_not_a_preflight_failure() {
         // The whole point of this lane is that HQ repairs the machine itself.
@@ -6354,9 +6348,13 @@ mod tests {
         // failure counter should_capture_crash rate-limits genuine alerts with,
         // or a machine HQ merely deferred would suppress alerts for a machine it
         // could not repair.
-        let _serial = PROVISION_STREAK_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        //
+        // Serialize against every test that mutates the process-global crash
+        // state: GUARD_TEST_LOCK is the suite's shared lock, and several of the
+        // tests it guards call note_watcher_spawned(), which resets
+        // preflight_fails — so a dedicated lock would not exclude them and this
+        // exact-count assertion could flake from 2 to 1.
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
         // From a reset streak, driving a deferral through the reporting seam
         // leaves the counter at 0, so the next genuine failure is still #1.
@@ -6404,9 +6402,9 @@ mod tests {
 
     #[test]
     fn preflight_failure_streak_resets_after_a_successful_spawn() {
-        let _serial = PROVISION_STREAK_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        // Shares the suite-wide crash-state lock so a concurrent
+        // note_watcher_spawned() cannot reset preflight_fails mid-assertion.
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         {
             let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
             *st = WatcherCrashState::default();
