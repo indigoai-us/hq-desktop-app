@@ -34,6 +34,8 @@ import {
   classifyTasks,
   groupByTaskColumn,
   projectFilesRootFromPrdPath,
+  projectFolderFromPrdPath,
+  runStoryPrompt,
   sessionActivityCardView,
   TASK_COLUMNS,
   TASK_COLUMN_LABEL,
@@ -726,5 +728,34 @@ describe('DESKTOP-005 task columns + live match', () => {
     );
     expect(projectFilesRootFromPrdPath(null)).toBeNull();
     expect(projectFilesRootFromPrdPath('/tmp/elsewhere/prd.json')).toBeNull();
+  });
+});
+
+describe('US-008 (V2) Run story handoff shape', () => {
+  it('runStoryPrompt is /execute-task {project}/{story-id}', () => {
+    expect(runStoryPrompt('hq-desktop-v2', 'US-008')).toBe(
+      '/execute-task hq-desktop-v2/US-008',
+    );
+  });
+
+  it('projectFolderFromPrdPath resolves the project directory', () => {
+    // Absolute prd path → its directory.
+    expect(
+      projectFolderFromPrdPath(
+        '/Users/x/HQ/companies/indigo/projects/hq-desktop-v2/prd.json',
+        '/Users/x/HQ',
+      ),
+    ).toBe('/Users/x/HQ/companies/indigo/projects/hq-desktop-v2');
+    // HQ-relative prd path → joined onto the HQ folder.
+    expect(
+      projectFolderFromPrdPath('companies/indigo/projects/foo/prd.json', '/Users/x/HQ/'),
+    ).toBe('/Users/x/HQ/companies/indigo/projects/foo');
+    // Relative path with no HQ folder known → still a usable relative folder.
+    expect(projectFolderFromPrdPath('companies/indigo/projects/foo/prd.json', '')).toBe(
+      'companies/indigo/projects/foo',
+    );
+    // Unresolvable → falls back to the HQ root (matches other agent handoffs).
+    expect(projectFolderFromPrdPath('', '/Users/x/HQ')).toBe('/Users/x/HQ');
+    expect(projectFolderFromPrdPath(null, '/Users/x/HQ')).toBe('/Users/x/HQ');
   });
 });

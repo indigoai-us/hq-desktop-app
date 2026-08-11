@@ -17,6 +17,8 @@
   import { setStoryPasses } from '../lib/projects-store.svelte';
   import {
     projectDisplayName,
+    projectFolderFromPrdPath,
+    runStoryPrompt,
     storyLiveRunView,
     type PortfolioSessionRef,
     type Project,
@@ -174,28 +176,18 @@
     if (!story || footerBusy) return;
     footerBusy = 'run';
     footerMessage = null;
-    const projectName = project ? projectDisplayName(project) : 'the current project';
-    const prompt = [
-      `/run-project ${story.id}`,
-      '',
-      `Run story ${story.id}: ${story.title}`,
-      `Project: ${projectName}`,
-      prdPath ? `PRD: ${prdPath}` : null,
-      story.description ? `Description: ${story.description}` : null,
-      acItems.length > 0
-        ? ['Acceptance criteria:', ...acItems.map((item) => `- ${item}`)].join('\n')
-        : null,
-      '',
-      'Execute this story through the normal HQ project workflow, update the PRD/story state when done, and run the relevant checks before reporting back.',
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join('\n');
+    // US-008 (V2): hand the story to the HQ /execute-task skill as
+    // {project}/{story-id}, cwd'd into the project's own folder. Both pieces
+    // are pure helpers (projects-model) so the wire shape stays unit-tested;
+    // dispatch stays on the validated claude-code-link path below.
+    const prompt = runStoryPrompt(project?.id ?? '', story.id);
 
     try {
       const config: { hqFolderPath?: string } = await invoke<{ hqFolderPath?: string }>(
         'get_config',
       ).catch(() => ({}));
-      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      const folder = projectFolderFromPrdPath(prdPath, config.hqFolderPath ?? '');
+      const url = buildClaudeCodeUrl({ folder, prompt });
       await invoke('open_claude_code_link', { url });
       footerMessage = 'Story opened in Claude Code.';
     } catch (err) {

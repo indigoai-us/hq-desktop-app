@@ -1315,3 +1315,42 @@ export function projectFilesRootFromPrdPath(prdPath: string | null | undefined):
   }
   return parts.join('/');
 }
+
+// ---------------------------------------------------------------------------
+// US-008 (V2) — Run story handoff shape
+// ---------------------------------------------------------------------------
+
+/**
+ * The Run story prompt (US-008 V2): hands the story to the HQ `/execute-task`
+ * skill as `{project}/{story-id}`. Kept pure so the wire shape is unit-tested;
+ * dispatch still routes through the validated claude-code-link path
+ * (buildClaudeCodeUrl → open_claude_code_link, clipboard fallback).
+ */
+export function runStoryPrompt(projectId: string, storyId: string): string {
+  return `/execute-task ${projectId}/${storyId}`;
+}
+
+/**
+ * Resolve the folder a Run story Claude Code session should cwd into: the
+ * project's own directory (dirname of prd.json), absolute when possible.
+ *
+ * - Absolute prdPath → its directory.
+ * - HQ-relative prdPath (companies/...) → joined onto hqFolderPath when known,
+ *   otherwise the relative project dir (still a valid `folder` value).
+ * - Unresolvable → hqFolderPath (HQ root), matching the other agent handoffs.
+ */
+export function projectFolderFromPrdPath(
+  prdPath: string | null | undefined,
+  hqFolderPath: string,
+): string {
+  const normalized = (prdPath ?? '').replace(/\\/g, '/');
+  if (normalized.startsWith('/')) {
+    const dir = normalized.slice(0, normalized.lastIndexOf('/'));
+    if (dir) return dir;
+  }
+  const relativeRoot = projectFilesRootFromPrdPath(normalized);
+  if (relativeRoot) {
+    return hqFolderPath ? `${hqFolderPath.replace(/\/+$/, '')}/${relativeRoot}` : relativeRoot;
+  }
+  return hqFolderPath;
+}

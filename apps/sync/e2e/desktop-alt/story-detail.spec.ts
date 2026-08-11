@@ -81,8 +81,40 @@ describe('desktop-alt story detail (US-008 / DESKTOP-006)', () => {
     expect(panel).toContain('onclick={() => void openPrd()}');
     expect(panel).toContain('onclick={() => void runStory()}');
     expect(panel).toContain("invoke('open_in_editor', { path: prdPath })");
-    expect(panel).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
+    expect(panel).toContain('buildClaudeCodeUrl({ folder, prompt })');
     expect(panel).toContain("invoke('open_claude_code_link', { url })");
+  });
+
+  it('US-008 (V2): Run story hands off /execute-task {project}/{story-id} in the project folder', () => {
+    // The wire shape is pure and unit-tested (runStoryPrompt / projectFolderFromPrdPath);
+    // the panel must route it through the validated claude-code-link path.
+    expect(panel).toContain('runStoryPrompt(project?.id ?? \'\', story.id)');
+    expect(panel).toContain(
+      "projectFolderFromPrdPath(prdPath, config.hqFolderPath ?? '')",
+    );
+    expect(panel).not.toContain('/run-project');
+  });
+
+  it('US-008 (V2): pane covers status control, timer block, hierarchy, provenance, AC note, and actions', () => {
+    // To do / Done writes the story-level pass state (set_local_story_passes path).
+    expect(panel).toContain('data-testid="task-status-control"');
+    expect(panel).toContain('setStoryPasses(');
+    // Running timer block for active tasks (real matched sessions only).
+    expect(panel).toContain('storyLiveRunView');
+    expect(panel).toContain('data-testid="task-agent-activity"');
+    expect(panel).toContain('liveRun.elapsed');
+    // Hierarchy (project → task) + provenance (Assignee / Created by / Source PRD).
+    expect(panel).toContain('data-testid="task-detail-hierarchy"');
+    expect(panel).toContain('data-testid="task-detail-provenance"');
+    expect(panel).toContain('ProvenanceLine');
+    // AC x/y with the shared-pass-state note.
+    expect(panel).toContain('data-testid="ac-progress-count"');
+    expect(panel).toContain(
+      'These criteria complete together when the task-level pass state changes.',
+    );
+    // Copy ID + close.
+    expect(panel).toContain('data-testid="copy-story-id"');
+    expect(panel).toContain('data-testid="task-detail-close"');
   });
 
   it('keeps the panel token-driven (no hardcoded hex)', () => {
