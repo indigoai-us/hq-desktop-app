@@ -481,10 +481,10 @@
   let coFilter = $state<'all' | string>('all');
   /** Company owning the open channel (rows carry their company). */
   let activeCo = $state('indigo');
-  let view = $state<'channel' | 'library' | 'marketplace' | 'meetings' | 'settings' | 'history' | 'notifications'>('channel');
+  let view = $state<'channel' | 'library' | 'meetings' | 'settings' | 'history' | 'notifications'>('channel');
   /** The reference surfaces go full-bleed; the day-to-day screens keep the
    *  daybook beside them so you can hop straight back into a conversation. */
-  const FULL_BLEED = ['library', 'marketplace', 'settings'];
+  const FULL_BLEED = ['library', 'settings'];
   const sidebarOpen = $derived(!FULL_BLEED.includes(view));
   let channelId = $state('hq-desktop');
   let tab = $state<'chat' | 'board' | 'files'>('chat');
@@ -775,7 +775,7 @@
     ['meetings', 'Meetings'],
     ['updates', 'Updates'],
   ];
-  let settingsTab = $state('general');
+  let settingsTab = $state('profile');
   let prefs = $state<Record<string, boolean>>({
     login: true,
     dock: true,
@@ -1523,13 +1523,6 @@
           <span class="mono">2 CALENDARS CONNECTED · LAST SYNCED 2M AGO</span>
           <button class="chip g" onclick={() => toast('HQ Console would open to manage calendars')}>Manage <ArrowUpRight size={11} weight="bold" /></button>
         </div>
-      {:else if view === 'marketplace'}
-        <div class="chan-head">
-          <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
-          <span class="chan-title">Marketplace</span>
-          <span class="chan-sub">packs & extensions for your HQ</span>
-        </div>
-        {@render marketBody()}
       {:else if view === 'settings'}
         <div class="chan-head">
           <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
@@ -1831,11 +1824,11 @@
         <span class="p-meta mono">4 INSTALLED {#if packsOpen}<CaretDown size={8} weight="bold" />{:else}<CaretRight size={8} weight="bold" />{/if}</span>
       </button>
       {#if packsOpen}
-        <button class="sub-item" onclick={() => nav('marketplace')}>engineering<span class="p-meta mono">v2.1</span></button>
-        <button class="sub-item" onclick={() => nav('marketplace')}>design-styles<span class="p-meta mono new">v3.0 · NEW</span></button>
-        <button class="sub-item" onclick={() => nav('marketplace')}>parker<span class="p-meta mono">v1.4</span></button>
-        <button class="sub-item" onclick={() => nav('marketplace')}>slack-bot<span class="p-meta mono">v1.0</span></button>
-        <button class="sub-item muted" onclick={() => nav('marketplace')}>Open marketplace <ArrowRight size={11} /></button>
+        <button class="sub-item" onclick={() => { libCat = 'marketplace'; nav('library'); }}>engineering<span class="p-meta mono">v2.1</span></button>
+        <button class="sub-item" onclick={() => { libCat = 'marketplace'; nav('library'); }}>design-styles<span class="p-meta mono new">v3.0 · NEW</span></button>
+        <button class="sub-item" onclick={() => { libCat = 'marketplace'; nav('library'); }}>parker<span class="p-meta mono">v1.4</span></button>
+        <button class="sub-item" onclick={() => { libCat = 'marketplace'; nav('library'); }}>slack-bot<span class="p-meta mono">v1.0</span></button>
+        <button class="sub-item muted" onclick={() => { libCat = 'marketplace'; nav('library'); }}>Open marketplace <ArrowRight size={11} /></button>
       {/if}
     </div>
   </div>
@@ -1866,7 +1859,7 @@
 
   <!-- User menu -->
   <div class="panel user-panel" class:open={openPanel === 'user'}>
-    <button class="p-item" onclick={() => { settingsTab = 'general'; nav('settings'); }}><span class="pi"><GearSix size={14} /></span>Settings</button>
+    <button class="p-item" onclick={() => nav('settings')}><span class="pi"><GearSix size={14} /></span>Settings</button>
     <button class="p-item" onclick={() => toast('Sign out')}><span class="pi"><SignOut size={14} /></span>Sign out</button>
   </div>
 
