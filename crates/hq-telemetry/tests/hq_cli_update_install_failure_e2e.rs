@@ -195,6 +195,15 @@ const ENOTDIR_STDERR: &str = "npm error code ENOTDIR\n\
     npm error errno -20\n\
     npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
 
+/// Reproduce HQ-DESKTOP-53: a full disk. npm surfaces its own `ENOSPC` code with
+/// a `write` syscall and no `npm error path` line (npm_path_shape=none), exit 1.
+/// This is a local-machine condition, not an updater defect, so it must emit NO
+/// Sentry event through the real `before_send` pipeline.
+const DISK_FULL_STDERR: &str = "npm error code ENOSPC\n\
+    npm error syscall write\n\
+    npm error errno -28\n\
+    npm error ENOSPC: no space left on device, write";
+
 fn single_event(events: Vec<sentry::protocol::Event<'static>>) -> sentry::protocol::Event<'static> {
     assert_eq!(events.len(), 1, "expected exactly one capture: {events:?}");
     events.into_iter().next().expect("captured event")
@@ -1250,5 +1259,87 @@ fn lifecycle_builder_tag_names_which_builder_ran() {
         report_install_failure(Some(1), &echo_only, Some(SELECTED_PREFIX))
     }));
     assert_eq!(tag(&event, "npm_lifecycle_builder"), Some("unknown"));
+    assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
+}
+
+/// HQ-DESKTOP-53: a full disk emits NO Sentry event. Proven through the real
+/// `before_send` pipeline on the legacy entrypoints AND on the environment
+/// entrypoint that actually emitted the reported event, across the prefixes the
+/// installer may pass and whether or not npm's retry ladder forced a final
+/// attempt.
+#[test]
+fn a_disk_full_install_failure_emits_no_event() {
+    for prefix in [None, Some("/usr/local")] {
+        let events = captured_events(|| report_install_failure(Some(1), DISK_FULL_STDERR, prefix));
+        assert!(
+            events.is_empty(),
+            "a full disk must not page (prefix={prefix:?}): {events:?}"
+        );
+        let events = captured_events(|| {
+            report_install_failure_with_final_attempt(Some(1), DISK_FULL_STDERR, prefix, true)
+        });
+        assert!(
+            events.is_empty(),
+            "a forced-final full disk must not page either (prefix={prefix:?}): {events:?}"
+        );
+    }
+
+    // The reported event came through `report_install_failure_with_environment`
+    // with the production toolchain provenance (Node 24.14.1 / ABI 137 / npm
+    // 11.11.0, user-path, no managed retry), so the suppression must hold there —
+    // that is the entrypoint that actually emitted HQ-DESKTOP-53.
+    let env = InstallEnvironment {
+        node_version: Some("24.14.1".to_string()),
+        node_abi: Some("137".to_string()),
+        npm_version: Some("11.11.0".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    for prefix in [None, Some("/usr/local")] {
+        let events = captured_events(|| {
+            report_install_failure_with_environment(Some(1), DISK_FULL_STDERR, prefix, false, &env)
+        });
+        assert!(
+            events.is_empty(),
+            "the reported environment entrypoint must not page a full disk (prefix={prefix:?}): {events:?}"
+        );
+    }
+}
+
+/// Negative control: a THIRD-PARTY build script that ran out of disk space is a
+/// lifecycle failure, not the top-level disk-full case, so it STILL captures
+/// exactly one Error event with its per-package `disk-space` signature. The new
+/// suppression must not have widened at the real envelope boundary.
+#[test]
+fn a_lifecycle_failure_carrying_enospc_still_captures() {
+    let lifecycle = format!(
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/better-sqlite3\n\
+         npm error command failed\n\
+         npm error command sh -c prebuild-install || node-gyp rebuild\n\
+         gyp ERR! stack Error: ENOSPC: no space left on device"
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &lifecycle, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (lifecycle:better-sqlite3:disk-space)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected-lifecycle",
+            "lifecycle:better-sqlite3:disk-space"
+        ]
+    );
+    assert_eq!(tag(&event, "npm_lifecycle_cause"), Some("disk-space"));
+    assert_eq!(
+        tag(&event, "install_failure_kind"),
+        Some("unexpected-lifecycle")
+    );
     assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
 }

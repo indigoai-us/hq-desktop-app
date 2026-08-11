@@ -759,20 +759,15 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         "the current transient-registry classifier must stay suppressed"
     );
 
+    // A full disk (ENOSPC) is a local-machine condition, not an updater defect,
+    // so it is now suppressed as an expected disk-full failure (HQ-DESKTOP-53) —
+    // the same treatment as the EACCES/transient cases above. It previously fell
+    // through to Unexpected and paged once at Error with npm_error_code=ENOSPC.
     let storage = "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
     let events = captured_events(|| report_install_failure(Some(1), storage, None));
-    assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].tags.get("eacces").map(String::as_str),
-        Some("false")
-    );
-    assert_eq!(
-        events[0].tags.get("npm_error_code").map(String::as_str),
-        Some("ENOSPC")
-    );
-    assert_eq!(
-        events[0].tags.get("npm_path_shape").map(String::as_str),
-        Some("global-lib-node-modules")
+    assert!(
+        events.is_empty(),
+        "a full disk (ENOSPC) must be suppressed as an expected disk-full failure, got {events:?}"
     );
 }
 
