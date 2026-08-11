@@ -395,6 +395,50 @@
     toast(`Notetaker will join — saving to ${where}`);
   }
 
+  type PastMeeting = {
+    name: string; who: string; meta: string;
+    when: string; length: string; company: string;
+    status: 'saved' | 'processing';
+    attendees: string[];
+    signals: [string, string][];
+    recap: string;
+  };
+  const PAST_DETAIL: Record<string, PastMeeting> = {
+    'Nestlé demo prep — Aug 1': {
+      name: 'Nestlé demo prep — Aug 1', who: 'Indigo · 4 attendees', meta: 'RECAP + TRANSCRIPT',
+      when: 'Fri, Aug 1 · 2:00 PM', length: '48m', company: 'Indigo', status: 'saved',
+      attendees: ['Corey', 'Bryan', 'Sofia', 'Priya'],
+      signals: [
+        ['action', 'Sofia to rebuild the pricing slide before Thursday'],
+        ['action', 'Bryan to confirm the sandbox account with their IT'],
+        ['decision', 'Lead with the agent-run demo, not the dashboard tour'],
+        ['risk', 'Their procurement review could push signature into Q4'],
+      ],
+      recap: 'Walked the room through the agent-run demo end to end. The pricing slide read as too dense, so Sofia is rebuilding it around the three tiers. Their team asked twice about data residency — worth a written answer before Thursday. Procurement is the real timeline risk, not the technical review.',
+    },
+    'Daybook design review — Jul 31': {
+      name: 'Daybook design review — Jul 31', who: 'Indigo · 3 attendees', meta: 'RECAP + TRANSCRIPT',
+      when: 'Thu, Jul 31 · 10:00 AM', length: '52m', company: 'Indigo', status: 'saved',
+      attendees: ['Corey', 'Lizzie', 'Bryan'],
+      signals: [
+        ['decision', 'Day groups fold after seven days, not fourteen'],
+        ['action', 'Corey to spec the filter dropdown states'],
+        ['decision', 'Marketplace lives inside the Library, not its own screen'],
+      ],
+      recap: 'Reviewed the daybook sidebar and the Core menu. Agreed the day grouping should fold at a week — two weeks left too much noise on screen. Marketplace moves inside the Library so the side nav survives the jump. Filter states still need a spec.',
+    },
+    'Sender weekly — Jul 30': {
+      name: 'Sender weekly — Jul 30', who: 'Sender Agency · 6 attendees', meta: 'RECAP',
+      when: 'Wed, Jul 30 · 4:30 PM', length: '31m', company: 'Sender Agency', status: 'processing',
+      attendees: ['Corey', 'Marcus', 'Kayla', 'Priya', 'Bryan', 'Sofia'],
+      signals: [['action', 'Marcus to pull last week’s creative numbers']],
+      recap: 'Standing weekly. Creative volume is up but the hook tests are inconclusive — Marcus is pulling the numbers so we can compare against the previous flight.',
+    },
+  };
+
+  let openPast = $state<string | null>(null);
+  const SIGNAL_KIND_LABEL: Record<string, string> = { action: 'ACTION', decision: 'DECISION', risk: 'RISK' };
+
   const MEETINGS_PAST: { label: string; rows: [string, string, string][] }[] = [
     {
       label: 'LAST 7 DAYS',
@@ -1344,7 +1388,7 @@
           </div>
           {#if mtgUrl.trim()}
             <div class="co-select-wrap">
-              <button class="co-select btn-ghost" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('mtg-url-co'); }}>
+              <button class="btn-ghost" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('mtg-url-co'); }}>
                 {mtgUrlCo ? DATA[mtgUrlCo].label : 'Personal'}
                 <span class="caret"><CaretDown size={10} weight="bold" /></span>
               </button>
@@ -1371,6 +1415,7 @@
             {/each}
           </div>
         </div>
+        <div class="board-wrap">
         <div class="listview mtg-view">
           {#if mtgTab === 'upcoming'}
           {#each MEETING_DAYS as day (day.label)}
@@ -1408,7 +1453,7 @@
           {#each MEETINGS_PAST as group (group.label)}
             <div class="grp mtg-day"><span class="t mono">{group.label}</span><span class="t mono dim">{group.rows.length}</span></div>
             {#each group.rows as [name, who, meta] (name)}
-              <button class="lrow mtg-row" onclick={() => toast(`${name} would open`)}>
+              <button class="lrow mtg-row" class:sel={openPast === name} onclick={() => (openPast = openPast === name ? null : name)}>
                 <span class="lrow-ic"><VideoCamera size={15} /></span>
                 <span class="fn">{name}</span>
                 <span class="fm sub">{who}</span>
@@ -1417,6 +1462,49 @@
             {/each}
           {/each}
           {/if}
+        </div>
+        {#if openPast && mtgTab === 'past'}
+          {@const m = PAST_DETAIL[openPast] ?? { name: openPast, when: '—', length: '—', company: '—', status: 'processing' as const, attendees: [], signals: [] as [string, string][], recap: 'No recap saved yet.', who: '', meta: '' }}
+          <aside class="story-panel" transition:slidePane>
+            <div class="sd-head">
+              <span class="sd-id mono">MEETING</span>
+              <button class="sd-close" aria-label="Close meeting" onclick={() => (openPast = null)}><X size={13} weight="bold" /></button>
+            </div>
+            <div class="sd-title">{m.name.split(' — ')[0]}</div>
+            <div class="sd-status">
+              <span class="pill mono {m.status === 'saved' ? 'inst' : ''}">{m.status === 'saved' ? 'Transcript saved' : 'Processing'}</span>
+            </div>
+
+            <div class="sd-meta">
+              <div class="sd-kv"><span class="sd-k mono">When</span><span class="sd-v">{m.when}</span></div>
+              <div class="sd-kv"><span class="sd-k mono">Length</span><span class="sd-v">{m.length}</span></div>
+              <div class="sd-kv"><span class="sd-k mono">Company</span><span class="sd-v">{m.company}</span></div>
+            </div>
+
+            <div class="grp"><span class="t mono">WHO WAS THERE</span><span class="d mono">{m.attendees.length}</span></div>
+            <div class="pk-people">
+              {#each m.attendees as person (person)}
+                <span class="pk-person"><span class="m-ava sm">{person[0]}</span>{person}</span>
+              {/each}
+            </div>
+
+            <div class="grp"><span class="t mono">WHAT HQ PICKED UP</span><span class="d mono">{m.signals.length}</span></div>
+            {#each m.signals as [kind, text], i (i)}
+              <div class="pk-row sig-row">
+                <span class="pill mono sig-{kind}">{SIGNAL_KIND_LABEL[kind] ?? kind}</span>
+                <span class="pk-name sig-text">{text}</span>
+              </div>
+            {/each}
+
+            <div class="grp"><span class="t mono">RECAP</span></div>
+            <p class="sd-desc">{m.recap}</p>
+
+            <div class="sd-actions">
+              <button class="chip" onclick={() => toast('Transcript would open')}>Open transcript</button>
+              <button class="chip g" onclick={() => toast('Recap copied')}>Copy recap</button>
+            </div>
+          </aside>
+        {/if}
         </div>
         <div class="mtg-foot">
           <span class="mono">2 CALENDARS CONNECTED · LAST SYNCED 2M AGO</span>
@@ -1998,6 +2086,14 @@
 
   /* ── Meetings ───────────────────────────────────────────────────── */
   .listview.mtg-view { padding-top: 8px; }
+  .listview.mtg-view .lrow.sel { border-color: var(--line2); background: var(--btn-bg); }
+  .pk-people { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+  .pk-person { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 4px; border-radius: 999px; background: var(--raised); font-size: 11px; color: var(--t2); }
+  .sig-row { align-items: flex-start; gap: 8px; }
+  .sig-text { font-size: 12px; line-height: 1.45; color: var(--t2); }
+  .pill.sig-action { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 28%, transparent); background: var(--ice-tile); }
+  .pill.sig-decision { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 32%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .pill.sig-risk { color: var(--warn-ink); border-color: color-mix(in srgb, var(--warn) 32%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
   /* Ad-hoc invite bar, above the agenda and outside its scroller. */
   .mtg-tabbar { display: flex; flex-shrink: 0; padding: 12px 20px 0; }
   .url-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--line); }
@@ -2215,8 +2311,9 @@
      and staying put while its picker is open. */
   .react-bar {
     position: absolute;
-    top: calc(100% + 4px);
+    top: 100%;
     right: 0;
+    margin-top: 4px;
     display: flex;
     align-items: center;
     gap: 1px;
@@ -2231,7 +2328,10 @@
     z-index: 20;
   }
   .msg:hover .react-bar,
-  .msg.picking .react-bar { opacity: 1; pointer-events: auto; }
+  .msg.picking .react-bar,
+  .react-bar:hover { opacity: 1; pointer-events: auto; }
+  /* Bridges the 4px offset so the pointer never crosses dead space. */
+  .react-bar::before { content: ''; position: absolute; inset: -6px -4px -4px; }
   .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t1); }
   .rb-ic.glyph { color: var(--t2); }
   .rb-ic:hover { background: var(--hover); color: var(--t1); }
@@ -2414,7 +2514,8 @@
 
   /* ── Story detail (right side panel; board stays visible) ── */
   .board-wrap { flex: 1; display: flex; min-height: 0; overflow: hidden; }
-  .board-wrap > .board { flex: 1; min-width: 0; }
+  .board-wrap > .board,
+  .board-wrap > .listview { flex: 1; min-width: 0; }
   /* A real pane, styled exactly like the daybook sidebar: side tint, one
      hairline edge, no shadow — it takes space rather than floating over. */
   .story-panel {
