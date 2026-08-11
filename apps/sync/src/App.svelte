@@ -845,6 +845,17 @@
     }
   }
 
+  // Open the drift detail window for the current core-state report (US-017 —
+  // the popover's drift-count pill routes here). No-op when state is missing.
+  async function handleOpenDriftDetail() {
+    if (!coreState) return;
+    try {
+      await invoke('open_drift_detail', { report: coreState.driftReport });
+    } catch (err) {
+      console.error('open_drift_detail failed:', err);
+    }
+  }
+
   /**
    * Fetch the workspaces union (Personal + memberships + local folders).
    * Called on mount, after sync completes, and after settings change. Errors
@@ -2474,11 +2485,19 @@
       {updateInstallError}
       {notificationActionRecovery}
       {notificationActionRetrying}
+      {hqVersion}
+      coreDriftCount={coreState?.driftReport.count ?? 0}
+      coreNeedsUpdate={coreState
+        ? coreState.versionBehind || coreState.driftReport.count > 0
+        : false}
+      {coreInstalling}
       onsync={handleSyncNow}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
+      oninstallcore={handleInstallCore}
+      onopendrift={handleOpenDriftDetail}
       onretrynotificationaction={handleRetryNotificationAction}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
     />

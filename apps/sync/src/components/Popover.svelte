@@ -68,11 +68,23 @@
     updateInstallError?: string | null;
     notificationActionRecovery?: NativeNotificationRecovery | null;
     notificationActionRetrying?: boolean;
+    /**
+     * HQ-core + desktop-app version rows (US-017). `hqVersion` is the local
+     * core.yaml hqVersion (null → unknown), `coreDriftCount` the USER-EDIT
+     * drift count from the unified core state, `coreNeedsUpdate` whether the
+     * Restore/Update rescue would do anything.
+     */
+    hqVersion?: string | null;
+    coreDriftCount?: number;
+    coreNeedsUpdate?: boolean;
+    coreInstalling?: boolean;
     onsync: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
     oninstallupdate?: () => void | Promise<void>;
+    oninstallcore?: () => void | Promise<void>;
+    onopendrift?: () => void | Promise<void>;
     onretrynotificationaction?: () => void | Promise<void>;
     bindStatsRefresh?: (fn: () => void) => void;
   }
@@ -116,14 +128,32 @@
     updateInstallError = null,
     notificationActionRecovery = null,
     notificationActionRetrying = false,
+    hqVersion = null,
+    coreDriftCount = 0,
+    coreNeedsUpdate = false,
+    coreInstalling = false,
     onsync,
     onresolve,
     onopen,
     ondismissconflicts,
     oninstallupdate,
+    oninstallcore,
+    onopendrift,
     onretrynotificationaction,
     bindStatsRefresh,
   }: Props = $props();
+
+  // Desktop app's own version for the "Desktop app vX.Y.Z" row. Resolved via
+  // the Tauri app API; blank in non-Tauri/test environments.
+  let appVersion = $state('');
+  $effect(() => {
+    untrack(() => {
+      void import('@tauri-apps/api/app')
+        .then((m) => m.getVersion())
+        .then((v) => (appVersion = v))
+        .catch(() => {});
+    });
+  });
 
   let popoverEl: HTMLElement | null = $state(null);
   let popoverContentEl: HTMLElement | null = $state(null);
@@ -503,6 +533,82 @@
       </div>
     {/if}
 
+    {#if conflictModalActive && onresolve && onopen && ondismissconflicts}
+      <!-- Conflict rescue card (US-017) — lives in the status area, per-file
+           Keep local / Keep cloud + Open-in-editor, resolves via the existing
+           resolve_conflict command and clears when every row is handled. -->
+      <div class="mbp-conflict-card" data-testid="popover-rescue-card">
+        <ConflictModal
+          {conflicts}
+          onresolve={onresolve}
+          onopen={onopen}
+          ondismiss={ondismissconflicts}
+        />
+      </div>
+    {/if}
+
+    <!-- HQ core drift + desktop app update rows (US-017). Sit under the
+         status/conflict area: core row surfaces "NO DRIFT" or the drift count
+         (count opens the drift detail / restore flow), app row surfaces the
+         installed version with an Update action riding the existing updater
+         install flow. -->
+    <div class="mbp-version-rows" data-testid="popover-version-rows">
+      <div class="mbp-vrow" data-testid="popover-core-row">
+        <span class="mbp-vrow-label">
+          HQ core {hqVersion ? `v${hqVersion}` : 'not detected'}
+        </span>
+        <span class="mbp-vrow-actions">
+          {#if coreDriftCount > 0}
+            <button
+              type="button"
+              class="mbp-vpill drifted"
+              data-testid="popover-drift-count"
+              onclick={() => void onopendrift?.()}
+              disabled={!onopendrift}
+              title="Show drifted files"
+            >
+              {coreDriftCount} drifted
+            </button>
+          {:else}
+            <span class="mbp-vpill" data-testid="popover-no-drift">No drift</span>
+          {/if}
+          {#if coreNeedsUpdate}
+            <button
+              type="button"
+              class="mbp-mini primary"
+              data-testid="popover-core-restore"
+              onclick={() => void oninstallcore?.()}
+              disabled={coreInstalling || !oninstallcore}
+              aria-busy={coreInstalling}
+            >
+              {coreInstalling ? 'Restoring…' : 'Restore'}
+            </button>
+          {/if}
+        </span>
+      </div>
+      <div class="mbp-vrow" data-testid="popover-app-row">
+        <span class="mbp-vrow-label">
+          Desktop app {appVersion ? `v${appVersion}` : ''}
+        </span>
+        <span class="mbp-vrow-actions">
+          {#if updateAvailable}
+            <button
+              type="button"
+              class="mbp-mini primary"
+              data-testid="popover-app-update"
+              onclick={() => void oninstallupdate?.()}
+              disabled={updateInstalling || !oninstallupdate}
+              aria-busy={updateInstalling}
+            >
+              {updateInstalling ? 'Installing…' : 'Update'}
+            </button>
+          {:else}
+            <span class="mbp-vpill">Up to date</span>
+          {/if}
+        </span>
+      </div>
+    </div>
+
     <button
       class="mbp-messages-entry"
       type="button"
@@ -604,19 +710,6 @@
           >
             {openingDesktop ? 'Retrying…' : 'Retry'}
           </button>
-        </div>
-      {/if}
-
-      {#if conflictModalActive && onresolve && onopen && ondismissconflicts}
-        <!-- Detailed conflict resolver keeps its own card; the lighter conflict
-             summary folds into the feed as a system-notice row. -->
-        <div class="mbp-conflict-card">
-          <ConflictModal
-            {conflicts}
-            onresolve={onresolve}
-            onopen={onopen}
-            ondismiss={ondismissconflicts}
-          />
         </div>
       {/if}
 
@@ -940,10 +1033,82 @@
     min-height: 0;
   }
 
-  /* Detailed conflict resolver keeps its own card; the lighter conflict
-     summary folds into the feed as a system-notice row. */
+  /* Conflict rescue card (US-017) — detailed per-file resolver in the status
+     area; the lighter aggregate conflict summary still folds into the feed as
+     a system-notice row when the per-file list is unavailable. */
   .mbp-conflict-card {
-    padding: 0 5px 4px;
+    margin: 0 8px 8px;
+    padding: 8px 10px 10px;
+    border: 0.5px solid var(--pop-border);
+    border-radius: var(--radius-card, 8px);
+    background: var(--pop-hover);
+  }
+
+  /* HQ core drift + desktop app version rows (US-017). */
+  .mbp-version-rows {
+    padding: 0 12px 8px;
+    display: grid;
+    gap: 2px;
+  }
+
+  .mbp-vrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 24px;
+  }
+
+  .mbp-vrow-label {
+    color: var(--pop-muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .mbp-vrow-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .mbp-vpill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--pop-hover);
+    color: var(--pop-muted);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  button.mbp-vpill {
+    cursor: pointer;
+  }
+
+  .mbp-vpill.drifted {
+    color: var(--pop-text);
+  }
+
+  button.mbp-vpill:hover:not(:disabled) {
+    color: var(--pop-text);
+    background: var(--pop-hover);
+  }
+
+  button.mbp-vpill:focus-visible {
+    outline: 1.5px solid var(--popover-focus-ring, var(--pop-accent));
+    outline-offset: var(--popover-focus-offset, 2px);
   }
 
   /* Pinned system-notice rows — one-line, matching the locked NotificationRow
