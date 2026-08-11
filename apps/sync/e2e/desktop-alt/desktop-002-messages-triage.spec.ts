@@ -74,6 +74,22 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toContain('mergeConversations(contacts, channels)');
   });
 
+  it('US-013: renders ack-driven delivery states and keeps request governance in the rail', () => {
+    // Delivery states: optimistic append renders "Sending…" until the send ack
+    // flips `delivered` to true, which renders "Delivered".
+    expect(shell).toContain('delivered: false');
+    expect(shell).toMatch(/m\.eventId === localId \? \{ \.\.\.m, delivered: true \}/);
+    expect(conversation).toContain('delivered?: boolean');
+    expect(conversation).toContain("msg.direction === 'out' && msg.delivered === false");
+    expect(conversation).toContain('Sending…');
+    expect(conversation).toContain('<span class="dm-msg-time">Delivered</span>');
+    // Governance kept (console has no messaging): pending DM requests stay
+    // directly reachable in the rail, opening the shared accept/decline card.
+    expect(shell).toContain('visibleRequestItems');
+    expect(shell).toContain('<span>Connection requests</span>');
+    expect(shell).toContain('{@render requestRow(req)}');
+  });
+
   it('uses a shared left-aligned authored timeline instead of opposing chat bubbles', () => {
     expect(conversation).toContain("msg.direction === 'out' ? 'You'");
     expect(conversation).toContain('<IdentityMark kind="person" label={messageAuthor(msg)}');
