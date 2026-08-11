@@ -4542,7 +4542,7 @@ mod tests {
         // abort and blur the very split this provenance exists to draw.
         let context = Mutex::new(RunnerPhaseContext::default());
         let error: SyncEvent =
-            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+            serde_json::from_str(r#"{"type":"error","path":"p.md","message":"boom"}"#)
                 .expect("error event");
         observe_manual_runner_phase(&context, &error);
         assert_eq!(context.lock().expect("phase context").phase, "unknown");
@@ -4558,7 +4558,7 @@ mod tests {
         )
         .expect("progress event");
         let error: SyncEvent =
-            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+            serde_json::from_str(r#"{"type":"error","path":"p.md","message":"boom"}"#)
                 .expect("error event");
         observe_manual_runner_phase(&context, &push);
         observe_manual_runner_phase(&context, &error);

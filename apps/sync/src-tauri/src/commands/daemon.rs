@@ -6270,7 +6270,7 @@ mod tests {
         // rather than lingering and masquerading as a pre-protocol abort.
         let context = Mutex::new(WatcherPhaseContext::default());
         let error: SyncEvent =
-            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+            serde_json::from_str(r#"{"type":"error","path":"p.md","message":"boom"}"#)
                 .expect("error event");
         observe_watcher_phase_from_event(&context, &error);
         assert_eq!(context.lock().expect("phase context").phase, "unknown");
@@ -6286,7 +6286,7 @@ mod tests {
         )
         .expect("progress event");
         let error: SyncEvent =
-            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+            serde_json::from_str(r#"{"type":"error","path":"p.md","message":"boom"}"#)
                 .expect("error event");
         observe_watcher_phase_from_event(&context, &pull);
         observe_watcher_phase_from_event(&context, &error);
