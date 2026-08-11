@@ -85,6 +85,17 @@ pub struct RunTotals {
     /// Read through `runner_fatal_syscall()` / `runner_fatal_errno()`.
     runner_fatal_syscall: Option<&'static str>,
     runner_fatal_errno: Option<i64>,
+    /// Content-safe identity of a runner assertion abort, recovered from the same
+    /// stderr line that set `runner_fatal_class` and present only when that class
+    /// is an assertion (`LibuvAssert` / `NodeCheckAbort`). They move in lockstep
+    /// with the class — a later non-assert fatal line clears them — so the three
+    /// can never describe a different line than the class. All content-safe: an
+    /// allow-listed source token, a bare integer line, and a SHA-256 digest.
+    /// Read through `runner_assert_source()` / `runner_assert_line()` /
+    /// `runner_assert_signature()`.
+    runner_assert_source: Option<&'static str>,
+    runner_assert_line: Option<i64>,
+    runner_assert_signature: Option<String>,
     /// Content-safe message-shape counts for the runner errors seen in this pass.
     /// A third attribution axis beside the class/op rollups: it discriminates the
     /// hq-cloud pull-leg prose that both of those axes collapse to `OTHER`/`other`
@@ -216,6 +227,13 @@ impl RunTotals {
             self.runner_fatal_class = signature.class;
             self.runner_fatal_syscall = signature.syscall;
             self.runner_fatal_errno = signature.errno;
+            // Recover assertion identity from the SAME line. `None` for a
+            // non-assert fatal class, which clears any earlier identity so it
+            // always matches the current class rather than a stale one.
+            let assert = parse_runner_assert_identity(line);
+            self.runner_assert_source = assert.as_ref().map(|identity| identity.source);
+            self.runner_assert_line = assert.as_ref().and_then(|identity| identity.line);
+            self.runner_assert_signature = assert.map(|identity| identity.signature);
         }
     }
 
@@ -230,6 +248,22 @@ impl RunTotals {
     /// The integer errno parsed from that same line, or `None`.
     pub fn runner_fatal_errno(&self) -> Option<i64> {
         self.runner_fatal_errno
+    }
+
+    /// The allow-listed source token of the last recognised runner assertion
+    /// abort this pass, or `None`. Always a fixed constant selected in code.
+    pub fn runner_assert_source(&self) -> Option<&'static str> {
+        self.runner_assert_source
+    }
+
+    /// The integer source line of that assertion, or `None`.
+    pub fn runner_assert_line(&self) -> Option<i64> {
+        self.runner_assert_line
+    }
+
+    /// The 16-hex digest of that assertion's normalised expression, or `None`.
+    pub fn runner_assert_signature(&self) -> Option<&str> {
+        self.runner_assert_signature.as_deref()
     }
 }
 
@@ -250,6 +284,18 @@ pub fn runner_phase_from_event(event: &SyncEvent) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// The complete fixed vocabulary of runner work-phase tokens, shared by both
+/// routes and the egress validator. `pre_protocol` is the never-observed default
+/// (the runner died before emitting any protocol event); `unknown` is the
+/// observed-but-indeterminate value (e.g. a directionless progress event), so the
+/// two are distinguishable. Any token that ships must appear here, in the
+/// `runner_phase` arm of the telemetry egress validator, and in the E2E harness
+/// `RunnerPhase` union — the tri-source vocabulary regression test pins the three
+/// enumerations equal so a divergence fails CI instead of silently scrubbing an
+/// unregistered token to `[Filtered]`.
+pub const RUNNER_PHASE_VOCABULARY: &[&str] =
+    &["scan", "push", "pull", "idle", "unknown", "pre_protocol"];
 
 /// Fixed elapsed-time vocabulary shared by both runner routes.
 pub fn runner_phase_elapsed_bucket(elapsed: Duration) -> &'static str {
@@ -744,6 +790,125 @@ fn parse_libuv_fatal_syscall(line: &str) -> Option<(&'static str, i64)> {
 /// enough — the line stays `None`.
 fn is_libuv_fatal_syscall_line(line: &str) -> bool {
     matches!(parse_libuv_fatal_syscall(line), Some((token, _)) if token != "other")
+}
+
+/// Content-safe identity of a runner assertion abort. Every field is a fixed
+/// allow-listed token, a bare integer, or a SHA-256 prefix — never a copied
+/// runner byte, source path, symbol, username, or company slug. It answers
+/// *which* assertion fired without ever transporting the assertion text: two
+/// distinct assertions in the same source file yield distinct `signature`s while
+/// still classifying as `LibuvAssert` with the same stack shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerAssertIdentity {
+    /// Allow-listed libuv source token (`libuv_win_async`, `libuv_unix_core`,
+    /// `libuv_handle`) or the sentinel `other`. Derived from the assertion's
+    /// `file` field only, so an `UV_HANDLE_CLOSING` expression can never
+    /// masquerade as the source. Never the observed path bytes.
+    pub source: &'static str,
+    /// The integer source line from the assertion's `line <N>` field, or `None`
+    /// when it is absent or not a bare integer — never a guessed value.
+    pub line: Option<i64>,
+    /// `sha256(normalised assertion expression)[..16]`, mirroring the
+    /// `runner_stack_shape` signature construction. Distinguishes assertions in
+    /// the same file without revealing the expression.
+    pub signature: String,
+}
+
+/// Allow-listed source token for a runner assertion's `file` field. Restricted
+/// to the libuv members of [`RUNTIME_FRAME_TABLE`] and matched by containment so
+/// a full build path (e.g. `..\deps\uv\src\win\async.c`) still maps; anything
+/// else is the sentinel `other`. Only the fixed token ever leaves the process.
+fn runner_assert_source_token(file_field: &str) -> &'static str {
+    let lowercased = file_field.to_ascii_lowercase();
+    RUNTIME_FRAME_TABLE
+        .iter()
+        .filter(|(_, token)| token.starts_with("libuv_"))
+        .find(|(marker, _)| lowercased.contains(&marker.to_ascii_lowercase()))
+        .map(|(_, token)| *token)
+        .unwrap_or("other")
+}
+
+/// Collapse ASCII whitespace runs and trim, so cosmetic spacing never splits an
+/// assertion's signature. Case and punctuation are preserved so two different
+/// assertions never collide; only the digest of the result leaves the process.
+fn normalise_assert_expression(expr: &str) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut prev_ws = false;
+    for ch in expr.trim().chars() {
+        if ch.is_ascii_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            out.push(ch);
+            prev_ws = false;
+        }
+    }
+    out
+}
+
+/// Parse the leading bare integer of a `line <N>` field. Greedy over leading
+/// digits so a suffixed path can never turn into a wrong integer; `None` when
+/// no digit leads.
+fn parse_assert_line_number(field: &str) -> Option<i64> {
+    let field = field.trim_start();
+    let digits: String = field.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+/// Parse a runner assertion abort line into content-safe identity. Handles the
+/// libuv/MSVCRT shape `Assertion failed: <expr>, file <path>, line <N>` and the
+/// Node internal `# … assertion failed: <expr>` shape. Returns `None` unless the
+/// line classifies as an assertion abort (`LibuvAssert` or `NodeCheckAbort`), so
+/// non-assert runner classes emit no assertion fields. The expression is only
+/// ever hashed, the source only ever mapped to an allow-listed token, and the
+/// line only ever parsed as a bare integer — no input byte is retained.
+pub fn parse_runner_assert_identity(line: &str) -> Option<RunnerAssertIdentity> {
+    match classify_runner_fatal_class(line) {
+        RunnerFatalClass::LibuvAssert | RunnerFatalClass::NodeCheckAbort => {}
+        _ => return None,
+    }
+    let lowercased = line.to_ascii_lowercase();
+    // Both assertion classes guarantee this marker is present. ASCII lowercasing
+    // preserves byte length, so indices align with the original `line`.
+    let marker = lowercased.find("assertion failed")?;
+    let after = &line[marker + "assertion failed".len()..];
+    // Skip an optional ':' and surrounding whitespace before the expression.
+    let after = after.trim_start().strip_prefix(':').unwrap_or(after);
+    let after_lower = after.to_ascii_lowercase();
+
+    // The expression runs up to the `, file ` field when present (MSVCRT/libuv),
+    // otherwise to end of line (Node internal check). The remainder carries the
+    // file and line fields.
+    let (expr, file_and_line) = match after_lower.find(", file ") {
+        Some(idx) => (&after[..idx], &after[idx + ", file ".len()..]),
+        None => (after, ""),
+    };
+    let expr_normalised = normalise_assert_expression(expr);
+    let digest = format!("{:x}", Sha256::digest(expr_normalised.as_bytes()));
+
+    let file_and_line_lower = file_and_line.to_ascii_lowercase();
+    // The file field ends at the `, line ` field when present.
+    let file_field = match file_and_line_lower.find(", line ") {
+        Some(end) => &file_and_line[..end],
+        None => file_and_line,
+    };
+    let source = runner_assert_source_token(file_field);
+    let line_no = file_and_line_lower
+        .find(", line ")
+        .map(|idx| &file_and_line[idx + ", line ".len()..])
+        .and_then(parse_assert_line_number);
+
+    Some(RunnerAssertIdentity {
+        source,
+        line: line_no,
+        signature: digest[..16].to_string(),
+    })
 }
 
 /// True when an already-lowercased message carries an UNAMBIGUOUS libuv marker.
@@ -2603,6 +2768,126 @@ mod tests {
         assert_eq!(token, "libuv_assert");
         assert!(!token.contains("Ada"));
         assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn distinct_libuv_assertions_yield_distinct_assert_signatures() {
+        // Two DIFFERENT assertions in the SAME source file. Today the only
+        // signature is the stack-shape hash (a constant of `libuv_win_async`), so
+        // both produce byte-identical telemetry; the assertion signature is what
+        // finally tells them apart.
+        let first_line =
+            r"Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76";
+        let second_line =
+            r"Assertion failed: handle->async_sent == 0, file src\win\async.c, line 112";
+        let first = parse_runner_assert_identity(first_line).expect("assertion parses to identity");
+        let second =
+            parse_runner_assert_identity(second_line).expect("assertion parses to identity");
+
+        // Both still classify identically and map to the same source file...
+        assert_eq!(
+            classify_runner_fatal_class(first_line),
+            RunnerFatalClass::LibuvAssert
+        );
+        assert_eq!(
+            classify_runner_fatal_class(second_line),
+            RunnerFatalClass::LibuvAssert
+        );
+        assert_eq!(first.source, "libuv_win_async");
+        assert_eq!(second.source, "libuv_win_async");
+        // ...but the assertion signatures differ — identity was added without
+        // weakening the fixed-vocabulary contract.
+        assert_ne!(first.signature, second.signature);
+        assert_eq!(first.line, Some(76));
+        assert_eq!(second.line, Some(112));
+        assert_eq!(first.signature.len(), 16);
+        assert!(first
+            .signature
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert!(!first.signature.contains("UV_HANDLE_CLOSING"));
+    }
+
+    #[test]
+    fn runner_assert_identity_never_copies_input_bytes() {
+        // The adversarial shape from `runner_fatal_class_is_fixed_vocabulary…`:
+        // a private Windows path suffixed onto the assertion line.
+        let private_path = r"C:\Users\Ada\hq\companies\private-company\secret-plan.md";
+        let line = format!(
+            "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76: {private_path}"
+        );
+        let identity = parse_runner_assert_identity(&line).expect("assertion parses to identity");
+        let rendered = format!("{identity:?}");
+        for forbidden in [
+            "Ada",
+            "secret-plan",
+            "private-company",
+            "async.c",
+            "UV_HANDLE_CLOSING",
+        ] {
+            assert!(!rendered.contains(forbidden), "{forbidden} leaked: {rendered}");
+        }
+        // The integer stops before the suffixed path; the source is a fixed token.
+        assert_eq!(identity.line, Some(76));
+        assert_eq!(identity.source, "libuv_win_async");
+    }
+
+    #[test]
+    fn runner_assert_identity_is_absent_for_non_assertions_and_degrades_on_malformed_line() {
+        assert!(
+            parse_runner_assert_identity("ReadDirectoryChangesW: (5) Access is denied.").is_none()
+        );
+        assert!(parse_runner_assert_identity("EPERM: operation not permitted").is_none());
+        assert!(parse_runner_assert_identity("").is_none());
+        // A malformed `line` field degrades to absent, never a wrong integer.
+        let identity = parse_runner_assert_identity(
+            r"Assertion failed: handle->async_sent == 0, file src\win\async.c, line oops",
+        )
+        .expect("assertion still parses");
+        assert_eq!(identity.line, None);
+        assert_eq!(identity.source, "libuv_win_async");
+        assert_eq!(identity.signature.len(), 16);
+    }
+
+    #[test]
+    fn assert_identity_moves_in_lockstep_with_fatal_class() {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(
+            r"Assertion failed: handle->async_sent == 0, file src\win\async.c, line 112",
+        );
+        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvAssert);
+        assert_eq!(totals.runner_assert_source(), Some("libuv_win_async"));
+        assert_eq!(totals.runner_assert_line(), Some(112));
+        assert!(totals.runner_assert_signature().is_some());
+
+        // A later non-assert fatal line moves the class and clears the identity.
+        totals.record_stderr_line("ReadDirectoryChangesW: (5) Access is denied.");
+        assert_eq!(
+            totals.runner_fatal_class,
+            RunnerFatalClass::LibuvFatalSyscall
+        );
+        assert_eq!(totals.runner_assert_source(), None);
+        assert_eq!(totals.runner_assert_line(), None);
+        assert!(totals.runner_assert_signature().is_none());
+    }
+
+    #[test]
+    fn runner_phase_vocabulary_enumerates_the_six_shared_tokens() {
+        assert_eq!(
+            RUNNER_PHASE_VOCABULARY,
+            &["scan", "push", "pull", "idle", "unknown", "pre_protocol"]
+        );
+        // The never-observed default and the observed-but-indeterminate value are
+        // distinct members, so "died before doing any work" is separable.
+        assert!(RUNNER_PHASE_VOCABULARY.contains(&"pre_protocol"));
+        assert!(RUNNER_PHASE_VOCABULARY.contains(&"unknown"));
+        assert_ne!("pre_protocol", "unknown");
+        // A directionless progress event maps to `unknown`, never `pre_protocol`.
+        let progress: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"private.md","bytes":1}"#,
+        )
+        .expect("progress event");
+        assert_eq!(runner_phase_from_event(&progress), Some("unknown"));
     }
 
     #[test]
