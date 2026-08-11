@@ -576,9 +576,13 @@
     transform: translateX(-50%);
     display: inline-flex;
     gap: 2px;
-    padding: 3px;
+    /* 4px track + a hairline edge: at 3px over a 35%-opaque fill the ring
+       around the active chip dissolved into the wallpaper on the dark side,
+       so the control read as a white pill stuck to a smudge. */
+    padding: 4px;
     border-radius: 999px;
-    background: rgba(20, 20, 22, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(20, 20, 22, 0.55);
     -webkit-backdrop-filter: blur(20px) saturate(1.4);
     backdrop-filter: blur(20px) saturate(1.4);
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);

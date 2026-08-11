@@ -24,6 +24,10 @@ export default defineConfig({
       '@sentry/svelte': mock('sentry.ts'),
     },
   },
+  // Shared-preview-only static files: the click-to-comment review widget and
+  // the root redirect into ?view=v2. Scoped here (not the default ./public) so
+  // the Tauri build in vite.config.ts never bundles them.
+  publicDir: resolve(__dirname, 'dev-harness/public'),
   optimizeDeps: {
     // phosphor-svelte ships .svelte sources; prebundling compiles them against
     // a mismatched runtime shape. Compile them as project source instead.

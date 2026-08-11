@@ -15,6 +15,32 @@
   </head>
   <body>
     <div id="app"></div>
+    <!--
+      The hq-deploy company gate rebuilds its return URL from the path alone,
+      so any re-auth round trip lands back here with ?view=v2 stripped — and a
+      bare /dev-harness/ falls through to the `settings` default, which is not
+      what the shared concept link is for. Restore the intended view before the
+      module below reads location.search. Classic inline scripts run during
+      parse; the module is deferred, so this always wins the race.
+      Localhost is left alone: `npm run dev:preview` keeps its settings default.
+    -->
+    <script>
+      if (
+        !window.location.search &&
+        window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1'
+      ) {
+        window.history.replaceState(null, '', window.location.pathname + '?view=v2');
+      }
+    </script>
     <script type="module" src="/dev-harness/main.ts"></script>
+    <!--
+      The local click-to-comment layer (dev-harness/public/review-widget.js)
+      is retired: hq-deploy now ships a native comments feature on gated
+      previews (hq-core ≥15.0.x), and the widget's bottom-right bar was
+      covering it. Re-add the script tag below to resurrect the local one.
+      <script src="/review-widget.js" defer></script>
+    -->
+
   </body>
 </html>
