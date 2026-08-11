@@ -1853,7 +1853,9 @@
             </div>
           {:else if route.kind === 'inbox'}
             <div class="page">
-              <InboxPage />
+              <!-- US-012: Inbox rows navigate in-shell (Messages / Files /
+                   company screens) instead of opening quick windows. -->
+              <InboxPage onnavigate={navigate} />
             </div>
           {:else if route.kind === 'messages'}
             <MessagesShell embedded={true} />

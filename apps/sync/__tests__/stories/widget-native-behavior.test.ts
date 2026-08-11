@@ -153,6 +153,8 @@ async function waitForNativeReady(): Promise<void> {
         'channel:new-message',
         'channel:updated',
         'dm:unread-summary',
+        // US-012: desktop Inbox Mark-all-read broadcast clears widget unread.
+        'hq:notifications-all-read',
         'sync:complete',
         'update:available',
         'update:cleared',
@@ -431,7 +433,7 @@ describe('Widget restored native standalone behavior', () => {
 
     await unmount(component!);
     component = null;
-    expect([...unlisteners.values()]).toHaveLength(9);
+    expect([...unlisteners.values()]).toHaveLength(10);
     for (const unlisten of unlisteners.values()) {
       expect(unlisten).toHaveBeenCalledOnce();
     }

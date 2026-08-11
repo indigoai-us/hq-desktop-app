@@ -142,3 +142,65 @@ describe('US-006 / US-008: NotificationRow message hover-expand', () => {
     );
   });
 });
+
+describe('US-012: Inbox merged feed V2 — in-shell routing + mark-all-read', () => {
+  const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
+  const feed = readRepoFile('src/components/NotificationFeed.svelte');
+  const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+  const widget = readRepoFile('src/components/Widget.svelte');
+
+  it('feed rows accept in-shell open overrides while the popover defaults survive', () => {
+    // Overrides exist and are consulted first…
+    expect(feed).toContain('onopendm?: (dm: DmEvent) => void | Promise<void>');
+    expect(feed).toContain('onopenshare?: (share: ShareEvent) => void | Promise<void>');
+    expect(feed).toContain('onopenworkspace?: (company: string) => void | Promise<void>');
+    expect(feed).toContain('if (onopendm) {');
+    expect(feed).toContain('if (onopenshare) {');
+    expect(feed).toContain('if (onopenworkspace) {');
+    // …and the quick-window components are NOT deleted: the popover (no
+    // overrides) still routes through them.
+    expect(feed).toContain("invoke('open_dm_detail'");
+    expect(feed).toContain("invoke('open_share_detail'");
+  });
+
+  it('Inbox rows open in-shell surfaces, not quick windows', () => {
+    // DM → Messages conversation route (stash + navigate).
+    expect(inbox).toContain('requestConversation(dmConversationTarget(dm))');
+    expect(inbox).toContain("onnavigate?.({ kind: 'messages' })");
+    // Share → Files preview; workspace event → company screen.
+    expect(inbox).toContain('shareFilesRoute(share)');
+    expect(inbox).toContain('workspaceActivityRoute(company)');
+    // Wired into the shared feed.
+    expect(inbox).toContain('onopendm={openDmConversation}');
+    expect(inbox).toContain('onopenshare={openShareInFiles}');
+    expect(inbox).toContain('onopenworkspace={openWorkspace}');
+    // The Inbox never invokes the quick-window commands itself.
+    expect(inbox).not.toContain('open_dm_detail');
+    expect(inbox).not.toContain('open_share_detail');
+    expect(inbox).not.toContain('open_desktop_alt_window');
+  });
+
+  it('DesktopApp supplies the in-shell navigate glue', () => {
+    expect(app).toContain('<InboxPage onnavigate={navigate} />');
+  });
+
+  it('Mark all read clears badges across sidebar, tray, and widget', () => {
+    expect(inbox).toContain('data-testid="inbox-mark-all-read"');
+    expect(inbox).toContain('Mark all read');
+    // Sidebar badge: markAllNotificationsRead broadcasts hq:notifications-read
+    // (V2Sidebar listens); feed.markAllRead delegates to it.
+    expect(inbox).toContain('feed?.markAllRead()');
+    // Tray/Dock unread-DM badge clears via the messages-viewed command.
+    expect(inbox).toContain("invoke('mark_messages_viewed')");
+    // Widget: app-wide broadcast, consumed by the widget window.
+    expect(inbox).toContain("emit('hq:notifications-all-read')");
+    expect(widget).toContain("listen('hq:notifications-all-read'");
+    expect(widget).toContain('markRecentRead(stack)');
+  });
+
+  it('keeps the unread · events header contract', () => {
+    expect(inbox).toContain('data-testid="inbox-unread-count"');
+    expect(inbox).toContain('unread === 0 ? \'All caught up\' : `${unread} unread`');
+    expect(inbox).toContain('${unreadPart} · ${total} ${noun}');
+  });
+});

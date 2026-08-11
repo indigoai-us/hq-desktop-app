@@ -125,8 +125,10 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(inboxPage).not.toContain("open_messages_window");
     expect(inboxPage).not.toContain("open_inbox_window");
     expect(inboxPage).toContain('density="comfortable"');
-    expect(inboxPage).not.toContain('Mark all read');
-    expect(inboxPage).not.toContain('mark-read');
+    // US-012 superseded the US-008 "no header controls" lock: the merged feed
+    // V2 header carries an explicit Mark-all-read affordance (badge clearing
+    // across sidebar / tray / widget). Tabs and sync chrome remain forbidden.
+    expect(inboxPage).toContain('data-testid="inbox-mark-all-read"');
     expect(inboxPage).not.toContain('role="tablist"');
   });
 

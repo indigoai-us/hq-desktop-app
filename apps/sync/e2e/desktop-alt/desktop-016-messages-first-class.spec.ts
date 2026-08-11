@@ -86,7 +86,8 @@ describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
     expect(app).toContain("id: 'command-go-messages'");
     expect(app).toContain("label: 'Go to Messages'");
     expect(app).toContain("action: () => navigate({ kind: 'messages' })");
-    expect(app).toContain('<InboxPage />');
+    // US-012: InboxPage now receives the in-shell navigate glue.
+    expect(app).toContain('<InboxPage onnavigate={navigate} />');
     expect(inbox).not.toContain('onopenmessages');
   });
 
