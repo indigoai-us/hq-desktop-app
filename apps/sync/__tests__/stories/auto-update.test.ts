@@ -280,46 +280,87 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('NON_CONVERGENT_CONTRACT_KEY');
   });
 
-  it('a pnpm install that lands in the wrong global bin dir does not wedge auto-update', () => {
-    // HQ-DESKTOP-46 r2 reopen: the pnpm arm classified every non-convergence as
-    // pnpm-targeted from the shim path + the updater's own PATH alone — a
-    // tautology that wrote the durable block and permanently disabled
-    // auto-install on the pnpm >=11 nested layout. The class must now observe the
-    // installer's OUTPUT, and a new non-blocking class covers a pnpm build that
-    // ignored the forced global bin dir.
-    expect(cliUpdateCore).toContain('PnpmMisdirected');
-    expect(cliUpdateCore).toContain('"pnpm-misdirected"');
-    // Misdirected and resolution-shortfall never block; only a delivered-into-
-    // the-matching-dir shadowing defect may.
-    expect(normalize(cliUpdateCore)).toContain(
-      '!matches!(self, Self::ResolutionShortfall | Self::PnpmMisdirected)',
-    );
+  it('the pnpm delivery decision uses pnpm’s own answer and an honest direction probe', () => {
+    // HQ-DESKTOP-46 r3 reopen: the r2 fix aimed pnpm correctly, but every path
+    // that VERIFIED the result hard-coded pnpm <=10's global layout, so on pnpm
+    // >=11 (store moved to `global/v11/<hash>`) the install landed while the app
+    // read delivered=none — a false shortfall that re-fired on every publish. Two
+    // things change: delivery evidence is now pnpm's OWN answer (which reads the
+    // v11 store), and the direction probe is made honest and demoted to a
+    // diagnostic, so blocking no longer rides a tautology.
 
-    // The app threads REAL delivery evidence into the pnpm decision instead of
-    // the hardcoded `None` it used before, and probes pnpm's effective global
-    // bin dir to decide whether the shim landed where the app executes.
+    // The direction-derived `pnpm-misdirected` class is gone: blocking is gated on
+    // delivery evidence plus the executed reading alone.
+    expect(cliUpdateCore).not.toContain('PnpmMisdirected');
+    expect(cliUpdateCore).not.toContain('"pnpm-misdirected"');
+    expect(normalize(cliUpdateCore)).toContain('!matches!(self, Self::ResolutionShortfall)');
+
     const pnpmBranch = cliUpdate.slice(
       cliUpdate.indexOf('async fn install_hq_cli_update_via_pnpm('),
       cliUpdate.indexOf('fn apply_post_install_with_app('),
     );
+    // Delivery evidence is pnpm's authoritative answer, not the guessed store path.
     expect(pnpmBranch).not.toContain('delivered_version: None,');
-    // Delivery evidence comes from the pnpm store specifically, so a stray
-    // npm-style manifest under the pnpm home cannot shadow the store reading.
-    expect(cliUpdateCore).toContain('pub fn installed_hq_cli_version_in_pnpm_store(');
-    expect(pnpmBranch).toContain('installed_hq_cli_version_in_pnpm_store(&home)');
+    expect(pnpmBranch).toContain('pnpm_global_delivered_version(&pnpm, &path, &env.home)');
     expect(pnpmBranch).toContain('delivered_version: delivered_version.as_deref(),');
-    expect(pnpmBranch).toContain('pnpm_effective_global_bin_dir(');
-    expect(pnpmBranch).toContain('global_bin_dir_matches_shim_dir,');
-    // The `pnpm bin -g` probe runs only when the install did not converge, so
-    // the converged happy path pays no extra subprocess.
+    // The authoritative reader and its layout-agnostic fallbacks live in core, and
+    // the app spawns pnpm's own `ls -g --json` / `root -g` for the answer. The
+    // corrected store enumeration remains only as the last-resort fallback.
+    expect(cliUpdateCore).toContain('pub fn pnpm_global_ls_hq_cli_version(');
+    expect(cliUpdateCore).toContain('pub fn hq_cli_version_under_pnpm_root(');
+    expect(cliUpdateCore).toContain('pub fn installed_hq_cli_version_in_pnpm_store(');
+    expect(normalize(cliUpdate)).toContain('cmd.args(["ls", "-g", "--depth", "0", "--json"])');
+    expect(normalize(cliUpdate)).toContain('cmd.args(["root", "-g"])');
+
+    // The `pnpm bin -g` probe runs only when the install did not converge...
     expect(pnpmBranch).toContain(
       'let converged = install_converged(resolved.as_deref(), latest);',
     );
-    // The delivery + bin-dir-match evidence rides into telemetry as closed
-    // values, so the next occurrence is self-diagnosing instead of ambiguous.
+    expect(pnpmBranch).toContain(
+      'pnpm_effective_global_bin_dir(&pnpm, &path, Some(home.as_str()))',
+    );
+    expect(pnpmBranch).toContain('global_bin_dir_matches_shim_dir,');
+    // ...and it is spawned WITHOUT the forced --config.global-bin-dir, so it
+    // reports pnpm's own resolution instead of echoing the value we handed it.
+    // (The install, by contrast, still forces it — r2 aiming is correct and kept.)
+    expect(cliUpdate).not.toContain('--config.global-bin-dir');
+    expect(cliUpdateCore).toContain('--config.global-bin-dir');
+    expect(normalize(cliUpdate)).toContain(
+      'let args = pnpm_install_argv( Some(latest), pnpm_env.as_ref().map(|env| env.global_bin_dir.as_str()), );',
+    );
+
+    // The delivery + direction + store-family evidence rides into telemetry as
+    // closed values, so the next occurrence is self-diagnosing instead of
+    // ambiguous — and the grouping fingerprint does not split.
     expect(normalize(cliUpdateCore)).toContain(
       'scope.set_tag( "pnpm_global_bin_dir_matches_shim_dir",',
     );
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "pnpm_store_family",');
+    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "pnpm_authoritative_query_ok",');
+  });
+
+  it('a persistent pnpm shortfall is captured once per version, not on every check', () => {
+    // The 16:13:33 (0.10.94) / 16:14:27 (0.10.95) double-fire across an app
+    // self-update: a non-blocking shortfall is now episode-bounded by a persisted
+    // key set, distinct from the durable blocking marker (which it never writes),
+    // so a persistent environment shape reports once per new `latest`.
+    expect(cliUpdateCore).toContain('pub fn non_convergent_episode_key(');
+    expect(cliUpdateCore).toContain('pub fn non_convergent_episode_reported(');
+    expect(cliUpdateCore).toContain('pub fn non_convergent_episode_record(');
+    // The decision returns the key to persist only on the first capture.
+    expect(cliUpdateCore).toContain('pub record_nonblocking_episode: Option<String>,');
+    // The app threads the persisted set in and persists the returned key after the
+    // capture — its OWN menubar key, never the durable blocking marker.
+    const pnpmBranch = cliUpdate.slice(
+      cliUpdate.indexOf('async fn install_hq_cli_update_via_pnpm('),
+      cliUpdate.indexOf('fn apply_post_install_with_app('),
+    );
+    expect(pnpmBranch).toContain('nonblocking_episode_keys: &nonblocking_episode_keys,');
+    expect(pnpmBranch).toContain('non_convergent_episode_record(&existing, key, latest)');
+    expect(cliUpdate).toContain(
+      'const NON_CONVERGENT_EPISODE_KEYS: &str = "cliNonConvergentEpisodeKeys";',
+    );
+    expect(cliUpdate).toContain('fn non_convergent_episode_markers()');
   });
 
   it('a non-convergent capture names which package manager ran', () => {

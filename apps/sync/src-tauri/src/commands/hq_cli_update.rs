@@ -72,14 +72,16 @@ pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_update_enabled, classify_install_failure,
     classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
     decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
-    hq_version_string, install_argv, install_converged, install_failure_detail,
-    install_failure_detail_with_final_attempt, install_failure_report,
+    hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
+    install_failure_detail, install_failure_detail_with_final_attempt, install_failure_report,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
     non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
-    non_convergent_episode_blocked, npm_install_attempt_summary, npm_lifecycle_cause,
-    npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_install_argv,
+    non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
+    non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
+    npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
     read_installed_version, redact_home, redact_home_in, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
@@ -89,8 +91,9 @@ pub use hq_desktop_core::hq_cli_update::{
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     InstallFailureEpisode, InstallFailureKind, LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport, NpmLatest,
-    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PostInstallContext,
-    PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome, DISMISSED_VERSION_KEY,
+    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
+    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
+    DISMISSED_VERSION_KEY,
     HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX,
     NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
 };
@@ -625,6 +628,14 @@ const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// closure has more than one native module that can fail.
 const INSTALL_FAILURE_EPISODE_KEYS: &str = "cliInstallFailureEpisodeKeys";
 
+/// menubar.json key holding the machine's set of already-reported NON-BLOCKING
+/// non-convergence episode keys (resolution shortfalls). Distinct from the durable
+/// blocking marker `cliUpdateNonConvergentVersion`: this set only bounds Sentry
+/// captures — it never stops auto-install — so a persistent environment shape (the
+/// pnpm >=11 field layout that keeps failing to deliver) reports once per new
+/// `latest` instead of on every check and every app restart.
+const NON_CONVERGENT_EPISODE_KEYS: &str = "cliNonConvergentEpisodeKeys";
+
 /// Run one bounded provenance probe (`node --version`, `node -p
 /// process.versions.modules`, `npm --version`) and return its trimmed stdout, or
 /// `None` on any failure or timeout. Runs through tokio's async child with
@@ -744,28 +755,62 @@ fn record_install_failure_episode_markers(keys: &[String]) -> Result<(), String>
     })
 }
 
-/// The global bin directory pnpm actually resolves under the same environment
-/// and config the install used — a bounded, non-mutating `pnpm bin -g`. When the
-/// install forced `--config.global-bin-dir`, the probe carries the same flag, so
-/// a build that honoured it echoes the forced dir (a match) and one that ignored
-/// it falls back to `PNPM_HOME` (a mismatch), faithfully reporting where the
-/// install landed. Spawned only on the non-convergent path, so the converged
-/// happy path pays no extra subprocess. `None` on any spawn, non-zero exit, or
-/// non-UTF-8 output — the classifier treats that as "not confirmed matched",
-/// failing safe toward retrying rather than a durable block. Only the directory
-/// string is returned; nothing here is retained in telemetry.
+/// Read the machine's set of already-reported non-blocking non-convergence
+/// episode keys from menubar.json, or an empty set if absent/unreadable. An
+/// unreadable set makes the capture bound fail closed (report), mirroring the
+/// install-failure marker contract.
+fn non_convergent_episode_markers() -> Vec<String> {
+    let Ok(path) = paths::menubar_json_path() else {
+        return Vec::new();
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&contents) else {
+        return Vec::new();
+    };
+    value
+        .get(NON_CONVERGENT_EPISODE_KEYS)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the updated non-blocking episode set through the same untyped-merge
+/// path as `record_non_convergent_version`, so unknown future menubar.json keys
+/// survive. This NEVER writes the durable blocking marker — a shortfall must keep
+/// retrying.
+fn record_non_convergent_episode_markers(keys: &[String]) -> Result<(), String> {
+    let array = Value::Array(keys.iter().map(|key| Value::String(key.clone())).collect());
+    paths::menubar_json_path().and_then(|path| {
+        hq_desktop_core::first_run::merge_menubar_flags(&path, &[(NON_CONVERGENT_EPISODE_KEYS, array)])
+    })
+}
+
+/// The global bin directory pnpm resolves NATIVELY (`pnpm bin -g`) under the same
+/// environment the install used — deliberately WITHOUT the forced global-bin-dir
+/// flag the install passes. The forced-flag probe the r2 fix
+/// used was a tautology: it could only echo the value we handed it, so it "proved"
+/// a match on both a build that honoured the flag and one that ignored it. Dropping
+/// the flag makes the probe honest — it now reports where pnpm would write on its
+/// own — but that answer is a DIAGNOSTIC ONLY and no longer gates any class: on the
+/// pnpm >=11 nested layout the native dir is the flat home while the install
+/// correctly writes the nested bin dir, so a mismatch here is the healthy shape.
+/// Spawned only on the non-convergent path, so the converged happy path pays no
+/// extra subprocess. `None` on any spawn error, non-zero exit, or non-UTF-8 output.
+/// Only the directory string is returned; nothing here is retained in telemetry.
 fn pnpm_effective_global_bin_dir(
     pnpm_bin: &str,
     path: &str,
     pnpm_home: Option<&str>,
-    global_bin_dir: Option<&str>,
 ) -> Option<String> {
-    let mut args: Vec<String> = vec!["bin".to_string(), "-g".to_string()];
-    if let Some(dir) = global_bin_dir.filter(|dir| !dir.is_empty()) {
-        args.push(format!("--config.global-bin-dir={dir}"));
-    }
     let mut cmd = paths::spawn_command(pnpm_bin, &[]);
-    cmd.args(&args).env("PATH", path);
+    cmd.args(["bin", "-g"]).env("PATH", path);
     if let Some(home) = pnpm_home {
         cmd.env("PNPM_HOME", home);
     }
@@ -775,6 +820,104 @@ fn pnpm_effective_global_bin_dir(
     }
     let dir = String::from_utf8(output.stdout).ok()?.trim().to_string();
     (!dir.is_empty()).then_some(dir)
+}
+
+/// The version pnpm actually delivered into its global store, taken from pnpm's
+/// OWN answer rather than a guessed store layout. Runs on the non-convergent path
+/// only, bounded and single-shot and non-mutating, under exactly the PATH and
+/// PNPM_HOME the install used:
+///   1. `pnpm ls -g --depth 0 --json` — the authoritative reader.
+///   2. `pnpm root -g` — scanned for the package in both the pnpm <=10 and pnpm
+///      >=11 store shapes, which also yields the store-family diagnostic token.
+///   3. the corrected candidate enumeration (`installed_hq_cli_version_in_pnpm_store`)
+///      as the last-resort fallback.
+/// Returns the delivered version (if any), the observed store family, and whether
+/// pnpm's own answer (steps 1-2) succeeded. Total failure is "no evidence" — the
+/// caller then retries and never blocks.
+async fn pnpm_global_delivered_version(
+    pnpm_bin: &str,
+    path: &str,
+    pnpm_home: &str,
+) -> (Option<String>, PnpmStoreFamily, bool) {
+    let ls_version = {
+        let pnpm_bin = pnpm_bin.to_string();
+        let path = path.to_string();
+        let pnpm_home = pnpm_home.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = paths::spawn_command(&pnpm_bin, &[]);
+            cmd.args(["ls", "-g", "--depth", "0", "--json"])
+                .env("PATH", &path)
+                .env("PNPM_HOME", &pnpm_home);
+            let output = cmd.output().ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let json = String::from_utf8(output.stdout).ok()?;
+            pnpm_global_ls_hq_cli_version(&json)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+
+    // `pnpm root -g` gives the store root: used to locate the package when
+    // `ls -g` did not answer, and to name the store family for telemetry.
+    let root = {
+        let pnpm_bin = pnpm_bin.to_string();
+        let path = path.to_string();
+        let pnpm_home = pnpm_home.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = paths::spawn_command(&pnpm_bin, &[]);
+            cmd.args(["root", "-g"])
+                .env("PATH", &path)
+                .env("PNPM_HOME", &pnpm_home);
+            let output = cmd.output().ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let root = String::from_utf8(output.stdout).ok()?.trim().to_string();
+            (!root.is_empty()).then_some(root)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+
+    let store_family = root
+        .as_deref()
+        .and_then(|root| {
+            std::path::Path::new(root)
+                .components()
+                .rev()
+                .find_map(|component| {
+                    let name = component.as_os_str().to_str()?;
+                    match pnpm_store_family(name) {
+                        PnpmStoreFamily::Unknown => None,
+                        family => Some(family),
+                    }
+                })
+        })
+        .unwrap_or(PnpmStoreFamily::Unknown);
+
+    let root_version = if ls_version.is_none() {
+        let root = root.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            root.and_then(|root| hq_cli_version_under_pnpm_root(std::path::Path::new(&root)))
+        })
+        .await
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
+
+    let authoritative_query_ok = ls_version.is_some() || root_version.is_some();
+    let delivered = ls_version.or(root_version).or_else(|| {
+        // Last resort: the corrected candidate enumeration, re-scanned fresh so a
+        // changing pnpm 11 opaque-hash directory is handled.
+        installed_hq_cli_version_in_pnpm_store(pnpm_home)
+    });
+    (delivered, store_family, authoritative_query_ok)
 }
 
 /// Update a pnpm-managed `hq` with pnpm itself. npm cannot replace a shim in
@@ -889,52 +1032,46 @@ async fn install_hq_cli_update_via_pnpm(
     };
     // Installer-output evidence for the classifier, gathered ONLY when the run
     // did not converge so the converged happy path pays no extra subprocess.
-    // `delivered` is the version pnpm actually wrote into its global store;
-    // `matches` is whether the global bin dir pnpm ACTUALLY resolved (a bounded
-    // `pnpm bin -g` under the same env/config the install used) is the directory
-    // holding the resolved shim. A mismatch means pnpm ignored the forced dir and
-    // wrote the shim where the app never runs — misdirected, loud but never
-    // blocking. An underivable layout probes nothing and stays foreign-managed.
+    // `delivered` is pnpm's OWN answer for the version in its global store
+    // (`pnpm ls -g --json` / `pnpm root -g` / corrected store enumeration), which
+    // reads the pnpm >=11 store the base defect was blind to. `matches` is now the
+    // native `pnpm bin -g` direction — a DIAGNOSTIC ONLY, spawned without the
+    // forced global-bin-dir so it reports pnpm's own resolution rather than
+    // echoing the value the install handed it. An underivable layout probes
+    // nothing and stays foreign-managed.
     let converged = install_converged(resolved.as_deref(), latest);
-    let (delivered_version, global_bin_dir_matches_shim_dir) = match (converged, pnpm_env.as_ref())
-    {
-        (false, Some(env)) => {
-            let delivered = {
-                // Read delivery evidence from the pnpm store specifically, so a
-                // stray npm-style manifest under the pnpm home cannot shadow the
-                // store reading and misreport a genuine pnpm delivery.
-                let home = env.home.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    installed_hq_cli_version_in_pnpm_store(&home)
-                })
-                .await
-                .ok()
-                .flatten()
-            };
-            let effective = {
-                let pnpm = pnpm.clone();
-                let path = path.clone();
-                let home = env.home.clone();
-                let dir = env.global_bin_dir.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    pnpm_effective_global_bin_dir(
-                        &pnpm,
-                        &path,
-                        Some(home.as_str()),
-                        Some(dir.as_str()),
-                    )
-                })
-                .await
-                .ok()
-                .flatten()
-            };
-            let matches = effective
-                .as_deref()
-                .map(|dir| std::path::Path::new(dir) == std::path::Path::new(&env.global_bin_dir));
-            (delivered, matches)
-        }
-        // Converged, or an underivable layout: nothing to probe or compare.
-        _ => (None, None),
+    let (delivered_version, global_bin_dir_matches_shim_dir, store_family, authoritative_query_ok) =
+        match (converged, pnpm_env.as_ref()) {
+            (false, Some(env)) => {
+                let (delivered, store_family, authoritative_query_ok) =
+                    pnpm_global_delivered_version(&pnpm, &path, &env.home).await;
+                let effective = {
+                    let pnpm = pnpm.clone();
+                    let path = path.clone();
+                    let home = env.home.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        pnpm_effective_global_bin_dir(&pnpm, &path, Some(home.as_str()))
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                };
+                let matches = effective.as_deref().map(|dir| {
+                    std::path::Path::new(dir) == std::path::Path::new(&env.global_bin_dir)
+                });
+                (delivered, matches, store_family, authoritative_query_ok)
+            }
+            // Converged, or an underivable layout: nothing to probe or compare.
+            _ => (None, None, PnpmStoreFamily::Unknown, false),
+        };
+    // The persisted non-blocking episode set bounds a resolution shortfall to one
+    // capture per `(latest, executor, kind, home_source)` episode. Read only on
+    // the non-convergent path; an unreadable set is an empty slice (fail-closed:
+    // report). The converged happy path needs none.
+    let nonblocking_episode_keys = if converged {
+        Vec::new()
+    } else {
+        non_convergent_episode_markers()
     };
     let outcome = decide_post_install(&PostInstallContext {
         executor: InstallExecutor::Pnpm,
@@ -949,23 +1086,41 @@ async fn install_hq_cli_update_via_pnpm(
         after_version: resolved.as_deref(),
         latest,
         npm_prefix_passed: None,
-        // Delivery evidence now gates the pnpm arm too: the version pnpm wrote
-        // into its store, read straight from the manifest. `None` on the
-        // converged happy path, where the decision never consults it.
+        // Delivery evidence now gates the pnpm arm too: pnpm's own answer for the
+        // version in its store. `None` on the converged happy path, where the
+        // decision never consults it.
         delivered_version: delivered_version.as_deref(),
         installer_bin: &pnpm,
         already_blocked,
+        nonblocking_episode_keys: &nonblocking_episode_keys,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present,
             path_has_shim_dir,
             global_bin_dir_matches_shim_dir,
+            store_family,
+            authoritative_query_ok,
             exit_status: pnpm_exit_status,
             output_len: pnpm_output_len,
         }),
     });
     log("hq-cli-update", &outcome.log_line);
-    apply_post_install_with_app(app, &outcome)
+    let result = apply_post_install_with_app(app, &outcome);
+    // Persist the non-blocking episode key AFTER the capture, so a persistent
+    // shortfall shape reports once per `latest` instead of on every check and
+    // every app restart. Best-effort and never gates the capture (fail-loud):
+    // a failed write simply means the next occurrence reports again.
+    if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(e) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {e}"),
+            );
+        }
+    }
+    result
 }
 
 /// Apply a post-install decision with the production effects. Both executors go

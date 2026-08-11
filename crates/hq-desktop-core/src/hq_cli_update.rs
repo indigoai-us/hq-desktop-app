@@ -740,20 +740,17 @@ impl InstallExecutor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonConvergenceKind {
     NpmTargeted,
-    /// pnpm ran against the very global bin dir that holds the resolved shim
-    /// (`PNPM_HOME` derived from that shim, its bin dir on the child PATH) and
-    /// the shim still did not move. Same class of defect as `NpmTargeted`: the
-    /// installer was pointed at the right place and the update still did not
-    /// land, so it stays loud instead of being bounded like a foreign layout.
+    /// pnpm ran against the global home derived from the resolved shim and the
+    /// target WAS delivered into pnpm's own global store, yet the executed shim
+    /// still reports the old version — a genuine shadowing defect (a different
+    /// `hq` copy earlier on PATH wins). Same class as `NpmTargeted`: the
+    /// installer landed the target and the update still did not take effect where
+    /// the app executes, so it stays loud instead of being bounded like a foreign
+    /// layout. Whether pnpm's native `pnpm bin -g` happens to equal the shim dir
+    /// is recorded as a diagnostic only; it is never a gate on this class, since
+    /// on the pnpm >=11 nested layout the native global bin dir legitimately
+    /// differs from the forced one the install (correctly) wrote to.
     PnpmTargeted,
-    /// pnpm's home was derivable and forced (`--config.global-bin-dir`), but the
-    /// global bin directory pnpm ACTUALLY resolved is still not the directory
-    /// holding the executed shim — a pnpm build that ignored the forced setting,
-    /// so it wrote the new shim flat into `PNPM_HOME` and left the nested one
-    /// stale. Unlike `PnpmTargeted` the installer did NOT land where the app
-    /// executes, so this must never wedge auto-update; it stays loud on every
-    /// occurrence and names the mismatch so the next event is self-diagnosing.
-    PnpmMisdirected,
     ForeignManaged,
     /// npm was aimed at the resolved binary's own prefix, yet the target version
     /// was never delivered INTO that prefix — the manifest there does not report
@@ -770,7 +767,6 @@ impl NonConvergenceKind {
         match self {
             Self::NpmTargeted => "npm-targeted",
             Self::PnpmTargeted => "pnpm-targeted",
-            Self::PnpmMisdirected => "pnpm-misdirected",
             Self::ForeignManaged => "foreign-managed",
             Self::ResolutionShortfall => "resolution-shortfall",
         }
@@ -788,13 +784,12 @@ impl NonConvergenceKind {
 
     /// May a non-convergence of this kind persist the durable marker that stops
     /// the background auto-installer? Only a defect backed by evidence that the
-    /// installer actually delivered the target INTO the directory the app
-    /// executes may block. A resolution shortfall never delivered the target, and
-    /// a misdirected pnpm install delivered it to the wrong global bin dir — both
-    /// stay loud but must never block, or a transient shortfall or a flag pnpm
-    /// ignored would permanently disable auto-update.
+    /// installer actually delivered the target INTO the store the app executes
+    /// from may block. A resolution shortfall never delivered the target, so it
+    /// stays loud but must never block, or a transient registry lag would
+    /// permanently disable auto-update.
     pub fn may_block_auto_update(self) -> bool {
-        !matches!(self, Self::ResolutionShortfall | Self::PnpmMisdirected)
+        !matches!(self, Self::ResolutionShortfall)
     }
 }
 
@@ -810,21 +805,22 @@ impl NonConvergenceKind {
 /// target was never delivered, the "targeted" match is a tautology (the location
 /// was itself derived from that same binary) covering a transient resolution
 /// shortfall, not a layout defect — so it is classified as such and must not
-/// block.
+/// block. For the pnpm arm this evidence now comes from pnpm's own answer
+/// (`pnpm ls -g --json`, `pnpm root -g`, then the corrected store enumeration),
+/// which reads both the pnpm <=10 and pnpm >=11 store layouts.
 ///
-/// `pnpm_bin_dir_matches` is the direction evidence for the pnpm arm: whether the
-/// global bin dir pnpm ACTUALLY resolved (a bounded `pnpm bin -g` under the same
-/// env/config the install used) is the directory holding the executed shim. It is
-/// what breaks the old pnpm tautology — before this the pnpm class was derived
-/// only from the shim path and the updater's own PATH, observing nothing about
-/// the installer's output. A mismatch means pnpm wrote the new shim somewhere the
-/// app never executes (a build that ignored the forced `global-bin-dir`), which
-/// must stay loud but never block. It is ignored for the npm executor.
+/// The direction of pnpm's native `pnpm bin -g` is deliberately NOT an input
+/// here. The forced-flag probe that once fed this decision was a tautology (it
+/// echoed the `--config.global-bin-dir` the install handed it), and once the
+/// probe is made honest it legitimately disagrees with the shim dir on the pnpm
+/// >=11 nested layout — where the install correctly forces the nested bin dir but
+/// pnpm's native global bin dir is the flat home. Blocking is therefore gated on
+/// real delivery evidence plus the post-install reading of the executed binary
+/// alone; the native-direction observation survives only as a diagnostic tag.
 pub fn non_convergence_kind(
     executor: InstallExecutor,
     npm_prefix_passed: Option<&str>,
     pnpm_targeted: bool,
-    pnpm_bin_dir_matches: bool,
     post_install_hq_bin: &str,
     target_delivered: bool,
 ) -> NonConvergenceKind {
@@ -835,18 +831,13 @@ pub fn non_convergence_kind(
                 // dir: we could not aim pnpm, so this is the ambient-spawn
                 // foreign-managed shape, bounded to one capture per episode.
                 NonConvergenceKind::ForeignManaged
-            } else if !pnpm_bin_dir_matches {
-                // We forced `--config.global-bin-dir` at the dir holding the
-                // resolved shim, yet pnpm resolved a different global bin dir:
-                // the shim landed where the app never runs. Loud, never blocks.
-                NonConvergenceKind::PnpmMisdirected
             } else if target_delivered {
-                // pnpm aimed at the right dir AND delivered the target into its
-                // store, yet the executed shim still reports the old version:
-                // genuine shadowing, the same defect class as `NpmTargeted`.
+                // pnpm delivered the target into its own global store, yet the
+                // executed shim still reports the old version: genuine shadowing,
+                // the same defect class as `NpmTargeted`.
                 NonConvergenceKind::PnpmTargeted
             } else {
-                // Aimed at the right dir but the target was never delivered — a
+                // Aimed at the right home but the target was never delivered — a
                 // transient registry/resolution shortfall, exactly as the npm
                 // arm treats an undelivered matching prefix.
                 NonConvergenceKind::ResolutionShortfall
@@ -1027,16 +1018,26 @@ pub struct PnpmRunDiagnostics {
     /// Did the PATH we handed the child contain the directory holding the
     /// resolved shim?
     pub path_has_shim_dir: bool,
-    /// Did the global bin dir pnpm ACTUALLY resolved (a bounded `pnpm bin -g`
-    /// under the same env/config the install used) equal the directory holding
-    /// the executed shim? `Some(true)` means pnpm honoured the forced
-    /// `--config.global-bin-dir` and wrote where the app runs; `Some(false)`
-    /// means it wrote elsewhere (a build that ignored the flag) — the misdirected
-    /// shape. `None` means the direction was not probed (a converged run, an
-    /// underivable layout, or a failed probe), which the classifier treats as
-    /// "not confirmed matched" so it fails safe toward retrying, never a block.
-    /// Only the closed boolean is retained — never the path pnpm printed.
+    /// Did pnpm's NATIVE global bin dir (a bounded `pnpm bin -g` WITHOUT the
+    /// forced `--config.global-bin-dir`, under the same env the install used)
+    /// equal the directory holding the executed shim? This is now a diagnostic
+    /// ONLY — it is never a gate on any class. On the pnpm >=11 nested layout the
+    /// install correctly forces the nested bin dir while pnpm's native resolution
+    /// is the flat home, so `Some(false)` here is the normal healthy shape, not a
+    /// defect. `None` means unprobed (a converged run, an underivable layout, or
+    /// a failed probe). Only the closed boolean is retained — never the path pnpm
+    /// printed.
     pub global_bin_dir_matches_shim_dir: Option<bool>,
+    /// The pnpm global-store layout family observed while reading delivery
+    /// evidence (`v11` / `numeric` / `unknown`). A closed token, never a path, so
+    /// a residual event names whether it saw the pnpm >=11 store the base defect
+    /// was blind to.
+    pub store_family: PnpmStoreFamily,
+    /// Did the authoritative pnpm delivery query (`pnpm ls -g --json` or
+    /// `pnpm root -g`) return a version, as opposed to falling through to the
+    /// guessed store enumeration? Lets a residual event say whether pnpm's own
+    /// answer was available.
+    pub authoritative_query_ok: bool,
     /// Bounded exit-status rendering, e.g. `0` or `signal/none`.
     pub exit_status: String,
     /// Length of pnpm's combined output. The text itself is never sent — only
@@ -1050,11 +1051,14 @@ impl PnpmRunDiagnostics {
     pub fn summary(&self) -> String {
         format!(
             "home_source={} home_env_present={} path_has_shim_dir={} \
-             global_bin_dir_matches_shim_dir={} exit_status={} output_len={}",
+             global_bin_dir_matches_shim_dir={} store_family={} \
+             authoritative_query_ok={} exit_status={} output_len={}",
             self.home_source.telemetry_value(),
             self.home_env_present,
             self.path_has_shim_dir,
             global_bin_dir_match_tag(self.global_bin_dir_matches_shim_dir),
+            self.store_family.telemetry_value(),
+            self.authoritative_query_ok,
             self.exit_status,
             self.output_len,
         )
@@ -1104,6 +1108,14 @@ pub struct PostInstallOutcome {
     pub clear_non_convergent: bool,
     pub capture: Option<NonConvergentReport>,
     pub capture_requires_durable_record: bool,
+    /// For a NON-BLOCKING non-convergence (a resolution shortfall) that is being
+    /// captured for the first time this episode: the episode key the caller must
+    /// persist to the non-blocking episode set so the same environment shape does
+    /// not re-page on the next check or app restart. `None` for every blocking
+    /// class (which use the durable marker instead) and for a suppressed repeat.
+    /// This is NEVER the durable blocking marker — persisting it does not stop
+    /// auto-install.
+    pub record_nonblocking_episode: Option<String>,
     pub log_line: String,
     pub result: Result<PostInstallSuccess, String>,
 }
@@ -1259,6 +1271,13 @@ pub struct PostInstallContext<'a> {
     /// The installer binary that ran.
     pub installer_bin: &'a str,
     pub already_blocked: bool,
+    /// The machine's persisted set of already-reported NON-BLOCKING
+    /// non-convergence episode keys (see [`non_convergent_episode_key`]). Used to
+    /// bound a resolution shortfall to one capture per `(latest, executor, kind,
+    /// home_source)` episode. An empty slice always reports (fail-closed), which
+    /// is what an unreadable set passes. The npm convenience constructor passes
+    /// `&[]`, preserving the npm arm's report-every-occurrence behaviour.
+    pub nonblocking_episode_keys: &'a [String],
     /// pnpm executor only. `Some` means pnpm ran; the diagnostics describe what
     /// environment it was handed and what it reported back.
     pub pnpm: Option<PnpmRunDiagnostics>,
@@ -1290,6 +1309,11 @@ impl<'a> PostInstallContext<'a> {
             delivered_version,
             installer_bin: npm_bin,
             already_blocked,
+            // The npm arm keeps reporting a shortfall on every occurrence, as
+            // before: an npm registry lag is genuinely transient and self-heals
+            // in minutes rather than persisting like the pnpm environment shape,
+            // so it needs no episode bound.
+            nonblocking_episode_keys: &[],
             pnpm: None,
         }
     }
@@ -1312,6 +1336,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         delivered_version,
         installer_bin,
         already_blocked,
+        nonblocking_episode_keys,
         pnpm,
     } = ctx;
     let (executor, before_bin, after_bin, latest, installer_bin, already_blocked) = (
@@ -1344,6 +1369,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
                 clear_non_convergent: true,
                 capture: None,
                 capture_requires_durable_record: false,
+                record_nonblocking_episode: None,
                 log_line: format!("install succeeded: local={local} latest={latest}"),
                 result: Ok(PostInstallSuccess {
                     local: local.to_string(),
@@ -1357,29 +1383,24 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
     // resolved shim AND the child could see that shim's directory. Either half
     // missing means the child may have written a different global dir, which is
     // the foreign-managed shape.
+    let nonblocking_episode_keys = *nonblocking_episode_keys;
     let pnpm_targeted = pnpm.as_ref().is_some_and(|diagnostics| {
         diagnostics.home_source != PnpmHomeSource::Undetermined && diagnostics.path_has_shim_dir
     });
-    // Direction evidence: did pnpm's effective global bin dir (a bounded
-    // `pnpm bin -g` under the same env/config the install used, measured only on
-    // the non-convergent path) equal the dir holding the executed shim? Only a
-    // confirmed match keeps a non-convergence in a blocking class; `None`
-    // (unprobed or failed) reads as not-confirmed, failing safe toward retrying.
-    let pnpm_bin_dir_matches = pnpm
-        .as_ref()
-        .is_some_and(|diagnostics| diagnostics.global_bin_dir_matches_shim_dir == Some(true));
     // Delivery evidence: did the installer write the target version INTO the
     // store it was aimed at? Only that separates genuine shadowing (delivered,
     // but a copy earlier on PATH still wins) from a transient resolution
-    // shortfall (never delivered). A missing manifest reads as not delivered,
-    // which fails safe toward retrying rather than toward a durable block.
+    // shortfall (never delivered). For the pnpm arm this is now pnpm's own answer
+    // (`pnpm ls -g --json` / `pnpm root -g` / corrected store enumeration), which
+    // reads the pnpm >=11 store the base defect was blind to. A missing manifest
+    // reads as not delivered, which fails safe toward retrying rather than toward
+    // a durable block.
     let target_delivered = delivered_version
         .is_some_and(|delivered| cmp_semver(delivered, latest) != std::cmp::Ordering::Less);
     let kind = non_convergence_kind(
         executor,
         npm_prefix_passed,
         pnpm_targeted,
-        pnpm_bin_dir_matches,
         after_bin,
         target_delivered,
     );
@@ -1396,19 +1417,33 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
     // marker — a propagation lag must not permanently disable auto-update. A
     // targeted defect stays loud on every occurrence and blocks; a foreign
     // layout is bounded to one durable-record-gated capture per episode.
-    let (record_non_convergent, should_capture, capture_requires_durable_record) =
-        if !kind.may_block_auto_update() {
-            (None, true, false)
-        } else if kind.is_installer_targeted() {
-            (Some(latest.to_string()), true, false)
-        } else {
-            let first_episode = !already_blocked;
-            (
-                first_episode.then(|| latest.to_string()),
-                first_episode,
-                true,
-            )
-        };
+    let pnpm_home_source = pnpm.as_ref().map(|diagnostics| diagnostics.home_source);
+    let (
+        record_non_convergent,
+        should_capture,
+        capture_requires_durable_record,
+        record_nonblocking_episode,
+    ) = if !kind.may_block_auto_update() {
+        // A resolution shortfall writes NO durable marker (it must keep retrying),
+        // but is bounded to one capture per `(latest, executor, kind, home_source)`
+        // episode so a persistent environment shape does not re-page on every
+        // check and every restart. The caller persists the returned key only on
+        // the first capture; an unreadable set passes an empty slice and reports.
+        let episode_key = non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
+        let first_episode =
+            !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
+        (None, first_episode, false, first_episode.then_some(episode_key))
+    } else if kind.is_installer_targeted() {
+        (Some(latest.to_string()), true, false, None)
+    } else {
+        let first_episode = !already_blocked;
+        (
+            first_episode.then(|| latest.to_string()),
+            first_episode,
+            true,
+            None,
+        )
+    };
     let report = should_capture.then(|| NonConvergentReport {
         executor,
         kind,
@@ -1429,6 +1464,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         clear_non_convergent: false,
         capture: report,
         capture_requires_durable_record,
+        record_nonblocking_episode,
         log_line: format!(
             "{} completed, but the active HQ CLI is still {} (expected v{latest}); hq={hq_display}",
             executor.telemetry_value(),
@@ -1488,6 +1524,68 @@ pub fn non_convergent_episode_blocked(non_convergent: Option<&str>, latest: &str
 
 pub fn should_auto_install(latest: &str, non_convergent: Option<&str>) -> bool {
     !non_convergent_episode_blocked(non_convergent, latest)
+}
+
+/// Upper bound on the persisted non-blocking non-convergence episode set, so a
+/// pathological environment cannot grow menubar.json without bound. Mirrors
+/// [`MAX_INSTALL_FAILURE_EPISODE_KEYS`].
+pub const MAX_NON_CONVERGENT_EPISODE_KEYS: usize = 32;
+
+/// The episode key that bounds how often a NON-BLOCKING non-convergence (a
+/// resolution shortfall) is captured. A persistent environment shape — the pnpm
+/// >=11 field layout that keeps failing to deliver `latest` — would otherwise
+/// re-page Sentry on every scheduled check and every app restart (the field's
+/// 16:13/16:14 double-fire across an app self-update). Keying on `(latest,
+/// executor, kind, pnpm home_source)` reports it once per new `latest`; a new CLI
+/// publish resets the bound (its keys carry a different `latest|` prefix), so a
+/// genuinely recurring defect is never hidden. This bound NEVER writes the durable
+/// blocking marker — a shortfall must always keep retrying.
+pub fn non_convergent_episode_key(
+    latest: &str,
+    executor: InstallExecutor,
+    kind: NonConvergenceKind,
+    pnpm_home_source: Option<PnpmHomeSource>,
+) -> String {
+    let home = pnpm_home_source
+        .map(|source| source.telemetry_value())
+        .unwrap_or("n/a");
+    format!(
+        "{latest}|{}|{}|{}",
+        executor.telemetry_value(),
+        kind.telemetry_value(),
+        home
+    )
+}
+
+/// Whether a non-blocking non-convergence episode identical to one already
+/// reported for this target version is in the machine's persisted set. A caller
+/// that cannot read its set passes an empty slice and therefore always reports —
+/// fail-closed, staying loud. Mirrors [`install_failure_episode_blocked`].
+pub fn non_convergent_episode_reported(reported_keys: &[String], current_key: &str) -> bool {
+    reported_keys.iter().any(|key| key == current_key)
+}
+
+/// The set to persist after reporting `current_key`: keep only keys for the
+/// CURRENT `latest` (a new target resets the set), append the new key, and bound
+/// the result to the most recent [`MAX_NON_CONVERGENT_EPISODE_KEYS`]. Mirrors
+/// [`install_failure_episode_record`].
+pub fn non_convergent_episode_record(
+    reported_keys: &[String],
+    current_key: &str,
+    latest: &str,
+) -> Vec<String> {
+    let prefix = format!("{latest}|");
+    let mut kept: Vec<String> = reported_keys
+        .iter()
+        .filter(|key| key.starts_with(&prefix) && key.as_str() != current_key)
+        .cloned()
+        .collect();
+    kept.push(current_key.to_string());
+    if kept.len() > MAX_NON_CONVERGENT_EPISODE_KEYS {
+        let overflow = kept.len() - MAX_NON_CONVERGENT_EPISODE_KEYS;
+        kept.drain(0..overflow);
+    }
+    kept
 }
 
 /// Stable marker on the non-convergent error string. The UI keys off it to tell
@@ -1647,6 +1745,20 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                         global_bin_dir_match_tag(
                             diagnostics.and_then(|d| d.global_bin_dir_matches_shim_dir),
                         ),
+                    );
+                    // Self-diagnosing residual telemetry: which pnpm global-store
+                    // family we saw, and whether pnpm's own delivery answer was
+                    // available. Both are closed tokens, never a path.
+                    scope.set_tag(
+                        "pnpm_store_family",
+                        diagnostics
+                            .map(|d| d.store_family)
+                            .unwrap_or(PnpmStoreFamily::Unknown)
+                            .telemetry_value(),
+                    );
+                    scope.set_tag(
+                        "pnpm_authoritative_query_ok",
+                        bool_tag(diagnostics.is_some_and(|d| d.authoritative_query_ok)),
                     );
                     if let Some(diagnostics) = diagnostics {
                         scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());
@@ -3406,13 +3518,64 @@ fn pnpm_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
     Some(parent.to_path_buf())
 }
 
+/// A pnpm global-store generation directory name parsed to a comparable number
+/// so the newest store sorts first. pnpm <=10 names the store by a bare integer
+/// (`5`); pnpm >=11 names it `v<n>` (`v11`). The base defect parsed `v11` with a
+/// plain `u64::parse`, scoring it 0 and sorting it BEHIND any leftover pre-11
+/// numeric store on a migrated machine, which entrenched a stale reading. Both
+/// forms parse here; anything else scores 0 and sorts last.
+fn pnpm_store_generation(name: &str) -> u64 {
+    name.strip_prefix('v').unwrap_or(name).parse::<u64>().unwrap_or(0)
+}
+
+/// Closed telemetry token for the pnpm global-store layout family observed while
+/// reading delivery evidence. Never a path — only the shape. Lets a residual
+/// event name whether it saw the pnpm >=11 `v<n>` store, a pre-11 numeric store,
+/// or nothing recognisable, without leaking any filesystem location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PnpmStoreFamily {
+    /// pnpm >=11: `<home>/global/v<n>/<opaque-hash>/node_modules`.
+    V11,
+    /// pnpm <=10: `<home>/global/<n>/node_modules`.
+    Numeric,
+    /// No store directory was found, or its name matched neither shape.
+    Unknown,
+}
+
+impl PnpmStoreFamily {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::V11 => "v11",
+            Self::Numeric => "numeric",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify a pnpm global-store generation directory name (or the trailing
+/// component of a `pnpm root -g` path) into its layout family. `v11` is the
+/// pnpm >=11 shape; a bare integer is the pre-11 shape.
+pub fn pnpm_store_family(name: &str) -> PnpmStoreFamily {
+    let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    match name.strip_prefix('v') {
+        Some(rest) if all_digits(rest) => PnpmStoreFamily::V11,
+        _ if all_digits(name) => PnpmStoreFamily::Numeric,
+        _ => PnpmStoreFamily::Unknown,
+    }
+}
+
 /// package.json candidates inside pnpm's global store.
 ///
-/// pnpm keeps globals under `<pnpm-home>/global/<store-version>/node_modules`
-/// — a small integer directory that changes with pnpm's store format — so the
-/// versions present are enumerated (highest first) rather than guessed. One
-/// bounded `read_dir` of a directory holding a handful of entries; a missing
-/// `global/` simply yields nothing.
+/// pnpm keeps globals under `<pnpm-home>/global/<store-generation>/…`. The
+/// generation directory changes with pnpm's store format, so the generations
+/// present are enumerated (newest first) rather than guessed:
+///   - pnpm <=10: `<home>/global/<n>/node_modules/@indigoai-us/hq-cli`
+///   - pnpm >=11: `<home>/global/v<n>/<opaque-hash>/node_modules/@indigoai-us/hq-cli`
+///
+/// Both shapes are emitted for every generation. The pnpm 11 opaque-hash
+/// directory changes on every install, so it is discovered by a bounded
+/// single-level `read_dir` of the generation directory rather than cached; a
+/// missing `global/` simply yields nothing.
 fn pnpm_store_package_json_candidates(pnpm_home: &Path) -> Vec<std::path::PathBuf> {
     let global = pnpm_home.join("global");
     let suffix = Path::new("node_modules")
@@ -3427,24 +3590,93 @@ fn pnpm_store_package_json_candidates(pnpm_home: &Path) -> Vec<std::path::PathBu
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
         .collect();
-    // Newest store format first, then by name so the order is deterministic
-    // regardless of how the filesystem enumerated the directory.
+    // Newest store generation first (parsing `v11` as 11 so it outranks a stale
+    // `5`), then by name for a deterministic order regardless of how the
+    // filesystem enumerated the directory.
     stores.sort_by_key(|path| {
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default()
             .to_string();
-        (std::cmp::Reverse(name.parse::<u64>().unwrap_or(0)), name)
+        (std::cmp::Reverse(pnpm_store_generation(&name)), name)
     });
 
-    let mut candidates: Vec<std::path::PathBuf> = stores
-        .into_iter()
-        .map(|store| store.join(&suffix))
-        .collect();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    for store in &stores {
+        // pnpm <=10: the package sits directly under the generation's node_modules.
+        candidates.push(store.join(&suffix));
+        // pnpm >=11: one opaque-hash directory per install lives under the
+        // generation, with the package beneath it. Enumerated fresh every call
+        // because the hash changes on each install.
+        if let Ok(entries) = std::fs::read_dir(store) {
+            for entry in entries.flatten() {
+                let child = entry.path();
+                if child.is_dir() {
+                    candidates.push(child.join(&suffix));
+                }
+            }
+        }
+    }
     // Some setups keep the store flat directly under `global/`.
     candidates.push(global.join(&suffix));
     candidates
+}
+
+/// The installed hq-cli version located from the path `pnpm root -g` reports,
+/// accepting BOTH global-store shapes so a pnpm major bump cannot blind the read:
+/// pnpm <=10 prints `<home>/global/<n>/node_modules` (the package sits directly
+/// beneath), while pnpm >=11 prints `<home>/global/v<n>` with the package one
+/// opaque-hash directory further down. A bounded single-level scan of the
+/// reported root covers the pnpm 11 shape; the direct and `node_modules`-suffixed
+/// joins cover the others. Returns `None` when no manifest is readable — absence
+/// of evidence fails safe toward retrying, never toward a durable block.
+pub fn hq_cli_version_under_pnpm_root(root: &Path) -> Option<String> {
+    let pkg = Path::new("@indigoai-us").join("hq-cli").join("package.json");
+    let nm_pkg = Path::new("node_modules").join(&pkg);
+    let mut candidates: Vec<std::path::PathBuf> = vec![root.join(&pkg), root.join(&nm_pkg)];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                candidates.push(child.join(&nm_pkg));
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
+}
+
+/// Parse the installed `@indigoai-us/hq-cli` version out of `pnpm ls -g --depth 0
+/// --json` output. pnpm answers with an array of one project object carrying a
+/// `dependencies` map (pnpm 10 and 11 share this shape); a few setups emit a bare
+/// object instead of a one-element array, so both are accepted. This is the
+/// authoritative delivery reader: it takes pnpm's OWN answer for where the global
+/// package lives rather than guessing a store layout. Returns `None` for empty,
+/// malformed, or unexpected JSON — a parse miss is "no evidence", which fails safe
+/// toward retrying and never blocks.
+pub fn pnpm_global_ls_hq_cli_version(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let projects: Vec<&serde_json::Value> = match &value {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        object @ serde_json::Value::Object(_) => vec![object],
+        _ => return None,
+    };
+    for project in projects {
+        for section in ["dependencies", "devDependencies", "optionalDependencies"] {
+            if let Some(version) = project
+                .get(section)
+                .and_then(|deps| deps.get("@indigoai-us/hq-cli"))
+                .and_then(|entry| entry.get("version"))
+                .and_then(|version| version.as_str())
+                .filter(|version| !version.is_empty())
+            {
+                return Some(version.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path::PathBuf> {
@@ -3934,8 +4166,11 @@ mod tests {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
             path_has_shim_dir: true,
-            // pnpm honoured the forced dir and wrote where the app runs.
+            // A native-resolution diagnostic only; on a nested layout it would
+            // legitimately be Some(false), and it no longer gates any class.
             global_bin_dir_matches_shim_dir: Some(true),
+            store_family: PnpmStoreFamily::V11,
+            authoritative_query_ok: true,
             exit_status: "0".to_string(),
             output_len: 42,
         };
@@ -3954,6 +4189,7 @@ mod tests {
             delivered_version: Some("5.94.1"),
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: true,
+            nonblocking_episode_keys: &[],
             pnpm: Some(pnpm.clone()),
         });
         assert_eq!(
@@ -3992,12 +4228,15 @@ mod tests {
                 delivered_version: None,
                 installer_bin: "/opt/homebrew/bin/pnpm",
                 already_blocked: false,
+                nonblocking_episode_keys: &[],
                 pnpm: Some(PnpmRunDiagnostics {
                     home_source,
                     home_env_present: false,
                     path_has_shim_dir,
                     // Not aimed => never probed.
                     global_bin_dir_matches_shim_dir: None,
+                    store_family: PnpmStoreFamily::Unknown,
+                    authoritative_query_ok: false,
                     exit_status: "0".to_string(),
                     output_len: 0,
                 }),
@@ -4027,36 +4266,30 @@ mod tests {
             // them: npm has nowhere safe to aim. Delivery evidence is irrelevant
             // — the prefix never matched, so it never reaches the delivery gate.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Npm, None, false, false, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Npm, None, false, hq_bin, false),
                 NonConvergenceKind::ForeignManaged,
                 "npm/{hq_bin}"
             );
-            // pnpm aimed at the right dir (match=true) AND the target delivered
-            // into the store, yet the shim is stale: genuine shadowing.
+            // pnpm aimed from the resolved shim AND the target delivered into
+            // pnpm's store, yet the shim is stale: genuine shadowing. The native
+            // `pnpm bin -g` direction is no longer an input — delivery evidence
+            // plus the executed reading decide this class.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, true),
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, true),
                 NonConvergenceKind::PnpmTargeted,
                 "pnpm-targeted/{hq_bin}"
             );
-            // Aimed, but pnpm's effective global bin dir is NOT the shim dir (a
-            // build that ignored the forced setting): misdirected, never blocks —
-            // regardless of whether the store received the package.
-            assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, true),
-                NonConvergenceKind::PnpmMisdirected,
-                "pnpm-misdirected/{hq_bin}"
-            );
-            // Aimed at the right dir but the target was never delivered: a
+            // Aimed at the right home but the target was never delivered: a
             // transient resolution shortfall, exactly like the npm arm.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false),
                 NonConvergenceKind::ResolutionShortfall,
                 "pnpm-shortfall/{hq_bin}"
             );
             // Not aimed at all (underivable / PATH without the shim dir): the
             // ambient-spawn foreign-managed shape.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, false, false, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin, false),
                 NonConvergenceKind::ForeignManaged,
                 "pnpm-untargeted/{hq_bin}"
             );
@@ -4067,7 +4300,6 @@ mod tests {
             non_convergence_kind(
                 InstallExecutor::Npm,
                 Some("/Users/t/.npm-global"),
-                false,
                 false,
                 "/Users/t/.npm-global/bin/hq",
                 true,
@@ -4086,29 +4318,14 @@ mod tests {
     fn npm_targeted_requires_delivery_evidence_and_is_no_longer_a_prefix_tautology() {
         let prefix = "/Users/t/.npm-global";
         let hq_bin = "/Users/t/.npm-global/bin/hq";
-        // Same tautological (prefix, bin) pair, opposite delivery evidence. The
-        // pnpm direction flag is ignored for the npm executor (pass false).
+        // Same tautological (prefix, bin) pair, opposite delivery evidence.
         assert_eq!(
-            non_convergence_kind(
-                InstallExecutor::Npm,
-                Some(prefix),
-                false,
-                false,
-                hq_bin,
-                true
-            ),
+            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, true),
             NonConvergenceKind::NpmTargeted,
             "delivered target in a matching prefix is genuine shadowing"
         );
         assert_eq!(
-            non_convergence_kind(
-                InstallExecutor::Npm,
-                Some(prefix),
-                false,
-                false,
-                hq_bin,
-                false
-            ),
+            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, false),
             NonConvergenceKind::ResolutionShortfall,
             "an undelivered target in a matching prefix is a resolution shortfall"
         );
@@ -4160,6 +4377,8 @@ mod tests {
             home_env_present: true,
             path_has_shim_dir: false,
             global_bin_dir_matches_shim_dir: Some(false),
+            store_family: PnpmStoreFamily::V11,
+            authoritative_query_ok: true,
             exit_status: "0".to_string(),
             output_len: 1024,
         }
@@ -4167,7 +4386,8 @@ mod tests {
         assert_eq!(
             summary,
             "home_source=nested-bin-dir home_env_present=true path_has_shim_dir=false \
-             global_bin_dir_matches_shim_dir=false exit_status=0 output_len=1024"
+             global_bin_dir_matches_shim_dir=false store_family=v11 authoritative_query_ok=true \
+             exit_status=0 output_len=1024"
         );
         assert!(!summary.contains('/'));
 
@@ -4177,11 +4397,15 @@ mod tests {
             home_env_present: false,
             path_has_shim_dir: false,
             global_bin_dir_matches_shim_dir: None,
+            store_family: PnpmStoreFamily::Unknown,
+            authoritative_query_ok: false,
             exit_status: "0".to_string(),
             output_len: 0,
         }
         .summary();
         assert!(unprobed.contains("global_bin_dir_matches_shim_dir=unprobed"));
+        assert!(unprobed.contains("store_family=unknown"));
+        assert!(unprobed.contains("authoritative_query_ok=false"));
         assert!(!unprobed.contains('/'));
     }
 
@@ -4281,148 +4505,155 @@ mod tests {
             .any(|arg| arg.starts_with("--config.global-bin-dir")));
     }
 
-    /// A pnpm run diagnostics builder for the nested pnpm >=11 field layout,
-    /// varying only the two evidence signals the new classifier observes.
+    /// A pnpm run diagnostics builder for the nested pnpm >=11 field layout. The
+    /// `matches` argument is now a NATIVE-resolution diagnostic only — it no
+    /// longer changes any class — but the builder keeps varying it so the tests
+    /// prove exactly that.
     fn pnpm_field_diagnostics(matches: Option<bool>) -> PnpmRunDiagnostics {
         PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
             path_has_shim_dir: true,
             global_bin_dir_matches_shim_dir: matches,
+            store_family: PnpmStoreFamily::V11,
+            authoritative_query_ok: true,
             exit_status: "0".to_string(),
             output_len: 96,
         }
     }
 
-    /// The classifier no longer derives the pnpm class from the shim path and the
-    /// updater's own PATH alone. Same targeted inputs, three different real
-    /// observations of the installer's output, three different classes.
+    /// The pnpm class is now decided by delivery evidence plus the executed
+    /// reading alone. The native `pnpm bin -g` direction is a diagnostic only:
+    /// the SAME targeted+delivered inputs classify PnpmTargeted whether the native
+    /// dir happens to match the shim dir or (as on every pnpm >=11 nested layout)
+    /// does not — the exact tautology the base defect gated blocking on.
     #[test]
-    fn pnpm_targeted_requires_delivery_evidence_and_a_matching_global_bin_dir() {
+    fn pnpm_targeted_requires_delivery_evidence_only() {
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
-        // Matched dir + delivered => genuine shadowing (loud, blocks).
+        // Delivered => genuine shadowing (loud, blocks), regardless of direction.
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, true),
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, true),
             NonConvergenceKind::PnpmTargeted
         );
-        // Matched dir + NOT delivered => transient shortfall (loud, never blocks).
+        // NOT delivered => transient shortfall (loud, never blocks).
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Pnpm, None, true, true, hq_bin, false),
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false),
             NonConvergenceKind::ResolutionShortfall
         );
-        // Mismatched dir => misdirected (loud, never blocks), whatever the store.
-        assert_eq!(
-            non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, true),
-            NonConvergenceKind::PnpmMisdirected
-        );
-        assert_eq!(
-            non_convergence_kind(InstallExecutor::Pnpm, None, true, false, hq_bin, false),
-            NonConvergenceKind::PnpmMisdirected
-        );
-        // Only the delivered-into-the-matching-dir class blocks.
+        // The direction diagnostic never promotes or demotes a class: a delivered
+        // target with the native dir matching AND with it mismatching both stay
+        // PnpmTargeted (via `decide_post_install`, which is what wires the probe).
+        for matches in [Some(true), Some(false), None] {
+            let outcome = decide_post_install(&PostInstallContext {
+                executor: InstallExecutor::Pnpm,
+                before_bin: hq_bin,
+                after_bin: hq_bin,
+                before_version: None,
+                after_version: Some("5.93.0"),
+                latest: "5.97.2",
+                npm_prefix_passed: None,
+                delivered_version: Some("5.97.2"),
+                installer_bin: "/opt/homebrew/bin/pnpm",
+                already_blocked: false,
+                nonblocking_episode_keys: &[],
+                pnpm: Some(pnpm_field_diagnostics(matches)),
+            });
+            assert_eq!(
+                outcome.non_convergence_kind,
+                Some(NonConvergenceKind::PnpmTargeted),
+                "delivered target stays PnpmTargeted for direction {matches:?}"
+            );
+            assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.97.2"));
+        }
         assert!(NonConvergenceKind::PnpmTargeted.may_block_auto_update());
-        assert!(!NonConvergenceKind::PnpmMisdirected.may_block_auto_update());
-        assert!(!NonConvergenceKind::PnpmMisdirected.is_installer_targeted());
-        assert_eq!(
-            NonConvergenceKind::PnpmMisdirected.telemetry_value(),
-            "pnpm-misdirected"
-        );
     }
 
-    /// The exact 2026-08-10 field shape: pnpm nested layout, PNPM_HOME derived
-    /// from the grandparent, the shim dir on PATH, the package delivered into the
-    /// pnpm store, but the executed shim unchanged because pnpm's effective global
-    /// bin dir is NOT the shim dir. On unmodified main this classifies PnpmTargeted
-    /// with `record_non_convergent = Some(latest)`, permanently wedging that
-    /// machine. Under the directed contract it is a misdirected install: loud on
-    /// every occurrence, but it writes NO durable marker.
+    /// The heart of the r3 regression fix: the exact 2026-08-10 pnpm >=11 field
+    /// shape that STILL fails to deliver (a genuine registry shortfall, not the
+    /// converged happy path) is a ResolutionShortfall that writes NO durable
+    /// marker AND is bounded to one capture per episode — so the 16:13:33 /
+    /// 16:14:27 double-fire across an app self-update collapses to a single event
+    /// instead of re-paging on every check and every restart. On unmodified main
+    /// this same shape (with the forced-flag direction probe echoing a match) was
+    /// captured on every single occurrence.
     #[test]
-    fn a_misdirected_pnpm_install_is_loud_and_never_blocks_auto_install() {
+    fn a_pnpm_resolution_shortfall_is_bounded_to_one_capture_per_episode() {
+        // The native direction is Some(false) on a nested layout — the healthy
+        // shape post-fix — and it no longer forces a misdirected class. pnpm's own
+        // answer said the target is NOT in its global store (a genuine shortfall).
+        fn shortfall_ctx<'a>(
+            hq_bin: &'a str,
+            latest: &'a str,
+            keys: &'a [String],
+        ) -> PostInstallContext<'a> {
+            PostInstallContext {
+                executor: InstallExecutor::Pnpm,
+                before_bin: hq_bin,
+                after_bin: hq_bin,
+                before_version: None,
+                after_version: Some("5.93.0"),
+                latest,
+                npm_prefix_passed: None,
+                delivered_version: Some("5.93.0"),
+                installer_bin: "/opt/homebrew/bin/pnpm",
+                already_blocked: false,
+                nonblocking_episode_keys: keys,
+                pnpm: Some(pnpm_field_diagnostics(Some(false))),
+            }
+        }
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
-        let outcome = decide_post_install(&PostInstallContext {
-            executor: InstallExecutor::Pnpm,
-            before_bin: hq_bin,
-            after_bin: hq_bin, // hq_bin_changed = false, as in the field event
-            before_version: None,
-            after_version: Some("5.93.0"),
-            latest: "5.97.2",
-            npm_prefix_passed: None,
-            // pnpm delivered the package into its store (run B) ...
-            delivered_version: Some("5.97.2"),
-            installer_bin: "/opt/homebrew/bin/pnpm",
-            already_blocked: false,
-            // ... but wrote the shim flat into PNPM_HOME, so the effective global
-            // bin dir is not the dir holding the executed shim.
-            pnpm: Some(pnpm_field_diagnostics(Some(false))),
-        });
-        assert_eq!(
-            outcome.non_convergence_kind,
-            Some(NonConvergenceKind::PnpmMisdirected)
-        );
-        assert_eq!(
-            outcome.record_non_convergent, None,
-            "a misdirected install must never wedge auto-update"
-        );
-        let report = outcome.capture.as_ref().expect("misdirected stays loud");
-        assert_eq!(report.executor, InstallExecutor::Pnpm);
-        assert_eq!(report.delivered_version.as_deref(), Some("5.97.2"));
-        assert_eq!(
-            report
-                .pnpm
-                .as_ref()
-                .and_then(|d| d.global_bin_dir_matches_shim_dir),
-            Some(false)
-        );
-        assert!(!outcome.capture_requires_durable_record);
-        // And it stays loud even once an episode was already recorded — no
-        // bounding, because it is not the foreign-managed shape.
-        let repeat = decide_post_install(&PostInstallContext {
-            executor: InstallExecutor::Pnpm,
-            before_bin: hq_bin,
-            after_bin: hq_bin,
-            before_version: None,
-            after_version: Some("5.93.0"),
-            latest: "5.97.2",
-            npm_prefix_passed: None,
-            delivered_version: Some("5.97.2"),
-            installer_bin: "/opt/homebrew/bin/pnpm",
-            already_blocked: true,
-            pnpm: Some(pnpm_field_diagnostics(Some(false))),
-        });
-        assert!(
-            repeat.capture.is_some(),
-            "misdirected is loud on every occurrence"
-        );
-        assert_eq!(repeat.record_non_convergent, None);
-    }
+        let latest = "5.97.2";
 
-    /// A pnpm install aimed at the right dir that delivered nothing (the registry
-    /// had not propagated the target yet) mirrors the npm arm's shortfall: loud,
-    /// self-healing, and never a durable block.
-    #[test]
-    fn an_undelivered_pnpm_target_is_a_resolution_shortfall() {
-        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
-        let outcome = decide_post_install(&PostInstallContext {
-            executor: InstallExecutor::Pnpm,
-            before_bin: hq_bin,
-            after_bin: hq_bin,
-            before_version: None,
-            after_version: Some("5.93.0"),
-            latest: "5.97.2",
-            npm_prefix_passed: None,
-            // Aimed at the right dir (match=true) but the store still has N-1.
-            delivered_version: Some("5.93.0"),
-            installer_bin: "/opt/homebrew/bin/pnpm",
-            already_blocked: false,
-            pnpm: Some(pnpm_field_diagnostics(Some(true))),
-        });
+        // First occurrence (empty episode set): classified shortfall, captured,
+        // NO durable block, and it hands back the episode key to persist.
+        let first = decide_post_install(&shortfall_ctx(hq_bin, latest, &[]));
         assert_eq!(
-            outcome.non_convergence_kind,
+            first.non_convergence_kind,
             Some(NonConvergenceKind::ResolutionShortfall)
         );
-        assert_eq!(outcome.record_non_convergent, None);
-        assert!(outcome.capture.is_some());
-        assert!(!outcome.capture_requires_durable_record);
+        assert_eq!(
+            first.record_non_convergent, None,
+            "a shortfall must never wedge auto-update"
+        );
+        assert!(first.capture.is_some(), "first occurrence stays loud");
+        assert!(!first.capture_requires_durable_record);
+        let key = first
+            .record_nonblocking_episode
+            .expect("the first capture returns an episode key to persist");
+        assert_eq!(
+            key,
+            non_convergent_episode_key(
+                latest,
+                InstallExecutor::Pnpm,
+                NonConvergenceKind::ResolutionShortfall,
+                Some(PnpmHomeSource::NestedBinDir),
+            )
+        );
+
+        // Second occurrence with that key already persisted (a later check, or the
+        // 16:14 app-restart event): SAME shape, but NOT captured — the double-fire
+        // is gone — and still never blocks.
+        let keys = [key];
+        let repeat = decide_post_install(&shortfall_ctx(hq_bin, latest, &keys));
+        assert_eq!(
+            repeat.non_convergence_kind,
+            Some(NonConvergenceKind::ResolutionShortfall)
+        );
+        assert!(
+            repeat.capture.is_none(),
+            "a persistent shortfall episode is captured once, not on every occurrence"
+        );
+        assert_eq!(repeat.record_nonblocking_episode, None);
+        assert_eq!(repeat.record_non_convergent, None);
+
+        // A NEW `latest` re-arms the capture: its episode key carries a different
+        // `latest|` prefix, so a genuinely recurring defect is never hidden.
+        let after_publish = decide_post_install(&shortfall_ctx(hq_bin, "5.98.0", &keys));
+        assert!(
+            after_publish.capture.is_some(),
+            "a new CLI publish reports the shortfall again"
+        );
+        assert!(after_publish.record_nonblocking_episode.is_some());
     }
 
     /// The invariant the fix must never break: a genuine pnpm shadowing defect —
@@ -4444,6 +4675,7 @@ mod tests {
             delivered_version: Some("5.97.2"), // delivered == target
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: true, // still loud + blocking anyway
+            nonblocking_episode_keys: &[],
             pnpm: Some(pnpm_field_diagnostics(Some(true))),
         });
         assert_eq!(
@@ -4508,6 +4740,211 @@ mod tests {
                 .as_deref(),
             Some("5.93.0"),
             "the shared reader is shadowed by the stray npm manifest"
+        );
+    }
+
+    /// r3 base-failure #1 (the recurrence's root): the exact pnpm >=11 store
+    /// layout the field machine had. pnpm reports its global root as
+    /// `<home>/global/v11`, with the delivered package one opaque-hash directory
+    /// below. On base `fcdca79e` the store reader built only
+    /// `<home>/global/<n>/node_modules/...`, so this returned None and every
+    /// verification path read `delivered_version=none` while the install had
+    /// actually landed. It must now be discovered — both directly and through the
+    /// executed (non-symlink script) shim, so `local` stops freezing stale.
+    #[test]
+    fn pnpm11_store_delivery_is_discovered_under_the_v11_hash_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let pkg = home
+            .join("global")
+            .join("v11")
+            .join("a1b2c3d4e5")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.98.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            installed_hq_cli_version_in_pnpm_store(home.to_str().unwrap()).as_deref(),
+            Some("5.98.0"),
+            "the pnpm 11 v11/<hash> store manifest must be discovered"
+        );
+
+        // A pnpm global shim is a plain (non-symlink) script — reproduction proves
+        // canonicalize()+ancestors() can never reach its package tree — yet the
+        // executed reading now resolves the version via the store candidates.
+        let shim = home.join("bin").join("hq");
+        std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        std::fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(
+            version_from_hq_binary(&shim).as_deref(),
+            Some("5.98.0"),
+            "the executed pnpm 11 shim resolves its version from the v11 store"
+        );
+    }
+
+    /// r3 base-failure #2: store-generation ordering. The base sort parsed "v11"
+    /// with `u64::parse`, scoring it 0, so a machine migrated from pnpm 10 with a
+    /// leftover "5" store enumerated the STALE store first. `v11` must now outrank
+    /// it — the end-to-end reader returns the v11 version when both are present.
+    #[test]
+    fn pnpm_store_generations_sort_v11_ahead_of_a_leftover_numeric_store() {
+        assert_eq!(pnpm_store_generation("5"), 5);
+        assert_eq!(pnpm_store_generation("v11"), 11);
+        assert_eq!(pnpm_store_generation("not-a-store"), 0);
+        assert!(pnpm_store_generation("v11") > pnpm_store_generation("5"));
+        assert!(pnpm_store_generation("v11") > pnpm_store_generation("4"));
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let numeric = home
+            .join("global")
+            .join("5")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&numeric).unwrap();
+        std::fs::write(
+            numeric.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.93.0"}"#,
+        )
+        .unwrap();
+        let v11 = home
+            .join("global")
+            .join("v11")
+            .join("deadbeef")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&v11).unwrap();
+        std::fs::write(
+            v11.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.98.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            installed_hq_cli_version_in_pnpm_store(home.to_str().unwrap()).as_deref(),
+            Some("5.98.0"),
+            "v11 must outrank a stale leftover numeric store"
+        );
+    }
+
+    /// The authoritative delivery parser over `pnpm ls -g --depth 0 --json`. Both
+    /// the pnpm 10 and pnpm 11 payload shapes yield the installed version; empty,
+    /// malformed and unexpected JSON yield None (no evidence → retry, never block).
+    #[test]
+    fn pnpm_global_ls_parser_reads_both_majors_and_fails_soft() {
+        let pnpm11 = r#"[{"name":"global","path":"/h/global/v11","dependencies":{"@indigoai-us/hq-cli":{"from":"@indigoai-us/hq-cli","version":"5.98.0","resolved":"file:","path":"/h/global/v11/abc/node_modules/@indigoai-us/hq-cli"}}}]"#;
+        assert_eq!(pnpm_global_ls_hq_cli_version(pnpm11).as_deref(), Some("5.98.0"));
+        let pnpm10 = r#"[{"dependencies":{"@indigoai-us/hq-cli":{"version":"5.97.2"}}}]"#;
+        assert_eq!(pnpm_global_ls_hq_cli_version(pnpm10).as_deref(), Some("5.97.2"));
+        // A bare object rather than a one-element array (seen on some setups).
+        let obj = r#"{"dependencies":{"@indigoai-us/hq-cli":{"version":"5.96.0"}}}"#;
+        assert_eq!(pnpm_global_ls_hq_cli_version(obj).as_deref(), Some("5.96.0"));
+        // No hq-cli present, empty, malformed, and a scalar all fail soft to None.
+        assert_eq!(pnpm_global_ls_hq_cli_version(r#"[{"dependencies":{}}]"#), None);
+        assert_eq!(pnpm_global_ls_hq_cli_version(""), None);
+        assert_eq!(pnpm_global_ls_hq_cli_version("not json {"), None);
+        assert_eq!(pnpm_global_ls_hq_cli_version("42"), None);
+    }
+
+    /// The `pnpm root -g` fallback accepts BOTH store shapes: the pnpm 10 root
+    /// (`<home>/global/5/node_modules`, package directly beneath) and the pnpm 11
+    /// root (`<home>/global/v11`, package under a per-install hash dir).
+    #[test]
+    fn hq_cli_version_under_pnpm_root_accepts_both_store_shapes() {
+        let tmp10 = tempfile::TempDir::new().unwrap();
+        let root10 = tmp10.path().join("global").join("5").join("node_modules");
+        let pkg10 = root10.join("@indigoai-us").join("hq-cli");
+        std::fs::create_dir_all(&pkg10).unwrap();
+        std::fs::write(
+            pkg10.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.97.2"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_version_under_pnpm_root(&root10).as_deref(),
+            Some("5.97.2")
+        );
+
+        let tmp11 = tempfile::TempDir::new().unwrap();
+        let root11 = tmp11.path().join("global").join("v11");
+        let pkg11 = root11
+            .join("f00ba7")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&pkg11).unwrap();
+        std::fs::write(
+            pkg11.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.98.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_version_under_pnpm_root(&root11).as_deref(),
+            Some("5.98.0")
+        );
+
+        let empty = tempfile::TempDir::new().unwrap();
+        assert_eq!(hq_cli_version_under_pnpm_root(empty.path()), None);
+    }
+
+    /// The pnpm global-store family token is a closed diagnostic, never a path.
+    #[test]
+    fn pnpm_store_family_classifies_the_generation_name() {
+        assert_eq!(pnpm_store_family("v11"), PnpmStoreFamily::V11);
+        assert_eq!(pnpm_store_family("v12"), PnpmStoreFamily::V11);
+        assert_eq!(pnpm_store_family("5"), PnpmStoreFamily::Numeric);
+        assert_eq!(pnpm_store_family("vfoo"), PnpmStoreFamily::Unknown);
+        assert_eq!(pnpm_store_family(""), PnpmStoreFamily::Unknown);
+        assert_eq!(PnpmStoreFamily::V11.telemetry_value(), "v11");
+        assert_eq!(PnpmStoreFamily::Numeric.telemetry_value(), "numeric");
+        assert_eq!(PnpmStoreFamily::Unknown.telemetry_value(), "unknown");
+    }
+
+    /// The non-blocking episode bound: keyed per `(latest, executor, kind,
+    /// home_source)`, membership-tested, and reset by a new `latest`.
+    #[test]
+    fn non_convergent_episode_bounding_is_per_latest_and_membership_keyed() {
+        let key = non_convergent_episode_key(
+            "5.98.0",
+            InstallExecutor::Pnpm,
+            NonConvergenceKind::ResolutionShortfall,
+            Some(PnpmHomeSource::NestedBinDir),
+        );
+        assert_eq!(key, "5.98.0|pnpm|resolution-shortfall|nested-bin-dir");
+        assert!(!non_convergent_episode_reported(&[], &key));
+        let recorded = non_convergent_episode_record(&[], &key, "5.98.0");
+        assert!(non_convergent_episode_reported(&recorded, &key));
+
+        // A new `latest` carries a different `latest|` prefix, so the old key is
+        // dropped from the persisted set and the shortfall reports again.
+        let newer_key = non_convergent_episode_key(
+            "5.99.0",
+            InstallExecutor::Pnpm,
+            NonConvergenceKind::ResolutionShortfall,
+            Some(PnpmHomeSource::NestedBinDir),
+        );
+        let after = non_convergent_episode_record(&recorded, &newer_key, "5.99.0");
+        assert!(non_convergent_episode_reported(&after, &newer_key));
+        assert!(
+            !non_convergent_episode_reported(&after, &key),
+            "keys for a superseded latest are reset"
+        );
+
+        // npm uses the executor token and no pnpm home source.
+        assert_eq!(
+            non_convergent_episode_key(
+                "5.98.0",
+                InstallExecutor::Npm,
+                NonConvergenceKind::ResolutionShortfall,
+                None,
+            ),
+            "5.98.0|npm|resolution-shortfall|n/a"
         );
     }
 
