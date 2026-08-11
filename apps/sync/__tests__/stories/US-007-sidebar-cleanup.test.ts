@@ -166,16 +166,22 @@ describe('US-007: Marketplace is a top-level destination', () => {
     expect(getDesktopSecondarySidebar({ kind: 'marketplace' }, workspaces)).toBeNull();
   });
 
-  it('left the Library tabs, and the legacy library:marketplace intent redirects top-level', () => {
+  it('carries the US-015 Marketplace fold-in tab, and library:marketplace resolves as a live Library tab', () => {
+    // US-015 folded Marketplace back into the Library tabs; the top-level
+    // `marketplace` route stays alive as the palette destination.
     expect(LIBRARY_SECTIONS.map((section) => section.id)).toEqual([
       'skills',
       'workers',
+      'marketplace',
       'installed',
       'profile',
     ]);
     const library = getDesktopSecondarySidebar({ kind: 'library' }, workspaces);
-    expect(library?.items.some((item) => item.label === 'Marketplace')).toBe(false);
-    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({ kind: 'marketplace' });
+    expect(library?.items.some((item) => item.label === 'Marketplace')).toBe(true);
+    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
+      kind: 'library',
+      tab: 'marketplace',
+    });
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
   });
 });
