@@ -8,7 +8,8 @@
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
   import CompanyProjectsPage from './CompanyProjectsPage.svelte';
   import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte';
-  import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
+  import CompanySkillsPage from './CompanySkillsPage.svelte';
+  import CompanyWorkersPage from './CompanyWorkersPage.svelte';
   import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
   import TeamPanel from '../panels/TeamPanel.svelte';
   import {
@@ -315,9 +316,10 @@
         {:else if tab === 'projects'}
           <CompanyProjectsPage slug={company.slug} />
         {:else if tab === 'skills'}
-          <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
+          <!-- hq-desktop-v2 US-009: first-class Skills/Workers company pages. -->
+          <CompanySkillsPage slug={company.slug} />
         {:else if tab === 'workers'}
-          <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
+          <CompanyWorkersPage slug={company.slug} />
         {:else if tab === 'knowledge'}
           <CompanyKnowledgePanel slug={company.slug} />
         {:else if tab === 'team'}

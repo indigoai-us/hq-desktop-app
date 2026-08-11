@@ -43,7 +43,9 @@ export interface DesktopAltTestHarness {
   openDesktopAltWindow(): MaybePromise<DesktopAltWindowState>;
   closeDesktopAltWindow(): MaybePromise<void>;
   snapshot(): MaybePromise<DesktopAltSnapshot>;
-  navigate(route: 'sync' | 'meetings' | 'company'): MaybePromise<RenderedPage>;
+  navigate(
+    route: 'sync' | 'meetings' | 'company' | 'company-skills' | 'company-workers',
+  ): MaybePromise<RenderedPage>;
   dispose?(): MaybePromise<void>;
 }
 
@@ -192,8 +194,44 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     };
   }
 
-  navigate(route: 'sync' | 'meetings' | 'company'): RenderedPage {
+  navigate(
+    route: 'sync' | 'meetings' | 'company' | 'company-skills' | 'company-workers',
+  ): RenderedPage {
     this.assertDesktopAppRouteContracts();
+
+    // hq-desktop-v2 US-009: first-class company Skills / Workers pages, wired
+    // from the V2 sidebar workspace sections and mounted by CompanyPage.
+    if (route === 'company-skills' || route === 'company-workers') {
+      const isSkills = route === 'company-skills';
+      const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
+      expect(page).toContain(
+        isSkills
+          ? '<CompanySkillsPage slug={company.slug} />'
+          : '<CompanyWorkersPage slug={company.slug} />',
+      );
+      return {
+        route,
+        text: sourceText(
+          isSkills
+            ? 'src/desktop-alt/pages/CompanySkillsPage.svelte'
+            : 'src/desktop-alt/pages/CompanyWorkersPage.svelte',
+          isSkills
+            ? [
+                'data-testid="company-skills-panel"',
+                '<h2>Skills</h2>',
+                'Company-scoped workflows and operating knowledge',
+                'forcedFilter="skills"',
+              ]
+            : [
+                'data-testid="company-workers-panel"',
+                '<h2>Workers</h2>',
+                'Company-scoped agents and specialist roles',
+                'forcedFilter="workers"',
+              ],
+        ),
+        consoleErrors: [...this.consoleErrors],
+      };
+    }
 
     if (route === 'sync') {
       // The legacy 'sync' route resolves to Home (US-002); the V4 Home surface

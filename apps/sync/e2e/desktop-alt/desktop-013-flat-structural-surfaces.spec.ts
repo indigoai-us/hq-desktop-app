@@ -25,7 +25,9 @@ describe('DESKTOP-013: flat structural surfaces', () => {
   const moderation = readRepoFile('src/desktop-alt/panels/ModerationPanel.svelte');
   const submit = readRepoFile('src/desktop-alt/panels/SubmitPanel.svelte');
   const agencyChat = readRepoFile('src/desktop-alt/panels/AgencyChatPanel.svelte');
-  const companyLibrary = readRepoFile('src/desktop-alt/panels/CompanyLibraryPanel.svelte');
+  // US-009 promoted the per-company library panel into first-class pages.
+  const companySkills = readRepoFile('src/desktop-alt/pages/CompanySkillsPage.svelte');
+  const companyWorkers = readRepoFile('src/desktop-alt/pages/CompanyWorkersPage.svelte');
   const projectRow = readRepoFile('src/desktop-alt/components/ProjectRow.svelte');
   const projectList = readRepoFile('src/desktop-alt/components/ProjectListView.svelte');
   const commandPalette = readRepoFile(
@@ -100,7 +102,8 @@ describe('DESKTOP-013: flat structural surfaces', () => {
       ['moderation', moderation, ['.section']],
       ['submit', submit, ['.picker', '.request-access']],
       ['agency chat', agencyChat, ['.thread']],
-      ['company library', companyLibrary, ['.empty-state']],
+      ['company skills', companySkills, ['.empty-state']],
+      ['company workers', companyWorkers, ['.empty-state']],
     ] as const) {
       for (const selector of selectors) {
         const block = rule(source, selector);

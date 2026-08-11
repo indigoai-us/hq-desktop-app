@@ -12,7 +12,7 @@ import {
   type RenderedPage,
 } from './harness';
 
-type DesktopRouteName = 'sync' | 'meetings' | 'company';
+type DesktopRouteName = 'sync' | 'meetings' | 'company' | 'company-skills' | 'company-workers';
 
 interface LiveConfig {
   appPath: string;
@@ -260,7 +260,7 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
     await this.driver.switchToWindow(desktop);
     await this.installErrorCapture();
 
-    if (route === 'company') {
+    if (route === 'company' || route === 'company-skills' || route === 'company-workers') {
       const clicked = await this.driver.execute<boolean>(`
         const button = document.querySelector('nav[aria-label="Companies"] button');
         if (!button) return false;
@@ -271,6 +271,33 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
         throw new Error('Live desktop-alt company navigation requires at least one company row.');
       }
       await this.waitForText('Companies');
+
+      // hq-desktop-v2 US-009: the Skills / Workers workspace sections are
+      // first-class sidebar entries under the active company.
+      if (route !== 'company') {
+        const section = route === 'company-skills' ? 'Skills' : 'Workers';
+        const sectionClicked = await this.driver.execute<boolean>(
+          `
+          const label = arguments[0];
+          const nav = document.querySelector('[data-testid="v2-workspace-sections"]');
+          const button = nav
+            ? [...nav.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)
+            : null;
+          if (!button) return false;
+          button.click();
+          return true;
+        `,
+          [section],
+        );
+        if (!sectionClicked) {
+          throw new Error(`Live desktop-alt navigation could not find the ${section} section.`);
+        }
+        await this.waitForText(
+          route === 'company-skills'
+            ? 'Company-scoped workflows and operating knowledge'
+            : 'Company-scoped agents and specialist roles',
+        );
+      }
     } else {
       // The V4 IA renamed the Sync destination to Home (US-002); the V4 Home
       // surface renders the actor-grouped digest header (US-003).

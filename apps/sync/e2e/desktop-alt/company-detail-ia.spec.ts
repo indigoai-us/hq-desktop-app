@@ -59,8 +59,10 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
 
   it('CompanyPage mounts Skills/Workers/Team panels (source contract)', () => {
     const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
-    expect(page).toContain('forcedFilter="skills"');
-    expect(page).toContain('forcedFilter="workers"');
+    // US-009: Skills/Workers are first-class company pages, not forced-filter
+    // library panels.
+    expect(page).toContain('<CompanySkillsPage slug={company.slug} />');
+    expect(page).toContain('<CompanyWorkersPage slug={company.slug} />');
     expect(page).toContain('TeamPanel');
     expect(page).not.toContain("tab === 'accounts'");
     expect(page).not.toContain("tab === 'tasks'");

@@ -7,6 +7,9 @@ describe('desktop-alt smoke pages', () => {
     ['sync', 'Home'],
     ['meetings', 'Meetings'],
     ['company', 'New project'],
+    // hq-desktop-v2 US-009: first-class company Skills / Workers pages.
+    ['company-skills', 'Company-scoped workflows and operating knowledge'],
+    ['company-workers', 'Company-scoped agents and specialist roles'],
   ] as const)('renders %s without console errors', async (route, expectedMarker) => {
     const app = await createDesktopAltHarness('qa@getindigo.ai');
 

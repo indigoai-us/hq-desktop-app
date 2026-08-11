@@ -365,7 +365,9 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   const activity = read('src/desktop-alt/panels/ActivityPanel.svelte');
   const secrets = read('src/desktop-alt/panels/SecretsPanel.svelte');
   const moderation = read('src/desktop-alt/panels/ModerationPanel.svelte');
-  const companyLibrary = read('src/desktop-alt/panels/CompanyLibraryPanel.svelte');
+  // US-009 promoted the per-company library panel into first-class pages.
+  const companySkills = read('src/desktop-alt/pages/CompanySkillsPage.svelte');
+  const companyWorkers = read('src/desktop-alt/pages/CompanyWorkersPage.svelte');
   const versionPopout = read('src/desktop-alt/components/VersionPopout.svelte');
   const desktop = read('src/desktop-alt/DesktopApp.svelte');
   const harness = read('dev-harness/mocks/core.ts');
@@ -469,8 +471,10 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   });
 
   it('gives company skills and workers context without multiplying every deep command', () => {
-    expect(companyLibrary).toContain('class="company-library-header"');
-    expect(companyLibrary).toContain('Company-scoped workflows and operating knowledge');
+    expect(companySkills).toContain('class="company-library-header"');
+    expect(companySkills).toContain('Company-scoped workflows and operating knowledge');
+    expect(companyWorkers).toContain('class="company-library-header"');
+    expect(companyWorkers).toContain('Company-scoped agents and specialist roles');
     expect(desktop).toContain('orderedCompanies.map');
     expect(desktop).not.toContain('orderedCompanies.flatMap');
     expect(desktop).toContain('only materialize deep section commands for the active company');

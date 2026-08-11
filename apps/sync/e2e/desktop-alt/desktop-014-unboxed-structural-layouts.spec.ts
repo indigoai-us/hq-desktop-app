@@ -84,8 +84,12 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
   const companyProjects = readRepoFile(
     'src/desktop-alt/pages/CompanyProjectsPage.svelte',
   );
-  const companyLibrary = readRepoFile(
-    'src/desktop-alt/panels/CompanyLibraryPanel.svelte',
+  // US-009 promoted the per-company library panel into first-class pages.
+  const companySkills = readRepoFile(
+    'src/desktop-alt/pages/CompanySkillsPage.svelte',
+  );
+  const companyWorkers = readRepoFile(
+    'src/desktop-alt/pages/CompanyWorkersPage.svelte',
   );
   const libraryList = readRepoFile('src/desktop-alt/components/LibraryList.svelte');
   const storyList = readRepoFile('src/desktop-alt/components/StoryList.svelte');
@@ -302,7 +306,8 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     expectEveryOpenStructure(companyProjects, '.empty-state', 'projects empty state');
     expectEveryOpenStructure(companyProjects, '.column-empty', 'project column empty state');
     expectEveryOpenStructure(companyGoals, '.empty-state', 'goals empty state');
-    expectEveryOpenStructure(companyLibrary, '.empty-state', 'company library empty state');
+    expectEveryOpenStructure(companySkills, '.empty-state', 'company skills empty state');
+    expectEveryOpenStructure(companyWorkers, '.empty-state', 'company workers empty state');
     expectEveryOpenStructure(libraryList, '.empty-state', 'library empty state');
     expectEveryOpenStructure(storyList, '.empty-state', 'story list empty state');
     expectEveryOpenStructure(storyKanban, '.column-empty', 'task column empty state');
