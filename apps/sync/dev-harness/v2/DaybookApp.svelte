@@ -1324,15 +1324,15 @@
                 <span class="fn">{r.name}</span>
                 <span class="fm who">{r.co} · {r.dur}</span>
                 {#if r.signals}<span class="fm mono sig">{r.signals} SIGNALS</span>{/if}
-                <span class="pill mtg-state {r.state}">{MEETING_STATE_LABEL[r.state]}</span>
                 <span class="mtg-actions">
-                  <button class="mtg-ic" aria-label="Join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}><VideoCamera size={14} /></button>
+                  <button class="mtg-ic" aria-label="Join" data-tip="Join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}><VideoCamera size={14} /></button>
                   {#if r.state === 'invited' || r.state === 'live'}
-                    <button class="mtg-ic on" aria-label="Notetaker joining" onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}><CheckCircle size={14} /></button>
+                    <button class="mtg-ic on" aria-label="Notetaker joining" data-tip="Notetaker is in" onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}><CheckCircle size={14} /></button>
                   {:else}
-                    <button class="mtg-ic" aria-label="Send the notetaker" onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}><Plus size={14} /></button>
+                    <button class="mtg-ic" aria-label="Send the notetaker" data-tip="Send the notetaker" onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}><Plus size={14} /></button>
                   {/if}
                 </span>
+                <span class="pill mtg-state {r.state}">{MEETING_STATE_LABEL[r.state]}</span>
               </div>
             {/each}
           {/each}
@@ -1348,7 +1348,7 @@
           {/each}
 
           <div class="mtg-foot">
-            <span>2 calendars connected · last synced <span class="mono">2M AGO</span></span>
+            <span class="mono">2 CALENDARS CONNECTED · LAST SYNCED 2M AGO</span>
             <button class="chip g" onclick={() => toast('HQ Console would open to manage calendars')}>Manage <ArrowUpRight size={11} /></button>
           </div>
         </div>
@@ -1951,7 +1951,7 @@
   .mtg-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--t2); }
   .mtg-ic:hover { background: var(--hover); color: var(--t1); }
   .mtg-ic.on { color: var(--ok-ink); }
-  .mtg-foot { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 11px; color: var(--t3); }
+  .mtg-foot { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 10px; letter-spacing: 0.04em; color: var(--t3); }
   .mtg-foot .chip { margin-left: auto; }
   .conflict-ic { display: inline-flex; align-items: center; color: var(--warn-ink); }
   .sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 5px; }
