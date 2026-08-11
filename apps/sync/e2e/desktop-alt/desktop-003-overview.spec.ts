@@ -148,3 +148,54 @@ describe('DESKTOP-003: actionable company overview', () => {
     expect(panel).toMatch(/var\(--type-secondary/);
   });
 });
+
+describe('US-004: V2 overview board — pulse, Needs-you queue, projects/goals/activity cards', () => {
+  const panel = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
+  const model = readRepoFile('src/desktop-alt/lib/overview-model.ts');
+  const digest = readRepoFile('src/desktop-alt/components/OverviewActivityDigest.svelte');
+  const collection = readRepoFile('src/desktop-alt/lib/progressive-collection.ts');
+
+  it('computes checks-passing desktop-side and hides it when the denominator is 0', () => {
+    // Formula lives in overview-model.ts per references.md — passed/total stories.
+    expect(model).toContain('checksPassing%');
+    expect(model).toContain('if (total === 0) return null;');
+    expect(panel).toContain('checksPassing(companyProjects)');
+    // Rendered only when non-null — never a fake 0% failing state.
+    expect(panel).toMatch(/\{#if checks\}[\s\S]*?pulse-checks-passing[\s\S]*?\{\/if\}/);
+    expect(panel).toContain('checks passing');
+  });
+
+  it('Needs-you aggregates conflicts, paused sync, goal nudges, and pending invites', () => {
+    // Sync conflicts from the popover conflict store, with rescue actions.
+    expect(panel).toContain("import { conflictStore } from '../../stores/conflicts'");
+    expect(panel).toContain('conflictsNeedsYouCard(conflictCount, conflictsResolving)');
+    expect(panel).toContain('conflictStore.resolveAll');
+    expect(model).toContain("id: 'keep-local'");
+    expect(model).toContain("id: 'keep-cloud'");
+    // Paused Cloud Off state with Inspect.
+    expect(panel).toContain('Sync is paused on this device');
+    expect(panel).toContain("{ id: 'inspect-paused', label: 'Inspect', kind: 'secondary' }");
+    // Goals-without-linked-work nudge + Connect.
+    expect(panel).toContain('unlinkedGoals');
+    expect(panel).toContain("{ id: 'connect', label: 'Connect', kind: 'primary' }");
+    // Pending invites + Accept (claim-by-email), cross-company.
+    expect(panel).toContain('pendingInviteWorkspaces');
+    expect(panel).toContain('getInviteCardModel(workspace, acceptingInviteSlug === workspace.slug)');
+    expect(panel).toContain("await invoke('claim_pending_company_invite', { companySlug: inviteSlug })");
+  });
+
+  it('Projects card previews 3 rows with a View projects link; Goals card keeps KR line + View all', () => {
+    expect(collection).toContain('export const OVERVIEW_PROJECT_LIMIT = 3');
+    expect(panel).toContain('OVERVIEW_PROJECT_LIMIT');
+    expect(panel).toContain('data-testid="overview-view-projects"');
+    expect(panel).toContain('data-testid="overview-view-goals"');
+    expect(panel).toContain('progress={objectiveProgress(objective)}');
+  });
+
+  it('Team activity card renders the activity contract or a clean empty state — no US-019 client here', () => {
+    expect(digest).toContain('No activity yet — it appears here after files sync.');
+    // Reuses the existing get_company_activity client via companyStore only.
+    expect(digest).toContain('companyStore.loadActivity');
+    expect(digest).not.toContain('fetch(');
+  });
+});

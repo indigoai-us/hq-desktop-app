@@ -40,12 +40,21 @@
     type Story,
     type StoryState,
   } from '../lib/projects-model';
+  import { invoke } from '@tauri-apps/api/core';
+  import { conflictStore } from '../../stores/conflicts';
+  import {
+    pendingInviteWorkspaces,
+    type Workspace,
+    type WorkspacesResult,
+  } from '../../lib/workspaces';
+  import { checksPassing, conflictsNeedsYouCard } from '../lib/overview-model';
   import { useCompanyBoard, type CompanyBoardCard } from '../lib/company-board.svelte';
   import { useCompanySummary } from '../lib/company-summary.svelte';
   import ProjectListView from '../components/ProjectListView.svelte';
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
   import GoalCard from '../v4/GoalCard.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
+  import { getInviteCardModel } from '../v4/home-model';
   import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte';
   import ProvenanceLine from '../components/ProvenanceLine.svelte';
   import type { HomeCardModel } from '../v4/home-model';
@@ -221,7 +230,10 @@
     boardState.board.doing.length + boardState.board.review.length || incompleteStoryCount(inFlightProjects),
   );
 
-  const acPercent = $derived(projectsAcceptancePercent(companyProjects));
+  // Checks passing (US-004/US-020): computed desktop-side from local prd.json
+  // story `passes` flags — formula documented in lib/overview-model.ts (per
+  // hq-desktop-v2/references.md). Null (denominator 0) hides the stat.
+  const checks = $derived(checksPassing(companyProjects));
   const lastUpdated = $derived(lastUpdatedLabel(boardCards));
   const goalsCount = $derived(objectives.length);
   const projectPulseCount = $derived(
@@ -239,6 +251,36 @@
     return { label: 'cloud connected', tone: 'ok' };
   });
 
+  // ---- sync conflicts (US-004) — mirror the popover's conflict store -------
+  let conflictCount = $state(conflictStore.pending.length);
+  let conflictsResolving = $state(false);
+  $effect(() => {
+    conflictCount = conflictStore.pending.length;
+    const unsubscribe = conflictStore.subscribe(() => {
+      conflictCount = conflictStore.pending.length;
+    });
+    return () => {
+      unsubscribe();
+    };
+  });
+
+  // ---- pending company invites (US-004) — cross-company, email-keyed -------
+  let inviteWorkspaces = $state<Workspace[]>([]);
+  let acceptingInviteSlug = $state<string | null>(null);
+  async function refreshInvites(): Promise<void> {
+    try {
+      const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
+      inviteWorkspaces = pendingInviteWorkspaces(
+        Array.isArray(result.workspaces) ? result.workspaces : [],
+      );
+    } catch (err) {
+      console.warn('list_syncable_workspaces (overview invites) failed:', err);
+    }
+  }
+  $effect(() => {
+    void refreshInvites();
+  });
+
   const unlinkedGoals = $derived(
     objectives.filter((objective) => linkedProjects(objective).length === 0),
   );
@@ -249,6 +291,8 @@
    */
   const needsYouCards = $derived.by((): Array<HomeCardModel & { id: string }> => {
     const cards: Array<HomeCardModel & { id: string }> = [];
+    const conflictCard = conflictsNeedsYouCard(conflictCount, conflictsResolving);
+    if (conflictCard) cards.push(conflictCard);
     const reviewCount = boardState.board.review.length;
     if (reviewCount > 0) {
       cards.push({
@@ -303,6 +347,12 @@
         sub: 'Connect active projects so progress can roll up',
         tone: 'neutral',
         actions: [{ id: 'connect', label: 'Connect', kind: 'primary' }],
+      });
+    }
+    for (const workspace of inviteWorkspaces) {
+      cards.push({
+        id: `invite:${workspace.slug}`,
+        ...getInviteCardModel(workspace, acceptingInviteSlug === workspace.slug),
       });
     }
     return cards;
@@ -557,7 +607,32 @@
 
   // ---- overview actions (preserve real navigation; never invent targets) ---
 
-  function handleNeedsYouAction(cardId: string, actionId: string): void {
+  async function handleNeedsYouAction(cardId: string, actionId: string): Promise<void> {
+    if (cardId === 'sync-conflicts') {
+      if (actionId !== 'keep-local' && actionId !== 'keep-cloud') return;
+      conflictsResolving = true;
+      try {
+        await conflictStore.resolveAll(
+          actionId === 'keep-local' ? 'keep-local' : 'keep-remote',
+        );
+      } finally {
+        conflictsResolving = false;
+      }
+      return;
+    }
+    if (cardId.startsWith('invite:') && actionId === 'accept-invite') {
+      const inviteSlug = cardId.slice('invite:'.length);
+      if (acceptingInviteSlug) return;
+      acceptingInviteSlug = inviteSlug;
+      try {
+        // Modern invites are email-keyed + tokenless — Accept runs claim-by-email.
+        await invoke('claim_pending_company_invite', { companySlug: inviteSlug });
+        await refreshInvites();
+      } finally {
+        acceptingInviteSlug = null;
+      }
+      return;
+    }
     if (cardId === 'review-board' && actionId === 'review') {
       const firstInFlight = inFlightProjects[0];
       if (firstInFlight) {
@@ -719,10 +794,13 @@
           <span class="pulse-value">{storiesInProgress}</span>
           <span class="pulse-label">stories moving</span>
         </div>
-        <div class="pulse-item">
-          <span class="pulse-value">{acPercent}%</span>
-          <span class="pulse-label">checks passing</span>
-        </div>
+        {#if checks}
+          <!-- Hidden when no stories exist — never "0%" as if checks fail. -->
+          <div class="pulse-item" data-testid="pulse-checks-passing">
+            <span class="pulse-value">{checks.percent}%</span>
+            <span class="pulse-label">checks passing</span>
+          </div>
+        {/if}
         <div class="pulse-item">
           <span class="pulse-value">{goalsCount}</span>
           <span class="pulse-label">goals</span>

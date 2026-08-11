@@ -10,9 +10,10 @@ describe('progressive project rendering', () => {
 
   it('caps the overview at a small ranked preview with an honest remainder', () => {
     const window = progressiveWindow(projects, OVERVIEW_PROJECT_LIMIT, OVERVIEW_PROJECT_LIMIT);
-    expect(window.items).toEqual(projects.slice(0, 8));
-    expect(window.remaining).toBe(53);
-    expect(window.nextCount).toBe(16);
+    expect(OVERVIEW_PROJECT_LIMIT).toBe(3);
+    expect(window.items).toEqual(projects.slice(0, 3));
+    expect(window.remaining).toBe(58);
+    expect(window.nextCount).toBe(6);
   });
 
   it('renders full Projects in bounded batches without losing data', () => {
