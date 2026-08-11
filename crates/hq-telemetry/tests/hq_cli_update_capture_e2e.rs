@@ -2,9 +2,10 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, decide_post_install, report_install_failure,
-    report_non_convergent_install, report_unreadable_version, BinaryAnchorShape, InstallExecutor,
-    LocalVersionProbeDiagnostics, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics,
+    apply_post_install_effects, decide_post_install, non_convergent_episode_key,
+    report_install_failure, report_non_convergent_install, report_unreadable_version,
+    BinaryAnchorShape, ConvergenceVerdict, InstallExecutor, LocalVersionProbeDiagnostics,
+    NonConvergenceKind, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind, VersionProbeOutcome,
     NON_CONVERGENT_ERROR_PREFIX,
 };
@@ -87,11 +88,16 @@ fn pnpm_context<'a>(
         delivered_version: delivered,
         installer_bin: pnpm_bin,
         already_blocked,
+        // Default fixtures are first-occurrence (empty episode set); tests that
+        // exercise the non-blocking episode bound pass their own set.
+        nonblocking_episode_keys: &[],
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present: false,
             path_has_shim_dir,
             global_bin_dir_matches_shim_dir: matches,
+            store_family: PnpmStoreFamily::V11,
+            authoritative_query_ok: delivered.is_some(),
             exit_status: "0".to_string(),
             output_len: 128,
         }),
@@ -381,10 +387,12 @@ fn pnpm_non_convergence_names_its_executor_and_drops_the_npm_prefix_placeholder(
         ("pnpm_home_source", "nested-bin-dir"),
         ("pnpm_home_env_present", "false"),
         ("pnpm_path_has_shim_dir", "true"),
-        // The direction evidence that breaks the tautology: pnpm's effective
-        // global bin dir IS the dir holding the shim, so this is genuine
-        // shadowing rather than a misdirected write.
+        // The native-direction diagnostic (now informational only).
         ("pnpm_global_bin_dir_matches_shim_dir", "true"),
+        // The r3 self-diagnosing tokens: which store family we saw and whether
+        // pnpm's own delivery answer was available.
+        ("pnpm_store_family", "v11"),
+        ("pnpm_authoritative_query_ok", "true"),
         // A pnpm run now names its requested and delivered versions too.
         ("requested_version", "5.84.0"),
         ("delivered_version", "5.84.0"),
@@ -399,7 +407,8 @@ fn pnpm_non_convergence_names_its_executor_and_drops_the_npm_prefix_placeholder(
         event.extra.get("pnpm_diagnostics").and_then(Value::as_str),
         Some(
             "home_source=nested-bin-dir home_env_present=false path_has_shim_dir=true \
-             global_bin_dir_matches_shim_dir=true exit_status=0 output_len=128"
+             global_bin_dir_matches_shim_dir=true store_family=v11 authoritative_query_ok=true \
+             exit_status=0 output_len=128"
         )
     );
     let serialized = serde_json::to_string(event).expect("serialize event");
@@ -930,18 +939,18 @@ fn the_2026_08_09_field_event_shape_reclassifies_under_the_new_contract() {
     );
 }
 
-/// HQ-DESKTOP-46, era 3 (the r2 reopen). Replay the exact 2026-08-10 field event
-/// shape (event 766826e5): pnpm executor, nested pnpm >=11 layout, PNPM_HOME
-/// derived from the grandparent, the shim dir on PATH, the package delivered into
-/// the pnpm store, yet the executed shim never moved because pnpm's effective
-/// global bin dir is the flat home, not the nested bin dir. On the base commit
-/// this rendered as pnpm-targeted with a durable block, permanently wedging that
-/// machine. Under the directed contract it renders through `before_send` as a
-/// non-blocking misdirected install that names the mismatch.
+/// HQ-DESKTOP-46, era 3 (the r2 reopen) — the recurrence closed at the reporting
+/// boundary. Replay the exact 2026-08-10 pnpm >=11 field shape with the
+/// candidate's store fix in effect: the package IS delivered into
+/// `<home>/global/v11/<hash>/node_modules`, so both the delivery read AND the
+/// executed-shim reading now reach `latest`. The run therefore CONVERGES and
+/// produces NO Sentry event — where the base commit (blind to the v11 store) read
+/// delivered/executed as stale and captured an install-non-convergent event on
+/// every check. pnpm's native `pnpm bin -g` direction is `Some(false)` here (the
+/// flat home, not the forced nested bin dir) and no longer changes the outcome.
 #[test]
-fn the_2026_08_10_pnpm_field_event_reclassifies_under_the_directed_contract() {
+fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
     let home = hq_desktop_core::paths::home_dir().expect("test home directory");
-    let home_text = home.to_string_lossy().to_string();
     let hq_bin = home
         .join("Library/pnpm/bin/hq")
         .to_string_lossy()
@@ -949,68 +958,120 @@ fn the_2026_08_10_pnpm_field_event_reclassifies_under_the_directed_contract() {
     let ctx = PostInstallContext {
         executor: InstallExecutor::Pnpm,
         before_bin: &hq_bin,
-        after_bin: &hq_bin, // hq_bin_changed = false, as in the field event
+        after_bin: &hq_bin,
         before_version: None,
-        after_version: Some("5.93.0"), // local
+        // The executed shim now resolves the v11 store, reaching latest.
+        after_version: Some("5.97.2"),
         latest: "5.97.2",
         npm_prefix_passed: None,
-        // pnpm delivered the package into its global store ...
         delivered_version: Some("5.97.2"),
         installer_bin: "/opt/homebrew/bin/pnpm",
         already_blocked: false,
+        nonblocking_episode_keys: &[],
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
             path_has_shim_dir: true,
-            // ... but wrote the shim flat into PNPM_HOME, not the nested bin dir.
+            // The native direction legitimately differs on a nested layout; it is
+            // a diagnostic only and no longer forces a non-convergent class.
             global_bin_dir_matches_shim_dir: Some(false),
+            store_family: PnpmStoreFamily::V11,
+            authoritative_query_ok: true,
             exit_status: "0".to_string(),
             output_len: 96,
         }),
     };
 
-    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
-    assert_eq!(
-        records, 0,
-        "the field event must no longer wedge auto-update"
-    );
-    assert_eq!(captures, 1, "but it stays loud on every occurrence");
-    assert_eq!(record_failures, 0);
-    assert_eq!(events.len(), 1);
-    let event = &events[0];
-    assert_eq!(event.level, sentry::Level::Warning);
-    // Grouping does NOT split: the fingerprint is unchanged.
-    assert_eq!(
-        fingerprint(event),
-        ["hq-cli-update", "install-non-convergent"]
-    );
-    for (tag, expected) in [
-        ("install_executor", "pnpm"),
-        ("non_convergence_kind", "pnpm-misdirected"),
-        ("pnpm_home_source", "nested-bin-dir"),
-        ("pnpm_path_has_shim_dir", "true"),
-        ("pnpm_global_bin_dir_matches_shim_dir", "false"),
-        ("requested_version", "5.97.2"),
-        ("delivered_version", "5.97.2"),
-        ("hq_bin_changed", "false"),
-    ] {
+    let clears = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(&ctx);
         assert_eq!(
-            event.tags.get(tag).map(String::as_str),
-            Some(expected),
-            "unexpected {tag} tag"
+            outcome.verdict,
+            ConvergenceVerdict::Converged,
+            "the fixed field shape converges"
         );
-    }
-    // Still no npm placeholder for a pnpm run.
-    assert!(!event.extra.contains_key("npm_prefix"));
-    assert!(!event.tags.contains_key("prefix_known"));
-    let serialized = serde_json::to_string(event).expect("serialize event");
-    assert!(!serialized.contains(&home_text));
-    for forbidden in ["/Users/", "/home/"] {
-        assert!(
-            !serialized.contains(forbidden),
-            "misdirected pnpm event leaked {forbidden:?}"
+        assert!(outcome.clear_non_convergent);
+        assert!(outcome.capture.is_none());
+        assert!(outcome.record_non_convergent.is_none());
+        assert!(outcome.record_nonblocking_episode.is_none());
+        let record = |_v: String| panic!("a converged field event must not record a marker");
+        let clear = || clears.set(clears.get() + 1);
+        let capture = |_r: NonConvergentReport| panic!("a converged field event must not capture");
+        let record_failure = |_e: String| panic!("no marker failure on a converged run");
+        let result = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
         );
-    }
+        assert!(result.is_ok(), "the fixed field shape is a success");
+    });
+    assert!(
+        events.is_empty(),
+        "the recurrence is closed: no Sentry event for the fixed field shape"
+    );
+    assert_eq!(
+        clears.get(),
+        1,
+        "a converged install clears any stale non-convergent marker"
+    );
+}
+
+/// The 16:13:33 (0.10.94) / 16:14:27 (0.10.95) double-fire — a persistent,
+/// genuinely-undelivered pnpm shortfall reported twice across an app self-update —
+/// collapses to ONE event under the non-blocking episode bound. Same environment
+/// shape and same `latest`; the second occurrence carries the persisted episode
+/// key the first produced, so it captures nothing and still never blocks.
+#[test]
+fn a_persistent_pnpm_shortfall_captures_once_across_checks_and_an_app_restart() {
+    let hq_bin = "/Users/t/Library/pnpm/bin/hq";
+    // First occurrence, empty episode set: captures once, writes no durable block.
+    let first_ctx = pnpm_context(
+        hq_bin,
+        "/opt/homebrew/bin/pnpm",
+        PnpmHomeSource::NestedBinDir,
+        true,
+        Some(false),    // native direction differs on a nested layout — diagnostic only
+        Some("5.83.0"), // pnpm's own answer: the store still holds N-1
+        false,
+    );
+    let (events1, records1, captures1, _) = composed_non_convergent_events(&first_ctx, true);
+    assert_eq!(captures1, 1, "the first occurrence is reported");
+    assert_eq!(records1, 0, "a shortfall never wedges auto-update");
+    assert_eq!(events1.len(), 1);
+    let key = decide_post_install(&first_ctx)
+        .record_nonblocking_episode
+        .expect("the first capture yields an episode key to persist");
+    assert_eq!(
+        key,
+        non_convergent_episode_key(
+            "5.84.0",
+            InstallExecutor::Pnpm,
+            NonConvergenceKind::ResolutionShortfall,
+            Some(PnpmHomeSource::NestedBinDir),
+        )
+    );
+
+    // Second occurrence (a later check or the 16:14 app-restart event) with the
+    // key already persisted: not captured, still not blocking.
+    let keys = [key];
+    let mut second_ctx = pnpm_context(
+        hq_bin,
+        "/opt/homebrew/bin/pnpm",
+        PnpmHomeSource::NestedBinDir,
+        true,
+        Some(false),
+        Some("5.83.0"),
+        false,
+    );
+    second_ctx.nonblocking_episode_keys = &keys;
+    let (events2, records2, captures2, _) = composed_non_convergent_events(&second_ctx, true);
+    assert_eq!(captures2, 0, "the double-fire collapses to a single event");
+    assert_eq!(records2, 0);
+    assert!(events2.is_empty());
 }
 
 /// The pnpm executor no longer hardcodes `delivered_version: None`. A

@@ -4,7 +4,8 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
     reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
-    PnpmRunDiagnostics, PostInstallContext, PostInstallCoreEffects, NON_CONVERGENT_ERROR_PREFIX,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::test::with_captured_events_options;
 
@@ -124,6 +125,7 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
             delivered_version: None,
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: false,
+            nonblocking_episode_keys: &[],
             pnpm: Some(PnpmRunDiagnostics {
                 // Underivable home => foreign-managed => capture is gated on a
                 // durable marker, exactly as for the npm path.
@@ -132,6 +134,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 path_has_shim_dir: false,
                 // Not aimed => never probed.
                 global_bin_dir_matches_shim_dir: None,
+                store_family: PnpmStoreFamily::Unknown,
+                authoritative_query_ok: false,
                 exit_status: "0".to_string(),
                 output_len: 64,
             }),
@@ -146,8 +150,9 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
     reset_non_convergent_marker_unpersisted_capture_for_tests();
 }
 
-/// The pnpm >=11 nested field layout, varying only the two evidence signals the
-/// r2 classifier observes. `'static` so the fixtures need no caller-side locals.
+/// The pnpm >=11 nested field layout. `matches` is now a native-resolution
+/// diagnostic only; the marker decision turns on delivery evidence. `'static` so
+/// the fixtures need no caller-side locals.
 fn pnpm_marker_ctx(
     matches: Option<bool>,
     delivered: Option<&'static str>,
@@ -163,11 +168,14 @@ fn pnpm_marker_ctx(
         delivered_version: delivered,
         installer_bin: "/opt/homebrew/bin/pnpm",
         already_blocked: false,
+        nonblocking_episode_keys: &[],
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
             path_has_shim_dir: true,
             global_bin_dir_matches_shim_dir: matches,
+            store_family: PnpmStoreFamily::V11,
+            authoritative_query_ok: delivered.is_some(),
             exit_status: "0".to_string(),
             output_len: 96,
         }),
@@ -203,33 +211,36 @@ fn drive_success_path(ctx: &PostInstallContext<'_>) -> (usize, usize) {
     (records.get(), captures.get())
 }
 
-/// The r2 contract at the marker layer: a misdirected or undelivered pnpm install
-/// writes NO durable `cliUpdateNonConvergentVersion` marker — the decision never
-/// even attempts the record — while a genuine shadowing install still writes one.
-/// This is what keeps a mis-aimed install (a pnpm build that ignored the forced
-/// global-bin-dir) from permanently wedging auto-update while a real defect keeps
-/// its block.
+/// The r3 contract at the marker layer: the durable `cliUpdateNonConvergentVersion`
+/// marker is gated on DELIVERY EVIDENCE alone, never on the native `pnpm bin -g`
+/// direction. An undelivered pnpm install (a registry shortfall) writes no marker;
+/// a delivered-but-shadowed install writes one — and it does so whether or not
+/// pnpm's native global bin dir happens to match the shim dir, which on a pnpm >=11
+/// nested layout it never does. That is exactly the tautology the base defect gated
+/// blocking on.
 #[test]
-fn a_misdirected_or_undelivered_pnpm_install_writes_no_durable_marker() {
-    // Misdirected: pnpm delivered to its store but wrote the shim to the wrong
-    // dir. No marker attempted, but still captured loudly.
-    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(false), Some("5.97.2")));
-    assert_eq!(
-        records, 0,
-        "a misdirected install must write no durable marker"
-    );
-    assert_eq!(captures, 1, "but it stays loud on every occurrence");
-
-    // Undelivered (aimed at the right dir, store still N-1): a shortfall.
+fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
+    // Undelivered (store still N-1): a shortfall — no marker, still captured.
     let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(true), Some("5.93.0")));
     assert_eq!(
         records, 0,
         "an undelivered target must write no durable marker"
     );
     assert_eq!(captures, 1);
-
-    // Genuine shadowing (aimed right AND delivered): the durable block IS written.
-    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(true), Some("5.97.2")));
-    assert_eq!(records, 1, "genuine shadowing keeps its durable marker");
+    // Undelivered entirely (pnpm's own answer returned nothing): still no marker.
+    let (records, captures) = drive_success_path(&pnpm_marker_ctx(Some(false), None));
+    assert_eq!(records, 0, "no delivery evidence must write no durable marker");
     assert_eq!(captures, 1);
+
+    // Genuine shadowing (delivered == target) writes the durable block — and the
+    // direction diagnostic does NOT change that: both a matching AND a mismatching
+    // native dir keep the block, proving blocking no longer depends on the probe.
+    for matches in [Some(true), Some(false), None] {
+        let (records, captures) = drive_success_path(&pnpm_marker_ctx(matches, Some("5.97.2")));
+        assert_eq!(
+            records, 1,
+            "genuine shadowing keeps its durable marker for direction {matches:?}"
+        );
+        assert_eq!(captures, 1);
+    }
 }
