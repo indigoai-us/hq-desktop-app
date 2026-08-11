@@ -83,6 +83,10 @@ pub struct CompanyActivity {
     pub recent: Vec<ActivityEntry>,
     #[serde(default)]
     pub top: Vec<ActivityContributor>,
+    /// Per-member breakdown when the server supports `include=members`.
+    /// Absent means no data — never treat as an empty constraint.
+    #[serde(default)]
+    pub members_detail: Option<Vec<ActivityMemberDetail>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -96,6 +100,10 @@ pub struct ActivityStats {
     pub members: u32,
     #[serde(default)]
     pub vault_size: String,
+    /// Raw vault size in bytes when the server provides it.
+    /// Absent means no data — never invent a zero size.
+    #[serde(default)]
+    pub vault_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -120,6 +128,17 @@ pub struct ActivityContributor {
     pub who: String,
     #[serde(default)]
     pub edits: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityMemberDetail {
+    #[serde(default)]
+    pub who: String,
+    #[serde(default)]
+    pub edits: u32,
+    #[serde(default)]
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -447,6 +466,21 @@ pub fn activity_url(base: &str, company_uid: &str) -> Result<String, String> {
         base.trim_end_matches('/'),
         company_uid
     ))
+}
+
+/// Activity URL with the US-019 window + members query string.
+///
+/// `window_days` is clamped to `1..=14`. Default callers should pass 7.
+/// The deployed server may ignore these params; the client still requests them
+/// so newer servers can return `membersDetail` / `vaultBytes`.
+pub fn activity_url_with_window(
+    base: &str,
+    company_uid: &str,
+    window_days: u32,
+) -> Result<String, String> {
+    let n = window_days.clamp(1, 14);
+    let base_url = activity_url(base, company_uid)?;
+    Ok(format!("{base_url}?windowDays={n}&include=members"))
 }
 
 /// Build the hq-deploy URL for the company Deployments panel.
@@ -2954,6 +2988,66 @@ mod tests {
         assert_eq!(activity.recent[0].extra["source"], "hq-sync");
         assert_eq!(activity.top[0].edits, 20);
         assert_eq!(activity.top[1].who, "Grace Hopper");
+        // Production payload lacks US-019 extensions — absent means no data.
+        assert_eq!(activity.stats.vault_bytes, None);
+        assert_eq!(activity.members_detail, None);
+    }
+
+    #[test]
+    fn company_activity_parses_us019_members_detail_and_vault_bytes() {
+        let activity = super::parse_company_activity(
+            r#"{
+                "stats": {
+                    "files7": 12,
+                    "edits7": 34,
+                    "members": 5,
+                    "vaultSize": "1.2 GB",
+                    "vaultBytes": 1288490188
+                },
+                "sparkline": [1, 2, 3],
+                "top": [{"who": "Ada Lovelace", "edits": 20}],
+                "membersDetail": [
+                    {"who": "ada@example.com", "edits": 20, "bytes": 900000},
+                    {"who": "grace@example.com", "edits": 14, "bytes": 400000}
+                ]
+            }"#,
+        )
+        .expect("extended activity should parse");
+
+        assert_eq!(activity.stats.vault_bytes, Some(1_288_490_188));
+        let members = activity
+            .members_detail
+            .expect("membersDetail present in payload");
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].who, "ada@example.com");
+        assert_eq!(members[0].edits, 20);
+        assert_eq!(members[0].bytes, 900_000);
+        assert_eq!(members[1].who, "grace@example.com");
+        assert_eq!(members[1].edits, 14);
+        assert_eq!(members[1].bytes, 400_000);
+    }
+
+    #[test]
+    fn company_activity_production_payload_leaves_us019_fields_absent() {
+        let activity = super::parse_company_activity(
+            r#"{
+                "stats": {
+                    "files7": 3,
+                    "edits7": 8,
+                    "members": 2,
+                    "vaultSize": "512 KB"
+                },
+                "sparkline": [0, 1, 0],
+                "top": [{"who": "", "edits": 3}, {"who": "Bob", "edits": 5}],
+                "recent": []
+            }"#,
+        )
+        .expect("current production activity should parse");
+
+        assert_eq!(activity.stats.vault_bytes, None);
+        assert_eq!(activity.members_detail, None);
+        assert_eq!(activity.top[0].who, "");
+        assert_eq!(activity.top[1].who, "Bob");
     }
 
     #[test]
@@ -3610,6 +3704,33 @@ mod tests {
         assert_eq!(
             super::activity_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
             "company uid has invalid characters: \"cmp/bad\""
+        );
+        assert_eq!(
+            super::activity_url_with_window(
+                "https://hqapi.getindigo.ai/",
+                "cmp_01ABC-def.2",
+                7
+            )
+            .unwrap(),
+            "https://hqapi.getindigo.ai/companies/cmp_01ABC-def.2/activity?windowDays=7&include=members"
+        );
+        assert_eq!(
+            super::activity_url_with_window(
+                "https://hqapi.getindigo.ai/",
+                "cmp_01ABC-def.2",
+                99
+            )
+            .unwrap(),
+            "https://hqapi.getindigo.ai/companies/cmp_01ABC-def.2/activity?windowDays=14&include=members"
+        );
+        assert_eq!(
+            super::activity_url_with_window(
+                "https://hqapi.getindigo.ai/",
+                "cmp_01ABC-def.2",
+                0
+            )
+            .unwrap(),
+            "https://hqapi.getindigo.ai/companies/cmp_01ABC-def.2/activity?windowDays=1&include=members"
         );
         assert_eq!(
             super::secrets_url("https://hqapi.getindigo.ai/", "cmp_01ABC-def.2").unwrap(),

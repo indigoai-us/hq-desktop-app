@@ -192,10 +192,19 @@ describe('US-004: V2 overview board — pulse, Needs-you queue, projects/goals/a
     expect(panel).toContain('progress={objectiveProgress(objective)}');
   });
 
-  it('Team activity card renders the activity contract or a clean empty state — no US-019 client here', () => {
+  it('Team activity card renders the activity contract or a clean empty state — US-019 client shipped', () => {
     expect(digest).toContain('No activity yet — it appears here after files sync.');
     // Reuses the existing get_company_activity client via companyStore only.
     expect(digest).toContain('companyStore.loadActivity');
     expect(digest).not.toContain('fetch(');
+    // US-019 pure client: member rows + window label from team-activity module.
+    expect(digest).toContain('teamMemberRows');
+    expect(digest).toContain('teamActivityWindowLabel');
+    const teamActivity = readRepoFile('src/desktop-alt/lib/team-activity.ts');
+    expect(teamActivity).toContain('membersDetail');
+    expect(teamActivity).toContain('vaultBytes');
+    // Absent-safe defaults — optional extensions never invent constraining values.
+    expect(teamActivity).toMatch(/membersDetail[\s\S]*undefined|undefined[\s\S]*membersDetail/);
+    expect(teamActivity).toContain('means NO DATA');
   });
 });
