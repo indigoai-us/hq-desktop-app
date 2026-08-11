@@ -32,8 +32,9 @@ use std::process::{Command, Output};
 use hq_desktop_core::hq_cloud::RUNNER_BIN;
 use hq_desktop_core::runner_target::{
     ensure_runner_target_runnable, npx_cache_dir, pinned_package_spec, probe_runner_target,
-    resolve_runner_target_in, RunnerTargetState,
+    resolve_runner_target_in, RunnerTargetRepair, RunnerTargetState,
 };
+use hq_desktop_core::sync_outcome::{classify_runner_fatal_class, RunnerFatalClass};
 
 fn npx(args: &[&str]) -> Output {
     Command::new("npx")
@@ -136,5 +137,96 @@ fn real_npx_cache_reproduces_exit_126_and_the_gate_unwedges_it() {
         Some(126),
         "the repaired cache must no longer fail in npx's exec layer, stderr: {}",
         String::from_utf8_lossy(&repaired.stderr)
+    );
+
+    // ── THIS cluster's exit-127 leg (HQ-DESKTOP-52): the runner bin is MISSING.
+    // Delete the .bin shim the daemon execs, leaving the entry resolvable. The
+    // preflight stays blind (it never touches the bin), while the payload the
+    // daemon actually spawns exits 127 with a not-found stderr line — and after
+    // the bounded purge-and-re-materialize, the real spawn is unwedged again.
+    let shim = resolve_runner_target_in(&npx_cache_dir().unwrap(), &pinned_package_spec())
+        .expect("the re-materialized cache must resolve the runner target");
+    std::fs::remove_file(&shim).expect("removing the .bin shim leaves the entry resolvable");
+    assert!(
+        preflight_payload().status.success(),
+        "the preflight payload is blind to a missing runner bin too (same divergence)"
+    );
+    let missing = watcher_payload();
+    assert_eq!(
+        missing.status.code(),
+        Some(127),
+        "expected the observed HQ-DESKTOP-52 exit 127, stderr: {}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+    let missing_stderr = String::from_utf8_lossy(&missing.stderr).to_ascii_lowercase();
+    assert!(
+        missing_stderr.contains("no such file") || missing_stderr.contains("not found"),
+        "expected the reported exec not-found stderr class, stderr: {missing_stderr}"
+    );
+    assert_eq!(
+        classify_runner_fatal_class(&String::from_utf8_lossy(&missing.stderr)),
+        RunnerFatalClass::ExecNotFound,
+        "the not-found shell line classifies as exec_not_found"
+    );
+    assert_eq!(probe_runner_target(), RunnerTargetState::Missing);
+
+    let missing_outcome = ensure_runner_target_runnable();
+    assert!(
+        missing_outcome.repair.attempted(),
+        "a Missing target must trigger the single bounded repair"
+    );
+    assert_ne!(
+        missing_outcome.repair,
+        RunnerTargetRepair::ModeRestored,
+        "a Missing target is repaired by purge-and-re-materialize, not a mode bit"
+    );
+    let re_healed = watcher_payload();
+    assert_ne!(
+        re_healed.status.code(),
+        Some(127),
+        "the re-materialized cache must no longer fail not-found, stderr: {}",
+        String::from_utf8_lossy(&re_healed.stderr)
+    );
+
+    // ── npm-relay SHAPE evidence (NOT causal proof for event f2f6c54b): npm
+    // relays an arbitrary failing lifecycle status while printing only its own
+    // `npm error …` lines, and the candidate classifier now names that shape
+    // npm_install_relay instead of `none` — so the NEXT such occurrence
+    // self-describes. The exit-190 producer itself stays unknown per the plan.
+    let relay_pkg = tmp.path().join("relay-fixture");
+    std::fs::create_dir_all(&relay_pkg).unwrap();
+    std::fs::write(
+        relay_pkg.join("package.json"),
+        br#"{"name":"hq-relay-fixture","version":"1.0.0","scripts":{"preinstall":"exit 190"}}"#,
+    )
+    .unwrap();
+    let relay = Command::new("npm")
+        .args(["install", "--no-audit", "--no-fund"])
+        .current_dir(&relay_pkg)
+        .env("npm_config_cache", &cache)
+        .output()
+        .expect("npm must be on PATH for this opt-in test");
+    assert_eq!(
+        relay.status.code(),
+        Some(190),
+        "npm must relay the fixture's lifecycle exit status verbatim, stderr: {}",
+        String::from_utf8_lossy(&relay.stderr)
+    );
+    let relay_stderr = String::from_utf8_lossy(&relay.stderr);
+    let mut saw_npm_relay_line = false;
+    for line in relay_stderr.lines() {
+        let lowered = line.trim_start().to_ascii_lowercase();
+        if lowered.starts_with("npm error ") || lowered.starts_with("npm err! ") {
+            assert_eq!(
+                classify_runner_fatal_class(line),
+                RunnerFatalClass::NpmInstallRelay,
+                "an npm own-prefixed line must classify as npm_install_relay: {line:?}"
+            );
+            saw_npm_relay_line = true;
+        }
+    }
+    assert!(
+        saw_npm_relay_line,
+        "npm must emit at least one npm-error-prefixed line: {relay_stderr}"
     );
 }

@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 
 use hq_desktop_core::runner_target::{
     ensure_runner_target_runnable, npx_cache_entry_hash, pinned_package_spec, probe_runner_target,
-    runner_target_diagnosis, RunnerTargetRepair, RunnerTargetState,
+    runner_target_diagnosis, runner_target_gate, RunnerTargetGate, RunnerTargetRepair,
+    RunnerTargetState,
 };
 
 /// Lay down the directory shape npm produces for `npx --package=<spec>`.
@@ -107,6 +108,78 @@ fn pre_spawn_gate_sees_and_heals_the_poisoned_npx_cache() {
     let diagnosis = runner_target_diagnosis(RunnerTargetState::NotExecutable);
     assert!(diagnosis.contains("HQ Sync"));
     assert!(!diagnosis.contains(&tmp.path().display().to_string()));
+
+    // ── 6. THIS cluster's exit-127 shape: the runner bin is MISSING ──────────
+    // A resolved npx entry whose `node_modules/.bin/hq-sync-runner` is absent is
+    // exactly the HQ-DESKTOP-52 state — the payload the daemon spawns exits 127
+    // with a not-found stderr line, while the materialization preflight (which
+    // only runs `node -e`) stays blind to it.
+    std::env::set_var("npm_config_cache", &cache_root);
+    let _script = materialize_fixture_cache(&cache_root, 0o755);
+    let shim = cache_root
+        .join("_npx")
+        .join(npx_cache_entry_hash(&pinned_package_spec()))
+        .join("node_modules")
+        .join(".bin")
+        .join("hq-sync-runner");
+    std::fs::remove_file(&shim).unwrap();
+    assert_eq!(
+        probe_runner_target(),
+        RunnerTargetState::Missing,
+        "a resolved entry whose runner bin is absent is Missing (exit-127 shape)",
+    );
+
+    // The bounded repair takes the purge-and-re-materialize path, never a mode
+    // restore (that only applies to a present-but-not-executable target). The
+    // final state is environment-dependent — Rematerialized+Runnable where npx
+    // can re-download, Failed+Unresolved on a network-free host — but a Missing
+    // target must NEVER be mode-restored, and a repair is always attempted.
+    let missing_outcome = ensure_runner_target_runnable();
+    assert!(
+        missing_outcome.repair.attempted(),
+        "a Missing target must trigger the single bounded repair",
+    );
+    assert_ne!(
+        missing_outcome.repair,
+        RunnerTargetRepair::ModeRestored,
+        "a Missing target is repaired by purge-and-re-materialize, not a mode bit",
+    );
+
+    // ── 7. The fail-open gate table (pure): only a positively-broken target,
+    //       after the single repair, refuses; every ambiguous/error result
+    //       spawns, so a probe bug can never take a healthy machine offline. ───
+    assert_eq!(
+        runner_target_gate(RunnerTargetState::Missing, false),
+        RunnerTargetGate::Repair,
+        "a fresh Missing target repairs once before any refusal",
+    );
+    assert_eq!(
+        runner_target_gate(RunnerTargetState::Missing, true),
+        RunnerTargetGate::Refuse,
+        "an unrepairable Missing target refuses rather than hot-looping",
+    );
+    assert_eq!(
+        runner_target_gate(RunnerTargetState::NotExecutable, true),
+        RunnerTargetGate::Refuse,
+    );
+    for spawn_state in [
+        RunnerTargetState::Runnable,
+        RunnerTargetState::Unreadable,
+        RunnerTargetState::Unresolved,
+    ] {
+        for repaired in [false, true] {
+            assert_eq!(
+                runner_target_gate(spawn_state, repaired),
+                RunnerTargetGate::Spawn,
+                "{spawn_state:?} must always spawn (fail-open)",
+            );
+        }
+    }
+
+    // ── 8. The Missing diagnosis is user-actionable and leaks no path ─────────
+    let missing_diagnosis = runner_target_diagnosis(RunnerTargetState::Missing);
+    assert!(missing_diagnosis.contains("HQ Sync"));
+    assert!(!missing_diagnosis.contains(&tmp.path().display().to_string()));
 
     std::env::remove_var("npm_config_cache");
     std::env::remove_var("HOME");
