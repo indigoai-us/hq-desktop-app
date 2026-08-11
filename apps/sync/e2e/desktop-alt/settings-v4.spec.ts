@@ -106,11 +106,14 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
       ['widget', 'Widget'],
       ['updates', 'Updates'],
       ['general', 'General'],
+      // US-016: Appearance is a first-class Settings section (theme / opacity / size).
+      ['appearance', 'Appearance'],
       ['meetings', 'Meetings'],
     ]) {
       expect(page).toContain(`id="${id}"`);
       expect(page).toContain(`<h2>${label}</h2>`);
     }
+    expect(page).toContain('data-testid="settings-appearance"');
     expect(page).toContain("closest<HTMLElement>('.desktop-main-scroll')");
     expect(page).toContain("scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })");
     expect(page).toContain('class="setting-row gated-row"');

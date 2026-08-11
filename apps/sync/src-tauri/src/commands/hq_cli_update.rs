@@ -2001,11 +2001,13 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::ffi::{OsStr, OsString};
-    #[cfg(unix)]
-    use std::sync::{Mutex, OnceLock};
 
+    // Serialize HOME mutation on the crate-wide env mutex so tests in other
+    // modules that READ the process-global HOME (e.g. launch.rs reveal-target
+    // tests, which lock the same mutex) never observe our temp poisoned-home.
+    // A private lock here would only exclude this module's own tests.
     #[cfg(unix)]
-    static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    use crate::util::test_support::ENV_MUTEX as HOME_ENV_LOCK;
 
     #[cfg(unix)]
     struct HomeEnvRestore(Option<OsString>);
@@ -2574,7 +2576,7 @@ exit 0
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
-        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _home_lock = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("poisoned-home");
         let poisoned_cache = home.join(".npm/_cacache");

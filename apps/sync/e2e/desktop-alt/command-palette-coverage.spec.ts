@@ -93,7 +93,15 @@ describe('desktop-alt command palette coverage', () => {
     for (const tab of ['skills', 'workers', 'installed', 'profile']) {
       expect(route).toContain(`id: '${tab}'`);
     }
-    for (const tab of ['sync', 'notifications', 'widget', 'updates', 'general', 'meetings']) {
+    for (const tab of [
+      'sync',
+      'notifications',
+      'widget',
+      'updates',
+      'general',
+      'appearance',
+      'meetings',
+    ]) {
       expect(route).toContain(`id: '${tab}'`);
     }
   });
