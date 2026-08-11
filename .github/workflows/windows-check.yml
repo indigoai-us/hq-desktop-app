@@ -233,6 +233,14 @@ jobs:
       - name: Git mirror tests
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml git_mirror::tests
+      # The runner-target probe has a Windows-specific arm: there is no POSIX
+      # mode bit, so executability is never asserted and "exists" means any of
+      # npm's `.cmd`/`.ps1`/extensionless shims. That arm compiles under the
+      # `cargo check --target` above but only *runs* here, and getting it wrong
+      # would report a healthy Windows cache as Missing.
+      - name: Runner target probe tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runner_target::tests
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
