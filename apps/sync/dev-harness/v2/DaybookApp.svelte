@@ -1280,30 +1280,34 @@
                           <span class="who" class:ai={m.ai}>{m.who}</span>
                           <span class="when" class:mono={m.ai}>{m.when}</span>
                         </div>
-                        {#if m.text}<div class="body-txt">{m.text}</div>{/if}
-                        {#if m.card}
-                          <div class="card">
-                            <span class="ct">{m.card.t}</span>
-                            <span class="cs">{m.card.s}</span>
-                            {#if m.card.actions?.length}
-                              <div class="actions">
-                                {#each m.card.actions as a, ai2 (a)}
-                                  <button class="chip" class:g={ai2 > 0} onclick={() => toast(`${a} would open`)}>{a}</button>
-                                {/each}
-                              </div>
-                            {/if}
-                          </div>
-                        {/if}
-                        {#if m.file}
-                          <div class="card filecard">
-                            <span class="lrow-ic"><FileText size={15} /></span><span class="ct small">{m.file.n}</span><span class="cs mono tiny">{m.file.m}</span>
-                          </div>
-                        {/if}
+                        <!-- The bar anchors to the message itself, so adding a
+                             reaction below never shifts where it sits. -->
+                        <div class="msg-main">
+                          {#if m.text}<div class="body-txt">{m.text}</div>{/if}
+                          {#if m.card}
+                            <div class="card">
+                              <span class="ct">{m.card.t}</span>
+                              <span class="cs">{m.card.s}</span>
+                              {#if m.card.actions?.length}
+                                <div class="actions">
+                                  {#each m.card.actions as a, ai2 (a)}
+                                    <button class="chip" class:g={ai2 > 0} onclick={() => toast(`${a} would open`)}>{a}</button>
+                                  {/each}
+                                </div>
+                              {/if}
+                            </div>
+                          {/if}
+                          {#if m.file}
+                            <div class="card filecard">
+                              <span class="lrow-ic"><FileText size={15} /></span><span class="ct small">{m.file.n}</span><span class="cs mono tiny">{m.file.m}</span>
+                            </div>
+                          {/if}
+                          {@render reactPicker(key)}
+                          {@render reactBar(key)}
+                        </div>
                         {#if reactList(key).length}
                           <div class="reacts">{@render reactChips(key)}</div>
                         {/if}
-                        {@render reactPicker(key)}
-                        {@render reactBar(key)}
                       </div>
                     </div>
                   {/if}
@@ -2336,7 +2340,6 @@
   .react-bar:hover { opacity: 1; pointer-events: auto; }
   /* Bridges the 4px offset so the pointer never crosses dead space. */
   .react-bar::before { content: ''; position: absolute; inset: -6px -4px -4px; z-index: -1; }
-  .msg-body:has(.reacts) .react-bar { top: auto; bottom: -4px; margin-top: 0; }
   .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t1); }
   .rb-ic.glyph { color: var(--t2); }
   .rb-ic:hover { background: var(--hover); color: var(--t1); }
@@ -2366,7 +2369,8 @@
   /* Yours reads as a selected control, matching the ice tint elsewhere. */
   .react.mine { background: var(--ice-tile); border-color: transparent; }
   .react.mine .rn { color: var(--ice-ink); }
-  .msg-body { position: relative; min-width: 0; flex: 1; }
+  .msg-body { min-width: 0; flex: 1; }
+  .msg-main { position: relative; }
   .pav { width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: var(--line2); display: flex; align-items: center; justify-content: center; font: 600 12px var(--font-ui); }
   /* Agent avatar: blue tint distinguishes it from humans; no ring, so it
      doesn't read as a selected control. */
