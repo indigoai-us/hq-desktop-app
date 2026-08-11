@@ -2530,7 +2530,7 @@
   }
   .range-val { font-size: 10px; color: var(--t3); min-width: 32px; text-align: right; }
   .plat-row { display: flex; gap: 6px; }
-  .okc { font-size: 10px; color: var(--ok-ink); }
+  .okc { font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ok-ink); }
   .set-row .sd.mono { font-size: 11px; }
 
   /* ── Story detail (right side panel; board stays visible) ── */
@@ -2674,7 +2674,7 @@
   .pill.role { border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent); background: transparent; color: var(--t3); letter-spacing: 0.04em; }
   /* Sync state reads as a word next to its switch. */
   .co-row-sync { display: flex; align-items: center; gap: 10px; }
-  .sync-label { font-size: 12px; color: var(--t3); min-width: 44px; text-align: right; }
+  .sync-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--t3); min-width: 52px; text-align: right; }
   .sync-label.on { color: var(--ok-ink); }
 
   .toggle { margin-left: auto; width: 28px; height: 16px; border-radius: 999px; background: var(--line2); position: relative; flex-shrink: 0; transition: background 0.15s; }
