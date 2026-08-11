@@ -206,6 +206,13 @@ pub fn cmp_semver(a: &str, b: &str) -> std::cmp::Ordering {
     parse(a).cmp(&parse(b))
 }
 
+/// Decide whether the updater should install. A genuinely absent CLI stays a
+/// quiet no-op, while a surviving corrupt managed package always arms repair.
+pub fn cli_install_needed(local: Option<&str>, latest: &str, managed_repair: bool) -> bool {
+    managed_repair
+        || local.is_some_and(|local| cmp_semver(local, latest) == std::cmp::Ordering::Less)
+}
+
 /// Read `package.json` at `pkg` and return its `version` **iff** the
 /// package name is `@indigoai-us/hq-cli`. The name guard lets us walk a
 /// binary's ancestor chain and stop only at the *right* package — never a
@@ -3891,6 +3898,14 @@ mod tests {
         // returning "no update" when the user is on a -beta or -rc.
         assert_eq!(cmp_semver("5.12.0-beta.1", "5.12.0"), Ordering::Equal);
         assert_eq!(cmp_semver("5.11.0-rc.3", "5.12.0"), Ordering::Less);
+    }
+
+    #[test]
+    fn install_needed_repairs_partial_managed_state_but_ignores_true_absence() {
+        assert!(cli_install_needed(None, "5.94.1", true));
+        assert!(!cli_install_needed(None, "5.94.1", false));
+        assert!(cli_install_needed(Some("5.93.0"), "5.94.1", false));
+        assert!(!cli_install_needed(Some("5.94.1"), "5.94.1", false));
     }
 
     /// The defect this whole change closes: the installer must ask npm for the

@@ -8,9 +8,9 @@
 //! npx-fallback hot path isn't permanent.
 //!
 //! Flow:
-//!   1. Resolve `hq` via `util::paths::resolve_bin`. If we get the bare
-//!      name "hq" back, the user doesn't have it installed — `local` is
-//!      None and we emit nothing (no nag for "you don't have it").
+//!   1. Resolve `hq` via `util::paths::resolve_bin`. If no local version can
+//!      be read, a genuinely absent CLI stays quiet, while a surviving broken
+//!      app-managed package is repaired from its stable managed prefix.
 //!   2. Read the installed version by *anchoring to the resolved `hq`
 //!      binary* — canonicalize it and walk up to the enclosing
 //!      `@indigoai-us/hq-cli/package.json`. This is independent of which
@@ -70,7 +70,8 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_update_enabled, classify_install_failure,
-    classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
+    classify_install_failure_with_final_attempt, cli_auto_update_enabled, cli_install_needed,
+    cmp_semver,
     decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
     hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
     install_failure_detail, install_failure_detail_with_final_attempt, install_failure_report,
@@ -151,15 +152,20 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, Stri
     let latest = fetch_latest().await?;
     let local_version = get_local_version_diagnostics();
     let local = local_version.local.clone();
-    let update_available = match local.as_deref() {
-        Some(l) => cmp_semver(l, &latest) == std::cmp::Ordering::Less,
-        None => false,
-    };
+    let managed_repair_prefix = paths::managed_partial_hq_cli_prefix();
+    let update_available = cli_install_needed(
+        local.as_deref(),
+        &latest,
+        managed_repair_prefix.is_some(),
+    );
     log(
         "hq-cli-update",
         &format!(
-            "check: local={:?} latest={} update_available={}",
-            local, latest, update_available
+            "check: local={:?} latest={} managed_repair={} update_available={}",
+            local,
+            latest,
+            managed_repair_prefix.is_some(),
+            update_available
         ),
     );
     // Triage signal: the CLI is on PATH but no probe could read its version.
@@ -1195,14 +1201,19 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
 }
 
 async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+    let _install_guard = crate::updater::acquire_update_install_guard().ok_or_else(|| {
+        "Another app or CLI update installation is already in progress".to_string()
+    })?;
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
+    let managed_repair_prefix =
+        paths::managed_partial_hq_cli_prefix().map(|prefix| prefix.to_string_lossy().to_string());
     // This must be sampled before the install, for either executor. An
     // unwritable marker reads as absent; the post-install gate then refuses to
     // capture unless this run successfully persists the first-episode marker.
     let non_convergent_version = non_convergent_cli_version();
-    if is_pnpm_global_shim(&hq) {
+    if managed_repair_prefix.is_none() && is_pnpm_global_shim(&hq) {
         // Pin the target before spawning, same as the npm path below.
         let latest = fetch_latest().await?;
         let already_blocked =
@@ -1214,6 +1225,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     // now managed (Node 22) while `hq` still resolves the user's Node-20 shim, and a
     // user-derived prefix would receive ABI-127 artifacts that runtime cannot load.
     let prefix = hq_cli_install_prefix(&npm, &hq);
+    let prefix = managed_repair_prefix.or(prefix);
     // Pin the target BEFORE building the install argv. The app resolved `latest`
     // from the registry's /latest endpoint; it must ask npm for THAT EXACT
     // version, not the `@latest` dist-tag. npm re-resolves that tag through its
