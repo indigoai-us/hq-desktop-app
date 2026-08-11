@@ -122,7 +122,20 @@ export interface RunnerExecPermissionDiagnostic {
 
 export type RunnerRoute = 'manual' | 'watcher';
 export type RunnerLaunchOrigin = 'renderer' | 'app_launch' | 'supervisor_respawn';
-export type RunnerPhase = 'scan' | 'push' | 'pull' | 'idle' | 'unknown';
+// Must enumerate the SAME token set as the core `RUNNER_PHASE_VOCABULARY`
+// (crates/hq-desktop-core/src/sync_outcome.rs) and the egress validator's
+// `runner_phase` arm (crates/hq-telemetry/src/lib.rs). The tri-source vocabulary
+// test in recall-windows-sidecar.spec.ts fails loudly if the three drift.
+// `pre_protocol` is the never-observed sentinel a route starts at.
+export type RunnerPhase = 'scan' | 'push' | 'pull' | 'idle' | 'unknown' | 'pre_protocol';
+
+// Allow-listed libuv source tokens an assertion `file` field may resolve to,
+// mirroring the core `RUNNER_ASSERT_SOURCES`.
+export type RunnerAssertSource =
+  | 'libuv_win_async'
+  | 'libuv_unix_core'
+  | 'libuv_handle'
+  | 'other';
 
 export interface RunnerTerminationDiagnostic {
   route: RunnerRoute;
@@ -136,6 +149,16 @@ export interface RunnerTerminationDiagnostic {
   redactedFrames: number;
   windowsExitStatus?: '0xC0000409';
   windowsFaultSymbol?: 'STATUS_STACK_BUFFER_OVERRUN';
+  /** Assertion identity (HQ-DESKTOP-50): an allow-listed source token, the
+   * integer source line, and a SHA-256 prefix of the expression. Present only
+   * for a libuv assertion abort; never the expression, path, or username. */
+  assertSource?: RunnerAssertSource;
+  assertLine?: number;
+  assertSignature?: string;
+  /** Protocol lines the runner emitted before dying (mirrors stderr count). */
+  stdoutLineCount: number;
+  /** The runner's Node major from the preflight probe, or the sentinel. */
+  nodeMajor: number | 'unknown';
 }
 
 const RUNNER_FRAME_TABLE = new Map<string, string>([
@@ -224,6 +247,82 @@ function fixtureRunnerStackShape(stderr: string[]): {
     depth: frames.length,
     redactedFrames,
   };
+}
+
+/** Case-insensitive split-once, mirroring the native `split_once_ci`. */
+function splitOnceCi(haystack: string, needle: string): [string, string] | undefined {
+  const idx = haystack.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx < 0) return undefined;
+  return [haystack.slice(0, idx), haystack.slice(idx + needle.length)];
+}
+
+/**
+ * Mirror of the native `runner_assert_source_token`: map an assertion `file`
+ * field to an allow-listed libuv source token, else the `other` sentinel. Only
+ * libuv source markers from RUNNER_FRAME_TABLE are meaningful for an assertion.
+ */
+function fixtureRunnerAssertSourceToken(file: string): RunnerAssertSource {
+  const lowered = file.toLowerCase();
+  for (const [marker, token] of RUNNER_FRAME_TABLE) {
+    if (
+      (token === 'libuv_win_async' ||
+        token === 'libuv_unix_core' ||
+        token === 'libuv_handle') &&
+      lowered.includes(marker.toLowerCase())
+    ) {
+      return token as RunnerAssertSource;
+    }
+  }
+  return 'other';
+}
+
+/**
+ * Mirror of the native `parse_runner_assertion`: recover an assertion's
+ * content-safe identity (source token, integer line, expression digest) from the
+ * `Assertion failed: <expr>, file <path>, line <N>` shape, without copying the
+ * expression, path, or any observed byte. Keeping this in step with the core
+ * parser is the point of the artifact contract.
+ */
+function fixtureRunnerAssertion(
+  stderr: string[],
+): { source: RunnerAssertSource; line?: number; signature: string } | undefined {
+  const MARKER = 'assertion failed:';
+  for (const raw of stderr) {
+    const markerAt = raw.toLowerCase().indexOf(MARKER);
+    if (markerAt < 0) continue;
+    const afterMarker = raw.slice(markerAt + MARKER.length);
+    const fileSplit = splitOnceCi(afterMarker, ', file ');
+    const exprRaw = fileSplit ? fileSplit[0] : afterMarker;
+    const normalized = exprRaw.trim().split(/\s+/).filter(Boolean).join(' ');
+    if (!normalized) continue;
+    const signature = createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+    let source: RunnerAssertSource = 'other';
+    let line: number | undefined;
+    if (fileSplit) {
+      const lineSplit = splitOnceCi(fileSplit[1], ', line ');
+      const path = lineSplit ? lineSplit[0] : fileSplit[1];
+      source = fixtureRunnerAssertSourceToken(path);
+      if (lineSplit) {
+        const digits = lineSplit[1].trimStart().match(/^\d+/);
+        if (digits) line = Number(digits[0]);
+      }
+    }
+    return { source, line, signature };
+  }
+  return undefined;
+}
+
+/** Mirror of the native `is_libuv_source_marker` conjoined with an assertion. */
+function fixtureIsLibuvAssert(serializedStderr: string): boolean {
+  if (!serializedStderr.includes('assertion failed')) return false;
+  return [
+    'uv_handle',
+    'libuv',
+    'deps/uv/',
+    'deps\\uv\\',
+    'src/win/async.c',
+    'src\\win\\async.c',
+  ].some((marker) => serializedStderr.includes(marker));
 }
 
 // Keys / string patterns that must never appear in diagnostics payloads.
@@ -775,6 +874,10 @@ export class WindowsReliabilityHarness {
     phase: RunnerPhase;
     exitCode: number;
     stderr: string[];
+    /** Protocol lines the runner emitted before dying (defaults to 0). */
+    stdoutLineCount?: number;
+    /** The runner's Node major, or the sentinel (defaults to 'unknown'). */
+    nodeMajor?: number | 'unknown';
   }): RunnerTerminationDiagnostic {
     this.ensureLaunched();
     if (options.route === 'watcher' && !options.origin) {
@@ -783,7 +886,7 @@ export class WindowsReliabilityHarness {
     const stack = fixtureRunnerStackShape(options.stderr);
     const windowsFault = options.exitCode === 0xc0000409;
     const serializedStderr = options.stderr.join('\n').toLowerCase();
-    const fatalClass = windowsFault && serializedStderr.includes('uv_handle_closing')
+    const fatalClass = windowsFault && fixtureIsLibuvAssert(serializedStderr)
       ? 'libuv_assert'
       : options.exitCode === 126
         ? 'exec_permission_denied'
@@ -797,11 +900,23 @@ export class WindowsReliabilityHarness {
       stackSignature: stack.signature,
       stackDepth: stack.depth,
       redactedFrames: stack.redactedFrames,
+      stdoutLineCount: options.stdoutLineCount ?? 0,
+      nodeMajor: options.nodeMajor ?? 'unknown',
     };
     if (options.origin) diagnostic.launchOrigin = options.origin;
     if (windowsFault) {
       diagnostic.windowsExitStatus = '0xC0000409';
       diagnostic.windowsFaultSymbol = 'STATUS_STACK_BUFFER_OVERRUN';
+    }
+    // Assertion identity attaches only for an assertion abort, from the same
+    // content-safe parser the native seam uses.
+    if (fatalClass === 'libuv_assert') {
+      const assertion = fixtureRunnerAssertion(options.stderr);
+      if (assertion) {
+        diagnostic.assertSource = assertion.source;
+        if (assertion.line !== undefined) diagnostic.assertLine = assertion.line;
+        diagnostic.assertSignature = assertion.signature;
+      }
     }
     assertContentSafeDiagnostics(diagnostic);
     return diagnostic;

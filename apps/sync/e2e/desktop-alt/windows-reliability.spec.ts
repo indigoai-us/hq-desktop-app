@@ -250,7 +250,50 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     expect(manualFault.windowsExitStatus).toBe(watcherFault.windowsExitStatus);
     expect(manualFault.windowsFaultSymbol).toBe(watcherFault.windowsFaultSymbol);
 
-    for (const diagnostic of [watcherExec, watcherFault, manualFault]) {
+    // HQ-DESKTOP-50: a libuv abort now carries WHICH assertion, whether the
+    // runner produced protocol, and which Node ran it — never the raw bytes.
+    const assertAbort = harness.simulateRunnerTerminationDiagnostics({
+      route: 'manual',
+      phase: 'pre_protocol',
+      exitCode: 0xc0000409,
+      stderr: [
+        'Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76',
+      ],
+      stdoutLineCount: 0,
+      nodeMajor: 20,
+    });
+    expect(assertAbort.fatalClass).toBe('libuv_assert');
+    expect(assertAbort.phase).toBe('pre_protocol');
+    expect(assertAbort.assertSource).toBe('libuv_win_async');
+    expect(assertAbort.assertLine).toBe(76);
+    expect(assertAbort.assertSignature).toMatch(/^[0-9a-f]{16}$/);
+    expect(assertAbort.stdoutLineCount).toBe(0);
+    expect(assertAbort.nodeMajor).toBe(20);
+
+    // A DIFFERENT assertion in the same source yields a distinct signature —
+    // the discriminating identity the base revision collapsed to one value.
+    const assertAbortB = harness.simulateRunnerTerminationDiagnostics({
+      route: 'watcher',
+      origin: 'supervisor_respawn',
+      phase: 'pull',
+      exitCode: 0xc0000409,
+      stderr: ['Assertion failed: handle->async_sent == 0, file src\\win\\async.c, line 112'],
+      stdoutLineCount: 4,
+      nodeMajor: 22,
+    });
+    expect(assertAbortB.assertSource).toBe('libuv_win_async');
+    expect(assertAbortB.assertLine).toBe(112);
+    expect(assertAbortB.assertSignature).not.toBe(assertAbort.assertSignature);
+    expect(assertAbortB.stdoutLineCount).toBe(4);
+    expect(assertAbortB.nodeMajor).toBe(22);
+
+    for (const diagnostic of [
+      watcherExec,
+      watcherFault,
+      manualFault,
+      assertAbort,
+      assertAbortB,
+    ]) {
       assertContentSafeDiagnostics(diagnostic);
       const serialized = JSON.stringify(diagnostic);
       for (const forbidden of [
@@ -259,6 +302,8 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
         '/.npm/_npx/',
         'private-company',
         'UV_HANDLE_CLOSING',
+        'async_sent',
+        'handle->flags',
       ]) {
         expect(serialized).not.toContain(forbidden);
       }

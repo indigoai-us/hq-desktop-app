@@ -75,6 +75,10 @@ const telemetrySource = readFileSync(
   repoUrl('crates/hq-telemetry/src/lib.rs'),
   'utf8',
 );
+const windowsHarnessSource = readFileSync(
+  appUrl('e2e/desktop-alt/windows-reliability-harness.ts'),
+  'utf8',
+);
 
 describe('Windows Recall SDK sidecar bundle parity', () => {
   it('declares the Windows externalBin launcher in the release-only overlay', () => {
@@ -249,6 +253,58 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(frontendMainSource).toContain("dataset.platform = isWindows ? 'windows' : 'other'");
     expect(popoverSource).toContain(":global(html[data-platform='windows']) .mbpop");
     expect(popoverSource).toContain('backdrop-filter: none');
+  });
+
+  it('keeps the runner-phase vocabulary single-source across core, validator, and the TS union', () => {
+    // Core: RUNNER_PHASE_VOCABULARY.
+    const coreMatch = syncOutcomeSource.match(
+      /RUNNER_PHASE_VOCABULARY[^=]*=\s*&\[([\s\S]*?)\];/,
+    );
+    expect(coreMatch).not.toBeNull();
+    const coreTokens = [...(coreMatch![1].matchAll(/"([^"]+)"/g))].map((m) => m[1]);
+
+    // Egress validator: the runner_phase match arm.
+    const validatorMatch = telemetrySource.match(
+      /"runner_phase"\s*=>\s*Some\(matches!\(([\s\S]*?)\)\)/,
+    );
+    expect(validatorMatch).not.toBeNull();
+    const validatorTokens = [...(validatorMatch![1].matchAll(/"([^"]+)"/g))].map((m) => m[1]);
+
+    // TS union: RunnerPhase.
+    const unionMatch = windowsHarnessSource.match(
+      /export type RunnerPhase\s*=\s*([^;]+);/,
+    );
+    expect(unionMatch).not.toBeNull();
+    const unionTokens = [...(unionMatch![1].matchAll(/'([^']+)'/g))].map((m) => m[1]);
+
+    // All three enumerate exactly the same token set — drift in any one fails.
+    expect(coreTokens.length).toBeGreaterThan(0);
+    expect(coreTokens).toContain('pre_protocol');
+    expect(new Set(validatorTokens)).toEqual(new Set(coreTokens));
+    expect(new Set(unionTokens)).toEqual(new Set(coreTokens));
+  });
+
+  it('pins the assertion-identity and Node provenance emission on both runner routes', () => {
+    // Manual route (sync.rs) reads the shared RunTotals identity and emits it.
+    expect(syncCommandSource).toContain(
+      'tags.push(("runner_assert_source", source.to_string()));',
+    );
+    expect(syncCommandSource).toContain('"runner_stdout_line_count",');
+    expect(syncCommandSource).toContain('"runner_node_major",');
+    // The Node major reuses the existing preflight probe — no new spawn.
+    expect(syncCommandSource).toContain('preflight_node_with_major()');
+
+    // Watcher route (daemon.rs) derives the identity from the SAME shared helper.
+    expect(daemonCommandSource).toContain('tags.push(("runner_assert_source", source));');
+    expect(daemonCommandSource).toContain('runner_assertion_for_class');
+    expect(daemonCommandSource).toContain('"runner_stdout_line_count",');
+    expect(daemonCommandSource).toContain('"runner_node_major",');
+    expect(daemonCommandSource).toContain('preflight_node_outcome()');
+
+    // The single source of the assertion parser + the never-observed sentinel.
+    expect(syncOutcomeSource).toContain('pub fn runner_assertion_for_class');
+    expect(syncOutcomeSource).toContain('pub fn parse_runner_assertion');
+    expect(syncOutcomeSource).toContain('RUNNER_PHASE_PRE_PROTOCOL');
   });
 
 });
