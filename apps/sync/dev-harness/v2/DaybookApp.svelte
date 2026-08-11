@@ -809,7 +809,8 @@
   let coSync = $state<Record<string, boolean>>({
     indigo: true,
     sender: true,
-    personal: true,
+    /* Your own vault stays on this machine unless you opt it into sync. */
+    personal: false,
     LiveRecover: true,
     Keptwork: false,
     'Holler Mgmt': false,
