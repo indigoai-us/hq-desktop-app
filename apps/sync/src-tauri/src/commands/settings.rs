@@ -30,6 +30,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
     if !path.exists() {
         return Ok(MenubarPrefs {
             hq_path: None,
+            // Cloud Off (V2 US-001) defaults to connected — sync runs.
+            cloud_paused: Some(false),
             // Sync-on-launch defaults ON so a fresh install syncs as soon as it
             // opens, matching the always-on auto-sync (realtime_sync) default.
             sync_on_launch: Some(true),
@@ -89,6 +91,10 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         .unwrap_or_else(default_meeting_detect_notify);
     Ok(MenubarPrefs {
         hq_path: prefs.hq_path,
+        // Cloud Off (V2 US-001): absent → false (connected). Mirrors
+        // `is_cloud_paused` in daemon.rs so the titlebar switch, the popover
+        // notice, and the Rust sync gates all agree.
+        cloud_paused: Some(prefs.cloud_paused.unwrap_or(false)),
         // Default ON (see the no-file branch above) — absent key syncs on launch.
         sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(true)),
         notifications: Some(prefs.notifications.unwrap_or(true)),

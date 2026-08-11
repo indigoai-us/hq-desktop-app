@@ -58,6 +58,8 @@
     brand?: CachedBrand | null;
     errorMessage?: string;
     errorCompany?: string;
+    /** V2 Cloud Off (US-001): sync is paused on this device (settings-backed). */
+    cloudPaused?: boolean;
     conflicts?: ConflictFile[];
     showConflictModal?: boolean;
     conflictCount?: number;
@@ -118,6 +120,7 @@
     brand = null,
     errorMessage = '',
     errorCompany = '',
+    cloudPaused = false,
     conflicts = [],
     showConflictModal = false,
     conflictCount = 0,
@@ -249,6 +252,7 @@
   const systemNoticeCount = $derived(
     (membershipsToPull.length > 0 ? 1 : 0) +
       (updateAvailable ? 1 : 0) +
+      (cloudPaused ? 1 : 0) +
       (syncState === 'conflict' && !conflictModalActive ? 1 : 0) +
       (syncState === 'auth-error' ? 1 : 0) +
       (syncState === 'error' && errorMessage ? 1 : 0) +
@@ -710,6 +714,19 @@
           >
             {openingDesktop ? 'Retrying…' : 'Retry'}
           </button>
+        </div>
+      {/if}
+
+      {#if cloudPaused}
+        <!-- Cloud Off (V2 US-001): every sync path — Sync Now here, the V2
+             window, and the background watcher — is gated in Rust while this
+             flag is set; this notice keeps the popover honest about it. -->
+        <div class="snr" data-testid="popover-system-notice" data-kind="cloud-paused">
+          <span class="snr-icon action" aria-hidden="true">{@render noticeGlyph('action')}</span>
+          <span class="snr-text">
+            <b>Cloud is off</b>
+            Sync is paused on this device. Turn Cloud on in the HQ window to resume.
+          </span>
         </div>
       {/if}
 

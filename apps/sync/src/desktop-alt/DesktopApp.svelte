@@ -77,7 +77,7 @@
     type LibraryTab,
     type SettingsTab,
   } from './route';
-  import { readCloudPaused, writeCloudPaused } from './lib/cloud-connection';
+  import { readCloudPaused, loadCloudPaused, setCloudPaused } from './lib/cloud-connection';
   import {
     accountIdentityFromWorkspaces,
     getV2ActiveWorkspace,
@@ -308,9 +308,14 @@
   // switcher placeholder, footer email, and the Cloud Connected/Off flag.
   const activeWorkspaceChrome = $derived(getV2ActiveWorkspace(route, renderCompanies));
   let accountEmail = $state<string | null>(null);
+  // Mirror-first for instant render; settings (menubar.json — the store the
+  // Rust sync gates read) is authoritative and hydrates just below.
   let cloudPaused = $state(readCloudPaused());
 
   onMount(() => {
+    void loadCloudPaused().then((paused) => {
+      cloudPaused = paused;
+    });
     void invoke<string | null>('get_account_email')
       .then((email) => {
         accountEmail = email && email.trim() ? email.trim() : null;
@@ -322,7 +327,20 @@
 
   function handleCloudToggle(paused: boolean) {
     cloudPaused = paused;
-    writeCloudPaused(paused);
+    // Write-through to menubar.json so the Rust gates (start_sync + the watch
+    // daemon) see the switch, then reconcile the running watcher: pausing
+    // stops it; unpausing lets auto-sync resume immediately instead of
+    // waiting for the supervisor's next tick. Both are best-effort — the
+    // Rust-side gates are the enforcement, not these calls.
+    void setCloudPaused(paused)
+      .then(async () => {
+        if (paused) {
+          await invoke('stop_daemon').catch(() => undefined);
+        } else {
+          await invoke('start_daemon').catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
   }
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));

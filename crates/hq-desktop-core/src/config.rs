@@ -49,6 +49,18 @@ pub struct MeetingDetectNotifyPrefs {
 #[serde(rename_all = "camelCase")]
 pub struct MenubarPrefs {
     pub hq_path: Option<String>,
+    /// V2 "Cloud Off" (US-001): when true, sync is paused on THIS device.
+    /// Every sync initiation path — the manual `start_sync` command (V2
+    /// window AND menubar popover), the watch daemon (auto-sync), the
+    /// supervisor respawn, and event-driven instant push (an argument of the
+    /// watch runner) — is gated on this flag in Rust (`is_cloud_paused` /
+    /// the `start_sync` + `start_daemon_with_origin` preflights), so the
+    /// titlebar switch and reality can never disagree. Defaults to false
+    /// (connected) when absent. Persisted here (not localStorage) so a
+    /// webview-data reset or a non-V2 surface can't silently resume sync;
+    /// the frontend migrates the legacy localStorage flag on first read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_paused: Option<bool>,
     pub sync_on_launch: Option<bool>,
     pub notifications: Option<bool>,
     pub start_at_login: Option<bool>,

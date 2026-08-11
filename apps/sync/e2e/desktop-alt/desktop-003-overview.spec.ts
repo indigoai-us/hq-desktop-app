@@ -208,3 +208,51 @@ describe('US-004: V2 overview board — pulse, Needs-you queue, projects/goals/a
     expect(teamActivity).toContain('means NO DATA');
   });
 });
+
+describe('US-001: Cloud Off gates EVERY sync path (review-critical fix)', () => {
+  const cloudConnection = readRepoFile('src/desktop-alt/lib/cloud-connection.ts');
+  const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+  const popoverApp = readRepoFile('src/App.svelte');
+  const popover = readRepoFile('src/components/Popover.svelte');
+  const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
+  const daemonRs = readRepoFile('src-tauri/src/commands/daemon.rs');
+
+  it('persists the paused flag in menubar.json (settings), not localStorage-only', () => {
+    // Write-through: the toggle persists via the settings mutation queue
+    // (get/save_settings → menubar.json `cloudPaused`) — the SAME store the
+    // Rust gates read — with localStorage demoted to a render mirror plus a
+    // one-time legacy migration.
+    expect(cloudConnection).toContain("updateSettings({ cloudPaused: paused })");
+    expect(cloudConnection).toContain('resolveCloudPaused');
+    expect(cloudConnection).toContain('migrateLegacy');
+    expect(desktopApp).toContain('setCloudPaused(paused)');
+    expect(desktopApp).toContain('loadCloudPaused()');
+  });
+
+  it('Rust refuses start_sync and every watch-daemon origin while paused', () => {
+    // Manual sync choke point (V2 window AND popover both invoke start_sync).
+    expect(syncRs).toContain('start_sync_cloud_gate()?;');
+    expect(syncRs).toContain('ensure_cloud_sync_allowed()');
+    // Watch daemon (auto-sync + instant/event push): gated for renderer,
+    // app-launch, and supervisor-respawn origins at the common entry, and the
+    // supervisor respawn decision itself is pause-aware.
+    expect(daemonRs).toContain('hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;');
+    expect(daemonRs).toContain('should_respawn_daemon_gated(');
+    expect(daemonRs).toContain('hq_desktop_core::daemon::is_cloud_paused()');
+  });
+
+  it('popover manual sync is gated too and shows the paused state', () => {
+    // handleSyncNow re-checks the settings-backed flag before starting a run.
+    expect(popoverApp).toContain('if (await refreshCloudPaused()) return;');
+    expect(popoverApp).toContain("import { loadCloudPaused } from './desktop-alt/lib/cloud-connection'");
+    // The popover reuses the system-notice machinery to say sync is paused.
+    expect(popover).toContain('data-kind="cloud-paused"');
+    expect(popover).toContain('Sync is paused on this device');
+    expect(popover).toMatch(/\(cloudPaused \? 1 : 0\) \+/);
+  });
+
+  it('toggling Cloud back on restores sync (stop/start reconciliation)', () => {
+    expect(desktopApp).toContain("await invoke('stop_daemon')");
+    expect(desktopApp).toContain("await invoke('start_daemon')");
+  });
+});
