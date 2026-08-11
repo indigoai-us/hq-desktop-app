@@ -2099,8 +2099,7 @@
   .sig-row:last-of-type { border-bottom: none; }
   .grp + .sd-desc { margin-top: 2px; }
   .sig-text { font-size: 12px; line-height: 1.5; color: var(--t2); }
-  .pill.sig-action { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 28%, transparent); background: var(--ice-tile); }
-  .pill.sig-decision { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 32%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .pill.sig-decision { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 28%, transparent); background: var(--ice-tile); }
   .pill.sig-risk { color: var(--warn-ink); border-color: color-mix(in srgb, var(--warn) 32%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
   /* Ad-hoc invite bar, above the agenda and outside its scroller. */
   .mtg-tabbar { display: flex; flex-shrink: 0; padding: 12px 20px 0; }
