@@ -9,7 +9,21 @@
 
   let { conflict, onresolve, onopen }: Props = $props();
 
+  // V2 rescue-card row: filename headline + company path subline (approved
+  // rescue-card design). Hashes stay available in the tooltip.
+  //
+  // Affordances (US-017): Keep local / Keep cloud are the primary per-file
+  // actions; Open-in-editor stays as a secondary icon affordance. A "Discard"
+  // action is CONSCIOUSLY DROPPED: the backend strategy validator
+  // (crates/hq-desktop-core/src/conflicts.rs VALID_STRATEGIES) accepts only
+  // `keep-local` / `keep-remote` — there is no discard strategy to wire, and
+  // inventing one client-side would fake a resolution the CLI never performed.
   let fileName = $derived(conflict.path.split('/').pop() ?? conflict.path);
+  let parentPath = $derived(
+    conflict.path.includes('/')
+      ? conflict.path.slice(0, conflict.path.lastIndexOf('/'))
+      : ''
+  );
 
   let localShort = $derived(conflict.localHash.slice(0, 7));
   let remoteShort = $derived(conflict.remoteHash.slice(0, 7));
@@ -50,12 +64,12 @@
     </div>
   </div>
 
-  <div class="hash-row">
-    <span class="hash-label">local</span>
-    <code class="hash-value">{localShort}</code>
-    <span class="hash-separator">vs</span>
-    <span class="hash-label">remote</span>
-    <code class="hash-value">{remoteShort}</code>
+  <div
+    class="path-row"
+    title={`${conflict.path} — local ${localShort} vs cloud ${remoteShort}`}
+    data-testid="conflict-row-path"
+  >
+    {parentPath || 'HQ root'}
   </div>
 
   {#if conflict.status === 'error' && conflict.error}
@@ -69,15 +83,15 @@
     </div>
   {:else if conflict.status === 'resolved'}
     <div class="resolved-state">
-      Resolved: {conflict.resolution === 'keep-local' ? 'kept local' : 'kept remote'}
+      Resolved: {conflict.resolution === 'keep-local' ? 'kept local' : 'kept cloud'}
     </div>
   {:else}
     <div class="actions">
       <button class="action-btn local-btn" aria-label="Keep local version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-local')}>
-        Keep Local
+        Keep local
       </button>
-      <button class="action-btn remote-btn" aria-label="Keep remote version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-remote')}>
-        Keep Remote
+      <button class="action-btn remote-btn" aria-label="Keep cloud version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-remote')}>
+        Keep cloud
       </button>
       <button class="action-btn editor-btn" onclick={() => onopen(conflict.path)} title="Open in editor" aria-label="Open {fileName} in editor">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -169,31 +183,15 @@
     color: var(--popover-text-heading, #ffffff);
   }
 
-  .hash-row {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
+  /* Company-path subline under the filename (V2 rescue-card row). */
+  .path-row {
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0a0);
     padding-left: 1.625rem;
-  }
-
-  .hash-label {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0a0);
-  }
-
-  .hash-value {
-    font-size: 0.6875rem;
-    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    color: var(--popover-text, #e0e0e0);
-    background: rgba(255, 255, 255, 0.05);
-    padding: 0.05rem 0.3rem;
-    border-radius: 3px;
-  }
-
-  .hash-separator {
-    font-size: 0.625rem;
-    color: var(--popover-text-muted, #a0a0a0);
-    opacity: 0.6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
 
   .error-message {
@@ -306,10 +304,6 @@
     .conflict-row.error {
       background: transparent;
       border-color: var(--popover-divider, rgba(0, 0, 0, 0.12));
-    }
-
-    .hash-value {
-      background: rgba(0, 0, 0, 0.04);
     }
 
     .editor-btn {

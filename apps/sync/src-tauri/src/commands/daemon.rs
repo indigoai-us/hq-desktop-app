@@ -64,7 +64,8 @@ pub use hq_desktop_core::daemon::{
     build_watch_runner_args, event_push_eligible, is_autostart_enabled, is_instant_sync_enabled,
     is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
     resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
-    should_force_clear_stalled_start, should_respawn_daemon, DaemonFailureCategory, DaemonJson,
+    should_force_clear_stalled_start, should_respawn_daemon, should_respawn_daemon_gated,
+    DaemonFailureCategory, DaemonJson,
     DaemonStatus, WatchDaemonState,
 };
 
@@ -755,6 +756,12 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
+    // V2 Cloud Off (US-001): while the user has Cloud paused, NO watch daemon
+    // may start — renderer request, app-launch autostart, or supervisor
+    // respawn. Instant/event push is an argument of this watcher, so gating
+    // here pauses it too. Checked before taking the singleton guard so a
+    // paused refusal never wedges a later, unpaused start.
+    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
     // Generation-scoped registration: every later release/terminate/cancel this
     // start performs is bound to the generation it acquired here, so a stale
     // actor can never operate on a replacement watcher (HQ-DESKTOP-3J).
@@ -3265,10 +3272,11 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                         note_watcher_rss(kb);
                     }
                 }
-            } else if should_respawn_daemon(
+            } else if should_respawn_daemon_gated(
                 is_realtime_sync_enabled(),
                 is_autostart_enabled(),
                 daemon_alive,
+                hq_desktop_core::daemon::is_cloud_paused(),
             ) {
                 // Crash-loop dampening: hold off respawning a watcher that just
                 // crashed until its exponential backoff elapses, instead of
@@ -3431,6 +3439,35 @@ mod tests {
     use crate::commands::process::{deregister_process, try_register_handle};
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use tempfile::TempDir;
+
+    // ── Cloud Off gating (V2 US-001) ─────────────────────────────────────
+
+    /// The watch daemon (auto-sync + the instant/event-push runner it hosts)
+    /// must refuse to start while Cloud is paused — for every launch origin,
+    /// since renderer, app-launch, and supervisor-respawn all funnel through
+    /// `start_daemon_with_origin`, whose first statement is the gate.
+    #[test]
+    fn test_start_daemon_refuses_while_cloud_paused() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"cloudPaused":true}"#,
+        )
+        .unwrap();
+        let _home = scoped_home(tmp.path());
+
+        let app = tauri::test::mock_app();
+        let err = start_daemon(app.handle().clone())
+            .expect_err("paused cloud must refuse to start the watch daemon");
+        assert_eq!(err, hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE);
+        // NOTE: the refusal happens before the singleton guard is taken (the
+        // gate is the first statement of `start_daemon_with_origin`), so a
+        // later unpaused start is never wedged by a paused attempt. Not
+        // asserted via `try_register_handle` here because DAEMON_HANDLE is
+        // process-global and other tests exercise it concurrently.
+    }
 
     // ── Double-start prevention ──────────────────────────────────────────
 

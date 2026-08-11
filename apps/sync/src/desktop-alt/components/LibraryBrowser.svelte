@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * LibraryBrowser — the shared body of the Library surface, used by both the
-   * root (all-scopes) LibraryPage and the per-company CompanyLibraryPanel. Owns
+   * root (all-scopes) LibraryPage and the per-company Skills / Workers pages. Owns
    * the Workers|Skills toggle, a multi-select **scope filter** (Core / Personal /
    * per-company), the text filter, the card grid, and the detail slide-over.
    * Data (items/loading/error) is loaded by the caller and passed in.

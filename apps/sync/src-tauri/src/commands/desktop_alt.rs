@@ -36,29 +36,28 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 #[allow(unused_imports)]
 pub use hq_desktop_core::desktop_alt::{
-    activity_url, board_url, bool_field, build_file_tree, build_node, canonical_hq_relative_path,
+    activity_url, activity_url_with_window, board_url, bool_field, build_file_tree, build_node,
+    canonical_hq_relative_path,
     crm_projection_url, deployment_entry_from_value, deployment_last_deploy,
     deployment_matches_selected_slug, deployment_org_slug, deployment_rows, deployment_size,
     deployment_version, deployments_url, derive_initials, dir_has_visible_children,
     first_row_key_names, format_board_date, format_bytes, format_deployment_age,
     is_activity_not_provisioned, is_auth_required_error, is_board_not_provisioned,
     is_deployments_not_provisioned, is_dev_noise, is_safe_deployment_host,
-    is_safe_deployment_label, is_secrets_not_provisioned, is_url_safe_id, is_within, json_code,
-    json_kind, lexically_normalize, list_dir_entries, live_cloud_uid_from_broken_reason,
+    is_safe_deployment_label, is_url_safe_id, is_within, json_code, json_kind,
+    lexically_normalize, list_dir_entries, live_cloud_uid_from_broken_reason,
     nested_number_field, nested_string_field, normalize_deployment_host,
     normalize_deployment_state, normalize_slug, number_field, parse_activity_response,
     parse_board_response, parse_company_activity, parse_company_board,
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
-    parse_project_creators, parse_project_creators_response, parse_secret_envs,
-    parse_secrets_response, read_file_bytes_capped, read_file_content, read_file_content_capped,
-    resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
-    secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
-    string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
-    workspace_grants_company_file_access, ActivityContributor, ActivityEntry, ActivityStats,
-    BoardCard, BoardColumn, BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
-    CompanyActivitySummary, CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode,
-    LiveBoardAssignee, LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem,
-    DEV_NOISE_NAMES,
+    parse_project_creators, parse_project_creators_response, read_file_bytes_capped,
+    read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
+    resolve_hq_folder, string_field, subdomain_from_url, summary_count_or_auth,
+    validate_hq_relative_path, workspace_grants_company_file_access, ActivityContributor,
+    ActivityEntry, ActivityStats, BoardCard, BoardColumn, BoardCreatorEnvelope,
+    BoardCreatorProject, CompanyActivity, CompanyActivitySummary, CompanyBoard,
+    CompanySummary, DeploymentEntry, DirEntry, FileNode, LiveBoardAssignee,
+    LiveBoardModel, LiveBoardProject, ProjectCreator, DEV_NOISE_NAMES,
 };
 use hq_desktop_core::workspaces::Workspace;
 
@@ -142,41 +141,40 @@ pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>
         return Err("company slug is required".to_string());
     }
 
-    // Aggregate the four real per-panel commands. Each surface is
-    // best-effort: a non-auth failure (404 not-provisioned, network, parse)
-    // contributes 0 so one dead endpoint doesn't zero the others. Auth
-    // failures are different — they must propagate so the UI can route to
-    // sign-in rather than silently rendering empty counts.
+    // Aggregate board / activity / deployments. Each surface is best-effort:
+    // a non-auth failure (404 not-provisioned, network, parse) contributes 0
+    // so one dead endpoint doesn't zero the others. Auth failures propagate so
+    // the UI can route to sign-in rather than silently rendering empty counts.
+    // US-021: company secrets are never fetched by the desktop — `secrets`
+    // stays 0 (field retained on the shared core summary type for wire shape).
     // DIAGNOSTIC: capture each surface's raw Result (count or error string)
     // before collapsing, so a "panel shows 0" can be traced to the exact
     // surface + reason. Counts and error messages only — never secret values.
     let board_res = get_company_board(slug.clone())
         .await
         .map(|b| b.card_count());
-    let activity_res = get_company_activity(slug.clone()).await.map(|a| a.last7d());
-    let deployments_res = get_company_deployments(slug.clone())
+    let activity_res = get_company_activity(slug.clone(), None)
+        .await
+        .map(|a| a.last7d());
+    let deployments_res = get_company_deployments(slug)
         .await
         .map(|d| u32::try_from(d.len()).unwrap_or(u32::MAX));
-    let secrets_res = get_company_secrets(slug)
-        .await
-        .map(|s| u32::try_from(s.len()).unwrap_or(u32::MAX));
     eprintln!(
-        "[desktop-alt] summary surfaces: board={board_res:?} activity={activity_res:?} deployments={deployments_res:?} secrets={secrets_res:?}"
+        "[desktop-alt] summary surfaces: board={board_res:?} activity={activity_res:?} deployments={deployments_res:?}"
     );
 
     let board = summary_count_or_auth(board_res)?;
     let last7d = summary_count_or_auth(activity_res)?;
     let deployments = summary_count_or_auth(deployments_res)?;
-    let secrets = summary_count_or_auth(secrets_res)?;
     eprintln!(
-        "[desktop-alt] summary final: board={board} activity={last7d} deployments={deployments} secrets={secrets}"
+        "[desktop-alt] summary final: board={board} activity={last7d} deployments={deployments}"
     );
 
     Ok(CompanySummary {
         board,
         activity: CompanyActivitySummary { last7d },
         deployments,
-        secrets,
+        secrets: 0,
     })
 }
 
@@ -273,10 +271,14 @@ pub async fn get_company_project_creators(slug: String) -> Result<Vec<ProjectCre
 }
 
 #[tauri::command]
-pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, String> {
+pub async fn get_company_activity(
+    slug: String,
+    window_days: Option<u32>,
+) -> Result<CompanyActivity, String> {
     let slug = normalize_slug(&slug)?;
     let company_uid = resolve_company_uid(&slug).await?;
-    let url = activity_url(&vault_base()?, &company_uid)?;
+    // Frontend may omit windowDays; Tauri maps missing args to None → default 7.
+    let url = activity_url_with_window(&vault_base()?, &company_uid, window_days.unwrap_or(7))?;
     let token = cognito::get_valid_access_token()
         .await
         .map_err(|e| format!("auth: {e}"))?;
@@ -405,34 +407,6 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
     );
 
     parse_deployments_response(status, &text, &slug)
-}
-
-#[tauri::command]
-pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String> {
-    let slug = normalize_slug(&slug)?;
-    let company_uid = resolve_company_uid(&slug).await?;
-    let url = secrets_url(&vault_base()?, &company_uid)?;
-    let token = cognito::get_valid_access_token()
-        .await
-        .map_err(|e| format!("auth: {e}"))?;
-
-    let res = build_client()
-        .get(&url)
-        .header("authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| format!("secrets fetch: {e}"))?;
-    let status = res.status();
-    let text = res.text().await.map_err(|e| format!("secrets read: {e}"))?;
-    // Secrets response bodies can carry plaintext secret values, so log
-    // only status + byte length here (never a body snippet).
-    eprintln!(
-        "[desktop-alt] secrets GET {url} -> HTTP {} ({} bytes)",
-        status,
-        text.len()
-    );
-
-    parse_secrets_response(status, &text)
 }
 
 /// Route the desktop-alt window should land on the next time it mounts. Set by

@@ -11,8 +11,10 @@ use hq_desktop_core::desktop_alt::{
     workspace_grants_company_file_access,
 };
 use hq_desktop_core::projects_local::{
-    read_company_goals, read_crm_projection, read_project_prd, read_project_readme,
-    resolve_project_path, resolve_project_write_path, scan_local_projects_for_companies,
+    create_local_goal as create_local_goal_entry,
+    create_local_project as create_local_project_scaffold, read_company_goals,
+    read_crm_projection, read_project_prd, read_project_readme, resolve_project_path,
+    resolve_project_write_path, scan_local_projects_for_companies, write_goal_project_link,
     write_project_status, write_story_passes,
 };
 #[allow(unused_imports)]
@@ -160,6 +162,47 @@ pub async fn get_local_company_goals(company_slug: String) -> Result<CompanyGoal
     read_company_goals(&hq, &slug)
 }
 
+/// Persist a goal ↔ project association into the company's own goals store
+/// (`board.json` `initiative_ids`) — US-005 "Link goal / Connect".
+#[tauri::command]
+pub async fn link_local_goal_project(
+    company_slug: String,
+    goal_id: String,
+    project_ref: String,
+) -> Result<(), String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("goals writer requires a signed-in user".to_string());
+    }
+    let (hq, workspaces) = hydrated_project_context().await?;
+    let slug = authorize_company_slug(&hq, &company_slug, &workspaces)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        write_goal_project_link(&hq, &slug, &goal_id, &project_ref)
+    })
+    .await
+    .map_err(|error| format!("goal link task join: {error}"))?
+}
+
+/// Create a new goal in the company's `board.json` — US-005 "New goal".
+/// Returns the created goal's id so the frontend can select it.
+#[tauri::command]
+pub async fn create_local_company_goal(
+    company_slug: String,
+    title: String,
+    description: String,
+    timeframe: String,
+) -> Result<String, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("goals writer requires a signed-in user".to_string());
+    }
+    let (hq, workspaces) = hydrated_project_context().await?;
+    let slug = authorize_company_slug(&hq, &company_slug, &workspaces)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        create_local_goal_entry(&hq, &slug, &title, &description, &timeframe)
+    })
+    .await
+    .map_err(|error| format!("goal create task join: {error}"))?
+}
+
 #[tauri::command]
 pub async fn get_company_crm_projection(company_slug: String) -> Result<serde_json::Value, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
@@ -195,6 +238,25 @@ pub async fn set_local_project_status(
         normalized_prd.as_deref(),
         &status,
     )
+}
+
+/// US-006 "New project": create a minimal local project scaffold
+/// (`companies/<slug>/projects/<name-slug>/prd.json`) and return the
+/// HQ-relative prd path. Same signed-in gate + tenant authorization as the
+/// other project writers; the pure body refuses clobbers and traversal.
+#[tauri::command]
+pub async fn create_local_project(
+    company_slug: String,
+    name: String,
+) -> Result<String, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects writer requires a signed-in user".to_string());
+    }
+    let (hq, workspaces) = hydrated_project_context().await?;
+    let slug = authorize_company_slug(&hq, &company_slug, &workspaces)?;
+    tauri::async_runtime::spawn_blocking(move || create_local_project_scaffold(&hq, &slug, &name))
+        .await
+        .map_err(|error| format!("project create task join: {error}"))?
 }
 
 #[tauri::command]

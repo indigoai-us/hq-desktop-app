@@ -73,17 +73,20 @@ describe('US-004: Single-window activation and navigation', () => {
     });
 
     it('frontend resolvePendingDesktopRoute accepts WindowRouter aliases', () => {
-      expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
-      expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-      expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
-      expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
+      expect(resolvePendingDesktopRoute('inbox')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
+      expect(resolvePendingDesktopRoute('messages')).toEqual({ mode: 'internal', route: { kind: 'messages' } });
+      expect(resolvePendingDesktopRoute('meetings')).toEqual({ mode: 'internal', route: { kind: 'meetings' } });
+      expect(resolvePendingDesktopRoute('library')).toEqual({ mode: 'internal', route: { kind: 'library' } });
       expect(resolvePendingDesktopRoute('library:installed')).toEqual({
-        kind: 'library',
-        tab: 'installed',
-      });
-      expect(resolvePendingDesktopRoute('activity')).toEqual({ kind: 'home' });
-      expect(resolvePendingDesktopRoute('core-drift')).toEqual({ kind: 'home' });
-      expect(resolvePendingDesktopRoute('drift')).toEqual({ kind: 'home' });
+      mode: 'internal',
+      route: {
+    kind: 'library',
+    tab: 'installed',
+      },
+    });
+      expect(resolvePendingDesktopRoute('activity')).toEqual({ mode: 'internal', route: { kind: 'home' } });
+      expect(resolvePendingDesktopRoute('core-drift')).toEqual({ mode: 'internal', route: { kind: 'home' } });
+      expect(resolvePendingDesktopRoute('drift')).toEqual({ mode: 'internal', route: { kind: 'home' } });
     });
   });
 

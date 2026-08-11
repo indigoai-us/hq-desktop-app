@@ -27,13 +27,22 @@
     type WidgetStackItem,
   } from '../src/stores/widgetNotifications';
   import '../src/desktop-alt/styles/desktop-alt.css';
-  import { popoverProps, bannerFixtures, workspaces } from './fixtures';
+  import {
+    popoverProps,
+    popoverRescueProps,
+    popoverDriftProps,
+    bannerFixtures,
+    workspaces,
+  } from './fixtures';
+  import { SETTINGS_SECTIONS, type SettingsTab } from '../src/desktop-alt/route';
   import { emit } from '@tauri-apps/api/event';
 
-  // Fixture thread for ?view=conversation — exercises the copy-message toolbar
-  // and the copy-prompt button (the last inbound message carries an agent
-  // prompt). Times are passed in via ISO strings so the harness stays
-  // deterministic without Date.now().
+  // Fixture thread for ?view=conversation — exercises the copy-message toolbar,
+  // copy-prompt button, and US-013 delivery states (Sending… / Delivered).
+  // Times are ISO strings so the harness stays deterministic without Date.now().
+  // ?scenario=sending marks the last outbound as undelivered.
+  const paramsEarly = new URLSearchParams(window.location.search);
+  const conversationScenario = paramsEarly.get('scenario');
   const conversationMessages: ConversationMessage[] = [
     {
       eventId: 'm1',
@@ -50,6 +59,7 @@
       body: 'Just merged it — running the e2e suite now.',
       createdAt: '2026-06-10T16:04:00Z',
       direction: 'out',
+      delivered: true,
     },
     {
       eventId: 'm3',
@@ -60,6 +70,19 @@
       prompt: '/run-project indigo-app --story audit-pass --headless',
       createdAt: '2026-06-10T16:06:00Z',
       direction: 'in',
+    },
+    {
+      eventId: 'm4',
+      fromPersonUid: 'prs_me',
+      fromDisplayName: 'Corey Epstein',
+      body:
+        conversationScenario === 'sending'
+          ? 'Kicking off the audit now…'
+          : 'Audit is green — shipping the desktop-v2 closeout next.',
+      createdAt: '2026-06-10T16:07:00Z',
+      direction: 'out',
+      // US-013: delivered:false → "Sending…"; true/absent on history → "Delivered".
+      delivered: conversationScenario === 'sending' ? false : true,
     },
   ];
 
@@ -220,8 +243,14 @@
   ];
 
   // View + theme driven by URL query so screenshots target a known state:
-  //   ?view=settings|popover|signin|banner   ?theme=light|dark
+  //   ?view=settings|popover|signin|banner|desktop|home|messages|permissions|
+  //         onboarding|conversation|company   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
+  //   settings: ?tab=sync|notifications|widget|updates|general|appearance|meetings
+  //   popover:  ?scenario=rescue|drift  (conflict rescue card / core drift rows)
+  //   home/desktop activity: ?scenario=analytics-empty|analytics-populated
+  //   conversation: ?scenario=sending (undelivered outbound "Sending…")
+  //   onboarding: ?step=0 (V2 welcome card) ..3
   // For the popover view, size the browser viewport to ~320x440 (the real
   // window size) — the popover root fills 100vw/100vh. For settings, any
   // viewport works; it renders centered on a desktop-ish backdrop.
@@ -230,6 +259,10 @@
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
   const scenario = params.get('scenario');
+  const rawSettingsTab = params.get('tab') ?? 'sync';
+  const settingsTab: SettingsTab = SETTINGS_SECTIONS.some((s) => s.id === rawSettingsTab)
+    ? (rawSettingsTab as SettingsTab)
+    : 'sync';
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
   const onboardingStep =
     Number.isInteger(requestedOnboardingStep) &&
@@ -239,22 +272,32 @@
       : 0;
   // ?state=error renders the "Sync initialized" notice banner.
   // ?state=auth-error renders the calm reconnect state without red styling.
-  // Otherwise the popover mounts in its idle fixture state.
+  // ?scenario=rescue mounts the conflict rescue card (US-017).
+  // ?scenario=drift mounts HQ-core drift + desktop update rows (US-017).
   // (CLI-update overflow preview retired with US-001 chrome strip.)
   const stateOverride = params.get('state');
   if (view === 'widget') {
     localStorage.removeItem(WIDGET_RECENT_STORAGE_KEY);
   }
   const previewPopoverProps =
-    stateOverride === 'error'
-      ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
-      : stateOverride === 'auth-error'
-        ? {
-            ...popoverProps,
-            syncState: 'auth-error' as const,
-            errorMessage: 'Sign in once and HQ will resume automatically.',
-          }
-      : popoverProps;
+    scenario === 'rescue'
+      ? popoverRescueProps
+      : scenario === 'drift'
+        ? popoverDriftProps
+        : stateOverride === 'error'
+          ? {
+              ...popoverProps,
+              syncState: 'error' as const,
+              errorMessage: 'failed to push indigo: exit 1',
+              errorCompany: 'indigo',
+            }
+          : stateOverride === 'auth-error'
+            ? {
+                ...popoverProps,
+                syncState: 'auth-error' as const,
+                errorMessage: 'Sign in once and HQ will resume automatically.',
+              }
+            : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture
@@ -436,10 +479,10 @@
     />
   </div>
 {:else}
-  <!-- Settings now live in the desktop-alt window (US-005). Preview the V4
-       SettingsPage rather than the retired popover Settings.svelte. -->
+  <!-- Settings live in the desktop-alt window (US-005 / US-016). Preview the V4
+       SettingsPage; ?tab=appearance scrolls the Appearance section into view. -->
   <div class="desktop-stage" class:light={theme === 'light'}>
-    <SettingsPage activeTab="sync" />
+    <SettingsPage activeTab={settingsTab} />
   </div>
 {/if}
 

@@ -12,8 +12,9 @@ import type { SyncState } from '../lib/sync-model';
 /**
  * The primary-nav destinations, in display order. Inbox owns notification
  * chronology; Messages owns complete conversations, channels, requests, and
- * shares. Home, Mission Control, and the Companies page are palette-only /
- * company-row surfaces — not sidebar nav items.
+ * shares. Home and the Companies page are palette-only / company-row surfaces
+ * — not sidebar nav items. (Mission Control was removed in US-021; Telescope
+ * lives in the HQ web console.)
  */
 export type V4NavId =
   | 'inbox'
@@ -35,7 +36,7 @@ export interface V4Route {
   tab?: string;
 }
 
-/** Primary company children expanded under the selected company (DESKTOP-001). */
+/** Primary company children expanded under the selected company (DESKTOP-001 / US-021). */
 export type V4CompanyPrimaryId =
   | 'overview'
   | 'goals'
@@ -43,8 +44,7 @@ export type V4CompanyPrimaryId =
   | 'skills'
   | 'workers'
   | 'knowledge'
-  | 'team'
-  | 'more';
+  | 'team';
 
 export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   id: V4CompanyPrimaryId;
@@ -57,7 +57,6 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'team', label: 'Team' },
-  { id: 'more', label: 'More' },
 ];
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
@@ -140,7 +139,7 @@ export interface V4SidebarModel {
 
 /**
  * Map a company route tab onto the primary sidebar child that should light.
- * Operational tabs highlight More; content tabs light their matching child.
+ * US-021: operational tabs / More are gone — unknown tabs light nothing.
  */
 export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4CompanyPrimaryId | null {
   switch (tab) {
@@ -156,13 +155,6 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
     case 'knowledge':
     case 'team':
       return tab;
-    case 'activity':
-    case 'deployments':
-    case 'secrets':
-    case 'settings':
-    case 'more':
-      // DESKTOP-010: all four operations destinations light More.
-      return 'more';
     default:
       return null;
   }
@@ -347,6 +339,177 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
   };
 }
 
+/* ── V2 shell (hq-desktop-v2 US-001 + US-002) ───────────────────────────────
+   The V2 sidebar is workspace-first: a WORKSPACE switcher dropdown, the
+   active workspace's sections, then a GENERAL group. Per-company rows and the
+   sidebar Settings entry are gone — Settings opens from the footer user card.
+   Marketplace stays routable (palette) but is not a V2 sidebar row. */
+
+/** Workspace sections shown under the switcher. */
+export const V2_WORKSPACE_SECTION_ITEMS: ReadonlyArray<{
+  id: V4CompanyPrimaryId;
+  label: string;
+}> = V4_COMPANY_PRIMARY_ITEMS;
+
+/** GENERAL group — global destinations. Marketplace is intentionally absent. */
+export const V2_GENERAL_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> =
+  V4_NAV_ITEMS.filter((item) => item.id !== 'marketplace');
+
+export interface V2SidebarWorkspace {
+  slug: string;
+  label: string;
+  tone: V4DotTone;
+}
+
+export interface V2SidebarSectionRow {
+  id: V4CompanyPrimaryId;
+  label: string;
+  active: boolean;
+}
+
+export interface V2SidebarModel {
+  /** Active workspace shown in the switcher; null with no companies. */
+  workspace: V2SidebarWorkspace | null;
+  /** Workspace section rows (Overview … Team), active per company tab. */
+  sections: V2SidebarSectionRow[];
+  /** GENERAL rows (Inbox / Messages / Meetings / Library / Files). */
+  general: V4SidebarNavRow[];
+  /** Footer user card highlights on the Settings route. */
+  settingsActive: boolean;
+}
+
+/**
+ * Resolve the V2 active workspace: the routed company when on a company route,
+ * otherwise the first connected non-personal company, otherwise the first
+ * sidebar row (connected-first order), otherwise null.
+ */
+export function getV2ActiveWorkspace(
+  route: V4Route,
+  workspaces: Workspace[],
+): V2SidebarWorkspace | null {
+  const rows = sortV4CompaniesConnectedFirst(
+    workspaces,
+    route.kind === 'company' ? route.slug : null,
+  );
+  const row =
+    (route.kind === 'company' ? rows.find((r) => r.active) : null) ??
+    rows.find((r) => !r.isPersonal) ??
+    rows[0] ??
+    null;
+  return row ? { slug: row.slug, label: row.label, tone: row.tone } : null;
+}
+
+/**
+ * Derive the V2 sidebar render model. Invariant: at most one active row across
+ * workspace sections, the GENERAL group, and the Settings footer card.
+ */
+export function getV2SidebarModel(route: V4Route, workspaces: Workspace[]): V2SidebarModel {
+  const settingsActive = route.kind === 'settings';
+  const workspace = getV2ActiveWorkspace(route, workspaces);
+  const activePrimary =
+    route.kind === 'company' && workspace != null && route.slug === workspace.slug
+      ? v4CompanyPrimaryForTab(route.tab)
+      : null;
+
+  const activeNavId: V4NavId | null =
+    !settingsActive &&
+    activePrimary == null &&
+    V2_GENERAL_NAV_ITEMS.some((item) => item.id === route.kind)
+      ? (route.kind as V4NavId)
+      : null;
+
+  return {
+    workspace,
+    sections: V2_WORKSPACE_SECTION_ITEMS.map((item) => ({
+      id: item.id,
+      label: item.label,
+      active: item.id === activePrimary,
+    })),
+    general: V2_GENERAL_NAV_ITEMS.map((item) => ({
+      id: item.id,
+      label: item.label,
+      active: item.id === activeNavId,
+    })),
+    settingsActive,
+  };
+}
+
+/** Human relative timestamp ("just now", "5m ago") for status meta lines. */
+export function formatRelativeTime(
+  iso: string | null | undefined,
+  now: number = Date.now(),
+): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const secs = Math.max(0, Math.round((now - then) / 1000));
+  if (secs < 60) return 'just now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
+/** One row in the V2 workspace switcher menu (US-002). */
+export interface V2WorkspaceSwitcherItem {
+  slug: string;
+  label: string;
+  tone: V4DotTone;
+  isPersonal: boolean;
+  syncAgeLabel: string | null;
+  hotkey: string | null;
+  active: boolean;
+  pendingInvite: boolean;
+}
+
+/**
+ * Pure switcher model: non-personal companies first (connected-first order),
+ * then Personal last. Companies get ⌘1–⌘9 by list position; Personal is ⌘0.
+ */
+export function getV2WorkspaceSwitcherItems(
+  workspaces: Workspace[],
+  activeSlug: string | null,
+  now: number = Date.now(),
+): V2WorkspaceSwitcherItem[] {
+  const rows = sortV4CompaniesConnectedFirst(workspaces);
+  const bySlug = new Map<string, Workspace>();
+  for (const workspace of workspaces) {
+    if (!bySlug.has(workspace.slug)) bySlug.set(workspace.slug, workspace);
+  }
+
+  const companies = rows.filter((row) => !row.isPersonal);
+  const personal = rows.find((row) => row.isPersonal) ?? null;
+
+  const toItem = (
+    row: (typeof rows)[number],
+    hotkey: string | null,
+  ): V2WorkspaceSwitcherItem => {
+    const workspace = bySlug.get(row.slug);
+    const age = formatRelativeTime(workspace?.lastSyncedAt, now);
+    // Personal with no sync timestamp is local-first — show "local", not blank.
+    const syncAgeLabel =
+      row.isPersonal && age == null ? 'local' : age;
+    return {
+      slug: row.slug,
+      label: row.label,
+      tone: row.tone,
+      isPersonal: row.isPersonal,
+      syncAgeLabel,
+      hotkey,
+      active: activeSlug != null && activeSlug === row.slug,
+      pendingInvite:
+        workspace?.kind === 'company' && workspace.membershipStatus === 'pending',
+    };
+  };
+
+  const items: V2WorkspaceSwitcherItem[] = companies.map((row, index) =>
+    toItem(row, index < 9 ? `⌘${index + 1}` : null),
+  );
+  if (personal) items.push(toItem(personal, '⌘0'));
+  return items;
+}
+
 /** Secondary-sidebar item (contextual menu row). */
 export interface V4SecondaryItem {
   id: string;
@@ -402,6 +565,8 @@ export interface V4TitleBarInput {
   errorSummary?: string | null;
   /** Independent desktop-state hydration failure; cached data may still render. */
   hydrationIssue?: V4HydrationIssue | null;
+  /** V2 Cloud Off — sync is paused on this device (hq-desktop-v2 US-001). */
+  cloudPaused?: boolean;
 }
 
 /**
@@ -416,6 +581,17 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
     input.syncState === 'error' ||
     input.syncState === 'auth-error' ||
     input.syncState === 'conflict';
+
+  // Cloud Off (V2): the paused state outranks idle/healthy copy but never an
+  // authoritative operational state or a hydration failure.
+  if (input.cloudPaused && !hasAuthoritativeOperationalState && !input.hydrationIssue) {
+    return {
+      tone: 'idle',
+      sentence: 'Cloud Off',
+      meta: 'sync paused on this device',
+      action: syncNow,
+    };
+  }
 
   if (input.hydrationIssue && !hasAuthoritativeOperationalState) {
     const sentenceByKind: Record<V4HydrationIssueKind, string> = {
@@ -475,11 +651,13 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
         action: syncNow,
       };
     default: {
+      // V2: the synced-age reads in the sentence ("Synced 5m ago") next to the
+      // green dot; watched count stays as trailing meta.
       const watched = `${input.watchedCount} watched`;
       return {
         tone: 'ok',
-        sentence: 'All synced',
-        meta: input.lastSyncLabel ? `${watched} · ${input.lastSyncLabel}` : watched,
+        sentence: input.lastSyncLabel ? `Synced ${input.lastSyncLabel}` : 'All synced',
+        meta: watched,
         action: syncNow,
       };
     }

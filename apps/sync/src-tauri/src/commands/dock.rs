@@ -293,6 +293,7 @@ mod tests {
     fn prefs_with_dock(dock_icon: Option<bool>) -> MenubarPrefs {
         MenubarPrefs {
             hq_path: None,
+            cloud_paused: None,
             sync_on_launch: None,
             notifications: None,
             start_at_login: None,
@@ -313,6 +314,9 @@ mod tests {
             widget_enabled: None,
             widget_display: None,
             dock_icon,
+            theme: None,
+            window_opacity: None,
+            interface_size: None,
         }
     }
 

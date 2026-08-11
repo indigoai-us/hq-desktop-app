@@ -4,8 +4,9 @@ export const DESKTOP_ZOOM_STORAGE_KEY = 'hq-sync.desktop.zoom.v1';
 export const DESKTOP_ZOOM_CHANGE_EVENT = 'hq:desktop-zoom-change';
 export const DESKTOP_ZOOM_REQUEST_EVENT = 'hq:desktop-zoom-request';
 export const DEFAULT_DESKTOP_ZOOM = 1;
-export const MIN_DESKTOP_ZOOM = 0.8;
-export const MAX_DESKTOP_ZOOM = 1.6;
+// V2 Settings spec (US-016): the Interface size slider spans 75%–150%.
+export const MIN_DESKTOP_ZOOM = 0.75;
+export const MAX_DESKTOP_ZOOM = 1.5;
 export const DESKTOP_ZOOM_STEP = 0.1;
 
 export type DesktopZoomAction = 'in' | 'out' | 'reset';
@@ -37,7 +38,9 @@ interface DesktopZoomOptions {
 type DesktopZoomRequestOptions = Pick<DesktopZoomOptions, 'storage' | 'target'>;
 
 function roundZoom(value: number): number {
-  return Math.round(value * 10) / 10;
+  // 0.05 granularity so the 0.75 / 1.5 range endpoints survive normalization
+  // (a 0.1 grid would round 0.75 up to 0.8) while ⌘+/⌘− keep 0.1 steps.
+  return Math.round(value * 20) / 20;
 }
 
 export function normalizeDesktopZoom(value: unknown): number {

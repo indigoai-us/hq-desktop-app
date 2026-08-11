@@ -88,9 +88,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     );
     expect(page).toContain('onclick={() => void startNewProject()}');
 
-    // DESKTOP-001: company sections expand inline under the selected company;
-    // there is no permanent company secondary sidebar. Full section list remains
-    // route-supported (deep links / More / palette).
+    // DESKTOP-001 + US-021: company sections expand inline; ops tabs removed.
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
       'goals',
@@ -99,10 +97,6 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       'workers',
       'knowledge',
       'team',
-      'activity',
-      'deployments',
-      'secrets',
-      'settings',
     ]);
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies)).toBeNull();
     expect(getDesktopActiveCompany({ kind: 'company', slug: 'acme' }, companies)?.role).toBe(
@@ -128,15 +122,14 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // projects/in-flight via CompanyBoardPanel). The old flat vault BoardPanel
     // stays retired.
     expect(page).not.toContain('<BoardPanel slug={company.slug} />');
-    // DESKTOP-010: Activity / Deployments / Secrets / Settings live under More
-    // via CompanyOperationsPanel (child panels still preserve backend wiring).
-    expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
+    // US-021: operations workspace removed — console deep links instead.
+    expect(page).not.toContain('CompanyOperationsPanel');
     expect(page).toContain('<CompanyBoardPanel');
     expect(page).toContain('slug={company.slug}');
     expect(page).toContain('{cloudBacked}');
-    expect(page).toContain('isCompanyOperationsTab(tab)');
-    expect(page).toContain('<CompanyOperationsPanel');
-    expect(page).toContain('destination={operationsDestination}');
+    expect(page).not.toContain('isCompanyOperationsTab');
+    expect(page).toContain('Open in HQ Console');
+    expect(page).not.toContain('destination={operationsDestination}');
   });
 
   it('wires company metadata plus workspace role propagation', () => {
@@ -152,7 +145,6 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       board: 0,
       activity: { last7d: 0 },
       deployments: 0,
-      secrets: 0,
     });
     expect(summary).toContain('void companyStore.loadSummary(slug, reenabled)');
     expect(summary).toContain('summary = emptyCompanySummary();');
@@ -160,12 +152,11 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // a monotonic request id that discards out-of-order completions.
     expect(summary).toContain('const myRequest = ++requestId;');
     expect(summary).toContain('if (myRequest === requestId) {');
-    expect(rustDesktopAlt).toContain('pub struct CompanySummary');
+    // CompanySummary type lives in hq-desktop-core; the app command constructs it.
     expect(rustDesktopAlt).toContain('pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>');
     expect(rustMain).toContain('commands::desktop_alt::get_company_summary');
-    // Company settings now opens the HQ web console (sync rules / members /
-    // roles live there) in the system browser, not an in-app settings route.
-    expect(page).toContain('void openExternal(companySettingsUrl(company.slug));');
+    // US-021: company console home opens in the system browser.
+    expect(page).toContain('void openExternal(companyConsoleUrl(company.slug));');
     expect(page).toContain('onopenprojects?: () => void;');
     expect(page).toContain("const settings = await invoke<SettingsWire>('get_settings').catch(() => ({ hqPath: null }));");
 

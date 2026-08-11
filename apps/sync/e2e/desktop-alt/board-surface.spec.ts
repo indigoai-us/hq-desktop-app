@@ -72,11 +72,11 @@ const FIXTURE_PROJECTS: Project[] = [
 ];
 
 describe('desktop-alt Board surface (US-007)', () => {
-  it('has no top-level Board route — ⌘1 is Inbox in the US-008 IA', () => {
+  it('has no top-level Board route — hotkeys only switch workspaces (US-002)', () => {
     const companies = [workspace({ slug: 'indigo', displayName: 'Indigo' })];
 
-    // No hotkey resolves to a 'board' kind anywhere on ⌘1–⌘9.
-    for (let key = 1; key <= 9; key += 1) {
+    // No hotkey resolves to a 'board' kind anywhere on ⌘0–⌘9.
+    for (let key = 0; key <= 9; key += 1) {
       const resolved = getDesktopHotkeyRoute(
         { key: String(key), metaKey: true, ctrlKey: false },
         companies,
@@ -84,14 +84,13 @@ describe('desktop-alt Board surface (US-007)', () => {
       expect(resolved?.kind).not.toBe('board');
     }
 
-    // ⌘1 maps to Inbox; ⌘2 to Meetings (US-008 order: Inbox/Meetings/
-    // Marketplace/Library — Home and Mission Control are palette-only).
+    // ⌘1 maps to the first company; ⌘2 past the company count is quiet.
     expect(
       getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'inbox' } satisfies DesktopRoute);
+    ).toEqual({ kind: 'company', slug: 'indigo' } satisfies DesktopRoute);
     expect(
       getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'meetings' } satisfies DesktopRoute);
+    ).toBeNull();
   });
 
   it('classifies projects to effective list status and honours the status pills', () => {
@@ -153,10 +152,10 @@ describe('desktop-alt Board surface (US-007)', () => {
 
     // Route kind union no longer carries 'board' (the US-008 IA is Inbox /
     // Meetings / Marketplace / Library plus settings, the palette-only
-    // home / mission-control / moderation surfaces, and per-company routes
+    // home / moderation surfaces, and per-company routes (US-021 drops mission-control)
     // — see route.ts).
     expect(route).toContain(
-      "{ kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
+      "{ kind: 'home' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
     );
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
@@ -239,9 +238,10 @@ describe('desktop-alt Board surface (US-007)', () => {
     expect(company).toContain('slug={company.slug}');
     expect(company).toContain('{cloudBacked}');
     // Other sections remain wired below it.
-    // DESKTOP-010: operational panels mount inside CompanyOperationsPanel under More.
-    expect(company).toContain('CompanyOperationsPanel');
-    expect(company).toContain('isCompanyOperationsTab(tab)');
-    expect(company).toContain('destination={operationsDestination}');
+    // US-021: operations workspace removed — console deep links instead.
+    expect(company).not.toContain('CompanyOperationsPanel');
+    expect(company).not.toContain('isCompanyOperationsTab');
+    expect(company).toContain('Open in HQ Console');
+    expect(company).not.toContain('destination={operationsDestination}');
   });
 });

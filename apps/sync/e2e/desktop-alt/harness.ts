@@ -43,20 +43,10 @@ export interface DesktopAltTestHarness {
   openDesktopAltWindow(): MaybePromise<DesktopAltWindowState>;
   closeDesktopAltWindow(): MaybePromise<void>;
   snapshot(): MaybePromise<DesktopAltSnapshot>;
-  navigate(route: 'sync' | 'meetings' | 'company'): MaybePromise<RenderedPage>;
+  navigate(
+    route: 'sync' | 'meetings' | 'company' | 'company-skills' | 'company-workers',
+  ): MaybePromise<RenderedPage>;
   dispose?(): MaybePromise<void>;
-}
-
-export interface SecretItem {
-  key: string;
-  upd: string;
-  rot: string;
-}
-
-export interface SecretEnv {
-  env: string;
-  count: number;
-  items: SecretItem[];
 }
 
 const repoRoot = process.cwd();
@@ -76,72 +66,6 @@ export function reportDriverMode(reason?: string): void {
 
 export function readRepoFile(path: string): string {
   return readFileSync(join(repoRoot, path), 'utf8').replace(/\r\n/g, '\n');
-}
-
-export function assertNoRecursiveSecretFields(payload: unknown): void {
-  const forbiddenPath = findForbiddenSecretField(payload);
-  expect(forbiddenPath).toBeNull();
-}
-
-export function findForbiddenSecretField(payload: unknown, path = '$'): string | null {
-  if (!payload || typeof payload !== 'object') return null;
-
-  if (Array.isArray(payload)) {
-    for (let index = 0; index < payload.length; index += 1) {
-      const nested = findForbiddenSecretField(payload[index], `${path}[${index}]`);
-      if (nested) return nested;
-    }
-    return null;
-  }
-
-  for (const [key, value] of Object.entries(payload)) {
-    if (key === 'value' || key === 'secret') {
-      return `${path}.${key}`;
-    }
-    const nested = findForbiddenSecretField(value, `${path}.${key}`);
-    if (nested) return nested;
-  }
-
-  return null;
-}
-
-export function sanitizeSecretsResponse(raw: unknown): SecretEnv[] {
-  const rows = secretRows(raw);
-  const grouped = new Map<string, SecretItem[]>();
-
-  for (const row of rows) {
-    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
-    const record = row as Record<string, unknown>;
-    const rawKey = firstString(record, [
-      'key',
-      'name',
-      'path',
-      'secretPath',
-      'secretName',
-      'parameterName',
-    ]);
-    if (!rawKey) continue;
-
-    const env =
-      firstString(record, ['env', 'environment', 'stage', 'scope']) ??
-      inferEnvFromKey(rawKey) ??
-      'default';
-    const key = rawKey.includes('/') ? rawKey.split('/').filter(Boolean).at(-1) ?? rawKey : rawKey;
-    const items = grouped.get(env) ?? [];
-    items.push({
-      key,
-      upd: firstString(record, ['upd', 'updatedAt', 'updated_at', 'lastUpdated']) ?? '-',
-      rot: firstString(record, ['rot', 'rotation', 'rotatedAt', 'lastRotated']) ?? '-',
-    });
-    grouped.set(env, items);
-  }
-
-  return [...grouped.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([env, items]) => {
-      const sortedItems = [...items].sort((a, b) => a.key.localeCompare(b.key));
-      return { env, count: sortedItems.length, items: sortedItems };
-    });
 }
 
 export class DesktopAltHarness implements DesktopAltTestHarness {
@@ -192,8 +116,44 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     };
   }
 
-  navigate(route: 'sync' | 'meetings' | 'company'): RenderedPage {
+  navigate(
+    route: 'sync' | 'meetings' | 'company' | 'company-skills' | 'company-workers',
+  ): RenderedPage {
     this.assertDesktopAppRouteContracts();
+
+    // hq-desktop-v2 US-009: first-class company Skills / Workers pages, wired
+    // from the V2 sidebar workspace sections and mounted by CompanyPage.
+    if (route === 'company-skills' || route === 'company-workers') {
+      const isSkills = route === 'company-skills';
+      const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
+      expect(page).toContain(
+        isSkills
+          ? '<CompanySkillsPage slug={company.slug} />'
+          : '<CompanyWorkersPage slug={company.slug} />',
+      );
+      return {
+        route,
+        text: sourceText(
+          isSkills
+            ? 'src/desktop-alt/pages/CompanySkillsPage.svelte'
+            : 'src/desktop-alt/pages/CompanyWorkersPage.svelte',
+          isSkills
+            ? [
+                'data-testid="company-skills-panel"',
+                '<h2>Skills</h2>',
+                'Company-scoped workflows and operating knowledge',
+                'forcedFilter="skills"',
+              ]
+            : [
+                'data-testid="company-workers-panel"',
+                '<h2>Workers</h2>',
+                'Company-scoped agents and specialist roles',
+                'forcedFilter="workers"',
+              ],
+        ),
+        consoleErrors: [...this.consoleErrors],
+      };
+    }
 
     if (route === 'sync') {
       // The legacy 'sync' route resolves to Home (US-002); the V4 Home surface
@@ -229,11 +189,6 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
       ]),
       consoleErrors: [...this.consoleErrors],
     };
-  }
-
-  interceptGetCompanySecrets(raw: unknown): SecretEnv[] {
-    this.assertSecretsSourceContracts();
-    return sanitizeSecretsResponse(raw);
   }
 
   private isDesktopAltEnabled(): boolean {
@@ -293,28 +248,14 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     expect(desktopApp).toContain('<CompanyPage');
     expect(desktopApp).toContain('company={activeCompany}');
     expect(desktopApp).toContain('tab={companyTab}');
-  }
-
-  private assertSecretsSourceContracts(): void {
-    const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
-    const core = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
-    const panel = readRepoFile('src/desktop-alt/panels/SecretsPanel.svelte');
-
-    // The command wrapper returns ONLY the metadata-only projection type — never
-    // a value-bearing shape. The type itself is defined + tested in the shared
-    // core library (the command binary depends on it, so it lives there).
-    expect(rust).toContain('pub async fn get_company_secrets(');
-    expect(rust).toContain('Result<Vec<SecretEnv>, String>');
-    expect(core).toContain('pub struct SecretItem');
-    const secretItemStruct = core.match(/pub struct SecretItem\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(secretItemStruct).toContain('pub key: String');
-    expect(secretItemStruct).toContain('pub upd: String');
-    expect(secretItemStruct).toContain('pub rot: String');
-    expect(secretItemStruct).not.toMatch(/pub (value|secret):|serde\(flatten\)/);
-    expect(panel).toContain('companyStore.loadSecrets(slug');
-    expect(panel).toContain('key: stringOrFallback(item.key');
-    expect(panel).toContain('upd: stringOrFallback(item.upd');
-    expect(panel).toContain('rot: stringOrFallback(item.rot');
+    // US-021: secrets command and Mission Control page are gone.
+    expect(desktopApp).not.toContain('MissionControlPage');
+    expect(desktopApp).not.toContain("route.kind === 'mission-control'");
+    // DesktopRoute union no longer includes mission-control as a kind.
+    expect(route).toContain("kind: 'home' | 'inbox' | 'messages'");
+    expect(route).not.toMatch(/kind:\s*'home'\s*\|\s*'mission-control'/);
+    const main = readRepoFile('src-tauri/src/main.rs');
+    expect(main).not.toContain('get_company_secrets');
   }
 }
 
@@ -384,34 +325,4 @@ function sourceText(path: string, markers: string[]): string[] {
       .replace(/<\/?h1>/g, '')
       .replace(/[<>"{}]/g, ''),
   );
-}
-
-function secretRows(raw: unknown): unknown[] {
-  if (Array.isArray(raw)) return raw;
-  if (!raw || typeof raw !== 'object') return [];
-  const record = raw as Record<string, unknown>;
-  for (const key of ['secrets', 'items']) {
-    if (Array.isArray(record[key])) return record[key] as unknown[];
-  }
-  for (const key of ['body', 'data']) {
-    const nested = record[key];
-    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-      const rows = secretRows(nested);
-      if (rows.length > 0) return rows;
-    }
-  }
-  return [];
-}
-
-function firstString(record: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function inferEnvFromKey(key: string): string | null {
-  const [first] = key.split('/').filter(Boolean);
-  return first && /^[a-z][a-z0-9_-]*$/i.test(first) ? first : null;
 }

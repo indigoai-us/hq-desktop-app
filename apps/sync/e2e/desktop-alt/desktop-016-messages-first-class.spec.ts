@@ -34,10 +34,10 @@ describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
     expect(getV4SidebarModel({ kind: 'messages' }, [indigo]).nav.find((row) => row.active)?.id)
       .toBe('messages');
 
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ mode: 'internal', route: { kind: 'messages' } });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     // Notifications remain the chronology/feed destination.
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
     expect(getDesktopSecondarySidebar({ kind: 'messages' }, [indigo])).toBeNull();
   });
@@ -86,7 +86,8 @@ describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
     expect(app).toContain("id: 'command-go-messages'");
     expect(app).toContain("label: 'Go to Messages'");
     expect(app).toContain("action: () => navigate({ kind: 'messages' })");
-    expect(app).toContain('<InboxPage />');
+    // US-012: InboxPage now receives the in-shell navigate glue.
+    expect(app).toContain('<InboxPage onnavigate={navigate} />');
     expect(inbox).not.toContain('onopenmessages');
   });
 

@@ -1244,6 +1244,52 @@ export function taskStateContext(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Activity tab session cards (US-007 V2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Presentation-ready view of one Activity-tab session card. All fields come
+ * from real AgentSession data — missing values stay null so the UI can omit
+ * them honestly instead of inventing telemetry. This is the mission-control-
+ * local guarantee surface: LOCAL Claude/Codex sessions matched to the project
+ * by cwd/repo tokens render here (the console Telescope cannot see them).
+ */
+export interface SessionActivityCard {
+  /** Model the session runs (e.g. `claude-opus-4-8`), or null when unknown. */
+  model: string | null;
+  /** The agent runtime — `claude` / `codex` — or null when unreported. */
+  runtime: string | null;
+  /** Elapsed wall time since startedAt (mm:ss or h:mm:ss), or null. */
+  elapsed: string | null;
+  /** Working directory the session runs in, or null when unknown. */
+  cwd: string | null;
+  /** Raw session status (running / awaiting_input). */
+  status: string;
+}
+
+/**
+ * Build the Activity card view for a live session. Pure + deterministic;
+ * `now` is injected for tests. Never fabricates values — empty strings map to
+ * null so the card omits the field.
+ */
+export function sessionActivityCardView(
+  session: PortfolioSessionRef,
+  now: number = Date.now(),
+): SessionActivityCard {
+  const clean = (value: string | null | undefined): string | null => {
+    const trimmed = (value ?? '').trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  return {
+    model: clean(session.model),
+    runtime: clean(session.tool)?.toLowerCase() ?? null,
+    elapsed: formatLiveElapsed(session.startedAt, now),
+    cwd: clean(session.cwd),
+    status: session.status,
+  };
+}
+
 /**
  * Derive an HQ-relative project directory from a prdPath for Files scoping.
  * Returns null when the path cannot be resolved to a companies/.../projects/...
@@ -1268,4 +1314,43 @@ export function projectFilesRootFromPrdPath(prdPath: string | null | undefined):
     parts.pop();
   }
   return parts.join('/');
+}
+
+// ---------------------------------------------------------------------------
+// US-008 (V2) — Run story handoff shape
+// ---------------------------------------------------------------------------
+
+/**
+ * The Run story prompt (US-008 V2): hands the story to the HQ `/execute-task`
+ * skill as `{project}/{story-id}`. Kept pure so the wire shape is unit-tested;
+ * dispatch still routes through the validated claude-code-link path
+ * (buildClaudeCodeUrl → open_claude_code_link, clipboard fallback).
+ */
+export function runStoryPrompt(projectId: string, storyId: string): string {
+  return `/execute-task ${projectId}/${storyId}`;
+}
+
+/**
+ * Resolve the folder a Run story Claude Code session should cwd into: the
+ * project's own directory (dirname of prd.json), absolute when possible.
+ *
+ * - Absolute prdPath → its directory.
+ * - HQ-relative prdPath (companies/...) → joined onto hqFolderPath when known,
+ *   otherwise the relative project dir (still a valid `folder` value).
+ * - Unresolvable → hqFolderPath (HQ root), matching the other agent handoffs.
+ */
+export function projectFolderFromPrdPath(
+  prdPath: string | null | undefined,
+  hqFolderPath: string,
+): string {
+  const normalized = (prdPath ?? '').replace(/\\/g, '/');
+  if (normalized.startsWith('/')) {
+    const dir = normalized.slice(0, normalized.lastIndexOf('/'));
+    if (dir) return dir;
+  }
+  const relativeRoot = projectFilesRootFromPrdPath(normalized);
+  if (relativeRoot) {
+    return hqFolderPath ? `${hqFolderPath.replace(/\/+$/, '')}/${relativeRoot}` : relativeRoot;
+  }
+  return hqFolderPath;
 }

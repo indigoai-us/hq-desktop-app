@@ -50,6 +50,7 @@ mod tests {
     fn empty_prefs() -> MenubarPrefs {
         MenubarPrefs {
             hq_path: None,
+            cloud_paused: None,
             sync_on_launch: None,
             notifications: None,
             start_at_login: None,
@@ -70,6 +71,9 @@ mod tests {
             widget_enabled: None,
             widget_display: None,
             dock_icon: None,
+            theme: None,
+            window_opacity: None,
+            interface_size: None,
         }
     }
 
@@ -81,6 +85,7 @@ mod tests {
     fn apply_defaults(prefs: MenubarPrefs) -> MenubarPrefs {
         MenubarPrefs {
             hq_path: prefs.hq_path,
+            cloud_paused: Some(prefs.cloud_paused.unwrap_or(false)),
             sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(true)),
             notifications: Some(prefs.notifications.unwrap_or(true)),
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
@@ -106,6 +111,12 @@ mod tests {
             // Dock icon defaults ON when absent (existing installs gain the
             // Dock icon on upgrade; explicit `false` is the only opt-out).
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
+            // Appearance (US-016) — pass-through: absence means "frontend
+            // default", and re-serializing an absent field would add a
+            // constraint an old config never expressed.
+            theme: prefs.theme,
+            window_opacity: prefs.window_opacity,
+            interface_size: prefs.interface_size,
         }
     }
 
@@ -161,6 +172,7 @@ mod tests {
     fn test_explicit_values_preserved() {
         let prefs = MenubarPrefs {
             hq_path: Some("/custom/path".to_string()),
+            cloud_paused: Some(true),
             sync_on_launch: Some(true),
             notifications: Some(false),
             start_at_login: Some(false),
@@ -181,6 +193,9 @@ mod tests {
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
             dock_icon: Some(false),
+            theme: Some("dark".to_string()),
+            window_opacity: Some(70),
+            interface_size: Some(125),
         };
 
         let result = apply_defaults(prefs);
@@ -209,12 +224,17 @@ mod tests {
         // explicit dock_icon false survives the default-on coercion — the
         // menubar-only opt-out must not be silently re-enabled on every save
         assert_eq!(result.dock_icon, Some(false));
+        // Appearance values pass through untouched (frontend owns defaults)
+        assert_eq!(result.theme, Some("dark".to_string()));
+        assert_eq!(result.window_opacity, Some(70));
+        assert_eq!(result.interface_size, Some(125));
     }
 
     #[test]
     fn test_roundtrip_serialization() {
         let prefs = MenubarPrefs {
             hq_path: Some("/Users/test/HQ".to_string()),
+            cloud_paused: Some(true),
             sync_on_launch: Some(true),
             notifications: Some(true),
             start_at_login: Some(false),
@@ -235,6 +255,9 @@ mod tests {
             widget_enabled: Some(true),
             widget_display: Some("Built-in Retina Display".to_string()),
             dock_icon: Some(true),
+            theme: Some("light".to_string()),
+            window_opacity: Some(35),
+            interface_size: Some(100),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();

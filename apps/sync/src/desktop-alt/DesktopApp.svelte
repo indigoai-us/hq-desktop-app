@@ -2,7 +2,9 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
+  import { consoleDeepLinks } from './lib/console-links';
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import {
     MESSAGE_PERSON_EVENT,
@@ -26,8 +28,8 @@
     type CachedBrand,
   } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
-  import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
+  import { companyConsoleUrl, HQ_CONSOLE_BASE } from './lib/hq-console';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
   import InboxPage from './pages/InboxPage.svelte';
@@ -61,20 +63,24 @@
     DEFAULT_SETTINGS_TAB,
     formatRelativeTime,
     fromV4Route,
+    getAddWorkspaceRoute,
     getDesktopActiveCompany,
     getDesktopCompanies,
     getDesktopHotkeyRoute,
     getDesktopLandingRoute,
     getDesktopRouteKey,
     getDesktopSecondarySidebar,
+    landOnRouteForResolution,
     resolvePendingDesktopRoute,
     type CompanyTab,
     type DesktopRoute,
     type LibraryTab,
     type SettingsTab,
   } from './route';
+  import { readCloudPaused, loadCloudPaused, setCloudPaused } from './lib/cloud-connection';
   import {
     accountIdentityFromWorkspaces,
+    getV2ActiveWorkspace,
     sortV4CompaniesConnectedFirst,
     type V4HydrationIssue,
     V4_CHROME_LAYOUT,
@@ -84,7 +90,7 @@
     HomeCoreState,
     HomeDeleteRefusal,
   } from './v4/home-model';
-  import V4Sidebar from './v4/V4Sidebar.svelte';
+  import V2Sidebar from './v4/V2Sidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
@@ -298,6 +304,44 @@
   );
   const watchedWorkspaceCount = $derived(watchedCompanies.length);
   const accountIdentity = $derived(accountIdentityFromWorkspaces(shellCompanies));
+  // V2 shell (US-001): active workspace for the titlebar name + sidebar
+  // switcher placeholder, footer email, and the Cloud Connected/Off flag.
+  const activeWorkspaceChrome = $derived(getV2ActiveWorkspace(route, renderCompanies));
+  let accountEmail = $state<string | null>(null);
+  // Mirror-first for instant render; settings (menubar.json — the store the
+  // Rust sync gates read) is authoritative and hydrates just below.
+  let cloudPaused = $state(readCloudPaused());
+
+  onMount(() => {
+    void loadCloudPaused().then((paused) => {
+      cloudPaused = paused;
+    });
+    void invoke<string | null>('get_account_email')
+      .then((email) => {
+        accountEmail = email && email.trim() ? email.trim() : null;
+      })
+      .catch(() => {
+        accountEmail = null;
+      });
+  });
+
+  function handleCloudToggle(paused: boolean) {
+    cloudPaused = paused;
+    // Write-through to menubar.json so the Rust gates (start_sync + the watch
+    // daemon) see the switch, then reconcile the running watcher: pausing
+    // stops it; unpausing lets auto-sync resume immediately instead of
+    // waiting for the supervisor's next tick. Both are best-effort — the
+    // Rust-side gates are the enforcement, not these calls.
+    void setCloudPaused(paused)
+      .then(async () => {
+        if (paused) {
+          await invoke('stop_daemon').catch(() => undefined);
+        } else {
+          await invoke('start_daemon').catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
+  }
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
   const activeCompanySyncEnabled = $derived(isWorkspaceSyncEnabled(activeCompany));
@@ -307,12 +351,10 @@
   const companyTab = $derived<CompanyTab>(
     route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
   );
+  // US-021: only overview keeps a polled cloud resource (summary). Ops panels
+  // (activity/deployments/secrets) no longer exist as desktop surfaces.
   const polledCompanyResource = $derived<CompanyResource | null>(
-    companyTab === 'activity' || companyTab === 'deployments' || companyTab === 'secrets'
-      ? companyTab
-      : companyTab === 'overview'
-        ? 'summary'
-        : null,
+    companyTab === 'overview' ? 'summary' : null,
   );
   $effect(() => {
     setActiveCompanyResource(
@@ -421,16 +463,23 @@
       action: () => navigate({ kind: 'home' }),
     },
     {
+      // US-021: fleet Mission Control is console Telescope, not an in-app page.
       id: 'command-go-mission-control',
-      label: 'Go to Mission Control',
-      detail: 'Live + historical view of running agent sessions',
-      action: () => navigate({ kind: 'mission-control' }),
+      label: 'Open Mission Control (Telescope) in HQ Console',
+      detail: activeCompany
+        ? `Opens Telescope for ${activeCompany.displayName} in the HQ web console (browser)`
+        : 'Opens the HQ web console in the browser',
+      action: () =>
+        openExternal(
+          activeCompany
+            ? `${companyConsoleUrl(activeCompany.slug)}/telescope`
+            : HQ_CONSOLE_BASE,
+        ),
     },
     {
       id: 'command-go-inbox',
       label: 'Go to Inbox',
       detail: 'Notifications, mentions, shares, and activity',
-      shortcut: '⌘1',
       action: () => navigate({ kind: 'inbox' }),
     },
     {
@@ -443,21 +492,18 @@
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘2',
       action: () => navigate({ kind: 'meetings' }),
     },
     {
       id: 'command-go-marketplace',
       label: 'Go to Marketplace',
       detail: 'Discover and install skills and workers',
-      shortcut: '⌘3',
       action: () => navigate({ kind: 'marketplace' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
       detail: 'Skills, workers, and installed packs',
-      shortcut: '⌘4',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -500,15 +546,23 @@
           },
         ]
       : []),
-    // Companies start at ⌘5 (after the four primary destinations), in sidebar
-    // (connected-first) order.
-    ...orderedCompanies.map((row, index) => ({
-      id: `command-go-company-${row.slug}`,
-      label: `Go to ${row.label}`,
-      detail: 'Show company overview',
-      shortcut: companyHotkey(index),
-      action: () => navigate({ kind: 'company', slug: row.slug }),
-    })),
+    // US-002 workspace numbering: ⌘1–⌘9 non-personal companies (connected-first
+    // order); Personal is ⌘0.
+    ...(() => {
+      const nonPersonal = orderedCompanies.filter((row) => !row.isPersonal);
+      return orderedCompanies.map((row) => {
+        const shortcut = row.isPersonal
+          ? '⌘0'
+          : companyHotkey(nonPersonal.findIndex((entry) => entry.slug === row.slug));
+        return {
+          id: `command-go-company-${row.slug}`,
+          label: `Go to ${row.label}`,
+          detail: 'Show company overview',
+          shortcut,
+          action: () => navigate({ kind: 'company', slug: row.slug }),
+        };
+      });
+    })(),
     // Keep the palette useful with hundreds of companies: expose every company
     // root, but only materialize deep section commands for the active company.
     ...(activeCompany
@@ -522,6 +576,14 @@
           }),
         )
       : []),
+    // US-003 console deep links — open the system browser via plugin-shell
+    // (the app's safe external-open path) for surfaces that live in the console.
+    ...consoleDeepLinks(activeCompany?.slug ?? null).map((link) => ({
+      id: link.id,
+      label: link.label,
+      detail: link.detail,
+      action: () => openExternal(link.url),
+    })),
   ]);
 
   // Plain-language error summary for the V4 title bar's error state.
@@ -928,6 +990,12 @@
 
   async function handleSyncAll() {
     if (syncState === 'syncing') return;
+    // Cloud Off (V2 US-001): sync is paused on this device. The titlebar
+    // switch is the way back on; a manual Sync press is a no-op with a toast.
+    if (cloudPaused) {
+      flashToast('Cloud is off — turn it on to sync', 'error');
+      return;
+    }
     resetRunState();
     manualSyncTelemetryPending = true;
     try {
@@ -1277,11 +1345,20 @@
     // already-open case is handled live by the `desktop:navigate` listener below.
     void invoke<string | null>('desktop_alt_consume_pending_route')
       .then((pending) => {
-        // Legacy aliases stay functional ('sync' → Home); unknown intents are
-        // ignored so a stale queue entry can't strand the window.
-        const pendingRoute = resolvePendingDesktopRoute(pending);
-        if (mounted && pendingRoute) {
-          navigate(pendingRoute);
+        // US-021: legacy ops / mission-control intents open the HQ console in
+        // the system browser and land on the nearest V2 screen. Unknown intents
+        // are ignored so a stale queue entry can't strand the window.
+        const resolved = resolvePendingDesktopRoute(pending, {
+          activeCompanySlug: activeCompany?.slug ?? null,
+        });
+        if (mounted && resolved) {
+          if (resolved.mode === 'console') {
+            void openExternal(resolved.url).catch((err) => {
+              console.error('open console deep link failed:', err);
+            });
+          }
+          const landOn = landOnRouteForResolution(resolved);
+          if (landOn) navigate(landOn);
           return;
         }
         // No backend pending route — restore a persisted Files-mode route so a
@@ -1627,7 +1704,15 @@
       // specific screen. The fresh-window case is handled by the
       // `desktop_alt_consume_pending_route` consume above.
       listen<string>('desktop:navigate', (event) => {
-        const nextRoute = resolvePendingDesktopRoute(event.payload);
+        const resolved = resolvePendingDesktopRoute(event.payload, {
+          activeCompanySlug: activeCompany?.slug ?? null,
+        });
+        if (resolved?.mode === 'console') {
+          void openExternal(resolved.url).catch((err) => {
+            console.error('open console deep link failed:', err);
+          });
+        }
+        const nextRoute = landOnRouteForResolution(resolved);
         if (nextRoute) {
           navigate(nextRoute);
         }
@@ -1680,6 +1765,9 @@
     conflictCompany={syncConflictCompany}
     {hqFolderPath}
     accountInitials={accountIdentity.initials}
+    companyName={activeWorkspaceChrome?.label ?? null}
+    {cloudPaused}
+    oncloudtoggle={handleCloudToggle}
     {sidebarCollapsed}
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
@@ -1705,14 +1793,19 @@
           onexit={exitFilesMode}
         />
       {:else}
-        <V4Sidebar
+        <V2Sidebar
           {route}
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
+          {accountEmail}
           {brand}
-          {cloudReachable}
-          onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
           onnavigate={(next) => navigate(fromV4Route(next))}
+          onaddworkspace={() => {
+            userNavigated = true;
+            navigate(
+              getAddWorkspaceRoute(workspaces.length > 0 ? workspaces : cachedWorkspaces),
+            );
+          }}
         />
       {/if}
     {/if}
@@ -1780,10 +1873,6 @@
                 onopenlog={handleOpenActivityLog}
               />
             </div>
-          {:else if route.kind === 'mission-control'}
-            <div class="page">
-              <MissionControlPage />
-            </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
@@ -1802,7 +1891,9 @@
             </div>
           {:else if route.kind === 'inbox'}
             <div class="page">
-              <InboxPage />
+              <!-- US-012: Inbox rows navigate in-shell (Messages / Files /
+                   company screens) instead of opening quick windows. -->
+              <InboxPage onnavigate={navigate} />
             </div>
           {:else if route.kind === 'messages'}
             <MessagesShell embedded={true} />
@@ -1858,9 +1949,6 @@
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: 'goals' })
                 }
                 onopeninbox={() => navigate({ kind: 'inbox' })}
-                onopenoperations={(destination) =>
-                  navigate({ kind: 'company', slug: activeCompany.slug, tab: destination })
-                }
                 onworkspaceschanged={() => void refreshRealState()}
               />
             </div>

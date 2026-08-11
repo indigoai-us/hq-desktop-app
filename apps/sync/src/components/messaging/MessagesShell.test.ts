@@ -58,6 +58,69 @@ afterEach(async () => {
   host.remove();
 });
 
+describe('MessagesShell request governance (US-013)', () => {
+  it('renders pending DM requests in the rail and opens the accept/decline card', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case 'list_contacts':
+          return Promise.resolve({ contacts: [] });
+        case 'fetch_notification_history':
+          return Promise.resolve({ dms: [], shares: [] });
+        case 'list_dm_requests':
+          return Promise.resolve({
+            requests: [
+              {
+                pairKey: 'pair-1',
+                fromPersonUid: 'person-ada',
+                fromEmail: 'ada@example.com',
+                fromDisplayName: 'Ada Lovelace',
+                message: 'Hello there',
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          });
+        case 'get_unread_summary':
+          return Promise.resolve({ unreadDms: 0, pendingRequests: 1 });
+        case 'list_channels':
+          return Promise.resolve({ channels: [] });
+        case 'meetings_list_memberships':
+          return Promise.resolve([]);
+        case 'get_config':
+          return Promise.resolve({});
+        case 'mark_messages_viewed':
+          return Promise.resolve();
+        case 'set_watched_shares':
+          return Promise.resolve();
+        default:
+          throw new Error(`Unexpected command: ${command}`);
+      }
+    });
+
+    component = mount(MessagesShell, {
+      target: host,
+      props: { embedded: true },
+    });
+    flushSync();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="request-rail-row"]')?.textContent,
+      ).toContain('Ada Lovelace');
+    });
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="request-rail-row"]')!
+      .click();
+    flushSync();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="request-detail-pane"]')).not.toBeNull();
+    });
+  });
+});
+
 describe('MessagesShell channel loading recovery', () => {
   it('keeps a failed channel load visible while retrying, then clears it after recovery', async () => {
     const retryChannels = deferred<{ channels: [] }>();

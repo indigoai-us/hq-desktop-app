@@ -86,8 +86,8 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
   });
 
   it('Home and Mission Control stay reachable via the command palette only — no hotkey slots', () => {
-    expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
+    expect(resolvePendingDesktopRoute('home')).toEqual({ mode: 'internal', route: { kind: 'home' } });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ mode: 'internal', route: { kind: 'home' } });
     const companies = getDesktopCompanies(workspaces);
     for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       const routed = getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
@@ -96,6 +96,7 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
     }
     expect(desktopApp).toContain("id: 'command-go-home'");
     expect(desktopApp).toContain("id: 'command-go-mission-control'");
+    expect(desktopApp).toContain('Open Mission Control (Telescope) in HQ Console');
     // Their palette entries carry no ⌘ shortcut anymore.
     const homeEntry = desktopApp.slice(
       desktopApp.indexOf("id: 'command-go-home'"),
@@ -143,14 +144,15 @@ describe('US-007: last-visited company landing (persisted)', () => {
 });
 
 describe('US-007: Marketplace is a top-level destination', () => {
-  it('has a sidebar row, the ⌘3 hotkey, and its own route key', () => {
+  it('has a sidebar row and its own route key (hotkeys are workspace-only since US-002)', () => {
     expect(V4_NAV_ITEMS.some((item) => item.id === 'marketplace')).toBe(true);
+    // Number chords no longer land on Marketplace — they switch workspaces.
     expect(
       getDesktopHotkeyRoute(
         { key: '3', metaKey: true, ctrlKey: false },
         getDesktopCompanies(workspaces),
-      ),
-    ).toEqual({ kind: 'marketplace' });
+      )?.kind,
+    ).not.toBe('marketplace');
     expect(fromV4Route({ kind: 'marketplace' })).toEqual({ kind: 'marketplace' });
     expect(getDesktopRouteKey({ kind: 'marketplace' })).toBe('marketplace');
     // Exactly one active row when the Marketplace route is on screen.
@@ -165,38 +167,43 @@ describe('US-007: Marketplace is a top-level destination', () => {
     expect(getDesktopSecondarySidebar({ kind: 'marketplace' }, workspaces)).toBeNull();
   });
 
-  it('left the Library tabs, and the legacy library:marketplace intent redirects top-level', () => {
+  it('carries the US-015 Marketplace fold-in tab, and library:marketplace resolves as a live Library tab', () => {
+    // US-015 folded Marketplace back into the Library tabs; the top-level
+    // `marketplace` route stays alive as the palette destination.
     expect(LIBRARY_SECTIONS.map((section) => section.id)).toEqual([
       'skills',
       'workers',
+      'marketplace',
       'installed',
       'profile',
     ]);
     const library = getDesktopSecondarySidebar({ kind: 'library' }, workspaces);
-    expect(library?.items.some((item) => item.label === 'Marketplace')).toBe(false);
-    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({ kind: 'marketplace' });
-    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
+    expect(library?.items.some((item) => item.label === 'Marketplace')).toBe(true);
+    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
+      mode: 'internal',
+      route: {
+    kind: 'library',
+    tab: 'marketplace',
+      },
+    });
+    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ mode: 'internal', route: { kind: 'marketplace' } });
   });
 });
 
-describe('US-007: hotkeys and palette rebalance with no dead slots', () => {
-  it('⌘1..⌘4 cover the four primaries (Inbox merged) and ⌘5..⌘8 cover companies in sidebar order', () => {
+describe('US-007 / US-002: hotkeys cover workspaces in connected-first order', () => {
+  it('⌘1..⌘N cover non-personal companies; keys past the count stay quiet', () => {
     const companies = getDesktopCompanies([
       ...workspaces,
       workspace({ slug: 'zed', displayName: 'Zed', state: 'synced' }),
     ]);
     const meta = (key: string) =>
       getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
-    expect(meta('1')).toEqual({ kind: 'inbox' });
-    expect(meta('2')).toEqual({ kind: 'meetings' });
-    expect(meta('3')).toEqual({ kind: 'marketplace' });
-    expect(meta('4')).toEqual({ kind: 'library' });
-    // Connected-first + alpha: Acme, Indigo, Zed, then the local-only row.
-    expect(meta('5')).toEqual({ kind: 'company', slug: 'acme' });
-    expect(meta('6')).toEqual({ kind: 'company', slug: 'indigo' });
-    expect(meta('7')).toEqual({ kind: 'company', slug: 'zed' });
-    expect(meta('8')).toEqual({ kind: 'company', slug: 'local-co' });
-    // Only four companies — ⌘9 stays quiet.
-    expect(meta('9')).toBeNull();
+    // Connected-first + alpha non-personal: Acme, Indigo, Zed, then local-only.
+    expect(meta('1')).toEqual({ kind: 'company', slug: 'acme' });
+    expect(meta('2')).toEqual({ kind: 'company', slug: 'indigo' });
+    expect(meta('3')).toEqual({ kind: 'company', slug: 'zed' });
+    expect(meta('4')).toEqual({ kind: 'company', slug: 'local-co' });
+    // Only four non-personal companies — ⌘5 stays quiet.
+    expect(meta('5')).toBeNull();
   });
 });

@@ -88,7 +88,9 @@ describe('DESKTOP-009: team activity and access', () => {
     expect(panel).toContain('data-testid="team-open-console"');
     expect(panel).toContain('data-testid="team-primary-actions"');
     expect(panel).toContain('companyInviteUrl(slug)');
-    expect(panel).toContain('companyConsoleUrl(slug)');
+    // US-011: Open console deep-links to the console team roster.
+    expect(panel).toContain('companyTeamUrl(slug)');
+    expect(consoleLib).toContain('return `${companyConsoleUrl(slug)}/team`');
     expect(panel).toContain("from '../lib/hq-console'");
     expect(consoleLib).toContain("return `${companyConsoleUrl(slug)}/team/invites`");
     // Company-level Invite remains on CompanyPage as well.

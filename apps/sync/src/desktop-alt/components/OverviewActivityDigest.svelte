@@ -1,12 +1,22 @@
 <script lang="ts">
   import { companyStore } from '../lib/company-store.svelte';
+  import {
+    TEAM_ACTIVITY_WINDOW_DAYS,
+    hasTeamActivity,
+    normalizeTeamActivity,
+    teamActivitySummaryLine,
+    teamActivityWindowLabel,
+    teamMemberRows,
+    type CompanyActivity,
+  } from '../lib/team-activity';
   import Sparkline from './Sparkline.svelte';
 
   /**
-   * Compact recent-activity digest for company Overview (DESKTOP-003).
+   * Compact recent-activity digest for company Overview (DESKTOP-003 / US-019).
    * Reuses `get_company_activity` (same as the Activity tab), warmed through
    * companyStore. Renders as a naked section: hairline rows, no outer rounded
    * dashboard boxes. All values are real; empty/zero states stay honest.
+   * Absent optional fields (membersDetail, vaultBytes) mean no data — never error.
    */
   interface Props {
     slug: string;
@@ -17,52 +27,14 @@
     onopeninbox?: () => void;
   }
 
-  interface ActivityStats {
-    files7: number;
-    edits7: number;
-    members: number;
-    vaultSize: string;
-  }
-  interface ActivityContributor {
-    who: string;
-    edits: number;
-  }
-  interface CompanyActivity {
-    stats: ActivityStats;
-    sparkline: number[];
-    top: ActivityContributor[];
-  }
-
   let { slug, cloudBacked = true, syncEnabled = true, onopeninbox }: Props = $props();
   const resourcesEnabled = $derived(cloudBacked && syncEnabled);
 
-  const emptyStats = (): ActivityStats => ({ files7: 0, edits7: 0, members: 0, vaultSize: '' });
-  const emptyActivity = (): CompanyActivity => ({ stats: emptyStats(), sparkline: [], top: [] });
+  const emptyActivity = (): CompanyActivity =>
+    normalizeTeamActivity({ stats: {}, sparkline: [], top: [] });
 
   let activity = $state<CompanyActivity>(emptyActivity());
   let loading = $state(false);
-
-  const numberOrZero = (value: unknown): number =>
-    typeof value === 'number' && Number.isFinite(value) ? value : 0;
-
-  function normalize(result: Partial<CompanyActivity> | null | undefined): CompanyActivity {
-    const stats = result?.stats ?? emptyStats();
-    return {
-      stats: {
-        files7: numberOrZero(stats.files7),
-        edits7: numberOrZero(stats.edits7),
-        members: numberOrZero(stats.members),
-        vaultSize: typeof stats.vaultSize === 'string' ? stats.vaultSize : '',
-      },
-      sparkline: Array.isArray(result?.sparkline) ? result.sparkline.map(numberOrZero) : [],
-      top: Array.isArray(result?.top)
-        ? result.top.map((c) => ({
-            who: typeof c?.who === 'string' ? c.who : 'Unknown',
-            edits: numberOrZero(c?.edits),
-          }))
-        : [],
-    };
-  }
 
   $effect(() => {
     void companyStore.revision;
@@ -75,7 +47,7 @@
 
     const warm = companyStore.activity(slug);
     if (warm != null) {
-      activity = normalize(warm as Partial<CompanyActivity>);
+      activity = normalizeTeamActivity(warm as Partial<CompanyActivity>);
       loading = false;
     } else {
       activity = emptyActivity();
@@ -85,7 +57,7 @@
     void companyStore.loadActivity<Partial<CompanyActivity>>(slug)
       .then((result) => {
         if (!cancelled) {
-          activity = normalize(result);
+          activity = normalizeTeamActivity(result);
         }
       })
       .catch((err) => {
@@ -100,19 +72,25 @@
     };
   });
 
-  const hasActivity = $derived(
-    activity.top.length > 0 || activity.sparkline.some((v) => v > 0) || activity.stats.edits7 > 0,
-  );
+  // Real field surface for the DESKTOP-003 contract + US-019 member rows.
+  // Passing explicit activity.* paths keeps the live payload wired into the UI.
+  const hasActivity = $derived(hasTeamActivity(activity));
   const summaryLine = $derived(
-    [
-      activity.stats.edits7 > 0 ? `${activity.stats.edits7} edits · 7d` : null,
-      activity.stats.files7 > 0 ? `${activity.stats.files7} files · 7d` : null,
-      activity.stats.members > 0 ? `${activity.stats.members} members` : null,
-      activity.stats.vaultSize ? activity.stats.vaultSize : null,
-    ]
-      .filter(Boolean)
-      .join(' · '),
+    teamActivitySummaryLine({
+      stats: {
+        files7: activity.stats.files7,
+        edits7: activity.stats.edits7,
+        members: activity.stats.members,
+        vaultSize: activity.stats.vaultSize,
+        vaultBytes: activity.stats.vaultBytes,
+      },
+      sparkline: activity.sparkline,
+      top: activity.top,
+      membersDetail: activity.membersDetail,
+    }),
   );
+  const memberRows = $derived(teamMemberRows(activity));
+  const windowLabel = $derived(teamActivityWindowLabel(TEAM_ACTIVITY_WINDOW_DAYS));
 </script>
 
 <section
@@ -148,7 +126,7 @@
           {#if summaryLine}
             <span class="digest-summary-title">{summaryLine}</span>
           {/if}
-          <span class="digest-summary-meta">Team vault · last 7–14 days</span>
+          <span class="digest-summary-meta">{windowLabel}</span>
         </div>
         {#if activity.sparkline.length > 0}
           <span class="digest-monitor" aria-label="Edits over time">
@@ -158,18 +136,19 @@
       </div>
     {/if}
 
-    {#if activity.top.length > 0}
+    {#if memberRows.length > 0}
       <ul class="digest-list">
-        {#each activity.top.slice(0, 5) as c, index (`${c.who}:${index}`)}
-          <li class="digest-row">
-            <span class="digest-mark" aria-hidden="true">{c.who.slice(0, 1).toUpperCase()}</span>
+        {#each memberRows.slice(0, 5) as row, index (`${row.name}:${row.email}:${index}`)}
+          <li class="digest-row" data-testid="overview-activity-member-row">
+            <span class="digest-mark" aria-hidden="true">{row.name.slice(0, 1).toUpperCase()}</span>
             <div class="digest-copy">
-              <span class="digest-title">{c.who}</span>
-              <span class="digest-meta">
-                {c.edits} {c.edits === 1 ? 'edit' : 'edits'} · recent window
-              </span>
+              <span class="digest-title">{row.name}</span>
+              <span class="digest-meta">{row.meta}</span>
+              {#if row.email}
+                <span class="digest-email">{row.email}</span>
+              {/if}
             </div>
-            <strong class="digest-count">{c.edits}</strong>
+            <strong class="digest-count">{row.edits}</strong>
           </li>
         {/each}
       </ul>
@@ -312,6 +291,15 @@
   }
 
   .digest-meta {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, var(--text-micro));
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .digest-email {
     overflow: hidden;
     color: var(--v4-text-3);
     font-size: var(--type-metadata, var(--text-micro));

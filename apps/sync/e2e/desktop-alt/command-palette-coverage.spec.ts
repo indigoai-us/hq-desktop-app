@@ -38,13 +38,15 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).toContain("navigate({ kind: 'settings', tab: section.id })");
   });
 
-  it('keeps Marketplace, Home, and Mission Control reachable from the palette (US-007)', () => {
-    // Marketplace is a top-level destination with the ⌘4 slot; Home and
-    // Mission Control lost their sidebar rows + hotkeys but stay routable.
+  it('keeps Marketplace, Home, and Mission Control (console) reachable from the palette (US-007 / US-021)', () => {
+    // Marketplace is a top-level destination; Home stays in-app; Mission Control
+    // is the HQ Console Telescope deep link (US-021).
     expect(desktopApp).toContain("id: 'command-go-marketplace'");
     expect(desktopApp).toContain("navigate({ kind: 'marketplace' })");
     expect(desktopApp).toContain("id: 'command-go-home'");
     expect(desktopApp).toContain("id: 'command-go-mission-control'");
+    expect(desktopApp).toContain('Open Mission Control (Telescope) in HQ Console');
+    expect(desktopApp).not.toContain("navigate({ kind: 'mission-control' })");
     expect(desktopApp).not.toContain("id: 'command-go-companies'");
   });
 
@@ -91,8 +93,36 @@ describe('desktop-alt command palette coverage', () => {
     for (const tab of ['skills', 'workers', 'installed', 'profile']) {
       expect(route).toContain(`id: '${tab}'`);
     }
-    for (const tab of ['sync', 'notifications', 'widget', 'updates', 'general', 'meetings']) {
+    for (const tab of [
+      'sync',
+      'notifications',
+      'widget',
+      'updates',
+      'general',
+      'appearance',
+      'meetings',
+    ]) {
       expect(route).toContain(`id: '${tab}'`);
+    }
+  });
+
+  it('deep-links Deployments, Secrets, Activity, Telescope, Company settings to the HQ Console (US-003)', () => {
+    // Surfaces dropped from desktop live in the console; the palette opens them
+    // in the system browser via plugin-shell + consoleDeepLinks().
+    expect(desktopApp).toContain("import { consoleDeepLinks } from './lib/console-links'");
+    expect(desktopApp).toContain('consoleDeepLinks(activeCompany?.slug ?? null)');
+    expect(desktopApp).toContain('openExternal(link.url)');
+
+    const consoleLinks = readRepoFile('src/desktop-alt/lib/console-links.ts');
+    expect(consoleLinks).toContain("from './hq-console'");
+    for (const id of [
+      'command-go-console-deployments',
+      'command-go-console-secrets',
+      'command-go-console-activity',
+      'command-go-console-telescope',
+      'command-go-console-settings',
+    ]) {
+      expect(consoleLinks).toContain(id);
     }
   });
 });

@@ -240,9 +240,10 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   width: 100%;
   height: 100%;
   /* Native NSGlassEffectView owns the full-window blur. The renderer adds only
-     a neutral alpha tint; a second viewport-sized backdrop filter can stall
-     WKWebView compositing and leave the canvas blank until a repaint. */
-  background: var(--v4-ground, transparent);
+     a neutral tint. V2 (US-001): the content canvas is a SOLID surface —
+     translucency is reserved for the sidebar/titlebar chrome — so page
+     content never depends on wallpaper contrast. */
+  background: var(--v2-canvas, var(--v4-ground, transparent));
 }
 
 .desktop-main-scroll {
