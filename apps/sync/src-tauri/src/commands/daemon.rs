@@ -36,8 +36,9 @@ use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
-    normalized_abort_description, runner_phase_elapsed_bucket, runner_phase_from_event,
-    runner_stack_shape, session_end_grace_waited_bucket, should_capture_watcher_exit,
+    normalized_abort_description, runner_assert_identity, runner_phase_elapsed_bucket,
+    runner_phase_from_event, runner_stack_shape, session_end_grace_waited_bucket,
+    should_capture_watcher_exit,
     spawn_failure_capture_policy, spawn_failure_fingerprint_token, termination_fingerprint_token,
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
@@ -737,7 +738,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     // only runner *resolvability*, so a machine whose managed Node had vanished
     // — leaving `env node` to find an ancient one on PATH — started a watcher
     // that could only fail later. Fail honestly up front instead.
-    if let Some(bail) = crate::commands::sync::preflight_node_bail() {
+    let (node_bail, runner_node_major) = crate::commands::sync::preflight_node_bail();
+    if let Some(bail) = node_bail {
         if bail.failure == PreflightFailure::NodeUnprovisioned {
             // This command is synchronous, so do not hold its singleton guard
             // across a network install. The supervisor will retry on its next
@@ -816,6 +818,9 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         let process_finished = daemon_finished.clone();
         let process_stderr_tail = stderr_tail.clone();
         let process_watcher_phase = watcher_phase.clone();
+        // Protocol stdout line count for this watcher generation, so a
+        // pre-protocol death is distinguishable from a mid-transfer one.
+        let mut watcher_stdout_line_count = 0_u32;
         let result = run_process_impl_for_generation(
             DAEMON_HANDLE,
             daemon_generation,
@@ -837,6 +842,10 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             &process_watcher_phase,
                             &line,
                         ) {
+                            // Count only parsed protocol records (mirrors the
+                            // manual route), never a blank/garbage teardown line.
+                            watcher_stdout_line_count =
+                                watcher_stdout_line_count.saturating_add(1);
                             *process_heartbeat
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
@@ -905,6 +914,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             &stderr_tail,
                             current_windows_terminator_attribution(&app, code, signal),
                             cancellation_record,
+                            watcher_stdout_line_count,
+                            runner_node_major,
                         );
                         let last_stderr = stderr_tail.last().map(String::as_str);
                         handle_watcher_exit(
@@ -1023,6 +1034,19 @@ struct WatcherExitCaptureContext {
     /// the syscall is a fixed constant, the errno a bare integer.
     runner_fatal_syscall: Option<String>,
     runner_fatal_errno: Option<i64>,
+    /// Content-safe libuv/CRT assertion identity for the last recognised
+    /// assertion-class line, read from the SAME RunTotals source as
+    /// `runner_fatal_class`: a fixed source token, a bare line number, and a
+    /// digest of the expression — never copied runner bytes.
+    runner_assert_source: Option<String>,
+    runner_assert_line: Option<u32>,
+    runner_assert_signature: Option<String>,
+    /// Total protocol stdout lines this pass — the stdout sibling of the stderr
+    /// count, so a pre-protocol death is a first-class datum on the watcher too.
+    runner_stdout_line_count: u32,
+    /// The runner's Node major from the daemon's pre-spawn preflight probe
+    /// (reused — no new spawn), or `None`.
+    runner_node_major: Option<u32>,
     /// Bucketed peak per-process COMMITTED memory and total process count read
     /// from the watcher's retained Windows Job Object at the exit boundary. The
     /// job sees the Node runner even though the registered child is the cmd.exe
@@ -1092,6 +1116,11 @@ impl Default for WatcherExitCaptureContext {
             runner_fatal_class: "none".to_string(),
             runner_fatal_syscall: None,
             runner_fatal_errno: None,
+            runner_assert_source: None,
+            runner_assert_line: None,
+            runner_assert_signature: None,
+            runner_stdout_line_count: 0,
+            runner_node_major: None,
             watcher_job_peak_commit_bucket: "unknown".to_string(),
             watcher_job_process_count: "unknown".to_string(),
             runner_error_rollup: None,
@@ -1101,7 +1130,7 @@ impl Default for WatcherExitCaptureContext {
             runner_error_path_roots: None,
             runner_error_scope: None,
             runner_error_companies: 0,
-            runner_phase: "unknown".to_string(),
+            runner_phase: "pre_protocol".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             watcher_launch_origin: "renderer".to_string(),
             runner_stack_shape: "all_redacted".to_string(),
@@ -1127,7 +1156,9 @@ struct WatcherPhaseContext {
 impl Default for WatcherPhaseContext {
     fn default() -> Self {
         Self {
-            phase: "unknown",
+            // Never-observed default, mirroring the manual route: a watcher runner
+            // that dies before emitting protocol reports `pre_protocol`.
+            phase: "pre_protocol",
             observed_at: Instant::now(),
         }
     }
@@ -1157,6 +1188,8 @@ fn watcher_exit_capture_context(
     stderr_tail: &[String],
     windows_terminator: Option<WindowsTerminatorAttribution>,
     cancellation_record: Option<CancellationRecord>,
+    stdout_line_count: u32,
+    node_major: Option<u32>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -1186,6 +1219,13 @@ fn watcher_exit_capture_context(
         runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
         runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
         runner_fatal_errno: totals.runner_fatal_errno(),
+        // Assertion identity from the SAME RunTotals source as the class above,
+        // so the watcher route reads exactly what the manual route does.
+        runner_assert_source: totals.runner_assert_source().map(|s| s.to_string()),
+        runner_assert_line: totals.runner_assert_line(),
+        runner_assert_signature: totals.runner_assert_signature().map(|s| s.to_string()),
+        runner_stdout_line_count: stdout_line_count,
+        runner_node_major: node_major,
         watcher_job_peak_commit_bucket: job_accounting
             .map(|acc| watcher_job_peak_commit_bucket(acc.peak_process_commit_bytes).to_string())
             .unwrap_or_else(|| "unknown".to_string()),
@@ -2011,6 +2051,37 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(errno) = runner_fatal_errno {
         tags.push(("runner_fatal_errno", errno.to_string()));
     }
+    // Assertion identity follows the SAME source as runner_fatal_class: prefer
+    // the last stderr line's identity when it recognised a fatal shape, else the
+    // run's accumulated context — the one-source discipline used for syscall/errno.
+    let (runner_assert_source, runner_assert_line, runner_assert_signature) =
+        match last_stderr.and_then(runner_assert_identity) {
+            Some(identity) => (
+                Some(identity.source.to_string()),
+                identity.line,
+                Some(identity.signature),
+            ),
+            None => (
+                context.runner_assert_source.clone(),
+                context.runner_assert_line,
+                context.runner_assert_signature.clone(),
+            ),
+        };
+    if let Some(source) = runner_assert_source {
+        tags.push(("runner_assert_source", source));
+    }
+    if let Some(signature) = runner_assert_signature {
+        tags.push(("runner_assert_signature", signature));
+    }
+    // The runner's Node major, reused from the daemon's pre-spawn preflight probe
+    // (no new spawn). Always present as an integer or the `unknown` sentinel.
+    tags.push((
+        "runner_node_major",
+        context
+            .runner_node_major
+            .map(|major| major.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+    ));
     // Whole-tree Job Object memory + process count, plus the child-kind/rss-scope
     // labels: a heap-OOM abort becomes separable from a small-footprint one, and
     // last_rss / the exit status are never re-read as the runner's own. Fixed
@@ -2056,6 +2127,17 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
 
     let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    // Protocol stdout count + assertion source line, mirroring the manual route.
+    extras.push((
+        "runner_stdout_line_count",
+        sentry::protocol::Value::Number(context.runner_stdout_line_count.into()),
+    ));
+    if let Some(line) = runner_assert_line {
+        extras.push((
+            "runner_assert_line",
+            sentry::protocol::Value::Number(line.into()),
+        ));
+    }
     if normalized_abort.is_some() {
         extras.push((
             "termination_status_raw",
@@ -4125,6 +4207,88 @@ mod tests {
         // Pre-existing channels are unchanged.
         assert_eq!(recorded_tag(capture, "sync_route"), "watcher");
         assert_eq!(recorded_tag(capture, "windows_exit_status"), "0xC0000409");
+    }
+
+    #[test]
+    fn windows_fastfail_watcher_capture_attributes_libuv_assertion_identity() {
+        // The HQ-DESKTOP-50 shape: a Windows libuv abort whose assertion identity
+        // base discarded. The candidate recovers source/line/signature, the Node
+        // major, and the pre_protocol phase — from the SAME source the manual
+        // route reads, so the two routes emit byte-identical identity.
+        let assertion =
+            r"Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76";
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(assertion);
+        let context = WatcherExitCaptureContext {
+            runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
+            runner_assert_source: totals.runner_assert_source().map(|s| s.to_string()),
+            runner_assert_line: totals.runner_assert_line(),
+            runner_assert_signature: totals.runner_assert_signature().map(|s| s.to_string()),
+            runner_stdout_line_count: 0,
+            runner_node_major: Some(20),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd",
+            Some(assertion),
+            TerminationHost::Windows,
+            &context,
+        );
+        let capture = effects.captures.first().expect("assertion captures");
+
+        // Grouping continuity: the family fingerprint is untouched.
+        assert_eq!(
+            capture.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
+        );
+        assert_eq!(recorded_tag(capture, "runner_fatal_class"), "libuv_assert");
+        assert_eq!(recorded_tag(capture, "runner_assert_source"), "libuv_win_async");
+        let signature = recorded_tag(capture, "runner_assert_signature");
+        assert_eq!(signature.len(), 16);
+        assert!(signature.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(recorded_tag(capture, "runner_node_major"), "20");
+        // On the watcher route runner_phase rides the extras, not the tags.
+        assert!(capture.extras.contains(&(
+            "runner_phase".to_string(),
+            sentry::protocol::Value::String("pre_protocol".to_string())
+        )));
+        assert_eq!(recorded_tag(capture, "sync_route"), "watcher");
+
+        // Byte-identical to what the shared helper (and the manual route) derive.
+        let expected = runner_assert_identity(assertion).expect("assertion identity");
+        assert_eq!(recorded_tag(capture, "runner_assert_source"), expected.source);
+        assert_eq!(signature, expected.signature.as_str());
+
+        // The source line + protocol counter ride the extras.
+        assert!(capture.extras.contains(&(
+            "runner_assert_line".to_string(),
+            sentry::protocol::Value::Number(76.into())
+        )));
+        assert!(capture.extras.contains(&(
+            "runner_stdout_line_count".to_string(),
+            sentry::protocol::Value::Number(0.into())
+        )));
+
+        // No raw byte escapes the emitted tags or extras.
+        let serialized = format!(
+            "{}{}",
+            serde_json::to_string(&capture.tags).expect("serialize tags"),
+            serde_json::to_string(&capture.extras).expect("serialize extras"),
+        );
+        for forbidden in ["Ada", "async.c", "UV_HANDLE_CLOSING", "secret-plan"] {
+            assert!(!serialized.contains(forbidden), "watcher capture leaked {forbidden:?}");
+        }
     }
 
     #[test]
@@ -6459,6 +6623,8 @@ mod tests {
 &[],
             None,
             None,
+            0,
+            None,
         );
 
         assert_eq!(context.watcher_launch_origin, "supervisor_respawn");
@@ -6495,6 +6661,8 @@ mod tests {
             0,
 &tail,
             None,
+            None,
+            0,
             None,
         );
         let mut effects = RecordingWatcherEffects::default();
@@ -6594,6 +6762,8 @@ mod tests {
             0,
 &tail,
             None,
+            None,
+            0,
             None,
         );
 
@@ -6704,6 +6874,8 @@ mod tests {
             0,
 &[],
             None,
+            None,
+            0,
             None,
         );
 

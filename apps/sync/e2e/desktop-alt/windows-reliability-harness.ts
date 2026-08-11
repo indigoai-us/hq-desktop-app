@@ -122,7 +122,11 @@ export interface RunnerExecPermissionDiagnostic {
 
 export type RunnerRoute = 'manual' | 'watcher';
 export type RunnerLaunchOrigin = 'renderer' | 'app_launch' | 'supervisor_respawn';
-export type RunnerPhase = 'scan' | 'push' | 'pull' | 'idle' | 'unknown';
+// Mirror of hq-desktop-core RUNNER_PHASE_VOCABULARY. `pre_protocol` is the
+// never-observed default; keep this in step with the Rust const and the
+// hq-telemetry validator arm (the tri-source vocabulary spec pins all three).
+export type RunnerPhase = 'scan' | 'push' | 'pull' | 'idle' | 'unknown' | 'pre_protocol';
+export type RunnerAssertSource = 'libuv_win_async' | 'libuv_unix_core' | 'libuv_handle' | 'other';
 
 export interface RunnerTerminationDiagnostic {
   route: RunnerRoute;
@@ -136,6 +140,15 @@ export interface RunnerTerminationDiagnostic {
   redactedFrames: number;
   windowsExitStatus?: '0xC0000409';
   windowsFaultSymbol?: 'STATUS_STACK_BUFFER_OVERRUN';
+  // libuv/CRT assertion identity, present only for a libuv_assert abort. Fixed
+  // source token, bare line, and a digest of the expression — never raw bytes.
+  assertSource?: RunnerAssertSource;
+  assertLine?: number;
+  assertSignature?: string;
+  // Always present: protocol stdout count (pre-protocol death is a first-class
+  // datum) and the runner's Node major (or the `unknown` sentinel).
+  stdoutLineCount: number;
+  nodeMajor: number | 'unknown';
 }
 
 const RUNNER_FRAME_TABLE = new Map<string, string>([
@@ -224,6 +237,66 @@ function fixtureRunnerStackShape(stderr: string[]): {
     depth: frames.length,
     redactedFrames,
   };
+}
+
+/**
+ * Mirror of the native `assert_source_token`: map an assertion's source-file
+ * path to the libuv subset of the frame table, else the `other` sentinel.
+ */
+function fixtureAssertSourceToken(path: string): RunnerAssertSource {
+  const token = RUNNER_FRAME_TABLE.get(path.replace(/:\d+:\d+$/, '').toLowerCase());
+  if (token === 'libuv_win_async' || token === 'libuv_unix_core' || token === 'libuv_handle') {
+    return token;
+  }
+  return 'other';
+}
+
+interface FixtureAssertIdentity {
+  source: RunnerAssertSource;
+  line?: number;
+  signature: string;
+}
+
+/**
+ * Mirror of the native `parse_runner_assertion`: isolate a content-safe identity
+ * from `Assertion failed: <expr>[, file <path>][, line <N>]` without copying the
+ * expression, path, or any suffixed private data. Returns the first assertion
+ * line's identity, or undefined when no assertion is present.
+ */
+function fixtureRunnerAssertIdentity(stderr: string[]): FixtureAssertIdentity | undefined {
+  for (const raw of stderr) {
+    const trimmed = raw.trim();
+    const lower = trimmed.toLowerCase();
+    const marker = 'assertion failed:';
+    const markerAt = lower.indexOf(marker);
+    if (markerAt < 0) continue;
+    const bodyStart = markerAt + marker.length;
+
+    let exprPathEnd = trimmed.length;
+    let line: number | undefined;
+    const lineAt = lower.lastIndexOf(', line ');
+    if (lineAt >= bodyStart) {
+      exprPathEnd = lineAt;
+      const digits = trimmed.slice(lineAt + ', line '.length).match(/^\s*(\d+)/);
+      if (digits) line = Number(digits[1]);
+    }
+
+    let exprEnd = exprPathEnd;
+    let source: RunnerAssertSource = 'other';
+    const fileAt = lower.lastIndexOf(', file ', exprPathEnd);
+    if (fileAt >= bodyStart) {
+      exprEnd = fileAt;
+      const path = trimmed.slice(fileAt + ', file '.length, exprPathEnd).trim();
+      source = fixtureAssertSourceToken(path);
+    }
+
+    const expression = trimmed.slice(bodyStart, exprEnd).trim();
+    if (!expression) continue;
+    const normalized = expression.split(/\s+/).join(' ');
+    const signature = createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+    return { source, line, signature };
+  }
+  return undefined;
 }
 
 // Keys / string patterns that must never appear in diagnostics payloads.
@@ -775,6 +848,8 @@ export class WindowsReliabilityHarness {
     phase: RunnerPhase;
     exitCode: number;
     stderr: string[];
+    stdoutLineCount?: number;
+    nodeMajor?: number | 'unknown';
   }): RunnerTerminationDiagnostic {
     this.ensureLaunched();
     if (options.route === 'watcher' && !options.origin) {
@@ -783,7 +858,17 @@ export class WindowsReliabilityHarness {
     const stack = fixtureRunnerStackShape(options.stderr);
     const windowsFault = options.exitCode === 0xc0000409;
     const serializedStderr = options.stderr.join('\n').toLowerCase();
-    const fatalClass = windowsFault && serializedStderr.includes('uv_handle_closing')
+    // Mirror the native libuv-assert arm: an assertion marker plus a
+    // libuv-specific source/handle marker (not a single hard-coded expression).
+    const isLibuvAssert =
+      serializedStderr.includes('assertion failed') &&
+      (serializedStderr.includes('uv_handle') ||
+        serializedStderr.includes('deps/uv/') ||
+        serializedStderr.includes('deps\\uv\\') ||
+        serializedStderr.includes('src/win/async.c') ||
+        serializedStderr.includes('src\\win\\async.c') ||
+        serializedStderr.includes('libuv'));
+    const fatalClass = windowsFault && isLibuvAssert
       ? 'libuv_assert'
       : options.exitCode === 126
         ? 'exec_permission_denied'
@@ -797,11 +882,21 @@ export class WindowsReliabilityHarness {
       stackSignature: stack.signature,
       stackDepth: stack.depth,
       redactedFrames: stack.redactedFrames,
+      stdoutLineCount: options.stdoutLineCount ?? 0,
+      nodeMajor: options.nodeMajor ?? 'unknown',
     };
     if (options.origin) diagnostic.launchOrigin = options.origin;
     if (windowsFault) {
       diagnostic.windowsExitStatus = '0xC0000409';
       diagnostic.windowsFaultSymbol = 'STATUS_STACK_BUFFER_OVERRUN';
+    }
+    if (fatalClass === 'libuv_assert') {
+      const identity = fixtureRunnerAssertIdentity(options.stderr);
+      if (identity) {
+        diagnostic.assertSource = identity.source;
+        if (identity.line !== undefined) diagnostic.assertLine = identity.line;
+        diagnostic.assertSignature = identity.signature;
+      }
     }
     assertContentSafeDiagnostics(diagnostic);
     return diagnostic;

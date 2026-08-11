@@ -75,6 +75,10 @@ const telemetrySource = readFileSync(
   repoUrl('crates/hq-telemetry/src/lib.rs'),
   'utf8',
 );
+const windowsReliabilityHarnessSource = readFileSync(
+  appUrl('e2e/desktop-alt/windows-reliability-harness.ts'),
+  'utf8',
+);
 
 describe('Windows Recall SDK sidecar bundle parity', () => {
   it('declares the Windows externalBin launcher in the release-only overlay', () => {
@@ -183,6 +187,73 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(windowsCheckWorkflow).toMatch(
       /- name: Sync outcome tests[\s\S]*cargo test --manifest-path .*sync_outcome::tests/,
     );
+  });
+
+  it('wires libuv assertion identity, node major, and stdout count on both runner seams', () => {
+    // The shared parser + accessors live in the core, read identically by both routes.
+    expect(syncOutcomeSource).toContain(
+      'pub fn runner_assert_identity(line: &str) -> Option<RunnerAssertIdentity>',
+    );
+    expect(syncOutcomeSource).toContain(
+      'fn parse_runner_assertion(line: &str) -> Option<RunnerAssertIdentity>',
+    );
+    expect(syncOutcomeSource).toContain(
+      "pub fn runner_assert_source(&self) -> Option<&'static str>",
+    );
+
+    // Manual route (sync.rs).
+    expect(syncCommandSource).toContain(
+      'tags.push(("runner_assert_source", source.to_string()));',
+    );
+    expect(syncCommandSource).toContain(
+      'tags.push(("runner_assert_signature", signature.to_string()));',
+    );
+    expect(syncCommandSource).toContain('"runner_assert_line",');
+    expect(syncCommandSource).toContain('"runner_stdout_line_count",');
+    expect(syncCommandSource).toContain('"runner_node_major",');
+    // The Node major is reused from the preflight probe — no new spawn.
+    expect(syncCommandSource).toContain(
+      'fn preflight_node_with_major() -> (NodePreflight, Option<u32>)',
+    );
+
+    // Watcher route (daemon.rs) — same fields from the shared source.
+    expect(daemonCommandSource).toContain('tags.push(("runner_assert_source", source));');
+    expect(daemonCommandSource).toContain('runner_assert_identity');
+    expect(daemonCommandSource).toContain('"runner_assert_line",');
+    expect(daemonCommandSource).toContain('"runner_stdout_line_count",');
+    expect(daemonCommandSource).toContain('"runner_node_major",');
+    // Node major inherited via the shared preflight bail — no new probe.
+    expect(daemonCommandSource).toContain(
+      'let (node_bail, runner_node_major) = crate::commands::sync::preflight_node_bail();',
+    );
+  });
+
+  it('keeps the runner phase vocabulary identical across core, telemetry, and the harness', () => {
+    // 1) Core: the single-source RUNNER_PHASE_VOCABULARY const.
+    const coreMatch = syncOutcomeSource.match(
+      /pub const RUNNER_PHASE_VOCABULARY:\s*&\[&str\]\s*=\s*&\[([^\]]*)\]/,
+    );
+    expect(coreMatch).not.toBeNull();
+    const coreTokens = [...coreMatch![1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
+    expect(coreTokens).toEqual(['idle', 'pre_protocol', 'pull', 'push', 'scan', 'unknown']);
+
+    // 2) Telemetry: the validator's runner_phase egress arm.
+    const telemetryMatch = telemetrySource.match(
+      /"runner_phase"\s*=>\s*Some\(matches!\(\s*value,\s*([^)]*)\)\)/,
+    );
+    expect(telemetryMatch).not.toBeNull();
+    const telemetryTokens = [...telemetryMatch![1].matchAll(/"([a-z_]+)"/g)]
+      .map((m) => m[1])
+      .sort();
+    expect(telemetryTokens).toEqual(coreTokens);
+
+    // 3) Harness: the TS RunnerPhase union.
+    const harnessMatch = windowsReliabilityHarnessSource.match(
+      /export type RunnerPhase\s*=\s*([^;]*);/,
+    );
+    expect(harnessMatch).not.toBeNull();
+    const harnessTokens = [...harnessMatch![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+    expect(harnessTokens).toEqual(coreTokens);
   });
 
   it('keeps raw watcher stderr local instead of copying it into Sentry breadcrumbs', () => {

@@ -182,7 +182,10 @@ struct RunnerPhaseContext {
 impl Default for RunnerPhaseContext {
     fn default() -> Self {
         Self {
-            phase: "unknown",
+            // Never-observed default: a runner that dies before emitting any
+            // protocol event reports `pre_protocol`, which a directionless
+            // Progress observation ("unknown") can never overwrite it into.
+            phase: "pre_protocol",
             observed_at: Instant::now(),
         }
     }
@@ -220,16 +223,24 @@ struct ManualRunnerExitContext {
     /// Total stderr lines observed this run (from the monotonic sequence
     /// counter), so the bounded 8-line tail is never misread as the full count.
     stderr_line_count: u32,
+    /// Total stdout (protocol) lines observed this run, so "died before any
+    /// protocol output" is distinguishable from "died mid-transfer".
+    stdout_line_count: u32,
+    /// The runner's Node major from the pre-spawn preflight probe (reused — no
+    /// new spawn), or `None` when it could not be determined.
+    runner_node_major: Option<u32>,
 }
 
 impl Default for ManualRunnerExitContext {
     fn default() -> Self {
         Self {
             sync_scope: "all".to_string(),
-            runner_phase: "unknown".to_string(),
+            runner_phase: "pre_protocol".to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             stderr_tail: Vec::new(),
             stderr_line_count: 0,
+            stdout_line_count: 0,
+            runner_node_major: None,
         }
     }
 }
@@ -239,6 +250,8 @@ fn manual_runner_exit_context(
     phase_context: &Mutex<RunnerPhaseContext>,
     stderr_tail: &Mutex<VecDeque<String>>,
     stderr_line_count: u32,
+    stdout_line_count: u32,
+    node_major: Option<u32>,
 ) -> ManualRunnerExitContext {
     let phase_context = phase_context
         .lock()
@@ -259,6 +272,8 @@ fn manual_runner_exit_context(
         .to_string(),
         stderr_tail: stderr_tail.iter().cloned().collect(),
         stderr_line_count,
+        stdout_line_count,
+        runner_node_major: node_major,
     }
 }
 
@@ -312,6 +327,26 @@ fn runner_exit_telemetry_context(
     if let Some(errno) = totals.runner_fatal_errno() {
         tags.push(("runner_fatal_errno", errno.to_string()));
     }
+    // Symmetric with the watcher route: the libuv/CRT assertion identity attaches
+    // wherever runner_fatal_class is an assertion class, read from the SAME
+    // RunTotals source so class and identity can never describe different lines.
+    // Content-safe: a fixed source token and a digest, never the expression.
+    if let Some(source) = totals.runner_assert_source() {
+        tags.push(("runner_assert_source", source.to_string()));
+    }
+    if let Some(signature) = totals.runner_assert_signature() {
+        tags.push(("runner_assert_signature", signature.to_string()));
+    }
+    // The runner's Node major — a libuv assertion is a property of the Node
+    // build's bundled libuv. Reused from the pre-spawn preflight probe (no new
+    // spawn); always present as an integer or the `unknown` sentinel.
+    tags.push((
+        "runner_node_major",
+        context
+            .runner_node_major
+            .map(|major| major.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+    ));
     tags.push((
         "sync_termination_reason",
         sync_termination_reason.to_string(),
@@ -368,7 +403,21 @@ fn runner_exit_telemetry_context(
             "runner_stderr_line_count",
             sentry::protocol::Value::Number(context.stderr_line_count.into()),
         ),
+        // Protocol stdout line count — the stdout sibling of the stderr count, so
+        // "died before emitting any protocol output" is a first-class datum.
+        (
+            "runner_stdout_line_count",
+            sentry::protocol::Value::Number(context.stdout_line_count.into()),
+        ),
     ];
+    // Assertion source line, present only for an assertion class (its source and
+    // signature ride the tags above).
+    if let Some(line) = totals.runner_assert_line() {
+        extras.push((
+            "runner_assert_line",
+            sentry::protocol::Value::Number(line.into()),
+        ));
+    }
     // Company-scope vs per-file split, only when a runner error was recorded.
     if let Some(scope) = totals.runner_error_scope() {
         extras.push(("runner_error_scope", sentry::protocol::Value::String(scope)));
@@ -950,6 +999,8 @@ pub fn build_sync_spawn_args(
 /// `all-complete`, the aggregated totals are persisted to
 /// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
 /// `lastSyncAt` and conflict count instead of "never" / zero.
+/// Returns `true` only when `line` parsed as a protocol `SyncEvent` (so the
+/// caller can count parsed records, not blank/garbage teardown lines).
 fn handle_sync_line<R: tauri::Runtime>(
     app: &AppHandle<R>,
     hq_folder: &str,
@@ -957,12 +1008,12 @@ fn handle_sync_line<R: tauri::Runtime>(
     phase_context: &Mutex<RunnerPhaseContext>,
     jwt: &str,
     line: &str,
-) {
+) -> bool {
     // The runner can emit blank lines at process teardown. Skip those cheaply
     // rather than logging a parse error.
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return;
+        return false;
     }
 
     let event: SyncEvent = match serde_json::from_str(trimmed) {
@@ -973,7 +1024,7 @@ fn handle_sync_line<R: tauri::Runtime>(
                 "[sync] skipping unparseable line: {} | line: {}",
                 _e, trimmed
             );
-            return;
+            return false;
         }
     };
 
@@ -1115,6 +1166,7 @@ fn handle_sync_line<R: tauri::Runtime>(
         #[cfg(debug_assertions)]
         eprintln!("[sync] failed to emit event: {}", _e);
     }
+    true
 }
 
 /// Return the re-authentication signal encoded in a runner stderr line.
@@ -1500,8 +1552,11 @@ fn classify_node_preflight(
     }
 }
 
-/// Probe the runner's Node and classify it against the managed toolchain.
-fn preflight_node() -> NodePreflight {
+/// Probe the runner's Node and classify it against the managed toolchain,
+/// returning the probed Node major alongside the classification so a later
+/// runner-exit capture can attribute a runtime abort to a specific Node major
+/// — reusing THIS probe result, never a second spawn.
+fn preflight_node_with_major() -> (NodePreflight, Option<u32>) {
     let (probed_major, node_resolution) = probe_node_major();
     // Only worth a second spawn on the failing path, and only when something
     // actually answered.
@@ -1515,13 +1570,19 @@ fn preflight_node() -> NodePreflight {
     } else {
         probe_npx_resolution()
     };
-    classify_node_preflight(
+    let preflight = classify_node_preflight(
         &hq_desktop_core::toolchain::classify(),
         probed_major,
         probed_path,
         node_resolution,
         npx_resolution,
-    )
+    );
+    (preflight, probed_major)
+}
+
+/// Probe the runner's Node and classify it against the managed toolchain.
+fn preflight_node() -> NodePreflight {
+    preflight_node_with_major().0
 }
 
 /// Why a preflight refused to start the runner. The daemon uses this to decide
@@ -1572,11 +1633,14 @@ impl NodePreflight {
     }
 }
 
-/// Node-runtime preflight for the daemon. Returns the named condition so the
-/// daemon can schedule non-blocking provisioning when HQ has never installed
-/// its runtime, or `None` when the runner's Node is fine.
-pub(crate) fn preflight_node_bail() -> Option<PreflightBail> {
-    preflight_node().into_bail()
+/// Node-runtime preflight for the daemon. Returns the named bail condition so
+/// the daemon can schedule non-blocking provisioning when HQ has never installed
+/// its runtime (or `None` when the runner's Node is fine), plus the probed Node
+/// major so the watcher's runner-exit capture can name the Node that would run
+/// the runner — reusing this same probe, never a second spawn.
+pub(crate) fn preflight_node_bail() -> (Option<PreflightBail>, Option<u32>) {
+    let (preflight, node_major) = preflight_node_with_major();
+    (preflight.into_bail(), node_major)
 }
 
 /// Message when the runner's interpreter (node/npx) isn't resolvable at all —
@@ -1775,8 +1839,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // with one clear, user-actionable message — surfaced via the command error
     // the popover shows — instead of a doomed spawn (crash-loop). Both fail
     // OPEN. Deregister the handle we just took so a later, fixed-environment
-    // sync isn't blocked.
-    match preflight_node() {
+    // sync isn't blocked. Capture the probed Node major here (reused from this
+    // preflight, no extra spawn) so a later runtime abort can name the Node.
+    let (node_preflight, mut probed_node_major) = preflight_node_with_major();
+    match node_preflight {
         NodePreflight::Usable => {}
         NodePreflight::ManagedNodeMissing {
             expected_node,
@@ -1800,8 +1866,19 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 ),
             );
             let repair = repair_managed_node(&app).await;
-            let recovered = matches!(repair, ToolchainRepair::Repaired)
-                && matches!(preflight_node(), NodePreflight::Usable);
+            let recovered = if matches!(repair, ToolchainRepair::Repaired) {
+                let (repaired_preflight, repaired_major) = preflight_node_with_major();
+                if matches!(repaired_preflight, NodePreflight::Usable) {
+                    // The runner will now use the repaired managed Node — attribute
+                    // to its major, not the stale fallback probed first.
+                    probed_node_major = repaired_major;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
             if !recovered {
                 let message = match repair {
                     // The user just clicked Sync Now, so never answer with
@@ -1844,6 +1921,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 return Err(message);
             }
             log("sync", "managed Node runtime provisioned — continuing");
+            // Attribute a later runtime abort to the newly-provisioned Node, not
+            // the pre-install `None` (mirrors the ManagedNodeMissing repair path).
+            let (_, provisioned_major) = preflight_node_with_major();
+            if provisioned_major.is_some() {
+                probed_node_major = provisioned_major;
+            }
         }
         NodePreflight::TooOld { major, path } => {
             log("sync", &format!("BAIL: node too old (v{major})"));
@@ -2171,6 +2254,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     let runner_stderr_tail: Arc<Mutex<VecDeque<String>>> =
         Arc::new(Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP)));
     let mut runner_stderr_sequence = 0_u32;
+    let mut runner_stdout_sequence = 0_u32;
     tauri::async_runtime::spawn_blocking(move || {
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
@@ -2187,14 +2271,19 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     log("runner.stdout", &line);
                     #[cfg(debug_assertions)]
                     eprintln!("[sync stdout] {}", line);
-                    handle_sync_line(
+                    // Count only lines that parse as a protocol record, so a
+                    // blank/garbage teardown line never inflates the count and
+                    // a `pre_protocol` death honestly reads as zero output.
+                    if handle_sync_line(
                         &app_bg,
                         &hq_folder_for_handler,
                         &totals,
                         &runner_phase,
                         &jwt_for_handler,
                         &line,
-                    );
+                    ) {
+                        runner_stdout_sequence = runner_stdout_sequence.saturating_add(1);
+                    }
                 }
                 ProcessEvent::Stderr(line) => {
                     // Always log runner stderr — when sync gets stuck this is the
@@ -2254,6 +2343,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             &runner_phase,
                             &runner_stderr_tail,
                             runner_stderr_sequence,
+                            runner_stdout_sequence,
+                            probed_node_major,
                         );
                         let mut effects = ProductionRunnerExitEffects {
                             app: &app_bg,
@@ -3273,7 +3364,7 @@ mod tests {
 
             let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
             let context =
-                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence);
+                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
             capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
         });
 
@@ -4123,6 +4214,8 @@ mod tests {
             &phase,
             &stderr_tail,
             2,
+            0,
+            None,
         );
         let totals = totals
             .lock()
@@ -4188,6 +4281,119 @@ mod tests {
     }
 
     #[test]
+    fn manual_runner_capture_attributes_a_libuv_abort_with_assertion_identity() {
+        const WINDOWS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409u32 as i32;
+        let private_path = r"C:\Users\Ada\hq\companies\private-company\secret-plan.md";
+        let assertion = format!(
+            "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76: {private_path}"
+        );
+
+        // Feed the fatal stderr through the SAME seam production uses, so totals
+        // carry the assertion identity.
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(&assertion);
+        assert_eq!(totals.runner_fatal_class.as_str(), "libuv_assert");
+
+        // A run that died before any protocol output keeps phase pre_protocol.
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let stderr_tail = Mutex::new(std::collections::VecDeque::new());
+        {
+            let mut tail = stderr_tail
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            push_runner_stderr_tail(&mut tail, assertion.clone());
+        }
+        let context =
+            manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, 1, 0, Some(20));
+
+        let captures = sentry::test::with_captured_events(|| {
+            capture_runner_exit_error(
+                Some(WINDOWS_STACK_BUFFER_OVERRUN),
+                None,
+                &totals,
+                &SyncErrorEvent {
+                    company: None,
+                    path: "(runner)".to_string(),
+                    message: "hq-sync-runner exited abnormally".to_string(),
+                },
+                &context,
+            );
+        });
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("manual event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+
+        // Assertion identity survives egress as fixed-vocabulary values.
+        assert_eq!(event.tags["runner_fatal_class"], "libuv_assert");
+        assert_eq!(event.tags["runner_assert_source"], "libuv_win_async");
+        let signature = &event.tags["runner_assert_signature"];
+        assert_eq!(signature.len(), 16);
+        assert!(signature.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            event.extra["runner_assert_line"],
+            sentry::protocol::Value::Number(76.into())
+        );
+        // Phase distinction, protocol counters, and Node runtime provenance.
+        assert_eq!(event.tags["runner_phase"], "pre_protocol");
+        assert_eq!(event.tags["runner_node_major"], "20");
+        assert_eq!(
+            event.extra["runner_stdout_line_count"],
+            sentry::protocol::Value::Number(0.into())
+        );
+        // Existing meaning preserved.
+        assert_eq!(
+            event.extra["runner_stderr_line_count"],
+            sentry::protocol::Value::Number(1.into())
+        );
+
+        // No raw byte escapes.
+        for forbidden in ["private-company", private_path, "UV_HANDLE_CLOSING", "async.c", "Ada"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "serialized event leaked {forbidden:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_runner_capture_omits_assertion_fields_for_a_non_assertion_exit() {
+        const WINDOWS_STACK_BUFFER_OVERRUN: i32 = 0xC000_0409u32 as i32;
+        // A non-fatal-shape exit: totals carry no assertion identity.
+        let totals = RunTotals::default();
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let stderr_tail = Mutex::new(std::collections::VecDeque::new());
+        let context =
+            manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, 0, 5, None);
+
+        let captures = sentry::test::with_captured_events(|| {
+            capture_runner_exit_error(
+                Some(WINDOWS_STACK_BUFFER_OVERRUN),
+                None,
+                &totals,
+                &SyncErrorEvent {
+                    company: None,
+                    path: "(runner)".to_string(),
+                    message: "hq-sync-runner exited abnormally".to_string(),
+                },
+                &context,
+            );
+        });
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("manual event remains sendable");
+
+        assert!(event.tags.get("runner_assert_source").is_none());
+        assert!(event.tags.get("runner_assert_signature").is_none());
+        assert!(event.extra.get("runner_assert_line").is_none());
+        // The always-present provenance is still emitted.
+        assert_eq!(event.tags["runner_node_major"], "unknown");
+        assert_eq!(event.tags["runner_phase"], "pre_protocol");
+        assert_eq!(
+            event.extra["runner_stdout_line_count"],
+            sentry::protocol::Value::Number(5.into())
+        );
+    }
+
+    #[test]
     fn manual_runner_phase_context_cannot_bleed_between_runs() {
         let first = Mutex::new(RunnerPhaseContext::default());
         let second = Mutex::new(RunnerPhaseContext::default());
@@ -4198,10 +4404,13 @@ mod tests {
         observe_manual_runner_phase(&first, &push);
 
         let empty_tail = Mutex::new(std::collections::VecDeque::new());
-        let first_context = manual_runner_exit_context(&SyncRunScope::All, &first, &empty_tail, 0);
+        let first_context =
+            manual_runner_exit_context(&SyncRunScope::All, &first, &empty_tail, 0, 0, None);
         let second_context =
-            manual_runner_exit_context(&SyncRunScope::All, &second, &empty_tail, 0);
+            manual_runner_exit_context(&SyncRunScope::All, &second, &empty_tail, 0, 0, None);
         assert_eq!(first_context.runner_phase, "push");
-        assert_eq!(second_context.runner_phase, "unknown");
+        // A fresh, never-observed context reports the `pre_protocol` default, not
+        // the first run's observed phase — the no-bleed guarantee is unchanged.
+        assert_eq!(second_context.runner_phase, "pre_protocol");
     }
 }
