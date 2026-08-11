@@ -41,6 +41,7 @@
     Lightning,
     MagnifyingGlass,
     Note,
+    LinkSimple,
     Package,
     PaintBrush,
     Paperclip,
@@ -373,6 +374,26 @@
       ],
     },
   ];
+  /** Ad-hoc invite: paste a meeting URL and send the notetaker to it.
+   *  Same shape as production — the destination picker only appears once
+   *  there is something to send, so the idle bar stays quiet. */
+  let mtgUrl = $state('');
+  let mtgUrlCo = $state<string | null>(null);
+  const mtgUrlValid = $derived(
+    /^https:\/\/[^\s/]*\.zoom\.us\/j\/[^\s]+/i.test(mtgUrl.trim()) ||
+      /^https:\/\/meet\.google\.com\/[a-z-]+/i.test(mtgUrl.trim()) ||
+      /^https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s]+/i.test(mtgUrl.trim()) ||
+      /^https:\/\/[^\s/]*\.webex\.com\/[^\s]+/i.test(mtgUrl.trim()),
+  );
+  function sendUrlInvite() {
+    if (!mtgUrlValid) return;
+    const where = mtgUrlCo ? (DATA[mtgUrlCo]?.label ?? 'company') : 'Personal';
+    mtgUrl = '';
+    mtgUrlCo = null;
+    openPanel = null;
+    toast(`Notetaker will join — saving to ${where}`);
+  }
+
   const MEETINGS_PAST: [string, string, string][] = [
     ['Nestlé demo prep — Aug 1', 'Indigo · 4 attendees', 'RECAP + TRANSCRIPT'],
     ['Daybook design review — Jul 31', 'Indigo · 3 attendees', 'RECAP + TRANSCRIPT'],
@@ -1294,6 +1315,40 @@
             <button class="btn-secondary" onclick={() => toast('Calendars refreshed')}><ArrowsClockwise size={14} /> Refresh</button>
           </div>
         </div>
+        <div class="url-bar">
+          <div class="search url-field">
+            <span class="lead"><LinkSimple size={13} /></span>
+            <input
+              type="url"
+              spellcheck="false"
+              placeholder="Paste a Zoom or Google Meet URL"
+              aria-label="Paste a meeting URL to send the notetaker"
+              bind:value={mtgUrl}
+              onkeydown={(e) => { if (e.key === 'Enter') sendUrlInvite(); }}
+            />
+          </div>
+          {#if mtgUrl.trim()}
+            <div class="co-select-wrap">
+              <button class="co-select" data-panel-trigger onclick={(e) => { e.stopPropagation(); togglePanel('mtg-url-co'); }}>
+                {mtgUrlCo ? DATA[mtgUrlCo].label : 'Personal'}
+                <span class="caret"><CaretDown size={10} weight="bold" /></span>
+              </button>
+              <div class="panel co-picker-panel" class:open={openPanel === 'mtg-url-co'}>
+                <button class="p-item" onclick={() => { mtgUrlCo = null; openPanel = null; }}>
+                  Personal
+                  <span class="p-check">{#if mtgUrlCo === null}<Check size={12} weight="bold" />{/if}</span>
+                </button>
+                {#each Object.entries(DATA).filter(([k]) => k !== 'personal') as [key, c] (key)}
+                  <button class="p-item" onclick={() => { mtgUrlCo = key; openPanel = null; }}>
+                    {c.label}
+                    <span class="p-check">{#if mtgUrlCo === key}<Check size={12} weight="bold" />{/if}</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+          <button class="btn-secondary" disabled={!mtgUrlValid} onclick={sendUrlInvite}>Invite</button>
+        </div>
         <div class="listview mtg-view">
           {#each MEETING_DAYS as day (day.label)}
             <div class="grp mtg-day"><span class="t mono">{day.label}</span><span class="t mono dim">{day.rows.length}</span></div>
@@ -1917,9 +1972,14 @@
 
   /* ── Meetings ───────────────────────────────────────────────────── */
   .mtg-view { gap: 4px; }
+  /* Ad-hoc invite bar, above the agenda and outside its scroller. */
+  .url-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  .url-field { flex: 1; min-width: 0; }
+  .url-bar .co-select-wrap { position: relative; flex-shrink: 0; }
+  .url-bar .co-picker-panel { top: calc(100% + 6px); right: 0; }
   .mtg-day { padding: 14px 2px 2px; }
-  .mtg-row { gap: 12px; }
-  .mtg-time { flex-shrink: 0; width: 62px; font-size: 10px; letter-spacing: 0.03em; color: var(--t3); }
+  .mtg-row { gap: 10px; }
+  .mtg-time { flex-shrink: 0; width: 60px; text-align: right; font-size: 10px; letter-spacing: 0.03em; color: var(--t3); }
   .lrow.mtg-row .fn { flex: 0 1 auto; }
   /* The company line ends the left group; the actions ride right. */
   .mtg-row .fm.sub { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
