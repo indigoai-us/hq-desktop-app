@@ -275,13 +275,18 @@ fn is_content_safe_syscall_token(value: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
 }
 
-/// A content-safe integer diagnostic. These fields ship as JSON numbers, which
-/// the extras scrubber presents to this check as the empty string; a stringified
-/// value must still be a bare integer, so a producer bug that shipped a path or
-/// message degrades to `[Filtered]` instead of leaking.
+/// A content-safe integer diagnostic. The extras scrubber renders a JSON number
+/// as its own decimal text before this check, so the value must be a bare
+/// integer; a path, message, or non-numeric JSON variant (rendered as the
+/// non-scalar sentinel) degrades to `[Filtered]` instead of leaking.
 fn is_content_safe_count_field(value: &str) -> bool {
-    value.is_empty() || value.parse::<i64>().is_ok()
+    value.parse::<i64>().is_ok()
 }
+
+/// Stand-in the extras scrubber passes for a bool/array/object under a runner
+/// diagnostic key. No validator accepts it, so a non-numeric JSON value under an
+/// integer key can never survive the fail-closed egress backstop.
+const NON_SCALAR_DIAGNOSTIC_SENTINEL: &str = "[non-scalar]";
 
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
@@ -341,9 +346,14 @@ fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
         }
     }
     for (key, value) in event.extra.iter_mut() {
+        // Registered integer diagnostics ship as JSON numbers; validate the
+        // number's own decimal text so a bool/array/object under the same key
+        // cannot pass as valid. Any other non-string variant is checked as a
+        // sentinel no validator accepts, keeping the backstop fail-closed.
         let Some(is_valid) = (match value {
             Value::String(value) => valid_runner_diagnostic_field(key, value),
-            _ => valid_runner_diagnostic_field(key, ""),
+            Value::Number(number) => valid_runner_diagnostic_field(key, &number.to_string()),
+            _ => valid_runner_diagnostic_field(key, NON_SCALAR_DIAGNOSTIC_SENTINEL),
         }) else {
             continue;
         };
@@ -1613,6 +1623,29 @@ mod tests {
                 result.extra[key],
                 Value::String("[Filtered]".to_string()),
                 "extra {key}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonscalar_json_in_integer_diagnostics_fails_closed_at_egress() {
+        // A bool, array, or object under an integer diagnostic key must degrade to
+        // [Filtered] — the extras backstop is not fooled by a non-string variant.
+        for (key, value) in [
+            ("runner_assert_line", Value::Bool(true)),
+            (
+                "runner_stdout_line_count",
+                Value::Array(vec![Value::Number(1.into())]),
+            ),
+            ("runner_node_major", Value::Bool(false)),
+        ] {
+            let mut event = Event::default();
+            event.extra.insert(key.to_string(), value);
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "non-scalar {key} must be filtered"
             );
         }
     }

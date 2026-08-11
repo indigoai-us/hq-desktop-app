@@ -193,16 +193,27 @@ impl Default for RunnerPhaseContext {
 }
 
 fn observe_manual_runner_phase(phase_context: &Mutex<RunnerPhaseContext>, event: &SyncEvent) {
-    let Some(phase) = runner_phase_from_event(event) else {
-        return;
-    };
     let now = Instant::now();
     let mut context = phase_context
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if context.phase != phase {
-        context.phase = phase;
-        context.observed_at = now;
+    match runner_phase_from_event(event) {
+        Some(phase) => {
+            if context.phase != phase {
+                context.phase = phase;
+                context.observed_at = now;
+            }
+        }
+        // A parsed protocol event with no specific work phase (an error, a
+        // completion, a setup/auth signal) still proves the runner emitted
+        // protocol, so leave the never-observed `pre_protocol` default behind —
+        // without downgrading an already-observed work phase.
+        None => {
+            if context.phase == "pre_protocol" {
+                context.phase = "unknown";
+                context.observed_at = now;
+            }
+        }
     }
 }
 
@@ -1926,8 +1937,21 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 ),
             );
             let repair = repair_managed_node(&app).await;
-            let recovered = matches!(repair, ToolchainRepair::Repaired)
-                && matches!(preflight_node(), NodePreflight::Usable { .. });
+            // If the reinstall recovered a usable toolchain, capture its major so
+            // a post-repair runner death still reports the Node it actually ran
+            // under — the pre-repair probe returned ManagedNodeMissing, so
+            // `runner_node_major` would otherwise stay None on this path.
+            let recovered = if matches!(repair, ToolchainRepair::Repaired) {
+                match preflight_node() {
+                    NodePreflight::Usable { node_major } => {
+                        runner_node_major = node_major;
+                        true
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
             if !recovered {
                 let message = match repair {
                     // The user just clicked Sync Now, so never answer with
@@ -2311,9 +2335,13 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             &spawn_args,
             |event| match event {
                 ProcessEvent::Stdout(line) => {
-                    // Count every protocol line so the exit capture can separate a
-                    // pre-protocol death from a mid-transfer one.
-                    runner_stdout_sequence = runner_stdout_sequence.saturating_add(1);
+                    // Count only lines that parse as protocol events so the exit
+                    // capture can separate a pre-protocol death from a mid-transfer
+                    // one. A blank teardown line or stray non-NDJSON stdout is not
+                    // protocol output and must not defeat that split.
+                    if serde_json::from_str::<SyncEvent>(line.trim()).is_ok() {
+                        runner_stdout_sequence = runner_stdout_sequence.saturating_add(1);
+                    }
                     // Always mirror runner stdout to the log file — this is the
                     // ndjson protocol stream and the only durable record of what
                     // the runner did. The eprintln! is dev-only / verbose.
@@ -2350,6 +2378,14 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // emits the re-authentication signal even though the runner
                     // intentionally exits 0 after a failed token refresh.
                     handle_runner_stderr_line(&app_bg, &totals, &line);
+                    // hq-cloud routes error-class protocol events to stderr. A
+                    // parsed protocol event there still proves the runner emitted
+                    // protocol, so leave the never-observed `pre_protocol` default
+                    // behind. A raw libuv assertion is not NDJSON, so a genuine
+                    // pre-protocol abort still reports `pre_protocol`.
+                    if let Ok(event) = serde_json::from_str::<SyncEvent>(line.trim()) {
+                        observe_manual_runner_phase(&runner_phase, &event);
+                    }
                     #[cfg(debug_assertions)]
                     eprintln!("[sync stderr] {}", line);
                 }
@@ -4494,5 +4530,38 @@ mod tests {
         // A run that never observed a protocol event stays at the never-observed
         // default, distinct from an observed-but-indeterminate `unknown`.
         assert_eq!(second_context.runner_phase, "pre_protocol");
+    }
+
+    #[test]
+    fn manual_runner_phase_leaves_pre_protocol_on_any_parsed_protocol_event() {
+        // A parsed protocol event with no specific work phase — an error that
+        // hq-cloud routes to stderr, for instance — still proves the runner
+        // emitted protocol, so the never-observed `pre_protocol` default must
+        // advance to the observed-but-indeterminate `unknown`. Otherwise a death
+        // that only emitted an error event would masquerade as a pre-protocol
+        // abort and blur the very split this provenance exists to draw.
+        let context = Mutex::new(RunnerPhaseContext::default());
+        let error: SyncEvent =
+            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+                .expect("error event");
+        observe_manual_runner_phase(&context, &error);
+        assert_eq!(context.lock().expect("phase context").phase, "unknown");
+    }
+
+    #[test]
+    fn manual_runner_phase_error_never_downgrades_an_observed_work_phase() {
+        // The `None` arm rescues only the never-observed default; a real work
+        // phase already observed must survive a later phaseless event.
+        let context = Mutex::new(RunnerPhaseContext::default());
+        let push: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"p.md","bytes":1,"direction":"up"}"#,
+        )
+        .expect("progress event");
+        let error: SyncEvent =
+            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+                .expect("error event");
+        observe_manual_runner_phase(&context, &push);
+        observe_manual_runner_phase(&context, &error);
+        assert_eq!(context.lock().expect("phase context").phase, "push");
     }
 }

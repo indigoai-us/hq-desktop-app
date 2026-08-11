@@ -839,7 +839,6 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                 // the timestamp of the last manual `Sync Now` click.
                 match event {
                     ProcessEvent::Stdout(line) => {
-                        watcher_stdout_lines = watcher_stdout_lines.saturating_add(1);
                         if handle_watch_stdout_line(
                             &app,
                             &hq_folder,
@@ -847,6 +846,10 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             &process_watcher_phase,
                             &line,
                         ) {
+                            // Count only lines that parsed as protocol events, so a
+                            // blank teardown line or non-NDJSON stdout cannot mask a
+                            // pre-protocol watcher death.
+                            watcher_stdout_lines = watcher_stdout_lines.saturating_add(1);
                             *process_heartbeat
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
@@ -859,6 +862,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // in the local log; the capture path receives only the
                         // fixed-vocabulary rollup recorded from parsed errors.
                         crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
+                        // hq-cloud routes error-class protocol events to stderr. A
+                        // parsed protocol event there still proves the runner emitted
+                        // protocol, so leave the never-observed `pre_protocol`
+                        // default behind. A raw libuv assertion is not NDJSON, so a
+                        // genuine pre-protocol abort still reports `pre_protocol`.
+                        if let Ok(event) = serde_json::from_str::<SyncEvent>(line.trim()) {
+                            observe_watcher_phase_from_event(&process_watcher_phase, &event);
+                        }
                     }
                     ProcessEvent::Exit {
                         code,
@@ -1164,16 +1175,27 @@ impl Default for WatcherPhaseContext {
 }
 
 fn observe_watcher_phase_from_event(phase_context: &Mutex<WatcherPhaseContext>, event: &SyncEvent) {
-    let Some(phase) = runner_phase_from_event(event) else {
-        return;
-    };
     let now = Instant::now();
     let mut context = phase_context
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if context.phase != phase {
-        context.phase = phase;
-        context.observed_at = now;
+    match runner_phase_from_event(event) {
+        Some(phase) => {
+            if context.phase != phase {
+                context.phase = phase;
+                context.observed_at = now;
+            }
+        }
+        // A parsed protocol event with no specific work phase (an error, a
+        // completion, a setup/auth signal) still proves the runner emitted
+        // protocol, so leave the never-observed `pre_protocol` default behind —
+        // without downgrading an already-observed work phase.
+        None => {
+            if context.phase == "pre_protocol" {
+                context.phase = "unknown";
+                context.observed_at = now;
+            }
+        }
     }
 }
 
@@ -6238,6 +6260,37 @@ mod tests {
             runner_phase_elapsed_bucket(Duration::from_secs(2 * 60 * 60)),
             "over_2h"
         );
+    }
+
+    #[test]
+    fn watcher_phase_leaves_pre_protocol_on_any_parsed_protocol_event() {
+        // Matches the manual seam: a parsed protocol event with no work phase
+        // (an error hq-cloud routes to stderr) still proves protocol was emitted,
+        // so the never-observed `pre_protocol` default advances to `unknown`
+        // rather than lingering and masquerading as a pre-protocol abort.
+        let context = Mutex::new(WatcherPhaseContext::default());
+        let error: SyncEvent =
+            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+                .expect("error event");
+        observe_watcher_phase_from_event(&context, &error);
+        assert_eq!(context.lock().expect("phase context").phase, "unknown");
+    }
+
+    #[test]
+    fn watcher_phase_error_never_downgrades_an_observed_work_phase() {
+        // The `None` arm rescues only the never-observed default; an already
+        // observed work phase survives a later phaseless event.
+        let context = Mutex::new(WatcherPhaseContext::default());
+        let pull: SyncEvent = serde_json::from_str(
+            r#"{"type":"progress","company":"indigo","path":"p.md","bytes":1,"direction":"down"}"#,
+        )
+        .expect("progress event");
+        let error: SyncEvent =
+            serde_json::from_str(r#"{"type":"error","code":"NET_FAIL","message":"boom"}"#)
+                .expect("error event");
+        observe_watcher_phase_from_event(&context, &pull);
+        observe_watcher_phase_from_event(&context, &error);
+        assert_eq!(context.lock().expect("phase context").phase, "pull");
     }
 
     #[test]
