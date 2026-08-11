@@ -847,6 +847,62 @@
 
 <svelte:window onkeydown={onWindowKeydown} onclick={onWindowClick} />
 
+{#snippet marketBody()}
+  <div class="board-wrap">
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="market" onclick={(e) => { if (!(e.target as HTMLElement).closest('.pack')) openPack = null; }}>
+      {#each MARKET as [n, d, cls, label] (n)}
+        <button class="pack" class:sel={openPack?.[0] === n} onclick={() => (openPack = [n, d, cls, label])}>
+          <span class="pn">{n}</span><span class="pd">{d}</span>
+          <div class="pf"><span class="pill mono {cls}">{label}</span></div>
+        </button>
+      {/each}
+    </div>
+    {#if openPack}
+      {@const pack = PACK_DETAIL[openPack[0]] ?? { publisher: 'Community', updated: '—', includes: [], notes: 'No description yet.' }}
+      <aside class="story-panel" transition:slidePane>
+        <div class="sd-head">
+          <span class="sd-id mono">PACK</span>
+          <button class="sd-close" aria-label="Close pack" onclick={() => (openPack = null)}><X size={13} weight="bold" /></button>
+        </div>
+        <div class="sd-title">{openPack[0]}</div>
+        {#if openPack[2] !== 'get'}
+          <div class="sd-status"><span class="pill mono {openPack[2]}">{openPack[3]}</span></div>
+        {/if}
+
+        <p class="sd-desc">{pack.notes}</p>
+
+        <div class="sd-meta">
+          <div class="sd-kv"><span class="sd-k mono">Publisher</span><span class="sd-v">{pack.publisher}</span></div>
+          <div class="sd-kv"><span class="sd-k mono">Updated</span><span class="sd-v">{pack.updated}</span></div>
+        </div>
+
+        <div class="grp"><span class="t mono">WHAT'S INSIDE</span><span class="d mono">{pack.includes.length}</span></div>
+        {#each pack.includes as [kind, name] (name)}
+          <div class="pk-row">
+            <span class="pk-ic">
+              {#if kind === 'skill'}<Lightning size={14} />{:else if kind === 'worker'}<UserCircle size={14} />{:else if kind === 'policy'}<ShieldCheck size={14} />{:else}<BookOpen size={14} />{/if}
+            </span>
+            <span class="pk-name">{name}</span>
+            <span class="pk-kind mono">{kind}</span>
+          </div>
+        {/each}
+
+        <div class="sd-actions">
+          {#if openPack[2] === 'get'}
+            <button class="upd-btn" onclick={() => toast(`${openPack?.[0]} would install`)}>Get pack</button>
+          {:else if openPack[2] === 'upd'}
+            <button class="upd-btn" onclick={() => toast(`${openPack?.[0]} would update`)}>Update</button>
+            <button class="chip g" onclick={() => toast('Release notes would open')}>Release notes</button>
+          {:else}
+            <button class="chip g" onclick={() => toast(`${openPack?.[0]} would be removed`)}>Remove</button>
+          {/if}
+        </div>
+      </aside>
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet reactChips(key: string)}
   {#each reactList(key) as [emoji, n] (emoji)}
     <button class="react" class:mine={myReacts[key]?.[emoji]} onclick={() => toggleReact(key, emoji)}>
@@ -1207,11 +1263,14 @@
               </button>
             {/each}
             <div class="lib-divider" role="none"></div>
-            <button class="lib-cat" onclick={() => nav('marketplace')}>
-              <span class="lc-ic"><Storefront size={14} /></span>Marketplace<span class="c"><ArrowRight size={12} /></span>
+            <button class="lib-cat" class:on={libCat === 'marketplace'} onclick={() => (libCat = 'marketplace')}>
+              <span class="lc-ic"><Storefront size={14} /></span>Marketplace
             </button>
           </div>
           <div class="lib-main">
+            {#if libCat === 'marketplace'}
+              {@render marketBody()}
+            {:else}
             <div class="lib-head">
               <div class="search">
                 <span class="lead"><MagnifyingGlass size={13} /></span>
@@ -1224,6 +1283,7 @@
                 <button class="lrow" onclick={() => toast(`${n} would open`)}><span class="lrow-ic"><Glyph size={15} /></span><span class="fn">{n}</span><span class="fm mono">{m}</span></button>
               {/each}
             </div>
+            {/if}
           </div>
         </div>
       {:else if view === 'meetings'}
@@ -1294,59 +1354,7 @@
           <span class="chan-title">Marketplace</span>
           <span class="chan-sub">packs & extensions for your HQ</span>
         </div>
-        <div class="board-wrap">
-          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <div class="market" onclick={(e) => { if (!(e.target as HTMLElement).closest('.pack')) openPack = null; }}>
-            {#each MARKET as [n, d, cls, label] (n)}
-              <button class="pack" class:sel={openPack?.[0] === n} onclick={() => (openPack = [n, d, cls, label])}>
-                <span class="pn">{n}</span><span class="pd">{d}</span>
-                <div class="pf"><span class="pill mono {cls}">{label}</span></div>
-              </button>
-            {/each}
-          </div>
-          {#if openPack}
-            {@const pack = PACK_DETAIL[openPack[0]] ?? { publisher: 'Community', updated: '—', includes: [], notes: 'No description yet.' }}
-            <aside class="story-panel" transition:slidePane>
-              <div class="sd-head">
-                <span class="sd-id mono">PACK</span>
-                <button class="sd-close" aria-label="Close pack" onclick={() => (openPack = null)}><X size={13} weight="bold" /></button>
-              </div>
-              <div class="sd-title">{openPack[0]}</div>
-              {#if openPack[2] !== 'get'}
-                <div class="sd-status"><span class="pill mono {openPack[2]}">{openPack[3]}</span></div>
-              {/if}
-
-              <p class="sd-desc">{pack.notes}</p>
-
-              <div class="sd-meta">
-                <div class="sd-kv"><span class="sd-k mono">Publisher</span><span class="sd-v">{pack.publisher}</span></div>
-                <div class="sd-kv"><span class="sd-k mono">Updated</span><span class="sd-v">{pack.updated}</span></div>
-              </div>
-
-              <div class="grp"><span class="t mono">WHAT'S INSIDE</span><span class="d mono">{pack.includes.length}</span></div>
-              {#each pack.includes as [kind, name] (name)}
-                <div class="pk-row">
-                  <span class="pk-ic">
-                    {#if kind === 'skill'}<Lightning size={14} />{:else if kind === 'worker'}<UserCircle size={14} />{:else if kind === 'policy'}<ShieldCheck size={14} />{:else}<BookOpen size={14} />{/if}
-                  </span>
-                  <span class="pk-name">{name}</span>
-                  <span class="pk-kind mono">{kind}</span>
-                </div>
-              {/each}
-
-              <div class="sd-actions">
-                {#if openPack[2] === 'get'}
-                  <button class="upd-btn" onclick={() => toast(`${openPack?.[0]} would install`)}>Get pack</button>
-                {:else if openPack[2] === 'upd'}
-                  <button class="upd-btn" onclick={() => toast(`${openPack?.[0]} would update`)}>Update</button>
-                  <button class="chip g" onclick={() => toast('Release notes would open')}>Release notes</button>
-                {:else}
-                  <button class="chip g" onclick={() => toast(`${openPack?.[0]} would be removed`)}>Remove</button>
-                {/if}
-              </div>
-            </aside>
-          {/if}
-        </div>
+        {@render marketBody()}
       {:else if view === 'settings'}
         <div class="chan-head">
           <button class="back-btn" onclick={() => nav('channel')}><ArrowLeft size={12} weight="bold" /> Back</button>
