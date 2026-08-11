@@ -250,7 +250,48 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     expect(manualFault.windowsExitStatus).toBe(watcherFault.windowsExitStatus);
     expect(manualFault.windowsFaultSymbol).toBe(watcherFault.windowsFaultSymbol);
 
-    for (const diagnostic of [watcherExec, watcherFault, manualFault]) {
+    // A manual-route 0xC0000409 libuv assertion abort (HQ-DESKTOP-50): the abort
+    // now carries assertion identity, a pre-protocol death signal, and the Node
+    // major — all fixed vocabulary / integers / a digest, never the assertion text.
+    const privatePath = 'C:\\Users\\Ada\\hq\\companies\\private-company\\secret-plan.md';
+    const manualAssert = harness.simulateRunnerTerminationDiagnostics({
+      route: 'manual',
+      phase: 'pre_protocol',
+      exitCode: 0xc0000409,
+      stderr: [
+        `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76: ${privatePath}`,
+      ],
+      stdoutLineCount: 0,
+      nodeMajor: 20,
+    });
+    expect(manualAssert.fatalClass).toBe('libuv_assert');
+    expect(manualAssert.assertSource).toBe('libuv_win_async');
+    expect(manualAssert.assertLine).toBe(76);
+    expect(manualAssert.assertSignature).toMatch(/^[0-9a-f]{16}$/);
+    expect(manualAssert.phase).toBe('pre_protocol');
+    expect(manualAssert.stdoutLineCount).toBe(0);
+    expect(manualAssert.nodeMajor).toBe(20);
+
+    // A DIFFERENT assertion in the SAME source file yields a DIFFERENT signature —
+    // the whole point of the fix. Both still classify as libuv_assert / win_async.
+    const manualAssertOther = harness.simulateRunnerTerminationDiagnostics({
+      route: 'manual',
+      phase: 'pre_protocol',
+      exitCode: 0xc0000409,
+      stderr: ['Assertion failed: handle->async_sent == 0, file src\\win\\async.c, line 112'],
+    });
+    expect(manualAssertOther.assertSource).toBe('libuv_win_async');
+    expect(manualAssertOther.assertLine).toBe(112);
+    expect(manualAssertOther.assertSignature).toMatch(/^[0-9a-f]{16}$/);
+    expect(manualAssertOther.assertSignature).not.toBe(manualAssert.assertSignature);
+
+    for (const diagnostic of [
+      watcherExec,
+      watcherFault,
+      manualFault,
+      manualAssert,
+      manualAssertOther,
+    ]) {
       assertContentSafeDiagnostics(diagnostic);
       const serialized = JSON.stringify(diagnostic);
       for (const forbidden of [
@@ -259,6 +300,8 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
         '/.npm/_npx/',
         'private-company',
         'UV_HANDLE_CLOSING',
+        'secret-plan',
+        'Ada',
       ]) {
         expect(serialized).not.toContain(forbidden);
       }

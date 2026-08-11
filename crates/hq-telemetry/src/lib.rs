@@ -213,6 +213,21 @@ const RUNNER_STACK_TOKENS: &[&str] = &[
     "rust_std_panicking",
 ];
 
+/// Fixed runner work-phase vocabulary. Duplicated from
+/// `hq_desktop_core::sync_outcome::RUNNER_PHASE_VOCABULARY` because that crate is
+/// only a dev-dependency here (the same reason `RUNNER_STACK_TOKENS` is
+/// duplicated). The tri-source vocabulary regression test pins this list equal to
+/// the core const and the E2E `RunnerPhase` union, so a divergence fails CI
+/// rather than silently scrubbing an unregistered phase token to `[Filtered]`.
+const RUNNER_PHASE_VOCABULARY: &[&str] =
+    &["scan", "push", "pull", "idle", "unknown", "pre_protocol"];
+
+/// Allow-listed runner-assertion source tokens (a libuv subset of the frame
+/// vocabulary) plus the sentinel `other`. The producer only ever emits one of
+/// these; this is the independent egress backstop.
+const RUNNER_ASSERT_SOURCE_TOKENS: &[&str] =
+    &["libuv_win_async", "libuv_unix_core", "libuv_handle", "other"];
+
 fn is_sensitive_key(k: &str) -> bool {
     SENSITIVE_FIELD_NAMES
         .iter()
@@ -260,6 +275,14 @@ fn is_content_safe_syscall_token(value: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
 }
 
+/// A content-safe integer diagnostic. These fields ship as JSON numbers, which
+/// the extras scrubber presents to this check as the empty string; a stringified
+/// value must still be a bare integer, so a producer bug that shipped a path or
+/// message degrades to `[Filtered]` instead of leaking.
+fn is_content_safe_count_field(value: &str) -> bool {
+    value.is_empty() || value.parse::<i64>().is_ok()
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -274,10 +297,10 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         )),
         "sync_route" => Some(matches!(value, "manual" | "watcher")),
         "sync_scope" => Some(matches!(value, "all" | "single_company")),
-        "runner_phase" => Some(matches!(
-            value,
-            "scan" | "push" | "pull" | "idle" | "unknown"
-        )),
+        // Single-source with the core vocabulary const and the TS union (pinned
+        // equal by the tri-source regression test). An unregistered phase token
+        // would otherwise scrub to `[Filtered]` — a silent regression.
+        "runner_phase" => Some(RUNNER_PHASE_VOCABULARY.contains(&value)),
         // A libuv fatal-syscall identifier is only ever a fixed constant (the
         // producer allow-lists it) or the sentinel `other`; the errno is a bare
         // integer. This independent egress check requires a bare, bounded ASCII
@@ -285,6 +308,16 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // stderr fragment degrades to `[Filtered]` instead.
         "runner_fatal_syscall" => Some(is_content_safe_syscall_token(value)),
         "runner_fatal_errno" => Some(value.parse::<i64>().is_ok()),
+        // Runner assertion identity: a libuv-subset source token, the 16-hex
+        // signature shape (reusing the stack-signature check), and a bare integer
+        // source line. Fixed vocabulary / digest / integer, never runner bytes.
+        "runner_assert_source" => Some(RUNNER_ASSERT_SOURCE_TOKENS.contains(&value)),
+        "runner_assert_signature" => Some(valid_runner_stack_signature(value)),
+        "runner_assert_line" | "runner_stdout_line_count" => {
+            Some(is_content_safe_count_field(value))
+        }
+        // The runner's Node major: a bare integer or the sentinel `unknown`.
+        "runner_node_major" => Some(value == "unknown" || is_content_safe_count_field(value)),
         "watcher_job_peak_commit_bucket" => Some(matches!(
             value,
             "under_128mb"
@@ -1476,6 +1509,111 @@ mod tests {
             let result = before_send(event).expect("event remains sendable");
             assert_eq!(result.tags["runner_stack_shape"], "[Filtered]");
             assert_eq!(result.tags["runner_stack_signature"], "[Filtered]");
+        }
+    }
+
+    #[test]
+    fn runner_phase_vocabulary_is_single_source_across_core_and_validator() {
+        use hq_desktop_core::sync_outcome::RUNNER_PHASE_VOCABULARY as CORE_VOCABULARY;
+        // The Rust half of the tri-source contract: the validator's local
+        // vocabulary must equal the core producer's (the TS `RunnerPhase` union is
+        // pinned to both by the desktop-alt source-contract spec).
+        assert_eq!(RUNNER_PHASE_VOCABULARY, CORE_VOCABULARY);
+        // Every member validates; near-miss non-members are rejected, so a typo
+        // can never ship a token that silently scrubs to `[Filtered]`.
+        for token in CORE_VOCABULARY {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_phase", token),
+                Some(true),
+                "vocabulary member {token} must validate"
+            );
+        }
+        for near in ["pre_protocoll", "scan2", "PUSH", "", "unknownx", "preprotocol"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_phase", near),
+                Some(false),
+                "near-miss {near} must be rejected"
+            );
+        }
+        // The new never-observed token is registered in particular.
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_phase", "pre_protocol"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn new_runner_provenance_fields_survive_egress_when_valid() {
+        for (key, value) in [
+            ("runner_assert_source", "libuv_win_async"),
+            ("runner_assert_source", "libuv_unix_core"),
+            ("runner_assert_source", "libuv_handle"),
+            ("runner_assert_source", "other"),
+            ("runner_assert_signature", "0123456789abcdef"),
+            ("runner_phase", "pre_protocol"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], value, "valid {key}={value} must survive");
+        }
+
+        // Integer extras (emitted as JSON numbers) and the Node-major sentinel.
+        let mut event = Event::default();
+        event
+            .extra
+            .insert("runner_assert_line".to_string(), Value::Number(76.into()));
+        event.extra.insert(
+            "runner_stdout_line_count".to_string(),
+            Value::Number(0.into()),
+        );
+        event
+            .extra
+            .insert("runner_node_major".to_string(), Value::Number(20.into()));
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(result.extra["runner_assert_line"], Value::Number(76.into()));
+        assert_eq!(
+            result.extra["runner_stdout_line_count"],
+            Value::Number(0.into())
+        );
+        assert_eq!(result.extra["runner_node_major"], Value::Number(20.into()));
+
+        let mut sentinel = Event::default();
+        sentinel.extra.insert(
+            "runner_node_major".to_string(),
+            Value::String("unknown".to_string()),
+        );
+        let result = before_send(sentinel).expect("event remains sendable");
+        assert_eq!(
+            result.extra["runner_node_major"],
+            Value::String("unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn new_runner_provenance_lookalikes_fail_closed_at_egress() {
+        for (key, value) in [
+            ("runner_assert_source", "libuv_win_async /Users/Ada/secret.md"),
+            ("runner_assert_source", "src\\win\\async.c"),
+            ("runner_assert_signature", "ABCDEF0123456789"),
+            ("runner_assert_signature", "not-16-hex-chars!"),
+            ("runner_assert_line", "76 /Users/Ada/secret-plan.md"),
+            ("runner_stdout_line_count", "3 protocol lines /Users/Ada"),
+            ("runner_node_major", "20 at /Users/Ada"),
+            ("runner_phase", "pre_protocol; rm -rf"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag {key}={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra {key}={value}"
+            );
         }
     }
 }

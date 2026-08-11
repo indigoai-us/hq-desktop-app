@@ -251,4 +251,70 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(popoverSource).toContain('backdrop-filter: none');
   });
 
+  it('wires runner assertion identity, stdout count, and node major through both seams', () => {
+    // The core is the single source: the content-safe parser plus the accessors
+    // both routes read.
+    expect(syncOutcomeSource).toContain('pub fn parse_runner_assert_identity(');
+    expect(syncOutcomeSource).toContain('pub fn runner_assert_source(&self)');
+    expect(syncOutcomeSource).toContain('pub fn runner_assert_signature(&self)');
+
+    // Manual seam (sync.rs): assertion source/signature tags, plus the stdout,
+    // node-major, and assert-line extras.
+    expect(syncCommandSource).toContain(
+      'tags.push(("runner_assert_source", source.to_string()));',
+    );
+    expect(syncCommandSource).toContain(
+      'tags.push(("runner_assert_signature", signature.to_string()));',
+    );
+    expect(syncCommandSource).toContain('"runner_stdout_line_count",');
+    expect(syncCommandSource).toContain('"runner_node_major",');
+    expect(syncCommandSource).toContain('"runner_assert_line",');
+
+    // Watcher seam (daemon.rs): the identical fixed vocabulary from the same
+    // shared RunTotals, so the two routes cannot drift.
+    expect(daemonCommandSource).toContain('tags.push(("runner_assert_source", source));');
+    expect(daemonCommandSource).toContain('tags.push(("runner_assert_signature", signature));');
+    expect(daemonCommandSource).toContain('"runner_stdout_line_count",');
+    expect(daemonCommandSource).toContain('"runner_node_major",');
+    expect(daemonCommandSource).toContain('"runner_assert_line",');
+
+    // The egress validator registers every new field, so a producer bug degrades
+    // to [Filtered] instead of leaking.
+    expect(telemetrySource).toContain(
+      '"runner_assert_source" => Some(RUNNER_ASSERT_SOURCE_TOKENS.contains(&value)),',
+    );
+    expect(telemetrySource).toContain('"runner_assert_signature" => Some(valid_runner_stack_signature(value)),');
+    expect(telemetrySource).toContain('"runner_node_major" =>');
+  });
+
+  it('keeps the runner-phase vocabulary single-source across core, validator, and E2E harness', () => {
+    const harnessSource = readFileSync(
+      appUrl('e2e/desktop-alt/windows-reliability-harness.ts'),
+      'utf8',
+    );
+
+    const extractRustVocab = (src: string): string[] => {
+      const match = src.match(/RUNNER_PHASE_VOCABULARY:\s*&\[&str\]\s*=\s*&\[([^\]]*)\]/);
+      expect(match, 'RUNNER_PHASE_VOCABULARY const must exist').toBeTruthy();
+      return [...match![1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    };
+    const coreVocab = extractRustVocab(syncOutcomeSource);
+    const validatorVocab = extractRustVocab(telemetrySource);
+
+    const unionMatch = harnessSource.match(/export type RunnerPhase =([^;]*);/);
+    expect(unionMatch, 'RunnerPhase union must exist').toBeTruthy();
+    const tsVocab = [...unionMatch![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+
+    const sorted = (tokens: string[]) => [...tokens].sort();
+    const expected = ['idle', 'pre_protocol', 'pull', 'push', 'scan', 'unknown'];
+    // All three enumerations must be the SAME set — any divergence fails CI loudly
+    // instead of silently scrubbing an unregistered phase token to [Filtered].
+    expect(sorted(coreVocab)).toEqual(expected);
+    expect(sorted(validatorVocab)).toEqual(sorted(coreVocab));
+    expect(sorted(tsVocab)).toEqual(sorted(coreVocab));
+    for (const vocab of [coreVocab, validatorVocab, tsVocab]) {
+      expect(vocab).toContain('pre_protocol');
+    }
+  });
+
 });
