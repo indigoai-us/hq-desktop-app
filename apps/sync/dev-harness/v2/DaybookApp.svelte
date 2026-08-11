@@ -1202,16 +1202,10 @@
                     <div class="daysep"><hr /><span class="mono">{m.sep}</span><hr /></div>
                   {:else if m.event}
                     {@const EventIcon = EVENT_ICONS[m.event.kind]}
-                    {@const key = rowKey(i)}
-                    <div class="feed-event" class:picking={reactPickerFor === key}>
+                    <div class="feed-event">
                       <span class="fe-ic"><EventIcon size={11} /></span>
                       <span class="fe-text"><span class="fe-who">{m.event.who}</span> {m.event.what}</span>
-                      {#if reactList(key).length}
-                        <span class="reacts inline">{@render reactChips(key)}</span>
-                      {/if}
                       <span class="fe-when mono">{m.event.when}</span>
-                      {@render reactBar(key)}
-                      {@render reactPicker(key)}
                     </div>
                   {:else}
                     {@const key = rowKey(i)}
@@ -2201,7 +2195,7 @@
      and staying put while its picker is open. */
   .react-bar {
     position: absolute;
-    bottom: -16px;
+    top: calc(100% + 4px);
     left: 0;
     display: flex;
     align-items: center;
@@ -2217,9 +2211,7 @@
     z-index: 20;
   }
   .msg:hover .react-bar,
-  .feed-event:hover .react-bar,
-  .msg.picking .react-bar,
-  .feed-event.picking .react-bar { opacity: 1; pointer-events: auto; }
+  .msg.picking .react-bar { opacity: 1; pointer-events: auto; }
   .rb-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; font-size: 13px; line-height: 1; color: var(--t1); }
   .rb-ic.glyph { color: var(--t2); }
   .rb-ic:hover { background: var(--hover); color: var(--t1); }
@@ -2227,7 +2219,7 @@
      the hover bar in the far corner. */
   .react-picker {
     position: absolute;
-    top: calc(100% + 6px);
+    top: calc(100% + 40px);
     left: 0;
     display: grid;
     grid-template-columns: repeat(8, 26px);
@@ -2242,8 +2234,6 @@
   .rp-ic { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; font-size: 14px; line-height: 1; }
   .rp-ic:hover { background: var(--hover); }
   .reacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-  .reacts.inline { margin-top: 0; margin-left: 8px; }
-  .feed-event > .react-picker, .feed-event > .react-bar { left: 23px; }
   .react { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--raised); transition: background 0.12s, border-color 0.12s; }
   .react:hover { border-color: var(--line2); }
   .react .re { font-size: 11px; line-height: 1; }
