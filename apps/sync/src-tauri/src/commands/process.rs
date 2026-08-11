@@ -769,6 +769,358 @@ unsafe fn query_job_accounting(job: isize) -> Option<WatcherJobAccounting> {
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Watcher fault provenance (HQ-DESKTOP-4X)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The watcher route reports `runner_fatal_class=none` because no fault-bearing
+// stderr line ever reaches the app; the classifier arms (proven by the sibling
+// manual-route issue) cannot converge on a line that never arrives. Instead of
+// widening the stderr table again, read the operating system's own fault record:
+// a Windows Error Reporting "Application Error" (Event ID 1000) entry naming the
+// faulting executable and module. To bind that record to THIS watcher generation
+// rather than a coincidental crash on the machine, the job's live process-id set
+// is sampled on the heartbeat cadence and the record's faulting PID is matched
+// against it (with a timestamp inside the generation lifetime). The reader is
+// strictly diagnostic, bounded, read-only, and degrades to a fixed sentinel on
+// any failure. All interpretation lives in `hq_desktop_core::watcher_fault` so it
+// is unit-tested off Windows; here is only the Win32 I/O.
+
+/// Max WER Application Error records pulled per exit query. Newest-first, so a
+/// dozen is far more than the one relevant crash while keeping the scan bounded.
+#[cfg(target_os = "windows")]
+const WER_MAX_RECORDS: usize = 12;
+
+/// Hard cap on how long the terminal exit callback waits for the worker thread's
+/// fault read. This bounds the exit/deregister path — and therefore supervisor
+/// recovery — even if the Windows Event Log service hangs entirely; on expiry the
+/// worker is abandoned and provenance stays `unavailable`.
+#[cfg(target_os = "windows")]
+const WER_TOTAL_BUDGET: Duration = Duration::from_millis(4500);
+
+/// The worker's own retry deadline, slightly under `WER_TOTAL_BUDGET` so it
+/// normally returns a verdict before the callback stops waiting.
+#[cfg(target_os = "windows")]
+const WER_READ_BUDGET: Duration = Duration::from_millis(4000);
+
+/// Per-sweep budget for one EvtQuery/EvtNext/EvtRender pass.
+#[cfg(target_os = "windows")]
+const WER_PER_QUERY_BUDGET: Duration = Duration::from_millis(500);
+
+/// Sleep between sweeps while waiting for WER to asynchronously publish the
+/// Event 1000 record after the child has already exited.
+#[cfg(target_os = "windows")]
+const WER_RETRY_INTERVAL: Duration = Duration::from_millis(300);
+
+/// Cap on distinct PIDs retained per generation's sampled set. The watcher tree
+/// is ~7 processes; this bounds pathological growth without losing the runner.
+#[cfg(target_os = "windows")]
+const WATCHER_PID_SAMPLE_CAP: usize = 256;
+
+/// Sampled live Job Object PID sets, keyed by process-registry generation. Union
+/// of every heartbeat sample so the runner descendant (dead by exit) is still
+/// bindable at exit. Populated only on Windows; drained at exit so it can never
+/// grow unbounded. Kept out of the registry `Entry` so it cannot perturb the
+/// existing job-accounting or containment paths.
+static WATCHER_JOB_PID_SAMPLES: OnceLock<Mutex<HashMap<u64, HashSet<u32>>>> = OnceLock::new();
+
+fn watcher_job_pid_samples() -> &'static Mutex<HashMap<u64, HashSet<u32>>> {
+    WATCHER_JOB_PID_SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Remove and return this generation's sampled PID set. Called once at exit both
+/// to read the sample and to release its memory.
+fn take_watcher_job_sampled_pids(generation: u64) -> Vec<u32> {
+    watcher_job_pid_samples()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&generation)
+        .map(|set| set.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// Sample the live process-id set of the EXACT `generation`'s retained Job
+/// Object and union it into that generation's sampled set. Called on the watcher
+/// heartbeat cadence so the runner descendant is captured while it is still
+/// alive. Read-only and generation-scoped, resolved exactly like
+/// [`watcher_job_accounting_for_generation`]; a no-op on non-Windows or when the
+/// generation carries no job handle.
+#[cfg(target_os = "windows")]
+pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let job = registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
+        .and_then(|entry| entry.job_handle);
+    let Some(job) = job else {
+        return;
+    };
+    // SAFETY: `job` is this app's own retained Job Object handle and the registry
+    // lock is held for the duration of the read, so it cannot be closed here. The
+    // query is read-only; it never closes, terminates, or duplicates the handle.
+    let pids = unsafe { query_job_live_pids(job) };
+    drop(registry);
+    let Some(pids) = pids else {
+        return;
+    };
+    let mut samples = watcher_job_pid_samples()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let set = samples.entry(generation).or_default();
+    for pid in pids {
+        if set.len() >= WATCHER_PID_SAMPLE_CAP {
+            break;
+        }
+        set.insert(pid);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn sample_watcher_job_pids_for_generation(_handle: &str, _generation: u64) {}
+
+/// Read the Windows fault record for THIS watcher generation and attribute it,
+/// content-safely, to a fixed faulting-image/module token plus a provenance
+/// honesty token. Runs off the terminal hot path under a hard bounded query
+/// budget; on non-Windows, a failed/timed-out/disabled query, or an unreadable
+/// log it degrades to the `unavailable` sentinel. Never blocks the exit path,
+/// never mutates lifecycle/containment state, and never changes whether an event
+/// is captured. `gen_start_ms`/`gen_end_ms` bound the generation lifetime in unix
+/// millis; `observed_exception_code` is the fault status the exit itself carried.
+#[cfg(target_os = "windows")]
+pub fn watcher_fault_provenance_for_generation(
+    generation: u64,
+    observed_exception_code: Option<u32>,
+    gen_start_ms: i64,
+    gen_end_ms: i64,
+) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
+    use hq_desktop_core::watcher_fault::WatcherFaultOutcome;
+    let sampled = take_watcher_job_sampled_pids(generation);
+    // Only a genuine Windows fault exit warrants scanning the event log; every
+    // other exit (clean, deliberate stop, non-fault) skips the scan entirely.
+    let Some(code) = observed_exception_code else {
+        return WatcherFaultOutcome::unavailable();
+    };
+    // Run the read on a worker thread and await it under a HARD total deadline, so
+    // a slow or stalled Event Log service can never wedge this terminal callback
+    // (which holds up emit_exit_then_deregister, and therefore supervisor
+    // recovery). On deadline the worker is abandoned — it ends on its own — and the
+    // provenance stays `unavailable`: absence of a reader result, not of a fault.
+    let (tx, rx) = mpsc::channel();
+    let _worker = thread::spawn(move || {
+        let _ = tx.send(read_and_attribute_wer(&sampled, code, gen_start_ms, gen_end_ms));
+    });
+    rx.recv_timeout(WER_TOTAL_BUDGET)
+        .unwrap_or_else(|_| WatcherFaultOutcome::unavailable())
+}
+
+/// Read the WER fault record for a generation and attribute it, POLLING for the
+/// record to appear. WER publishes the "Application Error" (Event 1000) entry
+/// asynchronously AFTER the child dies, so a single immediate query usually finds
+/// nothing; this retries within a bounded budget until a matching record is
+/// attributed or the budget expires. It also distinguishes a never-readable log
+/// (`unavailable`) from a readable log that has no matching record (`no_record`).
+/// Runs only on the worker thread spawned above, never on the terminal hot path.
+#[cfg(target_os = "windows")]
+fn read_and_attribute_wer(
+    sampled: &[u32],
+    code: u32,
+    gen_start_ms: i64,
+    gen_end_ms: i64,
+) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
+    use hq_desktop_core::watcher_fault::{
+        attribute_watcher_fault, parse_application_error_event, WatcherFaultOutcome,
+        WatcherFaultProvenance,
+    };
+    let deadline = std::time::Instant::now() + WER_READ_BUDGET;
+    let mut query_ever_ran = false;
+    loop {
+        if let Some(xmls) = query_wer_application_error_xml(WER_MAX_RECORDS, WER_PER_QUERY_BUDGET) {
+            query_ever_ran = true;
+            let records: Vec<_> = xmls
+                .iter()
+                .filter_map(|xml| parse_application_error_event(xml))
+                .collect();
+            let outcome =
+                attribute_watcher_fault(&records, sampled, gen_start_ms, gen_end_ms, Some(code));
+            // A concrete attribution is terminal; keep polling only while the
+            // record has not been published yet (still `no_record`).
+            if outcome.provenance != WatcherFaultProvenance::NoRecord {
+                return outcome;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            // Out of retry budget: a readable log with no matching record is a
+            // genuine `no_record`; a log that never opened stays `unavailable`.
+            return if query_ever_ran {
+                WatcherFaultOutcome::no_record()
+            } else {
+                WatcherFaultOutcome::unavailable()
+            };
+        }
+        thread::sleep(WER_RETRY_INTERVAL);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn watcher_fault_provenance_for_generation(
+    generation: u64,
+    _observed_exception_code: Option<u32>,
+    _gen_start_ms: i64,
+    _gen_end_ms: i64,
+) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
+    // Non-Windows never samples, but drain defensively so the map cannot retain a
+    // generation key if this platform ever populated one.
+    let _ = take_watcher_job_sampled_pids(generation);
+    hq_desktop_core::watcher_fault::WatcherFaultOutcome::unavailable()
+}
+
+/// Read the live process-id list of a Job Object. A single read-only
+/// `QueryInformationJobObject(JobObjectBasicProcessIdList)`; closes nothing. The
+/// buffer holds a fixed cap of ids — the watcher tree is tiny — and a job larger
+/// than the cap simply degrades to `None` (no sample this tick).
+#[cfg(target_os = "windows")]
+unsafe fn query_job_live_pids(job: isize) -> Option<Vec<u32>> {
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectBasicProcessIdList, QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    };
+    const CAP: usize = 512;
+    let hjob = job as windows_sys::Win32::Foundation::HANDLE;
+    let bytes = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
+        + CAP * std::mem::size_of::<usize>();
+    let mut buffer = vec![0u8; bytes];
+    let list = buffer.as_mut_ptr() as *mut JOBOBJECT_BASIC_PROCESS_ID_LIST;
+    if QueryInformationJobObject(
+        hjob,
+        JobObjectBasicProcessIdList,
+        list as *mut core::ffi::c_void,
+        bytes as u32,
+        core::ptr::null_mut(),
+    ) == 0
+    {
+        return None;
+    }
+    let count = ((*list).NumberOfProcessIdsInList as usize).min(CAP);
+    // The API writes a flexible array past the declared `[usize; 1]`, so take the
+    // element pointer WITHOUT forming a `&[usize; 1]` reference (which would make
+    // reading past index 0 undefined). The reads stay within the over-allocation.
+    let first = core::ptr::addr_of!((*list).ProcessIdList) as *const usize;
+    let mut pids = Vec::with_capacity(count);
+    for index in 0..count {
+        pids.push(*first.add(index) as u32);
+    }
+    Some(pids)
+}
+
+/// Query the Windows Application channel for recent WER "Application Error"
+/// (Event ID 1000) records and render each to its event XML. Newest-first,
+/// capped at `max_records`, and bounded by `budget`; every handle it opens it
+/// closes. Returns rendered XML fragments for the pure parser — never any
+/// interpreted bytes.
+///
+/// Returns `None` when the log could not be read at all (`EvtQuery` failed —
+/// WER/Application channel disabled, unreadable, or throttled), so the caller can
+/// preserve the `unavailable` provenance for that case rather than collapsing it
+/// to `no_record`. `Some(vec)` — possibly empty — means the query ran.
+#[cfg(target_os = "windows")]
+fn query_wer_application_error_xml(max_records: usize, budget: Duration) -> Option<Vec<String>> {
+    use std::time::Instant;
+    use windows_sys::Win32::System::EventLog::{
+        EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryReverseDirection,
+    };
+
+    let channel = to_wide("Application");
+    let query = to_wide("*[System[Provider[@Name='Application Error'] and (EventID=1000)]]");
+    let deadline = Instant::now() + budget;
+    let mut out: Vec<String> = Vec::new();
+
+    // SAFETY: standard wevtapi query loop. `results` and each pulled event handle
+    // are closed exactly once; buffers are sized from the API's own reported need.
+    unsafe {
+        let results = EvtQuery(
+            0,
+            channel.as_ptr(),
+            query.as_ptr(),
+            EvtQueryChannelPath | EvtQueryReverseDirection,
+        );
+        if results == 0 {
+            // The log itself could not be opened — absence of a reader, not of a
+            // fault. Distinct from an empty-but-successful query below.
+            return None;
+        }
+        while out.len() < max_records && Instant::now() < deadline {
+            let mut event: isize = 0;
+            let mut returned: u32 = 0;
+            let ok = EvtNext(results, 1, &mut event as *mut isize, 250, 0, &mut returned);
+            if ok == 0 || returned == 0 || event == 0 {
+                break;
+            }
+            if let Some(xml) = render_event_xml(event) {
+                out.push(xml);
+            }
+            EvtClose(event);
+        }
+        EvtClose(results);
+    }
+    Some(out)
+}
+
+/// Render one event handle to its XML text via `EvtRender(EvtRenderEventXml)`.
+/// Two-call size-then-fill; returns `None` on any failure. The rendered UTF-16
+/// is decoded lossily and trimmed at its terminating NUL.
+#[cfg(target_os = "windows")]
+unsafe fn render_event_xml(event: isize) -> Option<String> {
+    use windows_sys::Win32::System::EventLog::{EvtRender, EvtRenderEventXml};
+    let mut needed: u32 = 0;
+    let mut props: u32 = 0;
+    // Size probe: returns FALSE and reports the required byte count in `needed`.
+    EvtRender(
+        0,
+        event,
+        EvtRenderEventXml,
+        0,
+        core::ptr::null_mut(),
+        &mut needed,
+        &mut props,
+    );
+    if needed == 0 {
+        return None;
+    }
+    let mut buffer: Vec<u16> = vec![0u16; (needed as usize).div_ceil(2)];
+    let mut used: u32 = 0;
+    let ok = EvtRender(
+        0,
+        event,
+        EvtRenderEventXml,
+        (buffer.len() * 2) as u32,
+        buffer.as_mut_ptr() as *mut core::ffi::c_void,
+        &mut used,
+        &mut props,
+    );
+    if ok == 0 {
+        return None;
+    }
+    let chars = (used as usize / 2).min(buffer.len());
+    let slice = &buffer[..chars];
+    let end = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
+    Some(String::from_utf16_lossy(&slice[..end]))
+}
+
+/// NUL-terminated UTF-16 for a Win32 wide-string argument.
+#[cfg(target_os = "windows")]
+fn to_wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 /// Whether the process under `handle` was deliberately cancelled (SIGTERM sent
 /// via [`cancel_process_impl`], e.g. on app quit) rather than exiting on its own.
 ///
@@ -4829,6 +5181,117 @@ mod cross_generation_escalation_tests {
             cancellation_records().0.lock().unwrap().records.is_empty()
                 || cancellation_record_for_generation(&handle, generation_c).is_none(),
             "no cancellation record may outlive this handle"
+        );
+    }
+}
+
+/// Windows fault-provenance artifact E2E (HQ-DESKTOP-4X).
+///
+/// Runs the REAL `wevtapi` reader against the machine's REAL Windows Application
+/// log and reproduces a genuine abort through the same `cmd.exe` batch-shim shape
+/// production uses. Windows Error Reporting's asynchronous crash capture is not
+/// guaranteed on a headless CI host (the plan's own risk register calls this
+/// out), so the assertions prove what IS deterministic: the reader runs bounded
+/// and panic-free against genuine OS output, and every token it produces is a
+/// fixed allow-listed constant — never a raw record byte. A strong PID/code-scoped
+/// attribution, when the runner's WER did capture our crash, is surfaced
+/// best-effort and logged rather than gating the test.
+#[cfg(all(test, target_os = "windows"))]
+mod watcher_fault_e2e_tests {
+    use super::*;
+    use hq_desktop_core::watcher_fault::{parse_application_error_event, WatcherFaultBinary};
+
+    fn is_allow_listed_token(token: &str) -> bool {
+        WatcherFaultBinary::ALL
+            .iter()
+            .any(|binary| binary.as_str() == token)
+    }
+
+    /// Assert every image/module the parser extracts from the REAL log is a fixed
+    /// allow-listed token — proof the reader can never copy a path, username, or
+    /// product string out of genuine WER output — and that the query is bounded.
+    fn assert_reader_is_content_safe_and_bounded() {
+        let xmls =
+            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
+        assert!(
+            xmls.len() <= WER_MAX_RECORDS,
+            "the reader must honour its record cap"
+        );
+        for xml in &xmls {
+            let Some(record) = parse_application_error_event(xml) else {
+                continue;
+            };
+            assert!(
+                is_allow_listed_token(record.image.as_str()),
+                "faulting image token escaped the allow-list: {}",
+                record.image.as_str()
+            );
+            assert!(
+                is_allow_listed_token(record.module.as_str()),
+                "faulting module token escaped the allow-list: {}",
+                record.module.as_str()
+            );
+        }
+        eprintln!(
+            "watcher-fault E2E: reader returned {} real Application Error record(s)",
+            xmls.len()
+        );
+    }
+
+    // These two spawn real processes and query the live Windows Application log,
+    // so they are `#[ignore]`d out of the parallel `cargo test --bins` pool (where
+    // they would starve the 30s-bounded real-process teardown regression) and run
+    // only in their own isolated windows-check step via `--include-ignored`.
+    #[test]
+    #[ignore = "real-process + live-event-log E2E; run in the dedicated windows-check step"]
+    fn the_real_reader_reads_the_real_application_log_content_safely() {
+        assert_reader_is_content_safe_and_bounded();
+    }
+
+    #[test]
+    #[ignore = "real-process + live-event-log E2E; run in the dedicated windows-check step"]
+    fn a_node_child_aborts_and_the_reader_stays_content_safe_afterward() {
+        // Reproduce the production mechanism: a Node runner that hard-aborts.
+        // `process.abort()` terminates the child abnormally with a 0xC0000409-class
+        // status; the exact code varies by CRT/Node version, so the deterministic
+        // assertion is only that it did NOT exit cleanly. Node is invoked with
+        // separate argv (no shell), so no fragile cmd quoting can turn a genuine
+        // abort into a vacuous "module not found" pass.
+        let status = Command::new("node")
+            .args(["-e", "process.abort()"])
+            .status()
+            .expect("spawn node abort child");
+        assert!(
+            !status.success(),
+            "the child must abort abnormally, got a clean exit"
+        );
+        eprintln!(
+            "watcher-fault E2E: cmd-shim child aborted with status {:?}",
+            status.code()
+        );
+
+        // Give WER a bounded moment, then run the real reader again. The assertion
+        // is deterministic (content-safety on whatever records exist); a captured
+        // node.exe 0xC0000409 abort is surfaced as the strong signal without
+        // gating the test on WER having logged it on this particular host.
+        thread::sleep(Duration::from_secs(2));
+        let xmls =
+            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
+        let mut named_node_abort = false;
+        for xml in &xmls {
+            let Some(record) = parse_application_error_event(xml) else {
+                continue;
+            };
+            assert!(is_allow_listed_token(record.image.as_str()));
+            assert!(is_allow_listed_token(record.module.as_str()));
+            if record.image == WatcherFaultBinary::NodeExe
+                && record.exception_code == Some(0xC000_0409)
+            {
+                named_node_abort = true;
+            }
+        }
+        eprintln!(
+            "watcher-fault E2E: node.exe 0xC0000409 record present in WER log = {named_node_abort}"
         );
     }
 }

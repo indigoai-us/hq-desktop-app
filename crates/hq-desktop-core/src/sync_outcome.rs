@@ -679,6 +679,12 @@ pub enum RunnerFatalClass {
     ExecPermissionDenied,
     ExecNotFound,
     NodeTooOld,
+    /// npm relayed a failing lifecycle/install status while printing only its own
+    /// `npm error …` / `npm ERR! …` lines, with no shell not-found/permission
+    /// marker. Attribution for the NEXT occurrence of an npm-shaped fast-fail —
+    /// e.g. the still-unattributed exit-190 leg (HQ-DESKTOP-51) — never a causal
+    /// claim. The token is a fixed constant, never derived from observed bytes.
+    NpmInstallRelay,
     #[default]
     None,
 }
@@ -686,7 +692,7 @@ pub enum RunnerFatalClass {
 impl RunnerFatalClass {
     /// Every variant, so content-safety tests can enumerate the emitter's own
     /// fatal-class token set instead of a hand-copied list.
-    pub const ALL: [RunnerFatalClass; 10] = [
+    pub const ALL: [RunnerFatalClass; 11] = [
         Self::LibuvAssert,
         Self::LibuvFatalSyscall,
         Self::NodeCheckAbort,
@@ -696,6 +702,7 @@ impl RunnerFatalClass {
         Self::ExecPermissionDenied,
         Self::ExecNotFound,
         Self::NodeTooOld,
+        Self::NpmInstallRelay,
         Self::None,
     ];
 
@@ -711,6 +718,7 @@ impl RunnerFatalClass {
             Self::ExecPermissionDenied => "exec_permission_denied",
             Self::ExecNotFound => "exec_not_found",
             Self::NodeTooOld => "node_too_old",
+            Self::NpmInstallRelay => "npm_install_relay",
             Self::None => "none",
         }
     }
@@ -986,6 +994,12 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
         .any(|marker| msg.contains(marker))
     {
         RunnerFatalClass::NodeFatal
+    } else if is_npm_error_line(&msg) {
+        // npm's OWN line prefix, evaluated BEFORE the shell-exec arms so an
+        // `npm error enoent ENOENT: no such file … /.npm/_npx/…` line is
+        // attributed to the npm relay rather than mislabeled exec_not_found by
+        // the `/.npm/_npx/` marker in is_runner_exec_shell_failure.
+        RunnerFatalClass::NpmInstallRelay
     } else if is_runner_exec_shell_failure(&msg, "permission denied") {
         RunnerFatalClass::ExecPermissionDenied
     } else if is_runner_exec_shell_failure(&msg, "no such file or directory")
@@ -997,6 +1011,16 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
     } else {
         RunnerFatalClass::None
     }
+}
+
+/// npm prints its own diagnostics with a stable `npm error ` (npm ≥ 9) or
+/// `npm ERR! ` (npm ≤ 8) line prefix. Keying strictly on that own-prefix keeps
+/// npm-relayed lifecycle failures — which can themselves carry an ENOENT under
+/// `_npx` — out of the shell-exec classes. `message` is already lowercased; the
+/// source line stays local and no bytes are copied.
+fn is_npm_error_line(message: &str) -> bool {
+    let trimmed = message.trim_start();
+    trimmed.starts_with("npm error ") || trimmed.starts_with("npm err! ")
 }
 
 /// Shell launch diagnostics have a small, stable shape. Requiring that shape
@@ -2780,6 +2804,65 @@ mod tests {
         assert_eq!(token, "libuv_assert");
         assert!(!token.contains("Ada"));
         assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn npm_relay_stderr_classifies_as_npm_install_relay_and_never_exec() {
+        let home_path = "/Users/ada/.npm/_npx/f72697f8e89f117e/node_modules/.bin/hq-sync-runner";
+        // npm relays a failing lifecycle status while printing only its OWN
+        // `npm error …` lines. These attribute to the npm relay — including an
+        // ENOENT under `_npx`, which the shell-exec `/.npm/_npx/` marker would
+        // otherwise mislabel exec_not_found (the reorder-before-exec-arms fix).
+        let enoent_under_npx =
+            format!("npm error enoent ENOENT: no such file or directory, open '{home_path}'");
+        let npm_lines = [
+            "npm error code ELIFECYCLE".to_string(),
+            "npm error errno 190".to_string(),
+            "npm error command failed".to_string(),
+            "npm error command sh -c hq-sync-runner --watch".to_string(),
+            enoent_under_npx.clone(),
+            "npm ERR! code E190".to_string(),
+            "  npm error path /Users/ada/.npm/_npx/f72697f8e89f117e".to_string(),
+        ];
+        for npm_line in &npm_lines {
+            assert_eq!(
+                classify_runner_fatal_class(npm_line),
+                RunnerFatalClass::NpmInstallRelay,
+                "npm own-prefixed line must attribute to the npm relay: {npm_line:?}"
+            );
+        }
+
+        // Fixed constant — no observed bytes, no path or username fragment.
+        let token = classify_runner_fatal_class(&enoent_under_npx).as_str();
+        assert_eq!(token, "npm_install_relay");
+        assert!(!token.contains("ada"));
+        assert!(!token.contains("_npx"));
+        assert!(!token.contains('/'));
+
+        // Only npm-prefixed lines change class relative to base: the shell-exec
+        // legs this cluster's fix actually addresses stay exactly as they were.
+        assert_eq!(
+            classify_runner_fatal_class(&format!("sh: {home_path}: Permission denied")),
+            RunnerFatalClass::ExecPermissionDenied
+        );
+        assert_eq!(
+            classify_runner_fatal_class(&format!("sh: {home_path}: No such file or directory")),
+            RunnerFatalClass::ExecNotFound
+        );
+        assert_eq!(
+            classify_runner_fatal_class("bash: hq-sync-runner: command not found"),
+            RunnerFatalClass::ExecNotFound
+        );
+        assert_eq!(
+            classify_runner_fatal_class("zsh: hq-sync-runner: permission denied"),
+            RunnerFatalClass::ExecPermissionDenied
+        );
+        // A bare node_modules/.bin marker line (no npm/shell own-prefix) keeps its
+        // base class — it is not npm-prefixed, so it must not change.
+        assert_eq!(
+            classify_runner_fatal_class("node_modules/.bin/hq-sync-runner: No such file or directory"),
+            RunnerFatalClass::ExecNotFound
+        );
     }
 
     #[test]

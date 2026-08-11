@@ -1,0 +1,900 @@
+//! Content-safe Windows **fault provenance** for the auto-sync watcher route.
+//!
+//! HQ-DESKTOP-4X recurs because on the watcher route no fault-bearing stderr
+//! line reaches the app at all: after a 0xC0000409 (`STATUS_STACK_BUFFER_OVERRUN`)
+//! abort of a Node runner spawned through a `cmd.exe` batch shim, the exit
+//! capture reports `runner_fatal_class=none` and cannot name which executable or
+//! module in the seven-process watcher tree actually faulted. Widening the
+//! stderr pattern table (PR #397) could never converge, because there is no line
+//! to classify — the sibling manual-route issue HQ-DESKTOP-50 proves the arms
+//! fire when a fatal line *does* arrive.
+//!
+//! This module replaces enumeration-over-stderr with reading the operating
+//! system's own fault record. It is the pure half of that work — everything that
+//! interprets a Windows Error Reporting "Application Error" (Event ID 1000)
+//! record and decides how confidently it can be bound to a specific watcher
+//! generation. The thin Win32 `wevtapi` query and Job Object PID sampling live in
+//! `apps/sync/src-tauri/src/commands/process.rs` behind `cfg(windows)`; they only
+//! produce rendered event XML strings and a sampled PID set, both of which are
+//! interpreted here so the attribution logic is unit-testable off Windows.
+//!
+//! Content safety is absolute and follows the same discipline as
+//! [`crate::runner_error_shape`]: only fixed constants chosen in code, bare
+//! integers, and bounded rollups of those may ever leave the process. A faulting
+//! image or module name is mapped through a closed allow-list to a fixed token
+//! (or the sentinel `other`); it is never copied out. Absence of evidence is
+//! never rendered as evidence — a missing record, a coincidental time-window-only
+//! match, and a confirmed PID-scoped match are three visibly different states.
+
+use crate::sync_outcome::classify_runner_fatal_class;
+use crate::sync_outcome::RunnerFatalClass;
+
+/// Cap on how many entries the unmatched-stderr shape rollup renders into a
+/// single Sentry tag value, highest count first. Mirrors
+/// `runner_error_shape::ROLLUP_TAG_TOP_N`; keeps the value well under Sentry's
+/// 200-char tag limit even under a flood while surfacing the dominant shapes.
+const ROLLUP_TAG_TOP_N: usize = 3;
+
+/// The fixed sentinel every fault field degrades to when there is no record to
+/// read at all, or the query itself could not run (non-Windows, disabled or
+/// unreadable WER, or a timed-out query). Distinct from `other`, which means a
+/// record WAS read but its binary is outside the allow-list.
+pub const WATCHER_FAULT_UNAVAILABLE: &str = "unavailable";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Faulting-binary allow-list
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Closed allow-list of executables and modules that can be named as the
+/// faulting image or module in a watcher-tree 0xC0000409 abort. Both the
+/// faulting-executable and faulting-module positions map through this same list.
+///
+/// Every value is chosen here, never copied from the Windows Error Reporting
+/// record: an image or module outside the list collapses to [`Self::Other`] and
+/// never to a nearest guess, so no filesystem path, product string, or username
+/// embedded in the record can leak through this token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherFaultBinary {
+    /// The Node runtime — the runner itself.
+    NodeExe,
+    /// `npx.cmd`, the batch shim `resolve_bin` picks up for `npx`.
+    NpxCmd,
+    /// `cmd.exe`, the batch-shim interpreter the runner is dispatched through.
+    CmdExe,
+    /// The app's own menubar binary.
+    HqSyncMenubarExe,
+    /// The Windows loader / native runtime, the usual host of a `__fastfail`.
+    NtdllDll,
+    KernelbaseDll,
+    UcrtbaseDll,
+    MsvcrtDll,
+    /// A record was read, but its image/module is not in the allow-list. Never a
+    /// nearest guess — the record's raw name is discarded.
+    Other,
+}
+
+impl WatcherFaultBinary {
+    /// Every variant, so content-safety and anti-drift tests enumerate the
+    /// emitter's own token set rather than a hand-copied list.
+    pub const ALL: [WatcherFaultBinary; 9] = [
+        Self::NodeExe,
+        Self::NpxCmd,
+        Self::CmdExe,
+        Self::HqSyncMenubarExe,
+        Self::NtdllDll,
+        Self::KernelbaseDll,
+        Self::UcrtbaseDll,
+        Self::MsvcrtDll,
+        Self::Other,
+    ];
+
+    /// Fixed vocabulary safe for a Sentry tag. Never derived from the record.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NodeExe => "node_exe",
+            Self::NpxCmd => "npx_cmd",
+            Self::CmdExe => "cmd_exe",
+            Self::HqSyncMenubarExe => "hq_sync_menubar_exe",
+            Self::NtdllDll => "ntdll_dll",
+            Self::KernelbaseDll => "kernelbase_dll",
+            Self::UcrtbaseDll => "ucrtbase_dll",
+            Self::MsvcrtDll => "msvcrt_dll",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Map an untrusted image/module name (as WER records it) to a fixed allow-listed
+/// token. Only the final path component is inspected, case-insensitively, and
+/// only to *select* a closed-vocabulary value — the returned token is always a
+/// code constant, so no path byte, username, or product string can leak.
+pub fn classify_watcher_fault_binary(name: &str) -> WatcherFaultBinary {
+    let base = name
+        .rsplit(|c: char| c == '/' || c == '\\')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("")
+        .trim();
+    match base.to_ascii_lowercase().as_str() {
+        "node.exe" => WatcherFaultBinary::NodeExe,
+        "npx.cmd" => WatcherFaultBinary::NpxCmd,
+        "cmd.exe" => WatcherFaultBinary::CmdExe,
+        "hq-sync-menubar.exe" => WatcherFaultBinary::HqSyncMenubarExe,
+        "ntdll.dll" => WatcherFaultBinary::NtdllDll,
+        "kernelbase.dll" => WatcherFaultBinary::KernelbaseDll,
+        "ucrtbase.dll" => WatcherFaultBinary::UcrtbaseDll,
+        "msvcrt.dll" => WatcherFaultBinary::MsvcrtDll,
+        _ => WatcherFaultBinary::Other,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Provenance honesty token
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// How confidently a read WER record is bound to *this* watcher generation.
+/// Emitted alongside the image/module tokens so a time-window-only coincidence,
+/// an absent record, and an unreadable log are three visibly different states
+/// that can never be misread as a confirmed attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherFaultProvenance {
+    /// The record's faulting PID is a member of the generation's sampled Job
+    /// Object process set AND its timestamp falls inside the generation lifetime.
+    PidMatched,
+    /// The record's timestamp falls inside the generation lifetime (and matches
+    /// the observed exception code), but its PID is not in the sampled set — a
+    /// weaker, coincidence-possible binding.
+    WindowOnly,
+    /// The query ran but produced no record attributable to this generation.
+    NoRecord,
+    /// The query could not run (non-Windows, disabled/unreadable WER, or a
+    /// timed-out query). Absence of a reader, not absence of a fault.
+    Unavailable,
+}
+
+impl WatcherFaultProvenance {
+    pub const ALL: [WatcherFaultProvenance; 4] = [
+        Self::PidMatched,
+        Self::WindowOnly,
+        Self::NoRecord,
+        Self::Unavailable,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PidMatched => "pid_matched",
+            Self::WindowOnly => "window_only",
+            Self::NoRecord => "no_record",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parsed WER "Application Error" (Event ID 1000) record
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A content-safe projection of a Windows Error Reporting "Application Error"
+/// record. Image and module are already allow-listed to fixed tokens, so this
+/// struct never retains a raw record byte; the code, offset, PID, and time are
+/// bare integers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WerApplicationError {
+    pub image: WatcherFaultBinary,
+    pub module: WatcherFaultBinary,
+    pub exception_code: Option<u32>,
+    pub fault_offset: Option<u64>,
+    pub faulting_pid: Option<u32>,
+    pub event_time_unix_ms: Option<i64>,
+}
+
+/// Decode the ordered, unnamed `<Data>` children of a rendered WER Application
+/// Error event and the `System/TimeCreated` timestamp, WITHOUT retaining any
+/// raw byte. The "Application Error"/Event 1000 template records its EventData
+/// positionally: `[0]`=faulting app name, `[3]`=faulting module name,
+/// `[6]`=exception code (hex), `[7]`=fault offset (hex), `[8]`=faulting PID
+/// (hex). Names, versions, and full paths in the other slots are never read.
+///
+/// Returns `None` when the fragment is not a recognisable Application Error 1000
+/// record (wrong provider/id, or no EventData). The image is required; every
+/// other field degrades to `None` independently so a truncated record still
+/// yields whatever it safely can.
+pub fn parse_application_error_event(xml: &str) -> Option<WerApplicationError> {
+    // Cheap provider/id gate so an unrelated Application-channel event that
+    // happens to be handed to us is rejected rather than mis-parsed.
+    if !is_application_error_1000(xml) {
+        return None;
+    }
+    let data = ordered_event_data(xml);
+    let image = classify_watcher_fault_binary(data.first().map(String::as_str).unwrap_or(""));
+    let module = classify_watcher_fault_binary(data.get(3).map(String::as_str).unwrap_or(""));
+    let exception_code = data.get(6).and_then(|token| parse_hex_u32(token));
+    let fault_offset = data.get(7).and_then(|token| parse_hex_u64(token));
+    let faulting_pid = data.get(8).and_then(|token| parse_hex_u32(token));
+    let event_time_unix_ms = system_time_created_ms(xml);
+    Some(WerApplicationError {
+        image,
+        module,
+        exception_code,
+        fault_offset,
+        faulting_pid,
+        event_time_unix_ms,
+    })
+}
+
+/// True when the rendered event names the `Application Error` provider and event
+/// id 1000. Case-sensitive on the provider name (Windows emits it verbatim) but
+/// tolerant of attribute ordering/quoting.
+fn is_application_error_1000(xml: &str) -> bool {
+    let has_provider = xml.contains("Name='Application Error'")
+        || xml.contains("Name=\"Application Error\"");
+    // The EventID element carries the bare id as text: `<EventID ...>1000</EventID>`.
+    let has_event_id = xml
+        .split("<EventID")
+        .skip(1)
+        .filter_map(|rest| rest.split_once('>'))
+        .filter_map(|(_, tail)| tail.split_once("</EventID>"))
+        .any(|(value, _)| value.trim() == "1000");
+    has_provider && has_event_id
+}
+
+/// Collect the inner text of each `<Data ...>...</Data>` element in document
+/// order, decoding only the five XML entities Windows can emit. Attributes on
+/// the open tag (some templates add `Name='…'`) are skipped; only element text
+/// is read, and only to be positionally matched against the closed field layout.
+fn ordered_event_data(xml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Data") {
+        rest = &rest[start + "<Data".len()..];
+        // Skip to the end of the open tag; a self-closing `<Data/>` yields empty.
+        let Some(open_end) = rest.find('>') else {
+            break;
+        };
+        let self_closing = rest[..open_end].ends_with('/');
+        rest = &rest[open_end + 1..];
+        if self_closing {
+            out.push(String::new());
+            continue;
+        }
+        let Some(close) = rest.find("</Data>") else {
+            break;
+        };
+        out.push(decode_xml_entities(&rest[..close]));
+        rest = &rest[close + "</Data>".len()..];
+    }
+    out
+}
+
+/// Decode only the five predefined XML entities. Never interprets numeric
+/// character references, so no byte value can be reconstructed into a token here.
+fn decode_xml_entities(raw: &str) -> String {
+    raw.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+        .trim()
+        .to_string()
+}
+
+/// Extract `System/TimeCreated SystemTime='…'` as unix milliseconds. WER writes
+/// an RFC 3339 UTC instant (7-digit fractional seconds); `chrono` parses any
+/// fractional precision. Returns `None` when absent or unparseable.
+fn system_time_created_ms(xml: &str) -> Option<i64> {
+    let after = xml.split("SystemTime=").nth(1)?;
+    let quote = after.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    let value = after[quote.len_utf8()..].split(quote).next()?;
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+}
+
+fn parse_hex_u32(token: &str) -> Option<u32> {
+    let token = token.trim().trim_start_matches("0x").trim_start_matches("0X");
+    (!token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| u32::from_str_radix(token, 16).ok())
+        .flatten()
+}
+
+fn parse_hex_u64(token: &str) -> Option<u64> {
+    let token = token.trim().trim_start_matches("0x").trim_start_matches("0X");
+    (!token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| u64::from_str_radix(token, 16).ok())
+        .flatten()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attribution decision
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The content-safe result of attributing a fault to this watcher generation.
+/// Every field is a fixed token or a bare integer. `image`/`module` are `None`
+/// (rendered as [`WATCHER_FAULT_UNAVAILABLE`]) whenever the provenance is
+/// `NoRecord`/`Unavailable`, so absence can never masquerade as evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherFaultOutcome {
+    pub provenance: WatcherFaultProvenance,
+    pub image: Option<WatcherFaultBinary>,
+    pub module: Option<WatcherFaultBinary>,
+    pub exception_code: Option<u32>,
+    pub fault_offset: Option<u64>,
+}
+
+impl WatcherFaultOutcome {
+    /// The query could not run at all.
+    pub fn unavailable() -> Self {
+        Self {
+            provenance: WatcherFaultProvenance::Unavailable,
+            image: None,
+            module: None,
+            exception_code: None,
+            fault_offset: None,
+        }
+    }
+
+    /// The query ran but nothing bound to this generation.
+    pub fn no_record() -> Self {
+        Self {
+            provenance: WatcherFaultProvenance::NoRecord,
+            image: None,
+            module: None,
+            exception_code: None,
+            fault_offset: None,
+        }
+    }
+
+    fn from_record(record: &WerApplicationError, provenance: WatcherFaultProvenance) -> Self {
+        Self {
+            provenance,
+            image: Some(record.image),
+            module: Some(record.module),
+            exception_code: record.exception_code,
+            fault_offset: record.fault_offset,
+        }
+    }
+
+    /// Fixed token for the faulting executable, or [`WATCHER_FAULT_UNAVAILABLE`].
+    pub fn image_token(&self) -> &'static str {
+        self.image
+            .map(WatcherFaultBinary::as_str)
+            .unwrap_or(WATCHER_FAULT_UNAVAILABLE)
+    }
+
+    /// Fixed token for the faulting module, or [`WATCHER_FAULT_UNAVAILABLE`].
+    pub fn module_token(&self) -> &'static str {
+        self.module
+            .map(WatcherFaultBinary::as_str)
+            .unwrap_or(WATCHER_FAULT_UNAVAILABLE)
+    }
+
+    pub fn provenance_token(&self) -> &'static str {
+        self.provenance.as_str()
+    }
+}
+
+/// Bind zero or more read WER Application Error records to this watcher
+/// generation and choose the single most-confident provenance.
+///
+/// `records` are the parsed candidates (newest first is preferred but not
+/// required — the strongest binding wins regardless of order). `sampled_pids` is
+/// the union of live Job Object process ids sampled across the generation's
+/// lifetime; `[gen_start_ms, gen_end_ms]` is that lifetime as a closed unix-ms
+/// window. `observed_exception_code`, when known, is the fault status the exit
+/// itself carried, used to reject an in-window record for an unrelated fault.
+///
+/// Precedence, strongest first:
+///  1. `PidMatched` — faulting PID ∈ `sampled_pids` AND time ∈ window.
+///  2. `WindowOnly` — time ∈ window AND (no observed code, or codes agree).
+///  3. `NoRecord` — records exist but none bind to this generation.
+///
+/// A weaker binding is never upgraded, and a record outside the window is never
+/// reported, so PID reuse or a coincidental unrelated crash on the same machine
+/// downgrades to `window_only` or is rejected outright rather than producing a
+/// false `pid_matched`.
+pub fn attribute_watcher_fault(
+    records: &[WerApplicationError],
+    sampled_pids: &[u32],
+    gen_start_ms: i64,
+    gen_end_ms: i64,
+    observed_exception_code: Option<u32>,
+) -> WatcherFaultOutcome {
+    if records.is_empty() {
+        return WatcherFaultOutcome::no_record();
+    }
+    let in_window = |record: &WerApplicationError| {
+        record
+            .event_time_unix_ms
+            .map(|ms| ms >= gen_start_ms && ms <= gen_end_ms)
+            // A record with no readable timestamp cannot be time-bound; require
+            // an explicit time to avoid binding a stale crash to this generation.
+            .unwrap_or(false)
+    };
+    let code_agrees = |record: &WerApplicationError| match (observed_exception_code, record.exception_code) {
+        (Some(observed), Some(found)) => observed == found,
+        // No observed code to check against, or the record omitted one: do not
+        // let a missing code veto a time+PID match.
+        _ => true,
+    };
+
+    // Strongest: PID membership in the sampled set AND an in-window timestamp.
+    if let Some(record) = records.iter().find(|record| {
+        in_window(record)
+            && code_agrees(record)
+            && record
+                .faulting_pid
+                .is_some_and(|pid| sampled_pids.contains(&pid))
+    }) {
+        return WatcherFaultOutcome::from_record(record, WatcherFaultProvenance::PidMatched);
+    }
+
+    // Weaker: in-window and code-consistent, but PID not confirmed.
+    if let Some(record) = records
+        .iter()
+        .find(|record| in_window(record) && code_agrees(record))
+    {
+        return WatcherFaultOutcome::from_record(record, WatcherFaultProvenance::WindowOnly);
+    }
+
+    WatcherFaultOutcome::no_record()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unmatched-stderr structural rollup
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fixed, content-safe *coarse structural shape* of a runner stderr line that
+/// [`classify_runner_fatal_class`] did not recognise. This closes the watcher
+/// route's "was stderr silent or noisy-but-unrecognised?" blind spot: it yields
+/// a recurring, comparable descriptor of the unknown-line family across
+/// occurrences without ever emitting a runner byte. Every shape is decided from
+/// cheap structural predicates on the line — never from its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnmatchedStderrShape {
+    /// Parses as (or clearly opens as) an ndjson protocol/object record — the
+    /// hq-cloud error flood the live event's tail was full of.
+    NdjsonRecord,
+    /// A JS/Node stack frame (`at Object.<anonymous> (...)`).
+    StackFrame,
+    /// A Node `--report`/CheckMacro abort frame (`#12 0x...`).
+    HashFrame,
+    /// A leading bare identifier followed by a colon (`Error: …`, `TypeError: …`).
+    KeyColon,
+    /// Carries a Windows drive-letter path or a run of forward slashes.
+    PathLike,
+    /// Empty or whitespace only.
+    Blank,
+    /// A single bare token with no interior whitespace.
+    Word,
+    /// None of the above.
+    Other,
+}
+
+impl UnmatchedStderrShape {
+    pub const ALL: [UnmatchedStderrShape; 8] = [
+        Self::NdjsonRecord,
+        Self::StackFrame,
+        Self::HashFrame,
+        Self::KeyColon,
+        Self::PathLike,
+        Self::Blank,
+        Self::Word,
+        Self::Other,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NdjsonRecord => "ndjson_record",
+            Self::StackFrame => "stack_frame",
+            Self::HashFrame => "hash_frame",
+            Self::KeyColon => "key_colon",
+            Self::PathLike => "path_like",
+            Self::Blank => "blank",
+            Self::Word => "word",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classify one unrecognised stderr line by structure only. The line is inspected
+/// solely to *select* a fixed token; nothing is retained.
+pub fn classify_unmatched_stderr_shape(line: &str) -> UnmatchedStderrShape {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return UnmatchedStderrShape::Blank;
+    }
+    if trimmed.starts_with('{') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return UnmatchedStderrShape::NdjsonRecord;
+    }
+    if trimmed.starts_with("at ") {
+        return UnmatchedStderrShape::StackFrame;
+    }
+    if trimmed.starts_with('#')
+        && trimmed[1..]
+            .trim_start()
+            .starts_with(|c: char| c.is_ascii_digit())
+    {
+        return UnmatchedStderrShape::HashFrame;
+    }
+    if has_drive_path(trimmed) || slash_run(trimmed) {
+        return UnmatchedStderrShape::PathLike;
+    }
+    if leading_identifier_colon(trimmed) {
+        return UnmatchedStderrShape::KeyColon;
+    }
+    if !trimmed.contains(char::is_whitespace) {
+        return UnmatchedStderrShape::Word;
+    }
+    UnmatchedStderrShape::Other
+}
+
+/// A Windows drive-letter path root (`C:\`), the shape most likely to smuggle a
+/// user path.
+fn has_drive_path(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    line.char_indices().any(|(i, c)| {
+        c == ':'
+            && i >= 1
+            && bytes[i - 1].is_ascii_alphabetic()
+            && bytes.get(i + 1) == Some(&b'\\')
+    })
+}
+
+/// A line with several forward slashes reads as a POSIX-ish path.
+fn slash_run(line: &str) -> bool {
+    line.bytes().filter(|b| *b == b'/').count() >= 2
+}
+
+/// A leading `[A-Za-z_][A-Za-z0-9_]*` immediately followed by `:` — the `Error:`
+/// / `TypeError:` message shape. Requires the token before the colon to be a
+/// bare identifier so a bare `12:34` or a drive path is not mistaken for one.
+fn leading_identifier_colon(line: &str) -> bool {
+    let Some((head, _)) = line.split_once(':') else {
+        return false;
+    };
+    !head.is_empty()
+        && head.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && head.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Saturating per-generation counts of the closed unmatched-shape vocabulary.
+/// Renders a compact, fixed-vocabulary Sentry tag such as
+/// `ndjson_record:6,stack_frame:2`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnmatchedStderrShapeRollup {
+    ndjson_record: u32,
+    stack_frame: u32,
+    hash_frame: u32,
+    key_colon: u32,
+    path_like: u32,
+    blank: u32,
+    word: u32,
+    other: u32,
+}
+
+impl UnmatchedStderrShapeRollup {
+    /// Record one stderr line ONLY if the fatal classifier did not recognise it.
+    /// A recognised line already has a `runner_fatal_class` and must not also be
+    /// counted here, so the rollup describes exactly the unattributed remainder.
+    pub fn record_if_unmatched(&mut self, line: &str) {
+        if classify_runner_fatal_class(line) != RunnerFatalClass::None {
+            return;
+        }
+        let count = match classify_unmatched_stderr_shape(line) {
+            UnmatchedStderrShape::NdjsonRecord => &mut self.ndjson_record,
+            UnmatchedStderrShape::StackFrame => &mut self.stack_frame,
+            UnmatchedStderrShape::HashFrame => &mut self.hash_frame,
+            UnmatchedStderrShape::KeyColon => &mut self.key_colon,
+            UnmatchedStderrShape::PathLike => &mut self.path_like,
+            UnmatchedStderrShape::Blank => &mut self.blank,
+            UnmatchedStderrShape::Word => &mut self.word,
+            UnmatchedStderrShape::Other => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    fn counts(&self) -> [(&'static str, u32); 8] {
+        [
+            (UnmatchedStderrShape::NdjsonRecord.as_str(), self.ndjson_record),
+            (UnmatchedStderrShape::StackFrame.as_str(), self.stack_frame),
+            (UnmatchedStderrShape::HashFrame.as_str(), self.hash_frame),
+            (UnmatchedStderrShape::KeyColon.as_str(), self.key_colon),
+            (UnmatchedStderrShape::PathLike.as_str(), self.path_like),
+            (UnmatchedStderrShape::Blank.as_str(), self.blank),
+            (UnmatchedStderrShape::Word.as_str(), self.word),
+            (UnmatchedStderrShape::Other.as_str(), self.other),
+        ]
+    }
+
+    /// Render the top-N shapes by count as a bounded Sentry tag. `None` means no
+    /// unmatched lines were seen this generation, so no tag should be sent.
+    pub fn tag_value(&self) -> Option<String> {
+        render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+/// Bounded renderer: keep nonzero entries, order by count descending with a
+/// stable declaration-order tie-break, take the top `n`, join as `token:count`.
+/// `None` when every count is zero. (A local copy of the same discipline used by
+/// `runner_error_shape::render_top_n`, kept here so the modules stay independent.)
+fn render_top_n(counts: &[(&'static str, u32)], n: usize) -> Option<String> {
+    let mut nonzero: Vec<(&'static str, u32)> = counts
+        .iter()
+        .copied()
+        .filter(|(_, count)| *count > 0)
+        .collect();
+    nonzero.sort_by(|left, right| right.1.cmp(&left.1));
+    let rendered: Vec<String> = nonzero
+        .into_iter()
+        .take(n)
+        .map(|(token, count)| format!("{token}:{count}"))
+        .collect();
+    (!rendered.is_empty()).then(|| rendered.join(","))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A realistic rendered "Application Error" (Event ID 1000) event for the
+    // production fault: a Node runner spawned through the cmd.exe shim aborts
+    // with 0xC0000409 inside ntdll.dll. The paths, versions, and product strings
+    // in the non-fault slots are exactly what WER writes and exactly what must
+    // never leave the process.
+    const WER_XML: &str = r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>
+  <System>
+    <Provider Name='Application Error'/>
+    <EventID Qualifiers='0'>1000</EventID>
+    <Level>2</Level>
+    <TimeCreated SystemTime='2026-08-11T10:37:41.1234567Z'/>
+    <Channel>Application</Channel>
+    <Computer>SHTAIGA</Computer>
+  </System>
+  <EventData>
+    <Data>node.exe</Data>
+    <Data>22.5.1.0</Data>
+    <Data>66b8c1a2</Data>
+    <Data>ntdll.dll</Data>
+    <Data>10.0.22621.4111</Data>
+    <Data>abcd1234</Data>
+    <Data>c0000409</Data>
+    <Data>000000000002a1b3</Data>
+    <Data>1a2c</Data>
+    <Data>01dABCDEF0123456</Data>
+    <Data>C:\Users\Ada\AppData\Local\HQ\node.exe</Data>
+    <Data>C:\Windows\SYSTEM32\ntdll.dll</Data>
+    <Data>c0ffee00-dead-beef-0000-000000000000</Data>
+  </EventData>
+</Event>"#;
+
+    #[test]
+    fn classify_watcher_fault_binary_maps_allow_list_case_insensitively_by_basename() {
+        for (name, expected) in [
+            ("node.exe", WatcherFaultBinary::NodeExe),
+            (r"C:\Users\Ada\AppData\Local\HQ\node.exe", WatcherFaultBinary::NodeExe),
+            ("NPX.CMD", WatcherFaultBinary::NpxCmd),
+            ("cmd.exe", WatcherFaultBinary::CmdExe),
+            ("hq-sync-menubar.exe", WatcherFaultBinary::HqSyncMenubarExe),
+            (r"C:\Windows\SYSTEM32\ntdll.dll", WatcherFaultBinary::NtdllDll),
+            ("KernelBase.dll", WatcherFaultBinary::KernelbaseDll),
+            ("ucrtbase.dll", WatcherFaultBinary::UcrtbaseDll),
+            ("msvcrt.dll", WatcherFaultBinary::MsvcrtDll),
+            ("some-private-tool.exe", WatcherFaultBinary::Other),
+            ("", WatcherFaultBinary::Other),
+        ] {
+            assert_eq!(classify_watcher_fault_binary(name), expected, "name: {name:?}");
+        }
+    }
+
+    #[test]
+    fn classify_watcher_fault_binary_never_emits_input_bytes() {
+        // A secret-ish, never-allow-listed name must render only `other`.
+        let token = classify_watcher_fault_binary(
+            r"C:\Users\cognito-token-abc123\private-key-loader.exe",
+        )
+        .as_str();
+        assert_eq!(token, "other");
+        assert!(!token.contains("cognito") && !token.contains("abc123") && !token.contains("private"));
+    }
+
+    #[test]
+    fn parse_application_error_event_extracts_only_content_safe_fields() {
+        let record = parse_application_error_event(WER_XML).expect("valid WER 1000 event parses");
+        assert_eq!(record.image, WatcherFaultBinary::NodeExe);
+        assert_eq!(record.module, WatcherFaultBinary::NtdllDll);
+        assert_eq!(record.exception_code, Some(0xC000_0409));
+        assert_eq!(record.fault_offset, Some(0x2a1b3));
+        assert_eq!(record.faulting_pid, Some(0x1a2c));
+        // Compared against chrono's own parse of the same instant so the test is
+        // not coupled to a hand-computed epoch; millis truncate the 100ns tail.
+        let expected_ms = chrono::DateTime::parse_from_rfc3339("2026-08-11T10:37:41.1234567Z")
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(record.event_time_unix_ms, Some(expected_ms));
+        assert_eq!(expected_ms % 1000, 123);
+    }
+
+    #[test]
+    fn parse_application_error_event_rejects_non_matching_events() {
+        // Wrong provider.
+        assert!(parse_application_error_event(
+            &WER_XML.replace("Application Error", "Some Other Provider")
+        )
+        .is_none());
+        // Wrong event id.
+        assert!(parse_application_error_event(&WER_XML.replace(">1000<", ">4321<")).is_none());
+        // Not an event at all.
+        assert!(parse_application_error_event("not xml").is_none());
+    }
+
+    #[test]
+    fn attribute_prefers_pid_match_then_window_then_no_record() {
+        let base = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0409),
+            fault_offset: Some(0x2a1b3),
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(1_000_500),
+        };
+        let window = (1_000_000_i64, 1_001_000_i64);
+
+        // PID in the sampled set + in window → pid_matched, fields populated.
+        let outcome = attribute_watcher_fault(&[base], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::PidMatched);
+        assert_eq!(outcome.image_token(), "node_exe");
+        assert_eq!(outcome.module_token(), "ntdll_dll");
+        assert_eq!(outcome.exception_code, Some(0xC000_0409));
+
+        // Same record, PID NOT sampled → downgrades to window_only, still named.
+        let outcome = attribute_watcher_fault(&[base], &[42], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::WindowOnly);
+        assert_eq!(outcome.image_token(), "node_exe");
+
+        // Record timestamped OUTSIDE the window → rejected → no_record, unnamed.
+        let stale = WerApplicationError {
+            event_time_unix_ms: Some(999_000),
+            ..base
+        };
+        let outcome = attribute_watcher_fault(&[stale], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::NoRecord);
+        assert_eq!(outcome.image_token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(outcome.module_token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(outcome.exception_code, None);
+
+        // No records at all → no_record.
+        assert_eq!(
+            attribute_watcher_fault(&[], &[6700], window.0, window.1, None).provenance,
+            WatcherFaultProvenance::NoRecord
+        );
+    }
+
+    #[test]
+    fn attribute_binds_the_newest_matching_record_not_a_stale_earlier_one() {
+        // Records arrive newest-first (the reader queries reverse-direction), and
+        // the attributor must bind the terminal (newest) fault rather than a stale
+        // earlier one that shares the PID and code — the property the caller's
+        // narrowed terminal-lookback window relies on.
+        let newest = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0409),
+            fault_offset: Some(0xBEEF),
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(1_000_900),
+        };
+        let older = WerApplicationError {
+            fault_offset: Some(0x1111),
+            event_time_unix_ms: Some(1_000_100),
+            ..newest
+        };
+        let outcome =
+            attribute_watcher_fault(&[newest, older], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::PidMatched);
+        assert_eq!(outcome.fault_offset, Some(0xBEEF), "the newest record must win");
+    }
+
+    #[test]
+    fn attribute_rejects_in_window_record_for_a_different_fault_code() {
+        let other_fault = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0005), // ACCESS_VIOLATION, not our abort
+            fault_offset: None,
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(1_000_500),
+        };
+        // Even with the PID sampled and in-window, a mismatched code is not our
+        // fault → no attribution rather than a confident wrong one.
+        let outcome =
+            attribute_watcher_fault(&[other_fault], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::NoRecord);
+    }
+
+    #[test]
+    fn unavailable_and_no_record_are_distinct_and_unnamed() {
+        assert_eq!(
+            WatcherFaultOutcome::unavailable().provenance_token(),
+            "unavailable"
+        );
+        assert_eq!(WatcherFaultOutcome::no_record().provenance_token(), "no_record");
+        assert_eq!(WatcherFaultOutcome::unavailable().image_token(), "unavailable");
+        assert_eq!(WatcherFaultOutcome::no_record().image_token(), "unavailable");
+    }
+
+    #[test]
+    fn classify_unmatched_stderr_shape_reads_structure_not_content() {
+        for (line, expected) in [
+            (r#"{"type":"error","path":"knowledge/a.md","message":"boom"}"#, UnmatchedStderrShape::NdjsonRecord),
+            ("at Object.<anonymous> (C:/x/y.js:1:1)", UnmatchedStderrShape::StackFrame),
+            ("#12 0x00007ff6 node::Abort", UnmatchedStderrShape::HashFrame),
+            ("Error: something went wrong", UnmatchedStderrShape::KeyColon),
+            (r"C:\Users\Ada\secret\file.txt not found", UnmatchedStderrShape::PathLike),
+            ("/var/log/private/thing/here", UnmatchedStderrShape::PathLike),
+            ("   ", UnmatchedStderrShape::Blank),
+            ("SIGSEGV", UnmatchedStderrShape::Word),
+            ("just some prose without a colon token", UnmatchedStderrShape::Other),
+        ] {
+            assert_eq!(classify_unmatched_stderr_shape(line), expected, "line: {line:?}");
+        }
+    }
+
+    #[test]
+    fn unmatched_rollup_skips_recognised_lines_and_renders_top_three() {
+        let mut rollup = UnmatchedStderrShapeRollup::default();
+        // A recognised libuv-fatal line must NOT be counted here.
+        rollup.record_if_unmatched("ReadDirectoryChangesW: (5) Access is denied.");
+        assert_eq!(rollup.tag_value(), None, "a classified line must not enter the rollup");
+
+        for _ in 0..6 {
+            rollup.record_if_unmatched(r#"{"type":"error","path":"k/a.md","message":"x"}"#);
+        }
+        for _ in 0..2 {
+            rollup.record_if_unmatched("at Object.<anonymous> (C:/x/y.js:1:1)");
+        }
+        rollup.record_if_unmatched("SIGSEGV");
+        let value = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert_eq!(value, "ndjson_record:6,stack_frame:2,word:1");
+        assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
+    }
+
+    #[test]
+    fn unmatched_rollup_never_leaks_the_line() {
+        let mut rollup = UnmatchedStderrShapeRollup::default();
+        rollup.record_if_unmatched(r"C:\Users\cognito-token-abc123\leak.txt is bad");
+        let value = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert_eq!(value, "path_like:1");
+        assert!(!value.contains("cognito") && !value.contains("abc123") && !value.contains("Users"));
+    }
+
+    #[test]
+    fn every_emitted_token_is_denylist_free() {
+        // No token any of these axes can emit may contain a Sentry default-scrubber
+        // denylist substring, or the server-side @password:filter would silently
+        // delete the very attribution this module exists to add.
+        const DENYLIST: &[&str] = &[
+            "auth", "token", "secret", "password", "passwd", "credential", "api_key", "apikey",
+            "session", "private_key", "privatekey",
+        ];
+        let binary = WatcherFaultBinary::ALL.map(WatcherFaultBinary::as_str);
+        let provenance = WatcherFaultProvenance::ALL.map(WatcherFaultProvenance::as_str);
+        let shapes = UnmatchedStderrShape::ALL.map(UnmatchedStderrShape::as_str);
+        for token in binary
+            .into_iter()
+            .chain(provenance)
+            .chain(shapes)
+            .chain(std::iter::once(WATCHER_FAULT_UNAVAILABLE))
+        {
+            assert!(!token.is_empty() && token.len() <= 64);
+            assert!(
+                token.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "token {token:?} is not a bare lowercase identifier"
+            );
+            for denied in DENYLIST {
+                assert!(!token.contains(denied), "token {token:?} contains denylist substring {denied:?}");
+            }
+        }
+    }
+}

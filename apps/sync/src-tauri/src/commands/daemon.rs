@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
 use tauri::Manager;
@@ -34,6 +34,8 @@ use hq_desktop_core::daemon::{
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
+use hq_desktop_core::runner_target::RunnerTargetState;
+use hq_desktop_core::watcher_fault::{UnmatchedStderrShapeRollup, WATCHER_FAULT_UNAVAILABLE};
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
@@ -44,7 +46,8 @@ use hq_desktop_core::sync_outcome::{
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
     windows_exit_status_hex, windows_fault_symbol, DeferredSessionEndOutcome,
     SpawnFailureCapturePolicy, SyncCancelCause, TerminationHost, WatcherExitCapturePolicy,
-    WindowsTerminatorAttribution, SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
+    WindowsTermination, WindowsTerminatorAttribution, SESSION_END_GRACE_MS,
+    WINDOWS_SESSION_TERMINATE_EXIT,
 };
 
 #[cfg(target_os = "windows")]
@@ -92,6 +95,29 @@ const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 const DAEMON_START_DEADLINE: Duration = Duration::from_secs(2 * 60);
 const WATCHER_STDERR_TAIL_CAP: usize = 8;
 
+/// Slack added after the generation's exit instant when time-bounding a Windows
+/// Error Reporting record. WER writes the "Application Error" entry shortly AFTER
+/// the faulting process dies, so a record landing a little past exit is still
+/// this generation's; the PID-membership check remains the strong discriminator,
+/// so this only widens the weaker `window_only` binding, never `pid_matched`.
+const WATCHER_FAULT_WINDOW_SLACK_MS: i64 = 120_000;
+
+/// Only WER records within this lookback of the terminal exit are eligible for
+/// attribution. The fault that killed the watcher is the terminal one, so an
+/// older descendant fault — or a PID reused since early in a long-running
+/// generation — is excluded rather than over-claimed as `pid_matched`.
+const WATCHER_FAULT_TERMINAL_LOOKBACK_MS: i64 = 600_000;
+
+/// Wall-clock now in unix milliseconds, saturating at 0 before the epoch. Used to
+/// bound a Windows fault record to the watcher generation lifetime; a benign
+/// clock read that never affects capture or lifecycle.
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Retain the exact bounded, ordered stderr tail that the watcher exit path
 /// normalizes. This is intentionally the only mutation seam for watcher stderr
 /// retention, so production and regression coverage cannot diverge into a
@@ -115,6 +141,51 @@ static SUPERVISOR_RESPAWN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// cancellation. It remains set until the next spawn, so an exit diagnostic can
 /// distinguish a watchdog-initiated teardown from an external termination.
 static HEARTBEAT_STALL_TERMINATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Whether the pre-spawn runner-target gate repaired the cached target before
+/// the current generation started. Recorded at spawn because the repair happened
+/// there; an exit-time re-probe cannot tell whether the state it sees is the
+/// original one or the repaired one. Reset on every spawn.
+static RUNNER_TARGET_REPAIR_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+fn note_runner_target_repair_attempted(attempted: bool) {
+    RUNNER_TARGET_REPAIR_ATTEMPTED.store(attempted, Ordering::Release);
+}
+
+fn runner_target_repair_attempted() -> bool {
+    RUNNER_TARGET_REPAIR_ATTEMPTED.load(Ordering::Acquire)
+}
+
+/// Reporting-only gate for exec-layer target provenance. Strictly ADDITIVE over
+/// the pre-existing 126/127 arm so no exit that already carried provenance loses
+/// it: keep every 126/127 (the POSIX permission/not-found legs AND the Windows
+/// `npx.cmd` shim dispatch), and ALSO cover a launcher-kind child (`npx` /
+/// `npx.exe`) that died before emitting any runner protocol with a nonzero exit
+/// — that widened arm is what makes the still-unattributed exit-190 leg
+/// (HQ-DESKTOP-51) self-describe. This never influences whether an exit is
+/// captured; it only decides whether target facts are attached.
+fn should_report_exec_provenance(
+    code: Option<i32>,
+    watcher_command: &str,
+    runner_phase: &str,
+) -> bool {
+    matches!(code, Some(126 | 127))
+        || (matches!(code, Some(nonzero) if nonzero != 0)
+            && watcher_child_kind(watcher_command) == "launcher"
+            && runner_phase == RUNNER_PHASE_PRE_PROTOCOL)
+}
+
+/// Probe the runner target only for the exec-layer fast-fails whose provenance
+/// is in question. Diagnostics must never touch the filesystem on the ordinary
+/// path, and must never influence whether a crash is captured.
+fn current_runner_exec_target_state(
+    code: Option<i32>,
+    watcher_command: &str,
+    runner_phase: &str,
+) -> Option<RunnerTargetState> {
+    should_report_exec_provenance(code, watcher_command, runner_phase)
+        .then(hq_desktop_core::runner_target::probe_runner_target)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WatcherLaunchOrigin {
@@ -796,6 +867,36 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         return Err(msg);
     }
 
+    // Probe — and bounded self-repair — of the runner target the watcher will
+    // ACTUALLY exec, which the materialization preflight above never touches (it
+    // validates `node -e`, not node_modules/.bin/hq-sync-runner). A cache whose
+    // runner target is missing or not executable therefore passes materialization
+    // and the watcher is spawned into an exit-127/126 hot-respawn loop
+    // (HQ-DESKTOP-52 / HQ-DESKTOP-4K). Fail open: only a POSITIVELY identified
+    // Missing/NotExecutable target, after the single bounded repair, refuses;
+    // every ambiguous/error probe result spawns as before, so a probe bug can
+    // never take a healthy machine's auto-sync offline. A refusal is
+    // environmental — local diagnosis + Backoff, no Sentry event — exactly like
+    // the materialization failure above.
+    let runner_target = hq_desktop_core::runner_target::ensure_runner_target_runnable();
+    note_runner_target_repair_attempted(runner_target.repair.attempted());
+    if runner_target.refuses_spawn() {
+        log(
+            "daemon",
+            &format!(
+                "runner-target preflight refused spawn: state={} repair={}",
+                runner_target.state.class_name(),
+                runner_target.repair.class_name()
+            ),
+        );
+        note_environment_preflight_failure();
+        release_daemon_guard(daemon_generation, guard_generation);
+        set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
+        return Err(hq_desktop_core::runner_target::runner_target_diagnosis(
+            runner_target.state,
+        ));
+    }
+
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
     log("daemon", "spawn: hq-sync-runner --watch");
@@ -816,6 +917,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     let stderr_tail = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(
         WATCHER_STDERR_TAIL_CAP,
     )));
+    // Per-generation stderr diagnostics that must survive the AllComplete reset
+    // of `totals` (reset each pass): the true stderr line count and a structural
+    // rollup of the lines the fatal classifier did not recognise. Both are
+    // content-safe — only a count and fixed-vocabulary tokens leave the process.
+    let stderr_line_count = Arc::new(AtomicU64::new(0));
+    let unmatched_stderr = Arc::new(Mutex::new(UnmatchedStderrShapeRollup::default()));
+    // Wall-clock start of this generation, to time-bound its Windows fault record.
+    let generation_started_ms = now_unix_ms();
     let watcher_command = spawn_args.cmd.clone();
     start_daemon_heartbeat_watchdog(
         daemon_generation,
@@ -827,6 +936,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         let process_heartbeat = last_heartbeat.clone();
         let process_finished = daemon_finished.clone();
         let process_stderr_tail = stderr_tail.clone();
+        let process_stderr_line_count = stderr_line_count.clone();
+        let process_unmatched_stderr = unmatched_stderr.clone();
         let process_watcher_phase = watcher_phase.clone();
         // Monotonic count of stdout (protocol) lines this watcher generation
         // emitted, mirroring the manual route, so the exit capture can tell
@@ -861,6 +972,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             *process_heartbeat
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+                            // Heartbeat cadence: sample the live Job Object PID set
+                            // so a runner descendant that later faults is bindable
+                            // to this generation at exit. Windows-only; a no-op
+                            // elsewhere and purely additive diagnostics.
+                            crate::commands::process::sample_watcher_job_pids_for_generation(
+                                DAEMON_HANDLE,
+                                daemon_generation,
+                            );
                         }
                     }
                     ProcessEvent::Stderr(line) => {
@@ -870,6 +989,24 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // in the local log; the capture path receives only the
                         // fixed-vocabulary rollup recorded from parsed errors.
                         crate::commands::sync::handle_runner_stderr_line(&app, &totals, &line);
+                        // Per-generation counters (survive the AllComplete reset of
+                        // `totals`): the true stderr line count, and a structural
+                        // rollup of the lines the fatal classifier did not recognise.
+                        // Content-safe — only a count and fixed tokens ever escape.
+                        process_stderr_line_count.fetch_add(1, Ordering::Relaxed);
+                        process_unmatched_stderr
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .record_if_unmatched(&line);
+                        // Also sample the Job Object PID set here: a startup
+                        // fast-fail can abort before any parseable protocol event, so
+                        // relying on the stdout heartbeat alone would leave the
+                        // sampled set empty for exactly the early-crash class this
+                        // instruments. Windows-only; a no-op elsewhere.
+                        crate::commands::process::sample_watcher_job_pids_for_generation(
+                            DAEMON_HANDLE,
+                            daemon_generation,
+                        );
                         // A protocol event delivered on stderr still proves the
                         // runner emitted protocol; route it through the phase
                         // observer so the never-observed sentinel is cleared.
@@ -923,7 +1060,22 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             .iter()
                             .cloned()
                             .collect::<Vec<_>>();
-                        let exit_context = watcher_exit_capture_context(
+                        // Reporting-only: probe the runner target the watcher
+                        // actually execs, for the exec-layer fast-fails whose
+                        // provenance is in question (126/127 and the launcher
+                        // pre-protocol nonzero leg). Read the phase this exit
+                        // resolved to so the widened arm is gated on the SAME
+                        // pre_protocol sentinel the context records.
+                        let runner_phase_at_exit = watcher_phase
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .phase;
+                        let runner_exec_target = current_runner_exec_target_state(
+                            code,
+                            &watcher_command,
+                            runner_phase_at_exit,
+                        );
+                        let mut exit_context = watcher_exit_capture_context(
                             &totals,
                             cancelled,
                             &watcher_phase,
@@ -934,7 +1086,50 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             cancellation_record,
                             watcher_stdout_line_count,
                             watcher_node_major,
+                            runner_exec_target,
                         );
+                        // Additive per-generation diagnostics, set after the content
+                        // snapshot. None of these is consulted by capture policy.
+                        exit_context.runner_stderr_line_count = Some(
+                            process_stderr_line_count
+                                .load(Ordering::Relaxed)
+                                .min(u32::MAX as u64) as u32,
+                        );
+                        exit_context.runner_unmatched_stderr_shapes = process_unmatched_stderr
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .tag_value();
+                        // Read the OS's own fault record for this generation and bind
+                        // it content-safely, off the terminal hot path and under a
+                        // hard bounded budget. Only a Windows fault exit triggers the
+                        // log scan; every other exit and platform degrades to the
+                        // fixed sentinels. Never blocks exit or changes capture.
+                        let observed_exception_code =
+                            code.filter(|_| signal.is_none()).and_then(|code| {
+                                match classify_windows_exit_status(code) {
+                                    WindowsTermination::Fault(raw) => Some(raw),
+                                    _ => None,
+                                }
+                            });
+                        let fault_window_end =
+                            now_unix_ms().saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
+                        let fault_window_start = generation_started_ms
+                            .max(fault_window_end.saturating_sub(WATCHER_FAULT_TERMINAL_LOOKBACK_MS));
+                        let fault =
+                            crate::commands::process::watcher_fault_provenance_for_generation(
+                                daemon_generation,
+                                observed_exception_code,
+                                fault_window_start,
+                                fault_window_end,
+                            );
+                        exit_context.watcher_fault_provenance =
+                            fault.provenance_token().to_string();
+                        exit_context.watcher_fault_faulting_image =
+                            fault.image_token().to_string();
+                        exit_context.watcher_fault_faulting_module =
+                            fault.module_token().to_string();
+                        exit_context.watcher_fault_exception_code = fault.exception_code;
+                        exit_context.watcher_fault_offset = fault.fault_offset;
                         let last_stderr = stderr_tail.last().map(String::as_str);
                         handle_watcher_exit(
                             code,
@@ -1100,6 +1295,35 @@ struct WatcherExitCaptureContext {
     /// alertable fault must win over durable-record attribution, exactly as at
     /// the manual-sync boundary.
     saw_alertable_error: bool,
+    /// Total stderr lines this generation received, at parity with the manual
+    /// route's `runner_stderr_line_count` extra, so the 8-line tail ring is not
+    /// misread as the real line count. `None` renders nothing.
+    runner_stderr_line_count: Option<u32>,
+    /// Bounded, fixed-vocabulary structural rollup of stderr lines the fatal
+    /// classifier did NOT recognise (`ndjson_record:6,stack_frame:2`), so a silent
+    /// runner is distinguishable from a noisy-but-unrecognised one. `None` when no
+    /// unmatched line was seen this generation.
+    runner_unmatched_stderr_shapes: Option<String>,
+    /// Windows Error Reporting fault attribution for this generation. The image
+    /// and module are allow-listed tokens (or `unavailable`); provenance is an
+    /// honesty token; the code and offset are bare integers. Every field degrades
+    /// to its sentinel on non-Windows or a failed/absent query, so absence never
+    /// renders as evidence. Diagnostic-only: never consulted by any capture or
+    /// attribution decision.
+    watcher_fault_provenance: String,
+    watcher_fault_faulting_image: String,
+    watcher_fault_faulting_module: String,
+    watcher_fault_exception_code: Option<u32>,
+    watcher_fault_offset: Option<u64>,
+    /// Exit-time probe of the runner target the watcher execs. Populated only for
+    /// the exec-layer fast-fails whose provenance is in question (126/127 and the
+    /// launcher pre-protocol nonzero leg); `None` — reported as `"unknown"` — for
+    /// every other exit and for a genuinely unprobeable cache.
+    runner_exec_target: Option<RunnerTargetState>,
+    /// Whether the pre-spawn gate attempted a bounded repair before this
+    /// generation started. Carried independently of the exit-time probe so a
+    /// divergent pair is itself diagnostic rather than misleading (TOCTOU-safe).
+    runner_target_repair_attempted: bool,
 }
 
 impl WatcherExitCaptureContext {
@@ -1162,6 +1386,15 @@ impl Default for WatcherExitCaptureContext {
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
             saw_alertable_error: false,
+            runner_stderr_line_count: None,
+            runner_unmatched_stderr_shapes: None,
+            watcher_fault_provenance: WATCHER_FAULT_UNAVAILABLE.to_string(),
+            watcher_fault_faulting_image: WATCHER_FAULT_UNAVAILABLE.to_string(),
+            watcher_fault_faulting_module: WATCHER_FAULT_UNAVAILABLE.to_string(),
+            watcher_fault_exception_code: None,
+            watcher_fault_offset: None,
+            runner_exec_target: None,
+            runner_target_repair_attempted: false,
         }
     }
 }
@@ -1220,6 +1453,7 @@ fn watcher_exit_capture_context(
     cancellation_record: Option<CancellationRecord>,
     stdout_line_count: u32,
     node_major: Option<u32>,
+    runner_exec_target: Option<RunnerTargetState>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -1292,6 +1526,18 @@ fn watcher_exit_capture_context(
             .map(|record| record.termination_effected)
             .unwrap_or(false),
         saw_alertable_error: totals.saw_alertable_error,
+        // The per-generation stderr diagnostics and Windows fault provenance are
+        // filled by the exit callback after this snapshot (they need the exit code
+        // and the sampled PID set); default them here so the snapshot is complete.
+        runner_stderr_line_count: None,
+        runner_unmatched_stderr_shapes: None,
+        watcher_fault_provenance: WATCHER_FAULT_UNAVAILABLE.to_string(),
+        watcher_fault_faulting_image: WATCHER_FAULT_UNAVAILABLE.to_string(),
+        watcher_fault_faulting_module: WATCHER_FAULT_UNAVAILABLE.to_string(),
+        watcher_fault_exception_code: None,
+        watcher_fault_offset: None,
+        runner_exec_target,
+        runner_target_repair_attempted: runner_target_repair_attempted(),
     }
 }
 
@@ -2131,6 +2377,28 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         watcher_child_kind(watcher_command).to_string(),
     ));
     tags.push(("rss_scope", rss_scope(watcher_command).to_string()));
+    // Windows fault provenance (HQ-DESKTOP-4X): the faulting image + module read
+    // from the OS's own crash record, plus an honesty token for how confidently
+    // the record is bound to this generation. Always present so `unavailable` (no
+    // reader ran) and `no_record` (reader ran, nothing bound) stay visibly
+    // distinct from a real `pid_matched`/`window_only` attribution.
+    tags.push((
+        "watcher_fault_provenance",
+        context.watcher_fault_provenance.clone(),
+    ));
+    tags.push((
+        "watcher_fault_faulting_image",
+        context.watcher_fault_faulting_image.clone(),
+    ));
+    tags.push((
+        "watcher_fault_faulting_module",
+        context.watcher_fault_faulting_module.clone(),
+    ));
+    // Structural rollup of stderr lines the fatal classifier did not recognise,
+    // so "silent" is separable from "noisy but unrecognised". Only when nonempty.
+    if let Some(shapes) = &context.runner_unmatched_stderr_shapes {
+        tags.push(("runner_unmatched_stderr_shapes", shapes.clone()));
+    }
     if let (Some(code), Some(termination)) = (code, windows_termination) {
         tags.push(("windows_exit_status", windows_exit_status_hex(code)));
         tags.push(("windows_exit_class", termination.class_name().to_string()));
@@ -2173,8 +2441,21 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             sentry::protocol::Value::String(raw_fingerprint_token),
         ));
     }
-    if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command) {
+    if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command, context) {
         extras.extend(exec_extras);
+    }
+    // Per-event attribution ONLY: the exec-not-runnable streak that released this
+    // rate-limited capture. It reveals how many suppressed same-class failures
+    // preceded this one (first capture at 4, then power-of-two milestones).
+    // Emitted solely on CaptureRateLimited (126/127) captures, and makes NO
+    // cross-issue correlation claim: a non-126/127 exit resets the streak by
+    // design, so it cannot span a 190→127 episode. Episode correlation is
+    // carried by the global consecutive counter printed in the event message.
+    if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        extras.push((
+            "exec_not_runnable_streak",
+            sentry::protocol::Value::Number(policy_consecutive.into()),
+        ));
     }
     if is_unrecognized_watcher_exit(code, signal) {
         extras.extend(unrecognized_watcher_exit_extras());
@@ -2313,20 +2594,56 @@ fn watcher_exit_context_extras(
             sentry::protocol::Value::String(scope.clone()),
         ));
     }
+    // Total stderr lines this generation received, at parity with the manual
+    // route's `runner_stderr_line_count` extra, so the 8-line tail ring is not
+    // misread as the real count. A bare integer — content-safe by type.
+    if let Some(count) = context.runner_stderr_line_count {
+        extras.push((
+            "runner_stderr_line_count",
+            sentry::protocol::Value::Number(count.into()),
+        ));
+    }
+    // Faulting exception code + offset as bare decimal integers (never the hex
+    // bytes copied from the record), present only when the OS fault record
+    // supplied them. Emitted as digit strings so the hq-telemetry egress
+    // validator can independently shape-check them.
+    if let Some(exception_code) = context.watcher_fault_exception_code {
+        extras.push((
+            "watcher_fault_exception_code",
+            sentry::protocol::Value::String(exception_code.to_string()),
+        ));
+    }
+    if let Some(offset) = context.watcher_fault_offset {
+        extras.push((
+            "watcher_fault_offset",
+            sentry::protocol::Value::String(offset.to_string()),
+        ));
+    }
     extras
 }
 
-/// The selected spawn command determines the fixed-vocabulary resolution
-/// token. Exit status alone cannot tell whether a local-runner override or an
-/// npx cache target existed or was executable, so those facts are explicitly
-/// recorded as unknown rather than inferred from 126/127.
+/// The selected spawn command determines the fixed-vocabulary resolution token;
+/// the exit-time probe carried on the context supplies the target facts. Where
+/// nothing could be probed the pre-existing `"unknown"` vocabulary is kept — the
+/// exit status is never re-read to infer target state. Gated by
+/// [`should_report_exec_provenance`], which is strictly additive over the old
+/// 126/127 arm, so this only ever ADDS information and never suppresses.
 fn runner_exec_provenance_extras(
     code: Option<i32>,
     watcher_command: &str,
+    context: &WatcherExitCaptureContext,
 ) -> Option<Vec<(&'static str, sentry::protocol::Value)>> {
-    if !matches!(code, Some(126 | 127)) {
+    if !should_report_exec_provenance(code, watcher_command, &context.runner_phase) {
         return None;
     }
+    let exists = context
+        .runner_exec_target
+        .map(RunnerTargetState::exists_token)
+        .unwrap_or("unknown");
+    let executable = context
+        .runner_exec_target
+        .map(RunnerTargetState::executable_token)
+        .unwrap_or("unknown");
     Some(vec![
         (
             "runner_exec_resolution",
@@ -2334,11 +2651,15 @@ fn runner_exec_provenance_extras(
         ),
         (
             "runner_exec_target_exists",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(exists.to_string()),
         ),
         (
             "runner_exec_target_executable",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(executable.to_string()),
+        ),
+        (
+            "runner_target_repair_attempted",
+            sentry::protocol::Value::Bool(context.runner_target_repair_attempted),
         ),
     ])
 }
@@ -4334,6 +4655,115 @@ mod tests {
             "no libuv line -> no syscall tag"
         );
         assert!(capture.tags.iter().all(|(k, _)| k != "runner_fatal_errno"));
+    }
+
+    #[test]
+    fn watcher_capture_reports_windows_fault_provenance_and_stderr_diagnostics() {
+        // A generation whose OS fault record named node.exe/ntdll.dll and bound to
+        // it by PID: the new content-safe fields ride the capture, additive to the
+        // untouched classifier channels. Codes/offsets are bare decimal integers.
+        let context = WatcherExitCaptureContext {
+            watcher_fault_provenance: "pid_matched".to_string(),
+            watcher_fault_faulting_image: "node_exe".to_string(),
+            watcher_fault_faulting_module: "ntdll_dll".to_string(),
+            watcher_fault_exception_code: Some(0xC000_0409),
+            watcher_fault_offset: Some(0x2a1b3),
+            runner_stderr_line_count: Some(8),
+            runner_unmatched_stderr_shapes: Some("ndjson_record:6,stack_frame:2".to_string()),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd",
+            None,
+            TerminationHost::Windows,
+            &context,
+        );
+        let capture = effects.captures.first().expect("fault captures");
+        assert_eq!(
+            recorded_tag(capture, "watcher_fault_provenance"),
+            "pid_matched"
+        );
+        assert_eq!(
+            recorded_tag(capture, "watcher_fault_faulting_image"),
+            "node_exe"
+        );
+        assert_eq!(
+            recorded_tag(capture, "watcher_fault_faulting_module"),
+            "ntdll_dll"
+        );
+        assert_eq!(
+            recorded_tag(capture, "runner_unmatched_stderr_shapes"),
+            "ndjson_record:6,stack_frame:2"
+        );
+        assert_eq!(recorded_number_extra(capture, "runner_stderr_line_count"), 8);
+        assert_eq!(
+            recorded_string_extra(capture, "watcher_fault_exception_code"),
+            "3221226505"
+        );
+        assert_eq!(
+            recorded_string_extra(capture, "watcher_fault_offset"),
+            "172467"
+        );
+        // Grouping continuity: the new fields never enter the family fingerprint.
+        assert_eq!(
+            capture.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn watcher_capture_reports_unavailable_fault_provenance_by_default() {
+        // No OS fault record (or non-Windows): provenance + image + module render
+        // the `unavailable` sentinel, and no code/offset extras are attached, so
+        // absence never masquerades as an attribution.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Windows,
+            &WatcherExitCaptureContext::default(),
+        );
+        let capture = effects.captures.first().expect("captures");
+        assert_eq!(
+            recorded_tag(capture, "watcher_fault_provenance"),
+            "unavailable"
+        );
+        assert_eq!(
+            recorded_tag(capture, "watcher_fault_faulting_image"),
+            "unavailable"
+        );
+        assert_eq!(
+            recorded_tag(capture, "watcher_fault_faulting_module"),
+            "unavailable"
+        );
+        assert!(capture
+            .tags
+            .iter()
+            .all(|(k, _)| k != "runner_unmatched_stderr_shapes"));
+        assert!(capture
+            .extras
+            .iter()
+            .all(|(k, _)| k != "watcher_fault_exception_code"));
+        assert!(capture
+            .extras
+            .iter()
+            .all(|(k, _)| k != "watcher_fault_offset"));
     }
 
     #[test]
@@ -6366,9 +6796,13 @@ mod tests {
 
     #[test]
     fn exec_provenance_uses_the_actual_spawn_mode_and_never_infers_file_state() {
+        // Unprobed context: the exit status alone infers nothing, so both target
+        // facts stay the pre-existing `"unknown"` vocabulary (never a bool).
+        let unprobed = WatcherExitCaptureContext::default();
         let npx = runner_exec_provenance_extras(
             Some(126),
             r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+            &unprobed,
         )
         .expect("exec exit gets provenance");
         assert!(npx.iter().any(|(key, value)| {
@@ -6383,13 +6817,274 @@ mod tests {
             *key == "runner_exec_target_exists"
                 && value == &sentry::protocol::Value::String("unknown".to_string())
         }));
+        // The repair-attempted extra is always a bool, defaulting to false.
+        assert!(npx.iter().any(|(key, value)| {
+            *key == "runner_target_repair_attempted"
+                && value == &sentry::protocol::Value::Bool(false)
+        }));
 
-        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node")
+        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node", &unprobed)
             .expect("exec exit gets provenance");
         assert!(local.iter().any(|(key, value)| {
             *key == "runner_exec_resolution"
                 && value == &sentry::protocol::Value::String("local_runner".to_string())
         }));
+
+        // A probe result is what turns the facts into real values: a target that
+        // exists but is not executable reports exists=true, executable=false.
+        let probed = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::NotExecutable),
+            runner_target_repair_attempted: true,
+            ..WatcherExitCaptureContext::default()
+        };
+        let probed_npx = runner_exec_provenance_extras(Some(126), "npx", &probed)
+            .expect("exec exit gets provenance");
+        assert!(probed_npx.iter().any(|(key, value)| {
+            *key == "runner_exec_target_exists"
+                && value == &sentry::protocol::Value::String("true".to_string())
+        }));
+        assert!(probed_npx.iter().any(|(key, value)| {
+            *key == "runner_exec_target_executable"
+                && value == &sentry::protocol::Value::String("false".to_string())
+        }));
+        assert!(probed_npx.iter().any(|(key, value)| {
+            *key == "runner_target_repair_attempted"
+                && value == &sentry::protocol::Value::Bool(true)
+        }));
+
+        // A non-exec exit that never emitted protocol from a direct executable
+        // carries NO widened provenance (gate precision): neither 126/127 nor a
+        // launcher-kind child.
+        assert!(
+            runner_exec_provenance_extras(Some(190), "/opt/homebrew/bin/node", &probed).is_none()
+        );
+    }
+
+    /// Black-box replay of the exact observed episode: one exit 190 followed by
+    /// eight exit 127s in a tight crash loop. This REPLACES a presence-only streak
+    /// assertion (plan-review blocker 2). It pins that captures occur at exactly
+    /// global #1, #5, #9 and nowhere else; that the 190 leg captures under Capture
+    /// with fingerprint exit:190, the widened provenance, and NO exec_not_runnable
+    /// streak (a 190 is not 126/127, and the streak legitimately resets across it);
+    /// that the 127 legs capture under CaptureRateLimited at exec streaks 4 and 8
+    /// with fingerprint exit:127 and the streak extra; and that the global
+    /// consecutive counter rendered into the messages is the single series 1..9 —
+    /// so episode correlation rests on that already-shipped counter, never on the
+    /// per-event streak.
+    #[test]
+    fn the_observed_190_then_127x8_episode_captures_at_exactly_1_5_and_9() {
+        // A launcher child that died before any protocol, with a probed-broken
+        // target: the widened provenance arm and the exec streak both apply.
+        let context = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::Missing),
+            runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+
+        for &code in &[190, 127, 127, 127, 127, 127, 127, 127, 127] {
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(code),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                TerminationHost::Posix,
+                &context,
+            );
+        }
+
+        assert_eq!(
+            effects.captures.len(),
+            3,
+            "the episode must capture at exactly #1, #5, #9: {:?}",
+            effects.captures
+        );
+        let first = &effects.captures[0];
+        let fifth = &effects.captures[1];
+        let ninth = &effects.captures[2];
+
+        // #1 — the 190 leg: Capture, exit:190, widened provenance, NO streak.
+        assert!(
+            first.message.contains("consecutive failure #1"),
+            "{}",
+            first.message
+        );
+        assert_eq!(
+            first.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+        );
+        assert_eq!(recorded_string_extra(first, "runner_exec_resolution"), "npx_cache");
+        assert_eq!(recorded_string_extra(first, "runner_exec_target_exists"), "false");
+        assert!(
+            !first
+                .extras
+                .iter()
+                .any(|(key, _)| key == "exec_not_runnable_streak"),
+            "the 190 leg carries no exec-not-runnable streak (it is not 126/127)"
+        );
+
+        // #5 — a 127 leg at exec streak 4: CaptureRateLimited, exit:127, streak=4.
+        assert!(
+            fifth.message.contains("consecutive failure #5"),
+            "{}",
+            fifth.message
+        );
+        assert_eq!(
+            fifth.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+        );
+        assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
+        assert_eq!(recorded_string_extra(fifth, "runner_exec_target_exists"), "false");
+
+        // #9 — a 127 leg at exec streak 8.
+        assert!(
+            ninth.message.contains("consecutive failure #9"),
+            "{}",
+            ninth.message
+        );
+        assert_eq!(
+            ninth.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+        );
+        assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
+    }
+
+    /// Gate precision for the REPORTING-ONLY widened exec provenance (plan-review
+    /// blocker 1 treatment for the 190 class): a launcher-kind child that died
+    /// before any protocol carries the probed target facts on a 190 exit, with
+    /// its exit:190 fingerprint unchanged, while a non-launcher child and a
+    /// post-protocol exit carry no widened provenance at all. Capture behaviour
+    /// and fingerprints are untouched throughout.
+    #[test]
+    fn widened_exec_provenance_is_gated_to_launcher_pre_protocol_fast_fails() {
+        let host = TerminationHost::Posix;
+        let probed = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::Missing),
+            runner_target_repair_attempted: true,
+            runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+
+        // (a) launcher + pre_protocol + 190 → widened provenance, exit:190 intact.
+        let mut launcher = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut launcher,
+            Some(190),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            host,
+            &probed,
+        );
+        let event = launcher
+            .captures
+            .first()
+            .expect("a 190 launcher fast-fail captures at #1");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+        );
+        assert_eq!(recorded_string_extra(event, "runner_exec_resolution"), "npx_cache");
+        assert_eq!(recorded_string_extra(event, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_target_executable"),
+            "false"
+        );
+        assert!(
+            event.extras.iter().any(|(key, value)| key
+                == "runner_target_repair_attempted"
+                && *value == sentry::protocol::Value::Bool(true)),
+            "the spawn-time repair outcome rides alongside the exit-time probe"
+        );
+
+        // (b) a DIRECT executable (node) with the same pre-protocol 190 exit gets
+        //     NO widened provenance — it is not a launcher.
+        let mut direct = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut direct,
+            Some(190),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "/opt/homebrew/bin/node",
+            None,
+            host,
+            &probed,
+        );
+        let direct_event = direct.captures.first().expect("still captured at #1");
+        assert_eq!(
+            direct_event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+        );
+        assert!(
+            !direct_event
+                .extras
+                .iter()
+                .any(|(key, _)| key == "runner_exec_resolution"),
+            "a non-launcher child gets no widened exec provenance"
+        );
+
+        // (c) a launcher that DID emit protocol (post-protocol phase) then exited
+        //     190 also carries no widened provenance (gate precision).
+        let post_protocol = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::Missing),
+            runner_phase: "scan".to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+        let mut post = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut post,
+            Some(190),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            host,
+            &post_protocol,
+        );
+        let post_event = post.captures.first().expect("still captured at #1");
+        assert!(
+            !post_event
+                .extras
+                .iter()
+                .any(|(key, _)| key == "runner_exec_resolution"),
+            "a post-protocol exit gets no widened exec provenance"
+        );
+
+        // (d) the additive 126/127 base arm is UNCHANGED — a 127 carries probed
+        //     provenance regardless of phase, with its exit:127 fingerprint.
+        let mut exec = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut exec,
+            Some(127),
+            None,
+            4,
+            4,
+            WatcherExitCapturePolicy::CaptureRateLimited,
+            "npx",
+            None,
+            host,
+            &post_protocol,
+        );
+        let exec_event = exec.captures.first().expect("127 captures at streak 4");
+        assert_eq!(
+            exec_event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+        );
+        assert_eq!(
+            recorded_string_extra(exec_event, "runner_exec_target_exists"),
+            "false"
+        );
+        assert_eq!(recorded_number_extra(exec_event, "exec_not_runnable_streak"), 4);
     }
 
     #[test]
@@ -6757,6 +7452,7 @@ mod tests {
             None,
             0,
             None,
+            None,
         );
 
         assert_eq!(context.watcher_launch_origin, "supervisor_respawn");
@@ -6795,6 +7491,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
         let mut effects = RecordingWatcherEffects::default();
@@ -6896,6 +7593,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
 
@@ -7008,6 +7706,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
 

@@ -42,6 +42,7 @@ pub mod recordings_ledger;
 pub mod release_channel;
 pub mod run_cli_provision;
 pub mod runner_error_shape;
+pub mod runner_target;
 pub mod runtime_diagnosis;
 pub mod scope_gate;
 pub mod sessions;
@@ -53,6 +54,7 @@ pub mod status;
 pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
+pub mod watcher_fault;
 pub mod workspaces;
 
 #[cfg(test)]
