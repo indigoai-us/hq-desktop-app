@@ -377,6 +377,7 @@
   /** Ad-hoc invite: paste a meeting URL and send the notetaker to it.
    *  Same shape as production — the destination picker only appears once
    *  there is something to send, so the idle bar stays quiet. */
+  let mtgTab = $state<'upcoming' | 'past'>('upcoming');
   let mtgUrl = $state('');
   let mtgUrlCo = $state<string | null>(null);
   const mtgUrlValid = $derived(
@@ -1349,7 +1350,15 @@
           {/if}
           <button class="btn-secondary" disabled={!mtgUrlValid} onclick={sendUrlInvite}>Invite</button>
         </div>
+        <div class="mtg-tabbar">
+          <div class="tabs">
+            {#each [['upcoming', 'Upcoming'], ['past', 'Past']] as [k, label] (k)}
+              <button class="tab" class:on={mtgTab === k} onclick={() => (mtgTab = k as typeof mtgTab)}>{label}</button>
+            {/each}
+          </div>
+        </div>
         <div class="listview mtg-view">
+          {#if mtgTab === 'upcoming'}
           {#each MEETING_DAYS as day (day.label)}
             <div class="grp mtg-day"><span class="t mono">{day.label}</span><span class="t mono dim">{day.rows.length}</span></div>
             {#each day.rows as r (r.name)}
@@ -1381,8 +1390,7 @@
               </div>
             {/each}
           {/each}
-
-          <div class="grp mtg-day"><span class="t mono">RECENT</span></div>
+          {:else}
           {#each MEETINGS_PAST as [name, who, meta] (name)}
             <button class="lrow mtg-row" onclick={() => toast(`${name} would open`)}>
               <span class="lrow-ic"><VideoCamera size={15} /></span>
@@ -1391,6 +1399,7 @@
               <span class="fm mono">{meta}</span>
             </button>
           {/each}
+          {/if}
         </div>
         <div class="mtg-foot">
           <span class="mono">2 CALENDARS CONNECTED · LAST SYNCED 2M AGO</span>
@@ -1973,13 +1982,17 @@
   /* ── Meetings ───────────────────────────────────────────────────── */
   .mtg-view { gap: 4px; }
   /* Ad-hoc invite bar, above the agenda and outside its scroller. */
+  .mtg-tabbar { display: flex; flex-shrink: 0; padding: 12px 20px 0; }
   .url-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--line); }
   .url-field { flex: 1; min-width: 0; }
   .url-bar .co-select-wrap { position: relative; flex-shrink: 0; }
-  .url-bar .co-picker-panel { top: calc(100% + 6px); right: 0; }
+  .url-bar .co-picker-panel { top: calc(100% + 6px); bottom: auto; right: 0; }
+  /* Naked control: no fill, text dims on hover — the scope-button treatment. */
+  .url-bar .co-select { padding: 4px 2px; background: transparent; border-color: transparent; color: var(--t2); transition: color 0.12s; }
+  .url-bar .co-select:hover { background: transparent; color: var(--t1); }
   .mtg-day { padding: 14px 2px 2px; }
   .mtg-row { gap: 10px; }
-  .mtg-time { flex-shrink: 0; width: 60px; text-align: right; font-size: 10px; letter-spacing: 0.03em; color: var(--t3); }
+  .mtg-time { flex-shrink: 0; width: 52px; white-space: nowrap; font-size: 10px; letter-spacing: 0.03em; color: var(--t3); }
   .lrow.mtg-row .fn { flex: 0 1 auto; }
   /* The company line ends the left group; the actions ride right. */
   .mtg-row .fm.sub { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
