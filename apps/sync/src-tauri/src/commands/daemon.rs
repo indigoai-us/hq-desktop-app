@@ -24,7 +24,7 @@ use crate::commands::process::{
 #[cfg(target_os = "windows")]
 use crate::commands::session_end_observer::SessionEndObserverHandle;
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
-use crate::commands::sync::{PreflightFailure, RunTotals};
+use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -2396,26 +2396,47 @@ fn runner_preflight_capture_policy(failure: PreflightFailure) -> RunnerPreflight
 }
 
 /// Whether a finished provisioning attempt is worth reporting as a preflight
-/// failure at all.
+/// failure at all — the pure decision, so it stays directly unit-testable.
 ///
-/// A *successful* self-heal is the fix working, not a fault. Reporting it would
-/// send `sentry::Level::Error` to #hq-alerts and — worse — advance the
-/// consecutive-preflight-failure counter that `should_capture_crash` uses, so
-/// every machine HQ repaired would inflate the rate limiter for machines it
-/// could not. Success is local-log only; only an HQ-repairable state that HQ
-/// actually failed to repair may page, and only rate-limited.
-fn provisioning_bail_to_report(outcome: Result<(), String>) -> Option<String> {
-    outcome.err()
+/// A *successful* self-heal is the fix working, and a *deferral* (another lane
+/// already holds the shared repair slot — a single-flight cooldown) is that
+/// guard doing its job. Neither is a fault. Reporting either would send
+/// `sentry::Level::Error` to #hq-alerts and — worse — advance the
+/// consecutive-preflight-failure counter that `should_capture_crash` uses, so a
+/// machine HQ healed or merely deferred would inflate the rate limiter for
+/// machines it could not repair (HQ-DESKTOP-4Z). Only an HQ-repairable state
+/// that HQ actually *failed* to repair may page, and only rate-limited.
+fn provisioning_bail_to_report(outcome: ProvisionAttempt) -> Option<String> {
+    match outcome {
+        ProvisionAttempt::Provisioned | ProvisionAttempt::Deferred(_) => None,
+        ProvisionAttempt::Failed(reason) => Some(reason),
+    }
 }
 
-/// Log a finished managed-Node provisioning attempt, alerting only on failure.
-fn report_provisioning_outcome(outcome: Result<(), String>) {
-    match provisioning_bail_to_report(outcome) {
-        None => log(
+/// Log a finished managed-Node provisioning attempt, alerting only on a genuine
+/// failure.
+///
+/// Every finished attempt is logged locally (including a deferral's reason) for
+/// Connect diagnostics, but only `Failed` reaches `report_preflight_bail` — the
+/// one path that pages and advances the rate-limiting streak.
+fn report_provisioning_outcome(outcome: ProvisionAttempt) {
+    match &outcome {
+        ProvisionAttempt::Provisioned => log(
             "daemon",
             "managed Node provisioned — auto-sync will retry on the next supervisor cadence",
         ),
-        Some(reason) => report_preflight_bail(PreflightFailure::NodeUnprovisioned, &reason),
+        ProvisionAttempt::Deferred(reason) => log(
+            "daemon",
+            &format!(
+                "managed Node provisioning deferred — another lane holds the shared repair slot: {reason}"
+            ),
+        ),
+        // Failure is logged (and, when it clears the rate limit, captured) by
+        // report_preflight_bail below.
+        ProvisionAttempt::Failed(_) => {}
+    }
+    if let Some(reason) = provisioning_bail_to_report(outcome) {
+        report_preflight_bail(PreflightFailure::NodeUnprovisioned, &reason);
     }
 }
 
@@ -6303,7 +6324,65 @@ mod tests {
         // *fix* working, and would advance the consecutive-failure counter
         // `should_capture_crash` rate-limits on — so a fleet HQ successfully
         // healed would suppress the alerts for machines it could not heal.
-        assert_eq!(provisioning_bail_to_report(Ok(())), None);
+        assert_eq!(
+            provisioning_bail_to_report(ProvisionAttempt::Provisioned),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cooldown_deferral_is_not_a_preflight_failure_and_does_not_advance_the_streak() {
+        // HQ-DESKTOP-4Z regression guard. A shared-slot cooldown deferral
+        // (another lane is already installing) is single-flight working as
+        // designed — not a provisioning failure. It must not page…
+        assert_eq!(
+            provisioning_bail_to_report(ProvisionAttempt::Deferred(
+                "HQ skipped Node provisioning because an attempt was already made recently"
+                    .to_string()
+            )),
+            None,
+            "a cooldown deferral must not be reported as a preflight failure",
+        );
+
+        // …and — critically — it must not advance the consecutive-preflight-
+        // failure counter should_capture_crash rate-limits genuine alerts with,
+        // or a machine HQ merely deferred would suppress alerts for a machine it
+        // could not repair.
+        //
+        // Serialize against every test that mutates the process-global crash
+        // state: GUARD_TEST_LOCK is the suite's shared lock, and several of the
+        // tests it guards call note_watcher_spawned(), which resets
+        // preflight_fails — so a dedicated lock would not exclude them and this
+        // exact-count assertion could flake from 2 to 1.
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        // From a reset streak, driving a deferral through the reporting seam
+        // leaves the counter at 0, so the next genuine failure is still #1.
+        {
+            let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+            *st = WatcherCrashState::default();
+        }
+        report_provisioning_outcome(ProvisionAttempt::Deferred(
+            "HQ skipped Node provisioning because an attempt was already made recently".to_string(),
+        ));
+        assert_eq!(
+            note_runner_preflight_failure(),
+            1,
+            "a cooldown deferral must not advance the preflight-failure streak",
+        );
+
+        // A genuine failure, by contrast, DOES advance it, so repeats
+        // rate-limit exactly as an unrepairable machine should.
+        {
+            let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+            *st = WatcherCrashState::default();
+        }
+        report_provisioning_outcome(ProvisionAttempt::Failed("no disk".to_string()));
+        assert_eq!(
+            note_runner_preflight_failure(),
+            2,
+            "a failed provision advances the streak (its report was #1, this call is #2)",
+        );
     }
 
     #[test]
@@ -6311,7 +6390,7 @@ mod tests {
         // A machine HQ cannot repair (offline, MDM-locked, no disk) is the one
         // state that must still surface — carrying why, not a generic bail.
         assert_eq!(
-            provisioning_bail_to_report(Err("download timed out".to_string())),
+            provisioning_bail_to_report(ProvisionAttempt::Failed("download timed out".to_string())),
             Some("download timed out".to_string()),
         );
         // …and it routes through the rate-limited policy, never local-only.
@@ -6323,6 +6402,9 @@ mod tests {
 
     #[test]
     fn preflight_failure_streak_resets_after_a_successful_spawn() {
+        // Shares the suite-wide crash-state lock so a concurrent
+        // note_watcher_spawned() cannot reset preflight_fails mid-assertion.
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         {
             let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
             *st = WatcherCrashState::default();
