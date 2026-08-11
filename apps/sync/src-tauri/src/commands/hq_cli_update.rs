@@ -401,7 +401,7 @@ fn complete_hq_cli_package_version(package: &Path) -> Option<String> {
         .join("dist")
         .join("index.js")
         .is_file()
-        .then(|| version_if_hq_cli(package))
+        .then(|| version_if_hq_cli(&package.join("package.json")))
         .flatten()
 }
 
@@ -3268,7 +3268,10 @@ exit 0
             // No promote: this is the npm failure/interruption path.
         }
 
-        assert_eq!(version_if_hq_cli(&package).as_deref(), Some("5.93.0"));
+        assert_eq!(
+            complete_hq_cli_package_version(&package).as_deref(),
+            Some("5.93.0")
+        );
         assert_eq!(std::fs::read_to_string(&shim).unwrap(), "old-working-shim");
         assert!(!prefix.join(".hq-cli-update-staging").exists());
     }
@@ -3278,7 +3281,10 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let prefix = temp.path().join("npm-global");
         let old_package = seed_cli_package(&prefix, "5.93.0", false);
-        assert_eq!(version_if_hq_cli(&old_package).as_deref(), Some("5.93.0"));
+        assert_eq!(
+            complete_hq_cli_package_version(&old_package).as_deref(),
+            Some("5.93.0")
+        );
 
         let stage = ManagedCliInstallStage::prepare_for(
             prefix.to_str().unwrap(),
@@ -3293,7 +3299,10 @@ exit 0
         stage.promote("5.98.0").unwrap();
 
         let live_package = hq_cli_package_dir_for(&prefix, false);
-        assert_eq!(version_if_hq_cli(&live_package).as_deref(), Some("5.98.0"));
+        assert_eq!(
+            complete_hq_cli_package_version(&live_package).as_deref(),
+            Some("5.98.0")
+        );
         assert_eq!(
             std::fs::read_to_string(prefix.join("bin/hq")).unwrap(),
             "new-shim"
@@ -3349,7 +3358,7 @@ exit 0
         let error = stage.promote("5.98.0").unwrap_err();
         assert!(error.contains("complete package and primary shim"));
         assert_eq!(
-            version_if_hq_cli(&hq_cli_package_dir_for(&prefix, false)).as_deref(),
+            complete_hq_cli_package_version(&hq_cli_package_dir_for(&prefix, false)).as_deref(),
             Some("5.93.0")
         );
         assert!(!hq_cli_backup_dir_for(&prefix, false).exists());
@@ -3370,7 +3379,7 @@ exit 0
         .unwrap();
 
         assert_eq!(
-            version_if_hq_cli(&hq_cli_package_dir_for(&prefix, false)).as_deref(),
+            complete_hq_cli_package_version(&hq_cli_package_dir_for(&prefix, false)).as_deref(),
             Some("5.93.0")
         );
         assert!(!backup.exists());
