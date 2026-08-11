@@ -14,6 +14,7 @@
   import {
     ArrowLeft,
     ArrowsDownUp,
+    ArrowsClockwise,
     ArrowRight,
     ArrowUpRight,
     Bell,
@@ -27,6 +28,7 @@
     Clock,
     CheckCircle,
     Circle,
+    CalendarBlank,
     DownloadSimple,
     FileText,
     FunnelSimple,
@@ -1292,8 +1294,8 @@
           <span class="chan-title">Meetings</span>
           <span class="chan-sub">agenda, notetaker, and recaps</span>
           <div class="head-right">
-            <button class="chip g" onclick={() => toast('HQ Console would open to connect a calendar')}>Connect calendar</button>
-            <button class="chip" onclick={() => toast('Calendars synced')}>Sync now</button>
+            <button class="btn-tertiary" onclick={() => toast('HQ Console would open to connect a calendar')}><CalendarBlank size={14} /> Connect calendar</button>
+            <button class="btn-secondary" onclick={() => toast('Calendars refreshed')}><ArrowsClockwise size={14} /> Refresh</button>
           </div>
         </div>
         <div class="listview mtg-view">
@@ -1322,11 +1324,11 @@
                 {#if r.signals}<span class="fm mono sig">{r.signals} SIGNALS</span>{/if}
                 <span class="pill mtg-state {r.state}">{MEETING_STATE_LABEL[r.state]}</span>
                 <span class="mtg-actions">
-                  <button class="mtg-ic" aria-label="Join" data-tip="Join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}><VideoCamera size={14} /></button>
+                  <button class="mtg-ic" aria-label="Join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}><VideoCamera size={14} /></button>
                   {#if r.state === 'invited' || r.state === 'live'}
-                    <button class="mtg-ic on" aria-label="Notetaker joining" data-tip="Notetaker is in" onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}><CheckCircle size={14} /></button>
+                    <button class="mtg-ic on" aria-label="Notetaker joining" onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}><CheckCircle size={14} /></button>
                   {:else}
-                    <button class="mtg-ic" aria-label="Send the notetaker" data-tip="Send the notetaker" onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}><Plus size={14} /></button>
+                    <button class="mtg-ic" aria-label="Send the notetaker" onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}><Plus size={14} /></button>
                   {/if}
                 </span>
               </div>
@@ -1932,6 +1934,7 @@
   .mtg-day { padding: 14px 2px 2px; }
   .mtg-row { gap: 12px; }
   /* The company line ends the left group; everything after it rides right. */
+  .lrow.mtg-row .fn { flex: 0 1 auto; }
   .mtg-row .fm.who { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mtg-time { flex-shrink: 0; width: 62px; font-size: 11px; color: var(--t2); }
   .mtg-row .sig { color: var(--ice-ink); }
@@ -2437,7 +2440,11 @@
   .notif.unread .n-line { color: var(--t1); }
   .notif.unread .n-dot { background: var(--ice-ink); }
   /* Standard tertiary button — matches the segmented control's height. */
-  .btn-tertiary { display: inline-flex; align-items: center; height: 31px; padding: 0 12px; border: 1px solid var(--line2); border-radius: 8px; background: transparent; font-size: 12px; font-weight: 500; color: var(--t2); transition: background 0.12s, color 0.12s; }
+  .btn-secondary { display: inline-flex; align-items: center; gap: 6px; height: 31px; padding: 0 12px; border: 1px solid transparent; border-radius: 8px; background: var(--btn-bg); font-size: 12px; font-weight: 500; color: var(--t1); transition: border-color 0.12s; }
+  .btn-secondary:hover:not(:disabled) { border-color: var(--line2); }
+  .btn-secondary:active:not(:disabled) { border-color: var(--border-active); }
+  .btn-secondary:disabled { opacity: 0.45; cursor: default; }
+  .btn-tertiary { display: inline-flex; align-items: center; gap: 6px; height: 31px; padding: 0 12px; border: 1px solid var(--line2); border-radius: 8px; background: transparent; font-size: 12px; font-weight: 500; color: var(--t2); transition: background 0.12s, color 0.12s; }
   .btn-tertiary:hover:not(:disabled) { background: var(--hover); color: var(--t1); }
   .btn-tertiary:disabled { opacity: 0.45; cursor: default; }
 
