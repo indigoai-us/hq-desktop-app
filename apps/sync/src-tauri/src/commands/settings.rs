@@ -65,6 +65,12 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             // Dock icon defaults ON — a fresh install shows up in the Dock
             // without the user finding the toggle first.
             dock_icon: Some(true),
+            // Appearance (US-016): None = frontend defaults (system theme,
+            // default opacity, 100% interface size). Deliberately not
+            // materialized here — absence adds no constraint.
+            theme: None,
+            window_opacity: None,
+            interface_size: None,
         });
     }
 
@@ -150,6 +156,13 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // activation policy at launch and on toggle; this branch only keeps
         // the Settings round-trip honest.
         dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
+        // Appearance (US-016) — raw pass-through. The frontend owns the
+        // defaults and clamping (normalizeColorTheme / opacity / zoom
+        // normalizers), so `None` here means "use the frontend default"
+        // rather than pinning a value an old config never chose.
+        theme: prefs.theme,
+        window_opacity: prefs.window_opacity,
+        interface_size: prefs.interface_size,
     })
 }
 

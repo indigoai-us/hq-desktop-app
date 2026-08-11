@@ -313,6 +313,9 @@ mod tests {
             widget_enabled: None,
             widget_display: None,
             dock_icon,
+            theme: None,
+            window_opacity: None,
+            interface_size: None,
         }
     }
 

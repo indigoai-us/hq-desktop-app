@@ -65,13 +65,16 @@ describe('desktop zoom', () => {
     expect(normalizeDesktopZoom('1.399999')).toBe(1.4);
     expect(normalizeDesktopZoom('99')).toBe(MAX_DESKTOP_ZOOM);
     expect(normalizeDesktopZoom('-2')).toBe(MIN_DESKTOP_ZOOM);
+    // The 75% / 150% spec endpoints survive normalization exactly.
+    expect(normalizeDesktopZoom(0.75)).toBe(MIN_DESKTOP_ZOOM);
+    expect(normalizeDesktopZoom(1.5)).toBe(MAX_DESKTOP_ZOOM);
     expect(normalizeDesktopZoom('not-a-number')).toBe(DEFAULT_DESKTOP_ZOOM);
   });
 
   it.each([
-    { zoom: 0.8, expected: { width: 53, height: 35 } },
+    { zoom: 0.75, expected: { width: 50, height: 33 } },
     { zoom: 1, expected: { width: 66, height: 43 } },
-    { zoom: 1.6, expected: { width: 106, height: 69 } },
+    { zoom: 1.5, expected: { width: 99, height: 65 } },
   ])(
     'scales fixed-window geometry at $zoom without rounding below its content',
     ({ zoom, expected }) => {
