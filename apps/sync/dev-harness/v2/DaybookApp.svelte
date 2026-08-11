@@ -2037,6 +2037,8 @@
     --ok-ink: #4ade80;
     --warn: #facc15;
     --warn-ink: #facc15;
+    --vio: #c084fc;
+    --vio-ink: #e0c4fe;
     --hover: rgba(255, 255, 255, 0.05);
     --sel: rgba(255, 255, 255, 0.08);
     --panel-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
@@ -2076,6 +2078,8 @@
     --ok-ink: #248a3d;
     --warn: #f0a800;
     --warn-ink: #b45309;
+    --vio: #8b5cf6;
+    --vio-ink: #854dee;
     --hover: rgba(0, 0, 0, 0.045);
     --sel: rgba(0, 0, 0, 0.07);
     --panel-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
@@ -2099,7 +2103,7 @@
   .sig-row:last-of-type { border-bottom: none; }
   .grp + .sd-desc { margin-top: 2px; }
   .sig-text { font-size: 12px; line-height: 1.5; color: var(--t2); }
-  .pill.sig-decision { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 28%, transparent); background: var(--ice-tile); }
+  .pill.sig-decision { color: var(--vio-ink); border-color: color-mix(in srgb, var(--vio) 32%, transparent); background: color-mix(in srgb, var(--vio) 10%, transparent); }
   .pill.sig-risk { color: var(--warn-ink); border-color: color-mix(in srgb, var(--warn) 32%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
   /* Ad-hoc invite bar, above the agenda and outside its scroller. */
   .mtg-tabbar { display: flex; flex-shrink: 0; padding: 12px 20px 0; }
@@ -2366,7 +2370,7 @@
   .react .re { font-size: 11px; line-height: 1; }
   .react .rn { font-size: 10px; color: var(--t2); }
   /* Yours reads as a selected control, matching the ice tint elsewhere. */
-  .react.mine { background: var(--ice-tile); border-color: transparent; }
+  .react.mine { background: var(--ice-tile); border-color: color-mix(in srgb, var(--ice-ink) 30%, transparent); }
   .react.mine .rn { color: var(--ice-ink); }
   .msg-body { min-width: 0; flex: 1; }
   .msg-main { position: relative; }
