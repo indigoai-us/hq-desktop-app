@@ -354,7 +354,6 @@
   };
 
   type Agenda = { time: string; name: string; co: string; dur: string; state: 'live' | 'next' | 'invited' | 'scheduled' };
-  const MEETING_LIVE = { name: 'GTM standup', co: 'Indigo', running: '12:04', attendees: 8 };
   const MEETING_DAYS: { label: string; rows: Agenda[] }[] = [
     {
       label: 'TODAY',
@@ -373,16 +372,12 @@
       ],
     },
   ];
-  const MEETING_STATE_LABEL: Record<Agenda['state'], string> = {
-    live: 'Live', next: 'Next', invited: 'Notetaker in', scheduled: 'Scheduled',
-  };
   const MEETINGS_PAST: [string, string, string][] = [
     ['Nestlé demo prep — Aug 1', 'Indigo · 4 attendees', 'RECAP + TRANSCRIPT'],
     ['Daybook design review — Jul 31', 'Indigo · 3 attendees', 'RECAP + TRANSCRIPT'],
     ['Sender weekly — Jul 30', 'Sender Agency · 6 attendees', 'RECAP'],
     ['Pricing workshop — Jul 28', 'Indigo · 5 attendees', 'NOTES'],
   ];
-  let mtgLive = $state(true);
 
   const MARKET: [string, string, string, string][] = [
     ['engineering', 'Investigate, review, land, ship — the full engineering loop.', 'inst', 'v2.1 INSTALLED'],
@@ -1299,39 +1294,32 @@
           </div>
         </div>
         <div class="listview mtg-view">
-          <!-- Live detection, mirroring the production Live-now card: what is
-               being recorded, for how long, and the two actions that matter. -->
-          {#if mtgLive}
-            <div class="mtg-live">
-              <span class="ml-dot"></span>
-              <div class="ml-copy">
-                <div class="ml-title">Live now — {MEETING_LIVE.name}</div>
-                <div class="ml-sub">{MEETING_LIVE.co} · {MEETING_LIVE.attendees} people · recording <span class="mono">{MEETING_LIVE.running}</span></div>
-              </div>
-              <div class="ml-actions">
-                <button class="chip g" onclick={() => toast('Meeting would open')}>Join</button>
-                <button class="chip" onclick={() => { mtgLive = false; toast('Recording stopped — recap will land in #gtm-standup'); }}>Stop recording</button>
-              </div>
-            </div>
-          {/if}
-
           {#each MEETING_DAYS as day (day.label)}
             <div class="grp mtg-day"><span class="t mono">{day.label}</span><span class="t mono dim">{day.rows.length}</span></div>
             {#each day.rows as r (r.name)}
               <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-              <div class="lrow mtg-row" onclick={() => toast(`${r.name} would open`)}>
+              <div class="lrow mtg-row" class:live={r.state === 'live'} onclick={() => toast(`${r.name} would open`)}>
                 <span class="mtg-time mono">{r.time}</span>
                 <span class="fn">{r.name}</span>
                 <span class="fm who">{r.co} · {r.dur}</span>
                 <span class="mtg-actions">
-                  <button class="mtg-ic" aria-label="Join" data-tip="Join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}><VideoCamera size={14} /></button>
-                  {#if r.state === 'invited' || r.state === 'live'}
-                    <button class="mtg-ic on" aria-label="Notetaker joining" data-tip="Notetaker is in" onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}><CheckCircle size={14} /></button>
+                  <button class="btn-join" onclick={(e) => { e.stopPropagation(); toast('Meeting would open'); }}>Join</button>
+                  {#if r.state === 'live' || r.state === 'invited'}
+                    <button
+                      class="mtg-ic on"
+                      aria-label="Notetaker is in — remove it"
+                      data-tip="Notetaker is in. Click to remove."
+                      onclick={(e) => { e.stopPropagation(); toast('Notetaker removed'); }}
+                    ><CheckCircle size={16} weight="fill" /></button>
                   {:else}
-                    <button class="mtg-ic" aria-label="Send the notetaker" data-tip="Send the notetaker" onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}><Plus size={14} /></button>
+                    <button
+                      class="mtg-ic"
+                      aria-label="Send the notetaker"
+                      data-tip="Send the notetaker"
+                      onclick={(e) => { e.stopPropagation(); toast('Notetaker will join'); }}
+                    ><Plus size={16} /></button>
                   {/if}
                 </span>
-                <span class="pill mtg-state {r.state}">{MEETING_STATE_LABEL[r.state]}</span>
               </div>
             {/each}
           {/each}
@@ -1345,11 +1333,10 @@
               <span class="fm mono">{meta}</span>
             </button>
           {/each}
-
-          <div class="mtg-foot">
-            <span class="mono">2 CALENDARS CONNECTED · LAST SYNCED 2M AGO</span>
-            <button class="chip g" onclick={() => toast('HQ Console would open to manage calendars')}>Manage <ArrowUpRight size={11} weight="bold" /></button>
-          </div>
+        </div>
+        <div class="mtg-foot">
+          <span class="mono">2 CALENDARS CONNECTED · LAST SYNCED 2M AGO</span>
+          <button class="chip g" onclick={() => toast('HQ Console would open to manage calendars')}>Manage <ArrowUpRight size={11} weight="bold" /></button>
         </div>
       {:else if view === 'marketplace'}
         <div class="chan-head">
@@ -1927,29 +1914,27 @@
 
   /* ── Meetings ───────────────────────────────────────────────────── */
   .mtg-view { gap: 4px; }
-  .mtg-live { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent); }
-  .ml-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--ok-ink); }
-  .ml-actions { display: flex; gap: 8px; flex-shrink: 0; }
-  .ml-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .ml-title { font-size: 13px; font-weight: 500; color: var(--t1); }
-  .ml-sub { font-size: 11px; color: var(--t2); }
   .mtg-day { padding: 14px 2px 2px; }
   .mtg-row { gap: 12px; }
-  /* The company line ends the left group; everything after it rides right. */
   .lrow.mtg-row .fn { flex: 0 1 auto; }
+  /* The company line ends the left group; the actions ride right. */
   .mtg-row .fm.who { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mtg-time { flex-shrink: 0; width: 62px; font-size: 11px; color: var(--t2); }
-  .mtg-state { flex-shrink: 0; margin-left: 4px; }
-  .mtg-state.live { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
-  .mtg-state.next { color: var(--ice-ink); border-color: color-mix(in srgb, var(--ice-ink) 30%, transparent); background: var(--ice-tile); }
-  /* Row actions stay hidden until the row is hovered, so a long agenda
-     reads as a calm list rather than a wall of buttons. */
-  .mtg-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.12s; }
-  .mtg-row:hover .mtg-actions { opacity: 1; }
-  .mtg-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--t2); }
-  .mtg-ic:hover { background: var(--hover); color: var(--t1); }
+  /* A live meeting is the row itself — green fill, actions always showing. */
+  .mtg-row.live { border-color: color-mix(in srgb, var(--ok) 32%, transparent); background: color-mix(in srgb, var(--ok) 9%, transparent); }
+  .mtg-row.live:hover { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .mtg-row.live .mtg-time, .mtg-row.live .fn { color: var(--ok-ink); }
+  .mtg-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  /* Join is an affordance; the notetaker toggle is state, so it always shows. */
+  .btn-join { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 6px; font-size: 11px; font-weight: 500; color: var(--t2); opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s; }
+  .btn-join:hover { background: var(--hover); color: var(--t1); }
+  .mtg-row:hover .btn-join, .mtg-row.live .btn-join { opacity: 1; }
+  .mtg-ic { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--t3); }
+  .mtg-ic:hover { background: var(--hover); color: var(--t2); }
   .mtg-ic.on { color: var(--ok-ink); }
-  .mtg-foot { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 10px; letter-spacing: 0.04em; color: var(--t3); }
+  .mtg-ic.on:hover { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok-ink); }
+  /* Anchored to the right edge so the long notetaker tip stays in the pane. */
+  .mtg-actions :global([data-tip]::after) { left: auto; right: 0; transform: none; }
+  .mtg-foot { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 12px 20px; border-top: 1px solid var(--line); font-size: 10px; letter-spacing: 0.04em; color: var(--t3); }
   .mtg-foot .chip { margin-left: auto; }
   .conflict-ic { display: inline-flex; align-items: center; color: var(--warn-ink); }
   .sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 5px; }
