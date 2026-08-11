@@ -791,6 +791,27 @@ unsafe fn query_job_accounting(job: isize) -> Option<WatcherJobAccounting> {
 #[cfg(target_os = "windows")]
 const WER_MAX_RECORDS: usize = 12;
 
+/// Hard cap on how long the terminal exit callback waits for the worker thread's
+/// fault read. This bounds the exit/deregister path — and therefore supervisor
+/// recovery — even if the Windows Event Log service hangs entirely; on expiry the
+/// worker is abandoned and provenance stays `unavailable`.
+#[cfg(target_os = "windows")]
+const WER_TOTAL_BUDGET: Duration = Duration::from_millis(4500);
+
+/// The worker's own retry deadline, slightly under `WER_TOTAL_BUDGET` so it
+/// normally returns a verdict before the callback stops waiting.
+#[cfg(target_os = "windows")]
+const WER_READ_BUDGET: Duration = Duration::from_millis(4000);
+
+/// Per-sweep budget for one EvtQuery/EvtNext/EvtRender pass.
+#[cfg(target_os = "windows")]
+const WER_PER_QUERY_BUDGET: Duration = Duration::from_millis(500);
+
+/// Sleep between sweeps while waiting for WER to asynchronously publish the
+/// Event 1000 record after the child has already exited.
+#[cfg(target_os = "windows")]
+const WER_RETRY_INTERVAL: Duration = Duration::from_millis(300);
+
 /// Cap on distinct PIDs retained per generation's sampled set. The watcher tree
 /// is ~7 processes; this bounds pathological growth without losing the runner.
 #[cfg(target_os = "windows")]
@@ -882,26 +903,72 @@ pub fn watcher_fault_provenance_for_generation(
     gen_start_ms: i64,
     gen_end_ms: i64,
 ) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
-    use hq_desktop_core::watcher_fault::{attribute_watcher_fault, parse_application_error_event};
+    use hq_desktop_core::watcher_fault::WatcherFaultOutcome;
     let sampled = take_watcher_job_sampled_pids(generation);
     // Only a genuine Windows fault exit warrants scanning the event log; every
-    // other exit (clean, deliberate stop, non-fault) skips the scan so the common
-    // restart path pays nothing and the exit stays fast.
-    if observed_exception_code.is_none() {
-        return hq_desktop_core::watcher_fault::WatcherFaultOutcome::unavailable();
+    // other exit (clean, deliberate stop, non-fault) skips the scan entirely.
+    let Some(code) = observed_exception_code else {
+        return WatcherFaultOutcome::unavailable();
+    };
+    // Run the read on a worker thread and await it under a HARD total deadline, so
+    // a slow or stalled Event Log service can never wedge this terminal callback
+    // (which holds up emit_exit_then_deregister, and therefore supervisor
+    // recovery). On deadline the worker is abandoned — it ends on its own — and the
+    // provenance stays `unavailable`: absence of a reader result, not of a fault.
+    let (tx, rx) = mpsc::channel();
+    let _worker = thread::spawn(move || {
+        let _ = tx.send(read_and_attribute_wer(&sampled, code, gen_start_ms, gen_end_ms));
+    });
+    rx.recv_timeout(WER_TOTAL_BUDGET)
+        .unwrap_or_else(|_| WatcherFaultOutcome::unavailable())
+}
+
+/// Read the WER fault record for a generation and attribute it, POLLING for the
+/// record to appear. WER publishes the "Application Error" (Event 1000) entry
+/// asynchronously AFTER the child dies, so a single immediate query usually finds
+/// nothing; this retries within a bounded budget until a matching record is
+/// attributed or the budget expires. It also distinguishes a never-readable log
+/// (`unavailable`) from a readable log that has no matching record (`no_record`).
+/// Runs only on the worker thread spawned above, never on the terminal hot path.
+#[cfg(target_os = "windows")]
+fn read_and_attribute_wer(
+    sampled: &[u32],
+    code: u32,
+    gen_start_ms: i64,
+    gen_end_ms: i64,
+) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
+    use hq_desktop_core::watcher_fault::{
+        attribute_watcher_fault, parse_application_error_event, WatcherFaultOutcome,
+        WatcherFaultProvenance,
+    };
+    let deadline = std::time::Instant::now() + WER_READ_BUDGET;
+    let mut query_ever_ran = false;
+    loop {
+        if let Some(xmls) = query_wer_application_error_xml(WER_MAX_RECORDS, WER_PER_QUERY_BUDGET) {
+            query_ever_ran = true;
+            let records: Vec<_> = xmls
+                .iter()
+                .filter_map(|xml| parse_application_error_event(xml))
+                .collect();
+            let outcome =
+                attribute_watcher_fault(&records, sampled, gen_start_ms, gen_end_ms, Some(code));
+            // A concrete attribution is terminal; keep polling only while the
+            // record has not been published yet (still `no_record`).
+            if outcome.provenance != WatcherFaultProvenance::NoRecord {
+                return outcome;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            // Out of retry budget: a readable log with no matching record is a
+            // genuine `no_record`; a log that never opened stays `unavailable`.
+            return if query_ever_ran {
+                WatcherFaultOutcome::no_record()
+            } else {
+                WatcherFaultOutcome::unavailable()
+            };
+        }
+        thread::sleep(WER_RETRY_INTERVAL);
     }
-    let xmls = query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_millis(1500));
-    let records: Vec<_> = xmls
-        .iter()
-        .filter_map(|xml| parse_application_error_event(xml))
-        .collect();
-    attribute_watcher_fault(
-        &records,
-        &sampled,
-        gen_start_ms,
-        gen_end_ms,
-        observed_exception_code,
-    )
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -958,9 +1025,14 @@ unsafe fn query_job_live_pids(job: isize) -> Option<Vec<u32>> {
 /// (Event ID 1000) records and render each to its event XML. Newest-first,
 /// capped at `max_records`, and bounded by `budget`; every handle it opens it
 /// closes. Returns rendered XML fragments for the pure parser — never any
-/// interpreted bytes. On any failure it returns an empty vector.
+/// interpreted bytes.
+///
+/// Returns `None` when the log could not be read at all (`EvtQuery` failed —
+/// WER/Application channel disabled, unreadable, or throttled), so the caller can
+/// preserve the `unavailable` provenance for that case rather than collapsing it
+/// to `no_record`. `Some(vec)` — possibly empty — means the query ran.
 #[cfg(target_os = "windows")]
-fn query_wer_application_error_xml(max_records: usize, budget: Duration) -> Vec<String> {
+fn query_wer_application_error_xml(max_records: usize, budget: Duration) -> Option<Vec<String>> {
     use std::time::Instant;
     use windows_sys::Win32::System::EventLog::{
         EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryReverseDirection,
@@ -981,12 +1053,14 @@ fn query_wer_application_error_xml(max_records: usize, budget: Duration) -> Vec<
             EvtQueryChannelPath | EvtQueryReverseDirection,
         );
         if results == 0 {
-            return out;
+            // The log itself could not be opened — absence of a reader, not of a
+            // fault. Distinct from an empty-but-successful query below.
+            return None;
         }
         while out.len() < max_records && Instant::now() < deadline {
             let mut event: isize = 0;
             let mut returned: u32 = 0;
-            let ok = EvtNext(results, 1, &mut event as *mut isize, 500, 0, &mut returned);
+            let ok = EvtNext(results, 1, &mut event as *mut isize, 250, 0, &mut returned);
             if ok == 0 || returned == 0 || event == 0 {
                 break;
             }
@@ -997,7 +1071,7 @@ fn query_wer_application_error_xml(max_records: usize, budget: Duration) -> Vec<
         }
         EvtClose(results);
     }
-    out
+    Some(out)
 }
 
 /// Render one event handle to its XML text via `EvtRender(EvtRenderEventXml)`.
@@ -5137,7 +5211,8 @@ mod watcher_fault_e2e_tests {
     /// allow-listed token — proof the reader can never copy a path, username, or
     /// product string out of genuine WER output — and that the query is bounded.
     fn assert_reader_is_content_safe_and_bounded() {
-        let xmls = query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3));
+        let xmls =
+            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
         assert!(
             xmls.len() <= WER_MAX_RECORDS,
             "the reader must honour its record cap"
@@ -5197,7 +5272,8 @@ mod watcher_fault_e2e_tests {
         // node.exe 0xC0000409 abort is surfaced as the strong signal without
         // gating the test on WER having logged it on this particular host.
         thread::sleep(Duration::from_secs(2));
-        let xmls = query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3));
+        let xmls =
+            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
         let mut named_node_abort = false;
         for xml in &xmls {
             let Some(record) = parse_application_error_event(xml) else {

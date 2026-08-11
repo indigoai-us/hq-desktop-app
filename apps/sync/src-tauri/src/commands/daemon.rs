@@ -100,6 +100,12 @@ const WATCHER_STDERR_TAIL_CAP: usize = 8;
 /// so this only widens the weaker `window_only` binding, never `pid_matched`.
 const WATCHER_FAULT_WINDOW_SLACK_MS: i64 = 120_000;
 
+/// Only WER records within this lookback of the terminal exit are eligible for
+/// attribution. The fault that killed the watcher is the terminal one, so an
+/// older descendant fault — or a PID reused since early in a long-running
+/// generation — is excluded rather than over-claimed as `pid_matched`.
+const WATCHER_FAULT_TERMINAL_LOOKBACK_MS: i64 = 600_000;
+
 /// Wall-clock now in unix milliseconds, saturating at 0 before the epoch. Used to
 /// bound a Windows fault record to the watcher generation lifetime; a benign
 /// clock read that never affects capture or lifecycle.
@@ -1006,12 +1012,16 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                     _ => None,
                                 }
                             });
+                        let fault_window_end =
+                            now_unix_ms().saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
+                        let fault_window_start = generation_started_ms
+                            .max(fault_window_end.saturating_sub(WATCHER_FAULT_TERMINAL_LOOKBACK_MS));
                         let fault =
                             crate::commands::process::watcher_fault_provenance_for_generation(
                                 daemon_generation,
                                 observed_exception_code,
-                                generation_started_ms,
-                                now_unix_ms().saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS),
+                                fault_window_start,
+                                fault_window_end,
                             );
                         exit_context.watcher_fault_provenance =
                             fault.provenance_token().to_string();

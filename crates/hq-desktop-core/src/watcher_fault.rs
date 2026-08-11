@@ -772,6 +772,31 @@ mod tests {
     }
 
     #[test]
+    fn attribute_binds_the_newest_matching_record_not_a_stale_earlier_one() {
+        // Records arrive newest-first (the reader queries reverse-direction), and
+        // the attributor must bind the terminal (newest) fault rather than a stale
+        // earlier one that shares the PID and code — the property the caller's
+        // narrowed terminal-lookback window relies on.
+        let newest = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0409),
+            fault_offset: Some(0xBEEF),
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(1_000_900),
+        };
+        let older = WerApplicationError {
+            fault_offset: Some(0x1111),
+            event_time_unix_ms: Some(1_000_100),
+            ..newest
+        };
+        let outcome =
+            attribute_watcher_fault(&[newest, older], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::PidMatched);
+        assert_eq!(outcome.fault_offset, Some(0xBEEF), "the newest record must win");
+    }
+
+    #[test]
     fn attribute_rejects_in_window_record_for_a_different_fault_code() {
         let other_fault = WerApplicationError {
             image: WatcherFaultBinary::NodeExe,
