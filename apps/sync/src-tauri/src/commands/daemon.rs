@@ -34,6 +34,7 @@ use hq_desktop_core::daemon::{
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
+use hq_desktop_core::runner_target::RunnerTargetState;
 use hq_desktop_core::watcher_fault::{UnmatchedStderrShapeRollup, WATCHER_FAULT_UNAVAILABLE};
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
@@ -139,6 +140,51 @@ static SUPERVISOR_RESPAWN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// cancellation. It remains set until the next spawn, so an exit diagnostic can
 /// distinguish a watchdog-initiated teardown from an external termination.
 static HEARTBEAT_STALL_TERMINATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Whether the pre-spawn runner-target gate repaired the cached target before
+/// the current generation started. Recorded at spawn because the repair happened
+/// there; an exit-time re-probe cannot tell whether the state it sees is the
+/// original one or the repaired one. Reset on every spawn.
+static RUNNER_TARGET_REPAIR_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+fn note_runner_target_repair_attempted(attempted: bool) {
+    RUNNER_TARGET_REPAIR_ATTEMPTED.store(attempted, Ordering::Release);
+}
+
+fn runner_target_repair_attempted() -> bool {
+    RUNNER_TARGET_REPAIR_ATTEMPTED.load(Ordering::Acquire)
+}
+
+/// Reporting-only gate for exec-layer target provenance. Strictly ADDITIVE over
+/// the pre-existing 126/127 arm so no exit that already carried provenance loses
+/// it: keep every 126/127 (the POSIX permission/not-found legs AND the Windows
+/// `npx.cmd` shim dispatch), and ALSO cover a launcher-kind child (`npx` /
+/// `npx.exe`) that died before emitting any runner protocol with a nonzero exit
+/// — that widened arm is what makes the still-unattributed exit-190 leg
+/// (HQ-DESKTOP-51) self-describe. This never influences whether an exit is
+/// captured; it only decides whether target facts are attached.
+fn should_report_exec_provenance(
+    code: Option<i32>,
+    watcher_command: &str,
+    runner_phase: &str,
+) -> bool {
+    matches!(code, Some(126 | 127))
+        || (matches!(code, Some(nonzero) if nonzero != 0)
+            && watcher_child_kind(watcher_command) == "launcher"
+            && runner_phase == RUNNER_PHASE_PRE_PROTOCOL)
+}
+
+/// Probe the runner target only for the exec-layer fast-fails whose provenance
+/// is in question. Diagnostics must never touch the filesystem on the ordinary
+/// path, and must never influence whether a crash is captured.
+fn current_runner_exec_target_state(
+    code: Option<i32>,
+    watcher_command: &str,
+    runner_phase: &str,
+) -> Option<RunnerTargetState> {
+    should_report_exec_provenance(code, watcher_command, runner_phase)
+        .then(hq_desktop_core::runner_target::probe_runner_target)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WatcherLaunchOrigin {
@@ -814,6 +860,36 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         return Err(msg);
     }
 
+    // Probe — and bounded self-repair — of the runner target the watcher will
+    // ACTUALLY exec, which the materialization preflight above never touches (it
+    // validates `node -e`, not node_modules/.bin/hq-sync-runner). A cache whose
+    // runner target is missing or not executable therefore passes materialization
+    // and the watcher is spawned into an exit-127/126 hot-respawn loop
+    // (HQ-DESKTOP-52 / HQ-DESKTOP-4K). Fail open: only a POSITIVELY identified
+    // Missing/NotExecutable target, after the single bounded repair, refuses;
+    // every ambiguous/error probe result spawns as before, so a probe bug can
+    // never take a healthy machine's auto-sync offline. A refusal is
+    // environmental — local diagnosis + Backoff, no Sentry event — exactly like
+    // the materialization failure above.
+    let runner_target = hq_desktop_core::runner_target::ensure_runner_target_runnable();
+    note_runner_target_repair_attempted(runner_target.repair.attempted());
+    if runner_target.refuses_spawn() {
+        log(
+            "daemon",
+            &format!(
+                "runner-target preflight refused spawn: state={} repair={}",
+                runner_target.state.class_name(),
+                runner_target.repair.class_name()
+            ),
+        );
+        note_environment_preflight_failure();
+        release_daemon_guard(daemon_generation, guard_generation);
+        set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
+        return Err(hq_desktop_core::runner_target::runner_target_diagnosis(
+            runner_target.state,
+        ));
+    }
+
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
     log("daemon", "spawn: hq-sync-runner --watch");
@@ -977,6 +1053,21 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             .iter()
                             .cloned()
                             .collect::<Vec<_>>();
+                        // Reporting-only: probe the runner target the watcher
+                        // actually execs, for the exec-layer fast-fails whose
+                        // provenance is in question (126/127 and the launcher
+                        // pre-protocol nonzero leg). Read the phase this exit
+                        // resolved to so the widened arm is gated on the SAME
+                        // pre_protocol sentinel the context records.
+                        let runner_phase_at_exit = watcher_phase
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .phase;
+                        let runner_exec_target = current_runner_exec_target_state(
+                            code,
+                            &watcher_command,
+                            runner_phase_at_exit,
+                        );
                         let mut exit_context = watcher_exit_capture_context(
                             &totals,
                             cancelled,
@@ -988,6 +1079,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             cancellation_record,
                             watcher_stdout_line_count,
                             watcher_node_major,
+                            runner_exec_target,
                         );
                         // Additive per-generation diagnostics, set after the content
                         // snapshot. None of these is consulted by capture policy.
@@ -1216,6 +1308,15 @@ struct WatcherExitCaptureContext {
     watcher_fault_faulting_module: String,
     watcher_fault_exception_code: Option<u32>,
     watcher_fault_offset: Option<u64>,
+    /// Exit-time probe of the runner target the watcher execs. Populated only for
+    /// the exec-layer fast-fails whose provenance is in question (126/127 and the
+    /// launcher pre-protocol nonzero leg); `None` — reported as `"unknown"` — for
+    /// every other exit and for a genuinely unprobeable cache.
+    runner_exec_target: Option<RunnerTargetState>,
+    /// Whether the pre-spawn gate attempted a bounded repair before this
+    /// generation started. Carried independently of the exit-time probe so a
+    /// divergent pair is itself diagnostic rather than misleading (TOCTOU-safe).
+    runner_target_repair_attempted: bool,
 }
 
 impl WatcherExitCaptureContext {
@@ -1285,6 +1386,8 @@ impl Default for WatcherExitCaptureContext {
             watcher_fault_faulting_module: WATCHER_FAULT_UNAVAILABLE.to_string(),
             watcher_fault_exception_code: None,
             watcher_fault_offset: None,
+            runner_exec_target: None,
+            runner_target_repair_attempted: false,
         }
     }
 }
@@ -1343,6 +1446,7 @@ fn watcher_exit_capture_context(
     cancellation_record: Option<CancellationRecord>,
     stdout_line_count: u32,
     node_major: Option<u32>,
+    runner_exec_target: Option<RunnerTargetState>,
 ) -> WatcherExitCaptureContext {
     let totals = totals
         .lock()
@@ -1425,6 +1529,8 @@ fn watcher_exit_capture_context(
         watcher_fault_faulting_module: WATCHER_FAULT_UNAVAILABLE.to_string(),
         watcher_fault_exception_code: None,
         watcher_fault_offset: None,
+        runner_exec_target,
+        runner_target_repair_attempted: runner_target_repair_attempted(),
     }
 }
 
@@ -2328,8 +2434,21 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             sentry::protocol::Value::String(raw_fingerprint_token),
         ));
     }
-    if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command) {
+    if let Some(exec_extras) = runner_exec_provenance_extras(code, watcher_command, context) {
         extras.extend(exec_extras);
+    }
+    // Per-event attribution ONLY: the exec-not-runnable streak that released this
+    // rate-limited capture. It reveals how many suppressed same-class failures
+    // preceded this one (first capture at 4, then power-of-two milestones).
+    // Emitted solely on CaptureRateLimited (126/127) captures, and makes NO
+    // cross-issue correlation claim: a non-126/127 exit resets the streak by
+    // design, so it cannot span a 190→127 episode. Episode correlation is
+    // carried by the global consecutive counter printed in the event message.
+    if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        extras.push((
+            "exec_not_runnable_streak",
+            sentry::protocol::Value::Number(policy_consecutive.into()),
+        ));
     }
     if is_unrecognized_watcher_exit(code, signal) {
         extras.extend(unrecognized_watcher_exit_extras());
@@ -2496,17 +2615,28 @@ fn watcher_exit_context_extras(
     extras
 }
 
-/// The selected spawn command determines the fixed-vocabulary resolution
-/// token. Exit status alone cannot tell whether a local-runner override or an
-/// npx cache target existed or was executable, so those facts are explicitly
-/// recorded as unknown rather than inferred from 126/127.
+/// The selected spawn command determines the fixed-vocabulary resolution token;
+/// the exit-time probe carried on the context supplies the target facts. Where
+/// nothing could be probed the pre-existing `"unknown"` vocabulary is kept — the
+/// exit status is never re-read to infer target state. Gated by
+/// [`should_report_exec_provenance`], which is strictly additive over the old
+/// 126/127 arm, so this only ever ADDS information and never suppresses.
 fn runner_exec_provenance_extras(
     code: Option<i32>,
     watcher_command: &str,
+    context: &WatcherExitCaptureContext,
 ) -> Option<Vec<(&'static str, sentry::protocol::Value)>> {
-    if !matches!(code, Some(126 | 127)) {
+    if !should_report_exec_provenance(code, watcher_command, &context.runner_phase) {
         return None;
     }
+    let exists = context
+        .runner_exec_target
+        .map(RunnerTargetState::exists_token)
+        .unwrap_or("unknown");
+    let executable = context
+        .runner_exec_target
+        .map(RunnerTargetState::executable_token)
+        .unwrap_or("unknown");
     Some(vec![
         (
             "runner_exec_resolution",
@@ -2514,11 +2644,15 @@ fn runner_exec_provenance_extras(
         ),
         (
             "runner_exec_target_exists",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(exists.to_string()),
         ),
         (
             "runner_exec_target_executable",
-            sentry::protocol::Value::String("unknown".to_string()),
+            sentry::protocol::Value::String(executable.to_string()),
+        ),
+        (
+            "runner_target_repair_attempted",
+            sentry::protocol::Value::Bool(context.runner_target_repair_attempted),
         ),
     ])
 }
@@ -6625,9 +6759,13 @@ mod tests {
 
     #[test]
     fn exec_provenance_uses_the_actual_spawn_mode_and_never_infers_file_state() {
+        // Unprobed context: the exit status alone infers nothing, so both target
+        // facts stay the pre-existing `"unknown"` vocabulary (never a bool).
+        let unprobed = WatcherExitCaptureContext::default();
         let npx = runner_exec_provenance_extras(
             Some(126),
             r"C:\\Users\\Ada\\AppData\\Roaming\\npm\\npx.cmd",
+            &unprobed,
         )
         .expect("exec exit gets provenance");
         assert!(npx.iter().any(|(key, value)| {
@@ -6642,13 +6780,274 @@ mod tests {
             *key == "runner_exec_target_exists"
                 && value == &sentry::protocol::Value::String("unknown".to_string())
         }));
+        // The repair-attempted extra is always a bool, defaulting to false.
+        assert!(npx.iter().any(|(key, value)| {
+            *key == "runner_target_repair_attempted"
+                && value == &sentry::protocol::Value::Bool(false)
+        }));
 
-        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node")
+        let local = runner_exec_provenance_extras(Some(127), "/opt/dev/node", &unprobed)
             .expect("exec exit gets provenance");
         assert!(local.iter().any(|(key, value)| {
             *key == "runner_exec_resolution"
                 && value == &sentry::protocol::Value::String("local_runner".to_string())
         }));
+
+        // A probe result is what turns the facts into real values: a target that
+        // exists but is not executable reports exists=true, executable=false.
+        let probed = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::NotExecutable),
+            runner_target_repair_attempted: true,
+            ..WatcherExitCaptureContext::default()
+        };
+        let probed_npx = runner_exec_provenance_extras(Some(126), "npx", &probed)
+            .expect("exec exit gets provenance");
+        assert!(probed_npx.iter().any(|(key, value)| {
+            *key == "runner_exec_target_exists"
+                && value == &sentry::protocol::Value::String("true".to_string())
+        }));
+        assert!(probed_npx.iter().any(|(key, value)| {
+            *key == "runner_exec_target_executable"
+                && value == &sentry::protocol::Value::String("false".to_string())
+        }));
+        assert!(probed_npx.iter().any(|(key, value)| {
+            *key == "runner_target_repair_attempted"
+                && value == &sentry::protocol::Value::Bool(true)
+        }));
+
+        // A non-exec exit that never emitted protocol from a direct executable
+        // carries NO widened provenance (gate precision): neither 126/127 nor a
+        // launcher-kind child.
+        assert!(
+            runner_exec_provenance_extras(Some(190), "/opt/homebrew/bin/node", &probed).is_none()
+        );
+    }
+
+    /// Black-box replay of the exact observed episode: one exit 190 followed by
+    /// eight exit 127s in a tight crash loop. This REPLACES a presence-only streak
+    /// assertion (plan-review blocker 2). It pins that captures occur at exactly
+    /// global #1, #5, #9 and nowhere else; that the 190 leg captures under Capture
+    /// with fingerprint exit:190, the widened provenance, and NO exec_not_runnable
+    /// streak (a 190 is not 126/127, and the streak legitimately resets across it);
+    /// that the 127 legs capture under CaptureRateLimited at exec streaks 4 and 8
+    /// with fingerprint exit:127 and the streak extra; and that the global
+    /// consecutive counter rendered into the messages is the single series 1..9 —
+    /// so episode correlation rests on that already-shipped counter, never on the
+    /// per-event streak.
+    #[test]
+    fn the_observed_190_then_127x8_episode_captures_at_exactly_1_5_and_9() {
+        // A launcher child that died before any protocol, with a probed-broken
+        // target: the widened provenance arm and the exec streak both apply.
+        let context = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::Missing),
+            runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+
+        for &code in &[190, 127, 127, 127, 127, 127, 127, 127, 127] {
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(code),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                TerminationHost::Posix,
+                &context,
+            );
+        }
+
+        assert_eq!(
+            effects.captures.len(),
+            3,
+            "the episode must capture at exactly #1, #5, #9: {:?}",
+            effects.captures
+        );
+        let first = &effects.captures[0];
+        let fifth = &effects.captures[1];
+        let ninth = &effects.captures[2];
+
+        // #1 — the 190 leg: Capture, exit:190, widened provenance, NO streak.
+        assert!(
+            first.message.contains("consecutive failure #1"),
+            "{}",
+            first.message
+        );
+        assert_eq!(
+            first.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+        );
+        assert_eq!(recorded_string_extra(first, "runner_exec_resolution"), "npx_cache");
+        assert_eq!(recorded_string_extra(first, "runner_exec_target_exists"), "false");
+        assert!(
+            !first
+                .extras
+                .iter()
+                .any(|(key, _)| key == "exec_not_runnable_streak"),
+            "the 190 leg carries no exec-not-runnable streak (it is not 126/127)"
+        );
+
+        // #5 — a 127 leg at exec streak 4: CaptureRateLimited, exit:127, streak=4.
+        assert!(
+            fifth.message.contains("consecutive failure #5"),
+            "{}",
+            fifth.message
+        );
+        assert_eq!(
+            fifth.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+        );
+        assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
+        assert_eq!(recorded_string_extra(fifth, "runner_exec_target_exists"), "false");
+
+        // #9 — a 127 leg at exec streak 8.
+        assert!(
+            ninth.message.contains("consecutive failure #9"),
+            "{}",
+            ninth.message
+        );
+        assert_eq!(
+            ninth.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+        );
+        assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
+    }
+
+    /// Gate precision for the REPORTING-ONLY widened exec provenance (plan-review
+    /// blocker 1 treatment for the 190 class): a launcher-kind child that died
+    /// before any protocol carries the probed target facts on a 190 exit, with
+    /// its exit:190 fingerprint unchanged, while a non-launcher child and a
+    /// post-protocol exit carry no widened provenance at all. Capture behaviour
+    /// and fingerprints are untouched throughout.
+    #[test]
+    fn widened_exec_provenance_is_gated_to_launcher_pre_protocol_fast_fails() {
+        let host = TerminationHost::Posix;
+        let probed = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::Missing),
+            runner_target_repair_attempted: true,
+            runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+
+        // (a) launcher + pre_protocol + 190 → widened provenance, exit:190 intact.
+        let mut launcher = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut launcher,
+            Some(190),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            host,
+            &probed,
+        );
+        let event = launcher
+            .captures
+            .first()
+            .expect("a 190 launcher fast-fail captures at #1");
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+        );
+        assert_eq!(recorded_string_extra(event, "runner_exec_resolution"), "npx_cache");
+        assert_eq!(recorded_string_extra(event, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_target_executable"),
+            "false"
+        );
+        assert!(
+            event.extras.iter().any(|(key, value)| key
+                == "runner_target_repair_attempted"
+                && *value == sentry::protocol::Value::Bool(true)),
+            "the spawn-time repair outcome rides alongside the exit-time probe"
+        );
+
+        // (b) a DIRECT executable (node) with the same pre-protocol 190 exit gets
+        //     NO widened provenance — it is not a launcher.
+        let mut direct = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut direct,
+            Some(190),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "/opt/homebrew/bin/node",
+            None,
+            host,
+            &probed,
+        );
+        let direct_event = direct.captures.first().expect("still captured at #1");
+        assert_eq!(
+            direct_event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+        );
+        assert!(
+            !direct_event
+                .extras
+                .iter()
+                .any(|(key, _)| key == "runner_exec_resolution"),
+            "a non-launcher child gets no widened exec provenance"
+        );
+
+        // (c) a launcher that DID emit protocol (post-protocol phase) then exited
+        //     190 also carries no widened provenance (gate precision).
+        let post_protocol = WatcherExitCaptureContext {
+            runner_exec_target: Some(RunnerTargetState::Missing),
+            runner_phase: "scan".to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+        let mut post = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut post,
+            Some(190),
+            None,
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            host,
+            &post_protocol,
+        );
+        let post_event = post.captures.first().expect("still captured at #1");
+        assert!(
+            !post_event
+                .extras
+                .iter()
+                .any(|(key, _)| key == "runner_exec_resolution"),
+            "a post-protocol exit gets no widened exec provenance"
+        );
+
+        // (d) the additive 126/127 base arm is UNCHANGED — a 127 carries probed
+        //     provenance regardless of phase, with its exit:127 fingerprint.
+        let mut exec = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut exec,
+            Some(127),
+            None,
+            4,
+            4,
+            WatcherExitCapturePolicy::CaptureRateLimited,
+            "npx",
+            None,
+            host,
+            &post_protocol,
+        );
+        let exec_event = exec.captures.first().expect("127 captures at streak 4");
+        assert_eq!(
+            exec_event.fingerprint,
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+        );
+        assert_eq!(
+            recorded_string_extra(exec_event, "runner_exec_target_exists"),
+            "false"
+        );
+        assert_eq!(recorded_number_extra(exec_event, "exec_not_runnable_streak"), 4);
     }
 
     #[test]
@@ -7016,6 +7415,7 @@ mod tests {
             None,
             0,
             None,
+            None,
         );
 
         assert_eq!(context.watcher_launch_origin, "supervisor_respawn");
@@ -7054,6 +7454,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
         let mut effects = RecordingWatcherEffects::default();
@@ -7155,6 +7556,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
 
@@ -7267,6 +7669,7 @@ mod tests {
             None,
             None,
             0,
+            None,
             None,
         );
 

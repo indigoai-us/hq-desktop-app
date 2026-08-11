@@ -383,6 +383,23 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "watcher_fault_exception_code" => Some(is_bounded_decimal(value, 10)),
         "watcher_fault_offset" => Some(is_bounded_decimal(value, 20)),
         "runner_unmatched_stderr_shapes" => Some(is_unmatched_stderr_shape_rollup(value)),
+        // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
+        // producer emits fixed-vocabulary tokens from the runner-target probe;
+        // these independent egress checks degrade a producer bug to `[Filtered]`
+        // instead of shipping raw state. The exists/executable fields keep the
+        // pre-existing `unknown` sentinel for a genuinely unprobeable cache.
+        "runner_exec_resolution" => Some(matches!(value, "npx_cache" | "local_runner" | "unknown")),
+        "runner_exec_target_exists" | "runner_exec_target_executable" => {
+            Some(matches!(value, "true" | "false" | "unknown"))
+        }
+        // Emitted as a bare bool (reaches this check as `""` for a non-string
+        // Value); a string value must be exactly `true`/`false`.
+        "runner_target_repair_attempted" => {
+            Some(value.is_empty() || matches!(value, "true" | "false"))
+        }
+        // Emitted as a bare integer (reaches this check as `""` for a numeric
+        // Value); a string value must parse as an unsigned integer.
+        "exec_not_runnable_streak" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
         _ => None,
     }
 }
@@ -499,6 +516,7 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
                 | "exec_permission_denied"
                 | "exec_not_found"
                 | "node_too_old"
+                | "npm_install_relay"
                 | "none"
         )
     };
@@ -1683,6 +1701,90 @@ mod tests {
                 "valid {key}={value} must survive egress"
             );
         }
+    }
+
+    #[test]
+    fn exec_target_provenance_fields_survive_egress_only_as_fixed_vocabulary() {
+        // Accept exactly the producer's fixed vocabulary (HQ-DESKTOP-52 / -51).
+        for (key, value) in [
+            ("runner_exec_resolution", "npx_cache"),
+            ("runner_exec_resolution", "local_runner"),
+            ("runner_exec_resolution", "unknown"),
+            ("runner_exec_target_exists", "true"),
+            ("runner_exec_target_exists", "false"),
+            ("runner_exec_target_exists", "unknown"),
+            ("runner_exec_target_executable", "true"),
+            ("runner_exec_target_executable", "false"),
+            ("runner_exec_target_executable", "unknown"),
+            ("runner_target_repair_attempted", "true"),
+            ("runner_target_repair_attempted", "false"),
+            ("exec_not_runnable_streak", "4"),
+            ("exec_not_runnable_streak", "8"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(true),
+                "valid {key}={value} must pass egress"
+            );
+        }
+
+        // A bool/integer Value reaches the validator as "" (non-string), which is
+        // type-safe by construction and must pass.
+        for key in ["runner_target_repair_attempted", "exec_not_runnable_streak"] {
+            assert_eq!(valid_runner_diagnostic_field(key, ""), Some(true));
+        }
+
+        // Anything outside the fixed vocabulary fails closed to `[Filtered]`, so a
+        // producer bug can never ship a path, username, or raw state.
+        for (key, value) in [
+            ("runner_exec_resolution", "/Users/ada/.npm/_npx"),
+            ("runner_exec_target_exists", "maybe"),
+            ("runner_exec_target_executable", "/bin/sh"),
+            ("runner_target_repair_attempted", "sometimes"),
+            ("exec_not_runnable_streak", "four"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "invalid {key}={value} must fail closed"
+            );
+        }
+
+        // End-to-end: the probed extras (string tokens, a bool, an integer)
+        // survive `before_send`, while a lookalike resolution string is blanked.
+        let mut event = Event::default();
+        event.extra.insert(
+            "runner_exec_target_exists".to_string(),
+            Value::String("true".to_string()),
+        );
+        event
+            .extra
+            .insert("runner_target_repair_attempted".to_string(), Value::Bool(true));
+        event.extra.insert(
+            "exec_not_runnable_streak".to_string(),
+            Value::Number(4u32.into()),
+        );
+        event.extra.insert(
+            "runner_exec_resolution".to_string(),
+            Value::String("not-a-token".to_string()),
+        );
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.extra.get("runner_exec_target_exists"),
+            Some(&Value::String("true".to_string()))
+        );
+        assert_eq!(
+            result.extra.get("runner_target_repair_attempted"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            result.extra.get("exec_not_runnable_streak"),
+            Some(&Value::Number(4u32.into()))
+        );
+        assert_eq!(
+            result.extra.get("runner_exec_resolution"),
+            Some(&Value::String("[Filtered]".to_string()))
+        );
     }
 
     #[test]
