@@ -276,8 +276,27 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "sync_scope" => Some(matches!(value, "all" | "single_company")),
         "runner_phase" => Some(matches!(
             value,
-            "scan" | "push" | "pull" | "idle" | "unknown"
+            "scan" | "push" | "pull" | "idle" | "unknown" | "pre_protocol"
         )),
+        // Assertion identity (HQ-DESKTOP-50). The producer allow-lists the
+        // source token and emits only a digest and integers; these independent
+        // egress checks degrade a producer bug to `[Filtered]` instead of
+        // shipping a path, the assertion expression, or a raw stderr fragment.
+        "runner_assert_source" => Some(matches!(
+            value,
+            "libuv_win_async" | "libuv_unix_core" | "libuv_handle" | "other"
+        )),
+        // Same 16-hex-or-`unknown` shape the stack signature uses.
+        "runner_assert_signature" => Some(valid_runner_stack_signature(value)),
+        // Bare integers. A numeric extra reaches this check as `""` (the scrub
+        // loop passes an empty string for a non-string `Value`), which is
+        // type-safe by construction; a string value must parse as an integer, so
+        // a producer bug that shipped raw text degrades to `[Filtered]`.
+        "runner_assert_line" => Some(value.is_empty() || value.parse::<i64>().is_ok()),
+        "runner_stdout_line_count" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
+        // The runner's Node major, or the `unknown` sentinel when the preflight
+        // probe found none.
+        "runner_node_major" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
         // A libuv fatal-syscall identifier is only ever a fixed constant (the
         // producer allow-lists it) or the sentinel `other`; the errno is a bare
         // integer. This independent egress check requires a bare, bounded ASCII
@@ -1477,5 +1496,96 @@ mod tests {
             assert_eq!(result.tags["runner_stack_shape"], "[Filtered]");
             assert_eq!(result.tags["runner_stack_signature"], "[Filtered]");
         }
+    }
+
+    /// Tri-source vocabulary guard (HQ-DESKTOP-50): the egress validator's
+    /// `runner_phase` arm must accept exactly the tokens the core enumerates in
+    /// `RUNNER_PHASE_VOCABULARY`. If the core adds a phase token and this arm is
+    /// not updated in the same change, the new token would ship as `[Filtered]` —
+    /// a silent regression this test turns into a loud CI failure. The desktop
+    /// E2E source-contract spec pins the third source (the TS `RunnerPhase`
+    /// union) against the same core constant.
+    #[test]
+    fn runner_phase_vocabulary_is_single_source_across_core_and_validator() {
+        use hq_desktop_core::sync_outcome::RUNNER_PHASE_VOCABULARY;
+        for token in RUNNER_PHASE_VOCABULARY {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_phase", token),
+                Some(true),
+                "core phase vocabulary member {token} must validate at egress"
+            );
+        }
+        // Near-misses fail loudly, so a typo or an unregistered token cannot slip
+        // through as a valid phase.
+        for near_miss in ["pre_protocoll", "scan2", "PUSH", "", "protocol"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_phase", near_miss),
+                Some(false),
+                "non-member {near_miss:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn runner_assertion_and_node_provenance_fields_validate_or_filter() {
+        // Assert source: allow-listed tokens pass, a path-like value is rejected.
+        for good in ["libuv_win_async", "libuv_unix_core", "libuv_handle", "other"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_assert_source", good),
+                Some(true)
+            );
+        }
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_assert_source", r"src\win\async.c"),
+            Some(false)
+        );
+        // Assert signature: 16-hex passes; a raw expression is rejected.
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_assert_signature", "0123456789abcdef"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_assert_signature", "!(handle->flags)"),
+            Some(false)
+        );
+        // Bare-integer extras: a numeric string and the empty string (a numeric
+        // `Value` reaches the check as "") pass; raw text is rejected.
+        for key in ["runner_assert_line", "runner_stdout_line_count"] {
+            assert_eq!(valid_runner_diagnostic_field(key, "42"), Some(true));
+            assert_eq!(valid_runner_diagnostic_field(key, ""), Some(true));
+            assert_eq!(
+                valid_runner_diagnostic_field(key, "/Users/ada/secret"),
+                Some(false)
+            );
+        }
+        // Node major: an integer or the `unknown` sentinel passes; a path fails.
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_node_major", "20"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_node_major", "unknown"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_node_major", "/nvm/versions/v8"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn crafted_path_in_assert_source_is_scrubbed_before_send() {
+        let mut event = Event::default();
+        event.tags.insert(
+            "runner_assert_source".to_string(),
+            r"C:\Users\ada\companies\personal".to_string(),
+        );
+        event
+            .tags
+            .insert("runner_assert_signature".to_string(), "0123456789abcdef".to_string());
+        let result = before_send(event).expect("event remains sendable");
+        // The unregistered path value is filtered; the valid digest survives.
+        assert_eq!(result.tags["runner_assert_source"], "[Filtered]");
+        assert_eq!(result.tags["runner_assert_signature"], "0123456789abcdef");
     }
 }
