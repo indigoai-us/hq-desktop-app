@@ -792,6 +792,14 @@ fn record_non_convergent_episode_markers(keys: &[String]) -> Result<(), String> 
     })
 }
 
+/// Hard timeout for the pnpm verification subprocesses (`bin -g`, `ls -g`,
+/// `root -g`). pnpm cold-starts slower than a bare `node --version`, so this is
+/// looser than `TOOL_PROBE_TIMEOUT`, but every probe is still bounded: a hung
+/// pnpm (e.g. a Corepack shim resolving a missing package-manager binary) is
+/// killed when the timeout fires rather than blocking the install forever and
+/// wedging the CLI-update single-flight for every later caller.
+const PNPM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// The global bin directory pnpm resolves NATIVELY (`pnpm bin -g`) under the same
 /// environment the install used — deliberately WITHOUT the forced global-bin-dir
 /// flag the install passes. The forced-flag probe the r2 fix
@@ -802,35 +810,58 @@ fn record_non_convergent_episode_markers(keys: &[String]) -> Result<(), String> 
 /// pnpm >=11 nested layout the native dir is the flat home while the install
 /// correctly writes the nested bin dir, so a mismatch here is the healthy shape.
 /// Spawned only on the non-convergent path, so the converged happy path pays no
-/// extra subprocess. `None` on any spawn error, non-zero exit, or non-UTF-8 output.
-/// Only the directory string is returned; nothing here is retained in telemetry.
-fn pnpm_effective_global_bin_dir(
+/// extra subprocess. Bounded by `PNPM_PROBE_TIMEOUT` with `kill_on_drop`, so a
+/// hung pnpm is terminated instead of leaking. `None` on any spawn error, non-zero
+/// exit, non-UTF-8 output, or timeout. Only the directory string is returned.
+async fn pnpm_effective_global_bin_dir(
     pnpm_bin: &str,
     path: &str,
     pnpm_home: Option<&str>,
 ) -> Option<String> {
-    let mut cmd = paths::spawn_command(pnpm_bin, &[]);
-    cmd.args(["bin", "-g"]).env("PATH", path);
+    let mut cmd = paths::tokio_spawn_command(pnpm_bin, &["bin", "-g"]);
+    cmd.env("PATH", path).kill_on_drop(true);
     if let Some(home) = pnpm_home {
         cmd.env("PNPM_HOME", home);
     }
-    let output = cmd.output().ok()?;
+    let output = tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())
+        .await
+        .ok()? // timed out -> future dropped -> child killed
+        .ok()?; // spawn / exec error
     if !output.status.success() {
         return None;
     }
-    let dir = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!dir.is_empty()).then_some(dir)
+}
+
+/// Run one bounded pnpm probe and return its trimmed stdout, or `None` on spawn
+/// error, non-zero exit, or timeout. Every probe uses `kill_on_drop` + a
+/// `PNPM_PROBE_TIMEOUT`, so a hung pnpm cannot block the install.
+async fn pnpm_probe_line(pnpm_bin: &str, path: &str, pnpm_home: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = paths::tokio_spawn_command(pnpm_bin, args);
+    cmd.env("PATH", path)
+        .env("PNPM_HOME", pnpm_home)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// The version pnpm actually delivered into its global store, taken from pnpm's
 /// OWN answer rather than a guessed store layout. Runs on the non-convergent path
-/// only, bounded and single-shot and non-mutating, under exactly the PATH and
-/// PNPM_HOME the install used:
+/// only, bounded and non-mutating, under exactly the PATH and PNPM_HOME the
+/// install used:
 ///   1. `pnpm ls -g --depth 0 --json` — the authoritative reader.
 ///   2. `pnpm root -g` — scanned for the package in both the pnpm <=10 and pnpm
 ///      >=11 store shapes, which also yields the store-family diagnostic token.
 ///   3. the corrected candidate enumeration (`installed_hq_cli_version_in_pnpm_store`)
 ///      as the last-resort fallback.
+/// Every subprocess is bounded by `PNPM_PROBE_TIMEOUT` with `kill_on_drop`.
 /// Returns the delivered version (if any), the observed store family, and whether
 /// pnpm's own answer (steps 1-2) succeeded. Total failure is "no evidence" — the
 /// caller then retries and never blocks.
@@ -839,49 +870,16 @@ async fn pnpm_global_delivered_version(
     path: &str,
     pnpm_home: &str,
 ) -> (Option<String>, PnpmStoreFamily, bool) {
-    let ls_version = {
-        let pnpm_bin = pnpm_bin.to_string();
-        let path = path.to_string();
-        let pnpm_home = pnpm_home.to_string();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut cmd = paths::spawn_command(&pnpm_bin, &[]);
-            cmd.args(["ls", "-g", "--depth", "0", "--json"])
-                .env("PATH", &path)
-                .env("PNPM_HOME", &pnpm_home);
-            let output = cmd.output().ok()?;
-            if !output.status.success() {
-                return None;
-            }
-            let json = String::from_utf8(output.stdout).ok()?;
-            pnpm_global_ls_hq_cli_version(&json)
-        })
+    let ls_version = pnpm_probe_line(pnpm_bin, path, pnpm_home, &["ls", "-g", "--depth", "0", "--json"])
         .await
-        .ok()
-        .flatten()
-    };
+        .and_then(|json| pnpm_global_ls_hq_cli_version(&json));
 
     // `pnpm root -g` gives the store root: used to locate the package when
     // `ls -g` did not answer, and to name the store family for telemetry.
-    let root = {
-        let pnpm_bin = pnpm_bin.to_string();
-        let path = path.to_string();
-        let pnpm_home = pnpm_home.to_string();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut cmd = paths::spawn_command(&pnpm_bin, &[]);
-            cmd.args(["root", "-g"])
-                .env("PATH", &path)
-                .env("PNPM_HOME", &pnpm_home);
-            let output = cmd.output().ok()?;
-            if !output.status.success() {
-                return None;
-            }
-            let root = String::from_utf8(output.stdout).ok()?.trim().to_string();
-            (!root.is_empty()).then_some(root)
-        })
+    let root = pnpm_probe_line(pnpm_bin, path, pnpm_home, &["root", "-g"])
         .await
-        .ok()
-        .flatten()
-    };
+        .map(|line| line.trim().to_string())
+        .filter(|root| !root.is_empty());
 
     let store_family = root
         .as_deref()
@@ -899,24 +897,34 @@ async fn pnpm_global_delivered_version(
         })
         .unwrap_or(PnpmStoreFamily::Unknown);
 
-    let root_version = if ls_version.is_none() {
-        let root = root.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            root.and_then(|root| hq_cli_version_under_pnpm_root(std::path::Path::new(&root)))
+    // The `root -g` scan and the last-resort enumeration are filesystem reads
+    // (bounded read_dir, no subprocess), run off the async thread.
+    let root_version = match (ls_version.is_none(), root.clone()) {
+        (true, Some(root)) => tauri::async_runtime::spawn_blocking(move || {
+            hq_cli_version_under_pnpm_root(std::path::Path::new(&root))
         })
         .await
         .ok()
-        .flatten()
-    } else {
-        None
+        .flatten(),
+        _ => None,
     };
 
-    let authoritative_query_ok = ls_version.is_some() || root_version.is_some();
-    let delivered = ls_version.or(root_version).or_else(|| {
-        // Last resort: the corrected candidate enumeration, re-scanned fresh so a
-        // changing pnpm 11 opaque-hash directory is handled.
-        installed_hq_cli_version_in_pnpm_store(pnpm_home)
-    });
+    let authoritative = ls_version.or(root_version);
+    let authoritative_query_ok = authoritative.is_some();
+    let delivered = match authoritative {
+        Some(version) => Some(version),
+        None => {
+            // Last resort: the corrected candidate enumeration, re-scanned fresh so
+            // a changing pnpm 11 opaque-hash directory is handled.
+            let home = pnpm_home.to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                installed_hq_cli_version_in_pnpm_store(&home)
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+    };
     (delivered, store_family, authoritative_query_ok)
 }
 
@@ -1045,17 +1053,8 @@ async fn install_hq_cli_update_via_pnpm(
             (false, Some(env)) => {
                 let (delivered, store_family, authoritative_query_ok) =
                     pnpm_global_delivered_version(&pnpm, &path, &env.home).await;
-                let effective = {
-                    let pnpm = pnpm.clone();
-                    let path = path.clone();
-                    let home = env.home.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        pnpm_effective_global_bin_dir(&pnpm, &path, Some(home.as_str()))
-                    })
-                    .await
-                    .ok()
-                    .flatten()
-                };
+                let effective =
+                    pnpm_effective_global_bin_dir(&pnpm, &path, Some(env.home.as_str())).await;
                 let matches = effective.as_deref().map(|dir| {
                     std::path::Path::new(dir) == std::path::Path::new(&env.global_bin_dir)
                 });

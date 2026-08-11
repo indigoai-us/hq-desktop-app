@@ -272,12 +272,27 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
             Err(()) => saw_manifest_failure = true,
         }
     }
+    let hq_bin_str = hq_bin.to_string_lossy();
+    // A pnpm-managed shim is a plain script, so canonicalize()+ancestors above can
+    // never reach its package tree. Read the version from pnpm's own store, newest
+    // among any lingering opaque-hash dirs so a stale leftover cannot shadow the
+    // active install (pnpm points the shim at its newest global install). Done
+    // before the npm-prefix fallback below so the read is anchored to the store,
+    // not an arbitrary hash child in filesystem enumeration order.
+    if is_pnpm_global_shim(&hq_bin_str) {
+        if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
+            if let Some(version) =
+                installed_hq_cli_version_in_pnpm_store(&home.to_string_lossy())
+            {
+                return (Some(version), VersionProbeOutcome::Succeeded);
+            }
+        }
+    }
     // Windows npm does not create a symlink into the package tree. It writes
     // `<prefix>\hq.cmd` beside `<prefix>\node_modules`, so canonicalizing the
     // shim can never reach package.json through its ancestors. Anchor the
     // fallback to that exact shim's prefix instead of asking npm for its
     // unrelated default global root.
-    let hq_bin_str = hq_bin.to_string_lossy();
     if let Some(prefix) = npm_prefix_from_hq_bin(&hq_bin_str) {
         for package_json in hq_cli_package_json_candidates(Path::new(&prefix), hq_bin) {
             match read_hq_cli_package_version(&package_json) {
@@ -3643,9 +3658,26 @@ pub fn hq_cli_version_under_pnpm_root(root: &Path) -> Option<String> {
             }
         }
     }
+    max_hq_cli_version(candidates)
+}
+
+/// The HIGHEST hq-cli version among a set of candidate manifest paths, read with
+/// no subprocess. pnpm's `global/v<n>` can hold more than one opaque-hash
+/// directory (a prior install pnpm has not pruned), and their filesystem
+/// enumeration order is meaningless — so choosing the first readable manifest
+/// could nondeterministically return a stale version. Choosing the newest is
+/// deterministic AND correct: pnpm rewrites the shim to point at its newest
+/// global install, so the highest version present is exactly the one the shim
+/// executes, and for delivery evidence it answers "did pnpm deliver `latest`"
+/// regardless of stale leftovers.
+fn max_hq_cli_version<I>(candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = std::path::PathBuf>,
+{
     candidates
         .into_iter()
-        .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
+        .filter_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
+        .max_by(|a, b| cmp_semver(a, b))
 }
 
 /// Parse the installed `@indigoai-us/hq-cli` version out of `pnpm ls -g --depth 0
@@ -3742,9 +3774,9 @@ pub fn installed_hq_cli_version_in_prefix(prefix: &str, hq_bin: &str) -> Option<
 /// from the store directly. Returns `None` when no store manifest is readable,
 /// which fails safe toward retrying rather than a durable block.
 pub fn installed_hq_cli_version_in_pnpm_store(pnpm_home: &str) -> Option<String> {
-    pnpm_store_package_json_candidates(Path::new(pnpm_home))
-        .into_iter()
-        .find_map(|candidate| read_hq_cli_package_version(&candidate).ok().flatten())
+    // Newest-wins across any lingering opaque-hash dirs so a stale leftover cannot
+    // shadow the active install or misreport delivery — see `max_hq_cli_version`.
+    max_hq_cli_version(pnpm_store_package_json_candidates(Path::new(pnpm_home)))
 }
 
 /// Build the argv for the global install. Factored out so the unit test
@@ -4784,6 +4816,50 @@ mod tests {
             version_from_hq_binary(&shim).as_deref(),
             Some("5.98.0"),
             "the executed pnpm 11 shim resolves its version from the v11 store"
+        );
+    }
+
+    /// When `global/v11` holds MORE THAN ONE opaque-hash directory (a prior
+    /// install pnpm has not pruned), the read must be deterministic and pick the
+    /// NEWEST version present — never an arbitrary hash child in filesystem
+    /// enumeration order, which could report a stale version or falsely declare
+    /// convergence. Both the store reader and the executed-shim read must agree.
+    #[test]
+    fn pnpm11_multiple_hash_dirs_resolve_deterministically_to_the_newest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let v11 = home.join("global").join("v11");
+        for (hash, version) in [("olddir00", "5.93.0"), ("newdir99", "5.98.0")] {
+            let pkg = v11
+                .join(hash)
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli");
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(
+                pkg.join("package.json"),
+                format!(r#"{{"name":"@indigoai-us/hq-cli","version":"{version}"}}"#),
+            )
+            .unwrap();
+        }
+        // Newest present wins regardless of which hash dir enumerates first.
+        assert_eq!(
+            installed_hq_cli_version_in_pnpm_store(home.to_str().unwrap()).as_deref(),
+            Some("5.98.0"),
+            "a lingering older hash dir must not shadow the active install"
+        );
+        let shim = home.join("bin").join("hq");
+        std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        std::fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(
+            version_from_hq_binary(&shim).as_deref(),
+            Some("5.98.0"),
+            "the executed reading agrees with the store's newest install"
+        );
+        // The `pnpm root -g` fallback is deterministic over the same shape.
+        assert_eq!(
+            hq_cli_version_under_pnpm_root(&v11).as_deref(),
+            Some("5.98.0")
         );
     }
 

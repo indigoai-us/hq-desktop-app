@@ -309,15 +309,20 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdateCore).toContain('pub fn pnpm_global_ls_hq_cli_version(');
     expect(cliUpdateCore).toContain('pub fn hq_cli_version_under_pnpm_root(');
     expect(cliUpdateCore).toContain('pub fn installed_hq_cli_version_in_pnpm_store(');
-    expect(normalize(cliUpdate)).toContain('cmd.args(["ls", "-g", "--depth", "0", "--json"])');
-    expect(normalize(cliUpdate)).toContain('cmd.args(["root", "-g"])');
+    expect(normalize(cliUpdate)).toContain('["ls", "-g", "--depth", "0", "--json"]');
+    expect(normalize(cliUpdate)).toContain('["root", "-g"]');
+    // Every new pnpm verification subprocess is bounded — a hung pnpm is killed
+    // instead of wedging the install and the CLI-update single-flight forever.
+    expect(cliUpdate).toContain('const PNPM_PROBE_TIMEOUT: Duration');
+    expect(cliUpdate).toContain('tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())');
+    expect(cliUpdate).toContain('.kill_on_drop(true)');
 
     // The `pnpm bin -g` probe runs only when the install did not converge...
     expect(pnpmBranch).toContain(
       'let converged = install_converged(resolved.as_deref(), latest);',
     );
     expect(pnpmBranch).toContain(
-      'pnpm_effective_global_bin_dir(&pnpm, &path, Some(home.as_str()))',
+      'pnpm_effective_global_bin_dir(&pnpm, &path, Some(env.home.as_str()))',
     );
     expect(pnpmBranch).toContain('global_bin_dir_matches_shim_dir,');
     // ...and it is spawned WITHOUT the forced --config.global-bin-dir, so it
