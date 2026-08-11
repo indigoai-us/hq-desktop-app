@@ -2,7 +2,9 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
+  import { consoleDeepLinks } from './lib/console-links';
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import {
     MESSAGE_PERSON_EVENT,
@@ -549,6 +551,14 @@
           }),
         )
       : []),
+    // US-003 console deep links — open the system browser via plugin-shell
+    // (the app's safe external-open path) for surfaces that live in the console.
+    ...consoleDeepLinks(activeCompany?.slug ?? null).map((link) => ({
+      id: link.id,
+      label: link.label,
+      detail: link.detail,
+      action: () => openExternal(link.url),
+    })),
   ]);
 
   // Plain-language error summary for the V4 title bar's error state.

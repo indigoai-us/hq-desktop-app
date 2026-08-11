@@ -96,4 +96,24 @@ describe('desktop-alt command palette coverage', () => {
       expect(route).toContain(`id: '${tab}'`);
     }
   });
+
+  it('deep-links Deployments, Secrets, Activity, Telescope, Company settings to the HQ Console (US-003)', () => {
+    // Surfaces dropped from desktop live in the console; the palette opens them
+    // in the system browser via plugin-shell + consoleDeepLinks().
+    expect(desktopApp).toContain("import { consoleDeepLinks } from './lib/console-links'");
+    expect(desktopApp).toContain('consoleDeepLinks(activeCompany?.slug ?? null)');
+    expect(desktopApp).toContain('openExternal(link.url)');
+
+    const consoleLinks = readRepoFile('src/desktop-alt/lib/console-links.ts');
+    expect(consoleLinks).toContain("from './hq-console'");
+    for (const id of [
+      'command-go-console-deployments',
+      'command-go-console-secrets',
+      'command-go-console-activity',
+      'command-go-console-telescope',
+      'command-go-console-settings',
+    ]) {
+      expect(consoleLinks).toContain(id);
+    }
+  });
 });
