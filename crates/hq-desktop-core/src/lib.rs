@@ -5,8 +5,8 @@
 pub mod activity;
 pub mod agency;
 pub mod banner;
-pub mod client_info;
 pub mod claude_launch;
+pub mod client_info;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
@@ -53,6 +53,7 @@ pub mod status;
 pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
+pub mod watcher_fault;
 pub mod workspaces;
 
 #[cfg(test)]

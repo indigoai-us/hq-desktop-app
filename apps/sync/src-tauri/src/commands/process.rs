@@ -171,6 +171,15 @@ struct ProcessEntry {
     signal_authority_revoked: bool,
     #[cfg(target_os = "windows")]
     job_handle: Option<isize>,
+    /// Last sampled live Job Object process-id set for THIS generation, refreshed
+    /// on the daemon heartbeat cadence while the tree is alive. Read at the exit
+    /// boundary to bind a Windows Error Reporting fault record's faulting pid to
+    /// this exact generation (HQ-DESKTOP-4X), so a coincidental unrelated crash on
+    /// the same machine cannot be misattributed. Generation-scoped like the job
+    /// handle: a replacement watcher that has re-acquired the handle carries its
+    /// own set.
+    #[cfg(target_os = "windows")]
+    sampled_pids: std::collections::HashSet<u32>,
 }
 
 impl ProcessEntry {
@@ -182,6 +191,8 @@ impl ProcessEntry {
             signal_authority_revoked: false,
             #[cfg(target_os = "windows")]
             job_handle: None,
+            #[cfg(target_os = "windows")]
+            sampled_pids: std::collections::HashSet::new(),
         }
     }
 }
@@ -767,6 +778,145 @@ unsafe fn query_job_accounting(job: isize) -> Option<WatcherJobAccounting> {
         peak_process_commit_bytes: extended.PeakProcessMemoryUsed as u64,
         total_processes: accounting.TotalProcesses,
     })
+}
+
+/// Sample the live process-id set of THIS generation's retained Job Object and
+/// store it on the entry, replacing the previous sample. Called on the daemon
+/// heartbeat cadence while the tree is alive so the exit-boundary reader has a
+/// generation-scoped pid set to bind a Windows Error Reporting fault record
+/// against (HQ-DESKTOP-4X). Read-only against the OS, generation-scoped, and
+/// strictly diagnostic: it never mutates registry, containment, or lifecycle
+/// state, and never closes the job handle. A no-op when the exact generation is
+/// absent, carries no job handle, the query fails, or the platform is not
+/// Windows.
+#[cfg(target_os = "windows")]
+pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
+    let mut registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Resolve the exact generation's job handle (active only if it still owns the
+    // handle at this generation, else the parked retired entry) while the lock is
+    // held, so a concurrent deregister cannot close it between lookup and query.
+    let job = registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
+        .and_then(|entry| entry.job_handle);
+    let Some(job) = job else {
+        return;
+    };
+    // SAFETY: `job` is this app's own retained Job Object handle and the registry
+    // lock is held for the duration of the read, so it cannot be closed here.
+    let Some(pids) = (unsafe { query_job_process_ids(job) }) else {
+        return;
+    };
+    if let Some(entry) = registry
+        .active
+        .get_mut(handle)
+        .filter(|entry| entry.generation == generation)
+    {
+        entry.sampled_pids = pids;
+        return;
+    }
+    if let Some(retired) = registry
+        .retired
+        .get_mut(&generation)
+        .filter(|retired| retired.handle == handle)
+    {
+        retired.entry.sampled_pids = pids;
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn sample_watcher_job_pids_for_generation(_handle: &str, _generation: u64) {}
+
+/// Read the last sampled Job Object process set for the EXACT `generation` under
+/// `handle`, resolved with the same active-then-retired discipline as
+/// [`watcher_job_accounting_for_generation`]. `None` when the generation is
+/// absent, no non-empty sample was ever taken, or the platform is not Windows.
+/// Diagnostic-only; never mutates state.
+#[cfg(target_os = "windows")]
+pub fn watcher_job_sampled_pids_for_generation(
+    handle: &str,
+    generation: u64,
+) -> Option<std::collections::HashSet<u32>> {
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let pids = registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
+        .map(|entry| &entry.sampled_pids)?;
+    if pids.is_empty() {
+        None
+    } else {
+        Some(pids.clone())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn watcher_job_sampled_pids_for_generation(
+    _handle: &str,
+    _generation: u64,
+) -> Option<std::collections::HashSet<u32>> {
+    None
+}
+
+/// Query a Job Object's live process-id list into a bounded buffer. Read-only:
+/// one `QueryInformationJobObject(JobObjectBasicProcessIdList)` call, closing
+/// nothing. A function-local `use` keeps the raw `windows-sys` job symbols out of
+/// module scope. Returns the deduplicated live pids, bounded at `CAP`.
+#[cfg(target_os = "windows")]
+unsafe fn query_job_process_ids(job: isize) -> Option<std::collections::HashSet<u32>> {
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectBasicProcessIdList, QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    };
+    let hjob = job as windows_sys::Win32::Foundation::HANDLE;
+    // The header carries a one-element `ProcessIdList` flexible array; over-
+    // allocate a byte buffer for the header plus CAP additional pid slots. CAP
+    // bounds a pathological tree — the watcher's is a handful of processes.
+    const CAP: usize = 512;
+    let header_size = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+    let slot_size = std::mem::size_of::<usize>();
+    let mut buffer = vec![0u8; header_size + CAP * slot_size];
+    if QueryInformationJobObject(
+        hjob,
+        JobObjectBasicProcessIdList,
+        buffer.as_mut_ptr() as *mut core::ffi::c_void,
+        buffer.len() as u32,
+        core::ptr::null_mut(),
+    ) == 0
+    {
+        return None;
+    }
+    let header = &*(buffer.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST);
+    let count = (header.NumberOfProcessIdsInList as usize).min(CAP);
+    // The pid array begins at `ProcessIdList` (a `[usize; 1]` in the header) and
+    // continues contiguously into the over-allocated buffer.
+    let list = header.ProcessIdList.as_ptr();
+    let mut pids = std::collections::HashSet::with_capacity(count);
+    for index in 0..count {
+        let pid = *list.add(index);
+        if let Ok(pid) = u32::try_from(pid) {
+            pids.insert(pid);
+        }
+    }
+    Some(pids)
 }
 
 /// Whether the process under `handle` was deliberately cancelled (SIGTERM sent
@@ -4513,6 +4663,112 @@ mod windows_job_attachment_failure_tests {
             watcher_job_accounting_for_generation("watcher-job-accounting-absent", fixture.generation)
                 .is_none()
         );
+
+        let attempt = cancel_process_for_generation(
+            &fixture.handle,
+            fixture.generation,
+            SyncCancelCause::UserStop,
+            Duration::ZERO,
+        );
+        assert!(attempt.executed, "the exact generation must be cancellable");
+        assert_tree_gone(&fixture);
+        let _ = join_runner(fixture);
+    }
+
+    // HQ-DESKTOP-4X: prove the fault-provenance pid binding against a REAL Windows
+    // Job Object tree, and that the real EvtQuery/EvtRender reader runs bounded and
+    // content-safe against the machine's real Application log. The WER round-trip
+    // of a genuine 0xC0000409 is deliberately NOT asserted here: WER delivery is
+    // often disabled/redirected on CI runners, so the reader is asserted to return
+    // ANY fixed-vocabulary token (degrading to no_record/unavailable honestly),
+    // while the pid binding is proven deterministically against a fabricated record
+    // carrying a REAL sampled pid.
+    #[test]
+    fn watcher_fault_pid_sampling_binds_a_real_tree_and_reader_is_bounded_and_safe() {
+        use hq_desktop_core::watcher_fault::{
+            resolve_watcher_fault_attribution, WatcherFaultProvenance, WerApplicationError,
+            WATCHER_FAULT_IMAGE_ALLOWLIST, WATCHER_FAULT_MODULE_ALLOWLIST, WATCHER_FAULT_OTHER,
+        };
+
+        let fixture = start_fixture_with_real_job("watcher-fault-pid-sample");
+
+        // Sample the live pid set for THIS generation from the real Job Object.
+        sample_watcher_job_pids_for_generation(&fixture.handle, fixture.generation);
+        let sampled =
+            watcher_job_sampled_pids_for_generation(&fixture.handle, fixture.generation)
+                .expect("a live job must report a sampled pid set");
+        assert!(
+            sampled.contains(&fixture.root_pid),
+            "the sampled set must include the shim root pid"
+        );
+        assert!(
+            sampled.len() >= 2,
+            "the job sees the shim and its descendant, got {}",
+            sampled.len()
+        );
+
+        // Generation-scoped: a different generation never resolves a sample, and an
+        // absent handle is never fabricated.
+        assert!(watcher_job_sampled_pids_for_generation(
+            &fixture.handle,
+            fixture.generation.wrapping_add(4096)
+        )
+        .is_none());
+        assert!(watcher_job_sampled_pids_for_generation(
+            "watcher-fault-pid-sample-absent",
+            fixture.generation
+        )
+        .is_none());
+
+        // A fault record carrying a REAL sampled pid binds to pid_matched; a foreign
+        // pid degrades honestly to window_only.
+        let record = WerApplicationError {
+            faulting_image_raw: "node.exe".to_string(),
+            faulting_module_raw: "ntdll.dll".to_string(),
+            exception_code: 0xC000_0409,
+            fault_offset: 0x1234,
+            faulting_pid: fixture.root_pid,
+            faulting_pid_decimal: None,
+            created: None,
+        };
+        let matched = resolve_watcher_fault_attribution(true, Some(&record), Some(&sampled));
+        assert_eq!(matched.provenance, WatcherFaultProvenance::PidMatched);
+        assert_eq!(matched.faulting_image, Some("node.exe"));
+        assert_eq!(matched.faulting_module, Some("ntdll.dll"));
+
+        let foreign = WerApplicationError {
+            faulting_pid: u32::MAX - 7,
+            ..record.clone()
+        };
+        let windowed = resolve_watcher_fault_attribution(true, Some(&foreign), Some(&sampled));
+        assert_eq!(windowed.provenance, WatcherFaultProvenance::WindowOnly);
+
+        // The real EvtQuery/EvtRender reader executes on real Windows, returns a
+        // fixed-vocabulary token within its hard bound, and never leaks: any
+        // image/module it names is allow-listed or the `other` sentinel.
+        let attribution = crate::commands::watcher_fault::read_watcher_fault_attribution(
+            &fixture.handle,
+            fixture.generation,
+            std::time::Duration::from_secs(60),
+        );
+        assert!(
+            WatcherFaultProvenance::ALL
+                .iter()
+                .any(|token| token.as_str() == attribution.provenance.as_str()),
+            "reader must return a fixed-vocabulary provenance token"
+        );
+        if let Some(image) = attribution.faulting_image {
+            assert!(
+                WATCHER_FAULT_IMAGE_ALLOWLIST.contains(&image) || image == WATCHER_FAULT_OTHER,
+                "faulting image {image:?} must be allow-listed or the sentinel"
+            );
+        }
+        if let Some(module) = attribution.faulting_module {
+            assert!(
+                WATCHER_FAULT_MODULE_ALLOWLIST.contains(&module) || module == WATCHER_FAULT_OTHER,
+                "faulting module {module:?} must be allow-listed or the sentinel"
+            );
+        }
 
         let attempt = cancel_process_for_generation(
             &fixture.handle,

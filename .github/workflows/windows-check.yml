@@ -107,6 +107,21 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_job_accounting_reads_the_live_tree_and_is_generation_scoped -- --nocapture
 
+      # HQ-DESKTOP-4X. Drives a REAL cmd.exe shim + descendant through the
+      # production registry and Job Object path, samples the generation's live
+      # pid set, and binds a fault record's faulting pid to that exact generation
+      # (pid_matched vs a foreign pid → window_only). It also runs the real
+      # EvtQuery/EvtRender Application-log reader on the runner: the reader must
+      # return a fixed-vocabulary provenance token within its hard bound and never
+      # name a non-allow-listed image/module. The genuine 0xC0000409→WER round-trip
+      # is not asserted here because WER delivery is unreliable on CI runners; the
+      # reader degrades honestly to no_record/unavailable, which this proves is a
+      # valid, content-safe outcome rather than a leak or a hang.
+      - name: Windows watcher fault provenance regression
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::windows_job_attachment_failure_tests::watcher_fault_pid_sampling_binds_a_real_tree_and_reader_is_bounded_and_safe -- --nocapture
+
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync
       # decision seam to report capture for code 1/no signal.
@@ -159,6 +174,22 @@ jobs:
       - name: Sync outcome tests
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml sync_outcome::tests
+
+      # HQ-DESKTOP-4X. The platform-neutral content-safety heart of the fix — the
+      # provenance state machine, faulting image/module allow-list mapping, the
+      # `Application Error` record parser (against real-shape event XML), and the
+      # unmatched-stderr structural rollup — proven on the msvc target too, not
+      # only the Linux fix host.
+      - name: Watcher fault provenance tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml watcher_fault::tests
+
+      # The independent egress backstop: every new watcher-fault tag/extra survives
+      # before_send when valid, fails closed to `[Filtered]` when malformed, and its
+      # token vocabulary is pinned against the producer's own enumeration.
+      - name: Watcher fault egress validator tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --lib watcher_fault
 
       - name: Runtime diagnosis tests
         working-directory: apps/sync/src-tauri

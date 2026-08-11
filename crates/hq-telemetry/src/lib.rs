@@ -260,6 +260,65 @@ fn is_content_safe_syscall_token(value: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
 }
 
+// Fixed vocabularies for the watcher-fault attribution fields (HQ-DESKTOP-4X).
+// These MIRROR the producer allow-lists in `hq_desktop_core::watcher_fault`, but
+// are redeclared here so the egress backstop is INDEPENDENT of the producer: a
+// producer bug that shipped a path, username, or raw event-log byte in one of
+// these tags degrades to `[Filtered]` instead of leaking. The anti-drift test
+// pins each list against the producer's own enumerated vocabulary.
+const WATCHER_FAULT_IMAGE_TOKENS: &[&str] = &[
+    "node.exe",
+    "npx.cmd",
+    "cmd.exe",
+    "hq-sync-menubar.exe",
+    "other",
+];
+const WATCHER_FAULT_MODULE_TOKENS: &[&str] = &[
+    "ntdll.dll",
+    "kernelbase.dll",
+    "ucrtbase.dll",
+    "msvcrt.dll",
+    "other",
+];
+const WATCHER_STDERR_SHAPE_TOKENS: &[&str] = &[
+    "empty",
+    "json_object",
+    "bracketed",
+    "stack_frame_at",
+    "hash_frame",
+    "key_colon",
+    "prose",
+    "token",
+];
+
+/// The unmatched-stderr rollup is a bounded `token:count[,token:count…]` string.
+/// Validate the whole grammar — every token from the fixed shape vocabulary,
+/// every count a bare bounded decimal — so a producer bug that placed a raw
+/// stderr byte in this tag fails closed at egress.
+fn valid_watcher_stderr_unmatched_shape(value: &str) -> bool {
+    if value.is_empty() || value.len() > 200 {
+        return false;
+    }
+    let mut entries = 0usize;
+    for part in value.split(',') {
+        entries += 1;
+        if entries > WATCHER_STDERR_SHAPE_TOKENS.len() {
+            return false;
+        }
+        let Some((token, count)) = part.split_once(':') else {
+            return false;
+        };
+        if !WATCHER_STDERR_SHAPE_TOKENS.contains(&token) {
+            return false;
+        }
+        if count.is_empty() || count.len() > 10 || !count.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -295,8 +354,24 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unknown"
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
-        "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
+        "watcher_child_kind" => Some(matches!(
+            value,
+            "cmd_shim" | "launcher" | "direct_executable"
+        )),
         "rss_scope" => Some(matches!(value, "shim" | "launcher" | "runner")),
+        // Watcher fault provenance (HQ-DESKTOP-4X): the mandatory honesty token
+        // plus the allow-listed faulting image/module and bare-integer exception
+        // code / fault offset read from the OS Application-error record. Each is
+        // an independent egress shape check over a closed vocabulary.
+        "watcher_fault_provenance" => Some(matches!(
+            value,
+            "pid_matched" | "window_only" | "no_record" | "unavailable"
+        )),
+        "watcher_fault_faulting_image" => Some(WATCHER_FAULT_IMAGE_TOKENS.contains(&value)),
+        "watcher_fault_faulting_module" => Some(WATCHER_FAULT_MODULE_TOKENS.contains(&value)),
+        "watcher_fault_exception_code" => Some(value.parse::<i64>().is_ok()),
+        "watcher_fault_offset" => Some(value.parse::<u64>().is_ok()),
+        "watcher_stderr_unmatched_shape" => Some(valid_watcher_stderr_unmatched_shape(value)),
         _ => None,
     }
 }
@@ -1411,7 +1486,10 @@ mod tests {
             ("runner_phase", "push:/secret"),
             // A producer bug that shipped a raw word, a path, or a non-integer in
             // any of the new libuv/job channels must degrade to `[Filtered]`.
-            ("runner_fatal_syscall", "ReadDirectoryChangesW /Users/Ada/secret.md"),
+            (
+                "runner_fatal_syscall",
+                "ReadDirectoryChangesW /Users/Ada/secret.md",
+            ),
             ("runner_fatal_errno", "5; rm -rf"),
             ("watcher_job_peak_commit_bucket", "512mb_to_1gb:/Users/Ada"),
             ("watcher_job_process_count", "2 processes /Users/Ada"),
@@ -1459,6 +1537,131 @@ mod tests {
             assert_eq!(
                 result.tags[key], value,
                 "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_fault_fields_survive_egress_when_valid() {
+        for (key, value) in [
+            ("watcher_fault_provenance", "pid_matched"),
+            ("watcher_fault_provenance", "window_only"),
+            ("watcher_fault_provenance", "no_record"),
+            ("watcher_fault_provenance", "unavailable"),
+            ("watcher_fault_faulting_image", "node.exe"),
+            ("watcher_fault_faulting_image", "cmd.exe"),
+            ("watcher_fault_faulting_image", "other"),
+            ("watcher_fault_faulting_module", "ntdll.dll"),
+            ("watcher_fault_faulting_module", "other"),
+            // 0xC0000409 as a bare decimal, and a bare fault offset.
+            ("watcher_fault_exception_code", "3221226505"),
+            ("watcher_fault_offset", "303538"),
+            (
+                "watcher_stderr_unmatched_shape",
+                "json_object:5,key_colon:2,prose:1",
+            ),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_fault_lookalikes_fail_closed_at_egress() {
+        for (key, value) in [
+            ("watcher_fault_provenance", "pid_matched /Users/Ada"),
+            ("watcher_fault_provenance", "confirmed"),
+            // A path or username smuggled where an allow-listed image belongs.
+            ("watcher_fault_faulting_image", r"C:\Users\Ada\node.exe"),
+            ("watcher_fault_faulting_image", "secret.exe"),
+            ("watcher_fault_faulting_module", "vendor-private.dll"),
+            ("watcher_fault_exception_code", "0xC0000409 /Users/Ada"),
+            ("watcher_fault_offset", "-1; rm -rf"),
+            (
+                "watcher_stderr_unmatched_shape",
+                "prose:/Users/Ada/secret.md",
+            ),
+            ("watcher_stderr_unmatched_shape", "unknown_shape:1"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], "[Filtered]",
+                "tag key={key} value={value}"
+            );
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_fault_egress_vocabulary_pins_the_producer_tokens() {
+        use hq_desktop_core::watcher_fault::{
+            RunnerStderrShape, WatcherFaultProvenance, WATCHER_FAULT_IMAGE_ALLOWLIST,
+            WATCHER_FAULT_MODULE_ALLOWLIST, WATCHER_FAULT_OTHER,
+        };
+
+        // The independent egress vocab must equal the producer allow-list plus the
+        // shared `other` sentinel — nothing more, nothing less — so neither side
+        // can drift a token in without this test failing.
+        let expected_images: Vec<&str> = WATCHER_FAULT_IMAGE_ALLOWLIST
+            .iter()
+            .copied()
+            .chain(std::iter::once(WATCHER_FAULT_OTHER))
+            .collect();
+        assert_eq!(WATCHER_FAULT_IMAGE_TOKENS.to_vec(), expected_images);
+        let expected_modules: Vec<&str> = WATCHER_FAULT_MODULE_ALLOWLIST
+            .iter()
+            .copied()
+            .chain(std::iter::once(WATCHER_FAULT_OTHER))
+            .collect();
+        assert_eq!(WATCHER_FAULT_MODULE_TOKENS.to_vec(), expected_modules);
+        let expected_shapes: Vec<&str> =
+            RunnerStderrShape::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(WATCHER_STDERR_SHAPE_TOKENS.to_vec(), expected_shapes);
+
+        // Every producer token the emitter can actually emit must survive egress.
+        for provenance in WatcherFaultProvenance::ALL {
+            assert_eq!(
+                valid_runner_diagnostic_field("watcher_fault_provenance", provenance.as_str()),
+                Some(true),
+                "provenance {} must survive egress",
+                provenance.as_str()
+            );
+        }
+        for image in WATCHER_FAULT_IMAGE_TOKENS {
+            assert_eq!(
+                valid_runner_diagnostic_field("watcher_fault_faulting_image", image),
+                Some(true)
+            );
+        }
+        for module in WATCHER_FAULT_MODULE_TOKENS {
+            assert_eq!(
+                valid_runner_diagnostic_field("watcher_fault_faulting_module", module),
+                Some(true)
+            );
+        }
+        for shape in RunnerStderrShape::ALL {
+            assert_eq!(
+                valid_runner_diagnostic_field(
+                    "watcher_stderr_unmatched_shape",
+                    &format!("{}:1", shape.as_str())
+                ),
+                Some(true),
+                "shape rollup token {} must survive egress",
+                shape.as_str()
             );
         }
     }

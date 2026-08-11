@@ -45,6 +45,7 @@ use hq_desktop_core::sync_outcome::{
     SpawnFailureCapturePolicy, SyncCancelCause, TerminationHost, WatcherExitCapturePolicy,
     WindowsTerminatorAttribution, SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
 };
+use hq_desktop_core::watcher_fault::WatcherFaultAttribution;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::CloseHandle;
@@ -135,6 +136,10 @@ impl WatcherLaunchOrigin {
 struct WatcherGeneration {
     id: u64,
     launch_origin: WatcherLaunchOrigin,
+    /// Monotonic start of this generation, copied into the process closure so the
+    /// exit boundary can bound the Windows Error Reporting fault-record lookup to
+    /// this generation's lifetime (HQ-DESKTOP-4X).
+    started_at: Instant,
 }
 
 static WATCHER_GENERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -153,6 +158,7 @@ fn begin_watcher_generation(origin: WatcherLaunchOrigin) -> WatcherGeneration {
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1),
         launch_origin: origin,
+        started_at: Instant::now(),
     };
     *watcher_generation_state()
         .lock()
@@ -249,6 +255,12 @@ fn start_daemon_heartbeat_watchdog(
         if finished.load(Ordering::Acquire) {
             return;
         }
+        // Refresh THIS generation's sampled Job Object pid set while the tree is
+        // alive, so a watcher-exit Windows Error Reporting fault record can be
+        // bound to this exact generation (HQ-DESKTOP-4X). Read-only, cheap,
+        // generation-scoped; a no-op off Windows or once this generation no longer
+        // owns the handle.
+        crate::commands::process::sample_watcher_job_pids_for_generation(DAEMON_HANDLE, generation);
         let heartbeat_age = last_heartbeat
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1057,6 +1069,23 @@ struct WatcherExitCaptureContext {
     /// alertable fault must win over durable-record attribution, exactly as at
     /// the manual-sync boundary.
     saw_alertable_error: bool,
+    /// OS-read fault provenance for this generation's terminated tree
+    /// (HQ-DESKTOP-4X): a mandatory honesty token plus, only when a Windows Error
+    /// Reporting record bound, the allow-listed faulting image/module and
+    /// bare-integer exception code / fault offset. `unavailable` on non-Windows or
+    /// a failed/timed-out query. Reporting-only; never gates capture.
+    fault: WatcherFaultAttribution,
+    /// Total stderr lines this generation received, counted at the single
+    /// `record_stderr_line` funnel — independent of the bounded 8-line tail ring —
+    /// at parity with the manual route's `runner_stderr_line_count`, so a silent
+    /// runner and a noisy-but-unrecognised one are distinguishable on the watcher
+    /// route too.
+    stderr_line_count: u32,
+    /// Bounded top-N structural rollup of the stderr lines that matched no fatal
+    /// arm (`None` when none did), plus the total count of such unmatched lines —
+    /// a recurring, comparable descriptor of the unknown-line family.
+    runner_stderr_unmatched_shape: Option<String>,
+    runner_stderr_unmatched_count: u32,
 }
 
 impl WatcherExitCaptureContext {
@@ -1114,6 +1143,10 @@ impl Default for WatcherExitCaptureContext {
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
             saw_alertable_error: false,
+            fault: WatcherFaultAttribution::unavailable(),
+            stderr_line_count: 0,
+            runner_stderr_unmatched_shape: None,
+            runner_stderr_unmatched_count: 0,
         }
     }
 }
@@ -1174,6 +1207,15 @@ fn watcher_exit_capture_context(
         DAEMON_HANDLE,
         process_generation,
     );
+    // Read the operating system's OWN fault record for THIS generation's
+    // terminated tree, bounded and off the terminal callback, BEFORE the
+    // generation is finished so the sampled Job Object pid set is still resolvable.
+    // Content-safe by construction; degrades to `unavailable` on any failure.
+    let fault = crate::commands::watcher_fault::read_watcher_fault_attribution(
+        DAEMON_HANDLE,
+        process_generation,
+        generation.started_at.elapsed(),
+    );
     finish_watcher_generation(generation);
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
@@ -1221,6 +1263,12 @@ fn watcher_exit_capture_context(
             .map(|record| record.termination_effected)
             .unwrap_or(false),
         saw_alertable_error: totals.saw_alertable_error,
+        fault,
+        // Read the SAME RunTotals source the manual route reads, so the stderr
+        // volume and unmatched-shape axes can never drift between routes.
+        stderr_line_count: totals.stderr_line_count,
+        runner_stderr_unmatched_shape: totals.runner_stderr_shapes.tag_value(),
+        runner_stderr_unmatched_count: totals.runner_stderr_shapes.unmatched_line_count(),
     }
 }
 
@@ -2028,6 +2076,33 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         watcher_child_kind(watcher_command).to_string(),
     ));
     tags.push(("rss_scope", rss_scope(watcher_command).to_string()));
+    // Watcher fault provenance (HQ-DESKTOP-4X): the mandatory honesty token is
+    // ALWAYS attached (defaulting to `unavailable`/`no_record`), so absence of
+    // evidence never renders as evidence. The allow-listed faulting image/module
+    // and the bare-integer exception code / fault offset ride along only when a
+    // Windows Error Reporting record actually bound to this generation.
+    tags.push((
+        "watcher_fault_provenance",
+        context.fault.provenance.as_str().to_string(),
+    ));
+    if let Some(image) = context.fault.faulting_image {
+        tags.push(("watcher_fault_faulting_image", image.to_string()));
+    }
+    if let Some(module) = context.fault.faulting_module {
+        tags.push(("watcher_fault_faulting_module", module.to_string()));
+    }
+    if let Some(exception_code) = context.fault.exception_code {
+        tags.push(("watcher_fault_exception_code", exception_code.to_string()));
+    }
+    if let Some(offset) = context.fault.fault_offset {
+        tags.push(("watcher_fault_offset", offset.to_string()));
+    }
+    // Structural rollup of the stderr lines that matched no fatal arm — the
+    // recurring descriptor of the unknown-line family. Present only when at least
+    // one unmatched line was seen.
+    if let Some(shapes) = &context.runner_stderr_unmatched_shape {
+        tags.push(("watcher_stderr_unmatched_shape", shapes.clone()));
+    }
     if let (Some(code), Some(termination)) = (code, windows_termination) {
         tags.push(("windows_exit_status", windows_exit_status_hex(code)));
         tags.push(("windows_exit_class", termination.class_name().to_string()));
@@ -2157,6 +2232,19 @@ fn watcher_exit_context_extras(
         (
             "runner_stack_redacted_frames",
             serde_json::json!(context.runner_stack_redacted_frames),
+        ),
+        // Whole-generation stderr volume, at parity with the manual route's
+        // `runner_stderr_line_count` extra, so a silent runner is distinguishable
+        // from a noisy-but-unrecognised one (HQ-DESKTOP-4X). Bare integer.
+        (
+            "runner_stderr_line_count",
+            sentry::protocol::Value::Number(context.stderr_line_count.into()),
+        ),
+        // Count of stderr lines that matched no fatal arm — pairs with the
+        // `watcher_stderr_unmatched_shape` rollup tag. Bare integer.
+        (
+            "watcher_stderr_unmatched_count",
+            sentry::protocol::Value::Number(context.runner_stderr_unmatched_count.into()),
         ),
         (
             "cancellation_record_present",

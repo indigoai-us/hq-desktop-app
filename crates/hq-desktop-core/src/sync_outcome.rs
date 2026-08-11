@@ -7,6 +7,7 @@ use crate::runner_error_shape::{
     RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
     DISCOVERY_ERROR_PATH_SENTINEL,
 };
+use crate::watcher_fault::RunnerStderrShapeRollup;
 use sha2::{Digest, Sha256};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +104,18 @@ pub struct RunTotals {
     runner_error_discovery_scope: u32,
     /// Count of per-file errors (any other `path`) seen this pass.
     runner_error_file_scope: u32,
+    /// Total raw stderr lines this pass received, counted at the single
+    /// `record_stderr_line` funnel so it is INDEPENDENT of the bounded 8-line
+    /// tail ring. On the watcher route this closes the blind spot the manual
+    /// route already covered (HQ-DESKTOP-4X): a silent runner and a
+    /// noisy-but-unrecognised one are otherwise indistinguishable, because
+    /// `runner_fatal_class=none` alone cannot tell them apart.
+    pub stderr_line_count: u32,
+    /// Content-safe structural rollup of stderr lines that matched NO fatal
+    /// class — the recurring, comparable descriptor of the unknown-line family.
+    /// Every rendered token is a fixed constant chosen in code; no runner byte is
+    /// retained. Read via its `tag_value()` / `unmatched_line_count()`.
+    pub runner_stderr_shapes: RunnerStderrShapeRollup,
 }
 
 impl RunTotals {
@@ -201,6 +214,10 @@ impl RunTotals {
     /// Node-too-old signature is not a runner protocol error, it is the
     /// interpreter failing before the runner can start.
     pub fn record_stderr_line(&mut self, line: &str) {
+        // Count EVERY line at this single funnel, unbounded and independent of the
+        // 8-line tail ring, so a whole-generation stderr volume is knowable at
+        // exit on the watcher route just as it is on the manual route.
+        self.stderr_line_count = self.stderr_line_count.saturating_add(1);
         if is_node_too_old_signature(line) {
             self.saw_node_too_old = true;
         }
@@ -216,6 +233,12 @@ impl RunTotals {
             self.runner_fatal_class = signature.class;
             self.runner_fatal_syscall = signature.syscall;
             self.runner_fatal_errno = signature.errno;
+        } else {
+            // A line that matched no fatal arm is exactly the "unknown line
+            // family" the watcher cluster is made of. Characterise its structure
+            // content-safely so the family is comparable across occurrences
+            // without ever emitting a runner byte.
+            self.runner_stderr_shapes.record(line);
         }
     }
 
@@ -2733,22 +2756,87 @@ mod tests {
         totals.record_stderr_line("ReadDirectoryChangesW: (5) Access is denied.");
         totals.record_stderr_line("    at fs.watch (node:fs:1:1)");
         // A later unclassified continuation line never clears the winning line.
-        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvFatalSyscall);
+        assert_eq!(
+            totals.runner_fatal_class,
+            RunnerFatalClass::LibuvFatalSyscall
+        );
         assert_eq!(totals.runner_fatal_syscall(), Some("ReadDirectoryChangesW"));
         assert_eq!(totals.runner_fatal_errno(), Some(5));
 
         // A later, different libuv-fatal line wins as a whole triple.
         totals.record_stderr_line("CreateIoCompletionPort: (1450) Insufficient resources.");
-        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvFatalSyscall);
-        assert_eq!(totals.runner_fatal_syscall(), Some("CreateIoCompletionPort"));
+        assert_eq!(
+            totals.runner_fatal_class,
+            RunnerFatalClass::LibuvFatalSyscall
+        );
+        assert_eq!(
+            totals.runner_fatal_syscall(),
+            Some("CreateIoCompletionPort")
+        );
         assert_eq!(totals.runner_fatal_errno(), Some(1450));
 
         // A non-libuv fatal class leaves syscall/errno cleared for that line.
         let mut assert_totals = RunTotals::default();
         assert_totals.record_stderr_line(r"Assertion failed: cond, file src\win\async.c, line 1");
-        assert_eq!(assert_totals.runner_fatal_class, RunnerFatalClass::LibuvAssert);
+        assert_eq!(
+            assert_totals.runner_fatal_class,
+            RunnerFatalClass::LibuvAssert
+        );
         assert_eq!(assert_totals.runner_fatal_syscall(), None);
         assert_eq!(assert_totals.runner_fatal_errno(), None);
+    }
+
+    #[test]
+    fn record_stderr_line_counts_every_line_independent_of_the_tail_ring() {
+        let mut totals = RunTotals::default();
+        // Far more than the 8-line watcher tail cap: the counter is at the
+        // funnel, not the ring, so it counts all of them.
+        for index in 0..25 {
+            totals.record_stderr_line(&format!("line number {index}"));
+        }
+        assert_eq!(totals.stderr_line_count, 25);
+    }
+
+    #[test]
+    fn record_stderr_line_rolls_up_only_unmatched_lines_content_safely() {
+        // Reproduces the production HQ-DESKTOP-4X tail: mixed ndjson + plain,
+        // none matching any fatal arm. Every line is unmatched, so every line is
+        // characterised structurally and none changes the fatal class.
+        let mut totals = RunTotals::default();
+        let unmatched = [
+            r#"{"type":"progress","company":"acme","path":"/Users/Ada/x.md"}"#,
+            r#"{"type":"error","path":"/Users/Ada/secret.md","message":"skipped"}"#,
+            "[chokidar] ready",
+            "watching for changes",
+            "Downloaded: 12 files",
+        ];
+        for line in unmatched {
+            totals.record_stderr_line(line);
+        }
+        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::None);
+        assert_eq!(totals.stderr_line_count, 5);
+        // The unknown-line family is captured as a bounded, fixed-vocabulary tag.
+        let rollup = totals
+            .runner_stderr_shapes
+            .tag_value()
+            .expect("unmatched lines produce a rollup");
+        assert_eq!(totals.runner_stderr_shapes.unmatched_line_count(), 5);
+        // Only fixed tokens and decimal counts — never a runner byte.
+        for entry in rollup.split(',') {
+            let (token, count) = entry.split_once(':').expect("token:count");
+            assert!(count.bytes().all(|b| b.is_ascii_digit()));
+            assert!(!token.contains('/'));
+            assert!(!token.contains(' '));
+        }
+
+        // A genuinely fatal line is classified and does NOT enter the unmatched
+        // rollup, so the two axes never double-count the same line.
+        let mut fatal = RunTotals::default();
+        fatal.record_stderr_line(r"Assertion failed: cond, file src\win\async.c, line 1");
+        assert_eq!(fatal.runner_fatal_class, RunnerFatalClass::LibuvAssert);
+        assert_eq!(fatal.stderr_line_count, 1);
+        assert_eq!(fatal.runner_stderr_shapes.unmatched_line_count(), 0);
+        assert_eq!(fatal.runner_stderr_shapes.tag_value(), None);
     }
 
     #[test]
@@ -2759,10 +2847,7 @@ mod tests {
         for class in RunnerFatalClass::ALL {
             let token = class.as_str();
             assert!(
-                !token.is_empty()
-                    && token
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b == b'_'),
+                !token.is_empty() && token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
                 "fatal-class token must be a fixed lower_snake constant: {token:?}"
             );
             assert!(seen.insert(token), "duplicate fatal-class token: {token:?}");
