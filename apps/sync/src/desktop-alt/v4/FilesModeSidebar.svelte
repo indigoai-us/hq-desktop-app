@@ -27,6 +27,7 @@
   import type { Workspace } from '../../lib/workspaces';
   import {
     fileAccessibleCompanies,
+    filesScopeRootPath,
     filterFileEntriesForMembership,
     isFilesRouteAllowed,
     type DirEntry,
@@ -78,9 +79,11 @@
     activeSlug ? (companyRows.find((row) => row.slug === activeSlug)?.label ?? activeSlug) : null,
   );
 
-  // The tree's root path: HQ root by default, scoped to the company subtree
-  // when the filter is active. This is the ONLY thing the filter changes.
-  const treeRootPath = $derived(activeSlug ? `companies/${activeSlug}` : '');
+  // The tree's root path: HQ root by default, scoped to the workspace subtree
+  // when the filter is active (`companies/<slug>`, or the HQ-root `personal/`
+  // tree for the personal workspace). This is the ONLY thing the filter
+  // changes.
+  const treeRootPath = $derived(activeSlug ? filesScopeRootPath(activeSlug) : '');
 
   // Lazy children loader — the per-directory `list_hq_dir` command. Returns one
   // directory's immediate children (noise-filtered, path-guarded in Rust).
@@ -137,7 +140,7 @@
   <div class="fs-scope">
     {#if activeSlug}
       <span class="fs-scope-chip">
-        <span class="fs-scope-label">companies/{activeSlug}</span>
+        <span class="fs-scope-label">{treeRootPath}</span>
         <button
           type="button"
           class="fs-scope-clear"

@@ -29,6 +29,7 @@
     fileTreeRowMeta,
     filterLazyNodes,
     flattenLazy,
+    isRootNotFoundError,
     parentPathOf,
     type DirEntry,
     type LazyNode,
@@ -50,6 +51,13 @@
     selectedPath?: string | null;
     /** Optional case-insensitive name filter over loaded nodes (DESKTOP-008). */
     filterQuery?: string;
+    /**
+     * Calm empty-state label rendered when the ROOT directory itself does not
+     * exist (missing dir or dangling symlink) — distinct from a real load
+     * failure, which keeps the error + retry row. Subdirectory load failures
+     * are never reclassified.
+     */
+    rootMissingLabel?: string;
   }
 
   let {
@@ -58,6 +66,7 @@
     onselect,
     selectedPath = null,
     filterQuery = '',
+    rootMissingLabel = 'Nothing here yet',
   }: Props = $props();
 
   // The lazily-built top-level node list (children of `rootPath`).
@@ -71,6 +80,8 @@
   let loadErrorPaths = $state(new Set<string>());
   let rootLoading = $state(false);
   let rootError = $state<string | null>(null);
+  // The root directory itself doesn't exist — a calm empty state, not an error.
+  let rootMissing = $state(false);
   let rootRetryNonce = $state(0);
   let treeGeneration = 0;
   // Keyboard focus path (roving tabindex) — independent of file selection.
@@ -88,6 +99,7 @@
     loadingPaths = new Set();
     loadErrorPaths = new Set();
     rootError = null;
+    rootMissing = false;
     rootLoading = true;
     focusedPath = null;
 
@@ -101,7 +113,15 @@
       .catch((err) => {
         console.error('list_hq_dir failed:', err);
         if (!cancelled && generation === treeGeneration) {
-          rootError = String(err);
+          // A nonexistent ROOT (missing dir / dangling symlink) is an expected
+          // shape — e.g. a company with no knowledge/ directory yet — and
+          // renders as a calm empty state. Every other failure stays a real,
+          // retryable error. Applies to the root load ONLY.
+          if (isRootNotFoundError(err)) {
+            rootMissing = true;
+          } else {
+            rootError = String(err);
+          }
           roots = [];
         }
       })
@@ -304,6 +324,10 @@
 >
   {#if rootLoading}
     <div class="ft-status" aria-label="Loading files" data-testid="file-tree-loading">Loading…</div>
+  {:else if rootMissing}
+    <div class="ft-status" role="status" data-testid="file-tree-root-missing">
+      {rootMissingLabel}
+    </div>
   {:else if rootError}
     <div class="ft-status ft-root-error" role="alert" data-testid="file-tree-error">
       <span>Files unavailable</span>
