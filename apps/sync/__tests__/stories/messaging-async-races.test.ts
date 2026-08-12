@@ -306,7 +306,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    component = mount(MessagesShell, { target: host, props: { embedded: false } });
     await vi.waitFor(() => expect(listeners.has('dm:new-events')).toBe(true));
 
     emit('dm:new-events', [dmEvent('new-unread', 'New message', '2026-07-28T14:00:00.000Z')]);
@@ -334,7 +334,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    component = mount(MessagesShell, { target: host, props: { embedded: false } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
 
     railButton('direct-message', 'Alice').click();
@@ -373,7 +373,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    component = mount(MessagesShell, { target: host, props: { embedded: false } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
 
     railButton('direct-message', 'Alice').click();
@@ -413,7 +413,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    component = mount(MessagesShell, { target: host, props: { embedded: false } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
 
     railButton('direct-message', 'Alice').click();
@@ -465,7 +465,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    component = mount(MessagesShell, { target: host, props: { embedded: false } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
     railButton('direct-message', 'Alice').click();
     await vi.waitFor(() => {
@@ -521,7 +521,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    component = mount(MessagesShell, { target: host, props: { embedded: false } });
     await vi.waitFor(() => expect(listeners.has('dm:new-events')).toBe(true));
 
     emit('dm:new-events', [
@@ -757,7 +757,7 @@ describe('Channel join async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: true } });
+    component = mount(MessagesShell, { target: host, props: { embedded: false } });
     await vi.waitFor(() => expect(railButton('channel', 'alpha')).toBeTruthy());
 
     railButton('channel', 'alpha').click();

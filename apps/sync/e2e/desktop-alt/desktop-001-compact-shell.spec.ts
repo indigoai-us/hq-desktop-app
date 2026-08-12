@@ -229,20 +229,23 @@ describe('DESKTOP-001: compact native shell', () => {
     );
   });
 
-  it('titlebar owns sidebar toggle, sync status, command search, sync, account; drag only on pads', () => {
+  it('titlebar is minimal (wordmark, day, meetings, bell, Core); drag only on pads', () => {
     const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
 
     expect(titleBar).toMatch(/Show sidebar|Hide sidebar/);
-    expect(titleBar).toContain('aria-label="Open command palette"');
-    expect(titleBar).toContain('aria-label="Account and settings"');
-    expect(titleBar).toContain('class="v4-action"');
-    expect(titleBar).toContain('class="v4-status"');
+    expect(titleBar).toContain('data-testid="titlebar-wordmark"');
+    expect(titleBar).toContain('data-testid="titlebar-day-date"');
+    expect(titleBar).toContain('data-testid="titlebar-meetings"');
+    expect(titleBar).toContain('data-testid="titlebar-notifications"');
+    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
     // Drag region is on padded spacers only — not the whole header.
     expect(titleBar).not.toMatch(/<header class="v4-titlebar" data-tauri-drag-region/);
     expect(titleBar).toContain('data-tauri-drag-region');
     expect(titleBar).toContain('class="v4-drag-pad v4-drag-lights"');
     expect(titleBar).toContain('class="v4-drag-pad v4-drag-flex"');
-    expect(titleBar).toMatch(/\.v4-status\s*\{[\s\S]*?pointer-events: none;/);
+    // V1 chrome removed (D-04).
+    expect(titleBar).not.toContain('class="v4-status"');
+    expect(titleBar).not.toContain('class="v4-action"');
   });
 
   it('company primary children remain modeled for expansion (sortV4CompaniesConnectedFirst)', () => {

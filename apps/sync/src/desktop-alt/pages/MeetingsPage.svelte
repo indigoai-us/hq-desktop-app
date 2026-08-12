@@ -492,17 +492,20 @@
       {#if urlInput.trim().length > 0}
         <!-- Destination picker. Only renders once the user starts typing —
              keeps the idle bar clean. `null` = Personal (the default). -->
-        <select
-          class="url-invite-company"
-          aria-label="Save bot to"
-          bind:value={urlInputCompanyId}
-          disabled={urlInviting}
-        >
-          <option value={null}>Personal</option>
-          {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
-            <option value={uid}>{name}</option>
-          {/each}
-        </select>
+        <span class="url-invite-company-wrap">
+          <select
+            class="url-invite-company"
+            aria-label="Save bot to"
+            bind:value={urlInputCompanyId}
+            disabled={urlInviting}
+          >
+            <option value={null}>Personal</option>
+            {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
+              <option value={uid}>{name}</option>
+            {/each}
+          </select>
+          <span class="url-invite-company-chevron" aria-hidden="true">›</span>
+        </span>
       {/if}
       <button
         type="button"
@@ -904,12 +907,31 @@
   .url-input::placeholder { color: var(--v4-text-3); }
   .url-input:focus { outline: none; border-color: var(--v4-text-3); }
   .url-input:disabled { opacity: 0.55; cursor: default; }
+  /* Styled (non-native-looking) destination dropdown (D-18). */
+  .url-invite-company-wrap {
+    position: relative;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+  }
   .url-invite-company {
+    appearance: none;
+    -webkit-appearance: none;
     flex: 0 0 auto; max-width: 160px;
-    padding: 6px 8px; border: 1px solid var(--v4-control-border);
+    padding: 6px 24px 6px 8px; border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-field); background: var(--v4-inset);
     color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 18px;
     cursor: pointer;
+  }
+  .url-invite-company:focus { outline: none; border-color: var(--v4-text-3); }
+  .url-invite-company-chevron {
+    position: absolute;
+    right: 8px;
+    color: var(--v4-text-3);
+    font-size: 13px;
+    line-height: 1;
+    transform: rotate(90deg);
+    pointer-events: none;
   }
   .url-invite-company:disabled { opacity: 0.55; cursor: default; }
   .url-invite-btn { flex: 0 0 auto; }

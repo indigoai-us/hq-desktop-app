@@ -41,13 +41,20 @@ export const BOARD_COLUMN_TITLE: Record<BoardColumnId, string> = {
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
 
+/** One acceptance criterion — string form or explicit done flag for fixtures. */
+export type BoardAcInput = string | { text: string; done?: boolean };
+
 /** Story row as consumed by the board (from PRD userStories). */
 export interface BoardStoryInput {
   id: string;
   title?: string;
   description?: string;
-  acceptanceCriteria?: string[];
-  /** Story-level pass flag — when true, all AC render checked + struck. */
+  /**
+   * Acceptance criteria. Strings use story-level pass; objects may set per-item
+   * `done` for partial fixtures (e.g. 2 of 4 struck).
+   */
+  acceptanceCriteria?: BoardAcInput[];
+  /** Story-level pass flag — when true (and no per-item flags), all AC done. */
   passes?: boolean;
 }
 
@@ -262,9 +269,10 @@ export function hasReviewSignal(signal: BoardStorySignal | null | undefined): bo
 /**
  * Build the card / panel status-line vocabulary string.
  *
- * Exact forms:
+ * Exact forms (D-12):
  * - `AGENT RUNNING · 42%` (live session; omit ` · %` when progress unknown)
- * - `{PERSON} · DESIGN REVIEW` (reviewer signal, uppercased person)
+ * - `{PERSON} REVIEWING` (reviewer signal, e.g. `MARCUS REVIEWING`)
+ * - `DESIGN REVIEW` (review without named person / design flag)
  * - `PR OPEN · CI GREEN` / `PR OPEN · CI RED` / `PR OPEN` (CI unknown)
  * - `SHIPPED` (done)
  * - `QUEUED` (untouched fallback)
@@ -290,7 +298,10 @@ export function buildStatusLine(input: {
 
   const reviewer = signal?.reviewer?.trim();
   if (reviewer) {
-    return `${reviewer.toUpperCase()} · DESIGN REVIEW`;
+    const name = reviewer.toUpperCase();
+    // "design" alone → DESIGN REVIEW; named humans → "MARCUS REVIEWING".
+    if (name === 'DESIGN' || name === 'DESIGN REVIEW') return 'DESIGN REVIEW';
+    return `${name} REVIEWING`;
   }
 
   if (signal?.prOpen === true) {
@@ -404,11 +415,23 @@ export function deriveBoardColumns(
 }
 
 /**
+ * Normalize one AC input into text + optional explicit done flag.
+ */
+export function normalizeAcInput(raw: BoardAcInput): { text: string; done?: boolean } {
+  if (typeof raw === 'string') return { text: raw };
+  return {
+    text: (raw.text ?? '').trim() || String(raw),
+    done: raw.done,
+  };
+}
+
+/**
  * Story detail panel model.
  *
- * Acceptance criteria use **story-level pass semantics** (no per-criterion
- * state or writes): when `story.passes` is true every criterion renders done
- * (checked + struck); otherwise none are checked. Count label is `x/y`.
+ * Acceptance criteria:
+ * - Prefer per-item `done` when any criterion supplies it (fixture partials).
+ * - Else **story-level pass semantics**: when `story.passes` is true every
+ *   criterion is done; otherwise none. Count label is `x/y`.
  */
 export function buildStoryPanelModel(
   story: BoardStoryInput,
@@ -426,15 +449,16 @@ export function buildStoryPanelModel(
     liveSession: passes ? null : live,
   });
 
-  const ac = story.acceptanceCriteria ?? [];
-  const acTotal = ac.length;
-  // Story-level pass semantics: when story.passes all criteria render done
-  // (checked + struck); otherwise none checked — NO per-criterion state or writes.
-  const acComplete = passes ? acTotal : 0;
-  const acceptanceCriteria: BoardAcItem[] = ac.map((text) => ({
-    text,
-    done: passes,
+  const rawAc = story.acceptanceCriteria ?? [];
+  const normalized = rawAc.map(normalizeAcInput);
+  const hasPerItemDone = normalized.some((a) => typeof a.done === 'boolean');
+  const acceptanceCriteria: BoardAcItem[] = normalized.map((a) => ({
+    text: a.text,
+    // Per-item fixtures win; else story-level pass (NO writes).
+    done: hasPerItemDone ? a.done === true : passes,
   }));
+  const acTotal = acceptanceCriteria.length;
+  const acComplete = acceptanceCriteria.filter((a) => a.done).length;
 
   const assignee =
     (live && !passes ? sessionAssigneeLabel(live) : null) ||
@@ -443,7 +467,12 @@ export function buildStoryPanelModel(
 
   const projectLabel =
     (project?.title || project?.name || project?.id || prd?.name || '').trim() || '—';
-  const branch = (prd?.branchName ?? '').trim() || '—';
+  // BRANCH populated during runs (live agent) or from PRD.
+  const liveBranch =
+    live && isPortfolioLiveStatus(live.status)
+      ? (prd?.branchName ?? '').trim() || `story/${storyId.toLowerCase()}`
+      : '';
+  const branch = liveBranch || (prd?.branchName ?? '').trim() || '—';
 
   return {
     id: storyId,
@@ -534,3 +563,84 @@ export function buildStoryActivity(
   });
   return matched;
 }
+
+// ── Visual-QA fixtures (D-12) ────────────────────────────────────────────────
+
+/** Demo stories for the Board when no PRD is available. */
+export const BOARD_FIXTURE_STORIES: BoardStoryInput[] = [
+  {
+    id: 'US-010',
+    title: 'Wire chat shell',
+    description:
+      'Ship the chat-first shell with one sidebar, channel tabs, and board side panel.',
+    acceptanceCriteria: [
+      { text: 'Single sidebar only', done: true },
+      { text: 'Board docks as side panel', done: true },
+      { text: 'Files overlay preview', done: false },
+      { text: 'Core conflict card', done: false },
+    ],
+    passes: false,
+  },
+  {
+    id: 'US-011',
+    title: 'PR ready for CI',
+    description: 'Open the pull request and wait for green checks.',
+    acceptanceCriteria: ['PR opened', 'CI green', 'Review requested'],
+    passes: false,
+  },
+  {
+    id: 'US-012',
+    title: 'Marcus review pass',
+    description: 'Human review of the shell chrome and unread affordances.',
+    acceptanceCriteria: ['Unread dot', 'Titlebar minimal', 'Scope menu'],
+    passes: false,
+  },
+  {
+    id: 'US-013',
+    title: 'Design review pass',
+    description: 'Design review of tabs, members pill, and story panel.',
+    acceptanceCriteria: ['Icon+label tabs', 'Members pill', 'Side panel'],
+    passes: false,
+  },
+  {
+    id: 'US-014',
+    title: 'Shipped earlier',
+    description: 'Already merged baseline.',
+    acceptanceCriteria: ['Baseline landed'],
+    passes: true,
+  },
+];
+
+/** Review-column signals matching D-12 vocabulary. */
+export const BOARD_FIXTURE_SIGNALS: Record<string, BoardStorySignal> = {
+  'US-011': { prOpen: true, ciGreen: true },
+  'US-012': { reviewer: 'Marcus' },
+  'US-013': { reviewer: 'Design' },
+};
+
+export const BOARD_FIXTURE_SESSIONS: BoardSessionInput[] = [
+  {
+    project: 'hq-desktop-app',
+    company: 'indigo',
+    cwd: '/work/hq-desktop-app',
+    status: 'running',
+    tool: 'claude',
+    model: 'opus',
+    storyId: 'US-010',
+    progressPercent: 42,
+  },
+];
+
+export const BOARD_FIXTURE_PRD: BoardPrdInput = {
+  name: 'HQ Desktop',
+  branchName: 'feat/v2-chat-shell',
+  userStories: BOARD_FIXTURE_STORIES,
+};
+
+export const BOARD_FIXTURE_PROJECT: BoardProjectInput = {
+  id: 'hq-desktop-app',
+  title: 'HQ Desktop',
+  name: 'HQ Desktop',
+  company: 'indigo',
+  prdPath: 'companies/indigo/projects/hq-desktop-app/prd.json',
+};

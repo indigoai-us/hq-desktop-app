@@ -118,16 +118,21 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001 / US-018)', () => {
     expect(desktopApp).not.toContain('<DesktopStatusBar');
   });
 
-  it('renders the title-bar model error sentence and detail without misleading recovery copy', () => {
+  it('renders a minimal title bar (D-04) without V1 chrome', () => {
     const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
 
-    expect(titleBar).toContain('{model.sentence}');
-    expect(titleBar).toContain('{model.meta}');
-    expect(titleBar).toContain('catch (err)');
-    expect(titleBar).toContain('class="v4-action-error" role="alert"');
-    expect(titleBar).toContain("syncState === 'auth-error'");
-    expect(titleBar).toContain("'Couldn’t start sign-in'");
-    expect(titleBar).not.toContain('Sync initialized');
+    expect(titleBar).toContain('data-testid="titlebar-wordmark"');
+    expect(titleBar).toContain('data-testid="titlebar-day-date"');
+    expect(titleBar).toContain('data-testid="titlebar-meetings"');
+    expect(titleBar).toContain('data-testid="titlebar-notifications"');
+    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
+    expect(titleBar).toContain('v4-notif-dot');
+    // Removed V1 chrome.
+    expect(titleBar).not.toContain('class="v4-status"');
+    expect(titleBar).not.toContain('data-testid="cloud-connected-switch"');
+    expect(titleBar).not.toContain('data-testid="version-label"');
+    expect(titleBar).not.toContain('class="v4-account"');
+    expect(titleBar).not.toContain('Sync Now');
     expect(titleBar).not.toContain('finish sync in Claude Code');
   });
 

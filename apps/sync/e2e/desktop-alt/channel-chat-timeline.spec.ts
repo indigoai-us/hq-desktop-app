@@ -81,7 +81,7 @@ describe('desktop channel chat timeline + composer (US-004)', () => {
     expect(conversation).toContain("e.metaKey || e.ctrlKey) && e.key === 'Enter'");
     // Group-aware label: "#name" for channels, plain names for group DMs.
     expect(channelView).toContain(
-      'Message ${conversationLabel} — or type / to run an agent…',
+      'Message ${isGroup ? title : `# ${title}`} — or type / to run an agent…',
     );
   });
 

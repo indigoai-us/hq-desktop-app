@@ -361,6 +361,11 @@ function meetingFixture(
   const start = new Date();
   start.setDate(start.getDate() + daysFromToday);
   start.setHours(hour, minute, 0, 0);
+  // Sane fixture times (D-18): a same-day meeting whose slot already ended
+  // rolls to tomorrow so the harness never shows a stale past meeting today.
+  if (daysFromToday === 0 && start.getTime() + durationMinutes * 60_000 < Date.now()) {
+    start.setDate(start.getDate() + 1);
+  }
   const end = new Date(start.getTime() + durationMinutes * 60_000);
   return {
     id,

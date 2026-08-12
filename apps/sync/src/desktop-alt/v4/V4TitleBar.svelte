@@ -1,10 +1,6 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
   import type { SyncState } from '../lib/sync-model';
   import type { SettingsTab } from '../route';
-  import VersionPopout from '../components/VersionPopout.svelte';
-  import CopyPromptButton from '../../components/CopyPromptButton.svelte';
-  import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte';
   import { getV4TitleBarModel, type V4HydrationIssue } from './model';
   import { titlebarDayDate } from '../chat/sidebar-model';
   import type { HomeConflict } from './home-model';
@@ -12,36 +8,31 @@
   import './tokens.css';
 
   /**
-   * Compact native title bar (DESKTOP-001 + US-003 chat chrome): traffic-light
-   * inset, sidebar toggle, HQ wordmark, DAY · DATE, live sync status, meetings
-   * / notifications stubs, Core pill, command search, contextual sync action,
-   * and account control. Liquid Glass lives on this chrome only. Tauri drag
-   * regions are limited to noninteractive padded spacers — never the whole
-   * header and never interactive controls.
+   * Minimal native title bar (visual QA D-04): traffic-light inset, sidebar
+   * toggle, HQ wordmark, DAY · DATE, meetings icon, bell with monochrome unread
+   * dot, and Core pill. Sync/cloud/version/account live in Core + sidebar footer.
+   * Liquid Glass lives on this chrome only. Tauri drag regions are limited to
+   * noninteractive padded spacers — never the whole header and never controls.
+   *
+   * Extra props (syncState, watchedCount, …) remain accepted so DesktopApp can
+   * keep a single wiring surface; they are no longer rendered as V1 chrome.
    */
   interface Props {
     version: string;
     syncState: SyncState;
-    /** Connected workspaces being watched (companies + personal). */
     watchedCount: number;
-    /** Human relative last-sync label ("just now", "5m ago"). */
     lastSyncLabel?: string | null;
-    /** Company currently transferring, while syncing. */
     syncingCompany?: string | null;
     fanoutDone?: number;
     fanoutTotal?: number;
-    /** Plain-language error summary, for error states. */
     errorSummary?: string | null;
-    /** Failed desktop hydration while cached surfaces remain visible. */
     hydrationIssue?: V4HydrationIssue | null;
-    /** The newest hydration request is still resolving. */
     hydrationRefreshing?: boolean;
     errorMessage?: string;
     errorCompany?: string | null;
     conflictCount?: number;
     conflictCompany?: string | null;
     hqFolderPath?: string | null;
-    /** Account initials for the profile control (e.g. "CE"). */
     accountInitials?: string | null;
     sidebarCollapsed?: boolean;
     onsync?: () => void | Promise<void>;
@@ -53,17 +44,11 @@
     oncommand?: () => void;
     onaccount?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
-    /** US-003 / US-012: meetings + notifications destinations. */
     onopenMeetings?: () => void;
     onopenNotifications?: () => void;
-    /**
-     * Unread notifications count for the bell badge (US-012). Hidden at 0;
-     * display caps at 99+ (formatting owned by the caller or inline).
-     */
+    /** Unread count drives monochrome bell dot only (no red pill). */
     unreadCount?: number;
-    /** V2 Cloud Off (US-001 / US-016): true when sync is paused on this device. */
     cloudPaused?: boolean;
-    /** Live per-file conflicts for the Core popover rescue card (US-016). */
     conflicts?: HomeConflict[];
     oncloudtoggle?: (paused: boolean) => void;
     onresolveconflict?: (
@@ -72,7 +57,6 @@
     ) => void | Promise<void>;
     onopenconflict?: (path: string) => void | Promise<void>;
     onopendrift?: () => void | Promise<void>;
-    /** US-016 / US-017: open Library overlay (stub route is fine). */
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
   }
@@ -88,28 +72,20 @@
     errorSummary = null,
     hydrationIssue = null,
     hydrationRefreshing = false,
-    errorMessage = '',
-    errorCompany = null,
     conflictCount = 0,
     conflictCompany = null,
-    hqFolderPath = null,
-    accountInitials = null,
-    sidebarCollapsed = false,
     onsync,
     oncancel,
     onretry,
     onretryhydration,
     onresolveconflicts,
+    sidebarCollapsed = false,
     ontogglesidebar,
-    oncommand,
-    onaccount,
-    onOpenSettings,
     onopenMeetings,
     onopenNotifications,
     unreadCount = 0,
     cloudPaused = false,
     conflicts = [],
-    oncloudtoggle,
     onresolveconflict,
     onopenconflict,
     onopendrift,
@@ -119,6 +95,12 @@
 
   const dayDateLabel = $derived(titlebarDayDate());
 
+  /**
+   * Canonical status model. The minimal titlebar (D-04) hides idle sync
+   * chrome, but recovery flows stay first-class: hydration Retry re-runs the
+   * real hydration commands and conflicts route through the canonical
+   * resolve-conflicts prompt — never a bare Sync.
+   */
   const model = $derived(
     getV4TitleBarModel({
       syncState,
@@ -131,57 +113,11 @@
       hydrationIssue,
     }),
   );
+  let recoveryBusy = $state(false);
 
-  const initials = $derived((accountInitials ?? 'HQ').slice(0, 2).toUpperCase());
-  /** Bell badge: hide at 0, cap display at 99+. */
-  const notificationsBadge = $derived.by(() => {
-    const n = Number.isFinite(unreadCount) ? Math.floor(unreadCount) : 0;
-    if (n <= 0) return null;
-    return n > 99 ? '99+' : String(n);
-  });
-  let versionOpen = $state(false);
-  let versionContainer: HTMLDivElement | null = $state(null);
-  let coreOpen = $state(false);
-  let coreContainer: HTMLDivElement | null = $state(null);
-  let coreVersion = $state<string | null>(null);
-  let coreVersionLoading = $state(true);
-  let coreVersionError = $state(false);
-  let actionPending = $state(false);
-  let actionError = $state<string | null>(null);
-  let actionErrorDetail = $state('');
-  let actionContext = '';
-  let coreVersionLoadGeneration = 0;
-  const coreVersionLabel = $derived.by(() => {
-    if (coreVersionLoading) return 'Core checking…';
-    if (coreVersion) return `Core v${coreVersion}`;
-    return coreVersionError ? 'Core unavailable' : 'Core not detected';
-  });
-
-  async function refreshCoreVersion() {
-    const generation = ++coreVersionLoadGeneration;
-    coreVersionLoading = true;
-    coreVersionError = false;
-    try {
-      const next = await invoke<string | null>('get_hq_version');
-      if (generation === coreVersionLoadGeneration) {
-        coreVersion = next;
-        coreVersionError = false;
-      }
-    } catch (err) {
-      if (generation !== coreVersionLoadGeneration) return;
-      console.error('titlebar: failed to read HQ Core version', err);
-      coreVersion = null;
-      coreVersionError = true;
-    } finally {
-      if (generation === coreVersionLoadGeneration) coreVersionLoading = false;
-    }
-  }
-
-  async function handleAction(): Promise<void> {
-    if (actionPending) return;
-    actionPending = true;
-    actionError = null;
-    actionErrorDetail = '';
+  async function handleRecoveryAction(): Promise<void> {
+    if (recoveryBusy) return;
+    recoveryBusy = true;
     try {
       if (model.recovery === 'hydration') await onretryhydration?.();
       else if (model.action.id === 'cancel') await oncancel?.();
@@ -190,53 +126,57 @@
       else await onsync?.();
     } catch (err) {
       console.error(`titlebar: ${model.action.id} action failed`, err);
-      actionErrorDetail = err instanceof Error ? err.message : String(err);
-      actionError =
-        model.recovery === 'hydration'
-          ? 'Couldn’t refresh'
-          : model.action.id === 'cancel'
-            ? 'Couldn’t cancel'
-            : model.action.id === 'resolve'
-              ? 'Couldn’t open conflicts'
-              : syncState === 'auth-error'
-                ? 'Couldn’t start sign-in'
-                : model.action.id === 'retry'
-                  ? 'Couldn’t retry'
-                  : 'Couldn’t start sync';
     } finally {
-      actionPending = false;
+      recoveryBusy = false;
     }
   }
 
-  $effect(() => {
-    const nextContext = `${syncState}:${model.recovery ?? ''}:${model.action.id}`;
-    if (nextContext === actionContext) return;
-    actionContext = nextContext;
-    actionError = null;
-    actionErrorDetail = '';
+  /**
+   * Recovery card for the Core popover (D-04: no recovery chrome in the bar).
+   * Hydration Retry re-runs the real hydration commands; conflicts route
+   * through the canonical resolve-conflicts prompt — never a bare Sync.
+   */
+  const recoveryCard = $derived.by(() => {
+    if (model.recovery === 'hydration') {
+      return {
+        sentence: model.sentence,
+        label: hydrationRefreshing || recoveryBusy ? 'Retrying…' : 'Retry',
+        busy: hydrationRefreshing || recoveryBusy,
+        copyIssue: null,
+      };
+    }
+    if (syncState === 'conflict' && model.action.id === 'resolve') {
+      return {
+        sentence: model.sentence,
+        label: recoveryBusy ? 'Opening…' : 'Resolve conflicts',
+        busy: recoveryBusy,
+        copyIssue: {
+          kind: 'sync-conflict' as const,
+          payload: { count: conflictCount, company: conflictCompany },
+        },
+      };
+    }
+    if (syncState === 'error' || syncState === 'auth-error') {
+      return {
+        sentence: model.sentence,
+        label: recoveryBusy ? 'Working…' : model.action.label,
+        busy: recoveryBusy,
+        copyIssue: null,
+      };
+    }
+    return null;
   });
 
-  $effect(() => {
-    if (!versionOpen) return;
+  /** Bell monochrome dot only — no red pill / count (D-04). */
+  const hasUnread = $derived(
+    Number.isFinite(unreadCount) && Math.floor(unreadCount) > 0,
+  );
+  let coreOpen = $state(false);
+  let coreContainer: HTMLDivElement | null = $state(null);
 
-    function onMouseDown(event: MouseEvent) {
-      if (!(event.target instanceof Node)) return;
-      if (versionContainer && !versionContainer.contains(event.target)) {
-        versionOpen = false;
-      }
-    }
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') versionOpen = false;
-    }
-
-    window.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  });
+  function openCore(): void {
+    coreOpen = !coreOpen;
+  }
 
   $effect(() => {
     if (!coreOpen) return;
@@ -257,17 +197,6 @@
     return () => {
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('keydown', onKeyDown);
-    };
-  });
-
-  $effect(() => {
-    // Read once on mount and again whenever the update popout opens/closes so
-    // a Core update completed in Settings becomes visible without relaunching.
-    versionOpen;
-    coreOpen;
-    void refreshCoreVersion();
-    return () => {
-      coreVersionLoadGeneration += 1;
     };
   });
 </script>
@@ -294,50 +223,20 @@
     <span class="v4-day-date" data-testid="titlebar-day-date">{dayDateLabel}</span>
   </div>
 
-  <div class="v4-status" aria-live="polite">
-    <span
-      class={`v4-dot ${model.tone}`}
-      class:pulsing={syncState === 'syncing'}
-      aria-hidden="true"
-    ></span>
-    <span class="v4-sentence">{model.sentence}</span>
-    {#if model.meta}
-      <span class="v4-meta">{model.meta}</span>
-    {/if}
-  </div>
-
-  <button
-    type="button"
-    class="v4-cloud-switch"
-    class:off={cloudPaused}
-    role="switch"
-    aria-checked={!cloudPaused}
-    data-testid="cloud-connected-switch"
-    title={cloudPaused
-      ? 'Cloud is off — sync is paused on this device'
-      : 'Cloud connected — click to pause sync on this device'}
-    onclick={() => oncloudtoggle?.(!cloudPaused)}
-  >
-    <span class={`v4-dot ${cloudPaused ? 'idle' : 'ok'}`} aria-hidden="true"></span>
-    {cloudPaused ? 'Cloud Off' : 'Cloud Connected'}
-  </button>
-
-  <!-- Flexible noninteractive pad between status and actions — primary drag. -->
+  <!-- Flexible noninteractive pad — primary drag. -->
   <div class="v4-drag-pad v4-drag-flex" data-tauri-drag-region aria-hidden="true"></div>
 
   <div class="v4-title-actions">
-    {#if actionError}
-      <span class="v4-action-error" role="alert" title={actionErrorDetail}>
-        {actionError}
-      </span>
-    {/if}
     <button
       type="button"
       class="v4-icon-btn"
       data-testid="titlebar-meetings"
       aria-label="Meetings"
       title="Meetings"
-      onclick={() => onopenMeetings?.()}
+      onclick={() => {
+        coreOpen = false;
+        onopenMeetings?.();
+      }}
     >
       <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <rect x="2" y="4" width="12" height="8.5" rx="1.5" stroke="currentColor" stroke-width="1.2" />
@@ -349,11 +248,12 @@
       type="button"
       class="v4-icon-btn v4-notif-btn"
       data-testid="titlebar-notifications"
-      aria-label={notificationsBadge
-        ? `Notifications, ${notificationsBadge} unread`
-        : 'Notifications'}
+      aria-label={hasUnread ? 'Notifications, unread' : 'Notifications'}
       title="Notifications"
-      onclick={() => onopenNotifications?.()}
+      onclick={() => {
+        coreOpen = false;
+        onopenNotifications?.();
+      }}
     >
       <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path
@@ -364,14 +264,12 @@
         />
         <path d="M6.5 12.25a1.5 1.5 0 0 0 3 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
       </svg>
-      {#if notificationsBadge}
+      {#if hasUnread}
         <span
-          class="v4-notif-badge"
+          class="v4-notif-dot"
           data-testid="titlebar-notifications-badge"
           aria-hidden="true"
-        >
-          {notificationsBadge}
-        </span>
+        ></span>
       {/if}
     </button>
     <div class="v4-core-wrap" bind:this={coreContainer}>
@@ -383,10 +281,7 @@
         aria-expanded={coreOpen}
         aria-haspopup="dialog"
         aria-label="Open Core popover"
-        onclick={() => {
-          coreOpen = !coreOpen;
-          if (coreOpen) versionOpen = false;
-        }}
+        onclick={openCore}
       >
         <span class="v4-core-dot" aria-hidden="true">●</span>
         Core
@@ -397,6 +292,8 @@
           appVersion={version}
           {conflicts}
           {cloudPaused}
+          recovery={recoveryCard}
+          onrecovery={handleRecoveryAction}
           onclose={() => (coreOpen = false)}
           onresolve={onresolveconflict}
           onopeneditor={onopenconflict}
@@ -412,131 +309,6 @@
         />
       {/if}
     </div>
-    <button
-      type="button"
-      class="v4-icon-btn"
-      aria-label="Open command palette"
-      title="Open command palette (⌘K)"
-      onclick={() => oncommand?.()}
-    >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.25" />
-        <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
-      </svg>
-    </button>
-    {#if model.recovery === 'hydration'}
-      <button
-        type="button"
-        class="v4-action"
-        disabled={hydrationRefreshing || actionPending}
-        aria-busy={hydrationRefreshing || actionPending}
-        onclick={handleAction}
-      >
-        {hydrationRefreshing || actionPending ? 'Retrying…' : 'Retry'}
-      </button>
-    {:else if syncState === 'conflict'}
-      <div class="v4-recovery-actions" data-tauri-drag-region="false">
-        <button
-          type="button"
-          class="v4-action"
-          onclick={handleAction}
-          disabled={actionPending}
-          aria-busy={actionPending}
-        >
-          {actionPending ? 'Opening…' : 'Resolve conflicts'}
-        </button>
-        <CopyPromptButton
-          variant="inline"
-          label="Copy prompt"
-          issue={{
-            kind: 'sync-conflict',
-            payload: { count: conflictCount, company: conflictCompany },
-          }}
-        />
-      </div>
-    {:else if syncState === 'error' && errorMessage}
-      <div class="v4-recovery-actions" data-tauri-drag-region="false">
-        <button
-          type="button"
-          class="v4-action"
-          onclick={handleAction}
-          disabled={actionPending}
-          aria-busy={actionPending}
-        >
-          {actionPending ? 'Retrying…' : 'Retry'}
-        </button>
-        <OpenInClaudeCodeButton
-          variant="inline"
-          label="Finish sync in Claude Code"
-          folder={hqFolderPath ?? ''}
-          issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
-        />
-        <CopyPromptButton
-          variant="inline"
-          label="Copy prompt"
-          issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
-        />
-      </div>
-    {:else}
-      <button
-        type="button"
-        class="v4-action"
-        onclick={handleAction}
-        disabled={actionPending}
-        aria-busy={actionPending}
-      >
-        {actionPending
-          ? model.action.id === 'cancel'
-            ? 'Cancelling…'
-            : 'Starting…'
-          : model.action.label === 'Sync Now'
-            ? 'Sync'
-            : model.action.label}
-      </button>
-    {/if}
-    <div class="v4-version-wrap" bind:this={versionContainer}>
-      <button
-        type="button"
-        class="v4-version"
-        data-testid="version-label"
-        aria-expanded={versionOpen}
-        aria-haspopup="dialog"
-        aria-label={`HQ desktop app v${version}; ${coreVersionLabel}; ${
-          coreVersionError ? 'retry Core version and open updates' : 'open updates'
-        }`}
-        onclick={() => (versionOpen = !versionOpen)}
-      >
-        <span class="v4-version-app">App v{version}</span>
-        <span class="v4-version-divider" aria-hidden="true">·</span>
-        <span class="v4-version-core" data-testid="core-version-label">
-          {coreVersionLabel}
-        </span>
-        {#if coreVersionError && !coreVersionLoading}
-          <span
-            class="v4-version-retry"
-            data-testid="core-version-retry"
-            aria-hidden="true"
-          >Retry</span>
-        {/if}
-      </button>
-      {#if versionOpen}
-        <VersionPopout
-          {version}
-          placement="below"
-          onOpenSettings={(tab) => onOpenSettings?.(tab)}
-          onclose={() => (versionOpen = false)}
-        />
-      {/if}
-    </div>
-    <button
-      type="button"
-      class="v4-account"
-      aria-label="Account and settings"
-      title="Account and settings"
-      onclick={() => onaccount?.()}
-    >
-      {initials}
-    </button>
   </div>
 </header>
 
@@ -586,42 +358,6 @@
     line-height: 1;
     text-transform: uppercase;
     white-space: nowrap;
-  }
-
-  .v4-cloud-switch {
-    appearance: none;
-    -webkit-appearance: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex: 0 0 auto;
-    height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
-    font: inherit;
-    font-size: var(--type-metadata, 11px);
-    font-weight: 550;
-    line-height: 1;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .v4-cloud-switch.off {
-    color: var(--v4-text-3);
-  }
-
-  .v4-cloud-switch:hover {
-    border-color: var(--v4-control-border);
-    background: var(--v4-secondary-bg, var(--v4-active-row));
-    color: var(--v4-text-1);
-  }
-
-  .v4-cloud-switch:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: var(--v4-focus-offset, 2px);
   }
 
   .v4-core-wrap {
@@ -700,154 +436,14 @@
     min-width: 12px;
   }
 
-  .v4-status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    overflow: hidden;
-    min-width: 0;
-    max-width: 42%;
-    height: 28px;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    /* Status is display-only — do not steal drag or clicks. */
-    pointer-events: none;
-  }
-
-  .v4-dot {
-    flex: 0 0 6px;
-    width: 6px;
-    height: 6px;
-    border-radius: var(--v4-radius-pill);
-  }
-
-  .v4-dot.ok {
-    background: var(--v4-ok);
-  }
-
-  .v4-dot.warn {
-    background: var(--v4-warn);
-  }
-
-  .v4-dot.error {
-    background: var(--v4-error);
-  }
-
-  .v4-dot.idle {
-    background: var(--v4-idle);
-  }
-
-  .v4-dot.pulsing {
-    animation: v4-dot-pulse 1.4s ease-in-out infinite;
-  }
-
-  @keyframes v4-dot-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .v4-dot.pulsing {
-      animation: none;
-    }
-  }
-
-  .v4-sentence {
-    color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 500;
-    line-height: 1;
-    white-space: nowrap;
-  }
-
-  .v4-meta {
-    overflow: hidden;
-    min-width: 0;
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-xs));
-    font-weight: 400;
-    line-height: 1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .v4-title-actions {
     display: flex;
     align-items: center;
     flex: 0 0 auto;
     gap: 6px;
-  }
-
-  .v4-action-error {
-    max-width: 150px;
-    overflow: hidden;
-    color: var(--v4-error);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 550;
-    line-height: 1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .v4-version-wrap {
-    position: relative;
-    flex: 0 0 auto;
-  }
-
-  .v4-version {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 28px;
-    padding: 0 9px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-3);
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .v4-version:hover,
-  .v4-version[aria-expanded='true'] {
-    border-color: var(--v4-control-border);
-    background: var(--v4-secondary-bg);
-    color: var(--v4-text-1);
-  }
-
-  .v4-version-app {
-    color: var(--v4-text-3);
-    font-weight: 450;
-  }
-
-  .v4-version-divider {
-    color: var(--v4-hairline-strong, var(--v4-text-3));
-  }
-
-  .v4-version-core {
-    color: var(--v4-text-1);
-    font-weight: 650;
-  }
-
-  .v4-version-retry {
-    color: var(--v4-text-1);
-    font-weight: 500;
-  }
-
-  .v4-version:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: var(--v4-focus-offset, 2px);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
   }
 
   .v4-icon-btn {
@@ -896,93 +492,15 @@
     position: relative;
   }
 
-  .v4-notif-badge {
+  /* Plain monochrome unread DOT — no red pill/count (D-04). */
+  .v4-notif-dot {
     position: absolute;
-    top: -2px;
-    right: -2px;
-    min-width: 14px;
-    height: 14px;
-    padding: 0 3px;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
     border-radius: var(--v4-radius-pill);
-    background: var(--v4-error, #c44);
-    color: #fff;
-    font-size: 9px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    line-height: 14px;
-    text-align: center;
-  }
-
-  .v4-action {
-    flex: 0 0 auto;
-    height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 500;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .v4-action:hover:not(:disabled) {
-    background: var(--v4-active-row);
-  }
-
-  .v4-action:disabled {
-    cursor: default;
-    opacity: 0.55;
-  }
-
-  .v4-action:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: var(--v4-focus-offset, 2px);
-  }
-
-  .v4-account {
-    flex: 0 0 auto;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .v4-account:hover {
-    background: var(--v4-active-row);
-  }
-
-  .v4-account:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: var(--v4-focus-offset, 2px);
-  }
-
-  .v4-recovery-actions {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .v4-recovery-actions :global(button) {
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 28px;
-    padding-block: 0;
-    line-height: 1;
+    background: var(--v4-text-1);
   }
 
   @media (prefers-reduced-transparency: reduce) {
@@ -990,6 +508,14 @@
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
       box-shadow: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .v4-titlebar,
+    .v4-icon-btn,
+    .v4-core-pill {
+      transition: none;
     }
   }
 </style>

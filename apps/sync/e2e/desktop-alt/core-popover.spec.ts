@@ -99,7 +99,12 @@ describe('US-016: Cloud Off gates EVERY sync path (review-critical)', () => {
     expect(cloudConnection).toContain('migrateLegacy');
     expect(desktopApp).toContain('setCloudPaused(paused)');
     expect(desktopApp).toContain('loadCloudPaused()');
-    expect(titleBar).toContain('data-testid="cloud-connected-switch"');
+    // Cloud toggle lives in Core popover / settings (D-04 removed titlebar switch).
+    expect(titleBar).not.toContain('data-testid="cloud-connected-switch"');
+    // Paused state surfaces in the v4 Core popover (D-08).
+    expect(readRepoFile('src/desktop-alt/v4/CorePopover.svelte')).toContain(
+      'data-testid="core-popover-paused"',
+    );
   });
 
   it('Rust refuses start_sync and every watch-daemon origin while paused', () => {

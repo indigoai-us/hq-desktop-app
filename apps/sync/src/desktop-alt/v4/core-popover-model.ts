@@ -18,6 +18,8 @@ export interface CorePopoverConflict {
 export interface CorePopoverPack {
   name: string;
   version?: string | null;
+  /** When true, row shows a NEW badge (D-08 fixtures). */
+  isNew?: boolean;
 }
 
 export interface CorePopoverCoreState {
@@ -32,12 +34,16 @@ export interface CorePopoverCoreState {
 
 export interface BuildCorePopoverInput {
   conflicts?: readonly CorePopoverConflict[];
+  /** Epoch-ms of the newest conflict for "· 2m ago" header suffix. */
+  conflictUpdatedAtMs?: number | null;
   core?: CorePopoverCoreState | null;
   appVersion?: string | null;
   updateAvailable?: boolean;
   packs?: readonly CorePopoverPack[];
   cloudPaused?: boolean;
   packsExpanded?: boolean;
+  /** Wall clock for ago labels (tests inject). */
+  now?: number;
 }
 
 // ── Outputs ──────────────────────────────────────────────────────────────────
@@ -96,10 +102,27 @@ export function conflictCompanyPath(path: string): string {
   return normalized.slice(0, idx);
 }
 
-export function conflictHeaderLabel(count: number): string {
+export function conflictHeaderLabel(count: number, agoLabel?: string | null): string {
   const n = Math.max(0, Math.floor(count));
   if (n <= 0) return '';
-  return n === 1 ? '1 conflict needs you' : `${n} conflicts need you`;
+  const base = n === 1 ? '1 conflict needs you' : `${n} conflicts need you`;
+  const ago = (agoLabel ?? '').trim();
+  return ago ? `${base} · ${ago}` : base;
+}
+
+/** Relative ago label for conflict header (e.g. "2m ago"). */
+export function conflictAgoLabel(updatedAtMs?: number | null, now: number = Date.now()): string {
+  if (updatedAtMs == null || !Number.isFinite(updatedAtMs) || updatedAtMs <= 0) {
+    return 'just now';
+  }
+  const delta = Math.max(0, now - updatedAtMs);
+  const mins = Math.floor(delta / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 export function driftPillLabel(count: number): string {
@@ -154,6 +177,10 @@ export function buildCorePopoverViewModel(input: BuildCorePopoverInput = {}): Co
     actionsDisabled: c.status === 'resolving',
   }));
   const conflictCount = conflictRows.length;
+  const ago =
+    input.conflictUpdatedAtMs != null && conflictCount > 0
+      ? conflictAgoLabel(input.conflictUpdatedAtMs, input.now ?? Date.now())
+      : null;
 
   const core = input.core ?? null;
   const driftCount = Math.max(0, Math.floor(core?.driftCount ?? 0));
@@ -162,7 +189,7 @@ export function buildCorePopoverViewModel(input: BuildCorePopoverInput = {}): Co
 
   return {
     conflictRows,
-    conflictHeader: conflictHeaderLabel(conflictCount),
+    conflictHeader: conflictHeaderLabel(conflictCount, ago),
     conflictCount,
     hqVersionLabel: hqVersionLabel(core?.hqVersion),
     driftPill: driftPillLabel(driftCount),
@@ -177,5 +204,43 @@ export function buildCorePopoverViewModel(input: BuildCorePopoverInput = {}): Co
     cloudPaused,
     pausedNotice: cloudPaused ? CLOUD_PAUSED_NOTICE : null,
     syncNowAllowed: isSyncNowAllowed(cloudPaused),
+  };
+}
+
+// ── Visual-QA fixtures (D-08) ────────────────────────────────────────────────
+
+export const CORE_POPOVER_FIXTURE_CONFLICTS: CorePopoverConflict[] = [
+  {
+    path: 'companies/indigo/knowledge/runbook.md',
+    status: 'pending',
+  },
+];
+
+export const CORE_POPOVER_FIXTURE_PACKS: CorePopoverPack[] = [
+  { name: 'engineering', version: '1.4.0' },
+  { name: 'impeccable', version: '0.9.2', isNew: true },
+  { name: 'gstack', version: '2.1.0' },
+  { name: 'pocock-skills', version: '0.3.1' },
+];
+
+/** Fixture input: conflicts + update available + 4 packs (one NEW) + paused. */
+export function corePopoverFixtureInput(
+  overrides: Partial<BuildCorePopoverInput> = {},
+): BuildCorePopoverInput {
+  return {
+    conflicts: CORE_POPOVER_FIXTURE_CONFLICTS,
+    conflictUpdatedAtMs: Date.now() - 3 * 60_000,
+    updateAvailable: true,
+    packs: CORE_POPOVER_FIXTURE_PACKS,
+    cloudPaused: true,
+    packsExpanded: true,
+    appVersion: '2.4.0',
+    core: {
+      hqVersion: '15.2.0',
+      driftCount: 0,
+      needsRestore: false,
+      channel: 'release',
+    },
+    ...overrides,
   };
 }

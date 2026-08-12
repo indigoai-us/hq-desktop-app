@@ -152,10 +152,10 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
 
   it('gives icon controls accessible labels and focus-visible states', () => {
     expect(titleBar).toContain('aria-label={sidebarCollapsed ? \'Show sidebar\' : \'Hide sidebar\'}');
-    expect(titleBar).toContain('aria-label="Open command palette"');
-    expect(titleBar).toContain('aria-label="Account and settings"');
+    expect(titleBar).toContain('data-testid="titlebar-meetings"');
+    expect(titleBar).toContain('data-testid="titlebar-notifications"');
+    expect(titleBar).toContain('aria-label="Open Core popover"');
     expect(titleBar).toMatch(/\.v4-icon-btn:focus-visible\s*\{/);
-    expect(titleBar).toMatch(/\.v4-account:focus-visible\s*\{/);
     expect(desktopCss).toMatch(
       /\.desktop-icon-btn:focus-visible,\s*\.v4-icon-btn:focus-visible\s*\{/,
     );
@@ -173,7 +173,6 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
       /@supports not \(\(backdrop-filter:\s*blur\(1px\)\)[\s\S]*?@media \(prefers-reduced-transparency:\s*reduce\)\s*\{[\s\S]*?--v4-fallback-material-alpha:\s*1/,
     );
     expect(titleBar).toContain('@media (prefers-reduced-transparency: reduce)');
-    expect(titleBar).toContain('@media (prefers-reduced-motion: reduce)');
     expect(messages).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
@@ -206,10 +205,8 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(titleBar).toContain('class="v4-drag-pad v4-drag-lights"');
     expect(titleBar).toContain('class="v4-drag-pad v4-drag-flex"');
     expect(titleBar).toContain('data-tauri-drag-region');
-    expect(titleBar).toMatch(/\.v4-status\s*\{[\s\S]*?pointer-events:\s*none/);
     // Interactive controls must not be drag regions.
     expect(titleBar).not.toMatch(/class="v4-icon-btn"[^>]*data-tauri-drag-region/);
-    expect(titleBar).not.toMatch(/class="v4-action"[^>]*data-tauri-drag-region/);
-    expect(titleBar).not.toMatch(/class="v4-account"[^>]*data-tauri-drag-region/);
+    expect(titleBar).not.toMatch(/class="v4-core-pill"[^>]*data-tauri-drag-region/);
   });
 });

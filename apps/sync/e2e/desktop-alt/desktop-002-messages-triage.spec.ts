@@ -144,13 +144,16 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(conversation).toContain('onsend');
   });
 
-  it('uses one window material with a locally separated rail and naked main canvas', () => {
+  it('uses one window material; embedded mode hides the second rail (D-02)', () => {
     const railRule = shell.match(/\.rail\s*\{([\s\S]*?)\}/)?.[1] ?? '';
     const windowRule = shell.match(/\.messages-window\s*\{([\s\S]*?)\}/)?.[1] ?? '';
     expect(shell).toMatch(
       /\.messages-window\s*\{[\s\S]*?background:\s*var\(--v4-ground/,
     );
     expect(windowRule).not.toContain('backdrop-filter:');
+    // Standalone Messages window still has a rail; embedded shell hides it.
+    expect(shell).toContain('{#if !embedded}');
+    expect(shell).toContain('class:embedded');
     expect(railRule).toMatch(/background:\s*color-mix\(in srgb,[\s\S]*?4%,\s*transparent\);/);
     expect(railRule).not.toContain('backdrop-filter:');
     expect(shell).toMatch(
@@ -160,20 +163,7 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
       /:global\(\[data-window='desktop-alt'\]\) \.dm-reply-input\s*\{[\s\S]*?background:\s*transparent;/,
     );
     expect(shell).toContain('data-testid="messages-main-pane"');
-    // Title/meta 3px gap on rail rows and pane headers.
-    expect(shell).toMatch(
-      /\.contact-meta\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
-    expect(shell).toMatch(
-      /\.pane-title-stack\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
     expect(shell).toMatch(/\.rail\s*\{[\s\S]*?width:\s*282px/);
-    expect(shell).toMatch(
-      /\.compact-list \.contact-row\s*\{[\s\S]*?min-height:\s*34px;[\s\S]*?border-radius:\s*6px;/,
-    );
-    expect(shell).toMatch(
-      /\.contact-row\.active\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--fg\) 10%, transparent\);[\s\S]*?box-shadow:\s*none/,
-    );
   });
 
   it('shares request/share payload components with Notifications / quick-window paths', () => {

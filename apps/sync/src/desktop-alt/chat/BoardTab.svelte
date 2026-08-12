@@ -13,6 +13,11 @@
   import type { Project } from '../lib/projects-model';
   import type { MissionControlSnapshot } from '../lib/sessions';
   import {
+    BOARD_FIXTURE_PRD,
+    BOARD_FIXTURE_PROJECT,
+    BOARD_FIXTURE_SESSIONS,
+    BOARD_FIXTURE_SIGNALS,
+    BOARD_FIXTURE_STORIES,
     BOARD_POLL_MS,
     buildStoryActivity,
     buildStoryPanelModel,
@@ -23,6 +28,7 @@
     type BoardProjectInput,
     type BoardSessionInput,
     type BoardStoryInput,
+    type BoardStorySignal,
     type StoryActivityItem,
     type StoryPanelModel,
   } from './board-model';
@@ -58,12 +64,14 @@
   let project = $state<BoardProjectInput | null>(null);
   let stories = $state<BoardStoryInput[]>([]);
   let sessions = $state<BoardSessionInput[]>([]);
+  let storySignals = $state<Record<string, BoardStorySignal> | null>(null);
   let branchName = $state<string | null>(null);
   let prdName = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  let usingFixtures = $state(false);
 
   const columns = $derived(
-    deriveBoardColumns(stories, sessions, null, project),
+    deriveBoardColumns(stories, sessions, storySignals, project),
   );
 
   const selectedStory = $derived(
@@ -74,6 +82,11 @@
 
   const panelModel = $derived.by((): StoryPanelModel | null => {
     if (!selectedStory) return null;
+    const key = selectedStory.id;
+    const signal =
+      storySignals?.[key] ??
+      storySignals?.[key.toUpperCase()] ??
+      null;
     return buildStoryPanelModel(
       selectedStory,
       project,
@@ -82,7 +95,7 @@
         branchName,
       },
       sessions,
-      null,
+      signal,
     );
   });
 
@@ -174,14 +187,35 @@
         console.error('board-tab: list_agent_sessions failed', err);
       }
 
-      project = nextProject;
-      stories = nextStories;
-      sessions = nextSessions;
-      branchName = nextBranch;
-      prdName = nextPrdName;
+      // When the project has no PRD stories, fall back to D-12 visual fixtures.
+      if (nextStories.length === 0) {
+        project = nextProject ?? BOARD_FIXTURE_PROJECT;
+        stories = BOARD_FIXTURE_STORIES;
+        sessions = BOARD_FIXTURE_SESSIONS;
+        storySignals = BOARD_FIXTURE_SIGNALS;
+        branchName = nextBranch ?? BOARD_FIXTURE_PRD.branchName ?? null;
+        prdName = nextPrdName ?? BOARD_FIXTURE_PRD.name ?? null;
+        usingFixtures = true;
+      } else {
+        project = nextProject;
+        stories = nextStories;
+        sessions = nextSessions;
+        storySignals = null;
+        branchName = nextBranch;
+        prdName = nextPrdName;
+        usingFixtures = false;
+      }
       loadError = null;
     } catch (err) {
       console.error('board-tab: refresh failed', err);
+      // Still paint fixtures so the board is reviewable offline.
+      project = BOARD_FIXTURE_PROJECT;
+      stories = BOARD_FIXTURE_STORIES;
+      sessions = BOARD_FIXTURE_SESSIONS;
+      storySignals = BOARD_FIXTURE_SIGNALS;
+      branchName = BOARD_FIXTURE_PRD.branchName ?? null;
+      prdName = BOARD_FIXTURE_PRD.name ?? null;
+      usingFixtures = true;
       loadError = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;

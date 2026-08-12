@@ -97,7 +97,7 @@ describe('board-model (US-006 Board tab)', () => {
         'PR OPEN · CI GREEN',
       );
       expect(review?.cards.find((c) => c.storyId === 'US-004')?.statusLine).toBe(
-        'ADA · DESIGN REVIEW',
+        'ADA REVIEWING',
       );
     });
 
@@ -159,7 +159,7 @@ describe('board-model (US-006 Board tab)', () => {
 
     it('emits reviewer, PR/CI, SHIPPED, and QUEUED forms', () => {
       expect(buildStatusLine({ signal: { reviewer: 'corey' } })).toBe(
-        'COREY · DESIGN REVIEW',
+        'COREY REVIEWING',
       );
       expect(buildStatusLine({ signal: { prOpen: true, ciGreen: true } })).toBe(
         'PR OPEN · CI GREEN',
@@ -214,6 +214,38 @@ describe('board-model (US-006 Board tab)', () => {
       expect(done.acceptanceCriteria.every((c) => c.done === true)).toBe(true);
       expect(done.statusBadge).toBe('SHIPPED');
       expect(done.fields.status).toBe('SHIPPED');
+    });
+
+    it('supports partial AC fixtures (2 of 4 struck) and review vocabulary', () => {
+      const panel = buildStoryPanelModel(
+        story({
+          id: 'US-010',
+          title: 'Partial AC',
+          description: 'Fixture with mixed criteria.',
+          acceptanceCriteria: [
+            { text: 'One', done: true },
+            { text: 'Two', done: true },
+            { text: 'Three', done: false },
+            { text: 'Four', done: false },
+          ],
+        }),
+        project,
+        { branchName: 'feat/v2-chat-shell' },
+        [liveSession({ storyId: 'US-010', progressPercent: 42 })],
+      );
+      expect(panel.acComplete).toBe(2);
+      expect(panel.acTotal).toBe(4);
+      expect(panel.acCountLabel).toBe('2/4');
+      expect(panel.acceptanceCriteria.filter((c) => c.done)).toHaveLength(2);
+      expect(panel.description).toContain('mixed criteria');
+      expect(panel.statusBadge).toBe('AGENT RUNNING · 42%');
+      expect(panel.fields.branch).toBe('feat/v2-chat-shell');
+
+      expect(buildStatusLine({ signal: { reviewer: 'Marcus' } })).toBe('MARCUS REVIEWING');
+      expect(buildStatusLine({ signal: { reviewer: 'Design' } })).toBe('DESIGN REVIEW');
+      expect(buildStatusLine({ signal: { prOpen: true, ciGreen: true } })).toBe(
+        'PR OPEN · CI GREEN',
+      );
     });
 
     it('sets assignee from live agent when running', () => {

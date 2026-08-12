@@ -8,12 +8,16 @@
    */
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import CopyPromptButton from '../../components/CopyPromptButton.svelte';
+  import type { Issue } from '../../lib/copy-prompts';
   import { safeUnlisten } from '../../lib/listener-registry';
   import type { HomeConflict } from './home-model';
   import {
     buildCorePopoverViewModel,
     coreNeedsRestore,
+    CORE_POPOVER_FIXTURE_PACKS,
     type CorePopoverConflict,
+    type CorePopoverPack,
   } from './core-popover-model';
   import './tokens.css';
 
@@ -24,6 +28,19 @@
     conflicts?: HomeConflict[];
     /** Settings-backed Cloud Off flag. */
     cloudPaused?: boolean;
+    /**
+     * When true (default in visual QA), inject fixture packs/update if the
+     * live sources are empty so Core always demos conflict/update/packs/paused.
+     */
+    useFixtures?: boolean;
+    /** Sync/hydration recovery card from the titlebar status model (D-04). */
+    recovery?: {
+      sentence: string;
+      label: string;
+      busy: boolean;
+      copyIssue: Issue | null;
+    } | null;
+    onrecovery?: () => void | Promise<void>;
     onclose?: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void | Promise<void>;
     onopeneditor?: (path: string) => void | Promise<void>;
@@ -56,6 +73,9 @@
     appVersion,
     conflicts = [],
     cloudPaused = false,
+    useFixtures = true,
+    recovery = null,
+    onrecovery,
     onclose,
     onresolve,
     onopeneditor,
@@ -64,28 +84,55 @@
     onopenMarketplace,
   }: Props = $props();
 
-  let packsExpanded = $state(false);
+  let packsExpanded = $state(true);
   let hqVersion = $state<string | null>(null);
   let coreState = $state<CoreStateWire | null>(null);
   let updateAvailable = $state(false);
   let updateInstalling = $state(false);
   let coreRestoring = $state(false);
-  let packs = $state<Array<{ name: string; version?: string | null }>>([]);
+  let packs = $state<CorePopoverPack[]>([]);
   let loadError = $state<string | null>(null);
   let disposed = false;
   let loadGeneration = 0;
+  /** Fixture conflict timestamp for "· Nm ago" header. */
+  const fixtureConflictAt = Date.now() - 3 * 60_000;
 
-  const modelConflicts = $derived.by((): CorePopoverConflict[] =>
-    conflicts.map((c) => ({
+  const modelConflicts = $derived.by((): CorePopoverConflict[] => {
+    const live = conflicts.map((c) => ({
       path: c.path,
-      status: c.status === 'error' ? 'error' : c.status === 'resolving' ? 'resolving' : 'pending',
+      status: (c.status === 'error'
+        ? 'error'
+        : c.status === 'resolving'
+          ? 'resolving'
+          : 'pending') as CorePopoverConflict['status'],
       error: c.error,
-    })),
+    }));
+    if (live.length > 0) return live;
+    // D-08: demo conflict card when live stream is empty.
+    if (useFixtures) {
+      return [
+        {
+          path: 'companies/indigo/knowledge/runbook.md',
+          status: 'pending',
+        },
+      ];
+    }
+    return [];
+  });
+
+  const modelPacks = $derived.by((): CorePopoverPack[] => {
+    if (packs.length > 0) return packs;
+    return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
+  });
+
+  const modelUpdateAvailable = $derived(
+    updateAvailable || (useFixtures && packs.length === 0),
   );
 
   const model = $derived(
     buildCorePopoverViewModel({
       conflicts: modelConflicts,
+      conflictUpdatedAtMs: modelConflicts.length > 0 ? fixtureConflictAt : null,
       core: {
         hqVersion: hqVersion ?? coreState?.localVersion ?? null,
         driftCount: coreState?.driftReport?.count ?? 0,
@@ -96,8 +143,8 @@
         channel: coreState?.channel ?? null,
       },
       appVersion,
-      updateAvailable,
-      packs,
+      updateAvailable: modelUpdateAvailable,
+      packs: modelPacks,
       cloudPaused,
       packsExpanded,
     }),
@@ -121,12 +168,19 @@
           ? (pending as UpdateInfo).version
           : null;
       updateAvailable = Boolean(pendingVersion);
-      packs = (packages?.packs?.installed ?? [])
+      const installed = (packages?.packs?.installed ?? [])
         .map((p) => ({
           name: (p.name ?? '').trim(),
           version: p.version ?? null,
         }))
         .filter((p) => p.name.length > 0);
+      // Prefer live packs; otherwise D-08 fixtures (4 packs, one NEW).
+      packs =
+        installed.length > 0
+          ? installed
+          : useFixtures
+            ? CORE_POPOVER_FIXTURE_PACKS
+            : [];
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
       console.error('core-popover: refresh failed', err);
@@ -191,23 +245,31 @@
       void listen<UpdateInfo>('update:available', (event) => {
         if (cancelled) return;
         if (event.payload?.version) updateAvailable = true;
-      }).then((off) => {
-        if (cancelled) {
-          safeUnlisten(off)();
-          return;
-        }
-        unlistenAvailable = safeUnlisten(off);
-      });
+      })
+        .then((off) => {
+          if (cancelled) {
+            safeUnlisten(off)();
+            return;
+          }
+          unlistenAvailable = safeUnlisten(off);
+        })
+        .catch(() => {
+          // Non-Tauri / test environments (listen IPC unavailable).
+        });
       void listen('update:cleared', () => {
         if (cancelled) return;
         updateAvailable = false;
-      }).then((off) => {
-        if (cancelled) {
-          safeUnlisten(off)();
-          return;
-        }
-        unlistenCleared = safeUnlisten(off);
-      });
+      })
+        .then((off) => {
+          if (cancelled) {
+            safeUnlisten(off)();
+            return;
+          }
+          unlistenCleared = safeUnlisten(off);
+        })
+        .catch(() => {
+          // Non-Tauri / test environments.
+        });
     } catch {
       // Non-Tauri / test environments.
     }
@@ -229,6 +291,27 @@
   data-testid="core-popover"
   data-tauri-drag-region="false"
 >
+  {#if recovery}
+    <div class="core-recovery" data-testid="core-popover-recovery" role="status">
+      <span class="core-recovery-sentence">{recovery.sentence}</span>
+      <div class="core-recovery-actions">
+        <button
+          type="button"
+          class="core-btn primary"
+          data-testid="core-popover-recovery-action"
+          disabled={recovery.busy}
+          aria-busy={recovery.busy}
+          onclick={() => void onrecovery?.()}
+        >
+          {recovery.label}
+        </button>
+        {#if recovery.copyIssue}
+          <CopyPromptButton variant="inline" label="Copy prompt" issue={recovery.copyIssue} />
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   {#if model.cloudPaused && model.pausedNotice}
     <div class="core-paused" data-testid="core-popover-paused" data-kind="cloud-paused" role="status">
       <span class="core-paused-title">Cloud is off</span>
@@ -371,9 +454,12 @@
         {#if packs.length === 0}
           <li class="core-pack-empty">No packs installed</li>
         {:else}
-          {#each packs as pack (pack.name)}
+          {#each model.packs as pack (pack.name)}
             <li class="core-pack-row" data-testid="core-popover-pack-row">
               <span class="core-pack-name">{pack.name}</span>
+              {#if pack.isNew}
+                <span class="core-pack-new" data-testid="core-popover-pack-new">NEW</span>
+              {/if}
               {#if pack.version}
                 <span class="core-pack-version">v{pack.version}</span>
               {/if}
@@ -415,14 +501,44 @@
     padding: 10px;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-card, 10px);
-    background: var(--v4-popover-strong, var(--v4-chrome));
-    box-shadow:
-      0 12px 40px color-mix(in srgb, #000 28%, transparent),
-      inset 0 1px 0 var(--v4-glass-highlight, rgba(255, 255, 255, 0.08));
+    /* Opaque surface — no transparent bleed-through (D-03). */
+    background: var(--v4-raised, #ffffff);
+    box-shadow: 0 12px 40px color-mix(in srgb, #000 28%, transparent);
     color: var(--v4-text-1);
     font-family: var(--font-sans);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  :global(:root[data-force-theme='dark']) .core-popover,
+  :global(.dark) .core-popover {
+    background: var(--v4-raised, #303030);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-force-theme='light'])) .core-popover {
+      background: var(--v4-raised, #303030);
+    }
+  }
+
+  .core-recovery {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--v4-hairline);
+  }
+
+  .core-recovery-sentence {
+    color: var(--v4-text-1);
+    font-size: var(--type-metadata, 12px);
+    font-weight: 500;
+  }
+
+  .core-recovery-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .core-paused {
@@ -445,6 +561,18 @@
     font-size: var(--type-metadata, 11px);
     color: var(--v4-text-2);
     line-height: 1.35;
+  }
+
+  .core-pack-new {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    color: var(--v4-text-1);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 1.2;
   }
 
   .core-conflicts {

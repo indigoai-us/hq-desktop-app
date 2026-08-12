@@ -111,6 +111,9 @@
   --v4-focus-offset: 2px;
 }
 
+/* System dark does not override an explicit light force-theme (D-09): the
+   `:root[data-force-theme='light']` blocks above carry higher specificity
+   than this plain `:root`, so forced light wins without a :not() guard. */
 @media (prefers-color-scheme: dark) {
   :root {
     --v4-ground: rgb(17 17 17 / clamp(0.22, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.8), 1));

@@ -40,9 +40,14 @@ describe('US-003: unified conversation sidebar — shell integration', () => {
 });
 
 describe('US-003: ChatSidebar structure', () => {
-  it('exposes scope pill, new-message, search, filter, pinned/day groups, history, footer', () => {
+  it('exposes scope dropdown, new-message, search, filter, pinned/day groups, history, footer', () => {
     expect(chatSidebar).toContain('data-testid="chat-sidebar"');
     expect(chatSidebar).toContain('data-testid="chat-scope-pill"');
+    expect(chatSidebar).toContain('data-testid="chat-scope-menu"');
+    expect(chatSidebar).toContain('data-testid="chat-scope-option"');
+    expect(chatSidebar).toContain('All companies');
+    expect(chatSidebar).toContain('buildScopeOptions');
+    expect(chatSidebar).not.toContain('cycleScope');
     expect(chatSidebar).toContain('data-testid="chat-new-message"');
     expect(chatSidebar).toContain('data-testid="chat-search"');
     expect(chatSidebar).toContain('data-testid="chat-filter"');

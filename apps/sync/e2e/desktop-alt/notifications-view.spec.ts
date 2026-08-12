@@ -85,11 +85,13 @@ describe('desktop notifications view (US-012)', () => {
     expect(desktopApp).toContain('onunreadchange=');
   });
 
-  it('V4TitleBar shows unread badge from unreadCount prop', () => {
+  it('V4TitleBar shows monochrome unread DOT from unreadCount prop (no red pill count)', () => {
     expect(titleBar).toContain('unreadCount');
     expect(titleBar).toContain('data-testid="titlebar-notifications"');
     expect(titleBar).toContain('data-testid="titlebar-notifications-badge"');
-    expect(titleBar).toContain('99+');
+    expect(titleBar).toContain('v4-notif-dot');
+    expect(titleBar).not.toContain('v4-notif-badge');
+    expect(titleBar).not.toContain('99+');
   });
 
   it('NotificationsView exposes header, filter, mark-all, rows, actions', () => {

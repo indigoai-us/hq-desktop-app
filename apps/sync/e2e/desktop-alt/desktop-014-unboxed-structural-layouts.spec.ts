@@ -189,7 +189,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     for (const [source, selector, label] of [
       [companyBoard, '.pulse-row', 'company pulse summary'],
       [overviewDigest, '.digest-monitor', 'activity digest monitor'],
-      [titleBar, '.v4-status', 'title-bar status'],
+      [titleBar, '.v4-title-actions', 'title-bar actions'],
       [syncModeToggle, '.sync-mode-shell', 'sync mode selector'],
       [storyPanel, '.status-control', 'task status selector'],
     ] as const) {

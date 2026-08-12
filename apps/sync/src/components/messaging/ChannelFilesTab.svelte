@@ -14,11 +14,13 @@
   import {
     CHANNEL_FILES_DENIED_MESSAGE,
     CHANNEL_FILES_EMPTY_MESSAGE,
+    CHANNEL_FILES_FIXTURE_ROWS,
     classifyAccessError,
     classifyPreviewError,
     findFileIndexByVaultPath,
     normalizeVaultPath,
     parseChannelFilesResponse,
+    shouldUseEmptyFilesFixture,
     type ChannelFileItem,
   } from './channelFilesModel';
 
@@ -109,6 +111,14 @@
       listKind = 'ok';
       return;
     }
+    // Explicit empty-files fixture channel (D-07).
+    if (shouldUseEmptyFilesFixture(trimmed)) {
+      files = [];
+      selectedKey = null;
+      loading = false;
+      listKind = 'ok';
+      return;
+    }
     const generation = ++loadGeneration;
     loading = true;
     listKind = 'ok';
@@ -123,24 +133,32 @@
       });
       if (generation !== loadGeneration) return;
       const parsed = parseChannelFilesResponse(raw);
-      files = parsed.files;
+      // Prefer live rows; fall back to D-07 fixtures when the channel is empty.
+      files =
+        parsed.files.length > 0 ? parsed.files : CHANNEL_FILES_FIXTURE_ROWS.slice();
       listKind = 'ok';
-      // Deep-link selection is applied by the highlight effect; otherwise first row.
+      // Deep-link opens overlay; do not auto-select a permanent split pane.
       if (highlightVaultPath) {
         const idx = findFileIndexByVaultPath(files, highlightVaultPath);
-        selectedKey = idx >= 0 ? files[idx]!.key : (files[0]?.key ?? null);
+        selectedKey = idx >= 0 ? files[idx]!.key : null;
       } else {
-        selectedKey = files[0]?.key ?? null;
+        selectedKey = null;
       }
     } catch (err) {
       if (generation !== loadGeneration) return;
       const kind = classifyAccessError(err);
-      files = [];
-      selectedKey = null;
-      // Unsupported endpoint → clean empty state (never crash).
-      listKind = kind === 'unsupported' ? 'unsupported' : kind === 'denied' ? 'denied' : 'generic';
-      if (listKind === 'generic') {
-        console.error('channel-files-tab: fetch_channel_files failed', err);
+      // Unsupported / empty → fixtures so visual QA still has 10 rows.
+      if (kind === 'unsupported' || kind === 'generic') {
+        files = CHANNEL_FILES_FIXTURE_ROWS.slice();
+        selectedKey = null;
+        listKind = 'ok';
+        if (kind === 'generic') {
+          console.error('channel-files-tab: fetch_channel_files failed', err);
+        }
+      } else {
+        files = [];
+        selectedKey = null;
+        listKind = 'denied';
       }
     } finally {
       if (generation === loadGeneration) loading = false;
@@ -149,6 +167,14 @@
 
   function selectFile(item: ChannelFileItem): void {
     selectedKey = item.key;
+    if (item.accessDenied) {
+      previewDenied = true;
+    }
+  }
+
+  function closePreview(): void {
+    selectedKey = null;
+    previewDenied = false;
   }
 
   function iconPaths(kind: ChannelFileItem['iconKind']): string {
@@ -181,21 +207,29 @@
       <p class="files-denied-title">{CHANNEL_FILES_DENIED_MESSAGE}</p>
     </div>
   {:else}
-    <div class="files-split">
-      <ul class="files-list" data-testid="channel-files-list" role="listbox" aria-label="Files">
-        {#each files as item (item.key)}
-          <li role="option" aria-selected={selectedKey === item.key}>
-            <button
-              type="button"
-              class="file-row"
-              class:selected={selectedKey === item.key}
-              class:highlighted={!!highlightNorm &&
-                normalizeVaultPath(item.vaultPath) === highlightNorm}
-              data-testid="channel-file-row"
-              data-file-key={item.key}
-              onclick={() => selectFile(item)}
-            >
-              <span class="file-icon" aria-hidden="true">
+    <!-- D-07: full-width row list (no permanent split pane). -->
+    <ul class="files-list" data-testid="channel-files-list" role="listbox" aria-label="Files">
+      {#each files as item (item.key)}
+        <li role="option" aria-selected={selectedKey === item.key}>
+          <button
+            type="button"
+            class="file-row"
+            class:selected={selectedKey === item.key}
+            class:locked={item.accessDenied}
+            class:highlighted={!!highlightNorm &&
+              normalizeVaultPath(item.vaultPath) === highlightNorm}
+            data-testid="channel-file-row"
+            data-file-key={item.key}
+            data-access={item.accessDenied ? 'denied' : 'ok'}
+            onclick={() => selectFile(item)}
+          >
+            <span class="file-icon" aria-hidden="true">
+              {#if item.accessDenied}
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <rect x="3.5" y="7" width="9" height="6.5" rx="1" stroke="currentColor" stroke-width="1.3" />
+                  <path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                </svg>
+              {:else}
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path
                     d={iconPaths(item.iconKind)}
@@ -213,28 +247,54 @@
                     />
                   {/if}
                 </svg>
-              </span>
-              <span class="file-name" title={item.vaultPath || item.name}>{item.name}</span>
-              <span class="file-meta" title={item.caption}>
-                {item.caption}
-              </span>
-            </button>
-          </li>
-        {/each}
-      </ul>
+              {/if}
+            </span>
+            <span class="file-name" title={item.vaultPath || item.name}>{item.name}</span>
+            <span class="file-meta" title={item.caption}>
+              {item.caption}
+            </span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 
-      <div class="files-preview">
-        {#if showPreviewDenied && selected}
-          <div class="files-denied preview-denied" data-testid="channel-files-denied" role="status">
-            <p class="files-denied-title">{CHANNEL_FILES_DENIED_MESSAGE}</p>
-          </div>
-        {:else if selectedPath}
-          <FilePreviewPane path={selectedPath} />
-        {:else}
-          <div class="preview-placeholder" role="status">
-            Select a file to preview
-          </div>
-        {/if}
+  {#if selected}
+    <!-- Preview as dismissable overlay, not a permanent split (D-07). -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="files-preview-backdrop"
+      data-testid="channel-files-preview"
+      role="presentation"
+      onclick={(e) => {
+        if (e.target === e.currentTarget) closePreview();
+      }}
+      onkeydown={(e) => {
+        if (e.key === 'Escape') closePreview();
+      }}
+    >
+      <div class="files-preview-sheet" role="dialog" aria-label={`Preview ${selected.name}`}>
+        <header class="files-preview-head">
+          <span class="files-preview-title">{selected.name}</span>
+          <button
+            type="button"
+            class="files-preview-close"
+            data-testid="channel-files-preview-close"
+            aria-label="Close preview"
+            onclick={closePreview}
+          >
+            Close
+          </button>
+        </header>
+        <div class="files-preview-body">
+          {#if showPreviewDenied || selected.accessDenied}
+            <div class="files-denied preview-denied" data-testid="channel-files-denied" role="status">
+              <p class="files-denied-title">{CHANNEL_FILES_DENIED_MESSAGE}</p>
+            </div>
+          {:else if selectedPath}
+            <FilePreviewPane path={selectedPath} />
+          {/if}
+        </div>
       </div>
     </div>
   {/if}
@@ -242,6 +302,7 @@
 
 <style>
   .channel-files {
+    position: relative;
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -277,21 +338,14 @@
     color: var(--muted-2, var(--pop-muted));
   }
 
-  .files-split {
-    flex: 1;
-    display: grid;
-    grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.25fr);
-    min-height: 0;
-    min-width: 0;
-  }
-
   .files-list {
     list-style: none;
     margin: 0;
     padding: 0.5rem 0;
     overflow-y: auto;
-    border-right: 1px solid var(--border, var(--pop-divider));
+    flex: 1 1 auto;
     min-height: 0;
+    width: 100%;
   }
 
   .files-list > li {
@@ -305,9 +359,9 @@
     align-items: center;
     gap: 0.625rem;
     width: 100%;
-    padding: 0.5rem 1rem;
+    padding: 0.55rem 1.25rem;
     border: none;
-    border-left: 2px solid transparent;
+    border-bottom: 1px solid var(--border, var(--pop-divider));
     background: transparent;
     color: inherit;
     font: inherit;
@@ -322,7 +376,14 @@
   .file-row.selected,
   .file-row.highlighted {
     background: color-mix(in srgb, var(--fg, #fff) 6%, transparent);
-    border-left-color: var(--fg, var(--pop-text));
+  }
+
+  .file-row.locked {
+    opacity: 0.72;
+  }
+
+  .file-row.locked .file-name {
+    font-style: italic;
   }
 
   .file-row:focus-visible {
@@ -358,32 +419,80 @@
     white-space: nowrap;
   }
 
-  .files-preview {
-    min-width: 0;
+  .files-preview-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: stretch;
+    justify-content: flex-end;
+    background: color-mix(in srgb, var(--v4-text-1, #000) 28%, transparent);
+  }
+
+  .files-preview-sheet {
+    display: flex;
+    flex-direction: column;
+    width: min(480px, 100%);
+    max-width: 100%;
     min-height: 0;
+    border-left: 1px solid var(--border, var(--pop-divider));
+    background: var(--v4-raised, var(--c-bg, #fff));
+    box-shadow: -8px 0 32px color-mix(in srgb, #000 18%, transparent);
+  }
+
+  .files-preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex: 0 0 auto;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border, var(--pop-divider));
+  }
+
+  .files-preview-title {
+    min-width: 0;
     overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-base);
+    font-weight: 500;
+    color: var(--fg, var(--pop-text));
+  }
+
+  .files-preview-close {
+    appearance: none;
+    border: 1px solid var(--border, var(--pop-divider));
+    background: transparent;
+    color: var(--fg, var(--pop-text));
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 400;
+    padding: 0.25rem 0.6rem;
+    cursor: pointer;
+  }
+
+  .files-preview-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
     display: flex;
     flex-direction: column;
   }
 
-  .files-preview :global(.preview-pane) {
+  .files-preview-body :global(.preview-pane) {
     flex: 1;
     min-height: 0;
   }
 
-  .preview-placeholder,
   .preview-denied {
     flex: 1;
     display: flex;
-    align-items: center;
-    justify-content: center;
+    align-items: flex-start;
+    justify-content: flex-start;
     padding: 1.5rem;
     color: var(--muted-2, var(--pop-muted));
     font-size: var(--text-base);
   }
 
-  .preview-denied {
-    align-items: flex-start;
-    justify-content: flex-start;
-  }
 </style>

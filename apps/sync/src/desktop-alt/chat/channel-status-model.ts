@@ -387,3 +387,25 @@ export function projectChannelHeaderTitle(
   const company = companyLabel?.trim() || 'Company';
   return `# ${name} · ${company} · project channel`;
 }
+
+/** Visual-QA fixture members + agents (D-06). */
+export const CHANNEL_STATUS_FIXTURE_MEMBERS: StatusMemberInput[] = [
+  { personUid: 'prs_ada', displayName: 'Ada Lovelace', role: 'owner' },
+  { personUid: 'prs_marcus', displayName: 'Marcus Chen', role: 'member' },
+  { personUid: 'prs_corey', displayName: 'Corey', role: 'member' },
+  { personUid: 'agt_claude', displayName: 'Claude', role: 'agent', isAgent: true },
+  { personUid: 'agt_codex', displayName: 'Codex', role: 'agent', isAgent: true },
+];
+
+export const CHANNEL_STATUS_FIXTURE_PRD: StatusPrdInput = {
+  name: 'HQ Desktop',
+  branchName: 'feat/v2-chat-shell',
+  repoPath: 'companies/indigo/projects/hq-desktop-app',
+  previewUrl: 'https://preview.example/hq-desktop',
+  userStories: [
+    { id: 'US-001', passes: true },
+    { id: 'US-002', passes: true },
+    { id: 'US-003', passes: false },
+    { id: 'US-004', passes: false },
+  ],
+};

@@ -92,13 +92,17 @@ describe('US-006: story panel + poll + pass semantics', () => {
     expect(boardTab).toContain('clearInterval');
   });
 
-  it('encodes story-level pass semantics (no per-criterion state)', () => {
-    expect(boardModel).toContain('story-level pass semantics');
-    expect(boardModel).toContain('NO per-criterion state or writes');
-    expect(boardModel).toMatch(/acComplete\s*=\s*passes\s*\?\s*acTotal\s*:\s*0/);
+  it('encodes story-level pass + optional per-item fixture done flags', () => {
+    expect(boardModel).toContain('story-level pass');
+    expect(boardModel).toContain('normalizeAcInput');
+    expect(boardModel).toContain('BOARD_FIXTURE_STORIES');
+    expect(boardModel).toContain('MARCUS REVIEWING');
+    expect(boardModel).toContain('DESIGN REVIEW');
     expect(boardModelTest).toContain('story-level pass');
+    expect(boardModelTest).toContain('2 of 4');
     expect(boardTab).toContain('class:done={item.done}');
     expect(boardTab).toContain('text-decoration: line-through');
+    expect(boardTab).toContain('BOARD_FIXTURE');
   });
 
   it('board model stays pure (no Svelte / Tauri)', () => {

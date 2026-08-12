@@ -87,8 +87,9 @@ describe('quick communications window hierarchy', () => {
     expect(channelView).toContain('<span class="channel-hash" aria-hidden="true">#</span>');
     expect(channelView).toContain("isGroup ? 'Join conversation' : `Join #${title}`");
     // US-004: composer keeps the group-aware label and adds the '/' agent affordance.
+    // D-16: channel placeholder reads "Message # {name}" (spaced hash).
     expect(channelView).toContain(
-      '`Message ${conversationLabel} — or type / to run an agent…`',
+      '`Message ${isGroup ? title : `# ${title}`} — or type / to run an agent…`',
     );
     expect(channelView).toContain('placeholder={composerPlaceholder}');
   });

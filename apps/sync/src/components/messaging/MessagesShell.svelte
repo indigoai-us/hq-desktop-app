@@ -1787,7 +1787,10 @@
 
 <div class="messages-window" class:embedded data-window="messages">
   <!-- DESKTOP-002: room rail (glass) + naked main canvas. The rail owns
-       orientation and compose; no People/Requests tabs or redundant page chrome. -->
+       orientation and compose; no People/Requests tabs or redundant page chrome.
+       When embedded in the chat shell, ChatSidebar is the only sidebar — hide
+       this second Slack-style column entirely (D-02). -->
+  {#if !embedded}
   <aside class="rail" aria-label="Conversations">
     <header class="rail-header" data-tauri-drag-region>
       <div class="rail-heading">
@@ -2081,6 +2084,7 @@
       {/if}
     </div>
   </aside>
+  {/if}
 
   <!-- Naked main canvas: spacing + hairlines only — no liquid-glass chrome. -->
   <section class="pane" data-testid="messages-main-pane">
@@ -2208,6 +2212,13 @@
     width: 100%;
     height: 100%;
     background: transparent;
+  }
+
+  /* Embedded: conversation pane fills the remaining shell width (ChatSidebar
+     is the only list). Standalone Messages window keeps the rail. */
+  .messages-window.embedded .pane {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   /* ── Left rail ────────────────────────────────────────────────────────── */

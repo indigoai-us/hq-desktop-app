@@ -1912,6 +1912,16 @@
       <div class="route-progress" class:active={navigationPending} aria-hidden="true">
         <span></span>
       </div>
+      <!-- D-10: Library overlay sits over main content; titlebar + ChatSidebar remain. -->
+      {#if route.kind === 'library'}
+        <div class="library-overlay-host" data-testid="library-overlay-host">
+          <LibraryOverlay
+            tab={libraryTab}
+            onback={exitLibrary}
+            onnavigatetab={(t) => navigate({ kind: 'library', tab: t })}
+          />
+        </div>
+      {/if}
       <main class="desktop-main" aria-label="Desktop content">
         <div class="desktop-main-scroll">
         {#key routeKey}
@@ -2062,16 +2072,6 @@
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
   {/if}
 
-  {#if route.kind === 'library'}
-    <div class="library-overlay-host" data-testid="library-overlay-host">
-      <LibraryOverlay
-        tab={libraryTab}
-        onback={exitLibrary}
-        onnavigatetab={(t) => navigate({ kind: 'library', tab: t })}
-      />
-    </div>
-  {/if}
-
   {#if actionToast}
     <div class={`action-toast ${actionToast.tone}`} role="status">
       <span class="toast-dot" aria-hidden="true"></span>
@@ -2089,11 +2089,12 @@
     background: transparent;
   }
 
-  /* US-017 Library full-screen takeover over the whole shell (incl. sidebars). */
+  /* D-10: Library is an overlay over the main content only — titlebar + sidebar
+     stay visible behind/above. Host is positioned inside .desktop-content. */
   .library-overlay-host {
     position: absolute;
     inset: 0;
-    z-index: 50;
+    z-index: 40;
     min-height: 0;
   }
 

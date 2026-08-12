@@ -43,21 +43,32 @@
   let loadGeneration = 0;
 
   const view = $derived(buildNotificationsView(feedState));
+  /** Track filter as a primitive so load effect does not re-fire on every feedState rewrite. */
+  const filter = $derived(feedState.filter);
+  const unreadCount = $derived(feedState.unreadCount);
   const showEmpty = $derived(
     !loading && view.visibleCount === 0 && listKind !== 'auth',
   );
   const emptyCopy = $derived.by(() => {
     if (listKind === 'unsupported') return NOTIFICATIONS_UNSUPPORTED_MESSAGE;
-    if (feedState.filter === 'unread') return NOTIFICATIONS_UNREAD_EMPTY_MESSAGE;
+    if (filter === 'unread') return NOTIFICATIONS_UNREAD_EMPTY_MESSAGE;
     return NOTIFICATIONS_EMPTY_MESSAGE;
   });
 
+  let lastReportedUnread = $state<number | null>(null);
+
+  // Only re-fetch when All | Unread toggles — never when items/unreadCount update.
   $effect(() => {
-    void loadFeed(feedState.filter === 'unread');
+    const unreadOnly = filter === 'unread';
+    void loadFeed(unreadOnly);
   });
 
+  // Parent badge: fire only when the count actually changes (avoids effect loops).
   $effect(() => {
-    onunreadchange?.(feedState.unreadCount);
+    const n = unreadCount;
+    if (lastReportedUnread === n) return;
+    lastReportedUnread = n;
+    onunreadchange?.(n);
   });
 
   async function loadFeed(unreadOnly: boolean): Promise<void> {

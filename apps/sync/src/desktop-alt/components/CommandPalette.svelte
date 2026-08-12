@@ -318,7 +318,7 @@
     align-items: flex-start;
     justify-content: center;
     padding: clamp(48px, 9vh, 72px) 20px 20px;
-    background: rgba(0, 0, 0, 0.14);
+    background: color-mix(in srgb, var(--v4-text-1, #000) 22%, transparent);
   }
 
   .command-palette {
@@ -328,13 +328,16 @@
     max-height: min(640px, calc(100dvh - 96px));
     min-height: 0;
     overflow: hidden;
-    border: 1px solid var(--pop-border);
+    border: 1px solid var(--v4-hairline, var(--pop-border));
     border-radius: var(--v4-radius-popover);
-    background: var(--v4-popover, var(--pop-bg));
+    /* Solid popover material (D-03): popover-strong is the near-opaque token
+       tier, routed through the shared glass filter (DESKTOP-012) so text never
+       bleeds through while the chrome stays on the one vibrancy stack. */
+    background: var(--v4-popover-strong, var(--pop-bg));
     backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     -webkit-backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
     box-shadow: var(--v4-shadow-popover, var(--pop-shadow)), inset 0 1px 0 var(--v4-glass-highlight);
-    color: var(--pop-text);
+    color: var(--v4-text-1, var(--pop-text));
     transform-origin: top center;
   }
 
