@@ -6,7 +6,6 @@ describe('desktop-alt V4 library and marketplace family (US-014 / US-017)', () =
   const libraryBrowser = readRepoFile('src/desktop-alt/components/LibraryBrowser.svelte');
   const libraryOverlay = readRepoFile('src/desktop-alt/chat/LibraryOverlay.svelte');
   const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-  const secondarySidebar = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const submit = readRepoFile('src/desktop-alt/panels/SubmitPanel.svelte');
   const marketplace = readRepoFile('src/desktop-alt/panels/MarketplacePanel.svelte');
   const profile = readRepoFile('src/desktop-alt/panels/ProfilePanel.svelte');
@@ -36,8 +35,6 @@ describe('desktop-alt V4 library and marketplace family (US-014 / US-017)', () =
     expect(libraryPage).toContain("submit: 'Publish a pack'");
     expect(libraryBrowser).toContain('<SubmitPanel />');
     expect(submit).toContain('data-testid="submit-panel"');
-    expect(secondarySidebar).toContain('class:active={footer.active}');
-    expect(secondarySidebar).toContain("aria-current={footer.active ? 'page' : undefined}");
   });
 
   it('marketplace has listings, install/installed states, README preview, and honest published-listing context', () => {

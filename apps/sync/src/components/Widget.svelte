@@ -616,7 +616,8 @@
             : undefined;
         if (company) {
           await invoke('open_desktop_alt_window', {
-            route: `company:${company}:activity`,
+            // US-020: the Activity page is gone — land on the company Overview digest.
+            route: `company:${company}`,
           });
         } else {
           // No company slug — open the two-pane communications window.

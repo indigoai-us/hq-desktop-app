@@ -19,7 +19,6 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'workers',
       'knowledge',
       'team',
-      'activity',
       'deployments',
       'secrets',
       'settings',
@@ -70,9 +69,10 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
   it('DesktopApp routes Knowledge as a company tab (inline panel; DESKTOP-001 primary children)', () => {
     const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     // Knowledge is a primary company child + deep-link tab; secondary company
-    // column is gone (DESKTOP-001). Secondary select still handles library/settings.
+    // column is gone (DESKTOP-001), and US-020 removed the secondary sidebar
+    // everywhere — company tab navigation rides the palette + page callbacks.
     expect(app).not.toContain("id === 'knowledge'");
-    expect(app).toContain("navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab })");
+    expect(app).toContain("navigate({ kind: 'company', slug: activeCompany.slug, tab: section.id })");
     const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
     expect(page).toContain('<CompanyKnowledgePanel slug={company.slug} />');
     expect(page).not.toContain('company-knowledge-placeholder');
@@ -81,7 +81,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
     const model = readRepoFile('src/desktop-alt/v4/model.ts');
     expect(model).toContain('V4_COMPANY_PRIMARY_ITEMS');
     expect(model).toContain('sortV4CompaniesConnectedFirst');
-    expect(app).toContain("tab: id as CompanyTab");
+    expect(app).toContain("tab: section.id");
   });
 
   it('CompanyKnowledgePanel is tenant-scoped to the company knowledge subtree (source contract)', () => {

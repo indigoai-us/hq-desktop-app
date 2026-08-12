@@ -3,9 +3,10 @@
    * CompanyOperationsPanel — DESKTOP-010 company-scoped operations workspace.
    *
    * Opened from the primary sidebar More child. Compact internal destinations
-   * (Activity · Deployments · Secrets · Settings) stay under the selected
-   * company; More remains the active sidebar child for all four. Does not
-   * restore a permanent company secondary sidebar.
+   * (Deployments · Secrets · Settings) stay under the selected company; More
+   * remains the active sidebar child for all of them. Does not restore a
+   * permanent company secondary sidebar. US-020 removed the Activity page —
+   * activity lives on the company Overview digest.
    *
    * Operational panels retain existing actions, loading/error/empty states,
    * direction/date behavior, deploy open workflow, and metadata-only secrets.
@@ -16,9 +17,9 @@
   import { companySettingsUrl } from '../lib/hq-console';
   import {
     COMPANY_OPERATIONS_SECTIONS,
+    DEFAULT_COMPANY_OPERATIONS_TAB,
     type CompanyOperationsTab,
   } from '../route';
-  import ActivityPanel from './ActivityPanel.svelte';
   import DeploymentsPanel from './DeploymentsPanel.svelte';
   import SecretsPanel from './SecretsPanel.svelte';
   import '../v4/tokens.css';
@@ -38,13 +39,13 @@
     slug,
     cloudBacked = true,
     syncEnabled = true,
-    destination = 'activity',
+    destination = DEFAULT_COMPANY_OPERATIONS_TAB,
     ondestinationchange,
   }: Props = $props();
 
   const destinations = COMPANY_OPERATIONS_SECTIONS;
   const activeDestination = $derived<CompanyOperationsTab>(
-    destinations.some((d) => d.id === destination) ? destination : 'activity',
+    destinations.some((d) => d.id === destination) ? destination : DEFAULT_COMPANY_OPERATIONS_TAB,
   );
   let settingsBusy = $state(false);
   let settingsError = $state<string | null>(null);
@@ -127,7 +128,7 @@
     <div class="ops-heading title-stack">
       <h2 class="ops-title">Operations</h2>
       <span class="ops-meta" data-testid="operations-scope-meta">
-        Scoped · activity, deployments, secrets, settings
+        Scoped · deployments, secrets, settings
       </span>
     </div>
   </header>
@@ -178,9 +179,7 @@
       data-testid="operations-content"
       tabindex="-1"
     >
-      {#if activeDestination === 'activity'}
-        <ActivityPanel {slug} {cloudBacked} {syncEnabled} />
-      {:else if activeDestination === 'deployments'}
+      {#if activeDestination === 'deployments'}
         <DeploymentsPanel {slug} {cloudBacked} {syncEnabled} />
       {:else if activeDestination === 'secrets'}
         <SecretsPanel {slug} {cloudBacked} {syncEnabled} />

@@ -118,7 +118,6 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
   // US-018: ChatSidebar is the primary sidebar chrome (V4Sidebar retired).
   const sidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
-  const secondarySidebar = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const filesSidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
   const commandPalette = readRepoFile('src/desktop-alt/components/CommandPalette.svelte');
   const versionPopout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
@@ -291,7 +290,6 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
       // the chat-shell titlebar is transparent chrome over the window
       // material (no per-element glass filter), per design/desktop-os-redesign.
       ['primary sidebar', sidebar],
-      ['secondary sidebar', secondarySidebar],
       ['files sidebar', filesSidebar],
       ['command palette', commandPalette],
       ['version updater', versionPopout],

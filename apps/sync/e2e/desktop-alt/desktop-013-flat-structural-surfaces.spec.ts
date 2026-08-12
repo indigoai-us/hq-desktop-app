@@ -13,7 +13,6 @@ describe('DESKTOP-013: flat structural surfaces', () => {
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
   // US-018: ChatSidebar is primary chrome (V4Sidebar retired).
   const sidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
-  const secondarySidebar = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const filesSidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
   const activityDigest = readRepoFile('src/desktop-alt/v4/ActivityDigest.svelte');
   const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
@@ -135,7 +134,6 @@ describe('DESKTOP-013: flat structural surfaces', () => {
       ['title bar', titleBar, ['.v4-titlebar']],
       // ChatSidebar root has no border-radius declaration (square by default).
       ['primary sidebar', sidebar, ['.chat-sidebar']],
-      ['secondary sidebar', secondarySidebar, ['.v4-secondary']],
       ['files sidebar', filesSidebar, ['.files-sidebar']],
     ] as const) {
       for (const selector of selectors) {
@@ -151,7 +149,6 @@ describe('DESKTOP-013: flat structural surfaces', () => {
       // ChatSidebar .chat-row exempted: Daybook parity override (prd.json
       // decisions) gives chat rows Lizzie Liu's 8px radius; covered by
       // chat-sidebar.spec.ts + chat-token-parity.spec.ts instead.
-      ['secondary sidebar', secondarySidebar, ['.v4-row']],
       ['files sidebar', filesSidebar, ['.fs-company-row']],
       ['team', team, ['.team-member-row', '.team-member-row.is-selected']],
       ['operations', operations, ['.ops-nav-item', '.ops-nav-item.is-selected']],
@@ -224,7 +221,6 @@ describe('DESKTOP-013: flat structural surfaces', () => {
           '.overview-task-rail',
         ],
       ],
-      ['src/desktop-alt/panels/ActivityPanel.svelte', ['.activity-error']],
       ['src/desktop-alt/panels/DeploymentsPanel.svelte', ['.deployments-error']],
       [
         'src/desktop-alt/panels/InstalledPacksPanel.svelte',

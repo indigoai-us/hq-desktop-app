@@ -362,7 +362,6 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   const marketplace = read('src/desktop-alt/panels/MarketplacePanel.svelte');
   const companyPage = read('src/desktop-alt/pages/CompanyPage.svelte');
   const companyBoard = read('src/desktop-alt/panels/CompanyBoardPanel.svelte');
-  const activity = read('src/desktop-alt/panels/ActivityPanel.svelte');
   const secrets = read('src/desktop-alt/panels/SecretsPanel.svelte');
   const moderation = read('src/desktop-alt/panels/ModerationPanel.svelte');
   const companyLibrary = read('src/desktop-alt/panels/CompanyLibraryPanel.svelte');
@@ -451,10 +450,7 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
     expect(companyBoard).toContain('Counts below are local cached data until reconnect succeeds');
   });
 
-  it('keeps partial activity honest and de-duplicates legacy secret payloads', () => {
-    expect(activity).toContain('const recentSummaryLabel');
-    expect(activity).toContain("'files'} in summary");
-    expect(activity).toContain('Recent file details are unavailable');
+  it('de-duplicates legacy secret payloads (US-020 removed the Activity panel)', () => {
     expect(secrets).toContain('function normalizeSecretEnvs');
     expect(secrets).toContain('current.items.set');
     expect(harness).toContain("file: 'companies/indigo/projects/desktop-experience/README.md'");
