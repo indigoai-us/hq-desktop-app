@@ -46,6 +46,7 @@
     type StatusSessionInput,
   } from '../../desktop-alt/chat/channel-status-model';
   import { isProjectChannel } from '../../desktop-alt/chat/project-channel-model';
+  import BoardTab from '../../desktop-alt/chat/BoardTab.svelte';
 
   interface Props {
     channel: Channel;
@@ -690,10 +691,11 @@
 </header>
 
 {#if isProject && projectTab === 'board'}
-  <div class="project-placeholder" data-testid="project-tab-board" role="status">
-    <p class="project-placeholder-title">Board</p>
-    <p class="project-placeholder-copy">Project board lands in a later story.</p>
-  </div>
+  <BoardTab
+    channel={current}
+    {messages}
+    onOpenInChannel={() => (projectTab = 'chat')}
+  />
 {:else if isProject && projectTab === 'files'}
   <div class="project-placeholder" data-testid="project-tab-files" role="status">
     <p class="project-placeholder-title">Files</p>
