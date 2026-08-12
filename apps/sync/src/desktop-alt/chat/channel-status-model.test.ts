@@ -6,6 +6,7 @@ import {
   firstOpenStoryId,
   liveAgentRowFromSession,
   projectChannelHeaderTitle,
+  resolveMemberPillCount,
   resolvePreviewUrl,
   resolveRepoPath,
 } from './channel-status-model';
@@ -181,5 +182,21 @@ describe('channel-status-model (US-005 status popover)', () => {
     });
     expect(model.project.previewUrl).toBeNull();
     expect(model.project.branch).toBe('main');
+  });
+});
+
+describe('resolveMemberPillCount (header pill drift regression)', () => {
+  it('adopts the model count after a real roster fetch', () => {
+    expect(resolveMemberPillCount(5, { memberCount: 5 }, 6)).toBe(5);
+  });
+
+  it('keeps the previous metadata count when the roster fetch was empty (fixture fallback)', () => {
+    // Opening + closing the popover with no roster data must NOT drift the
+    // pill from the channel-metadata count (6) to the fixture count (5).
+    expect(resolveMemberPillCount(0, { memberCount: 5 }, 6)).toBe(6);
+  });
+
+  it('stays null when there was never a count and no roster data', () => {
+    expect(resolveMemberPillCount(0, { memberCount: 5 }, null)).toBeNull();
   });
 });

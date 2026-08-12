@@ -502,7 +502,7 @@
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-card, 10px);
     /* Opaque surface — no transparent bleed-through (D-03). */
-    background: var(--v4-raised, #ffffff);
+    background: var(--v4-surface-solid, #ffffff);
     box-shadow: 0 12px 40px color-mix(in srgb, #000 28%, transparent);
     color: var(--v4-text-1);
     font-family: var(--font-sans);
@@ -512,12 +512,12 @@
 
   :global(:root[data-force-theme='dark']) .core-popover,
   :global(.dark) .core-popover {
-    background: var(--v4-raised, #303030);
+    background: var(--v4-surface-solid, #303030);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme='light'])) .core-popover {
-      background: var(--v4-raised, #303030);
+      background: var(--v4-surface-solid, #303030);
     }
   }
 

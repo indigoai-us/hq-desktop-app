@@ -1535,18 +1535,18 @@
     border: 1px solid var(--v4-hairline);
     border-radius: 0;
     /* Opaque surface — no transparent bleed-through (D-03). */
-    background: var(--v4-raised, #fff);
+    background: var(--v4-surface-solid, #fff);
     box-shadow: var(--v4-shadow-popover);
   }
 
   :global(:root[data-force-theme='dark']) .chat-popover,
   :global(.dark) .chat-popover {
-    background: var(--v4-raised, #303030);
+    background: var(--v4-surface-solid, #303030);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme='light'])) .chat-popover {
-      background: var(--v4-raised, #303030);
+      background: var(--v4-surface-solid, #303030);
     }
   }
 
@@ -1727,18 +1727,18 @@
     border: 1px solid var(--v4-hairline);
     border-radius: 0;
     /* Opaque surface — no transparent bleed-through (D-03). */
-    background: var(--v4-raised, #fff);
+    background: var(--v4-surface-solid, #fff);
     box-shadow: var(--v4-shadow-popover);
   }
 
   :global(:root[data-force-theme='dark']) .chat-modal,
   :global(.dark) .chat-modal {
-    background: var(--v4-raised, #303030);
+    background: var(--v4-surface-solid, #303030);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme='light'])) .chat-modal {
-      background: var(--v4-raised, #303030);
+      background: var(--v4-surface-solid, #303030);
     }
   }
 

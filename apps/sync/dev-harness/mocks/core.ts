@@ -1115,7 +1115,8 @@ This final paragraph verifies spacing after a thematic break.
       detectionId: 'preview-meeting-detection',
       platform: 'meet',
       meetingUrl: 'https://meet.google.com/preview-audit',
-      detectedAt: '2026-07-26T14:00:00.000Z',
+      // Relative to now so the "started Xm ago" label stays sane in previews.
+      detectedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
       source: 'preview',
     },
   ],

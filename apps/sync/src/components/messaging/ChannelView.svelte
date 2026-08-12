@@ -43,6 +43,7 @@
     CHANNEL_STATUS_FIXTURE_MEMBERS,
     CHANNEL_STATUS_FIXTURE_PRD,
     projectChannelHeaderTitle,
+    resolveMemberPillCount,
     type ChannelStatusModel,
     type StatusMemberInput,
     type StatusSessionInput,
@@ -249,8 +250,12 @@
         members: statusMembers,
         companyLabel,
       });
-      // Member count must stay consistent with humans + agents listed.
-      memberCount = statusModel.memberCount;
+      // Only adopt the model's count when it was built from a real roster
+      // fetch. When the roster call failed or returned empty, the model was
+      // built from visual-QA fixture members — letting that overwrite the
+      // channel-metadata count made the header pill drift (e.g. 6 → 5) after
+      // simply opening and closing the popover.
+      memberCount = resolveMemberPillCount(members.length, statusModel, memberCount);
     } finally {
       statusLoading = false;
     }
@@ -833,6 +838,22 @@
   />
 {/if}
 
+<!-- Escape dismisses the members/status popovers regardless of where focus
+     sits (aligned with the other popovers) — the backdrop keydown alone only
+     fired when focus was inside the popover. -->
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key !== 'Escape') return;
+    if (statusOpen) {
+      statusOpen = false;
+      e.stopPropagation();
+    } else if (rosterOpen) {
+      rosterOpen = false;
+      e.stopPropagation();
+    }
+  }}
+/>
+
 {#if rosterOpen && !isProject}
   <ChannelRoster
     channelId={current.channelId}
@@ -1129,7 +1150,7 @@
     border: 1px solid var(--border, var(--pop-divider));
     border-radius: 0;
     /* Opaque surface (D-03). */
-    background: var(--v4-raised, var(--c-bg, #fff));
+    background: var(--v4-surface-solid, var(--c-bg, #fff));
     color: var(--fg, var(--pop-text));
     font-family: var(--font-sans);
     box-shadow: var(--v4-shadow-popover, 0 12px 32px rgba(0, 0, 0, 0.18));

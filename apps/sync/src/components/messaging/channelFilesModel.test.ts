@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CHANNEL_FILES_DENIED_MESSAGE,
+  CHANNEL_FILES_LIST_DENIED_MESSAGE,
   CHANNEL_FILES_EMPTY_MESSAGE,
   classifyAccessError,
   classifyFileIcon,
@@ -185,8 +186,13 @@ describe('access error classification', () => {
 
   it('exposes clean denied / empty copy without raw error text', () => {
     expect(CHANNEL_FILES_DENIED_MESSAGE).toBe("You don't have access to this file.");
+    // List-level denial labels the whole list, so it reads plural.
+    expect(CHANNEL_FILES_LIST_DENIED_MESSAGE).toBe(
+      "You don't have access to these files.",
+    );
     expect(CHANNEL_FILES_EMPTY_MESSAGE).toBe('No files yet');
     expect(CHANNEL_FILES_DENIED_MESSAGE).not.toMatch(/403|forbidden|Request failed/i);
+    expect(CHANNEL_FILES_LIST_DENIED_MESSAGE).not.toMatch(/403|forbidden|Request failed/i);
   });
 });
 

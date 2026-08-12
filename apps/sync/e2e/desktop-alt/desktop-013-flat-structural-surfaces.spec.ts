@@ -271,11 +271,10 @@ describe('DESKTOP-013: flat structural surfaces', () => {
     }
   });
 
-  it('uses only modest popover rounding on the visual harness window frame', () => {
-    expect(rule(harness, '.window')).toContain(
-      'border-radius: var(--radius-popover, 8px)',
-    );
-    expect(rule(harness, '.window')).not.toMatch(/border-radius:\s*(?:1[0-9]|[2-9][0-9])px/);
+  it('carries no oversized rounding anywhere in the visual harness styles', () => {
+    // The unused .window frame selector was removed in visual QA round 2;
+    // nothing left in the harness may reintroduce heavy card rounding.
+    expect(harness).not.toMatch(/border-radius:\s*(?:1[0-9]|[2-9][0-9])px/);
   });
 
   it('keeps command, notification, filter, and scope rows free of card perimeters', () => {

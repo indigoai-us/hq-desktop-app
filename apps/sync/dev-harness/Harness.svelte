@@ -372,6 +372,26 @@
         });
       }
 
+      // ?screen=board|files must land on that project tab, not just open the
+      // channel on Chat. The tab is ChannelView-internal state, so drive the
+      // real tab button once it renders (bounded retry — the channel view
+      // mounts asynchronously after requestChannelOpen).
+      if (screen === 'board' || screen === 'files') {
+        const testid = `project-tab-${screen}-btn`;
+        let attempts = 0;
+        const clickTab = () => {
+          const btn = document.querySelector<HTMLButtonElement>(
+            `[data-testid="${testid}"]`,
+          );
+          // Keep going until the tab is actually active — the channel view can
+          // remount while messages load, resetting the tab back to Chat.
+          if (btn?.getAttribute('aria-current') === 'page') return;
+          btn?.click();
+          if (attempts++ < 80) setTimeout(clickTab, 100);
+        };
+        setTimeout(clickTab, 100);
+      }
+
       // Cmd-K palette: dispatch the same chord DesktopApp listens for.
       if (screen === 'palette') {
         window.dispatchEvent(
@@ -427,7 +447,7 @@
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->
   <GlobalErrorBoundary component={GlobalErrorPreview} windowLabel="preview" />
-{:else if view === 'composer' || (isChatShell && screen === 'composer')}
+{:else if view === 'composer' || (isChatShell && (screen === 'composer' || scenario === 'composer-states'))}
   <!-- Composer optimistic states (Sending / Delivered / Failed) in isolation.
        Full shell cannot inject sendStatus from the wire; this screen mounts
        Conversation directly with production-shaped rows. -->
@@ -543,22 +563,6 @@
     overflow: hidden;
   }
 
-  .stage {
-    min-height: 100vh;
-    display: grid;
-    place-items: start center;
-    padding: 32px;
-    box-sizing: border-box;
-    background: radial-gradient(120% 120% at 30% 10%, #3a3a3a 0%, #1a1a1a 55%, #0c0c0c 100%);
-  }
-  .stage.light {
-    background: radial-gradient(120% 120% at 30% 10%, #ededed 0%, #d4d4d4 55%, #bcbcbc 100%);
-  }
-  .window {
-    border-radius: var(--radius-popover, 8px);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
   /* Desktop window content area (company page). desktop-alt.css paints the
      body background under html[data-window='desktop-alt']; this just insets
      the page like the real window's main pane. */
@@ -598,10 +602,5 @@
   :global(html[data-window='dm-banner']),
   :global(html[data-window='dm-banner'] body) {
     background: radial-gradient(120% 120% at 75% 10%, #565656 0%, #292929 55%, #0c0c0c 100%) !important;
-  }
-  .banner-stage {
-    width: 366px;
-    height: 104px;
-    margin: 40px auto;
   }
 </style>

@@ -13,6 +13,7 @@
   import FilePreviewPane from '../../desktop-alt/components/FilePreviewPane.svelte';
   import {
     CHANNEL_FILES_DENIED_MESSAGE,
+    CHANNEL_FILES_LIST_DENIED_MESSAGE,
     CHANNEL_FILES_EMPTY_MESSAGE,
     CHANNEL_FILES_FIXTURE_ROWS,
     classifyAccessError,
@@ -204,7 +205,7 @@
     </div>
   {:else if showListDenied}
     <div class="files-denied" data-testid="channel-files-denied" role="status">
-      <p class="files-denied-title">{CHANNEL_FILES_DENIED_MESSAGE}</p>
+      <p class="files-denied-title">{CHANNEL_FILES_LIST_DENIED_MESSAGE}</p>
     </div>
   {:else}
     <!-- D-07: full-width row list (no permanent split pane). -->

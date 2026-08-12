@@ -283,6 +283,10 @@ export function classifyPreviewError(err: unknown): AccessErrorKind {
 /** User-facing denied copy (no raw error text). */
 export const CHANNEL_FILES_DENIED_MESSAGE = "You don't have access to this file.";
 
+/** List-level denied copy — labels the whole file list, so plural. */
+export const CHANNEL_FILES_LIST_DENIED_MESSAGE =
+  "You don't have access to these files.";
+
 /**
  * Visual-QA fixture rows (D-07): 10 files including one ACL-denied locked row.
  * Used when the channel has no server files (or for harness demos).

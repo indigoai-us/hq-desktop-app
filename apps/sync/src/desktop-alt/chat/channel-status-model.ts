@@ -378,6 +378,22 @@ export function buildChannelStatusModel(input: BuildChannelStatusInput): Channel
   };
 }
 
+/**
+ * Resolve the header member-pill count after a status refresh.
+ *
+ * Only a real roster fetch (fetchedMemberCount > 0) may update the pill; when
+ * the roster call failed or returned empty the status model was built from
+ * fixture members, and adopting its count would make the pill drift away from
+ * the channel-metadata count (e.g. 6 → 5) just from opening the popover.
+ */
+export function resolveMemberPillCount(
+  fetchedMemberCount: number,
+  model: Pick<ChannelStatusModel, 'memberCount'>,
+  previousCount: number | null,
+): number | null {
+  return fetchedMemberCount > 0 ? model.memberCount : previousCount;
+}
+
 /** Header title pieces for a project channel: `# name · company · project channel`. */
 export function projectChannelHeaderTitle(
   channelName: string,

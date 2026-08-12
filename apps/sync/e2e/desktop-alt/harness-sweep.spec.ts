@@ -362,3 +362,62 @@ describe('US-019 deterministic timeline content', () => {
     expect(block).not.toContain('Date.now()');
   });
 });
+
+// ── Visual QA round 2 regressions (popover opacity / Escape / pill count) ────
+
+describe('visual QA round 2 source contracts', () => {
+  it('popover surfaces use the fully opaque --v4-surface-solid token (no bleed-through)', () => {
+    const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
+    // The solid token must be a literal hex (alpha-free) in both themes.
+    expect(tokens).toContain('--v4-surface-solid: #ffffff;');
+    expect(tokens).toContain('--v4-surface-solid: #303030;');
+
+    const chatSidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
+    const corePopover = readRepoFile('src/desktop-alt/v4/CorePopover.svelte');
+    const channelView = readRepoFile('src/components/messaging/ChannelView.svelte');
+    for (const [name, src] of [
+      ['ChatSidebar', chatSidebar],
+      ['CorePopover', corePopover],
+      ['ChannelView', channelView],
+    ] as const) {
+      expect(src, `${name} popover must use --v4-surface-solid`).toContain(
+        'var(--v4-surface-solid',
+      );
+      // The translucent raised token must not back a popover surface anymore.
+      expect(src).not.toMatch(/Opaque surface[^\n]*\n\s*background: var\(--v4-raised/);
+    }
+  });
+
+  it('status/members popover dismisses on Escape via a window-level listener', () => {
+    const channelView = readRepoFile('src/components/messaging/ChannelView.svelte');
+    expect(channelView).toContain('<svelte:window');
+    expect(channelView).toContain("e.key !== 'Escape'");
+    expect(channelView).toContain('statusOpen = false');
+    expect(channelView).toContain('rosterOpen = false');
+  });
+
+  it('member pill count cannot drift from fixture-built status models', () => {
+    const channelView = readRepoFile('src/components/messaging/ChannelView.svelte');
+    expect(channelView).toContain('resolveMemberPillCount(members.length, statusModel, memberCount)');
+    // The unconditional overwrite that caused the 6 → 5 drift is gone.
+    expect(channelView).not.toContain('memberCount = statusModel.memberCount');
+  });
+
+  it('harness lands ?screen=files on the Files tab and supports ?scenario=composer-states', () => {
+    const harness = readRepoFile('dev-harness/Harness.svelte');
+    expect(harness).toContain("screen === 'board' || screen === 'files'");
+    expect(harness).toContain('project-tab-${screen}-btn');
+    expect(harness).toContain("scenario === 'composer-states'");
+  });
+
+  it('active-detection fixture detectedAt is relative to now, not hardcoded', () => {
+    const mocks = readRepoFile('dev-harness/mocks/core.ts');
+    expect(mocks).not.toContain("detectedAt: '2026-07-26T14:00:00.000Z'");
+    expect(mocks).toContain('detectedAt: new Date(Date.now() - 12 * 60_000).toISOString()');
+  });
+
+  it('ACL-denied list copy is plural where it labels the file list', () => {
+    const tab = readRepoFile('src/components/messaging/ChannelFilesTab.svelte');
+    expect(tab).toContain('CHANNEL_FILES_LIST_DENIED_MESSAGE');
+  });
+});

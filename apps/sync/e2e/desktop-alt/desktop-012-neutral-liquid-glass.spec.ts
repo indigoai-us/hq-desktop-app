@@ -513,12 +513,10 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
   });
 
   it('keeps the visual verification harness neutral so previews do not fake a blue cast', () => {
-    expect(harness).toContain('#3a3a3a');
-    expect(harness).toContain('#1a1a1a');
+    // Neutral greys only. (The unused .stage/.stage.light gradient selectors
+    // were removed in visual QA round 2 — the remaining backdrops must stay
+    // neutral.)
     expect(harness).toContain('#0c0c0c');
-    expect(harness).toContain('#ededed');
-    expect(harness).toContain('#d4d4d4');
-    expect(harness).toContain('#bcbcbc');
     expect(harness).toContain('#161616');
     expect(harness).toContain('#565656');
     expect(harness).toContain('#292929');
