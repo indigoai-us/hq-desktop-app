@@ -32,7 +32,9 @@ describe('US-003: unified conversation sidebar — shell integration', () => {
 
   it('wires titlebar meetings / notifications stubs to real routes', () => {
     expect(desktopApp).toContain("onopenMeetings={() => navigate({ kind: 'meetings' })}");
-    expect(desktopApp).toContain("onopenNotifications={() => navigate({ kind: 'inbox' })}");
+    // US-012: bell opens the dedicated notifications feed (NOTIF store).
+    expect(desktopApp).toContain('onopenNotifications={openNotifications}');
+    expect(desktopApp).toContain("navigate({ kind: 'notifications' })");
   });
 });
 

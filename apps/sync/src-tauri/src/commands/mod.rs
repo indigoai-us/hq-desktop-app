@@ -42,6 +42,7 @@ pub mod messages;
 pub mod new_files;
 pub mod notification_history;
 pub mod notifications;
+pub mod notifications_feed;
 pub mod oauth;
 pub mod packages;
 pub mod permissions;

@@ -40,12 +40,12 @@ describe('US-006 / US-008: Inbox chronology and Messages route', () => {
   it('messages → Messages while notifications → Inbox at both resolution sites', () => {
     // resolvePendingDesktopRoute switch
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
     expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
 
     // fromV4Route switch
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
 
     // Both switch sites keep the legacy case arms.

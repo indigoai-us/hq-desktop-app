@@ -84,9 +84,9 @@ describe('US-006 / US-007: sidebar IA — hotkeys (behavioral)', () => {
 describe('US-006 / US-007: sidebar IA — legacy intent resolution (behavioral)', () => {
   it("messages → Messages; notifications → Inbox", () => {
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
   });
 
   it("home / sync → home; mission-control stays reachable", () => {

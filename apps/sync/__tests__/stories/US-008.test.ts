@@ -190,8 +190,8 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
 });
 
 describe('US-008: navigation intents resolve to their complete surfaces', () => {
-  it('routes messages to Messages and notifications/inbox to Inbox', () => {
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+  it('routes messages to Messages, notifications to Notifications, inbox to Inbox', () => {
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('settings:notifications')).toEqual({
@@ -200,9 +200,9 @@ describe('US-008: navigation intents resolve to their complete surfaces', () => 
     });
   });
 
-  it('fromV4Route preserves Messages while mapping notifications onto Inbox', () => {
+  it('fromV4Route preserves Messages, Notifications, and Inbox as first-class kinds', () => {
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
   });
 

@@ -37,8 +37,8 @@ describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     // Notifications remain the chronology/feed destination.
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
     expect(getDesktopSecondarySidebar({ kind: 'messages' }, [indigo])).toBeNull();
   });
 

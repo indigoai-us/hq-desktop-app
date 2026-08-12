@@ -87,6 +87,8 @@
   // V4Sidebar remains in the codebase (workspace IA, company children, specs).
   // US-003 mounts ChatSidebar as the primary conversation surface.
   import ChatSidebar from './chat/ChatSidebar.svelte';
+  import NotificationsView from './chat/NotificationsView.svelte';
+  import { parseNotificationsResponse } from './chat/notifications-model';
   import {
     companyLabelFor,
     conversationKindLabel,
@@ -595,6 +597,35 @@
   // navigation AWAY from a non-files route (US-010).
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
 
+  // US-012: previous route for Notifications Back, plus bell unread badge.
+  let routeBeforeNotifications = $state<DesktopRoute>({ kind: 'home' });
+  let notificationsUnreadCount = $state(0);
+
+  function openNotifications(): void {
+    if (route.kind !== 'notifications') {
+      routeBeforeNotifications = route;
+    }
+    navigate({ kind: 'notifications' });
+  }
+
+  function exitNotifications(): void {
+    navigate(routeBeforeNotifications ?? { kind: 'home' });
+  }
+
+  async function refreshNotificationsBadge(): Promise<void> {
+    try {
+      const raw = await invoke<unknown>('fetch_notifications', {
+        limit: 1,
+        cursor: null,
+        unreadOnly: false,
+      });
+      const parsed = parseNotificationsResponse(raw);
+      notificationsUnreadCount = parsed.unreadCount;
+    } catch (err) {
+      // Absent endpoint / auth miss: hide the badge rather than surface noise.
+      console.error('desktop: fetch_notifications badge failed', err);
+    }
+  }
 
   function mapMessagesTarget(payload: {
     personUid?: string;
@@ -1319,6 +1350,8 @@
 
     if (renderCompanies.length > 0) queueDesktopRenderAudit();
     void refreshRealState();
+    // US-012: seed the titlebar bell badge from the NOTIF store unreadCount.
+    void refreshNotificationsBadge();
     // Resolve the admin gate for the Moderation nav entry (default-deny: only an
     // explicit `true` unlocks it; any error leaves it hidden). This MUST use the
     // admin gate (`desktop_alt_is_admin` → @getindigo.ai), NOT `desktop_alt_enabled`
@@ -1778,7 +1811,8 @@
     onaccount={handleAccountMenu}
     onOpenSettings={handleOpenSettings}
     onopenMeetings={() => navigate({ kind: 'meetings' })}
-    onopenNotifications={() => navigate({ kind: 'inbox' })}
+    onopenNotifications={openNotifications}
+    unreadCount={notificationsUnreadCount}
   />
 
   <div class="desktop-body">
@@ -1893,6 +1927,13 @@
           {:else if route.kind === 'inbox'}
             <div class="page">
               <InboxPage />
+            </div>
+          {:else if route.kind === 'notifications'}
+            <div class="page">
+              <NotificationsView
+                onback={exitNotifications}
+                onunreadchange={(n) => (notificationsUnreadCount = n)}
+              />
             </div>
           {:else if route.kind === 'messages'}
             <MessagesShell embedded={true} />

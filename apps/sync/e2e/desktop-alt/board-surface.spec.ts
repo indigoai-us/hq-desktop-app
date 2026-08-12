@@ -155,9 +155,21 @@ describe('desktop-alt Board surface (US-007)', () => {
     // Meetings / Marketplace / Library plus settings, the palette-only
     // home / mission-control / moderation surfaces, and per-company routes
     // — see route.ts).
-    expect(route).toContain(
-      "{ kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
-    );
+    // US-012 reformatted the plain-kind union to one member per line and added
+    // 'notifications'; assert each member (and the absence of 'board') rather
+    // than the exact single-line formatting.
+    for (const kind of [
+      'home',
+      'mission-control',
+      'inbox',
+      'notifications',
+      'messages',
+      'meetings',
+      'marketplace',
+      'moderation',
+    ]) {
+      expect(route).toMatch(new RegExp(`\\|\\s*'${kind}'`));
+    }
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");

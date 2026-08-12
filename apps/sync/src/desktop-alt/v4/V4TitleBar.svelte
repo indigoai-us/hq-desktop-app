@@ -51,9 +51,14 @@
     oncommand?: () => void;
     onaccount?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
-    /** US-003: meetings / notifications stub destinations. */
+    /** US-003 / US-012: meetings + notifications destinations. */
     onopenMeetings?: () => void;
     onopenNotifications?: () => void;
+    /**
+     * Unread notifications count for the bell badge (US-012). Hidden at 0;
+     * display caps at 99+ (formatting owned by the caller or inline).
+     */
+    unreadCount?: number;
   }
 
   let {
@@ -85,6 +90,7 @@
     onOpenSettings,
     onopenMeetings,
     onopenNotifications,
+    unreadCount = 0,
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
@@ -103,6 +109,12 @@
   );
 
   const initials = $derived((accountInitials ?? 'HQ').slice(0, 2).toUpperCase());
+  /** Bell badge: hide at 0, cap display at 99+. */
+  const notificationsBadge = $derived.by(() => {
+    const n = Number.isFinite(unreadCount) ? Math.floor(unreadCount) : 0;
+    if (n <= 0) return null;
+    return n > 99 ? '99+' : String(n);
+  });
   let versionOpen = $state(false);
   let versionContainer: HTMLDivElement | null = $state(null);
   let coreVersion = $state<string | null>(null);
@@ -270,9 +282,11 @@
     </button>
     <button
       type="button"
-      class="v4-icon-btn"
+      class="v4-icon-btn v4-notif-btn"
       data-testid="titlebar-notifications"
-      aria-label="Notifications"
+      aria-label={notificationsBadge
+        ? `Notifications, ${notificationsBadge} unread`
+        : 'Notifications'}
       title="Notifications"
       onclick={() => onopenNotifications?.()}
     >
@@ -285,6 +299,15 @@
         />
         <path d="M6.5 12.25a1.5 1.5 0 0 0 3 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
       </svg>
+      {#if notificationsBadge}
+        <span
+          class="v4-notif-badge"
+          data-testid="titlebar-notifications-badge"
+          aria-hidden="true"
+        >
+          {notificationsBadge}
+        </span>
+      {/if}
     </button>
     <span class="v4-core-pill" data-testid="titlebar-core-pill" title="Core">Core</span>
     <button
@@ -695,6 +718,27 @@
   .v4-icon {
     width: 14px;
     height: 14px;
+  }
+
+  .v4-notif-btn {
+    position: relative;
+  }
+
+  .v4-notif-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-error, #c44);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 14px;
+    text-align: center;
   }
 
   .v4-action {

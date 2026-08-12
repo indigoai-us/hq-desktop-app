@@ -142,7 +142,17 @@ export type SettingsTab =
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }
+  | {
+      kind:
+        | 'home'
+        | 'mission-control'
+        | 'inbox'
+        | 'notifications'
+        | 'messages'
+        | 'meetings'
+        | 'marketplace'
+        | 'moderation';
+    }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -388,9 +398,9 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
       return { kind: 'inbox' };
     case 'messages':
       return { kind: 'messages' };
-    // Notifications remain the chronological Inbox feed.
+    // US-012: dedicated notifications feed (NOTIF store), separate from Inbox.
     case 'notifications':
-      return { kind: 'inbox' };
+      return { kind: 'notifications' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -438,8 +448,9 @@ export function fromV4Route(route: V4Route): DesktopRoute {
     case 'mission-control':
       return { kind: 'mission-control' };
     case 'inbox':
-    case 'notifications':
       return { kind: 'inbox' };
+    case 'notifications':
+      return { kind: 'notifications' };
     case 'messages':
       return { kind: 'messages' };
     case 'meetings':

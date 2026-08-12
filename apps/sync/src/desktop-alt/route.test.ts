@@ -262,7 +262,7 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
     expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
     // Messages is the complete conversation surface; Notifications stays Inbox.
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
     expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
     expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
@@ -339,7 +339,7 @@ describe('US-002 V4Sidebar payload narrowing', () => {
     // Messages remains distinct; notification payloads land on Inbox.
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
     // Unknown kinds land on Home, mirroring the sidebar model's fallback.
     expect(fromV4Route({ kind: 'mystery' })).toEqual({ kind: 'home' });
   });
