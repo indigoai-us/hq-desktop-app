@@ -19,6 +19,7 @@
   import { requestConversation } from '../../lib/pendingConversation';
   import type { Workspace } from '../../lib/workspaces';
   import { requestChannelOpen } from './open-target';
+  import CreateProjectChannel from './CreateProjectChannel.svelte';
   import {
     applySidebarFilters,
     clearDmDot,
@@ -98,6 +99,7 @@
   let historyQuery = $state('');
   let newMessageOpen = $state(false);
   let newMessageQuery = $state('');
+  let createProjectChannelOpen = $state(false);
   let filterOpen = $state(false);
   let footerMenuOpen = $state(false);
   let loading = $state(false);
@@ -272,6 +274,25 @@
     newMessageOpen = false;
     newMessageQuery = '';
     void openRow(row);
+  }
+
+  function openProjectChannelCreate() {
+    newMessageOpen = false;
+    newMessageQuery = '';
+    createProjectChannelOpen = true;
+  }
+
+  function handleProjectChannelCreated(channel: Channel) {
+    createProjectChannelOpen = false;
+    channels = upsertChannel(channels, channel);
+    saveConversationCache(
+      { channels, contacts, cachedAt: Date.now() },
+      storage,
+    );
+    if (channel.channelId) {
+      requestChannelOpen(channel.channelId);
+      onnavigateMessages?.();
+    }
   }
 
   function openHistory() {
@@ -580,6 +601,15 @@
             Close
           </button>
         </div>
+        <button
+          type="button"
+          class="chat-row chat-create-action"
+          data-testid="chat-project-channel"
+          onclick={openProjectChannelCreate}
+        >
+          <span class="chat-glyph" aria-hidden="true">#</span>
+          <span class="chat-row-title">Project channel</span>
+        </button>
         <input
           class="chat-search-input"
           type="search"
@@ -612,6 +642,14 @@
         </div>
       </div>
     </div>
+  {/if}
+
+  {#if createProjectChannelOpen}
+    <CreateProjectChannel
+      companies={companies}
+      onclose={() => (createProjectChannelOpen = false)}
+      oncreated={handleProjectChannelCreated}
+    />
   {/if}
 </aside>
 
@@ -1087,6 +1125,13 @@
 
   .chat-text-btn:hover {
     color: var(--v4-text-1);
+  }
+
+  .chat-create-action {
+    margin: 0 4px 6px;
+    width: calc(100% - 8px);
+    border: 1px solid var(--v4-hairline);
+    border-radius: 0;
   }
 
   .chat-modal-backdrop {

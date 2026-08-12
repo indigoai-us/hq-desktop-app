@@ -66,7 +66,7 @@ pub struct RequestsResponse {
 }
 
 /// One channel the caller can see. Tolerant of server additions — unknown
-/// fields are ignored. `company_uid` is present only for company-scoped
+/// fields are ignored. `company_uid` is present only for company/project-scoped
 /// channels. Mirrors the TS `Channel` shape in `src/lib/channels.ts`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,11 +74,14 @@ pub struct Channel {
     pub channel_id: String,
     #[serde(default)]
     pub name: String,
-    /// "personal" | "company" | "group".
+    /// "personal" | "company" | "group" | "project".
     #[serde(default)]
     pub scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company_uid: Option<String>,
+    /// Present when `scope == "project"` (invite-only, bound to a board project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company_name: Option<String>,
     /// "all" | "owner" — who may post.
@@ -259,12 +262,24 @@ pub fn esc_seg(s: &str) -> String {
 
 /// Build the `POST /v1/notify/channels` create body. Exactly the fields the
 /// server contract expects: `name`, `scope`, optional `companyUid` (required
-/// only for company scope), optional `invite` (personUids). Pure so the wire
-/// shape is unit-testable.
+/// for company + project scope), optional `projectId` (project scope), optional
+/// `invite` (personUids). Pure so the wire shape is unit-testable.
 pub fn build_create_payload(
     name: &str,
     scope: &str,
     company_uid: Option<&str>,
+    invite: &[String],
+) -> serde_json::Value {
+    build_create_payload_with_project(name, scope, company_uid, None, invite)
+}
+
+/// Same as [`build_create_payload`] with optional `projectId` for project-scoped
+/// channels (`scope == "project"`).
+pub fn build_create_payload_with_project(
+    name: &str,
+    scope: &str,
+    company_uid: Option<&str>,
+    project_id: Option<&str>,
     invite: &[String],
 ) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
@@ -280,6 +295,12 @@ pub fn build_create_payload(
         obj.insert(
             "companyUid".to_string(),
             serde_json::Value::String(uid.to_string()),
+        );
+    }
+    if let Some(pid) = project_id.map(str::trim).filter(|s| !s.is_empty()) {
+        obj.insert(
+            "projectId".to_string(),
+            serde_json::Value::String(pid.to_string()),
         );
     }
     if !invite.is_empty() {
@@ -696,6 +717,25 @@ mod tests {
         // A blank companyUid is treated as absent.
         let blank = build_create_payload("x", "company", Some("   "), &[]);
         assert!(!blank.as_object().unwrap().contains_key("companyUid"));
+    }
+
+    #[test]
+    fn create_payload_project_includes_project_id() {
+        let invites = vec!["prs_a".to_string()];
+        let payload = build_create_payload_with_project(
+            "hq-desktop",
+            "project",
+            Some("cmp_indigo"),
+            Some("hq-desktop-app"),
+            &invites,
+        );
+        assert_eq!(payload["scope"], "project");
+        assert_eq!(payload["companyUid"], "cmp_indigo");
+        assert_eq!(payload["projectId"], "hq-desktop-app");
+        assert_eq!(payload["invite"][0], "prs_a");
+        // Blank projectId is treated as absent.
+        let blank = build_create_payload_with_project("x", "project", Some("c"), Some("  "), &[]);
+        assert!(!blank.as_object().unwrap().contains_key("projectId"));
     }
 
     #[test]

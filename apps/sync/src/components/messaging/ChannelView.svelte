@@ -1,9 +1,10 @@
 <script lang="ts">
-  // Channel conversation pane (US-018). Renders one channel's thread + composer
-  // by REUSING the shared <Conversation showAuthors={true}/> (channels are
-  // multi-party, so author names show above incoming messages). The header
-  // shows the channel identity, a scope chip (personal/group/company), and
-  // a member-count button that opens <ChannelRoster/>.
+  // Channel conversation pane (US-018 / US-005 project channels). Renders one
+  // channel's thread + composer by REUSING the shared
+  // <Conversation showAuthors={true}/>. The header shows the channel identity,
+  // a scope chip (personal/group/company), and a member-count button that opens
+  // <ChannelRoster/> — or for project channels, a status popover (live agents,
+  // PRD rollup, branch/repo/preview, members + agents).
   //
   // If the caller is invited-but-not-joined, the composer is replaced by a join
   // CTA: joining (join_channel) flips membership to "joined" and the composer
@@ -11,14 +12,17 @@
   // live `channel:new-message` refresh for the channel it's showing.
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { safeUnlisten } from '../../lib/listener-registry';
   import { untrack } from 'svelte';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ChannelRoster from './ChannelRoster.svelte';
   import {
     type Channel,
+    type ChannelMember,
     type ChannelMessage as ChannelMessageWire,
     channelDisplayName,
+    companyNameFor,
     scopeChipLabel,
     isInvitedNotJoined,
   } from '../../lib/channels';
@@ -31,6 +35,17 @@
     type OutboundMessage,
     type SendStatus,
   } from './sendStateMachine';
+  import { loadLocalProjects, loadLocalProjectPrd } from '../../desktop-alt/lib/local-projects';
+  import type { Project } from '../../desktop-alt/lib/projects-model';
+  import type { MissionControlSnapshot } from '../../desktop-alt/lib/sessions';
+  import {
+    buildChannelStatusModel,
+    projectChannelHeaderTitle,
+    type ChannelStatusModel,
+    type StatusMemberInput,
+    type StatusSessionInput,
+  } from '../../desktop-alt/chat/channel-status-model';
+  import { isProjectChannel } from '../../desktop-alt/chat/project-channel-model';
 
   interface Props {
     channel: Channel;
@@ -95,9 +110,16 @@
   let joinGeneration = 0;
 
   let rosterOpen = $state(false);
+  let statusOpen = $state(false);
   let memberCount = $state<number | null>(
     untrack(() => channel.memberCount ?? null),
   );
+
+  /** Project channel tabs (US-005). Chat is live; Board/Files are placeholders. */
+  type ProjectTab = 'chat' | 'board' | 'files';
+  let projectTab = $state<ProjectTab>('chat');
+  let statusModel = $state<ChannelStatusModel | null>(null);
+  let statusLoading = $state(false);
 
   // Reactions (US-025) for the open channel. Recreated when the selected channel
   // changes (each channel is its own messageScope), kept in step with the visible
@@ -109,12 +131,135 @@
   const chip = $derived(scopeChipLabel(current));
   const isPersonal = $derived(current.scope === 'personal');
   const isGroup = $derived(current.scope === 'group');
+  const isProject = $derived(isProjectChannel(current));
+  const companyLabel = $derived(companyNameFor(current) ?? current.companyName?.trim() ?? null);
+  const projectHeaderTitle = $derived(
+    projectChannelHeaderTitle(title, companyLabel),
+  );
   const invited = $derived(isInvitedNotJoined(current));
   const conversationLabel = $derived(isGroup ? title : `#${title}`);
   const composerPlaceholder = $derived(
     `Message ${conversationLabel} — or type / to run an agent…`,
   );
   const hasOlder = $derived(!!nextCursor);
+
+  async function loadProjectStatus(): Promise<void> {
+    if (!isProjectChannel(current)) {
+      statusModel = null;
+      return;
+    }
+    statusLoading = true;
+    try {
+      const projectId = current.projectId?.trim() || title;
+      let projects: Project[] = [];
+      try {
+        projects = await loadLocalProjects();
+      } catch (err) {
+        console.error('channel-view: get_local_projects failed', err);
+      }
+      const project =
+        projects.find(
+          (p) =>
+            p.id === projectId ||
+            p.id === current.projectId ||
+            (p.title || p.name || '').toLowerCase() === title.toLowerCase(),
+        ) ?? null;
+
+      let prd: Awaited<ReturnType<typeof loadLocalProjectPrd>> | null = null;
+      if (project?.prdPath) {
+        try {
+          prd = await loadLocalProjectPrd(project.prdPath);
+        } catch (err) {
+          console.error('channel-view: get_local_project_prd failed', err);
+        }
+      }
+
+      let sessions: StatusSessionInput[] = [];
+      try {
+        const snap = await invoke<MissionControlSnapshot>('list_agent_sessions');
+        sessions = (snap?.sessions ?? []).map((s) => ({
+          project: s.project,
+          company: s.company,
+          cwd: s.cwd,
+          status: s.status,
+          tool: s.tool,
+          model: s.model,
+          source: s.source,
+          startedAt: s.startedAt,
+        }));
+      } catch (err) {
+        console.error('channel-view: list_agent_sessions failed', err);
+      }
+
+      let members: StatusMemberInput[] = [];
+      try {
+        const resp = await invoke<{ members?: ChannelMember[] }>('list_channel_members', {
+          channelId: current.channelId,
+        });
+        members = (resp?.members ?? []).map((m) => ({
+          personUid: m.personUid,
+          displayName: m.displayName,
+          email: m.email,
+          role: m.role,
+        }));
+        if (members.length > 0) {
+          memberCount = members.length;
+        }
+      } catch (err) {
+        console.error('channel-view: list_channel_members failed', err);
+      }
+
+      statusModel = buildChannelStatusModel({
+        project: project ?? {
+          id: projectId,
+          title,
+          name: title,
+          company: current.companyName ?? '',
+          prdPath: '',
+          storiesTotal: 0,
+          storiesComplete: 0,
+        },
+        prd: prd
+          ? {
+              name: prd.name,
+              branchName: prd.branchName,
+              userStories: (prd.userStories ?? []).map((s) => ({
+                id: s.id,
+                title: s.title,
+                passes: s.passes,
+              })),
+              metadata: prd.metadata,
+              prdPath: project?.prdPath ?? null,
+            }
+          : null,
+        sessions,
+        members,
+        companyLabel,
+      });
+      if (statusModel.memberCount > 0) {
+        memberCount = statusModel.memberCount;
+      }
+    } finally {
+      statusLoading = false;
+    }
+  }
+
+  function openMembersSurface(): void {
+    if (isProjectChannel(current)) {
+      statusOpen = true;
+      void loadProjectStatus();
+      return;
+    }
+    rosterOpen = true;
+  }
+
+  async function openPreview(url: string): Promise<void> {
+    try {
+      await openExternal(url);
+    } catch (err) {
+      console.error('channel-view: open preview failed', err);
+    }
+  }
 
   // Owner determination: the creator is the channel owner. The Channel wire
   // shape doesn't carry the caller's role, so the roster (which lists per-member
@@ -413,6 +558,10 @@
     joining = false;
     sendError = null;
     joinError = null;
+    rosterOpen = false;
+    statusOpen = false;
+    statusModel = null;
+    projectTab = 'chat';
     void id;
     void load();
   });
@@ -479,25 +628,58 @@
   });
 </script>
 
-<header class="channel-header" data-tauri-drag-region>
-  <div class="channel-title">
-    {#if !isGroup}<span class="channel-hash" aria-hidden="true">#</span>{/if}
-    <h2>{title}</h2>
-    <span class="scope-chip" class:personal={isPersonal} title={`Scope: ${chip}`}>
-      {#if isPersonal}
-        <span class="scope-glyph" aria-hidden="true">◐</span>
+<header class="channel-header" class:project={isProject} data-tauri-drag-region>
+  <div class="channel-title-block">
+    <div class="channel-title">
+      {#if isProject}
+        <h2 data-testid="project-channel-title">{projectHeaderTitle}</h2>
+      {:else}
+        {#if !isGroup}<span class="channel-hash" aria-hidden="true">#</span>{/if}
+        <h2>{title}</h2>
+        <span class="scope-chip" class:personal={isPersonal} title={`Scope: ${chip}`}>
+          {#if isPersonal}
+            <span class="scope-glyph" aria-hidden="true">◐</span>
+          {/if}
+          {chip}
+        </span>
       {/if}
-      {chip}
-    </span>
+    </div>
+    {#if isProject}
+      <nav class="project-tabs" aria-label="Project channel views" data-testid="project-channel-tabs">
+        <button
+          type="button"
+          class="project-tab"
+          class:active={projectTab === 'chat'}
+          aria-current={projectTab === 'chat' ? 'page' : undefined}
+          onclick={() => (projectTab = 'chat')}
+        >Chat</button>
+        <button
+          type="button"
+          class="project-tab"
+          class:active={projectTab === 'board'}
+          aria-current={projectTab === 'board' ? 'page' : undefined}
+          onclick={() => (projectTab = 'board')}
+        >Board</button>
+        <button
+          type="button"
+          class="project-tab"
+          class:active={projectTab === 'files'}
+          aria-current={projectTab === 'files' ? 'page' : undefined}
+          onclick={() => (projectTab = 'files')}
+        >Files</button>
+      </nav>
+    {/if}
   </div>
   <button
     class="member-count-btn"
     type="button"
-    onclick={() => (rosterOpen = true)}
-    title="View members"
+    data-testid="channel-member-count"
+    onclick={openMembersSurface}
+    title={isProject ? 'Members and status' : 'View members'}
     aria-label={memberCount != null
       ? `View ${memberCount} ${memberCount === 1 ? 'member' : 'members'}`
       : 'View members'}
+    aria-expanded={isProject ? statusOpen : rosterOpen}
   >
     {#if memberCount != null}
       {memberCount} {memberCount === 1 ? 'member' : 'members'}
@@ -507,7 +689,17 @@
   </button>
 </header>
 
-{#if invited}
+{#if isProject && projectTab === 'board'}
+  <div class="project-placeholder" data-testid="project-tab-board" role="status">
+    <p class="project-placeholder-title">Board</p>
+    <p class="project-placeholder-copy">Project board lands in a later story.</p>
+  </div>
+{:else if isProject && projectTab === 'files'}
+  <div class="project-placeholder" data-testid="project-tab-files" role="status">
+    <p class="project-placeholder-title">Files</p>
+    <p class="project-placeholder-copy">Project files land in a later story.</p>
+  </div>
+{:else if invited}
   <!-- Invited-but-not-joined: the thread is a read-only preview. `readonly`
        hides the composer and renders a static "preview" note in its place — the
        Join CTA below is the only write affordance. Without readonly the composer
@@ -568,13 +760,144 @@
   />
 {/if}
 
-{#if rosterOpen}
+{#if rosterOpen && !isProject}
   <ChannelRoster
     channelId={current.channelId}
     {selfPersonUid}
     onclose={() => (rosterOpen = false)}
     oncountchange={handleRosterCount}
   />
+{/if}
+
+{#if statusOpen && isProject}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div
+    class="status-backdrop"
+    data-testid="project-status-popover"
+    role="presentation"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) statusOpen = false;
+    }}
+    onkeydown={(e) => {
+      if (e.key === 'Escape') statusOpen = false;
+    }}
+  >
+    <div
+      class="status-popover"
+      role="dialog"
+      aria-label="Members and status"
+      aria-busy={statusLoading}
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <header class="status-head">
+        <span class="status-head-label">Status</span>
+        <button type="button" class="status-close" onclick={() => (statusOpen = false)}>
+          Close
+        </button>
+      </header>
+
+      {#if statusLoading && !statusModel}
+        <p class="status-empty" role="status">Loading…</p>
+      {:else if statusModel}
+        {#if statusModel.liveAgents.length > 0}
+          <section class="status-section" aria-label="Live agents">
+            {#each statusModel.liveAgents as agent (agent.id)}
+              <div class="status-agent-row">
+                <div class="status-agent-label">{agent.label}</div>
+                <div
+                  class="status-progress"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={agent.progressPercent}
+                >
+                  <span class="status-progress-fill" style={`width: ${agent.progressPercent}%`}></span>
+                </div>
+              </div>
+            {/each}
+            <p class="status-rollup">{statusModel.stories.label}</p>
+          </section>
+        {:else}
+          <section class="status-section" aria-label="Stories">
+            <p class="status-rollup">{statusModel.stories.label}</p>
+          </section>
+        {/if}
+
+        <section class="status-section" aria-label="Project">
+          <div class="status-section-label">Project</div>
+          {#if statusModel.project.branch}
+            <div class="status-kv">
+              <span class="status-k">Branch</span>
+              <span class="status-v">{statusModel.project.branch}</span>
+            </div>
+          {/if}
+          {#if statusModel.project.repo}
+            <div class="status-kv">
+              <span class="status-k">Repo</span>
+              <span class="status-v">{statusModel.project.repo}</span>
+            </div>
+          {/if}
+          {#if statusModel.project.previewUrl}
+            <div class="status-kv">
+              <span class="status-k">Preview</span>
+              <button
+                type="button"
+                class="status-link"
+                onclick={() => void openPreview(statusModel!.project.previewUrl!)}
+              >
+                Open preview
+              </button>
+            </div>
+          {/if}
+          {#if !statusModel.project.branch && !statusModel.project.repo && !statusModel.project.previewUrl}
+            <p class="status-empty">No project metadata yet</p>
+          {/if}
+        </section>
+
+        <section class="status-section" aria-label="Members">
+          <div class="status-section-label">Members</div>
+          {#if statusModel.members.length === 0}
+            <p class="status-empty">No human members listed</p>
+          {:else}
+            <ul class="status-list">
+              {#each statusModel.members as m (m.personUid)}
+                <li class="status-person">
+                  <span class="status-person-name">{m.displayName}</span>
+                  {#if m.role}
+                    <span class="status-person-role">{m.role}</span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+
+        <section class="status-section" aria-label="Agents">
+          <div class="status-section-label">Agents</div>
+          {#if statusModel.agents.length === 0}
+            <p class="status-empty">No agents</p>
+          {:else}
+            <ul class="status-list">
+              {#each statusModel.agents as a (a.personUid)}
+                <li class="status-person">
+                  <span
+                    class="status-dot"
+                    class:running={a.statusIcon === 'running'}
+                    aria-hidden="true"
+                  ></span>
+                  <span class="status-person-name">{a.displayName}</span>
+                  <span class="status-person-role">{a.statusIcon}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      {:else}
+        <p class="status-empty" role="status">Status unavailable</p>
+      {/if}
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -587,11 +910,262 @@
     flex-shrink: 0;
   }
 
+  .channel-header.project {
+    align-items: flex-start;
+  }
+
+  .channel-title-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+    flex: 1;
+  }
+
   .channel-title {
     display: flex;
     align-items: center;
     gap: 0.4375rem;
     min-width: 0;
+  }
+
+  .project-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .project-tab {
+    appearance: none;
+    border: none;
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--muted-2, var(--pop-muted));
+    font-family: inherit;
+    font-size: var(--text-base);
+    font-weight: 400;
+    padding: 0.125rem 0;
+    cursor: pointer;
+  }
+
+  .project-tab.active {
+    color: var(--fg, var(--pop-text));
+    font-weight: 500;
+    border-bottom-color: var(--fg, var(--pop-text));
+  }
+
+  .project-placeholder {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    padding: 1.5rem 1.25rem;
+    min-height: 0;
+  }
+
+  .project-placeholder-title {
+    margin: 0;
+    font-size: var(--text-base);
+    font-weight: 500;
+    color: var(--fg, var(--pop-text));
+  }
+
+  .project-placeholder-copy {
+    margin: 0;
+    font-size: var(--text-base);
+    font-weight: 400;
+    color: var(--muted-2, var(--pop-muted));
+  }
+
+  .status-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: 3.5rem 1.25rem 1.25rem;
+    background: color-mix(in srgb, var(--pop-bg, #111) 20%, transparent);
+  }
+
+  .status-popover {
+    width: min(320px, 100%);
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.75rem 0.875rem 1rem;
+    border: 1px solid var(--border, var(--pop-divider));
+    border-radius: 0;
+    background: var(--pop-bg, var(--c-bg));
+    color: var(--fg, var(--pop-text));
+    font-family: var(--font-sans);
+    box-shadow: none;
+  }
+
+  .status-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .status-head-label {
+    font-size: var(--text-base);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted-2, var(--pop-muted));
+  }
+
+  .status-close {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--muted-2, var(--pop-muted));
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 400;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .status-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border, var(--pop-divider));
+  }
+
+  .status-section-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted-2, var(--pop-muted));
+  }
+
+  .status-agent-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .status-agent-label {
+    font-size: var(--text-base);
+    font-weight: 400;
+    color: var(--fg, var(--pop-text));
+  }
+
+  .status-progress {
+    height: 2px;
+    width: 100%;
+    background: color-mix(in srgb, var(--fg, #fff) 12%, transparent);
+    border-radius: 0;
+    overflow: hidden;
+  }
+
+  .status-progress-fill {
+    display: block;
+    height: 100%;
+    background: var(--fg, var(--pop-text));
+    border-radius: 0;
+  }
+
+  .status-rollup {
+    margin: 0;
+    font-size: var(--text-base);
+    font-weight: 400;
+    color: var(--muted-2, var(--pop-muted));
+  }
+
+  .status-kv {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: var(--text-base);
+  }
+
+  .status-k {
+    flex: 0 0 auto;
+    min-width: 3.5rem;
+    font-weight: 400;
+    color: var(--muted-2, var(--pop-muted));
+  }
+
+  .status-v {
+    min-width: 0;
+    font-weight: 400;
+    color: var(--fg, var(--pop-text));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status-link {
+    appearance: none;
+    border: none;
+    border-bottom: 1px solid var(--fg, var(--pop-text));
+    border-radius: 0;
+    background: transparent;
+    color: var(--fg, var(--pop-text));
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 400;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  .status-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .status-person {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: var(--text-base);
+    font-weight: 400;
+  }
+
+  .status-person-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status-person-role {
+    color: var(--muted-2, var(--pop-muted));
+    font-weight: 400;
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--muted-2, var(--pop-muted));
+    flex-shrink: 0;
+  }
+
+  .status-dot.running {
+    background: var(--v4-ok, #6a6);
+  }
+
+  .status-empty {
+    margin: 0;
+    font-size: var(--text-base);
+    font-weight: 400;
+    color: var(--muted-2, var(--pop-muted));
   }
 
   .channel-hash {

@@ -50,7 +50,8 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    build_create_payload, build_group_payload, build_reaction_payload, build_reactions_url,
+    build_create_payload, build_create_payload_with_project, build_group_payload,
+    build_reaction_payload, build_reactions_url,
     esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
     ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     MessageReactions, ReactionAggregate, RequestsResponse, UnreadSummary,
@@ -487,35 +488,51 @@ pub async fn fetch_channel(
 }
 
 /// Tauri command: create a channel. `POST /v1/notify/channels`. `scope` is
-/// "personal" | "company"; a company channel requires `company_uid`. Optional
-/// `invite` seeds initial members by personUid. Returns the created `Channel`.
+/// "personal" | "company" | "project"; a company/project channel requires
+/// `company_uid`. Project scope also requires `project_id` (invite-only; no
+/// company auto-join). Optional `invite` seeds initial members by personUid.
+/// Returns the created `Channel`.
 #[tauri::command]
 pub async fn create_channel(
     name: String,
     scope: String,
     company_uid: Option<String>,
     invite: Option<Vec<String>>,
+    project_id: Option<String>,
 ) -> Result<Channel, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Channel name must not be empty".to_string());
     }
     let scope_norm = scope.trim().to_ascii_lowercase();
-    if scope_norm != "personal" && scope_norm != "company" {
-        return Err("Channel scope must be 'personal' or 'company'".to_string());
+    if scope_norm != "personal" && scope_norm != "company" && scope_norm != "project" {
+        return Err("Channel scope must be 'personal', 'company', or 'project'".to_string());
     }
     let company = company_uid
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    if scope_norm == "company" && company.is_none() {
-        return Err("A company channel requires a companyUid".to_string());
+    if (scope_norm == "company" || scope_norm == "project") && company.is_none() {
+        return Err("A company/project channel requires a companyUid".to_string());
+    }
+    let project = project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if scope_norm == "project" && project.is_none() {
+        return Err("A project channel requires a projectId".to_string());
     }
     let invites = invite.unwrap_or_default();
 
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_CREATE").await?;
     let url = format!("{base}/v1/notify/channels");
-    let payload = build_create_payload(trimmed, &scope_norm, company, &invites);
+    let payload = build_create_payload_with_project(
+        trimmed,
+        &scope_norm,
+        company,
+        project,
+        &invites,
+    );
     // The server wraps the created channel in an envelope: `{"channel": {…}}`.
     // Decoding into `Channel` directly failed with `missing field channelId` even
     // though the channel WAS created — so the user saw an error, retried, and hit

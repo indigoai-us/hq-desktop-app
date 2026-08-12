@@ -93,6 +93,10 @@
     takePendingConversation,
     type ConversationTarget,
   } from '../../lib/pendingConversation';
+  import {
+    OPEN_CHANNEL_EVENT,
+    takePendingChannel,
+  } from '../../desktop-alt/chat/open-target';
 
   interface Props {
     /** Fill the desktop canvas instead of the dedicated native window. */
@@ -1618,6 +1622,27 @@
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson),
     );
     onMessagePerson();
+
+    // Chat sidebar (US-003) → open a channel in the embedded Messages shell.
+    const openPendingChannel = () => {
+      const channelId = takePendingChannel();
+      if (!channelId) return;
+      const match = channels.find((c) => c.channelId === channelId);
+      if (match) selectChannel(match);
+      else {
+        // Channel list may still be loading — retry after the next channels load.
+        void loadChannels().then(() => {
+          const late = channels.find((c) => c.channelId === channelId);
+          if (late) selectChannel(late);
+        });
+      }
+    };
+    const onOpenChannel = () => openPendingChannel();
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
+    retainUnlistener(() =>
+      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel),
+    );
+    openPendingChannel();
 
     // A brand-new channel/invite appeared, or a channel's metadata changed.
     // Upsert it into the rail so it shows live without a manual refresh.
