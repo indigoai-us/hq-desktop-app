@@ -50,8 +50,9 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    build_create_payload, build_create_payload_with_project, build_group_payload,
-    build_reaction_payload, build_reactions_url,
+    build_create_payload, build_create_payload_with_project,
+    build_ensure_project_channel_payload, build_group_payload,
+    build_reaction_payload, build_reactions_url, EnsureProjectChannelResponse,
     esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
     ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     MessageReactions, ReactionAggregate, RequestsResponse, UnreadSummary,
@@ -78,6 +79,50 @@ async fn post_json<T: serde::de::DeserializeOwned>(
         })?;
 
     let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("{code}_ERROR status={status} msg={server_msg:?}"),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Request failed (status {})", status.as_u16()))
+        );
+    }
+
+    parse_body::<T>(resp, code).await
+}
+
+/// Like `post_json`, but a `404 Not Found` resolves to `T::default()` instead
+/// of an error (US-021). Used for additive endpoints an older server may lack
+/// — e.g. `ensure-project` — where the caller silently no-ops. Any other
+/// non-success status still errors.
+async fn post_json_allow_404<T: serde::de::DeserializeOwned + Default>(
+    url: &str,
+    token: &str,
+    payload: &serde_json::Value,
+    code: &str,
+) -> Result<T, String> {
+    let resp = build_client()
+        .post(url)
+        .header("authorization", format!("Bearer {token}"))
+        .json(payload)
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("{code}_NETWORK_FAIL {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        log(LOG_TAG, &format!("{code}_ABSENT_404 (treating as no-op)"));
+        return Ok(T::default());
+    }
     if !status.is_success() {
         let server_msg = resp
             .json::<serde_json::Value>()
@@ -441,14 +486,59 @@ pub async fn get_unread_summary(app: AppHandle) -> Result<UnreadSummary, String>
 
 /// Tauri command: list every channel the caller can see (personal + company,
 /// joined + invited). `GET /v1/notify/channels`.
+/// US-021: optional owner listing — `company_uid` + `include_company_projects`
+/// append `?companyUid=…&includeCompanyProjects=1` so org owners/admins also
+/// receive project channels they are not members of. Old servers ignore the
+/// unknown query params (absent-safe); plain calls are byte-identical to before.
 #[tauri::command]
-pub async fn list_channels() -> Result<ChannelsResponse, String> {
+pub async fn list_channels(
+    company_uid: Option<String>,
+    include_company_projects: Option<bool>,
+) -> Result<ChannelsResponse, String> {
     let (base, token) = auth_and_base("MESSAGES_CHANNELS").await?;
-    let url = format!("{base}/v1/notify/channels");
+    let mut url = format!("{base}/v1/notify/channels");
+    if include_company_projects.unwrap_or(false) {
+        if let Some(uid) = company_uid.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            url = format!(
+                "{url}?companyUid={}&includeCompanyProjects=1",
+                esc_seg(uid)
+            );
+        }
+    }
     let out: ChannelsResponse = get_json(&url, &token, "MESSAGES_CHANNELS").await?;
     log(
         LOG_TAG,
         &format!("MESSAGES_CHANNELS_OK count={}", out.channels.len()),
+    );
+    Ok(out)
+}
+
+/// Tauri command (US-021): idempotent auto-provision of a project's
+/// invite-only channel. `POST /v1/notify/channels/ensure-project`.
+/// Absent-safe: an older server without the route 404s → `Default`
+/// (no channel, created=false) so the frontend silently no-ops.
+#[tauri::command]
+pub async fn ensure_project_channel(
+    company_uid: String,
+    project_id: String,
+) -> Result<EnsureProjectChannelResponse, String> {
+    let company = company_uid.trim();
+    let project = project_id.trim();
+    if company.is_empty() || project.is_empty() {
+        return Err("companyUid and projectId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_ENSURE_PROJECT").await?;
+    let url = format!("{base}/v1/notify/channels/ensure-project");
+    let payload = build_ensure_project_channel_payload(company, project);
+    let out: EnsureProjectChannelResponse =
+        post_json_allow_404(&url, &token, &payload, "MESSAGES_ENSURE_PROJECT").await?;
+    log(
+        LOG_TAG,
+        &format!(
+            "MESSAGES_ENSURE_PROJECT_OK project={project} created={} present={}",
+            out.created,
+            out.channel.is_some()
+        ),
     );
     Ok(out)
 }

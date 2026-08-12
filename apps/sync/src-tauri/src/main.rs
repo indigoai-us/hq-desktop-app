@@ -731,6 +731,7 @@ fn main() {
             commands::messages::list_company_members,
             commands::messages::get_unread_summary,
             commands::messages::list_channels,
+            commands::messages::ensure_project_channel,
             commands::messages::fetch_channel,
             commands::messages::fetch_channel_files,
             commands::messages::create_channel,
