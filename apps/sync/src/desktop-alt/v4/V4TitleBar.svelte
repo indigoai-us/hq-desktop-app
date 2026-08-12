@@ -6,12 +6,14 @@
   import CopyPromptButton from '../../components/CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte';
   import { getV4TitleBarModel, type V4HydrationIssue } from './model';
+  import { titlebarDayDate } from '../chat/sidebar-model';
   import './tokens.css';
 
   /**
-   * Compact native title bar (DESKTOP-001): traffic-light inset, sidebar
-   * toggle, live sync status, command search, contextual sync action, and
-   * account control. Liquid Glass lives on this chrome only. Tauri drag
+   * Compact native title bar (DESKTOP-001 + US-003 chat chrome): traffic-light
+   * inset, sidebar toggle, HQ wordmark, DAY · DATE, live sync status, meetings
+   * / notifications stubs, Core pill, command search, contextual sync action,
+   * and account control. Liquid Glass lives on this chrome only. Tauri drag
    * regions are limited to noninteractive padded spacers — never the whole
    * header and never interactive controls.
    */
@@ -49,6 +51,9 @@
     oncommand?: () => void;
     onaccount?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
+    /** US-003: meetings / notifications stub destinations. */
+    onopenMeetings?: () => void;
+    onopenNotifications?: () => void;
   }
 
   let {
@@ -78,7 +83,11 @@
     oncommand,
     onaccount,
     onOpenSettings,
+    onopenMeetings,
+    onopenNotifications,
   }: Props = $props();
+
+  const dayDateLabel = $derived(titlebarDayDate());
 
   const model = $derived(
     getV4TitleBarModel({
@@ -220,6 +229,8 @@
         <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
       </svg>
     </button>
+    <span class="v4-wordmark" data-testid="titlebar-wordmark" aria-label="HQ">HQ</span>
+    <span class="v4-day-date" data-testid="titlebar-day-date">{dayDateLabel}</span>
   </div>
 
   <div class="v4-status" aria-live="polite">
@@ -243,6 +254,39 @@
         {actionError}
       </span>
     {/if}
+    <button
+      type="button"
+      class="v4-icon-btn"
+      data-testid="titlebar-meetings"
+      aria-label="Meetings"
+      title="Meetings"
+      onclick={() => onopenMeetings?.()}
+    >
+      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="2" y="4" width="12" height="8.5" rx="1.5" stroke="currentColor" stroke-width="1.2" />
+        <circle cx="8" cy="8.25" r="2" stroke="currentColor" stroke-width="1.2" />
+        <path d="M11.5 6.5l2-1.25v5.5L11.5 9.5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      </svg>
+    </button>
+    <button
+      type="button"
+      class="v4-icon-btn"
+      data-testid="titlebar-notifications"
+      aria-label="Notifications"
+      title="Notifications"
+      onclick={() => onopenNotifications?.()}
+    >
+      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+          d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
+          stroke="currentColor"
+          stroke-width="1.2"
+          stroke-linejoin="round"
+        />
+        <path d="M6.5 12.25a1.5 1.5 0 0 0 3 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      </svg>
+    </button>
+    <span class="v4-core-pill" data-testid="titlebar-core-pill" title="Core">Core</span>
     <button
       type="button"
       class="v4-icon-btn"
@@ -394,9 +438,45 @@
     display: flex;
     align-items: center;
     flex: 0 0 auto;
-    gap: 4px;
+    gap: 8px;
     /* 78px left inset clears the overlay traffic lights (macOS). */
     padding-left: 78px;
+  }
+
+  .v4-wordmark {
+    flex: 0 0 auto;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 14px);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+
+  .v4-day-date {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 11px);
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    line-height: 1;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .v4-core-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 9px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font-size: var(--type-metadata, 11px);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    white-space: nowrap;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap
