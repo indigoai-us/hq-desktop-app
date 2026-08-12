@@ -8,17 +8,17 @@ import {
 } from './v4/model';
 
 /**
- * V4 information architecture (docs/design/v4/SPEC.md section 4 + DESKTOP-001).
+ * Desktop information architecture (chat-first shell, US-003..018).
  *
- * Global destinations — Inbox, Messages, Meetings, Marketplace, Library, Files
- * — plus companies as first-class sidebar rows and a Settings footer. Inbox is
- * notification chronology; Messages is the full conversation workspace. Home /
- * Mission Control / Moderation are palette-only. DESKTOP-001 expands the
- * selected company inline (Overview /
- * Goals / Projects / Skills / Workers / Knowledge / Team / More) and removes
- * the permanent company secondary sidebar; Library and Settings keep their
- * contextual secondary columns. DESKTOP-010 groups Activity / Deployments /
- * Secrets / company Settings under More as one operations workspace.
+ * Primary chrome is ChatSidebar (conversations + companies). Global page
+ * destinations include Notifications (notification chronology), Messages,
+ * Meetings, Marketplace, Library (overlay), Files, Settings, Home (palette /
+ * exception surface), and Moderation (admin). Legacy workspace-shell deep
+ * links remap in resolvePendingDesktopRoute. DESKTOP-001 expands the selected
+ * company inline (Overview / Goals / Projects / Skills / Workers / Knowledge /
+ * Team / More). Settings keeps a secondary column; Library is a full-screen
+ * overlay. DESKTOP-010 groups Activity / Deployments / Secrets / company
+ * Settings under More as one operations workspace.
  */
 
 /**
@@ -145,8 +145,6 @@ export type DesktopRoute =
   | {
       kind:
         | 'home'
-        | 'mission-control'
-        | 'inbox'
         | 'notifications'
         | 'messages'
         | 'meetings'
@@ -309,10 +307,11 @@ export function getDesktopActiveCompany(
 const COMPANY_HOTKEY_BASE = 5;
 
 /**
- * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
- * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
- * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
- * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
+ * ⌘1–⌘4 map to the four primary destinations (Notifications / Meetings /
+ * Marketplace / Library); ⌘5–⌘9 map to the first five companies in sidebar
+ * (connected-first) order (US-008 renumber, no dead slots; US-018 remaps the
+ * former Inbox hotkey onto Notifications). Home has no hotkey (palette-only).
+ * Mirrors `companyHotkey` below for the palette labels.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -320,7 +319,7 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'inbox' };
+  if (event.key === '1') return { kind: 'notifications' };
   if (event.key === '2') return { kind: 'meetings' };
   if (event.key === '3') return { kind: 'marketplace' };
   if (event.key === '4') return { kind: 'library' };
@@ -342,8 +341,10 @@ export function companyHotkey(index: number): string | undefined {
 
 /**
  * Resolve a backend navigation intent (desktop_alt_consume_pending_route /
- * the `desktop:navigate` event) to a route. Legacy aliases stay functional:
- * 'sync' deep-links — the pre-V4 home surface — land on Home.
+ * the `desktop:navigate` event) to a route. Legacy aliases stay functional and
+ * always land on a live route (US-018): never null for known legacy names.
+ * Examples: 'sync' / 'activity' / 'core-drift' / 'drift' / 'mission-control'
+ * → Home; 'inbox' → Notifications; 'library:marketplace' → Marketplace.
  */
 export function resolvePendingDesktopRoute(name: string | null | undefined): DesktopRoute | null {
   const trimmed = name?.trim();
@@ -391,16 +392,15 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'activity':
     case 'core-drift':
     case 'drift':
-      return { kind: 'home' };
+    // US-018: mission-control deep link lands on Home.
     case 'mission-control':
-      return { kind: 'mission-control' };
+      return { kind: 'home' };
+    // US-018: inbox deep link lands on Notifications feed.
     case 'inbox':
-      return { kind: 'inbox' };
-    case 'messages':
-      return { kind: 'messages' };
-    // US-012: dedicated notifications feed (NOTIF store), separate from Inbox.
     case 'notifications':
       return { kind: 'notifications' };
+    case 'messages':
+      return { kind: 'messages' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -431,9 +431,10 @@ function isSettingsTab(value: string | undefined): value is SettingsTab {
 }
 
 /**
- * Narrow a V4Sidebar navigation payload (open-ended V4Route) back into the
- * app's DesktopRoute union. Unknown kinds land on Home — the exception surface.
- * Company payloads may carry a primary section / tab id (DESKTOP-001).
+ * Narrow an open-ended V4Route payload back into the app's DesktopRoute union.
+ * Unknown kinds land on Home — the exception surface. Company payloads may
+ * carry a primary section / tab id (DESKTOP-001). US-018: legacy 'inbox' and
+ * 'mission-control' kinds remap to live destinations.
  */
 export function fromV4Route(route: V4Route): DesktopRoute {
   if (route.kind === 'company' && route.slug) {
@@ -444,11 +445,9 @@ export function fromV4Route(route: V4Route): DesktopRoute {
   }
   switch (route.kind) {
     case 'home':
-      return { kind: 'home' };
     case 'mission-control':
-      return { kind: 'mission-control' };
+      return { kind: 'home' };
     case 'inbox':
-      return { kind: 'inbox' };
     case 'notifications':
       return { kind: 'notifications' };
     case 'messages':
@@ -492,9 +491,8 @@ export interface DesktopSecondarySidebarOptions {
  * SPEC section 4 + DESKTOP-001 / US-017: the secondary sidebar exists ONLY on
  * Settings. Library is a full-screen overlay (no permanent secondary column).
  * Company navigation expands inline in the primary sidebar, so company routes
- * never render a permanent secondary column. Home, Mission Control,
- * Marketplace, Meetings, Inbox, Messages, Files, Library, and Moderation have
- * none.
+ * never render a permanent secondary column. Home, Marketplace, Meetings,
+ * Notifications, Messages, Files, Library, and Moderation have none.
  */
 export function getDesktopSecondarySidebar(
   route: DesktopRoute,

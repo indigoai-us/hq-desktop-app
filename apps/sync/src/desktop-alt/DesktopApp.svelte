@@ -26,11 +26,9 @@
     type CachedBrand,
   } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
-  import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryOverlay from './chat/LibraryOverlay.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
-  import InboxPage from './pages/InboxPage.svelte';
   import MessagesShell from '../components/messaging/MessagesShell.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
@@ -89,8 +87,7 @@
     HomeCoreState,
     HomeDeleteRefusal,
   } from './v4/home-model';
-  // V4Sidebar remains in the codebase (workspace IA, company children, specs).
-  // US-003 mounts ChatSidebar as the primary conversation surface.
+  // US-003 / US-018: ChatSidebar is the primary conversation surface.
   import ChatSidebar from './chat/ChatSidebar.svelte';
   import NotificationsView from './chat/NotificationsView.svelte';
   import { parseNotificationsResponse } from './chat/notifications-model';
@@ -455,17 +452,11 @@
       action: () => navigate({ kind: 'home' }),
     },
     {
-      id: 'command-go-mission-control',
-      label: 'Go to Mission Control',
-      detail: 'Live + historical view of running agent sessions',
-      action: () => navigate({ kind: 'mission-control' }),
-    },
-    {
-      id: 'command-go-inbox',
-      label: 'Go to Inbox',
+      id: 'command-go-notifications',
+      label: 'Go to Notifications',
       detail: 'Notifications, mentions, shares, and activity',
       shortcut: '⌘1',
-      action: () => navigate({ kind: 'inbox' }),
+      action: () => navigate({ kind: 'notifications' }),
     },
     {
       id: 'command-go-messages',
@@ -609,8 +600,8 @@
   let routeBeforeNotifications = $state<DesktopRoute>({ kind: 'home' });
   let notificationsUnreadCount = $state(0);
 
-  // US-017: previous route for Library overlay Back (fallback inbox/home).
-  let routeBeforeLibrary = $state<DesktopRoute>({ kind: 'inbox' });
+  // US-017: previous route for Library overlay Back (fallback notifications/home).
+  let routeBeforeLibrary = $state<DesktopRoute>({ kind: 'notifications' });
 
   function openNotifications(): void {
     if (route.kind !== 'notifications') {
@@ -630,7 +621,7 @@
   function exitLibrary(): void {
     const fallback =
       routeBeforeLibrary.kind === 'library'
-        ? ({ kind: 'inbox' } satisfies DesktopRoute)
+        ? ({ kind: 'notifications' } satisfies DesktopRoute)
         : routeBeforeLibrary;
     navigate(fallback);
   }
@@ -879,7 +870,7 @@
           companies: nextWorkspaces,
         }).trim() || null;
       writeCachedWorkspaces(nextWorkspaces);
-      // The chrome (V4Sidebar / V4TitleBar) consumes renderCompanies +
+      // The chrome (ChatSidebar / V4TitleBar) consumes renderCompanies +
       // renderWorkspaceCount reactively ($derived / $props), so the reassignments
       // above refresh it on their own. We deliberately do NOT reload the document
       // or remount the chrome on a workspace-list change: a full reload mid-paint
@@ -1892,8 +1883,7 @@
           onexit={exitFilesMode}
         />
       {:else}
-        <!-- US-003: chat-first primary sidebar. V4Sidebar stays in the tree for
-             workspace IA specs / palette-driven company destinations. -->
+        <!-- US-003 / US-018: chat-first primary sidebar. -->
         <ChatSidebar
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
@@ -1968,10 +1958,6 @@
                 onopenlog={handleOpenActivityLog}
               />
             </div>
-          {:else if route.kind === 'mission-control'}
-            <div class="page">
-              <MissionControlPage />
-            </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
@@ -1985,10 +1971,6 @@
           {:else if route.kind === 'settings'}
             <div class="page">
               <SettingsPage activeTab={route.tab ?? 'sync'} />
-            </div>
-          {:else if route.kind === 'inbox'}
-            <div class="page">
-              <InboxPage />
             </div>
           {:else if route.kind === 'notifications'}
             <div class="page">
@@ -2050,7 +2032,7 @@
                 onopengoals={() =>
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: 'goals' })
                 }
-                onopeninbox={() => navigate({ kind: 'inbox' })}
+                onopeninbox={() => navigate({ kind: 'notifications' })}
                 onopenoperations={(destination) =>
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: destination })
                 }

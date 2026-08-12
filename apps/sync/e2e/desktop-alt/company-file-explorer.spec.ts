@@ -107,13 +107,16 @@ describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009
     expect(desktopApp).toContain('Select a file to preview it');
   });
 
-  it('the files route + Files nav destination exist in the IA', () => {
-    // route.ts declares the files route kind.
+  it('the files route + Files destination exist in the IA', () => {
+    // route.ts declares the files route kind (US-018: V4_NAV_ITEMS retired).
     expect(route).toContain("kind: 'files'");
     expect(route).toMatch(/kind === 'files'/);
-    // model.ts / V4_NAV_ITEMS includes Files as a primary destination.
-    expect(model).toContain("{ id: 'files', label: 'Files' }");
-    expect(model).toContain("| 'files'");
+    expect(route).toContain("| { kind: 'files'; slug?: string; path?: string }");
+    // DesktopApp mounts FilesModeSidebar for the files route.
+    expect(desktopApp).toContain("{#if route.kind === 'files'}");
+    expect(desktopApp).toContain('<FilesModeSidebar');
+    // Shared company sort still lives in model.ts for the Files mini list.
+    expect(model).toContain('export function sortV4CompaniesConnectedFirst');
   });
 
   it('Files mode survives a desktop-alt window reload via persisted route state', () => {

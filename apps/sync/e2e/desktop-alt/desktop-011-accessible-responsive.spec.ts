@@ -49,7 +49,7 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
   const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
-  const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+  const chatSidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
   const secondary = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const messages = readRepoFile('src/components/messaging/MessagesShell.svelte');
   const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
@@ -132,8 +132,9 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(desktopCss).toMatch(
       /\.desktop-row-stack,\s*\.v4-row-stack\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
     );
-    expect(sidebar).toMatch(
-      /\.v4-footer\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
+    // US-018: ChatSidebar is primary; user-card stack keeps title/meta gap tight.
+    expect(chatSidebar).toMatch(
+      /\.chat-user-copy\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;[\s\S]*?gap:\s*2px/,
     );
     expect(secondary).toMatch(
       /\.v4-context\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,

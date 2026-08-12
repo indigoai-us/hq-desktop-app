@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -38,7 +38,7 @@ const featureGate = readIfExists('../../crates/hq-desktop-core/src/feature_gate.
 const trayHelper = read('src-tauri/src/tray_helper.rs');
 const trayRs = read('src-tauri/src/tray.rs');
 const settingsPage = read('src/desktop-alt/pages/SettingsPage.svelte');
-const inboxPage = read('src/desktop-alt/pages/InboxPage.svelte');
+const notificationsView = read('src/desktop-alt/chat/NotificationsView.svelte');
 
 function normalize(source: string): string {
   return source.replace(/\s+/g, ' ');
@@ -113,7 +113,7 @@ describe('US-005: Alt Home surface wires to real sync state and events', () => {
 
     // Menubar no longer polls desktop_alt_enabled for a popover toggle (US-001
     // chrome strip). Auth still sets authenticated state; onboarding remains
-    // lifecycle-driven. Desktop open paths use tray + NotificationFeed.
+    // lifecycle-driven. Desktop open paths use tray + notifications surfaces.
     expect(app).toContain('function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string })');
     expect(app).toContain('authenticated = auth.authenticated');
     expect(app).toContain("invoke('open_desktop_alt_window')");
@@ -235,8 +235,16 @@ describe('US-005 acceptance: all previous popover settings and company controls 
   // destination by hq-desktop-widget US-007 — companies are reached via their
   // first-class sidebar rows; cloud-only rows pull via Sync.
 
-  it('InboxPage still mounts NotificationFeed (notifications not orphaned — merged into Inbox by US-008)', () => {
-    expect(inboxPage).toContain('NotificationFeed');
-    expect(inboxPage).toMatch(/import NotificationFeed from ['"].*NotificationFeed\.svelte['"]/);
+  it('InboxPage is retired; NotificationsView is the live notifications feed (US-018)', () => {
+    expect(existsSync(root('src/desktop-alt/pages/InboxPage.svelte'))).toBe(false);
+    expect(existsSync(root('src/desktop-alt/chat/NotificationsView.svelte'))).toBe(true);
+    expect(desktopApp).toContain("import NotificationsView from './chat/NotificationsView.svelte'");
+    expect(desktopApp).toContain("route.kind === 'notifications'");
+    expect(desktopApp).toContain('<NotificationsView');
+    expect(desktopApp).not.toMatch(/import\s+InboxPage\b/);
+    expect(desktopApp).not.toMatch(/<InboxPage\b/);
+    // NotificationsView loads the hq-pro NOTIF store, not a demo fixture.
+    expect(notificationsView).toContain("invoke<unknown>('fetch_notifications'");
+    expect(notificationsView).toContain('data-testid="notifications-view"');
   });
 });

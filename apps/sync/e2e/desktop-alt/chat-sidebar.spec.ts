@@ -26,8 +26,9 @@ describe('US-003: unified conversation sidebar — shell integration', () => {
     expect(desktopApp).toContain("onnavigateMessages={() => navigate({ kind: 'messages' })}");
     // Files mode still uses the dedicated files sidebar.
     expect(desktopApp).toContain('<FilesModeSidebar');
-    // V4Sidebar stays in the tree for IA specs; not the default primary mount.
-    expect(desktopApp).not.toMatch(/<V4Sidebar[\s\S]*?onnavigate=/);
+    // US-018: V4Sidebar retired entirely — ChatSidebar is the only primary mount.
+    expect(desktopApp).not.toContain('<V4Sidebar');
+    expect(desktopApp).not.toContain('V4Sidebar');
   });
 
   it('wires titlebar meetings / notifications stubs to real routes', () => {

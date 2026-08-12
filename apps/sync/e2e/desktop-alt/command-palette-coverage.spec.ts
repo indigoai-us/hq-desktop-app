@@ -39,13 +39,16 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).toContain("navigate({ kind: 'settings', tab: section.id })");
   });
 
-  it('keeps Marketplace, Home, and Mission Control reachable from the palette (US-007)', () => {
-    // Marketplace is a top-level destination with the ⌘4 slot; Home and
-    // Mission Control lost their sidebar rows + hotkeys but stay routable.
+  it('keeps Marketplace, Home, and Notifications reachable from the palette (US-007 / US-018)', () => {
+    // Marketplace is a top-level destination; Home stays palette-only.
+    // US-018: Mission Control entry removed; Notifications replaces Inbox.
     expect(desktopApp).toContain("id: 'command-go-marketplace'");
     expect(desktopApp).toContain("navigate({ kind: 'marketplace' })");
     expect(desktopApp).toContain("id: 'command-go-home'");
-    expect(desktopApp).toContain("id: 'command-go-mission-control'");
+    expect(desktopApp).toContain("id: 'command-go-notifications'");
+    expect(desktopApp).toContain("navigate({ kind: 'notifications' })");
+    expect(desktopApp).not.toContain("id: 'command-go-mission-control'");
+    expect(desktopApp).not.toContain("id: 'command-go-inbox'");
     expect(desktopApp).not.toContain("id: 'command-go-companies'");
   });
 

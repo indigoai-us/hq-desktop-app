@@ -84,7 +84,7 @@ async function refresh(): Promise<void> {
  * Start the singleton once for the app's lifetime. Subscribes to the backend
  * `sessions:updated` poll event FIRST (so no tick is missed), then does one
  * immediate `list_agent_sessions` for instant paint. Idempotent via `started`.
- * Called from MissionControlPage.onMount so the page works in isolation.
+ * Called from LiveSessionsPanel / SessionHistoryPanel / project surfaces onMount.
  */
 export function startSessionsStore(): void {
   if (started) return;

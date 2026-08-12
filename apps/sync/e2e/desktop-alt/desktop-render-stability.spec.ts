@@ -10,8 +10,8 @@ import { readRepoFile } from './harness';
  * cache→live swap, on every window focus, and on every sync:all-complete — plus
  * `{#key renderWorkspaceCount}` remounts of the title bar, sidebar, and status
  * bar. The reload mid-paint is what blanked/froze the desktop. The chrome is
- * already reactive (V4Sidebar derives its model from the `companies` prop;
- * V4TitleBar / DesktopStatusBar are pure $props consumers), so reassigning
+ * already reactive (ChatSidebar / FilesModeSidebar consume the `companies`
+ * prop; V4TitleBar / DesktopStatusBar are pure $props consumers), so reassigning
  * renderCompanies refreshes everything without a reload or a remount.
  */
 describe('desktop render stability', () => {

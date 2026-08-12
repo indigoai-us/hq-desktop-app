@@ -9,7 +9,7 @@ import { readRepoFile } from './harness';
  * room-only rail plus dedicated activity shortcut, ShareMainPane payload (sender /
  * path / timestamp / ACL / actions), preserved copy + Claude actions, text-only
  * composer (no attachment affordance), naked main canvas, and shared component
- * reuse across Messages + Inbox paths.
+ * reuse across Messages + Notifications paths (US-018: InboxPage retired).
  */
 
 describe('DESKTOP-002: unified messages and notification triage', () => {
@@ -18,7 +18,7 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
   const requestCard = readRepoFile('src/components/messaging/DmRequestCard.svelte');
   const conversation = readRepoFile('src/components/messaging/Conversation.svelte');
   const compose = readRepoFile('src/components/messaging/ComposeMessage.svelte');
-  const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
+  const notifications = readRepoFile('src/desktop-alt/chat/NotificationsView.svelte');
   const dmDetail = readRepoFile('src/components/DmDetail.svelte');
   const shareDetail = readRepoFile('src/components/ShareDetail.svelte');
 
@@ -176,18 +176,17 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     );
   });
 
-  it('shares request/share payload components with Inbox quick-window paths', () => {
+  it('shares request/share payload components with Notifications / quick-window paths', () => {
     // ShareMainPane is the shared payload surface for standalone share-detail,
     // dm-detail share rows, and MessagesShell share selection.
     expect(dmDetail).toContain('<ShareMainPane events={shareEvents} />');
     expect(shareDetail).toContain('<ShareMainPane');
     expect(shell).toContain('<ShareMainPane events={selectedShareEvents} />');
-    // Inbox still hosts NotificationFeed (ordinary share/DM rows) without
-    // People/Requests tabs.
-    expect(inbox).toContain('NotificationFeed');
-    expect(inbox).not.toMatch(/>\s*People\s*</);
-    expect(inbox).not.toMatch(/>\s*Requests\s*</);
-    expect(inbox).not.toContain('role="tablist"');
-    expect(inbox).toContain('border-radius: 0');
+    // US-018: NotificationsView is the desktop chronology feed (no People/Requests tabs).
+    expect(notifications).toContain('data-testid="notifications-view"');
+    expect(notifications).not.toMatch(/>\s*People\s*</);
+    expect(notifications).not.toMatch(/>\s*Requests\s*</);
+    expect(notifications).not.toContain('role="tablist"');
+    expect(notifications).toContain('border-radius: 0');
   });
 });

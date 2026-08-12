@@ -119,7 +119,8 @@ describe('DESKTOP-003: actionable company overview', () => {
     // Navigation wired from shell.
     expect(desktopApp).toContain("tab: 'projects'");
     expect(desktopApp).toContain("tab: 'goals'");
-    expect(desktopApp).toContain("navigate({ kind: 'inbox' })");
+    // US-018: overview "Open inbox" hands off to the notifications feed.
+    expect(desktopApp).toContain("navigate({ kind: 'notifications' })");
     expect(digest).toContain('data-testid="overview-open-inbox"');
     expect(digest).toContain('companyStore.loadActivity<Partial<CompanyActivity>>');
     // No fabricated live state.

@@ -116,7 +116,8 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
   const designSystem = readRepoFile('src/styles/design-system.css');
   const popover = readRepoFile('src/styles/popover.css');
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
-  const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+  // US-018: ChatSidebar is the primary sidebar chrome (V4Sidebar retired).
+  const sidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
   const secondarySidebar = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const filesSidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
   const commandPalette = readRepoFile('src/desktop-alt/components/CommandPalette.svelte');

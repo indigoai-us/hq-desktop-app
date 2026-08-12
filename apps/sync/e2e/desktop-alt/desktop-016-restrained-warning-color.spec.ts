@@ -38,7 +38,6 @@ describe('DESKTOP-016: restrained warning color', () => {
     'src/desktop-alt/panels/CompanyBoardPanel.svelte',
   );
   const sidebarModel = readRepoFile('src/desktop-alt/v4/model.ts');
-  const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
   const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
   const homeModel = readRepoFile('src/desktop-alt/v4/home-model.ts');
   const profile = readRepoFile('src/desktop-alt/panels/ProfilePanel.svelte');
@@ -65,9 +64,7 @@ describe('DESKTOP-016: restrained warning color', () => {
     'src/desktop-alt/styles/desktop-alt.css',
   );
   const popover = readRepoFile('src/components/Popover.svelte');
-  const missionControl = readRepoFile(
-    'src/desktop-alt/pages/MissionControlPage.svelte',
-  );
+  // US-018: MissionControlPage retired — awaiting_input tone lives on LiveSessionsPanel.
   const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const agentWorkflow = readRepoFile(
     'src/desktop-alt/lib/agent-workflow.ts',
@@ -114,8 +111,8 @@ describe('DESKTOP-016: restrained warning color', () => {
     expect(sidebarModel).toContain(
       "workspace.membershipStatus === 'pending') return 'idle'",
     );
-    expect(rule(sidebar, '.v4-invite-badge')).toContain('border: 0');
-    expect(rule(sidebar, '.v4-invite-badge')).toContain('background: transparent');
+    // Pending invite is model metadata (idle tone), not a warning chrome badge.
+    expect(sidebarModel).toContain('pendingInvite:');
     expect(homeModel).toMatch(/title: `Invite[^]*?tone: 'neutral'/);
     expect(home).toContain('class="home-label-dot idle"');
     expect(liveSessions).toContain(
@@ -125,9 +122,6 @@ describe('DESKTOP-016: restrained warning color', () => {
     expect(rule(liveSessions, '.ls-besteffort')).toContain('background: transparent');
     expect(companyBoard).toContain(
       "if (status === 'in-progress') return { label: 'In progress', tone: 'idle' };",
-    );
-    expect(missionControl).toContain(
-      "{ id: 'awaiting', label: 'AWAITING INPUT', tone: 'idle'",
     );
     expect(rule(liveSessions, '.ls-dot.awaiting_input')).toContain(
       'background: var(--v4-text-2)',
