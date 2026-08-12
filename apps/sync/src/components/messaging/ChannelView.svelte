@@ -17,12 +17,20 @@
   import ChannelRoster from './ChannelRoster.svelte';
   import {
     type Channel,
+    type ChannelMessage as ChannelMessageWire,
     channelDisplayName,
     scopeChipLabel,
     isInvitedNotJoined,
   } from '../../lib/channels';
   import { type ReactionEvent, channelScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
+  import {
+    createOutboundMessage,
+    retrySend,
+    runSend,
+    type OutboundMessage,
+    type SendStatus,
+  } from './sendStateMachine';
 
   interface Props {
     channel: Channel;
@@ -59,15 +67,19 @@
     // caller already holds the channel from the list). Consumed via a guard
     // below — `if (detail.channel)`.
     channel?: Channel;
-    messages: ChannelMessageRow[];
+    messages: ChannelMessageWire[];
     nextCursor?: string | null;
   }
+
+  const PAGE_SIZE = 50;
 
   // Local mutable copy of the channel metadata (membership/member-count can
   // change in place via join/roster actions).
   let current = $state<Channel>(untrack(() => channel));
   let messages = $state<ChannelMessageRow[]>([]);
   let loading = $state(false);
+  let loadingOlder = $state(false);
+  let nextCursor = $state<string | null>(null);
   let threadError = $state<string | null>(null);
   let loadGeneration = 0;
   let activeChannelId: string | null = null;
@@ -75,6 +87,8 @@
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let sendGeneration = 0;
+  /** In-flight / failed optimistic sends keyed by clientId. */
+  let outboundById = $state<Map<string, OutboundMessage>>(new Map());
 
   let joining = $state(false);
   let joinError = $state<string | null>(null);
@@ -97,6 +111,10 @@
   const isGroup = $derived(current.scope === 'group');
   const invited = $derived(isInvitedNotJoined(current));
   const conversationLabel = $derived(isGroup ? title : `#${title}`);
+  const composerPlaceholder = $derived(
+    `Message ${conversationLabel} — or type / to run an agent…`,
+  );
+  const hasOlder = $derived(!!nextCursor);
 
   // Owner determination: the creator is the channel owner. The Channel wire
   // shape doesn't carry the caller's role, so the roster (which lists per-member
@@ -106,22 +124,67 @@
   // and lets it decide; the server also rejects a non-owner's remove/invite POST
   // as defense-in-depth.
 
+  function mapWireMessage(row: ChannelMessageWire): ChannelMessageRow {
+    const direction = row.direction === 'out' ? 'out' : 'in';
+    return {
+      eventId: row.eventId,
+      fromPersonUid: row.fromPersonUid,
+      fromEmail: row.fromEmail ?? '',
+      fromDisplayName: row.fromDisplayName?.trim() || row.fromEmail || 'Unknown',
+      body: row.body ?? '',
+      details: row.details ?? null,
+      prompt: row.prompt ?? null,
+      createdAt: row.createdAt,
+      direction,
+      messageKind: row.messageKind ?? null,
+      systemEvent: row.systemEvent ?? null,
+      attachment: row.attachment ?? null,
+    };
+  }
+
+  function patchOutboundRow(outbound: OutboundMessage): void {
+    const status: SendStatus = outbound.status;
+    messages = messages.map((m) =>
+      m.eventId === outbound.clientId
+        ? {
+            ...m,
+            sendStatus: status,
+            body: outbound.body,
+          }
+        : m,
+    );
+  }
+
   async function load(): Promise<void> {
     const requestedChannelId = current.channelId;
     const generation = ++loadGeneration;
     loading = true;
     threadError = null;
     sendError = null;
+    nextCursor = null;
     try {
       const detail = await invoke<ChannelDetail>('fetch_channel', {
         channelId: requestedChannelId,
+        limit: PAGE_SIZE,
+        cursor: null,
       });
       if (
         generation !== loadGeneration ||
         current.channelId !== requestedChannelId
       ) return;
       // Server returns newest-first; render oldest → newest.
-      messages = [...(detail.messages ?? [])].reverse();
+      const page = (detail.messages ?? []).map(mapWireMessage).reverse();
+      // Preserve any in-flight optimistic rows for this channel so a live
+      // refresh never silently drops an unacked send.
+      const optimistic = messages.filter(
+        (m) =>
+          m.eventId.startsWith('local-send-') &&
+          (m.sendStatus === 'sending' ||
+            m.sendStatus === 'pending' ||
+            m.sendStatus === 'failed'),
+      );
+      messages = [...page, ...optimistic];
+      nextCursor = detail.nextCursor ?? null;
       if (detail.channel) {
         current = { ...current, ...detail.channel };
         memberCount = current.memberCount ?? memberCount;
@@ -141,6 +204,44 @@
     }
   }
 
+  async function loadOlder(): Promise<void> {
+    const cursor = nextCursor;
+    if (!cursor || loadingOlder || loading) return;
+    const requestedChannelId = current.channelId;
+    const generation = loadGeneration;
+    loadingOlder = true;
+    try {
+      const detail = await invoke<ChannelDetail>('fetch_channel', {
+        channelId: requestedChannelId,
+        limit: PAGE_SIZE,
+        cursor,
+      });
+      if (
+        generation !== loadGeneration ||
+        current.channelId !== requestedChannelId
+      ) return;
+      const older = (detail.messages ?? []).map(mapWireMessage).reverse();
+      // Dedupe by eventId in case of cursor overlap.
+      const seen = new Set(messages.map((m) => m.eventId));
+      const fresh = older.filter((m) => !seen.has(m.eventId));
+      messages = [...fresh, ...messages];
+      nextCursor = detail.nextCursor ?? null;
+    } catch (err) {
+      if (
+        generation !== loadGeneration ||
+        current.channelId !== requestedChannelId
+      ) return;
+      console.error('channel-view: fetch_channel (older) failed', err);
+    } finally {
+      if (
+        generation === loadGeneration &&
+        current.channelId === requestedChannelId
+      ) {
+        loadingOlder = false;
+      }
+    }
+  }
+
   function retryThread(): Promise<void> {
     return load();
   }
@@ -156,43 +257,94 @@
   }
 
   async function send(text: string): Promise<void> {
-    if (!text || sending) return;
+    const body = text.trim();
+    if (!body) return;
     const requestedChannelId = current.channelId;
     const generation = ++sendGeneration;
-    sending = true;
     sendError = null;
-    try {
-      await invoke('send_channel_message', {
-        channelId: requestedChannelId,
-        body: text,
-      });
-      if (
-        generation !== sendGeneration ||
-        current.channelId !== requestedChannelId
-      ) return;
-      messages = [
-        ...messages,
-        {
-          eventId: `local-${messages.length}-${text.length}`,
-          fromPersonUid: 'me',
-          fromEmail: '',
-          fromDisplayName: 'You',
-          body: text,
-          details: null,
-          prompt: null,
-          createdAt: new Date().toISOString(),
-          direction: 'out',
-        },
-      ];
-    } catch (err) {
-      if (
-        generation !== sendGeneration ||
-        current.channelId !== requestedChannelId
-      ) return;
-      sendError = typeof err === 'string' ? err : 'Failed to send message';
-      console.error('channel-view: send_channel_message failed', err);
-    } finally {
-      if (generation === sendGeneration) sending = false;
+
+    // Optimistic append — message appears immediately as "Sending…".
+    const outbound = createOutboundMessage(body);
+    const nextMap = new Map(outboundById);
+    nextMap.set(outbound.clientId, outbound);
+    outboundById = nextMap;
+
+    const row: ChannelMessageRow = {
+      eventId: outbound.clientId,
+      fromPersonUid: 'me',
+      fromEmail: '',
+      fromDisplayName: 'You',
+      body: outbound.body,
+      details: null,
+      prompt: null,
+      createdAt: outbound.createdAt,
+      direction: 'out',
+      sendStatus: 'sending',
+    };
+    messages = [...messages, row];
+    sending = true;
+
+    const result = await runSend(outbound, {
+      send: async (msgBody) => {
+        await invoke('send_channel_message', {
+          channelId: requestedChannelId,
+          body: msgBody,
+        });
+      },
+      onChange: (msg) => {
+        if (
+          generation !== sendGeneration &&
+          current.channelId !== requestedChannelId
+        ) {
+          // Still patch if the row exists — never drop.
+        }
+        const map = new Map(outboundById);
+        map.set(msg.clientId, { ...msg });
+        outboundById = map;
+        patchOutboundRow(msg);
+      },
+    });
+
+    // Per-message failure lives on the row ("Failed — tap to retry") so we
+    // never surface a composer-level error that would block clearing the
+    // textarea — the message is already on the timeline and must not be dropped.
+    if (
+      generation === sendGeneration &&
+      current.channelId === requestedChannelId
+    ) {
+      sending = false;
+      sendError = null;
+      void result;
+    } else {
+      // Channel swapped mid-send: leave the row in the old channel's discarded
+      // state; the outbound map is cleared on channel change.
+      sending = false;
+    }
+  }
+
+  async function retryFailedSend(eventId: string): Promise<void> {
+    const outbound = outboundById.get(eventId);
+    if (!outbound || outbound.status !== 'failed') return;
+    const requestedChannelId = current.channelId;
+    sendError = null;
+    sending = true;
+    await retrySend(outbound, {
+      send: async (msgBody) => {
+        await invoke('send_channel_message', {
+          channelId: requestedChannelId,
+          body: msgBody,
+        });
+      },
+      onChange: (msg) => {
+        const map = new Map(outboundById);
+        map.set(msg.clientId, { ...msg });
+        outboundById = map;
+        patchOutboundRow(msg);
+      },
+    });
+    if (current.channelId === requestedChannelId) {
+      sending = false;
+      sendError = null;
     }
   }
 
@@ -253,6 +405,10 @@
     joinGeneration += 1;
     current = nextChannel;
     memberCount = nextChannel.memberCount ?? null;
+    messages = [];
+    nextCursor = null;
+    loadingOlder = false;
+    outboundById = new Map();
     sending = false;
     joining = false;
     sendError = null;
@@ -399,12 +555,16 @@
     onretryload={retryThread}
     {sending}
     {sendError}
-    placeholder={`Message ${conversationLabel}…`}
+    placeholder={composerPlaceholder}
     onsend={send}
     {onopenthread}
     {activeRootEventId}
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
+    onloadolder={loadOlder}
+    {loadingOlder}
+    {hasOlder}
+    onretrysend={retryFailedSend}
   />
 {/if}
 

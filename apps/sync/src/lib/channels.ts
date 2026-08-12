@@ -78,6 +78,36 @@ export interface ChannelMember {
   role: 'owner' | 'member' | string;
 }
 
+/** File attachment on a channel message (hq-pro chat wire, camelCase). */
+export interface ChannelMessageAttachment {
+  vaultPath: string;
+  name: string;
+  sizeBytes?: number | null;
+  kind?: string | null;
+}
+
+/**
+ * One channel message row as returned by `fetch_channel` (mirrors Rust
+ * `ChannelMessage`). Optional chat-tab fields are absent-safe.
+ */
+export interface ChannelMessage {
+  eventId: string;
+  fromPersonUid: string;
+  fromEmail?: string;
+  fromDisplayName?: string;
+  body: string;
+  details?: string | null;
+  prompt?: string | null;
+  createdAt: string;
+  direction?: string;
+  /** `"system"` for bridge events; absent for normal human/agent posts. */
+  messageKind?: string | null;
+  /** Versioned system-event envelope — parse via `parseSystemEvent`. */
+  systemEvent?: Record<string, unknown> | null;
+  /** Optional file attachment card payload. */
+  attachment?: ChannelMessageAttachment | null;
+}
+
 /** A group of channels under one header (Personal, or a company name). */
 export interface ChannelGroup {
   /** Stable key for `{#each}`. */
