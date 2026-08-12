@@ -76,9 +76,12 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
     const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
     expect(page).toContain('<CompanyKnowledgePanel slug={company.slug} />');
     expect(page).not.toContain('company-knowledge-placeholder');
-    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
-    expect(sidebar).toContain('goCompanySection');
-    expect(sidebar).toContain('v4-company-children');
+    // US-018: V4Sidebar retired; company primary children live in the model +
+    // DesktopApp company tab navigation (not a dedicated sidebar expander).
+    const model = readRepoFile('src/desktop-alt/v4/model.ts');
+    expect(model).toContain('V4_COMPANY_PRIMARY_ITEMS');
+    expect(model).toContain('sortV4CompaniesConnectedFirst');
+    expect(app).toContain("tab: id as CompanyTab");
   });
 
   it('CompanyKnowledgePanel is tenant-scoped to the company knowledge subtree (source contract)', () => {

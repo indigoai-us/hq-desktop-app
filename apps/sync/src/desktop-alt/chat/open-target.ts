@@ -8,16 +8,36 @@ export const OPEN_CHANNEL_EVENT = 'hq:open-channel';
 /** Open the connection-requests surface (shared DmRequestCard) from the sidebar. */
 export const OPEN_DM_REQUESTS_EVENT = 'hq:open-dm-requests';
 
+export interface OpenChannelOptions {
+  /** Optional message id to scroll/focus near when the shell supports it. */
+  messageId?: string | null;
+  /** Optional ISO timestamp of the hit for near-message navigation. */
+  createdAt?: string | null;
+}
+
 let pendingChannelId: string | null = null;
+let pendingChannelMessageId: string | null = null;
+let pendingChannelCreatedAt: string | null = null;
 let pendingDmRequests = false;
 /** Optional pairKey to open a specific request; null opens the first pending. */
 let pendingDmRequestPairKey: string | null = null;
 
-export function requestChannelOpen(channelId: string): void {
+export function requestChannelOpen(
+  channelId: string,
+  options: OpenChannelOptions = {},
+): void {
   pendingChannelId = channelId;
+  pendingChannelMessageId = options.messageId?.trim() || null;
+  pendingChannelCreatedAt = options.createdAt?.trim() || null;
   try {
     window.dispatchEvent(
-      new CustomEvent(OPEN_CHANNEL_EVENT, { detail: { channelId } }),
+      new CustomEvent(OPEN_CHANNEL_EVENT, {
+        detail: {
+          channelId,
+          messageId: pendingChannelMessageId,
+          createdAt: pendingChannelCreatedAt,
+        },
+      }),
     );
   } catch {
     // Non-browser (unit tests) — stash alone is enough.
@@ -27,7 +47,22 @@ export function requestChannelOpen(channelId: string): void {
 export function takePendingChannel(): string | null {
   const id = pendingChannelId;
   pendingChannelId = null;
+  pendingChannelMessageId = null;
+  pendingChannelCreatedAt = null;
   return id;
+}
+
+/** Take (and clear) optional near-hit metadata for the last channel open. */
+export function takePendingChannelFocus(): {
+  messageId: string | null;
+  createdAt: string | null;
+} | null {
+  if (!pendingChannelMessageId && !pendingChannelCreatedAt) return null;
+  const messageId = pendingChannelMessageId;
+  const createdAt = pendingChannelCreatedAt;
+  pendingChannelMessageId = null;
+  pendingChannelCreatedAt = null;
+  return { messageId, createdAt };
 }
 
 /**

@@ -84,6 +84,8 @@ describe('MessagesShell channel loading recovery', () => {
           return Promise.resolve({});
         case 'mark_messages_viewed':
           return Promise.resolve();
+        case 'messages_window_ready':
+          return Promise.resolve();
         case 'set_watched_shares':
           return Promise.resolve();
         default:
@@ -91,9 +93,11 @@ describe('MessagesShell channel loading recovery', () => {
       }
     });
 
+    // Rail (channel list + load errors) only mounts in standalone mode; embedded
+    // hides the second column (D-02) and ChatSidebar owns the conversation list.
     component = mount(MessagesShell, {
       target: host,
-      props: { embedded: true },
+      props: { embedded: false },
     });
     flushSync();
 

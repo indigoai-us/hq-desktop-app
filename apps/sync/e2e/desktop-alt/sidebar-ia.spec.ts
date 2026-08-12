@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   getDesktopHotkeyRoute,
@@ -7,23 +9,22 @@ import {
   LIBRARY_SECTIONS,
   type DesktopRoute,
 } from '../../src/desktop-alt/route';
-import { V4_NAV_ITEMS } from '../../src/desktop-alt/v4/model';
 import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
 
 /**
- * US-006 — US-007 sidebar IA (behavioral route helpers + source contracts).
+ * US-006 — US-007 / US-018 sidebar IA (behavioral route helpers + source contracts).
  *
- * Locks the V4 primary-nav shape and landing rules:
- *  - ⌘1–⌘4 = Inbox / Meetings / Marketplace / Library; company digits map
- *    connected-first order.
- *  - Legacy intents resolve (messages → Messages, notifications → Inbox,
- *    home/sync → home,
- *    mission-control palette-only, library:marketplace → top-level marketplace).
+ * Locks the chat-first shell landing rules:
+ *  - ⌘1–⌘4 = Notifications / Meetings / Marketplace / Library; company digits
+ *    map connected-first order (US-018: former Inbox hotkey → Notifications).
+ *  - Legacy intents resolve (messages → Messages, inbox → Notifications,
+ *    home/sync/mission-control → home, library:marketplace → marketplace).
  *  - getDesktopLandingRoute uses last-visited company then first sidebar row.
- *  - Source: no Home / Mission Control / Companies primary rows; Marketplace
- *    is top-level; Library secondary tabs drop Marketplace; last-company key.
+ *  - Source: ChatSidebar is primary; V4Sidebar / Mission Control / Inbox retired.
  */
+
+const root = process.cwd();
 
 function workspace(overrides: Partial<Workspace>): Workspace {
   return {
@@ -50,9 +51,11 @@ function hotkey(key: string): Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>
 }
 
 describe('US-006 / US-007: sidebar IA — hotkeys (behavioral)', () => {
-  it("⌘1 → inbox, ⌘3 → marketplace", () => {
+  it('⌘1 → notifications, ⌘3 → marketplace', () => {
     const companies = [workspace({})];
-    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({ kind: 'inbox' });
+    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({
+      kind: 'notifications',
+    });
     expect(getDesktopHotkeyRoute(hotkey('3'), companies)).toEqual({ kind: 'marketplace' });
     expect(getDesktopHotkeyRoute(hotkey('2'), companies)).toEqual({ kind: 'meetings' });
     expect(getDesktopHotkeyRoute(hotkey('4'), companies)).toEqual({ kind: 'library' });
@@ -81,23 +84,24 @@ describe('US-006 / US-007: sidebar IA — hotkeys (behavioral)', () => {
   });
 });
 
-describe('US-006 / US-007: sidebar IA — legacy intent resolution (behavioral)', () => {
-  it("messages → Messages; notifications → Inbox", () => {
+describe('US-006 / US-007 / US-018: sidebar IA — legacy intent resolution (behavioral)', () => {
+  it('messages → Messages; notifications + inbox → Notifications', () => {
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
+    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'notifications' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
+    expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'notifications' });
   });
 
-  it("home / sync → home; mission-control stays reachable", () => {
+  it('home / sync / mission-control → home', () => {
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
     expect(resolvePendingDesktopRoute('sync')).toEqual({ kind: 'home' });
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({
-      kind: 'mission-control',
-    });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'home' });
+    expect(fromV4Route({ kind: 'mission-control' })).toEqual({ kind: 'home' });
   });
 
-  it("legacy library:marketplace alias → top-level marketplace", () => {
+  it('legacy library:marketplace alias → top-level marketplace', () => {
     expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
       kind: 'marketplace',
     });
@@ -138,25 +142,26 @@ describe('US-006 / US-007: sidebar IA — landing route (behavioral)', () => {
   });
 });
 
-describe('US-006 / US-007: sidebar IA — source contracts', () => {
-  it('primary nav has Marketplace and no Home / Mission Control / Companies rows', () => {
-    const navIds = V4_NAV_ITEMS.map((item) => item.id);
-    expect(navIds).toEqual(['inbox', 'messages', 'meetings', 'marketplace', 'library', 'files']);
-    expect(navIds).not.toContain('home');
-    expect(navIds).not.toContain('mission-control');
-    expect(navIds).not.toContain('companies');
+describe('US-006 / US-007 / US-018: sidebar IA — source contracts', () => {
+  it('ChatSidebar is primary; legacy V4Sidebar / Inbox / Mission Control are gone', () => {
+    expect(existsSync(join(root, 'src/desktop-alt/v4/V4Sidebar.svelte'))).toBe(false);
+    expect(existsSync(join(root, 'src/desktop-alt/pages/InboxPage.svelte'))).toBe(false);
+    expect(existsSync(join(root, 'src/desktop-alt/pages/MissionControlPage.svelte'))).toBe(
+      false,
+    );
 
-    const model = readRepoFile('src/desktop-alt/v4/model.ts');
-    expect(model).toContain("{ id: 'marketplace', label: 'Marketplace' }");
-    expect(model).toContain("{ id: 'inbox', label: 'Inbox' }");
-    expect(model).toContain("{ id: 'messages', label: 'Messages' }");
+    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+    expect(desktopApp).toContain('<ChatSidebar');
+    expect(desktopApp).not.toContain('<V4Sidebar');
+    expect(desktopApp).not.toContain('InboxPage');
+    expect(desktopApp).not.toContain('MissionControlPage');
 
-    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
-    // Comment contract: US-007 removed Home / Mission Control / Companies page rows.
-    expect(sidebar).toContain('US-007 removed Home / Mission');
-    expect(sidebar).toContain('Control / Companies page rows');
-    // Companies is a section label for company rows, not a primary nav destination.
-    expect(sidebar).toContain('id="v4-companies-label">Companies</div>');
+    const route = readRepoFile('src/desktop-alt/route.ts');
+    expect(route).toContain("'notifications'");
+    expect(route).toContain("'messages'");
+    expect(route).toContain("'marketplace'");
+    expect(route).not.toMatch(/kind:\s*'inbox'/);
+    expect(route).not.toMatch(/kind:\s*'mission-control'/);
   });
 
   it('Library secondary tabs no longer include Marketplace', () => {

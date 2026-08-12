@@ -64,13 +64,17 @@ describe('async desktop surfaces expose immediate, scoped feedback', () => {
     expect(company).toContain('<CompanyProjectsPage slug={company.slug} />');
   });
 
-  it('covers titlebar recovery, Home cards, and the raw activity log handoff', () => {
+  it('covers Core popover + Home cards and the raw activity log handoff (titlebar is minimal)', () => {
     const titlebar = source('../../src/desktop-alt/v4/V4TitleBar.svelte');
+    const core = source('../../src/desktop-alt/v4/CorePopover.svelte');
     const needsYou = source('../../src/desktop-alt/v4/NeedsYouCard.svelte');
     const activity = source('../../src/desktop-alt/v4/ActivityDigest.svelte');
 
-    expect(titlebar).toContain('let actionPending = $state(false)');
-    expect(titlebar).toContain('aria-busy={actionPending}');
+    // D-04: recovery pending state lives in Core / Home, not titlebar chrome.
+    expect(titlebar).toContain('data-testid="titlebar-core-pill"');
+    expect(titlebar).not.toContain('let actionPending = $state(false)');
+    expect(core).toContain('let updateInstalling = $state(false)');
+    expect(core).toContain('aria-busy={updateInstalling}');
     expect(needsYou).toContain('let pendingActionId = $state<string | null>(null)');
     expect(needsYou).toContain('aria-busy={pendingActionId === action.id}');
     expect(needsYou).toContain('let actionFailure = $state');

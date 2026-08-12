@@ -2004,6 +2004,10 @@ mod tests {
     #[cfg(unix)]
     use std::sync::{Mutex, OnceLock};
 
+    // Serialize HOME mutation against every other test that reads or writes
+    // the process-global HOME (launch.rs reveal-target tests, telemetry) by
+    // sharing the crate-wide env mutex — a private lock here does not stop a
+    // concurrent `dirs::home_dir()` reader from observing the poisoned home.
     #[cfg(unix)]
     static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -2575,6 +2579,9 @@ exit 0
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("poisoned-home");

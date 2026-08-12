@@ -124,10 +124,10 @@ describe('DESKTOP-018: no colored edge rails', () => {
   it('uses transparent neutral bottom rules for persistent row selection', () => {
     for (const [path, baseSelector, selectedSelector, label] of [
       [
-        'desktop-alt/v4/V4Sidebar.svelte',
-        '.v4-row',
-        '.v4-row.active',
-        'primary navigation',
+        'desktop-alt/chat/ChatSidebar.svelte',
+        '.chat-row',
+        '.chat-row.active',
+        'primary conversation navigation',
       ],
       [
         'desktop-alt/v4/V4SecondarySidebar.svelte',

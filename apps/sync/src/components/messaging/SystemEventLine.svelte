@@ -11,7 +11,7 @@
   let { model }: Props = $props();
 </script>
 
-<div class="sys-line" data-system-type={model.type} role="status">
+<div class="sys-line" data-testid="system-event-line" data-system-type={model.type} role="status">
   <span class="sys-icon" aria-hidden="true">
     {#if model.type === 'run_started' || model.type === 'run_progress'}
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">

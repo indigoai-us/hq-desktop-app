@@ -90,7 +90,8 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(
       getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo', tab: 'settings' }, []),
     ).toBeNull();
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, [])?.surface).toBe('library');
+    // US-017: library overlay replaces the permanent secondary column.
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, [])).toBeNull();
     expect(getDesktopSecondarySidebar({ kind: 'settings' }, [])?.surface).toBe('settings');
     // Operations nav is internal, not a permanent secondary column.
     expect(ops).toContain('operations-nav');

@@ -47,7 +47,6 @@ function expectEveryOpenStructure(
 
 describe('DESKTOP-014: unboxed structural layouts', () => {
   const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
-  const missionControl = readRepoFile('src/desktop-alt/pages/MissionControlPage.svelte');
   const agencyTeams = readRepoFile(
     'src/desktop-alt/panels/AgencyTeamsPanel.svelte',
   );
@@ -110,9 +109,8 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
   const libraryDetail = readRepoFile(
     'src/desktop-alt/components/LibraryDetailPanel.svelte',
   );
-  const sidebarSyncMode = readRepoFile(
-    'src/desktop-alt/v4/SidebarSyncMode.svelte',
-  );
+  // US-018: SidebarSyncMode retired — Shared/All lives in SyncModeToggle.
+  const syncModeToggle = readRepoFile('src/components/SyncModeToggle.svelte');
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
   const popoverCss = readRepoFile('src/styles/popover.css');
   const accountView = readRepoFile('src/lib/crm/AccountView.svelte');
@@ -129,13 +127,8 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     expect(notice).toContain('background: transparent');
   });
 
-  it('opens mission-control sections and separates them with single rules', () => {
-    expectOpenStructure(missionControl, '.mc-col', 'mission-control sections');
-    expect(rule(missionControl, '.mc-col.mc-agency-q')).toContain('padding-right:');
-    expect(rule(missionControl, '.mc-col.mc-agency-t')).toContain('border-left:');
-    expect(rule(missionControl, '.mc-col-history')).toContain('border-left:');
-    expect(rule(missionControl, '.mc-col.mc-agency-chat')).toContain('border-top:');
-
+  it('opens agency / live-session sections and separates them with single rules', () => {
+    // US-018: MissionControlPage retired; agency panels + LiveSessions remain open.
     expectOpenStructure(agencyChat, '.thread', 'agency conversation thread');
     expect(rule(agencyChat, '.thread')).toContain('border-top:');
 
@@ -144,6 +137,9 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     expect(rule(agencyTeams, '.teams')).toContain('gap: 0');
     expect(rule(agencyTeams, '.team + .team')).toContain('border-top:');
     expectOpenStructure(agencyTeams, '.count', 'agency team count');
+
+    expectOpenStructure(liveSessions, '.ls-group-ctl', 'live session grouping control');
+    expectOpenStructure(liveSessions, '.ls-group-head', 'live session group header');
   });
 
   it('keeps list-detail workspaces open while retaining their internal splits', () => {
@@ -193,8 +189,8 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     for (const [source, selector, label] of [
       [companyBoard, '.pulse-row', 'company pulse summary'],
       [overviewDigest, '.digest-monitor', 'activity digest monitor'],
-      [titleBar, '.v4-status', 'title-bar status'],
-      [sidebarSyncMode, '.sidebar-sync-mode', 'sidebar sync selector'],
+      [titleBar, '.v4-title-actions', 'title-bar actions'],
+      [syncModeToggle, '.sync-mode-shell', 'sync mode selector'],
       [storyPanel, '.status-control', 'task status selector'],
     ] as const) {
       expectOpenStructure(source, selector, label);
@@ -202,11 +198,11 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
 
     for (const [source, selector, activeSelector, baseSelector, label] of [
       [
-        sidebarSyncMode,
-        '.sidebar-sync-mode-opt',
-        '.sidebar-sync-mode-opt.active',
-        '.sidebar-sync-mode-opt',
-        'sidebar sync option',
+        syncModeToggle,
+        '.sync-mode-opt',
+        '.sync-mode-opt.active',
+        '.sync-mode-opt',
+        'sync mode option',
       ],
       [
         storyPanel,
@@ -227,11 +223,6 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
   });
 
   it('renders summary and KPI groups as open data strips with responsive dividers', () => {
-    expectOpenStructure(missionControl, '.mc-tile', 'mission-control summary metric');
-    expect(rule(missionControl, '.mc-summary')).toContain('gap: 0');
-    expect(rule(missionControl, '.mc-tile + .mc-tile')).toContain('border-left:');
-    expect(rule(missionControl, '.mc-tile:nth-child(n + 3)')).toContain('border-top:');
-
     expectOpenStructure(statTile, '.stat-tile', 'activity summary metric');
     expect(rule(activity, '.stats-grid')).toContain('gap: 0');
     expect(

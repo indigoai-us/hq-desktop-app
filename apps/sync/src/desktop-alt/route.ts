@@ -8,17 +8,17 @@ import {
 } from './v4/model';
 
 /**
- * V4 information architecture (docs/design/v4/SPEC.md section 4 + DESKTOP-001).
+ * Desktop information architecture (chat-first shell, US-003..018).
  *
- * Global destinations — Inbox, Messages, Meetings, Marketplace, Library, Files
- * — plus companies as first-class sidebar rows and a Settings footer. Inbox is
- * notification chronology; Messages is the full conversation workspace. Home /
- * Mission Control / Moderation are palette-only. DESKTOP-001 expands the
- * selected company inline (Overview /
- * Goals / Projects / Skills / Workers / Knowledge / Team / More) and removes
- * the permanent company secondary sidebar; Library and Settings keep their
- * contextual secondary columns. DESKTOP-010 groups Activity / Deployments /
- * Secrets / company Settings under More as one operations workspace.
+ * Primary chrome is ChatSidebar (conversations + companies). Global page
+ * destinations include Notifications (notification chronology), Messages,
+ * Meetings, Marketplace, Library (overlay), Files, Settings, Home (palette /
+ * exception surface), and Moderation (admin). Legacy workspace-shell deep
+ * links remap in resolvePendingDesktopRoute. DESKTOP-001 expands the selected
+ * company inline (Overview / Goals / Projects / Skills / Workers / Knowledge /
+ * Team / More). Settings keeps a secondary column; Library is a full-screen
+ * overlay. DESKTOP-010 groups Activity / Deployments / Secrets / company
+ * Settings under More as one operations workspace.
  */
 
 /**
@@ -142,7 +142,15 @@ export type SettingsTab =
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }
+  | {
+      kind:
+        | 'home'
+        | 'notifications'
+        | 'messages'
+        | 'meetings'
+        | 'marketplace'
+        | 'moderation';
+    }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -299,10 +307,11 @@ export function getDesktopActiveCompany(
 const COMPANY_HOTKEY_BASE = 5;
 
 /**
- * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
- * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
- * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
- * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
+ * ⌘1–⌘4 map to the four primary destinations (Notifications / Meetings /
+ * Marketplace / Library); ⌘5–⌘9 map to the first five companies in sidebar
+ * (connected-first) order (US-008 renumber, no dead slots; US-018 remaps the
+ * former Inbox hotkey onto Notifications). Home has no hotkey (palette-only).
+ * Mirrors `companyHotkey` below for the palette labels.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -310,7 +319,7 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'inbox' };
+  if (event.key === '1') return { kind: 'notifications' };
   if (event.key === '2') return { kind: 'meetings' };
   if (event.key === '3') return { kind: 'marketplace' };
   if (event.key === '4') return { kind: 'library' };
@@ -332,8 +341,10 @@ export function companyHotkey(index: number): string | undefined {
 
 /**
  * Resolve a backend navigation intent (desktop_alt_consume_pending_route /
- * the `desktop:navigate` event) to a route. Legacy aliases stay functional:
- * 'sync' deep-links — the pre-V4 home surface — land on Home.
+ * the `desktop:navigate` event) to a route. Legacy aliases stay functional and
+ * always land on a live route (US-018): never null for known legacy names.
+ * Examples: 'sync' / 'activity' / 'core-drift' / 'drift' / 'mission-control'
+ * → Home; 'inbox' → Notifications; 'library:marketplace' → Marketplace.
  */
 export function resolvePendingDesktopRoute(name: string | null | undefined): DesktopRoute | null {
   const trimmed = name?.trim();
@@ -381,16 +392,15 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'activity':
     case 'core-drift':
     case 'drift':
-      return { kind: 'home' };
+    // US-018: mission-control deep link lands on Home.
     case 'mission-control':
-      return { kind: 'mission-control' };
+      return { kind: 'home' };
+    // US-018: inbox deep link lands on Notifications feed.
     case 'inbox':
-      return { kind: 'inbox' };
+    case 'notifications':
+      return { kind: 'notifications' };
     case 'messages':
       return { kind: 'messages' };
-    // Notifications remain the chronological Inbox feed.
-    case 'notifications':
-      return { kind: 'inbox' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -421,9 +431,10 @@ function isSettingsTab(value: string | undefined): value is SettingsTab {
 }
 
 /**
- * Narrow a V4Sidebar navigation payload (open-ended V4Route) back into the
- * app's DesktopRoute union. Unknown kinds land on Home — the exception surface.
- * Company payloads may carry a primary section / tab id (DESKTOP-001).
+ * Narrow an open-ended V4Route payload back into the app's DesktopRoute union.
+ * Unknown kinds land on Home — the exception surface. Company payloads may
+ * carry a primary section / tab id (DESKTOP-001). US-018: legacy 'inbox' and
+ * 'mission-control' kinds remap to live destinations.
  */
 export function fromV4Route(route: V4Route): DesktopRoute {
   if (route.kind === 'company' && route.slug) {
@@ -434,12 +445,11 @@ export function fromV4Route(route: V4Route): DesktopRoute {
   }
   switch (route.kind) {
     case 'home':
-      return { kind: 'home' };
     case 'mission-control':
-      return { kind: 'mission-control' };
+      return { kind: 'home' };
     case 'inbox':
     case 'notifications':
-      return { kind: 'inbox' };
+      return { kind: 'notifications' };
     case 'messages':
       return { kind: 'messages' };
     case 'meetings':
@@ -478,11 +488,11 @@ export interface DesktopSecondarySidebarOptions {
 }
 
 /**
- * SPEC section 4 + DESKTOP-001: the secondary sidebar exists ONLY on Library
- * and Settings. Company navigation expands inline in the primary sidebar, so
- * company routes never render a permanent secondary column. Home, Mission
- * Control, Marketplace, Meetings, Inbox, Messages, Files, and Moderation have
- * none.
+ * SPEC section 4 + DESKTOP-001 / US-017: the secondary sidebar exists ONLY on
+ * Settings. Library is a full-screen overlay (no permanent secondary column).
+ * Company navigation expands inline in the primary sidebar, so company routes
+ * never render a permanent secondary column. Home, Marketplace, Meetings,
+ * Notifications, Messages, Files, Library, and Moderation have none.
  */
 export function getDesktopSecondarySidebar(
   route: DesktopRoute,
@@ -493,17 +503,13 @@ export function getDesktopSecondarySidebar(
   // permanent company secondary sidebar. Keep `companies` in the signature so
   // call sites and library/settings meta helpers stay stable.
   void companies;
+  // hqFolderPath was Library secondary meta; overlay owns its own chrome.
+  void options.hqFolderPath;
 
+  // US-017: Library is a takeover overlay with its own left nav — no secondary
+  // sidebar. LIBRARY_SECTIONS remain for command-palette / route tab params.
   if (route.kind === 'library') {
-    return {
-      surface: 'library',
-      header: 'Library',
-      headerTone: null,
-      meta: formatHqFolderMeta(options.hqFolderPath),
-      items: LIBRARY_SECTIONS.map(({ id, label }) => ({ id, label })),
-      activeId: route.tab ?? DEFAULT_LIBRARY_TAB,
-      footer: { label: 'Publish a pack', active: route.tab === 'submit' },
-    };
+    return null;
   }
 
   if (route.kind === 'settings') {

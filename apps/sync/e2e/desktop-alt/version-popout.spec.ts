@@ -9,27 +9,25 @@ import { readRepoFile } from './harness';
  */
 
 describe('desktop-alt version pop-out (US-017)', () => {
-  it('compact titlebar hosts the version pop-out without restoring the bottom status bar', () => {
+  it('compact titlebar hosts Core popover (version/update lives there); no bottom status bar', () => {
     const statusBar = readRepoFile('src/desktop-alt/DesktopStatusBar.svelte');
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
+    const corePopover = readRepoFile('src/desktop-alt/v4/CorePopover.svelte');
 
-    // The retired footer keeps its implementation for older entry points, but
-    // the mounted titlebar must expose the same updater in the redesign.
+    // The retired footer keeps its implementation for older entry points.
     expect(statusBar).toContain("import VersionPopout from './components/VersionPopout.svelte'");
     expect(desktopApp).not.toContain('<DesktopStatusBar');
-    expect(titleBar).toContain("import VersionPopout from '../components/VersionPopout.svelte'");
-    expect(titleBar).toContain('data-testid="version-label"');
-    expect(titleBar).toContain('data-testid="core-version-label"');
-    expect(titleBar).toContain("'get_hq_version'");
-    expect(titleBar).toContain('aria-expanded={versionOpen}');
-    expect(titleBar).toContain('<VersionPopout');
-    expect(titleBar).toContain("onOpenSettings?: (tab?: SettingsTab) => void");
-    expect(titleBar).toContain('placement="below"');
+    // D-04: titlebar is minimal; Core popover owns version/update.
+    expect(titleBar).toContain("import CorePopover from './CorePopover.svelte'");
+    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
+    expect(titleBar).toContain('<CorePopover');
+    expect(titleBar).not.toContain('data-testid="version-label"');
     expect(titleBar).toContain("window.addEventListener('mousedown'");
     expect(titleBar).toContain("event.key === 'Escape'");
+    expect(corePopover).toContain('data-testid="core-popover-app-row"');
+    expect(corePopover).toContain('data-testid="core-popover-app-update"');
     expect(desktopApp).toContain('version={__APP_VERSION__}');
-    expect(desktopApp).toContain('onaccount={handleAccountMenu}');
   });
 
   it('pop-out shows app + Core versions and Check all updates invokes both checks', () => {
@@ -109,8 +107,10 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(harness).toContain("scenario === 'update-available'");
     expect(harness).toContain('check_for_updates: () =>');
     expect(harness).toContain('get_pending_update: () =>');
+    // US-019: chat shell may swap the update body via currentHarnessAppUpdate().
     expect(harness).toContain(
-      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null',
+      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? currentHarnessAppUpdate() : null',
     );
+    expect(harness).toContain('function currentHarnessAppUpdate(');
   });
 });

@@ -30,25 +30,33 @@
     applySidebarFilters,
     clearDmDot,
     clearPairUnread,
+    conversationKindLabel,
     distinctDmPeople,
     filterTypeahead,
+    formatSearchHitTime,
     groupByDay,
+    historySearchScopeLabel,
     initialsFor,
+    buildScopeOptions,
     loadConversationCache,
     loadDmDots,
     loadPins,
-    nextScope,
     normalizeConversations,
+    resolveSearchHitRow,
     saveConversationCache,
     saveDmDots,
     savePins,
     scopeFromHotkey,
     scopePillLabel,
+    searchCompanyUidFromScope,
     searchHistory,
+    searchHitSnippet,
     togglePin,
     type CompanyScope,
     type ConversationRow,
     type DmContactInput,
+    type MessageSearchHit,
+    type MessageSearchResult,
     type ShowFilter,
     type SortMode,
   } from './sidebar-model';
@@ -119,15 +127,25 @@
   let lastWeekExpanded = $state(false);
   let historyOpen = $state(false);
   let historyQuery = $state('');
+  /** Server message-content hits for non-empty history query (US-013). */
+  let messageSearchHits = $state<MessageSearchHit[]>([]);
+  let messageSearchLoading = $state(false);
+  let messageSearchError = $state<string | null>(null);
+  let messageSearchSeq = 0;
   let newMessageOpen = $state(false);
   let newMessageQuery = $state('');
   let createProjectChannelOpen = $state(false);
   let filterOpen = $state(false);
+  let scopeMenuOpen = $state(false);
   let footerMenuOpen = $state(false);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
+  let scopeMenuEl: HTMLDivElement | null = $state(null);
+  let filterWrapEl: HTMLDivElement | null = $state(null);
+  let footerEl: HTMLDivElement | null = $state(null);
 
-  let activeId = $state<string | null>(selectedId);
+  // Mirror of selectedId — do not seed $state from a prop (state_referenced_locally).
+  let activeId = $state<string | null>(null);
   $effect(() => {
     activeId = selectedId;
   });
@@ -165,11 +183,150 @@
   const people = $derived(distinctDmPeople(allRows));
   const typeaheadRows = $derived(filterTypeahead(allRows, newMessageQuery));
   const historyRows = $derived(searchHistory(filteredRows, historyQuery));
+  const historyScopeLabel = $derived(historySearchScopeLabel(scope, scopeCompanies));
+  const historyCompanyUid = $derived(searchCompanyUidFromScope(scope));
+  const historyHasQuery = $derived(historyQuery.trim().length > 0);
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
+  const scopeOptions = $derived(buildScopeOptions(scopeCompanies));
   const displayName = $derived(accountLabel?.trim() || 'Account');
+  /** Footer shows the first name only (D-17). */
+  const firstName = $derived(displayName.split(/\s+/)[0] || displayName);
   const initials = $derived(
     (accountInitials?.trim() || initialsFor(displayName)).slice(0, 2).toUpperCase(),
   );
+
+  /** Mutually exclusive overlays: opening one closes the others (D-03). */
+  function closeAllOverlays(): void {
+    filterOpen = false;
+    scopeMenuOpen = false;
+    footerMenuOpen = false;
+    newMessageOpen = false;
+  }
+
+  function openScopeMenu(): void {
+    const next = !scopeMenuOpen;
+    closeAllOverlays();
+    scopeMenuOpen = next;
+  }
+
+  function openFilterMenu(): void {
+    const next = !filterOpen;
+    closeAllOverlays();
+    filterOpen = next;
+  }
+
+  function openNewMessage(): void {
+    closeAllOverlays();
+    newMessageOpen = true;
+    newMessageQuery = '';
+  }
+
+  function openFooterMenu(): void {
+    const next = !footerMenuOpen;
+    closeAllOverlays();
+    footerMenuOpen = next;
+  }
+
+  function selectScope(next: CompanyScope): void {
+    scope = next;
+    scopeMenuOpen = false;
+  }
+
+  function scopeShortcutLabel(optionId: string, companyIndex: number): string {
+    if (optionId === 'all') return '⌘0';
+    if (optionId === 'personal') return '⌘P';
+    if (companyIndex >= 0 && companyIndex < 5) return `⌘${companyIndex + 1}`;
+    return '';
+  }
+
+  function scopeAvatarLabel(option: { id: string; label: string }): string {
+    if (option.id === 'all') return 'AL';
+    if (option.id === 'personal') return 'PE';
+    return initialsFor(option.label);
+  }
+
+  // Avatar hue from stable hash of label (monochrome-friendly tint via CSS vars).
+  function scopeAvatarTone(label: string): number {
+    let h = 0;
+    for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) | 0;
+    return Math.abs(h) % 6;
+  }
+
+  $effect(() => {
+    if (!scopeMenuOpen && !filterOpen && !footerMenuOpen && !newMessageOpen) return;
+
+    function onMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Node)) return;
+      if (scopeMenuOpen && scopeMenuEl && !scopeMenuEl.contains(event.target)) {
+        scopeMenuOpen = false;
+      }
+      if (filterOpen && filterWrapEl && !filterWrapEl.contains(event.target)) {
+        filterOpen = false;
+      }
+      if (footerMenuOpen && footerEl && !footerEl.contains(event.target)) {
+        footerMenuOpen = false;
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      if (newMessageOpen) {
+        newMessageOpen = false;
+        event.preventDefault();
+        return;
+      }
+      if (scopeMenuOpen || filterOpen || footerMenuOpen) {
+        scopeMenuOpen = false;
+        filterOpen = false;
+        footerMenuOpen = false;
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  });
+
+  $effect(() => {
+    if (!historyOpen) return;
+    const q = historyQuery.trim();
+    if (!q) {
+      messageSearchHits = [];
+      messageSearchError = null;
+      messageSearchLoading = false;
+      return;
+    }
+    const companyUid = historyCompanyUid;
+    const seq = ++messageSearchSeq;
+    messageSearchLoading = true;
+    messageSearchError = null;
+    const handle = setTimeout(() => {
+      void (async () => {
+        try {
+          const resp = await invoke<MessageSearchResult>('search_messages', {
+            q,
+            companyUid: companyUid ?? undefined,
+            limit: 50,
+          });
+          if (seq !== messageSearchSeq) return;
+          messageSearchHits = Array.isArray(resp?.results) ? resp.results : [];
+        } catch (err) {
+          if (seq !== messageSearchSeq) return;
+          messageSearchHits = [];
+          messageSearchError =
+            typeof err === 'string' ? err : 'Could not search recent messages';
+          console.error('chat-sidebar: search_messages failed', err);
+        } finally {
+          if (seq === messageSearchSeq) messageSearchLoading = false;
+        }
+      })();
+    }, 220);
+    return () => clearTimeout(handle);
+  });
 
   async function refreshLists(): Promise<void> {
     loading = true;
@@ -300,17 +457,16 @@
     };
   });
 
-  function cycleScope() {
-    scope = nextScope(scope, scopeCompanies);
-  }
-
   function handlePin(row: ConversationRow, event: MouseEvent) {
     event.stopPropagation();
     pins = togglePin(pins, row.id);
     savePins(pins, storage);
   }
 
-  async function openRow(row: ConversationRow) {
+  async function openRow(
+    row: ConversationRow,
+    focus?: { messageId?: string | null; createdAt?: string | null },
+  ) {
     activeId = row.id;
     onselect?.(row);
     onnavigateMessages?.();
@@ -341,7 +497,10 @@
       } catch (err) {
         console.error('chat-sidebar: mark_channel_read failed', err);
       }
-      requestChannelOpen(row.channelId);
+      requestChannelOpen(row.channelId, {
+        messageId: focus?.messageId,
+        createdAt: focus?.createdAt,
+      });
     }
   }
 
@@ -378,10 +537,24 @@
   function openHistory() {
     historyOpen = true;
     historyQuery = '';
+    messageSearchHits = [];
+    messageSearchError = null;
+    messageSearchLoading = false;
   }
 
   function closeHistory() {
     historyOpen = false;
+    historyQuery = '';
+    messageSearchHits = [];
+    messageSearchError = null;
+  }
+
+  function openSearchHit(hit: MessageSearchHit) {
+    const row = resolveSearchHitRow(hit, allRows);
+    void openRow(row, {
+      messageId: hit.messageId,
+      createdAt: hit.createdAt,
+    });
   }
 
   async function signOut() {
@@ -407,50 +580,145 @@
           Back
         </button>
         <span class="chat-section-label">History</span>
+        <span class="chat-history-scope" data-testid="chat-history-scope">
+          {historyScopeLabel}
+        </span>
       </div>
       <input
         class="chat-search-input"
         type="search"
-        placeholder="Search titles"
+        placeholder="Search recent messages"
         bind:value={historyQuery}
         aria-label="Search conversation history"
+        data-testid="chat-history-search"
       />
-      <div class="chat-list" role="list">
-        {#each historyRows as row (row.id)}
-          <button
-            type="button"
-            class="chat-row"
-            class:unread={!!row.unreadCount || row.unreadDot}
-            class:active={activeId === row.id}
-            role="listitem"
-            onclick={() => void openRow(row)}
-          >
-            {#if row.kind === 'channel'}
-              <span class="chat-glyph" aria-hidden="true">#</span>
-            {:else if row.kind === 'group'}
-              <span class="chat-avatar group" aria-hidden="true">
-                {row.memberCount ?? row.members?.length ?? 0}
-              </span>
-            {:else}
-              <span class="chat-avatar" aria-hidden="true">{initialsFor(row.title)}</span>
-            {/if}
-            <span class="chat-row-title">{row.title}</span>
-          </button>
-        {/each}
+      <p class="chat-history-helper" data-testid="chat-history-helper">
+        Searches recent messages (about the last 1,000)
+      </p>
+      <div class="chat-list" role="list" data-testid="chat-history-results">
+        {#if historyHasQuery}
+          {#if messageSearchLoading && messageSearchHits.length === 0}
+            <div class="chat-empty" role="status">Searching…</div>
+          {:else if messageSearchError}
+            <div class="chat-empty" role="alert">{messageSearchError}</div>
+          {:else if messageSearchHits.length === 0}
+            <div class="chat-empty">No matching messages</div>
+          {:else}
+            {#each messageSearchHits as hit (hit.messageId + (hit.createdAt ?? ''))}
+              {@const row = resolveSearchHitRow(hit, allRows)}
+              <div role="listitem" class="chat-li">
+              <button
+                type="button"
+                class="chat-row chat-search-hit"
+                data-testid="chat-search-hit"
+                onclick={() => openSearchHit(hit)}
+              >
+                {#if row.kind === 'channel'}
+                  <span class="chat-glyph" aria-hidden="true">#</span>
+                {:else if row.kind === 'group'}
+                  <span class="chat-avatar group" aria-hidden="true">
+                    {row.memberCount ?? row.members?.length ?? 0}
+                  </span>
+                {:else}
+                  <span class="chat-avatar" aria-hidden="true">{initialsFor(row.title)}</span>
+                {/if}
+                <span class="chat-search-hit-copy">
+                  <span class="chat-row-title">{row.title}</span>
+                  <span class="chat-search-snippet">{searchHitSnippet(hit)}</span>
+                </span>
+                <span class="chat-search-meta">
+                  <span class="chat-type-tag">{conversationKindLabel(row.kind)}</span>
+                  <span class="chat-search-time">{formatSearchHitTime(hit.createdAt)}</span>
+                </span>
+              </button>
+              </div>
+            {/each}
+          {/if}
+        {:else}
+          {#each historyRows as row (row.id)}
+            <div role="listitem" class="chat-li">
+            <button
+              type="button"
+              class="chat-row"
+              class:unread={!!row.unreadCount || row.unreadDot}
+              class:active={activeId === row.id}
+              onclick={() => void openRow(row)}
+            >
+              {#if row.kind === 'channel'}
+                <span class="chat-glyph" aria-hidden="true">#</span>
+              {:else if row.kind === 'group'}
+                <span class="chat-avatar group" aria-hidden="true">
+                  {row.memberCount ?? row.members?.length ?? 0}
+                </span>
+              {:else}
+                <span class="chat-avatar" aria-hidden="true">{initialsFor(row.title)}</span>
+              {/if}
+              <span class="chat-row-title">{row.title}</span>
+            </button>
+            </div>
+          {:else}
+            <div class="chat-empty">No conversations</div>
+          {/each}
+        {/if}
       </div>
     </div>
   {:else}
     <header class="chat-header">
-      <button
-        type="button"
-        class="chat-scope-pill"
-        data-testid="chat-scope-pill"
-        aria-label={`Company scope: ${scopeLabel}. Click to cycle.`}
-        title="Cycle company scope (⌘0 All, ⌘1–5 companies, ⌘P Personal)"
-        onclick={cycleScope}
-      >
-        {scopeLabel}
-      </button>
+      <div class="chat-scope-wrap" bind:this={scopeMenuEl}>
+        <button
+          type="button"
+          class="chat-scope-pill"
+          data-testid="chat-scope-pill"
+          aria-label={`Company scope: ${scopeLabel}. Open menu.`}
+          aria-expanded={scopeMenuOpen}
+          aria-haspopup="menu"
+          title="Company scope (⌘0 All, ⌘1–5 companies, ⌘P Personal)"
+          onclick={openScopeMenu}
+        >
+          {scopeLabel}
+          <span class="chat-scope-caret" aria-hidden="true">⌄</span>
+        </button>
+        {#if scopeMenuOpen}
+          <div
+            class="chat-popover chat-scope-menu"
+            data-testid="chat-scope-menu"
+            role="menu"
+            aria-label="Company scope"
+          >
+            {#each scopeOptions as option, i (option.id)}
+              {@const companyIndex =
+                option.id === 'all' || option.id === 'personal'
+                  ? -1
+                  : scopeCompanies.findIndex((c) => c.companyUid === option.id)}
+              <button
+                type="button"
+                class="chat-popover-row chat-scope-row"
+                class:active={scope === option.id}
+                role="menuitemradio"
+                aria-checked={scope === option.id}
+                data-testid="chat-scope-option"
+                data-scope={option.id}
+                onclick={() => selectScope(option.id)}
+              >
+                <span
+                  class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
+                  aria-hidden="true"
+                >
+                  {scopeAvatarLabel(option)}
+                </span>
+                <span class="chat-scope-row-label">
+                  {option.id === 'all' ? 'All companies' : option.label}
+                </span>
+                {#if scopeShortcutLabel(option.id, companyIndex)}
+                  <span class="chat-scope-shortcut">
+                    {scopeShortcutLabel(option.id, companyIndex)}
+                  </span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
 
       <div class="chat-header-actions">
         <button
@@ -459,10 +727,7 @@
           data-testid="chat-new-message"
           aria-label="New message"
           title="New message"
-          onclick={() => {
-            newMessageOpen = true;
-            newMessageQuery = '';
-          }}
+          onclick={openNewMessage}
         >
           <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
@@ -474,14 +739,17 @@
           data-testid="chat-search"
           aria-label="Search (command palette)"
           title="Search (⌘K)"
-          onclick={() => oncommand?.()}
+          onclick={() => {
+            closeAllOverlays();
+            oncommand?.();
+          }}
         >
           <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.25" />
             <path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
           </svg>
         </button>
-        <div class="chat-filter-wrap">
+        <div class="chat-filter-wrap" bind:this={filterWrapEl}>
           <button
             type="button"
             class="chat-icon-btn"
@@ -489,7 +757,7 @@
             aria-label="Filter conversations"
             aria-expanded={filterOpen}
             title="Filter"
-            onclick={() => (filterOpen = !filterOpen)}
+            onclick={openFilterMenu}
           >
             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M2.5 4h11M4.5 8h7M6.5 12h3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
@@ -501,6 +769,7 @@
               class="chat-popover"
               data-testid="chat-filter-popover"
               role="dialog"
+              tabindex="-1"
               aria-label="Conversation filters"
               onmousedown={(e) => e.stopPropagation()}
             >
@@ -604,7 +873,11 @@
       {/if}
 
       {#each grouped.sections as section (section.key)}
-        <div class="chat-section-label" id={`chat-sec-${section.key}`}>{section.label}</div>
+        {@const [sectionName, sectionDate] = section.label.split(' · ')}
+        <div class="chat-section-label chat-day-head" id={`chat-sec-${section.key}`}>
+          <span>{sectionName}</span>
+          {#if sectionDate}<span class="chat-day-date" data-testid="chat-day-date">{sectionDate}</span>{/if}
+        </div>
         <div class="chat-list" role="list" aria-labelledby={`chat-sec-${section.key}`}>
           {#each section.rows as row (row.id)}
             {@render conversationRow(row)}
@@ -620,8 +893,13 @@
           aria-expanded={lastWeekExpanded}
           onclick={() => (lastWeekExpanded = !lastWeekExpanded)}
         >
-          <span class="chat-section-label inline">Last week</span>
-          <span class="chat-collapse-meta">{grouped.lastWeek.length}</span>
+          <span class="chat-collapse-left">
+            <span class="chat-collapse-chevron" class:open={lastWeekExpanded} aria-hidden="true">›</span>
+            <span class="chat-section-label inline">Last week</span>
+          </span>
+          {#if !lastWeekExpanded}
+            <span class="chat-collapse-meta" data-testid="chat-last-week-count">{grouped.lastWeek.length}</span>
+          {/if}
         </button>
         {#if lastWeekExpanded}
           <div class="chat-list" role="list" aria-label="Last week">
@@ -650,18 +928,18 @@
       {/if}
     </div>
 
-    <div class="chat-footer">
+    <div class="chat-footer" bind:this={footerEl}>
       <button
         type="button"
         class="chat-user-card"
         data-testid="chat-user-card"
         aria-haspopup="menu"
         aria-expanded={footerMenuOpen}
-        onclick={() => (footerMenuOpen = !footerMenuOpen)}
+        onclick={openFooterMenu}
       >
         <span class="chat-avatar" aria-hidden="true">{initials}</span>
         <span class="chat-user-copy">
-          <span class="chat-user-name">{displayName}</span>
+          <span class="chat-user-name">{firstName}</span>
           <span class="chat-user-status">
             <span class="chat-status-dot" aria-hidden="true"></span>
             SYNCED
@@ -694,7 +972,7 @@
         if (e.key === 'Escape') newMessageOpen = false;
       }}
     >
-      <div class="chat-modal" role="dialog" aria-label="New message">
+      <div class="chat-modal" role="dialog" aria-label="New message" tabindex="-1">
         <div class="chat-modal-head">
           <span class="chat-section-label">New message</span>
           <button type="button" class="chat-text-btn" onclick={() => (newMessageOpen = false)}>
@@ -719,10 +997,10 @@
         />
         <div class="chat-list modal-list" role="list">
           {#each typeaheadRows as row (row.id)}
+            <div role="listitem" class="chat-li">
             <button
               type="button"
               class="chat-row"
-              role="listitem"
               onclick={() => openFromTypeahead(row)}
             >
               {#if row.kind === 'channel'}
@@ -736,6 +1014,7 @@
               {/if}
               <span class="chat-row-title">{row.title}</span>
             </button>
+            </div>
           {:else}
             <div class="chat-empty">No matches</div>
           {/each}
@@ -754,6 +1033,7 @@
 </aside>
 
 {#snippet conversationRow(row: ConversationRow)}
+  <div role="listitem" class="chat-li">
   <button
     type="button"
     class="chat-row"
@@ -761,7 +1041,6 @@
     class:active={activeId === row.id}
     data-kind={row.kind}
     data-conversation-id={row.id}
-    role="listitem"
     onclick={() => void openRow(row)}
     oncontextmenu={(e) => handlePin(row, e)}
   >
@@ -785,6 +1064,7 @@
       <span class="chat-unread-dot" data-testid="chat-unread-dot" aria-label="Unread"></span>
     {/if}
   </button>
+  </div>
 {/snippet}
 
 <style>
@@ -821,11 +1101,19 @@
     gap: 2px;
   }
 
+  .chat-scope-wrap {
+    position: relative;
+    min-width: 0;
+  }
+
   .chat-scope-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     min-width: 0;
     max-width: 140px;
     height: 26px;
-    padding: 0 10px;
+    padding: 0 8px 0 10px;
     overflow: hidden;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-pill);
@@ -840,8 +1128,78 @@
     cursor: pointer;
   }
 
-  .chat-scope-pill:hover {
+  .chat-scope-pill:hover,
+  .chat-scope-pill[aria-expanded='true'] {
     background: var(--v4-active-row);
+  }
+
+  .chat-scope-caret {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .chat-scope-menu {
+    left: 0;
+    right: auto;
+    min-width: 200px;
+    max-height: 320px;
+  }
+
+  .chat-scope-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chat-scope-avatar {
+    display: grid;
+    place-items: center;
+    flex: 0 0 22px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--v4-text-1) 12%, transparent);
+    color: var(--v4-text-1);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+
+  .chat-scope-avatar.tone-0 {
+    background: color-mix(in srgb, var(--v4-text-1) 14%, transparent);
+  }
+  .chat-scope-avatar.tone-1 {
+    background: color-mix(in srgb, var(--v4-text-1) 18%, transparent);
+  }
+  .chat-scope-avatar.tone-2 {
+    background: color-mix(in srgb, var(--v4-text-1) 10%, transparent);
+  }
+  .chat-scope-avatar.tone-3 {
+    background: color-mix(in srgb, var(--v4-text-1) 16%, transparent);
+  }
+  .chat-scope-avatar.tone-4 {
+    background: color-mix(in srgb, var(--v4-text-1) 12%, transparent);
+  }
+  .chat-scope-avatar.tone-5 {
+    background: color-mix(in srgb, var(--v4-text-1) 20%, transparent);
+  }
+
+  .chat-scope-row-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-scope-shortcut {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 400;
   }
 
   .chat-icon-btn {
@@ -899,6 +1257,42 @@
   .chat-section-label.inline {
     margin: 0;
     padding: 0;
+  }
+
+  /* Day-group header: name left, date right-aligned (D-13). */
+  .chat-day-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .chat-day-date {
+    color: var(--v4-text-3);
+    font-family: var(--font-mono, inherit);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Listitem wrapper keeps ARIA list semantics without breaking layout (D-19). */
+  .chat-li {
+    display: contents;
+  }
+
+  .chat-collapse-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .chat-collapse-chevron {
+    color: var(--v4-text-3);
+    font-size: 13px;
+    line-height: 1;
+    transition: transform 120ms ease;
+  }
+
+  .chat-collapse-chevron.open {
+    transform: rotate(90deg);
   }
 
   .chat-section-label.pad-top {
@@ -1140,8 +1534,20 @@
     padding: 8px 0;
     border: 1px solid var(--v4-hairline);
     border-radius: 0;
-    background: var(--v4-popover-strong, var(--v4-popover));
+    /* Opaque surface — no transparent bleed-through (D-03). */
+    background: var(--v4-surface-solid, #fff);
     box-shadow: var(--v4-shadow-popover);
+  }
+
+  :global(:root[data-force-theme='dark']) .chat-popover,
+  :global(.dark) .chat-popover {
+    background: var(--v4-surface-solid, #303030);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-force-theme='light'])) .chat-popover {
+      background: var(--v4-surface-solid, #303030);
+    }
   }
 
   .chat-popover.footer {
@@ -1189,6 +1595,74 @@
     align-items: center;
     gap: 8px;
     padding: 0 4px 8px;
+  }
+
+  .chat-history-scope {
+    margin-left: auto;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 11px);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .chat-history-helper {
+    margin: 0 4px 8px;
+    padding: 0 6px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 11px);
+    font-weight: 400;
+    line-height: 1.35;
+  }
+
+  .chat-search-hit {
+    align-items: flex-start;
+    min-height: 44px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .chat-search-hit-copy {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .chat-search-snippet {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 12px);
+    font-weight: 400;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-search-meta {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    max-width: 88px;
+  }
+
+  .chat-type-tag {
+    color: var(--v4-text-3);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .chat-search-time {
+    color: var(--v4-text-3);
+    font-size: 10px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .chat-search-input {
@@ -1252,8 +1726,20 @@
     max-height: 70%;
     border: 1px solid var(--v4-hairline);
     border-radius: 0;
-    background: var(--v4-popover-strong, var(--v4-popover));
+    /* Opaque surface — no transparent bleed-through (D-03). */
+    background: var(--v4-surface-solid, #fff);
     box-shadow: var(--v4-shadow-popover);
+  }
+
+  :global(:root[data-force-theme='dark']) .chat-modal,
+  :global(.dark) .chat-modal {
+    background: var(--v4-surface-solid, #303030);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-force-theme='light'])) .chat-modal {
+      background: var(--v4-surface-solid, #303030);
+    }
   }
 
   .chat-modal-head {

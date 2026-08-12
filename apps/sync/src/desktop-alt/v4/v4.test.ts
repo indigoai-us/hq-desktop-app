@@ -2,14 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
   accountIdentityFromWorkspaces,
-  getV4SidebarModel,
   getV4TitleBarModel,
   sortV4CompaniesConnectedFirst,
-  V4_NAV_ITEMS,
   v4CompanyConnected,
   v4CompanyDotTone,
-  type V4Route,
-  type V4SidebarModel,
+  v4CompanyPrimaryForTab,
+  V4_COMPANY_PRIMARY_ITEMS,
 } from './model';
 
 const baseCompany: Workspace = {
@@ -41,14 +39,6 @@ const personal: Workspace = {
   state: 'personal',
 };
 
-function activeRowCount(model: V4SidebarModel): number {
-  return (
-    model.nav.filter((row) => row.active).length +
-    model.companies.filter((row) => row.active).length +
-    (model.settingsActive ? 1 : 0)
-  );
-}
-
 describe('V4 account identity', () => {
   it('derives the visible account label and initials from the personal workspace', () => {
     expect(
@@ -75,46 +65,17 @@ describe('V4 account identity', () => {
   });
 });
 
-describe('US-001 V4 sidebar active-state mapping', () => {
+describe('US-001 / US-018 company row model (sortV4CompaniesConnectedFirst)', () => {
   const workspaces = [
     company({ slug: 'indigo', displayName: 'Indigo' }),
     company({ slug: 'hpo', displayName: 'hpo' }),
     personal,
   ];
 
-  it('maps each primary destination to its own nav row', () => {
-    for (const item of V4_NAV_ITEMS) {
-      const model = getV4SidebarModel({ kind: item.id }, workspaces);
-      const active = model.nav.filter((row) => row.active);
-      expect(active.map((row) => row.id)).toEqual([item.id]);
-      expect(activeRowCount(model)).toBe(1);
-    }
-  });
-
-  it('renders nav rows in the restored Inbox/Messages/Meetings/Marketplace/Library/Files order', () => {
-    const model = getV4SidebarModel({ kind: 'inbox' }, workspaces);
-    expect(model.nav.map((row) => row.label)).toEqual([
-      'Inbox',
-      'Messages',
-      'Meetings',
-      'Marketplace',
-      'Library',
-      'Files',
-    ]);
-    // Home, Mission Control, Companies, and Notifications are not nav rows.
-    for (const gone of ['Home', 'Mission Control', 'Companies', 'Notifications']) {
-      expect(model.nav.some((row) => row.label === gone)).toBe(false);
-    }
-  });
-
-  it('highlights the company row — not a nav item — on company routes', () => {
-    const model = getV4SidebarModel({ kind: 'company', slug: 'hpo' }, workspaces);
-    expect(model.nav.every((row) => !row.active)).toBe(true);
-    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['hpo']);
-    expect(model.settingsActive).toBe(false);
-    expect(activeRowCount(model)).toBe(1);
-    // DESKTOP-001: selected company expands primary children; others collapse.
-    const hpo = model.companies.find((row) => row.slug === 'hpo');
+  it('highlights the company row and expands primary children when active', () => {
+    const companies = sortV4CompaniesConnectedFirst(workspaces, 'hpo', 'overview');
+    expect(companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['hpo']);
+    const hpo = companies.find((row) => row.slug === 'hpo');
     expect(hpo?.expanded).toBe(true);
     expect(hpo?.children.map((c) => c.id)).toEqual([
       'overview',
@@ -127,9 +88,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       'more',
     ]);
     expect(hpo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
-    expect(model.companies.filter((row) => row.slug !== 'hpo').every((row) => !row.expanded)).toBe(
-      true,
-    );
+    expect(companies.filter((row) => row.slug !== 'hpo').every((row) => !row.expanded)).toBe(true);
   });
 
   it('never expands tenant navigation for an unaccepted company invite', () => {
@@ -141,11 +100,8 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       hasLocalFolder: false,
       localPath: null,
     });
-    const model = getV4SidebarModel(
-      { kind: 'company', slug: 'sender-agency', tab: 'projects' },
-      [pending],
-    );
-    const row = model.companies[0];
+    const companies = sortV4CompaniesConnectedFirst([pending], 'sender-agency', 'projects');
+    const row = companies[0];
 
     expect(row.pendingInvite).toBe(true);
     expect(row.active).toBe(true);
@@ -155,64 +111,41 @@ describe('US-001 V4 sidebar active-state mapping', () => {
 
   it('keeps Skills and Workers visible and highlights their company child routes', () => {
     for (const tab of ['skills', 'workers'] as const) {
-      const model = getV4SidebarModel({ kind: 'company', slug: 'hpo', tab }, workspaces);
-      const activeCompany = model.companies.find((row) => row.slug === 'hpo');
+      const primary = v4CompanyPrimaryForTab(tab);
+      const companies = sortV4CompaniesConnectedFirst(workspaces, 'hpo', primary);
+      const activeCompany = companies.find((row) => row.slug === 'hpo');
       expect(activeCompany?.children.some((child) => child.id === tab)).toBe(true);
       expect(activeCompany?.children.find((child) => child.id === tab)?.active).toBe(true);
     }
   });
 
-  it('collapses company children on global destinations (DESKTOP-001)', () => {
-    const model = getV4SidebarModel({ kind: 'inbox' }, workspaces);
-    expect(model.companies.every((row) => !row.expanded && row.children.length === 0)).toBe(true);
+  it('collapses company children when no active company is selected', () => {
+    const companies = sortV4CompaniesConnectedFirst(workspaces);
+    expect(companies.every((row) => !row.expanded && row.children.length === 0)).toBe(true);
   });
 
-  it('highlights the Settings footer — and nothing else — on the settings route', () => {
-    const model = getV4SidebarModel({ kind: 'settings' }, workspaces);
-    expect(model.settingsActive).toBe(true);
-    expect(model.nav.every((row) => !row.active)).toBe(true);
-    expect(model.companies.every((row) => !row.active)).toBe(true);
-    expect(activeRowCount(model)).toBe(1);
+  it('lights no active company for a missing slug', () => {
+    const companies = sortV4CompaniesConnectedFirst(workspaces, 'ghost');
+    expect(companies.every((row) => !row.active)).toBe(true);
   });
 
-  it('lights no row for a company route with no matching row — the Companies fallback is gone (US-007)', () => {
-    const model = getV4SidebarModel({ kind: 'company', slug: 'ghost' }, workspaces);
-    expect(model.nav.every((row) => !row.active)).toBe(true);
-    expect(activeRowCount(model)).toBe(0);
-  });
-
-  it('keeps exactly one active row on every sidebar destination', () => {
-    const routes: V4Route[] = [
-      { kind: 'inbox' },
-      { kind: 'meetings' },
-      { kind: 'marketplace' },
-      { kind: 'library' },
-      { kind: 'files' },
-      { kind: 'settings' },
-      { kind: 'company', slug: 'indigo' },
-    ];
-    for (const route of routes) {
-      expect(activeRowCount(getV4SidebarModel(route, workspaces))).toBe(1);
-    }
-  });
-
-  it('lights no row on palette-only and unknown routes (US-007: at most one active row)', () => {
-    const routes: V4Route[] = [
-      { kind: 'home' },
-      { kind: 'mission-control' },
-      { kind: 'moderation' },
-      { kind: 'company', slug: 'missing' },
-      { kind: 'some-future-kind' },
-    ];
-    for (const route of routes) {
-      expect(activeRowCount(getV4SidebarModel(route, workspaces))).toBe(0);
-    }
+  it('declares the full primary company child list', () => {
+    expect(V4_COMPANY_PRIMARY_ITEMS.map((item) => item.id)).toEqual([
+      'overview',
+      'goals',
+      'projects',
+      'skills',
+      'workers',
+      'knowledge',
+      'team',
+      'more',
+    ]);
   });
 });
 
-describe('US-001 V4 sidebar companies-list rendering', () => {
+describe('US-001 V4 companies-list rendering', () => {
   it('renders one row per workspace with the display name and status dot tone (connected-first, alpha within group)', () => {
-    const model = getV4SidebarModel({ kind: 'home' }, [
+    const companies = sortV4CompaniesConnectedFirst([
       company({ slug: 'synced', displayName: 'Synced Co', state: 'synced' }),
       company({ slug: 'broken', displayName: 'Broken Co', state: 'broken' }),
       company({ slug: 'local', displayName: 'Local Co', state: 'local-only', cloudUid: null }),
@@ -222,7 +155,7 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
 
     // Connected (synced / cloud-only / personal) lead, alphabetical by name;
     // the rest (broken, local-only) follow, alphabetical. Tones are unchanged.
-    expect(model.companies.map((row) => [row.slug, row.label, row.tone])).toEqual([
+    expect(companies.map((row) => [row.slug, row.label, row.tone])).toEqual([
       ['cloud', 'Cloud Co', 'idle'],
       ['personal', 'Personal', 'ok'],
       ['synced', 'Synced Co', 'ok'],
@@ -248,10 +181,10 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
     const many = Array.from({ length: 9 }, (_, index) =>
       company({ slug: `co-${index}`, displayName: `Co ${index}` }),
     );
-    const model = getV4SidebarModel({ kind: 'home' }, many);
+    const companies = sortV4CompaniesConnectedFirst(many);
 
-    expect(model.companies).toHaveLength(9);
-    expect(model.companies.map((row) => row.slug)).toEqual([
+    expect(companies).toHaveLength(9);
+    expect(companies.map((row) => row.slug)).toEqual([
       'co-0',
       'co-1',
       'co-2',
@@ -265,37 +198,36 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
   });
 
   it('deduplicates repeated workspace slugs so cached local data cannot blank the app', () => {
-    const model = getV4SidebarModel({ kind: 'company', slug: 'dupe' }, [
-      company({ slug: 'dupe', displayName: 'Dupe Local', state: 'local-only' }),
-      company({ slug: 'dupe', displayName: 'Dupe Cloud', state: 'cloud-only' }),
-      company({ slug: 'next', displayName: 'Next', state: 'synced' }),
-    ]);
+    const companies = sortV4CompaniesConnectedFirst(
+      [
+        company({ slug: 'dupe', displayName: 'Dupe Local', state: 'local-only' }),
+        company({ slug: 'dupe', displayName: 'Dupe Cloud', state: 'cloud-only' }),
+        company({ slug: 'next', displayName: 'Next', state: 'synced' }),
+      ],
+      'dupe',
+    );
 
     // First occurrence wins the dedupe (Dupe Local, local-only → idle/not
     // connected), so the connected-first sort puts 'next' (synced) ahead of it.
-    expect(model.companies.map((row) => row.slug)).toEqual(['next', 'dupe']);
-    expect(model.companies.find((row) => row.slug === 'dupe')?.label).toBe('Dupe Local');
-    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual([
-      'dupe',
-    ]);
-    expect(activeRowCount(model)).toBe(1);
+    expect(companies.map((row) => row.slug)).toEqual(['next', 'dupe']);
+    expect(companies.find((row) => row.slug === 'dupe')?.label).toBe('Dupe Local');
+    expect(companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['dupe']);
   });
 
   it('keeps later companies selectable and active because every row renders', () => {
     const many = Array.from({ length: 9 }, (_, index) =>
       company({ slug: `co-${index}`, displayName: `Co ${index}` }),
     );
-    const model = getV4SidebarModel({ kind: 'company', slug: 'co-8' }, many);
+    const companies = sortV4CompaniesConnectedFirst(many, 'co-8');
 
-    expect(model.companies).toHaveLength(9);
-    expect(model.companies.find((row) => row.slug === 'co-8')?.active).toBe(true);
-    expect(activeRowCount(model)).toBe(1);
+    expect(companies).toHaveLength(9);
+    expect(companies.find((row) => row.slug === 'co-8')?.active).toBe(true);
   });
 });
 
-describe('US-007 V4 sidebar connected-first sort', () => {
+describe('US-007 V4 connected-first sort', () => {
   it('sorts cloud-connected companies (synced / cloud-only) above idle ones, alphabetical within group', () => {
-    const model = getV4SidebarModel({ kind: 'home' }, [
+    const companies = sortV4CompaniesConnectedFirst([
       company({ slug: 'zed', displayName: 'Zed', state: 'local-only' }),
       company({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
       company({ slug: 'beta', displayName: 'Beta', state: 'local-only' }),
@@ -305,7 +237,7 @@ describe('US-007 V4 sidebar connected-first sort', () => {
 
     // Connected (Acme synced, CloudCo cloud-only, Orbit synced) lead in alpha
     // order; idle (Beta, Zed local-only) follow in alpha order.
-    expect(model.companies.map((row) => row.label)).toEqual([
+    expect(companies.map((row) => row.label)).toEqual([
       'Acme',
       'CloudCo',
       'Orbit',
@@ -315,35 +247,37 @@ describe('US-007 V4 sidebar connected-first sort', () => {
   });
 
   it('sorts case-insensitively within each group', () => {
-    const model = getV4SidebarModel({ kind: 'home' }, [
+    const companies = sortV4CompaniesConnectedFirst([
       company({ slug: 'b', displayName: 'banana', state: 'synced' }),
       company({ slug: 'a', displayName: 'Apple', state: 'synced' }),
       company({ slug: 'c', displayName: 'Cherry', state: 'synced' }),
     ]);
-    expect(model.companies.map((row) => row.label)).toEqual(['Apple', 'banana', 'Cherry']);
+    expect(companies.map((row) => row.label)).toEqual(['Apple', 'banana', 'Cherry']);
   });
 
   it('treats personal as connected (green dot) and groups it with synced/cloud-only', () => {
-    const model = getV4SidebarModel({ kind: 'home' }, [
+    const companies = sortV4CompaniesConnectedFirst([
       company({ slug: 'idle1', displayName: 'Idle One', state: 'local-only' }),
       personal,
       company({ slug: 'sync1', displayName: 'Aardvark', state: 'synced' }),
     ]);
     // personal + synced lead (alpha: Aardvark, Personal), then the idle row.
-    expect(model.companies.map((row) => row.slug)).toEqual(['sync1', 'personal', 'idle1']);
+    expect(companies.map((row) => row.slug)).toEqual(['sync1', 'personal', 'idle1']);
   });
 
   it('keeps the active company highlighted after the connected-first reorder', () => {
-    const model = getV4SidebarModel({ kind: 'company', slug: 'idle-active' }, [
-      company({ slug: 'idle-active', displayName: 'Idle Active', state: 'local-only' }),
-      company({ slug: 'conn', displayName: 'Connected', state: 'synced' }),
-    ]);
+    const companies = sortV4CompaniesConnectedFirst(
+      [
+        company({ slug: 'idle-active', displayName: 'Idle Active', state: 'local-only' }),
+        company({ slug: 'conn', displayName: 'Connected', state: 'synced' }),
+      ],
+      'idle-active',
+    );
     // Connected row sorts first, but the idle active row stays the only active one.
-    expect(model.companies.map((row) => row.slug)).toEqual(['conn', 'idle-active']);
-    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual([
+    expect(companies.map((row) => row.slug)).toEqual(['conn', 'idle-active']);
+    expect(companies.filter((row) => row.active).map((row) => row.slug)).toEqual([
       'idle-active',
     ]);
-    expect(activeRowCount(model)).toBe(1);
   });
 
   it('exposes v4CompanyConnected as the grouping predicate (synced/cloud-only/personal)', () => {
@@ -355,24 +289,12 @@ describe('US-007 V4 sidebar connected-first sort', () => {
   });
 });
 
-describe('US-009 Files nav row + shared connected-first sort', () => {
+describe('US-009 Files company list + shared connected-first sort', () => {
   const workspaces = [
     company({ slug: 'indigo', displayName: 'Indigo' }),
     company({ slug: 'hpo', displayName: 'hpo' }),
     personal,
   ];
-
-  it('includes Files as the last primary nav row', () => {
-    expect(V4_NAV_ITEMS.at(-1)).toEqual({ id: 'files', label: 'Files' });
-  });
-
-  it('marks the Files nav row active in Files mode with exactly one active row', () => {
-    const model = getV4SidebarModel({ kind: 'files' }, workspaces);
-    expect(model.nav.filter((row) => row.active).map((row) => row.id)).toEqual(['files']);
-    expect(model.companies.every((row) => !row.active)).toBe(true);
-    expect(model.settingsActive).toBe(false);
-    expect(activeRowCount(model)).toBe(1);
-  });
 
   it('sortV4CompaniesConnectedFirst groups connected-first, alpha within group', () => {
     const rows = sortV4CompaniesConnectedFirst([

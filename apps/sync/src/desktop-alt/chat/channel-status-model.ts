@@ -378,6 +378,22 @@ export function buildChannelStatusModel(input: BuildChannelStatusInput): Channel
   };
 }
 
+/**
+ * Resolve the header member-pill count after a status refresh.
+ *
+ * Only a real roster fetch (fetchedMemberCount > 0) may update the pill; when
+ * the roster call failed or returned empty the status model was built from
+ * fixture members, and adopting its count would make the pill drift away from
+ * the channel-metadata count (e.g. 6 → 5) just from opening the popover.
+ */
+export function resolveMemberPillCount(
+  fetchedMemberCount: number,
+  model: Pick<ChannelStatusModel, 'memberCount'>,
+  previousCount: number | null,
+): number | null {
+  return fetchedMemberCount > 0 ? model.memberCount : previousCount;
+}
+
 /** Header title pieces for a project channel: `# name · company · project channel`. */
 export function projectChannelHeaderTitle(
   channelName: string,
@@ -387,3 +403,25 @@ export function projectChannelHeaderTitle(
   const company = companyLabel?.trim() || 'Company';
   return `# ${name} · ${company} · project channel`;
 }
+
+/** Visual-QA fixture members + agents (D-06). */
+export const CHANNEL_STATUS_FIXTURE_MEMBERS: StatusMemberInput[] = [
+  { personUid: 'prs_ada', displayName: 'Ada Lovelace', role: 'owner' },
+  { personUid: 'prs_marcus', displayName: 'Marcus Chen', role: 'member' },
+  { personUid: 'prs_corey', displayName: 'Corey', role: 'member' },
+  { personUid: 'agt_claude', displayName: 'Claude', role: 'agent', isAgent: true },
+  { personUid: 'agt_codex', displayName: 'Codex', role: 'agent', isAgent: true },
+];
+
+export const CHANNEL_STATUS_FIXTURE_PRD: StatusPrdInput = {
+  name: 'HQ Desktop',
+  branchName: 'feat/v2-chat-shell',
+  repoPath: 'companies/indigo/projects/hq-desktop-app',
+  previewUrl: 'https://preview.example/hq-desktop',
+  userStories: [
+    { id: 'US-001', passes: true },
+    { id: 'US-002', passes: true },
+    { id: 'US-003', passes: false },
+    { id: 'US-004', passes: false },
+  ],
+};

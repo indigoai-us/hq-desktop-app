@@ -307,7 +307,8 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     expect(styleBlock.toLowerCase()).not.toContain('purple');
 
     // The only #hex allowed is the opaque mask sentinel (#000) used by the
-    // name fade-out mask — same pattern as V4Sidebar. No other hex literals.
+    // name fade-out mask — same pattern as the retired V4Sidebar company names.
+    // No other hex literals.
     const hexMatches = styleBlock.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [];
     expect(hexMatches.every((hex) => hex === '#000')).toBe(true);
   });

@@ -356,7 +356,7 @@ describe('visual hierarchy polish: bounded Inbox chronology', () => {
 describe('visual hierarchy polish: scoped surface contracts', () => {
   const row = read('src/components/NotificationRow.svelte');
   const feed = read('src/components/NotificationFeed.svelte');
-  const inbox = read('src/desktop-alt/pages/InboxPage.svelte');
+  const notificationsView = read('src/desktop-alt/chat/NotificationsView.svelte');
   const quickPane = read('src/components/QuickWindowSidePane.svelte');
   const widget = read('src/components/Widget.svelte');
   const marketplace = read('src/desktop-alt/panels/MarketplacePanel.svelte');
@@ -376,7 +376,10 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
     expect(feed).toContain('sourceLabel="Shared file"');
     expect(feed).toContain('sourceLabel="Workspace activity"');
     expect(feed).toContain('sourceLabel="App update"');
-    expect(inbox).toContain('density="comfortable"');
+    // US-018: InboxPage retired — desktop chronology is NotificationsView.
+    expect(notificationsView).toContain('data-testid="notifications-view"');
+    expect(notificationsView).toContain('data-testid="notifications-row"');
+    expect(desktop).toContain('<NotificationsView');
     expect(quickPane).toContain('id="quick-conversations-label">Direct messages');
     expect(quickPane).toContain('<div class="qw-side-label">Channels</div>');
     expect(quickPane).not.toContain('text={row.latest');
@@ -398,12 +401,12 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   });
 
   it('uses open neutral list structure without colored rails or nested notification cards', () => {
-    for (const source of [row, feed, inbox, quickPane]) {
+    for (const source of [row, feed, notificationsView, quickPane]) {
       expect(source).not.toMatch(/border-(?:left|inline-start)\s*:\s*[^;]*--(?:v4-)?(?:warn|error|unread)/);
     }
-    expect(inbox).toContain('background: transparent');
-    expect(inbox).toContain('border-radius: 0');
-    expect(inbox).not.toContain('var(--v4-warn)');
+    expect(notificationsView).toContain('background: transparent');
+    expect(notificationsView).toContain('border-radius: 0');
+    expect(notificationsView).not.toContain('var(--v4-warn)');
   });
 
   it('restores full-color marketplace covers while retaining neutral glass chrome', () => {

@@ -286,7 +286,7 @@
     box-sizing: border-box;
     width: 100%;
     height: var(--v4-row-h);
-    /* Lock the row to exactly --v4-row-h (same pattern as V4Sidebar) so a tall
+    /* Lock the row to exactly --v4-row-h (same pattern as legacy sidebar) so a tall
        glyph or sub-pixel font metrics can never grow/shrink it; flex-shrink:0
        stops the scroll container compressing rows when the list overflows. */
     min-height: var(--v4-row-h);

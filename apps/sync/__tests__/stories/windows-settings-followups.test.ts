@@ -34,16 +34,10 @@ describe('Windows settings follow-up regressions', () => {
     expect(settings).toMatch(/select option\s*\{[\s\S]*?color:/);
   });
 
-  it('centers recovery action content inside the fixed-height title bar', () => {
-    expect(titleBar).toMatch(
-      /\.v4-recovery-actions :global\(button\)\s*\{[\s\S]*?box-sizing:\s*border-box/,
-    );
-    expect(titleBar).toMatch(
-      /\.v4-recovery-actions :global\(button\)\s*\{[\s\S]*?justify-content:\s*center/,
-    );
-    expect(titleBar).toMatch(
-      /\.v4-recovery-actions :global\(button\)\s*\{[\s\S]*?padding-block:\s*0/,
-    );
+  it('keeps the titlebar minimal without recovery-action chrome (D-04)', () => {
+    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
+    expect(titleBar).not.toContain('v4-recovery-actions');
+    expect(titleBar).not.toContain('class="v4-action"');
   });
 
   it('uses platform-neutral visible Settings copy', () => {

@@ -236,10 +236,10 @@
           <div class="pc-empty">No local projects</div>
         {:else}
           {#each filteredRows as row (row.company + ':' + row.id + ':' + row.prdPath)}
+            <div role="listitem" class="pc-li">
             <button
               type="button"
               class="pc-row"
-              role="listitem"
               onclick={() => selectProject(row)}
             >
               <span class="pc-glyph" aria-hidden="true">#</span>
@@ -248,6 +248,7 @@
                 <span class="pc-row-sub">{row.subtitle}</span>
               </span>
             </button>
+            </div>
           {/each}
         {/if}
       </div>
@@ -456,6 +457,10 @@
     min-height: 0;
     overflow-y: auto;
     border-top: 1px solid var(--v4-hairline, var(--pop-border));
+  }
+
+  .pc-li {
+    display: contents;
   }
 
   .pc-row {

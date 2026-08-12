@@ -191,8 +191,8 @@ describe('US-007 — app shell mounts with HQ defaults', () => {
 
     const titlebar = host.querySelector('.v4-titlebar');
     expect(titlebar).not.toBeNull();
-    expect(host.querySelector('.v4-status')).not.toBeNull();
-    expect(host.querySelector('.v4-action')).not.toBeNull();
+    expect(host.querySelector('[data-testid="titlebar-wordmark"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="titlebar-core-pill"]')).not.toBeNull();
     expect(host.querySelector('[data-tauri-drag-region]')).not.toBeNull();
 
     // Tokens still resolve on :root while chrome is mounted.

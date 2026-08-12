@@ -959,12 +959,17 @@
         onclick={send}
         disabled={sending || replyText.trim().length === 0 || replyText.trim() === '/'}
         aria-busy={sending}
+        aria-label={sending ? 'Sending' : 'Send'}
+        title={sending ? 'Sending…' : 'Send'}
         data-testid="composer-send"
       >
         {#if sending}
           <span class="inline-spinner" aria-hidden="true"></span>
+        {:else}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M8 13V3M8 3 3.75 7.25M8 3l4.25 4.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
         {/if}
-        {sending ? 'Sending…' : 'Send'}
       </button>
     </div>
   </div>
@@ -1946,8 +1951,9 @@
   }
 
   .dm-reply-hint {
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 11px);
     color: var(--pop-muted);
+    opacity: 0.65;
   }
 
   .dm-reply-error {

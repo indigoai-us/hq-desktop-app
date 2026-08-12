@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   COMPANY_PRIMARY_SECTIONS,
@@ -9,9 +11,8 @@ import {
   resolvePendingDesktopRoute,
 } from '../../src/desktop-alt/route';
 import {
-  getV4SidebarModel,
+  sortV4CompaniesConnectedFirst,
   V4_COMPANY_PRIMARY_ITEMS,
-  V4_NAV_ITEMS,
   v4CompanyPrimaryForTab,
 } from '../../src/desktop-alt/v4/model';
 import type { Workspace } from '../../src/lib/workspaces';
@@ -20,10 +21,14 @@ import { readRepoFile } from './harness';
 /**
  * DESKTOP-001 — Compact native shell source contracts.
  *
- * Locks: single global sidebar with inline company children, no permanent
- * company secondary sidebar, no bottom status bar, titlebar chrome controls,
- * safe drag regions only on padded noninteractive space, light-mode hierarchy.
+ * Locks: chat-first primary sidebar (ChatSidebar), company model still expands
+ * primary children when active, no permanent company secondary sidebar, no
+ * bottom status bar, titlebar chrome controls, safe drag regions only on padded
+ * noninteractive space, light-mode hierarchy.
+ * US-018: V4Sidebar / V4_NAV_ITEMS / getV4SidebarModel retired.
  */
+
+const root = process.cwd();
 
 function workspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
@@ -82,15 +87,26 @@ describe('DESKTOP-001: compact native shell', () => {
     workspace({ slug: 'liverecover', displayName: 'LiveRecover' }),
   ];
 
-  it('primary nav exposes Inbox / Messages / Meetings / Marketplace / Library / Files', () => {
-    expect(V4_NAV_ITEMS.map((item) => item.id)).toEqual([
-      'inbox',
+  it('primary shell is ChatSidebar; legacy V4 nav model is gone', () => {
+    expect(existsSync(join(root, 'src/desktop-alt/v4/V4Sidebar.svelte'))).toBe(false);
+    const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+    const route = readRepoFile('src/desktop-alt/route.ts');
+    expect(app).toContain('<ChatSidebar');
+    // Live global destinations still resolve.
+    for (const kind of [
+      'notifications',
       'messages',
       'meetings',
       'marketplace',
       'library',
       'files',
-    ]);
+    ] as const) {
+      expect(resolvePendingDesktopRoute(kind)?.kind).toBe(kind === 'library' ? 'library' : kind);
+    }
+    expect(route).toContain("'notifications'");
+    expect(route).toContain("'messages'");
+    // Legacy inbox deep link remaps (US-018).
+    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'notifications' });
   });
 
   it('selected company expands Overview / Goals / Projects / Skills / Workers / Knowledge / Team / More', () => {
@@ -108,8 +124,8 @@ describe('DESKTOP-001: compact native shell', () => {
       COMPANY_PRIMARY_SECTIONS.map((s) => s.id),
     );
 
-    const model = getV4SidebarModel({ kind: 'company', slug: 'indigo' }, companies);
-    const active = model.companies.find((row) => row.slug === 'indigo');
+    const rows = sortV4CompaniesConnectedFirst(companies, 'indigo', 'overview');
+    const active = rows.find((row) => row.slug === 'indigo');
     expect(active?.expanded).toBe(true);
     expect(active?.children.map((c) => c.id)).toEqual([
       'overview',
@@ -123,17 +139,17 @@ describe('DESKTOP-001: compact native shell', () => {
     ]);
     expect(active?.children.find((c) => c.id === 'overview')?.active).toBe(true);
 
-    const other = model.companies.find((row) => row.slug === 'liverecover');
+    const other = rows.find((row) => row.slug === 'liverecover');
     expect(other?.expanded).toBe(false);
     expect(other?.children).toEqual([]);
   });
 
-  it('collapses company children on global destinations', () => {
-    for (const kind of ['inbox', 'messages', 'meetings', 'marketplace', 'library', 'files'] as const) {
-      const model = getV4SidebarModel({ kind }, companies);
-      expect(model.companies.every((row) => !row.expanded)).toBe(true);
-      expect(model.companies.every((row) => row.children.length === 0)).toBe(true);
-    }
+  it('collapses company children when no company is selected (global destinations)', () => {
+    // Without an activeSlug every row stays collapsed — same contract as
+    // navigating to notifications / messages / meetings / etc.
+    const rows = sortV4CompaniesConnectedFirst(companies);
+    expect(rows.every((row) => !row.expanded)).toBe(true);
+    expect(rows.every((row) => row.children.length === 0)).toBe(true);
   });
 
   it('operational tabs light More while Skills and Workers light visible primary children', () => {
@@ -149,15 +165,20 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(companyPrimarySectionForTab('workers')).toBe('workers');
     expect(companyTabForPrimarySection('more')).toBe('activity');
 
-    const model = getV4SidebarModel(
-      { kind: 'company', slug: 'indigo', tab: 'deployments' },
-      companies,
-    );
-    expect(model.companies.find((r) => r.slug === 'indigo')?.children.find((c) => c.id === 'more')
-      ?.active).toBe(true);
+    const rows = sortV4CompaniesConnectedFirst(companies, 'indigo', 'more');
+    expect(
+      rows.find((r) => r.slug === 'indigo')?.children.find((c) => c.id === 'more')?.active,
+    ).toBe(true);
 
     // Full operational + skills/workers routes resolve.
-    for (const tab of ['skills', 'workers', 'activity', 'deployments', 'secrets', 'settings'] as const) {
+    for (const tab of [
+      'skills',
+      'workers',
+      'activity',
+      'deployments',
+      'secrets',
+      'settings',
+    ] as const) {
       expect(resolvePendingDesktopRoute(`company:indigo:${tab}`)).toEqual({
         kind: 'company',
         slug: 'indigo',
@@ -174,7 +195,8 @@ describe('DESKTOP-001: compact native shell', () => {
 
   it('never mounts a permanent company secondary sidebar', () => {
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies)).toBeNull();
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.surface).toBe('library');
+    // US-017: library is a full-screen overlay — no permanent secondary column.
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).toBeNull();
     expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)?.surface).toBe('settings');
   });
 
@@ -191,8 +213,9 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(app).toContain('accountLabel={accountIdentity.label}');
     expect(app).toContain('let sidebarCollapsed = $state(false)');
     expect(app).toContain('class:sidebar-collapsed={sidebarCollapsed}');
-    // US-003: chat-first primary sidebar.
+    // US-003 / US-018: chat-first primary sidebar.
     expect(app).toContain('<ChatSidebar');
+    expect(app).not.toContain('<V4Sidebar');
     expect(app).not.toContain('<DesktopStatusBar');
     expect(app).not.toContain("import DesktopStatusBar");
     // Secondary remains for library/settings only.
@@ -206,28 +229,31 @@ describe('DESKTOP-001: compact native shell', () => {
     );
   });
 
-  it('titlebar owns sidebar toggle, sync status, command search, sync, account; drag only on pads', () => {
+  it('titlebar is minimal (wordmark, day, meetings, bell, Core); drag only on pads', () => {
     const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
 
     expect(titleBar).toMatch(/Show sidebar|Hide sidebar/);
-    expect(titleBar).toContain('aria-label="Open command palette"');
-    expect(titleBar).toContain('aria-label="Account and settings"');
-    expect(titleBar).toContain('class="v4-action"');
-    expect(titleBar).toContain('class="v4-status"');
+    expect(titleBar).toContain('data-testid="titlebar-wordmark"');
+    expect(titleBar).toContain('data-testid="titlebar-day-date"');
+    expect(titleBar).toContain('data-testid="titlebar-meetings"');
+    expect(titleBar).toContain('data-testid="titlebar-notifications"');
+    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
     // Drag region is on padded spacers only — not the whole header.
     expect(titleBar).not.toMatch(/<header class="v4-titlebar" data-tauri-drag-region/);
     expect(titleBar).toContain('data-tauri-drag-region');
     expect(titleBar).toContain('class="v4-drag-pad v4-drag-lights"');
     expect(titleBar).toContain('class="v4-drag-pad v4-drag-flex"');
-    expect(titleBar).toMatch(/\.v4-status\s*\{[\s\S]*?pointer-events: none;/);
+    // V1 chrome removed (D-04).
+    expect(titleBar).not.toContain('class="v4-status"');
+    expect(titleBar).not.toContain('class="v4-action"');
   });
 
-  it('sidebar renders company children and collapses them for global routes (source)', () => {
-    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
-    expect(sidebar).toContain('v4-company-children');
-    expect(sidebar).toContain('goCompanySection');
-    expect(sidebar).toContain("data-testid={`company-children-${row.slug}`}");
-    expect(sidebar).toContain("child.id === 'more'");
+  it('company primary children remain modeled for expansion (sortV4CompaniesConnectedFirst)', () => {
+    const model = readRepoFile('src/desktop-alt/v4/model.ts');
+    expect(model).toContain('export function sortV4CompaniesConnectedFirst');
+    expect(model).toContain('V4_COMPANY_PRIMARY_ITEMS');
+    expect(model).toContain('expanded: active && workspace.membershipStatus !==');
+    expect(model).toContain("child");
   });
 
   it('light-mode material roles stay visibly translucent with weighted hierarchy', () => {

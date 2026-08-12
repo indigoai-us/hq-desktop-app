@@ -2,35 +2,18 @@ import { isWorkspaceSyncEnabled, type Workspace } from '../../lib/workspaces';
 import type { SyncState } from '../lib/sync-model';
 
 /**
- * V4 chrome model — pure derivations for the shared chrome components
- * (V4Sidebar / V4SecondarySidebar / V4TitleBar). The route restructure that
- * adopts these kinds app-wide lands in US-002; until then this module defines
- * the V4 information architecture the chrome renders against
- * (docs/design/v4/SPEC.md section 4 + chrome-master.png).
+ * V4 chrome model — pure derivations for shared chrome still mounted by the
+ * chat-first shell (V4SecondarySidebar / V4TitleBar / FilesModeSidebar).
+ * Primary nav is ChatSidebar (US-003 / US-018).
  */
 
 /**
- * The primary-nav destinations, in display order. Inbox owns notification
- * chronology; Messages owns complete conversations, channels, requests, and
- * shares. Home, Mission Control, and the Companies page are palette-only /
- * company-row surfaces — not sidebar nav items.
- */
-export type V4NavId =
-  | 'inbox'
-  | 'messages'
-  | 'meetings'
-  | 'marketplace'
-  | 'library'
-  | 'files';
-
-/**
- * Route shape the V4 chrome maps to an active row. `kind` is open-ended
- * (`string & {}` keeps autocomplete on the known kinds while accepting the
- * richer kinds US-002 introduces); `slug` is set for company routes; `tab`
- * carries the company primary section / operational tab (DESKTOP-001).
+ * Route shape used when narrowing open-ended navigation payloads into
+ * DesktopRoute (fromV4Route). `kind` is open-ended; `slug` is set for company
+ * routes; `tab` carries the company primary section / operational tab.
  */
 export interface V4Route {
-  kind: V4NavId | 'settings' | 'company' | (string & {});
+  kind: string;
   slug?: string;
   tab?: string;
 }
@@ -60,16 +43,7 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   { id: 'more', label: 'More' },
 ];
 
-export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
-  { id: 'inbox', label: 'Inbox' },
-  { id: 'messages', label: 'Messages' },
-  { id: 'meetings', label: 'Meetings' },
-  { id: 'marketplace', label: 'Marketplace' },
-  { id: 'library', label: 'Library' },
-  { id: 'files', label: 'Files' },
-];
-
-/** Chrome metrics (SPEC section 4) — exported for shell composition in US-002. */
+/** Chrome metrics (SPEC section 4) — exported for shell composition. */
 export const V4_CHROME_LAYOUT = {
   titleBarHeightPx: 40,
   primarySidebarWidthPx: 220,
@@ -94,12 +68,6 @@ export const V4_ROW_STACK_GAP_PX = 3;
 /** Status-dot tones — the only color in the app, almost always as 6px dots. */
 export type V4DotTone = 'ok' | 'warn' | 'error' | 'idle';
 
-export interface V4SidebarNavRow {
-  id: V4NavId;
-  label: string;
-  active: boolean;
-}
-
 export interface V4SidebarCompanyChild {
   id: V4CompanyPrimaryId;
   label: string;
@@ -123,19 +91,12 @@ export interface V4SidebarCompanyRow {
   children: V4SidebarCompanyChild[];
   /**
    * True when this row is a cloud-activated company membership (synced or
-   * cloud-only). Gates the Shared/All hover control (US-009); personal and
+   * cloud-only). Gates Shared/All controls when mounted; personal and
    * local-only/broken rows stay false.
    */
   cloudActivated: boolean;
   /** True when this row is a pending company invite (needs Accept). */
   pendingInvite?: boolean;
-}
-
-export interface V4SidebarModel {
-  nav: V4SidebarNavRow[];
-  companies: V4SidebarCompanyRow[];
-  /** Settings highlights the footer, not a nav item (SPEC section 4). */
-  settingsActive: boolean;
 }
 
 /**
@@ -243,10 +204,10 @@ export function accountIdentityFromWorkspaces(workspaces: Workspace[]): V4Accoun
 
 /**
  * Shared dedupe + connected-first + alpha sort for the COMPANIES list (US-007).
- * Both the primary V4Sidebar (via getV4SidebarModel) and the FilesModeSidebar
- * mini company list consume this, so their ordering matches exactly. Pass
- * `activeSlug` to mark one row active; the dedupe keeps the first occurrence per
- * slug and the sort is stable so the active row and survivor are untouched.
+ * FilesModeSidebar mini company list and landing-route helpers consume this.
+ * Pass `activeSlug` to mark one row active; the dedupe keeps the first
+ * occurrence per slug and the sort is stable so the active row and survivor
+ * are untouched.
  */
 export function sortV4CompaniesConnectedFirst(
   workspaces: Workspace[],
@@ -276,7 +237,7 @@ export function sortV4CompaniesConnectedFirst(
         tone: v4CompanyDotTone(workspace),
         active,
         // DESKTOP-001: only the selected company expands; global destinations
-        // collapse every company so children never compete with Inbox/etc.
+        // collapse every company so children never compete with primary nav.
         expanded: active && workspace.membershipStatus !== 'pending',
         children: active && workspace.membershipStatus !== 'pending'
           ? V4_COMPANY_PRIMARY_ITEMS.map((item) => ({
@@ -302,49 +263,6 @@ export function sortV4CompaniesConnectedFirst(
   });
 
   return deduped.map((entry) => entry.row);
-}
-
-/**
- * Derive the primary-sidebar render model from the route + the
- * `list_syncable_workspaces` result. Invariant (US-007 / DESKTOP-001): AT MOST
- * one top-level active row — a nav item, a company row, or the Settings footer.
- * When a company is selected it expands primary children inline; company
- * children collapse on global destinations. Palette-only surfaces light no
- * row. Company pages highlight the company row (and a primary child when
- * applicable), not a nav item.
- */
-export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
-  const settingsActive = route.kind === 'settings';
-  const companyActive = route.kind === 'company';
-  const activePrimary = companyActive ? v4CompanyPrimaryForTab(route.tab) : null;
-
-  const companies: V4SidebarCompanyRow[] = sortV4CompaniesConnectedFirst(
-    workspaces,
-    companyActive ? route.slug : null,
-    activePrimary,
-  );
-
-  const companyRowActive = companies.some((row) => row.active);
-
-  // Settings footer or a company row owns the highlight — nav stays unlit.
-  // Otherwise the matching primary nav item, or null (no fallback to home /
-  // companies: those rows no longer exist — US-007).
-  const activeNavId: V4NavId | null =
-    settingsActive || companyRowActive
-      ? null
-      : V4_NAV_ITEMS.some((item) => item.id === route.kind)
-        ? (route.kind as V4NavId)
-        : null;
-
-  return {
-    nav: V4_NAV_ITEMS.map((item) => ({
-      id: item.id,
-      label: item.label,
-      active: item.id === activeNavId,
-    })),
-    companies,
-    settingsActive,
-  };
 }
 
 /** Secondary-sidebar item (contextual menu row). */

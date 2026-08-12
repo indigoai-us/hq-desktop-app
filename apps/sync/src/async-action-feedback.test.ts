@@ -6,7 +6,8 @@ const source = (relativePath: string) =>
 
 const agencyChat = source('./desktop-alt/panels/AgencyChatPanel.svelte');
 const channelRoster = source('./components/messaging/ChannelRoster.svelte');
-const sidebarSyncMode = source('./desktop-alt/v4/SidebarSyncMode.svelte');
+// US-018: SidebarSyncMode retired; Shared/All lives in SyncModeToggle.
+const syncModeToggle = source('./components/SyncModeToggle.svelte');
 const widgetSettings = source('./components/WidgetSettings.svelte');
 
 describe('user-triggered async action feedback contracts', () => {
@@ -35,15 +36,15 @@ describe('user-triggered async action feedback contracts', () => {
     expect(channelRoster).toContain('aria-busy={removing === m.personUid}');
   });
 
-  it('retries the captured sidebar sync mutation instead of only clearing its error', () => {
-    expect(sidebarSyncMode).toContain('let pendingMutation = $state<SyncMutation | null>(null);');
-    expect(sidebarSyncMode).toContain(
-      'let mutationFailure = $state<SyncMutationFailure | null>(null);',
-    );
-    expect(sidebarSyncMode).toContain('await applyEnabled(failure.next, true);');
-    expect(sidebarSyncMode).toContain('await applyMode(failure.next, false, true);');
-    expect(sidebarSyncMode).toContain('data-testid="sidebar-sync-mutation-error"');
-    expect(sidebarSyncMode).toContain('aria-busy={pendingMutation?.kind ===');
+  it('retries the captured sync-mode mutation instead of only clearing its error', () => {
+    // Live control is SyncModeToggle (US-018 retired SidebarSyncMode).
+    expect(syncModeToggle).toContain('let failedMode = $state<WritableSyncMode | null>(null);');
+    expect(syncModeToggle).toContain('function retrySave()');
+    expect(syncModeToggle).toContain('if (!failedMode) return;');
+    expect(syncModeToggle).toContain('void setMode(failedMode)');
+    expect(syncModeToggle).toContain('data-testid="sync-mode-error"');
+    expect(syncModeToggle).toContain('data-testid="sync-mode-retry"');
+    expect(syncModeToggle).toContain('aria-busy={savingMode ===');
   });
 
   it('scopes widget saving feedback and retries the captured setting value', () => {

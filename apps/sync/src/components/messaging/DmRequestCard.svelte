@@ -271,10 +271,12 @@
     background: var(--row-hover);
   }
 
+  /* Monochrome per the V2 restrained-color rule — destructive intent is
+     carried by copy + confirmation, not red chrome (D-15). */
   .action-block {
     background: transparent;
     border-color: var(--border-strong);
-    color: var(--red);
+    color: var(--pop-muted, inherit);
   }
 
   .action-block:hover:not(:disabled) {

@@ -1,19 +1,24 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   fromV4Route,
   getDesktopSecondarySidebar,
   type DesktopRoute,
 } from '../../src/desktop-alt/route';
-import { getV4SidebarModel } from '../../src/desktop-alt/v4/model';
+import { sortV4CompaniesConnectedFirst } from '../../src/desktop-alt/v4/model';
 import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
 
 /**
- * US-002 / DESKTOP-001 — V4 chrome composition.
+ * US-002 / DESKTOP-001 / US-018 — V4 chrome composition.
  *
- * Source-contract + model harness. Company navigation expands inline in the
- * primary sidebar; the permanent company secondary column is gone.
+ * Source-contract + model harness. Company navigation expands via
+ * sortV4CompaniesConnectedFirst; ChatSidebar is the primary chrome;
+ * the permanent company secondary column is gone; V4Sidebar is retired.
  */
+
+const root = process.cwd();
 
 function workspace(overrides: Partial<Workspace>): Workspace {
   return {
@@ -35,7 +40,7 @@ function workspace(overrides: Partial<Workspace>): Workspace {
   };
 }
 
-describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
+describe('desktop-alt V4 chrome (US-002 / DESKTOP-001 / US-018)', () => {
   it('a company row click opens the company page with primary children and Overview active', () => {
     const companies = [workspace({})];
 
@@ -45,8 +50,8 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     // DESKTOP-001: no permanent company secondary sidebar.
     expect(getDesktopSecondarySidebar(clicked, companies)).toBeNull();
 
-    const sidebar = getV4SidebarModel(clicked, companies);
-    const indigo = sidebar.companies.find((row) => row.slug === 'indigo');
+    const rows = sortV4CompaniesConnectedFirst(companies, 'indigo', 'overview');
+    const indigo = rows.find((row) => row.slug === 'indigo');
     expect(indigo?.expanded).toBe(true);
     expect(indigo?.children.map((c) => c.label)).toEqual([
       'Overview',
@@ -61,29 +66,31 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(indigo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
   });
 
-  it('shows the secondary sidebar only on library / settings surfaces', () => {
+  it('shows the secondary sidebar only on settings (library is US-017 overlay)', () => {
     const companies = [workspace({})];
     for (const route of [
       { kind: 'home' },
       { kind: 'marketplace' },
-      { kind: 'inbox' },
+      { kind: 'notifications' },
       { kind: 'meetings' },
       { kind: 'moderation' },
       { kind: 'company', slug: 'indigo' },
+      { kind: 'library' },
     ] satisfies DesktopRoute[]) {
       expect(getDesktopSecondarySidebar(route, companies)).toBeNull();
     }
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).not.toBeNull();
     expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)).not.toBeNull();
   });
 
-  it('DesktopApp composes the V4 chrome (title bar + primary sidebar) and drops the old chrome', () => {
+  it('DesktopApp composes the V4 chrome (title bar + ChatSidebar) and drops the old chrome', () => {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
     expect(desktopApp).toContain('<V4TitleBar');
-    // US-003: chat-first primary sidebar (V4Sidebar remains in src for workspace IA).
+    // US-003 / US-018: chat-first primary sidebar; V4Sidebar deleted.
     expect(desktopApp).toContain('<ChatSidebar');
     expect(desktopApp).toContain("import ChatSidebar from './chat/ChatSidebar.svelte'");
+    expect(desktopApp).not.toContain('<V4Sidebar');
+    expect(existsSync(join(root, 'src/desktop-alt/v4/V4Sidebar.svelte'))).toBe(false);
     expect(desktopApp).toContain('let companies = $state<Workspace[]>(cachedCompanies)');
     expect(desktopApp).toContain('const nextCompanies = getDesktopCompanies(nextWorkspaces)');
     expect(desktopApp).toContain('companies = nextCompanies');
@@ -103,7 +110,7 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).not.toContain('{#key renderWorkspaceCount}');
     expect(desktopApp).not.toContain('chromeReady');
     expect(desktopApp).not.toContain('companies={workspaces}');
-    // Secondary remains for library/settings; company secondary is gone.
+    // Secondary remains for settings; library is US-017 overlay; company secondary is gone.
     expect(desktopApp).toContain('{#if secondarySidebar');
     expect(desktopApp).toContain('<V4SecondarySidebar');
     expect(desktopApp).not.toContain('DesktopSidebar');
@@ -111,34 +118,38 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).not.toContain('<DesktopStatusBar');
   });
 
-  it('renders the title-bar model error sentence and detail without misleading recovery copy', () => {
+  it('renders a minimal title bar (D-04) without V1 chrome', () => {
     const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
 
-    expect(titleBar).toContain('{model.sentence}');
-    expect(titleBar).toContain('{model.meta}');
-    expect(titleBar).toContain('catch (err)');
-    expect(titleBar).toContain('class="v4-action-error" role="alert"');
-    expect(titleBar).toContain("syncState === 'auth-error'");
-    expect(titleBar).toContain("'Couldn’t start sign-in'");
-    expect(titleBar).not.toContain('Sync initialized');
+    expect(titleBar).toContain('data-testid="titlebar-wordmark"');
+    expect(titleBar).toContain('data-testid="titlebar-day-date"');
+    expect(titleBar).toContain('data-testid="titlebar-meetings"');
+    expect(titleBar).toContain('data-testid="titlebar-notifications"');
+    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
+    expect(titleBar).toContain('v4-notif-dot');
+    // Removed V1 chrome.
+    expect(titleBar).not.toContain('class="v4-status"');
+    expect(titleBar).not.toContain('data-testid="cloud-connected-switch"');
+    expect(titleBar).not.toContain('data-testid="version-label"');
+    expect(titleBar).not.toContain('class="v4-account"');
+    expect(titleBar).not.toContain('Sync Now');
     expect(titleBar).not.toContain('finish sync in Claude Code');
   });
 
-  it('the sidebar renders all companies directly instead of using an overflow row', () => {
-    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+  it('ChatSidebar owns conversation list scrolling; FilesModeSidebar lists all companies without overflow row', () => {
+    const chatSidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
+    const filesSidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
     const harnessMocks = readRepoFile('dev-harness/mocks/core.ts');
 
-    expect(sidebar).toContain('class="v4-nav v4-company-nav"');
-    expect(sidebar).toContain('flex: 1 1 auto');
-    expect(sidebar).toContain('overflow-y: auto');
-    expect(sidebar).toContain('companies,');
-    expect(sidebar).toContain('companies ?? fetched');
-    expect(sidebar).toContain('if (companies != null) return');
-    expect(sidebar).not.toContain('companies && companies.length > 0 ? companies : fetched');
-    expect(sidebar).not.toContain('companies = null');
-    expect(sidebar).not.toContain('data-testid="v4-more-companies"');
-    expect(sidebar).not.toContain('model.overflowCount');
-    expect(sidebar).not.toContain('View {model.overflowCount} more companies');
+    expect(chatSidebar).toContain('data-testid="chat-sidebar"');
+    expect(chatSidebar).toContain('class="chat-list"');
+    expect(chatSidebar).toContain('data-testid="chat-conversation-list"');
+    expect(chatSidebar).toMatch(/\.chat-scroll\s*\{[\s\S]*?overflow-y:\s*auto/);
+
+    // Files mode still lists every company (no "View N more companies" overflow).
+    expect(filesSidebar).toContain('sortV4CompaniesConnectedFirst');
+    expect(filesSidebar).not.toContain('data-testid="v4-more-companies"');
+    expect(filesSidebar).not.toContain('View {model.overflowCount} more companies');
     expect(harnessMocks).toContain('const HARNESS_WORKSPACES');
     expect(harnessMocks).toContain("slug: 'sender-agency'");
     expect(harnessMocks).toContain("slug: 'archive-labs'");

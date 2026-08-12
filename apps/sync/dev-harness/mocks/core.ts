@@ -2,6 +2,20 @@
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
+import {
+  buildChatChannels,
+  buildChatContacts,
+  CHANNEL_FILES_RESPONSE,
+  CHAT_APP_UPDATE,
+  CHAT_CORE_DRIFT_STATE,
+  CHAT_CORE_NO_DRIFT_STATE,
+  CHAT_GROUP_DM_ID,
+  CHAT_PROJECT_CHANNEL_ID,
+  chatNotificationsResponse,
+  chatScreenToPendingRoute,
+  harnessMinsAgo,
+  PROJECT_CHANNEL_MESSAGES,
+} from '../chat-fixtures';
 import { emit } from './event';
 
 const settings = {
@@ -26,10 +40,15 @@ const settings = {
   telemetryEnabled: true,
   widgetEnabled: true,
   widgetDisplay: null as string | null,
+  cloudPaused: false as boolean,
 };
 
+function harnessParams(): URLSearchParams {
+  return new URLSearchParams(window.location.search);
+}
+
 function harnessScenario(): string | null {
-  const params = new URLSearchParams(window.location.search);
+  const params = harnessParams();
   const explicitScenario = params.get('scenario');
   if (explicitScenario) return explicitScenario;
 
@@ -41,6 +60,15 @@ function harnessScenario(): string | null {
   }
 
   return null;
+}
+
+function harnessScreen(): string | null {
+  return harnessParams().get('screen');
+}
+
+function isChatShellView(): boolean {
+  const view = harnessParams().get('view') ?? 'chat';
+  return view === 'chat' || view === 'v2' || view === 'desktop';
 }
 
 const HARNESS_UPDATE = {
@@ -101,15 +129,36 @@ function hasSettingsUpdates(scenario = harnessScenario()): boolean {
   );
 }
 
+function currentHarnessAppUpdate() {
+  // Chat shell uses a chat-era update fixture; other views keep the legacy body.
+  return isChatShellView() ? CHAT_APP_UPDATE : HARNESS_UPDATE;
+}
+
+function wantsCoreDrift(scenario = harnessScenario()): boolean {
+  if (scenario === 'no-drift' || scenario === 'core-empty') return false;
+  if (scenario === 'drift' || hasSettingsUpdates(scenario)) return true;
+  // Chat shell default shows a small drift sample so Core popover is populated.
+  if (isChatShellView() && scenario !== 'paused') return true;
+  return false;
+}
+
 function currentHarnessCoreState() {
-  if (harnessScenario() !== 'drift' && !hasSettingsUpdates()) return null;
-  if (!harnessCoreUpdated) return HARNESS_DRIFT;
+  const scenario = harnessScenario();
+  if (scenario === 'no-drift' || scenario === 'core-empty') {
+    return CHAT_CORE_NO_DRIFT_STATE;
+  }
+  if (!wantsCoreDrift(scenario)) return null;
+  if (!harnessCoreUpdated) {
+    return isChatShellView() ? CHAT_CORE_DRIFT_STATE : HARNESS_DRIFT;
+  }
   return {
-    ...HARNESS_DRIFT,
+    ...(isChatShellView() ? CHAT_CORE_DRIFT_STATE : HARNESS_DRIFT),
     localVersion: harnessCoreVersion,
     versionBehind: false,
     driftReport: {
-      ...HARNESS_DRIFT.driftReport,
+      ...(isChatShellView()
+        ? CHAT_CORE_DRIFT_STATE.driftReport
+        : HARNESS_DRIFT.driftReport),
       count: 0,
       modified: [],
       missing: [],
@@ -312,6 +361,11 @@ function meetingFixture(
   const start = new Date();
   start.setDate(start.getDate() + daysFromToday);
   start.setHours(hour, minute, 0, 0);
+  // Sane fixture times (D-18): a same-day meeting whose slot already ended
+  // rolls to tomorrow so the harness never shows a stale past meeting today.
+  if (daysFromToday === 0 && start.getTime() + durationMinutes * 60_000 < Date.now()) {
+    start.setDate(start.getDate() + 1);
+  }
   const end = new Date(start.getTime() + durationMinutes * 60_000);
   return {
     id,
@@ -531,11 +585,19 @@ const HARNESS_WORKSPACES: Workspace[] = [
 ];
 
 const handlers: Record<string, Handler> = {
-  // Deterministic full-desktop route for visual QA:
+  // Deterministic full-desktop / chat route for visual QA:
   //   ?view=desktop&route=company:indigo:projects
+  //   ?view=chat&screen=notifications|meetings|library|…
   // Mirrors the native pending-route handoff consumed once on mount.
-  desktop_alt_consume_pending_route: () =>
-    new URLSearchParams(window.location.search).get('route'),
+  desktop_alt_consume_pending_route: () => {
+    const params = harnessParams();
+    const explicit = params.get('route');
+    if (explicit) return explicit;
+    if (isChatShellView()) {
+      return chatScreenToPendingRoute(params.get('screen'));
+    }
+    return null;
+  },
   // Company-board path (?view=company)
   list_syncable_workspaces: () => ({
     workspaces: HARNESS_WORKSPACES,
@@ -930,6 +992,7 @@ This final paragraph verifies spacing after a thematic break.
     }
     return {
       ...settings,
+      cloudPaused: scenario === 'paused' || settings.cloudPaused,
       widgetDisplay: scenario === 'widget-disconnected' ? 'Studio Display' : settings.widgetDisplay,
     };
   },
@@ -1052,7 +1115,8 @@ This final paragraph verifies spacing after a thematic break.
       detectionId: 'preview-meeting-detection',
       platform: 'meet',
       meetingUrl: 'https://meet.google.com/preview-audit',
-      detectedAt: '2026-07-26T14:00:00.000Z',
+      // Relative to now so the "started Xm ago" label stays sane in previews.
+      detectedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
       source: 'preview',
     },
   ],
@@ -1086,9 +1150,9 @@ This final paragraph verifies spacing after a thematic break.
       : null,
   pick_folder: () => null,
   check_for_updates: () =>
-    hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null,
+    hasSettingsUpdates() && !harnessAppUpdateInstalled ? currentHarnessAppUpdate() : null,
   get_pending_update: () =>
-    hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null,
+    hasSettingsUpdates() && !harnessAppUpdateInstalled ? currentHarnessAppUpdate() : null,
   install_update: () => {
     if (harnessScenario() === 'settings-errors') {
       throw new Error('Preview: app update signature verification failed');
@@ -1162,87 +1226,128 @@ This final paragraph verifies spacing after a thematic break.
   permissions_force_native_register: () => null,
 
   // -------------------------------------------------------------------------
-  // Messaging window fixtures (US-008→011) — representative DMs, a thread, and
-  // pending requests so the Messages window renders populated in the harness.
+  // Messaging + chat shell fixtures (US-003→019) — production-contract shapes
+  // from hq-pro channels / notifications / pairUnreads. See chat-fixtures.ts.
   // -------------------------------------------------------------------------
-  get_unread_summary: () => ({ unreadDms: 2, pendingRequests: 2 }),
+  get_unread_summary: () => ({ unreadDms: 3, pendingRequests: 2 }),
   list_contacts: () => ({
-    contacts: [
-      { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z', lastMessageBody: 'Please do — I’m restyling it to match the desktop view right now.', lastMessageDirection: 'out' },
-      { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', source: 'company' },
-      { personUid: 'prs_alan', email: 'alan@example.com', displayName: 'Alan Turing', companyUid: null, source: 'connection' },
-      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-08T19:43:10.000Z' },
-    ],
+    contacts: buildChatContacts(),
   }),
   list_channels: () => ({
-    channels: [
-      {
-        channelId: 'ch_release',
-        name: '',
-        scope: 'group',
-        visibility: 'private',
-        membership: 'joined',
-        unread: 2,
-        memberCount: 3,
-        lastActivityAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
-        members: [
-          { personUid: 'prs_jacob', displayName: 'Jacob Patel' },
-          { personUid: 'prs_alan', displayName: 'Alan Turing' },
-        ],
-      },
-      {
-        channelId: 'ch_core',
-        name: 'hq-core',
-        scope: 'company',
-        companyUid: 'cmp_indigo',
-        companyName: 'Indigo',
-        visibility: 'company',
-        membership: 'joined',
-        unread: 4,
-        memberCount: 18,
-        lastActivityAt: new Date(Date.now() - 32 * 60 * 1000).toISOString(),
-      },
-      {
-        channelId: 'ch_exec',
-        name: 'corey-exec',
-        scope: 'company',
-        companyUid: 'cmp_indigo',
-        companyName: 'Indigo',
-        visibility: 'private',
-        membership: 'joined',
-        unread: 0,
-        memberCount: 5,
-        lastActivityAt: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
-      },
-    ],
+    channels: buildChatChannels(),
   }),
   fetch_channel: (args) => {
-    const channelId = String(args?.channelId ?? 'ch_core');
-    const names = channelId === 'ch_release'
-      ? ['Jacob Patel', 'Alan Turing']
-      : ['Grace Hopper', 'Ada Lovelace'];
+    const channelId = String(args?.channelId ?? CHAT_PROJECT_CHANNEL_ID);
+    if (channelId === CHAT_PROJECT_CHANNEL_ID) {
+      const channel = buildChatChannels().find((c) => c.channelId === channelId);
+      return {
+        channel: channel ?? null,
+        messages: PROJECT_CHANNEL_MESSAGES.slice(),
+        nextCursor: null,
+      };
+    }
+    if (channelId === CHAT_GROUP_DM_ID) {
+      const channel = buildChatChannels().find((c) => c.channelId === channelId);
+      return {
+        channel: channel ?? null,
+        messages: [
+          {
+            eventId: 'gdm-1',
+            fromPersonUid: 'prs_jacob',
+            fromDisplayName: 'Jacob Patel',
+            fromEmail: 'jacob@getindigo.ai',
+            body: 'Group DM — release smoke is green on staging.',
+            createdAt: '2026-08-12T17:00:00.000Z',
+            direction: 'in',
+          },
+          {
+            eventId: 'gdm-2',
+            fromPersonUid: 'prs_alan',
+            fromDisplayName: 'Alan Turing',
+            fromEmail: 'alan@example.com',
+            body: 'Ack — I will watch the harness sweep.',
+            createdAt: '2026-08-12T17:05:00.000Z',
+            direction: 'in',
+          },
+          {
+            eventId: 'gdm-3',
+            fromPersonUid: 'prs_me',
+            fromDisplayName: 'Corey Epstein',
+            fromEmail: 'corey@getindigo.ai',
+            body: 'Ship it once US-019 is green.',
+            createdAt: '2026-08-12T17:08:00.000Z',
+            direction: 'out',
+          },
+        ],
+        nextCursor: null,
+      };
+    }
+    const names =
+      channelId === 'ch_release' || channelId === CHAT_GROUP_DM_ID
+        ? ['Jacob Patel', 'Alan Turing']
+        : ['Grace Hopper', 'Ada Lovelace'];
+    const channel = buildChatChannels().find((c) => c.channelId === channelId) ?? null;
     return {
+      channel,
       messages: names.map((name, index) => ({
         eventId: `${channelId}-${index + 1}`,
         fromPersonUid: `prs_${index + 1}`,
         fromDisplayName: name,
         fromEmail: `${name.split(' ')[0]?.toLocaleLowerCase()}@getindigo.ai`,
-        body: index === 0
-          ? 'The release checklist is clean. I am ready for the final smoke.'
-          : 'Confirmed — updater artifacts and the public channel both look good.',
-        createdAt: new Date(Date.now() - (8 - index * 3) * 60 * 1000).toISOString(),
+        body:
+          index === 0
+            ? 'The release checklist is clean. I am ready for the final smoke.'
+            : 'Confirmed — updater artifacts and the public channel both look good.',
+        createdAt: harnessMinsAgo(8 - index * 3),
         direction: 'in',
       })),
       nextCursor: null,
     };
   },
+  fetch_channel_files: (args) => {
+    const scenario = harnessScenario();
+    if (scenario === 'acl-denied' || harnessScreen() === 'files-denied') {
+      throw new Error('403 Forbidden: membership denied for channel files');
+    }
+    const channelId = String(args?.channelId ?? CHAT_PROJECT_CHANNEL_ID);
+    if (channelId === CHAT_PROJECT_CHANNEL_ID || isChatShellView()) {
+      return { ...CHANNEL_FILES_RESPONSE, files: [...CHANNEL_FILES_RESPONSE.files] };
+    }
+    return { files: [], nextCursor: null };
+  },
+  fetch_notifications: () => chatNotificationsResponse(),
+  ack_notification: () => ({ ok: true }),
+  read_all_notifications: () => ({ ok: true, unreadCount: 0 }),
+  run_notification_action: () => ({ ok: true }),
   mark_channel_read: () => null,
   mark_dm_thread_read: () => null,
-  send_channel_message: () => ({ eventId: 'channel-sent-1', createdAt: new Date().toISOString() }),
+  send_channel_message: () => ({
+    eventId: 'channel-sent-1',
+    createdAt: '2026-08-12T17:59:00.000Z',
+  }),
   list_company_members: () => ({
     members: [
-      { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },
-      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', companyName: 'Indigo' },
+      {
+        personUid: 'prs_grace',
+        email: 'grace@getindigo.ai',
+        displayName: 'Grace Hopper',
+        companyUid: 'cmp_indigo',
+        companyName: 'Indigo',
+      },
+      {
+        personUid: 'prs_katherine',
+        email: 'katherine@getindigo.ai',
+        displayName: 'Katherine Johnson',
+        companyUid: 'cmp_indigo',
+        companyName: 'Indigo',
+      },
+      {
+        personUid: 'prs_maya',
+        email: 'maya@getindigo.ai',
+        displayName: 'Maya Chen',
+        companyUid: 'cmp_indigo',
+        companyName: 'Indigo',
+      },
     ],
   }),
   fetch_dm_thread: (args) => {
@@ -1251,7 +1356,7 @@ This final paragraph verifies spacing after a thematic break.
       prs_ada: {
         name: 'Ada Lovelace',
         email: 'ada@getindigo.ai',
-        latest: 'Please do — I’m restyling it to match the desktop view right now.',
+        latest: 'Please do — restyling it to match the desktop view right now.',
       },
       prs_grace: {
         name: 'Grace Hopper',
@@ -1272,21 +1377,83 @@ This final paragraph verifies spacing after a thematic break.
     const person = people[peer] ?? people.prs_ada;
     return {
       messages: [
-        { eventId: 'm1', fromPersonUid: peer, fromDisplayName: person.name, fromEmail: person.email, body: 'Hey — did the Phase 1 backend land in prod?', createdAt: '2026-06-09T19:40:00.000Z', direction: 'in' },
-        { eventId: 'm2', fromPersonUid: 'prs_me', fromDisplayName: 'You', fromEmail: 'me@coreyepstein.com', body: 'Yep, just went live. Connection routes are up and the send path is verified.', createdAt: '2026-06-09T19:41:00.000Z', direction: 'out' },
-        { eventId: 'm3', fromPersonUid: peer, fromDisplayName: person.name, fromEmail: person.email, body: 'Amazing. Want me to take the Messages window for a spin?', createdAt: '2026-06-09T19:42:30.000Z', direction: 'in' },
-        { eventId: 'm4', fromPersonUid: peer === 'prs_katherine' ? peer : 'prs_me', fromDisplayName: peer === 'prs_katherine' ? person.name : 'You', fromEmail: peer === 'prs_katherine' ? person.email : 'me@coreyepstein.com', body: person.latest, createdAt: '2026-06-09T19:43:10.000Z', direction: peer === 'prs_katherine' ? 'in' : 'out' },
+        {
+          eventId: 'm1',
+          fromPersonUid: peer,
+          fromDisplayName: person.name,
+          fromEmail: person.email,
+          body: 'Hey — did the Phase 1 backend land in prod?',
+          createdAt: '2026-08-12T16:40:00.000Z',
+          direction: 'in',
+        },
+        {
+          eventId: 'm2',
+          fromPersonUid: 'prs_me',
+          fromDisplayName: 'You',
+          fromEmail: 'corey@getindigo.ai',
+          body: 'Yep, just went live. Connection routes are up and the send path is verified.',
+          createdAt: '2026-08-12T16:41:00.000Z',
+          direction: 'out',
+        },
+        {
+          eventId: 'm3',
+          fromPersonUid: peer,
+          fromDisplayName: person.name,
+          fromEmail: person.email,
+          body: 'Amazing. Want me to take the Messages window for a spin?',
+          createdAt: '2026-08-12T16:42:30.000Z',
+          direction: 'in',
+        },
+        {
+          eventId: 'm4',
+          fromPersonUid: peer === 'prs_katherine' ? peer : 'prs_me',
+          fromDisplayName: peer === 'prs_katherine' ? person.name : 'You',
+          fromEmail:
+            peer === 'prs_katherine' ? person.email : 'corey@getindigo.ai',
+          body: person.latest,
+          createdAt: '2026-08-12T16:43:10.000Z',
+          direction: peer === 'prs_katherine' ? 'in' : 'out',
+        },
       ],
       nextCursor: null,
     };
   },
   list_dm_requests: () => ({
     requests: [
-      { pairKey: 'pk1', fromPersonUid: 'prs_lin', fromEmail: 'lin@northwind.co', fromDisplayName: 'Lin Manuel', message: 'Hi! We met at the HQ demo — would love to connect here.', sharedCompany: null, createdAt: '2026-06-09T18:10:00.000Z' },
-      { pairKey: 'pk2', fromPersonUid: 'prs_rao', fromEmail: 'rao@getindigo.ai', fromDisplayName: 'Rao Patel', message: 'Pinging you about the messaging rollout.', sharedCompany: 'Indigo', createdAt: '2026-06-09T17:05:00.000Z' },
+      {
+        pairKey: 'pk1',
+        fromPersonUid: 'prs_lin',
+        fromEmail: 'lin@northwind.co',
+        fromDisplayName: 'Lin Manuel',
+        message: 'Hi! We met at the HQ demo — would love to connect here.',
+        sharedCompany: null,
+        createdAt: '2026-08-12T15:10:00.000Z',
+      },
+      {
+        pairKey: 'pk2',
+        fromPersonUid: 'prs_rao',
+        fromEmail: 'rao@getindigo.ai',
+        fromDisplayName: 'Rao Patel',
+        message: 'Pinging you about the messaging rollout.',
+        sharedCompany: 'Indigo',
+        createdAt: '2026-08-12T14:05:00.000Z',
+      },
     ],
   }),
-  send_dm: () => ({ eventId: 'sent-1', createdAt: '2026-06-09T19:44:00.000Z' }),
+  send_dm: () => ({ eventId: 'sent-1', createdAt: '2026-08-12T16:44:00.000Z' }),
+  search_messages: () => ({
+    hits: [
+      {
+        eventId: 'msg_human_in',
+        channelId: CHAT_PROJECT_CHANNEL_ID,
+        channelName: 'hq-desktop-v2-chat',
+        body: 'Timeline looks complete — every system event + the file card.',
+        createdAt: '2026-08-12T17:50:00.000Z',
+        fromDisplayName: 'Maya Chen',
+      },
+    ],
+    nextCursor: null,
+  }),
   // Reactions (US-025 + share reactions) — canned aggregates so pills render.
   fetch_reactions: (args) => {
     const id = String(args?.messageId ?? '');

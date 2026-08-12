@@ -28,6 +28,18 @@
   } from '../src/stores/widgetNotifications';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
+  import {
+    CHAT_PAIR_UNREADS,
+    CHAT_PIN_IDS,
+    CHAT_PROJECT_CHANNEL_ID,
+    COMPOSER_STATE_MESSAGES,
+    chatScreenOpenTarget,
+  } from './chat-fixtures';
+  import { PINS_STORAGE_KEY } from '../src/desktop-alt/chat/sidebar-model';
+  import {
+    requestChannelOpen,
+  } from '../src/desktop-alt/chat/open-target';
+  import { requestConversation } from '../src/lib/pendingConversation';
   import { emit } from '@tauri-apps/api/event';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
@@ -220,16 +232,20 @@
   ];
 
   // View + theme driven by URL query so screenshots target a known state:
-  //   ?view=settings|popover|signin|banner   ?theme=light|dark
+  //   ?view=chat|v2|desktop|settings|popover|signin|banner   ?theme=light|dark
+  //   Chat shell (default): ?view=chat&screen=…&scenario=…
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   // For the popover view, size the browser viewport to ~320x440 (the real
   // window size) — the popover root fills 100vw/100vh. For settings, any
   // viewport works; it renders centered on a desktop-ish backdrop.
   const params = new URLSearchParams(window.location.search);
-  const view = params.get('view') ?? 'settings';
+  // US-019: shipped chat shell is the default harness view.
+  const view = params.get('view') ?? 'chat';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
   const scenario = params.get('scenario');
+  const screen = params.get('screen');
+  const isChatShell = view === 'chat' || view === 'v2' || view === 'desktop';
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
   const onboardingStep =
     Number.isInteger(requestedOnboardingStep) &&
@@ -263,7 +279,11 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home'
+      : view === 'company' ||
+          view === 'desktop' ||
+          view === 'chat' ||
+          view === 'v2' ||
+          view === 'home'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -281,11 +301,23 @@
                     ? 'widget'
         : view === 'permissions'
           ? 'meeting-permissions'
-          : view === 'messages' || view === 'conversation' || view === 'createchannel'
+          : view === 'messages' ||
+              view === 'conversation' ||
+              view === 'createchannel' ||
+              view === 'composer'
             ? 'messages'
             : 'main'
   );
   document.documentElement.dataset.forceTheme = theme;
+
+  // Seed chat pins so the sidebar shows a Pinned section (deterministic).
+  if (isChatShell) {
+    try {
+      window.localStorage.setItem(PINS_STORAGE_KEY, JSON.stringify([...CHAT_PIN_IDS]));
+    } catch {
+      // Best-effort — private mode still renders without pins.
+    }
+  }
 
   if (view === 'banner') {
     const payload = bannerFixtures[bannerKind] ?? bannerFixtures.share;
@@ -302,13 +334,16 @@
     setTimeout(() => void emit('dm:detail-event', dmPreviewEvent), 75);
   }
 
-  // Deterministic safety-state previews for the full desktop shell. The delay
-  // lets DesktopApp register native-event listeners before the fixture fires.
-  if (view === 'desktop') {
+  // Deterministic safety-state + chat handoff for the full desktop / chat shell.
+  // Delay lets DesktopApp register native-event listeners before fixtures fire.
+  if (isChatShell) {
     setTimeout(() => {
-      if (scenario === 'conflict') {
+      // Numeric DM badges from pairUnreads (production-contract event).
+      void emit('dm:pair-unreads', CHAT_PAIR_UNREADS);
+
+      if (scenario === 'conflict' || scenario === 'core-conflicts') {
         void emit('sync:conflict', {
-          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
+          path: 'companies/indigo/projects/hq-desktop-v2-chat/prd.json',
           localHash: 'local-preview',
           remoteHash: 'remote-preview',
           canAutoResolve: false,
@@ -316,9 +351,57 @@
       } else if (scenario === 'sync-error') {
         void emit('sync:error', {
           company: 'indigo',
-          path: 'companies/indigo/projects/hq-desktop-app/prd.json',
+          path: 'companies/indigo/projects/hq-desktop-v2-chat/prd.json',
           message: 'The cloud connection closed before the desktop audit could finish.',
         });
+      }
+
+      // Open the target conversation after MessagesShell has mounted.
+      const openTarget = chatScreenOpenTarget(screen);
+      if (openTarget.channelId) {
+        requestChannelOpen(openTarget.channelId);
+      } else if (openTarget.personUid) {
+        requestConversation({
+          personUid: openTarget.personUid,
+          email:
+            openTarget.personUid === 'prs_ada'
+              ? 'ada@getindigo.ai'
+              : `${openTarget.personUid}@example.com`,
+          displayName:
+            openTarget.personUid === 'prs_ada' ? 'Ada Lovelace' : openTarget.personUid,
+        });
+      }
+
+      // ?screen=board|files must land on that project tab, not just open the
+      // channel on Chat. The tab is ChannelView-internal state, so drive the
+      // real tab button once it renders (bounded retry — the channel view
+      // mounts asynchronously after requestChannelOpen).
+      if (screen === 'board' || screen === 'files') {
+        const testid = `project-tab-${screen}-btn`;
+        let attempts = 0;
+        const clickTab = () => {
+          const btn = document.querySelector<HTMLButtonElement>(
+            `[data-testid="${testid}"]`,
+          );
+          // Keep going until the tab is actually active — the channel view can
+          // remount while messages load, resetting the tab back to Chat.
+          if (btn?.getAttribute('aria-current') === 'page') return;
+          btn?.click();
+          if (attempts++ < 80) setTimeout(clickTab, 100);
+        };
+        setTimeout(clickTab, 100);
+      }
+
+      // Cmd-K palette: dispatch the same chord DesktopApp listens for.
+      if (screen === 'palette') {
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'k',
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
       }
     }, 250);
   }
@@ -364,10 +447,27 @@
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->
   <GlobalErrorBoundary component={GlobalErrorPreview} windowLabel="preview" />
-{:else if view === 'desktop'}
-  <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
-       live strip). Resize the preview viewport to ~1180x720. -->
-  <DesktopApp />
+{:else if view === 'composer' || (isChatShell && (screen === 'composer' || scenario === 'composer-states'))}
+  <!-- Composer optimistic states (Sending / Delivered / Failed) in isolation.
+       Full shell cannot inject sendStatus from the wire; this screen mounts
+       Conversation directly with production-shaped rows. -->
+  <div class="conversation-stage" data-testid="harness-composer-screen">
+    <Conversation
+      messages={COMPOSER_STATE_MESSAGES}
+      showAuthors={true}
+      onsend={() => {}}
+      ontogglereaction={() => {}}
+      onretrysend={() => {}}
+    />
+  </div>
+{:else if view === 'chat' || view === 'v2' || view === 'desktop'}
+  <!-- US-019: shipped chat-first shell with production-contract mocks.
+       Default harness view. Resize the preview viewport to ~1180x720.
+       Sub-states: ?screen=notifications|meetings|library|dm|group-dm|…
+                  ?scenario=acl-denied|core-conflicts|drift|no-drift|paused|… -->
+  <div class="chat-shell-stage" data-testid="harness-chat-shell" data-screen={screen ?? 'channel'}>
+    <DesktopApp />
+  </div>
 {:else if view === 'banner'}
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->
@@ -463,22 +563,6 @@
     overflow: hidden;
   }
 
-  .stage {
-    min-height: 100vh;
-    display: grid;
-    place-items: start center;
-    padding: 32px;
-    box-sizing: border-box;
-    background: radial-gradient(120% 120% at 30% 10%, #3a3a3a 0%, #1a1a1a 55%, #0c0c0c 100%);
-  }
-  .stage.light {
-    background: radial-gradient(120% 120% at 30% 10%, #ededed 0%, #d4d4d4 55%, #bcbcbc 100%);
-  }
-  .window {
-    border-radius: var(--radius-popover, 8px);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
   /* Desktop window content area (company page). desktop-alt.css paints the
      body background under html[data-window='desktop-alt']; this just insets
      the page like the real window's main pane. */
@@ -486,6 +570,16 @@
     box-sizing: border-box;
     min-height: 100vh;
     padding: 28px 32px;
+  }
+
+  /* Full chat shell fills the viewport (no inset) so ChatSidebar + Messages
+     match production proportions. */
+  .chat-shell-stage {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
   }
 
   /* Conversation preview: a fixed-width column with the messages-window
@@ -508,10 +602,5 @@
   :global(html[data-window='dm-banner']),
   :global(html[data-window='dm-banner'] body) {
     background: radial-gradient(120% 120% at 75% 10%, #565656 0%, #292929 55%, #0c0c0c 100%) !important;
-  }
-  .banner-stage {
-    width: 366px;
-    height: 104px;
-    margin: 40px auto;
   }
 </style>

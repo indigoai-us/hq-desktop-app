@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import pkg from '../../package.json' with { type: 'json' };
 import type { Workspace } from '../../src/lib/workspaces';
 import {
@@ -9,7 +11,10 @@ import {
   isDesktopRouteActive,
   type DesktopRoute,
 } from '../../src/desktop-alt/route';
-import { getV4SidebarModel, V4_CHROME_LAYOUT } from '../../src/desktop-alt/v4/model';
+import { sortV4CompaniesConnectedFirst, V4_CHROME_LAYOUT } from '../../src/desktop-alt/v4/model';
+
+const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
+const desktopApp = readFileSync(root('src/desktop-alt/DesktopApp.svelte'), 'utf8');
 
 function workspace(overrides: Partial<Workspace>): Workspace {
   return {
@@ -54,39 +59,34 @@ const workspaces: Workspace[] = [
   }),
 ];
 
-describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V4 IA since US-002)', () => {
-  it('shows the V4 sidebar with six nav destinations and the COMPANIES section on mount', () => {
-    // The V4 window redesign (US-001/US-002) replaced the 216px rail + 42px
-    // titlebar with the 220px raised sidebar + 40px title bar + 200px
-    // contextual secondary sidebar. hq-desktop-widget US-007 later removed the
-    // Home / Mission Control / Companies rows (palette-only routes now),
-    // promoted Marketplace top-level, and lands on the first company row.
+describe('US-003: Desktop-alt app shell — chat sidebar, route state, ⌘ hotkeys (US-018 retired V4 nav)', () => {
+  it('keeps V4 chrome metrics and mounts ChatSidebar (legacy V4Sidebar retired)', () => {
+    // The V4 window redesign (US-001/US-002) established the 220px raised
+    // sidebar + 40px title bar + 200px contextual secondary sidebar. US-018
+    // retired V4Sidebar / getV4SidebarModel; ChatSidebar is the live primary.
     expect(V4_CHROME_LAYOUT).toEqual({
       titleBarHeightPx: 40,
       primarySidebarWidthPx: 220,
       secondarySidebarWidthPx: 200,
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(existsSync(root('src/desktop-alt/v4/V4Sidebar.svelte'))).toBe(false);
+    expect(desktopApp).toContain("import ChatSidebar from './chat/ChatSidebar.svelte'");
+    expect(desktopApp).toContain('<ChatSidebar');
+    expect(desktopApp).not.toMatch(/import\s+V4Sidebar\b/);
+    expect(desktopApp).not.toMatch(/<V4Sidebar\b/);
+  });
 
+  it('lands on the first connected company and sorts companies connected-first', () => {
     const landing = getDesktopLandingRoute(workspaces, null);
     expect(landing).toEqual({ kind: 'company', slug: 'acme' });
-    const model = getV4SidebarModel(landing, workspaces);
-    // Inbox owns chronology; the complete Messages workspace is first-class.
-    expect(model.nav.map((row) => row.label)).toEqual([
-      'Inbox',
-      'Messages',
-      'Meetings',
-      'Marketplace',
-      'Library',
-      'Files',
-    ]);
-    // The landing company row is the only active row — no nav item lights.
-    expect(model.nav.every((row) => !row.active)).toBe(true);
-    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
+
     // Connected-first sort (US-007): personal (always live), acme (synced) and
     // globex (cloud-only) are all connected, so they list alphabetically by
     // display name within the single connected group.
-    expect(model.companies.map((row) => row.label)).toEqual([
+    const companies = sortV4CompaniesConnectedFirst(workspaces, landing.kind === 'company' ? landing.slug : null);
+    expect(companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
+    expect(companies.map((row) => row.label)).toEqual([
       'Acme Corp',
       'Globex',
       'Personal',
@@ -113,9 +113,8 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
   it('gives personal a navigable page and marks a clicked company row active', () => {
     const companies = getDesktopCompanies(workspaces);
 
-    // Company hotkeys start at ⌘5 (US-008 renumber after the Inbox merge) and
-    // follow the rendered sidebar order (connected-first + alphabetical):
-    // Acme Corp, Globex, Personal.
+    // Company hotkeys start at ⌘5 (US-008 renumber) and follow the rendered
+    // sidebar order (connected-first + alphabetical): Acme Corp, Globex, Personal.
     expect(
       getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'acme' });
@@ -128,10 +127,10 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     expect(getDesktopActiveCompany(nextRoute, companies)).toMatchObject({ slug: 'acme' });
     expect(isDesktopRouteActive(nextRoute, { kind: 'company', slug: 'acme' })).toBe(true);
 
-    // The sidebar highlights the clicked company row — and nothing else.
-    const model = getV4SidebarModel(nextRoute, workspaces);
-    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
-    expect(model.nav.every((row) => !row.active)).toBe(true);
+    // The company model highlights the clicked company row — and nothing else.
+    const model = sortV4CompaniesConnectedFirst(workspaces, 'acme');
+    expect(model.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
+    expect(model.filter((row) => row.slug !== 'acme').every((row) => !row.active)).toBe(true);
 
     // Globex is cloud-only (no synced local vault) but still gets a desktop
     // page so the user can see and act on the membership instead of losing it.

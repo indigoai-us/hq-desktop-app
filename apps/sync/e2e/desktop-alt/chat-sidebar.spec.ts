@@ -26,20 +26,28 @@ describe('US-003: unified conversation sidebar — shell integration', () => {
     expect(desktopApp).toContain("onnavigateMessages={() => navigate({ kind: 'messages' })}");
     // Files mode still uses the dedicated files sidebar.
     expect(desktopApp).toContain('<FilesModeSidebar');
-    // V4Sidebar stays in the tree for IA specs; not the default primary mount.
-    expect(desktopApp).not.toMatch(/<V4Sidebar[\s\S]*?onnavigate=/);
+    // US-018: V4Sidebar retired entirely — ChatSidebar is the only primary mount.
+    expect(desktopApp).not.toContain('<V4Sidebar');
+    expect(desktopApp).not.toContain('V4Sidebar');
   });
 
   it('wires titlebar meetings / notifications stubs to real routes', () => {
     expect(desktopApp).toContain("onopenMeetings={() => navigate({ kind: 'meetings' })}");
-    expect(desktopApp).toContain("onopenNotifications={() => navigate({ kind: 'inbox' })}");
+    // US-012: bell opens the dedicated notifications feed (NOTIF store).
+    expect(desktopApp).toContain('onopenNotifications={openNotifications}');
+    expect(desktopApp).toContain("navigate({ kind: 'notifications' })");
   });
 });
 
 describe('US-003: ChatSidebar structure', () => {
-  it('exposes scope pill, new-message, search, filter, pinned/day groups, history, footer', () => {
+  it('exposes scope dropdown, new-message, search, filter, pinned/day groups, history, footer', () => {
     expect(chatSidebar).toContain('data-testid="chat-sidebar"');
     expect(chatSidebar).toContain('data-testid="chat-scope-pill"');
+    expect(chatSidebar).toContain('data-testid="chat-scope-menu"');
+    expect(chatSidebar).toContain('data-testid="chat-scope-option"');
+    expect(chatSidebar).toContain('All companies');
+    expect(chatSidebar).toContain('buildScopeOptions');
+    expect(chatSidebar).not.toContain('cycleScope');
     expect(chatSidebar).toContain('data-testid="chat-new-message"');
     expect(chatSidebar).toContain('data-testid="chat-search"');
     expect(chatSidebar).toContain('data-testid="chat-filter"');

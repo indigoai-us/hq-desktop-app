@@ -9,7 +9,7 @@ import { readRepoFile } from './harness';
  * room-only rail plus dedicated activity shortcut, ShareMainPane payload (sender /
  * path / timestamp / ACL / actions), preserved copy + Claude actions, text-only
  * composer (no attachment affordance), naked main canvas, and shared component
- * reuse across Messages + Inbox paths.
+ * reuse across Messages + Notifications paths (US-018: InboxPage retired).
  */
 
 describe('DESKTOP-002: unified messages and notification triage', () => {
@@ -18,7 +18,7 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
   const requestCard = readRepoFile('src/components/messaging/DmRequestCard.svelte');
   const conversation = readRepoFile('src/components/messaging/Conversation.svelte');
   const compose = readRepoFile('src/components/messaging/ComposeMessage.svelte');
-  const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
+  const notifications = readRepoFile('src/desktop-alt/chat/NotificationsView.svelte');
   const dmDetail = readRepoFile('src/components/DmDetail.svelte');
   const shareDetail = readRepoFile('src/components/ShareDetail.svelte');
 
@@ -144,13 +144,16 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(conversation).toContain('onsend');
   });
 
-  it('uses one window material with a locally separated rail and naked main canvas', () => {
+  it('uses one window material; embedded mode hides the second rail (D-02)', () => {
     const railRule = shell.match(/\.rail\s*\{([\s\S]*?)\}/)?.[1] ?? '';
     const windowRule = shell.match(/\.messages-window\s*\{([\s\S]*?)\}/)?.[1] ?? '';
     expect(shell).toMatch(
       /\.messages-window\s*\{[\s\S]*?background:\s*var\(--v4-ground/,
     );
     expect(windowRule).not.toContain('backdrop-filter:');
+    // Standalone Messages window still has a rail; embedded shell hides it.
+    expect(shell).toContain('{#if !embedded}');
+    expect(shell).toContain('class:embedded');
     expect(railRule).toMatch(/background:\s*color-mix\(in srgb,[\s\S]*?4%,\s*transparent\);/);
     expect(railRule).not.toContain('backdrop-filter:');
     expect(shell).toMatch(
@@ -160,34 +163,20 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
       /:global\(\[data-window='desktop-alt'\]\) \.dm-reply-input\s*\{[\s\S]*?background:\s*transparent;/,
     );
     expect(shell).toContain('data-testid="messages-main-pane"');
-    // Title/meta 3px gap on rail rows and pane headers.
-    expect(shell).toMatch(
-      /\.contact-meta\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
-    expect(shell).toMatch(
-      /\.pane-title-stack\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
     expect(shell).toMatch(/\.rail\s*\{[\s\S]*?width:\s*282px/);
-    expect(shell).toMatch(
-      /\.compact-list \.contact-row\s*\{[\s\S]*?min-height:\s*34px;[\s\S]*?border-radius:\s*6px;/,
-    );
-    expect(shell).toMatch(
-      /\.contact-row\.active\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--fg\) 10%, transparent\);[\s\S]*?box-shadow:\s*none/,
-    );
   });
 
-  it('shares request/share payload components with Inbox quick-window paths', () => {
+  it('shares request/share payload components with Notifications / quick-window paths', () => {
     // ShareMainPane is the shared payload surface for standalone share-detail,
     // dm-detail share rows, and MessagesShell share selection.
     expect(dmDetail).toContain('<ShareMainPane events={shareEvents} />');
     expect(shareDetail).toContain('<ShareMainPane');
     expect(shell).toContain('<ShareMainPane events={selectedShareEvents} />');
-    // Inbox still hosts NotificationFeed (ordinary share/DM rows) without
-    // People/Requests tabs.
-    expect(inbox).toContain('NotificationFeed');
-    expect(inbox).not.toMatch(/>\s*People\s*</);
-    expect(inbox).not.toMatch(/>\s*Requests\s*</);
-    expect(inbox).not.toContain('role="tablist"');
-    expect(inbox).toContain('border-radius: 0');
+    // US-018: NotificationsView is the desktop chronology feed (no People/Requests tabs).
+    expect(notifications).toContain('data-testid="notifications-view"');
+    expect(notifications).not.toMatch(/>\s*People\s*</);
+    expect(notifications).not.toMatch(/>\s*Requests\s*</);
+    expect(notifications).not.toContain('role="tablist"');
+    expect(notifications).toContain('border-radius: 0');
   });
 });

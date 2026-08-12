@@ -40,7 +40,10 @@
   import type { MissionControlSnapshot } from '../../desktop-alt/lib/sessions';
   import {
     buildChannelStatusModel,
+    CHANNEL_STATUS_FIXTURE_MEMBERS,
+    CHANNEL_STATUS_FIXTURE_PRD,
     projectChannelHeaderTitle,
+    resolveMemberPillCount,
     type ChannelStatusModel,
     type StatusMemberInput,
     type StatusSessionInput,
@@ -144,7 +147,7 @@
   const invited = $derived(isInvitedNotJoined(current));
   const conversationLabel = $derived(isGroup ? title : `#${title}`);
   const composerPlaceholder = $derived(
-    `Message ${conversationLabel} — or type / to run an agent…`,
+    `Message ${isGroup ? title : `# ${title}`} — or type / to run an agent…`,
   );
   const hasOlder = $derived(!!nextCursor);
 
@@ -214,6 +217,24 @@
         console.error('channel-view: list_channel_members failed', err);
       }
 
+      // D-06: fall back to fixture humans + agents when roster is empty.
+      const statusMembers =
+        members.length > 0 ? members : CHANNEL_STATUS_FIXTURE_MEMBERS;
+      const statusPrd = prd
+        ? {
+            name: prd.name,
+            branchName: prd.branchName,
+            userStories: (prd.userStories ?? []).map((s) => ({
+              id: s.id,
+              title: s.title,
+              passes: s.passes,
+            })),
+            metadata: prd.metadata,
+            prdPath: project?.prdPath ?? null,
+            repoPath: CHANNEL_STATUS_FIXTURE_PRD.repoPath,
+            previewUrl: CHANNEL_STATUS_FIXTURE_PRD.previewUrl,
+          }
+        : CHANNEL_STATUS_FIXTURE_PRD;
       statusModel = buildChannelStatusModel({
         project: project ?? {
           id: projectId,
@@ -224,26 +245,17 @@
           storiesTotal: 0,
           storiesComplete: 0,
         },
-        prd: prd
-          ? {
-              name: prd.name,
-              branchName: prd.branchName,
-              userStories: (prd.userStories ?? []).map((s) => ({
-                id: s.id,
-                title: s.title,
-                passes: s.passes,
-              })),
-              metadata: prd.metadata,
-              prdPath: project?.prdPath ?? null,
-            }
-          : null,
+        prd: statusPrd,
         sessions,
-        members,
+        members: statusMembers,
         companyLabel,
       });
-      if (statusModel.memberCount > 0) {
-        memberCount = statusModel.memberCount;
-      }
+      // Only adopt the model's count when it was built from a real roster
+      // fetch. When the roster call failed or returned empty, the model was
+      // built from visual-QA fixture members — letting that overwrite the
+      // channel-metadata count made the header pill drift (e.g. 6 → 5) after
+      // simply opening and closing the popover.
+      memberCount = resolveMemberPillCount(members.length, statusModel, memberCount);
     } finally {
       statusLoading = false;
     }
@@ -667,6 +679,8 @@
         </span>
       {/if}
     </div>
+  </div>
+  <div class="channel-header-trailing">
     {#if isProject}
       <nav class="project-tabs" aria-label="Project channel views" data-testid="project-channel-tabs">
         <button
@@ -674,44 +688,81 @@
           class="project-tab"
           class:active={projectTab === 'chat'}
           aria-current={projectTab === 'chat' ? 'page' : undefined}
+          data-testid="project-tab-chat-btn"
           onclick={() => (projectTab = 'chat')}
-        >Chat</button>
+        >
+          <span class="project-tab-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
+              <path d="M2.75 3.5h10.5v7.25H7.2L4 13.25V10.75H2.75V3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span>Chat</span>
+        </button>
         <button
           type="button"
           class="project-tab"
           class:active={projectTab === 'board'}
           aria-current={projectTab === 'board' ? 'page' : undefined}
+          data-testid="project-tab-board-btn"
           onclick={() => (projectTab = 'board')}
-        >Board</button>
+        >
+          <span class="project-tab-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
+              <rect x="2.5" y="2.5" width="4" height="11" rx="0.75" stroke="currentColor" stroke-width="1.2" />
+              <rect x="9.5" y="2.5" width="4" height="7" rx="0.75" stroke="currentColor" stroke-width="1.2" />
+            </svg>
+          </span>
+          <span>Board</span>
+        </button>
         <button
           type="button"
           class="project-tab"
           class:active={projectTab === 'files'}
           aria-current={projectTab === 'files' ? 'page' : undefined}
+          data-testid="project-tab-files-btn"
           onclick={() => (projectTab = 'files')}
-        >Files</button>
+        >
+          <span class="project-tab-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
+              <path d="M4 2.75h4.2L12 5.55V13.25H4V2.75Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+              <path d="M8.2 2.9v2.8H12" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span>Files</span>
+        </button>
       </nav>
     {/if}
+    {#if !isGroup}
+      <button
+        class="member-count-btn"
+        type="button"
+        data-testid="channel-member-count"
+        onclick={openMembersSurface}
+        title={isProject ? 'Members and status' : 'View members'}
+        aria-label={memberCount != null
+          ? `View ${memberCount} ${memberCount === 1 ? 'member' : 'members'}`
+          : 'View members'}
+        aria-expanded={isProject ? statusOpen : rosterOpen}
+      >
+        <span class="member-count-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
+            <circle cx="6" cy="5.5" r="2.25" stroke="currentColor" stroke-width="1.2" />
+            <path d="M2.5 12.5c.4-2 1.9-3 3.5-3s3.1 1 3.5 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            <circle cx="11" cy="6" r="1.75" stroke="currentColor" stroke-width="1.2" />
+            <path d="M11.5 9.5c1.2.2 2.2 1.1 2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+          </svg>
+        </span>
+        <span class="member-count-num">
+          {#if memberCount != null}
+            {memberCount}
+          {:else}
+            —
+          {/if}
+        </span>
+        <span class="member-count-chevron" aria-hidden="true">⌄</span>
+      </button>
+    {/if}
   </div>
-  {#if !isGroup}
-    <button
-      class="member-count-btn"
-      type="button"
-      data-testid="channel-member-count"
-      onclick={openMembersSurface}
-      title={isProject ? 'Members and status' : 'View members'}
-      aria-label={memberCount != null
-        ? `View ${memberCount} ${memberCount === 1 ? 'member' : 'members'}`
-        : 'View members'}
-      aria-expanded={isProject ? statusOpen : rosterOpen}
-    >
-      {#if memberCount != null}
-        {memberCount} {memberCount === 1 ? 'member' : 'members'}
-      {:else}
-        Members
-      {/if}
-    </button>
-  {/if}
 </header>
 
 {#if isProject && projectTab === 'board'}
@@ -787,6 +838,22 @@
   />
 {/if}
 
+<!-- Escape dismisses the members/status popovers regardless of where focus
+     sits (aligned with the other popovers) — the backdrop keydown alone only
+     fired when focus was inside the popover. -->
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key !== 'Escape') return;
+    if (statusOpen) {
+      statusOpen = false;
+      e.stopPropagation();
+    } else if (rosterOpen) {
+      rosterOpen = false;
+      e.stopPropagation();
+    }
+  }}
+/>
+
 {#if rosterOpen && !isProject}
   <ChannelRoster
     channelId={current.channelId}
@@ -831,6 +898,7 @@
           <section class="status-section" aria-label="Live agents">
             {#each statusModel.liveAgents as agent (agent.id)}
               <div class="status-agent-row">
+                <div class="status-agent-name">{agent.displayName}</div>
                 <div class="status-agent-label">{agent.label}</div>
                 <div
                   class="status-progress"
@@ -843,31 +911,32 @@
                 </div>
               </div>
             {/each}
-            <p class="status-rollup">{statusModel.stories.label}</p>
-          </section>
-        {:else}
-          <section class="status-section" aria-label="Stories">
-            <p class="status-rollup">{statusModel.stories.label}</p>
           </section>
         {/if}
 
+        <!-- Story rollup on its own row — avoids colliding with agent progress (D-06). -->
+        <section class="status-section status-stories" aria-label="Stories">
+          <p class="status-rollup" data-testid="status-story-rollup">
+            {statusModel.stories.label}
+            {#if statusModel.stories.total > 0}
+              <span class="status-rollup-pct"> · {statusModel.stories.percent}%</span>
+            {/if}
+          </p>
+        </section>
+
         <section class="status-section" aria-label="Project">
           <div class="status-section-label">Project</div>
-          {#if statusModel.project.branch}
-            <div class="status-kv">
-              <span class="status-k">Branch</span>
-              <span class="status-v">{statusModel.project.branch}</span>
-            </div>
-          {/if}
-          {#if statusModel.project.repo}
-            <div class="status-kv">
-              <span class="status-k">Repo</span>
-              <span class="status-v">{statusModel.project.repo}</span>
-            </div>
-          {/if}
-          {#if statusModel.project.previewUrl}
-            <div class="status-kv">
-              <span class="status-k">Preview</span>
+          <div class="status-kv">
+            <span class="status-k">Branch</span>
+            <span class="status-v">{statusModel.project.branch ?? '—'}</span>
+          </div>
+          <div class="status-kv">
+            <span class="status-k">Repo</span>
+            <span class="status-v">{statusModel.project.repo ?? '—'}</span>
+          </div>
+          <div class="status-kv">
+            <span class="status-k">Preview</span>
+            {#if statusModel.project.previewUrl}
               <button
                 type="button"
                 class="status-link"
@@ -875,15 +944,17 @@
               >
                 Open preview
               </button>
-            </div>
-          {/if}
-          {#if !statusModel.project.branch && !statusModel.project.repo && !statusModel.project.previewUrl}
-            <p class="status-empty">No project metadata yet</p>
-          {/if}
+            {:else}
+              <span class="status-v">—</span>
+            {/if}
+          </div>
         </section>
 
         <section class="status-section" aria-label="Members">
-          <div class="status-section-label">Members</div>
+          <div class="status-section-label">
+            <span>Members</span>
+            <span class="status-section-count">({statusModel.members.length})</span>
+          </div>
           {#if statusModel.members.length === 0}
             <p class="status-empty">No human members listed</p>
           {:else}
@@ -901,7 +972,10 @@
         </section>
 
         <section class="status-section" aria-label="Agents">
-          <div class="status-section-label">Agents</div>
+          <div class="status-section-label">
+            <span>Agents</span>
+            <span class="status-section-count">({statusModel.agents.length})</span>
+          </div>
           {#if statusModel.agents.length === 0}
             <p class="status-empty">No agents</p>
           {:else}
@@ -932,13 +1006,13 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 1rem 1.25rem 0.75rem;
+    padding: 0.75rem 1.25rem;
     border-bottom: 1px solid var(--border, var(--pop-divider));
     flex-shrink: 0;
   }
 
   .channel-header.project {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .channel-title-block {
@@ -956,30 +1030,102 @@
     min-width: 0;
   }
 
+  /* D-11: tabs right-aligned as icon+label; full hit-target buttons. */
+  .channel-header-trailing {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+
   .project-tabs {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 2px;
   }
 
   .project-tab {
     appearance: none;
-    border: none;
-    border-bottom: 1px solid transparent;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    min-height: 32px;
+    min-width: 64px;
+    padding: 0.35rem 0.65rem;
+    border: 1px solid transparent;
     border-radius: 0;
     background: transparent;
     color: var(--muted-2, var(--pop-muted));
     font-family: inherit;
     font-size: var(--text-base);
     font-weight: 400;
-    padding: 0.125rem 0;
+    line-height: 1;
     cursor: pointer;
+  }
+
+  .project-tab:hover {
+    color: var(--fg, var(--pop-text));
+    background: color-mix(in srgb, var(--fg, #000) 5%, transparent);
   }
 
   .project-tab.active {
     color: var(--fg, var(--pop-text));
     font-weight: 500;
     border-bottom-color: var(--fg, var(--pop-text));
+    box-shadow: inset 0 -1px 0 var(--fg, var(--pop-text));
+  }
+
+  .project-tab:focus-visible {
+    outline: 2px solid var(--fg, var(--pop-text));
+    outline-offset: 2px;
+  }
+
+  .project-tab-icon {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+  }
+
+  .member-count-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 28px;
+    padding: 0 0.5rem 0 0.4rem;
+    border: 1px solid var(--border, var(--pop-divider));
+    border-radius: 0;
+    background: transparent;
+    color: var(--fg, var(--pop-text));
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 400;
+    cursor: pointer;
+  }
+
+  .member-count-btn:hover {
+    background: color-mix(in srgb, var(--fg, #000) 5%, transparent);
+  }
+
+  .member-count-icon {
+    display: grid;
+    place-items: center;
+    color: var(--muted-2, var(--pop-muted));
+  }
+
+  .member-count-num {
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+
+  .member-count-chevron {
+    color: var(--muted-2, var(--pop-muted));
+    font-size: 11px;
+    line-height: 1;
   }
 
   .status-backdrop {
@@ -1003,10 +1149,11 @@
     padding: 0.75rem 0.875rem 1rem;
     border: 1px solid var(--border, var(--pop-divider));
     border-radius: 0;
-    background: var(--pop-bg, var(--c-bg));
+    /* Opaque surface (D-03). */
+    background: var(--v4-surface-solid, var(--c-bg, #fff));
     color: var(--fg, var(--pop-text));
     font-family: var(--font-sans);
-    box-shadow: none;
+    box-shadow: var(--v4-shadow-popover, 0 12px 32px rgba(0, 0, 0, 0.18));
   }
 
   .status-head {
@@ -1056,17 +1203,25 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+    padding-bottom: 0.35rem;
+  }
+
+  .status-agent-name {
+    font-size: var(--text-base);
+    font-weight: 500;
+    color: var(--fg, var(--pop-text));
   }
 
   .status-agent-label {
-    font-size: var(--text-base);
+    font-size: var(--type-metadata, 12px);
     font-weight: 400;
-    color: var(--fg, var(--pop-text));
+    color: var(--muted-2, var(--pop-muted));
   }
 
   .status-progress {
     height: 2px;
     width: 100%;
+    margin-top: 0.15rem;
     background: color-mix(in srgb, var(--fg, #fff) 12%, transparent);
     border-radius: 0;
     overflow: hidden;
@@ -1079,9 +1234,23 @@
     border-radius: 0;
   }
 
+  .status-stories {
+    /* Clear separation from agent progress rows (D-06 collision fix). */
+    margin-top: 0.15rem;
+  }
+
   .status-rollup {
     margin: 0;
     font-size: var(--text-base);
+    font-weight: 400;
+    color: var(--muted-2, var(--pop-muted));
+  }
+
+  .status-rollup-pct {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .status-section-count {
     font-weight: 400;
     color: var(--muted-2, var(--pop-muted));
   }

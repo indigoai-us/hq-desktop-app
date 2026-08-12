@@ -59,6 +59,8 @@ export interface ChannelFileItem {
   caption: string;
   /** Icon kind derived from vaultPath / name via file-preview-kind. */
   iconKind: ChannelFileIconKind;
+  /** ACL-denied fixture / row — locked style, preview blocked (D-07). */
+  accessDenied?: boolean;
 }
 
 export type AccessErrorKind = 'unsupported' | 'denied' | 'generic';
@@ -280,6 +282,154 @@ export function classifyPreviewError(err: unknown): AccessErrorKind {
 
 /** User-facing denied copy (no raw error text). */
 export const CHANNEL_FILES_DENIED_MESSAGE = "You don't have access to this file.";
+
+/** List-level denied copy — labels the whole file list, so plural. */
+export const CHANNEL_FILES_LIST_DENIED_MESSAGE =
+  "You don't have access to these files.";
+
+/**
+ * Visual-QA fixture rows (D-07): 10 files including one ACL-denied locked row.
+ * Used when the channel has no server files (or for harness demos).
+ */
+export const CHANNEL_FILES_FIXTURE_ROWS: ChannelFileItem[] = [
+  {
+    key: 'fx-01',
+    vaultPath: 'companies/indigo/projects/hq/prd.json',
+    name: 'prd.json',
+    sizeBytes: 4200,
+    kind: 'json',
+    uploaderLabel: 'Ada',
+    isAgent: false,
+    createdAt: '2026-08-10T14:00:00.000Z',
+    dateLabel: 'AUG 10',
+    caption: 'ADA · AUG 10',
+    iconKind: 'file',
+  },
+  {
+    key: 'fx-02',
+    vaultPath: 'companies/indigo/projects/hq/README.md',
+    name: 'README.md',
+    sizeBytes: 2100,
+    kind: 'markdown',
+    uploaderLabel: 'Marcus',
+    isAgent: false,
+    createdAt: '2026-08-09T11:00:00.000Z',
+    dateLabel: 'AUG 9',
+    caption: 'MARCUS · AUG 9',
+    iconKind: 'markdown',
+  },
+  {
+    key: 'fx-03',
+    vaultPath: 'companies/indigo/projects/hq/spec.pdf',
+    name: 'spec.pdf',
+    sizeBytes: 180_000,
+    kind: 'pdf',
+    uploaderLabel: 'Corey',
+    isAgent: false,
+    createdAt: '2026-08-08T16:30:00.000Z',
+    dateLabel: 'AUG 8',
+    caption: 'COREY · AUG 8',
+    iconKind: 'pdf',
+  },
+  {
+    key: 'fx-04',
+    vaultPath: 'companies/indigo/projects/hq/hero.png',
+    name: 'hero.png',
+    sizeBytes: 92_000,
+    kind: 'image',
+    uploaderLabel: 'Design bot',
+    isAgent: true,
+    createdAt: '2026-08-07T09:00:00.000Z',
+    dateLabel: 'AUG 7',
+    caption: 'DESIGN BOT · AUG 7',
+    iconKind: 'image',
+  },
+  {
+    key: 'fx-05',
+    vaultPath: 'companies/indigo/projects/hq/notes.txt',
+    name: 'notes.txt',
+    sizeBytes: 800,
+    kind: 'text',
+    uploaderLabel: 'Ada',
+    isAgent: false,
+    createdAt: '2026-08-06T13:20:00.000Z',
+    dateLabel: 'AUG 6',
+    caption: 'ADA · AUG 6',
+    iconKind: 'text',
+  },
+  {
+    key: 'fx-06',
+    vaultPath: 'companies/indigo/projects/hq/board-export.csv',
+    name: 'board-export.csv',
+    sizeBytes: 12_400,
+    kind: 'file',
+    uploaderLabel: 'Claude',
+    isAgent: true,
+    createdAt: '2026-08-05T18:00:00.000Z',
+    dateLabel: 'AUG 5',
+    caption: 'CLAUDE · AUG 5',
+    iconKind: 'file',
+  },
+  {
+    key: 'fx-07',
+    vaultPath: 'companies/indigo/projects/hq/changelog.md',
+    name: 'changelog.md',
+    sizeBytes: 3400,
+    kind: 'markdown',
+    uploaderLabel: 'Marcus',
+    isAgent: false,
+    createdAt: '2026-08-04T10:10:00.000Z',
+    dateLabel: 'AUG 4',
+    caption: 'MARCUS · AUG 4',
+    iconKind: 'markdown',
+  },
+  {
+    key: 'fx-08',
+    vaultPath: 'companies/indigo/projects/hq/screenshot.jpg',
+    name: 'screenshot.jpg',
+    sizeBytes: 240_000,
+    kind: 'image',
+    uploaderLabel: 'Ada',
+    isAgent: false,
+    createdAt: '2026-08-03T15:45:00.000Z',
+    dateLabel: 'AUG 3',
+    caption: 'ADA · AUG 3',
+    iconKind: 'image',
+  },
+  {
+    key: 'fx-09',
+    vaultPath: 'companies/indigo/projects/hq/run-log.txt',
+    name: 'run-log.txt',
+    sizeBytes: 56_000,
+    kind: 'text',
+    uploaderLabel: 'Agent runner',
+    isAgent: true,
+    createdAt: '2026-08-02T08:00:00.000Z',
+    dateLabel: 'AUG 2',
+    caption: 'AGENT RUNNER · AUG 2',
+    iconKind: 'text',
+  },
+  {
+    key: 'fx-10-denied',
+    vaultPath: 'companies/indigo/vault/private/secrets.env',
+    name: 'secrets.env',
+    sizeBytes: 120,
+    kind: 'file',
+    uploaderLabel: 'System',
+    isAgent: false,
+    createdAt: '2026-08-01T12:00:00.000Z',
+    dateLabel: 'AUG 1',
+    caption: 'SYSTEM · AUG 1',
+    iconKind: 'file',
+    accessDenied: true,
+  },
+];
+
+/** Channels that should show the empty-files state in fixtures. */
+export function shouldUseEmptyFilesFixture(channelId: string | null | undefined): boolean {
+  const id = (channelId ?? '').toLowerCase();
+  return id.includes('empty-files') || id.includes('no-files');
+}
 
 /** Empty-state copy when the list is empty or the endpoint is unsupported. */
 export const CHANNEL_FILES_EMPTY_MESSAGE = 'No files yet';
