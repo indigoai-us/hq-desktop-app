@@ -66,7 +66,7 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001 / US-018)', () => {
     expect(indigo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
   });
 
-  it('shows the secondary sidebar only on settings (library is US-017 overlay)', () => {
+  it('shows no secondary sidebar on any surface (US-020)', () => {
     const companies = [workspace({})];
     for (const route of [
       { kind: 'home' },
@@ -79,7 +79,8 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001 / US-018)', () => {
     ] satisfies DesktopRoute[]) {
       expect(getDesktopSecondarySidebar(route, companies)).toBeNull();
     }
-    expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)).not.toBeNull();
+    // US-020: settings is single-pane — no secondary sidebar anywhere.
+    expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)).toBeNull();
   });
 
   it('DesktopApp composes the V4 chrome (title bar + ChatSidebar) and drops the old chrome', () => {
@@ -110,9 +111,9 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001 / US-018)', () => {
     expect(desktopApp).not.toContain('{#key renderWorkspaceCount}');
     expect(desktopApp).not.toContain('chromeReady');
     expect(desktopApp).not.toContain('companies={workspaces}');
-    // Secondary remains for settings; library is US-017 overlay; company secondary is gone.
-    expect(desktopApp).toContain('{#if secondarySidebar');
-    expect(desktopApp).toContain('<V4SecondarySidebar');
+    // US-020: no secondary sidebar mounts anywhere.
+    expect(desktopApp).not.toContain('secondarySidebar');
+    expect(desktopApp).not.toContain('V4SecondarySidebar');
     expect(desktopApp).not.toContain('DesktopSidebar');
     // DESKTOP-001: bottom status bar removed from the shell.
     expect(desktopApp).not.toContain('<DesktopStatusBar');
@@ -173,10 +174,12 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001 / US-018)', () => {
     expect(library).toContain('forcedFilter={tab}');
   });
 
-  it('settings uses the V4 secondary sidebar instead of rendering a second in-page index', () => {
+  it('settings is a single pane with an in-place section index (US-020, no second column)', () => {
     const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
 
-    expect(settings).not.toContain('class="settings-index"');
+    // The index is a full-width in-place list, never a side column.
+    expect(settings).toContain('data-testid="settings-index"');
+    expect(settings).toContain('data-testid="settings-back"');
     expect(settings).not.toContain('grid-template-columns: 180px minmax');
   });
 });

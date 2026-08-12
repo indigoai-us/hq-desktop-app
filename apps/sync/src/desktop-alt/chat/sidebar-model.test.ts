@@ -440,6 +440,30 @@ describe('sort + show filters', () => {
     expect(filterByShow(rows, 'dms').map((r) => r.id).sort()).toEqual(['ch:g', 'dm:1']);
   });
 
+  // US-021: browse-only rows (other members' project channels, owner view).
+  const browseRow: ConversationRow = {
+    id: 'ch:browse',
+    kind: 'channel',
+    title: 'Other project',
+    companyUid: 'c',
+    unreadDot: false,
+    lastActivityAt: 20,
+    pinned: false,
+    browseOnly: true,
+  };
+
+  it("Show 'company-projects' includes member + browse-only channel rows (US-021)", () => {
+    const result = filterByShow([...rows, browseRow], 'company-projects');
+    expect(result.map((r) => r.id).sort()).toEqual(['ch:1', 'ch:browse']);
+  });
+
+  it("browse-only rows are hidden from 'all', 'projects', and 'dms' (US-021)", () => {
+    const withBrowse = [...rows, browseRow];
+    expect(filterByShow(withBrowse, 'all').map((r) => r.id)).not.toContain('ch:browse');
+    expect(filterByShow(withBrowse, 'projects').map((r) => r.id)).toEqual(['ch:1']);
+    expect(filterByShow(withBrowse, 'dms').map((r) => r.id)).not.toContain('ch:browse');
+  });
+
   it('applySidebarFilters composes scope + show + sort + person', () => {
     const result = applySidebarFilters(rows, {
       scope: 'all',

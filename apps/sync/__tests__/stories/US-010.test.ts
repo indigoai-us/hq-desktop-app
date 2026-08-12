@@ -1,132 +1,57 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const companyPage = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/pages/CompanyPage.svelte'),
-  'utf8',
-);
-const activityPanel = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/panels/ActivityPanel.svelte'),
-  'utf8',
-);
-const companyStore = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/lib/company-store.svelte.ts'),
-  'utf8',
-);
-const statTile = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/StatTile.svelte'),
-  'utf8',
-);
-const sparkline = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/Sparkline.svelte'),
-  'utf8',
-);
-const tauriMain = readFileSync(resolve(process.cwd(), 'src-tauri/src/main.rs'), 'utf8');
+// US-010 originally wired a standalone company Activity panel. US-020 removed
+// the Activity page entirely (Corey's feedback): activity lives on the company
+// Overview digest, legacy activity deep-links remap to Overview, and the
+// operations workspace under More is Deployments / Secrets / Settings only.
+// This spec now guards the removal instead of the panel.
+
+const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
+const read = (...parts: string[]) => readFileSync(root(...parts), 'utf8');
 
 function normalize(source: string): string {
   return source.replace(/\s+/g, ' ');
 }
 
-describe('US-010: Activity panel reads company activity via Tauri command', () => {
-  it('wires the activity tab to ActivityPanel with the selected company slug', () => {
-    const page = normalize(companyPage);
-    const panel = normalize(activityPanel);
-    const operations = normalize(
-      readFileSync(
-        resolve(process.cwd(), 'src/desktop-alt/panels/CompanyOperationsPanel.svelte'),
-        'utf8',
-      ),
-    );
+describe('US-020: the standalone Activity page is gone', () => {
+  it('has no ActivityPanel component and no activity operations destination', () => {
+    expect(existsSync(root('src/desktop-alt/panels/ActivityPanel.svelte'))).toBe(false);
 
-    // DESKTOP-010: Activity mounts inside the operations workspace under More.
-    expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
-    expect(page).toContain('isCompanyOperationsTab(tab)');
-    expect(page).toContain('<CompanyOperationsPanel');
-    expect(page).toContain('slug={company.slug}');
-    expect(page).toContain('{cloudBacked}');
-    expect(operations).toContain('<ActivityPanel {slug} {cloudBacked} {syncEnabled} />');
-    expect(page).not.toContain('Activity panel - wired in US-010');
-    expect(panel).toContain('void companyStore.loadActivity<Partial<CompanyActivity>>(slug, force)');
-    expect(normalize(companyStore)).toContain(
+    const operations = normalize(read('src/desktop-alt/panels/CompanyOperationsPanel.svelte'));
+    expect(operations).not.toContain('ActivityPanel');
+    expect(operations).not.toContain("=== 'activity'");
+
+    const route = normalize(read('src/desktop-alt/route.ts'));
+    // 'activity' must not be a live company tab or operations destination…
+    expect(route).toContain(
+      "export type CompanyOperationsTab = 'deployments' | 'secrets' | 'settings'",
+    );
+    // …only a legacy redirect onto Overview.
+    expect(route).toContain("activity: 'overview'");
+  });
+
+  it('remaps activity deep-links: notifications + widget land on the company Overview', () => {
+    const feed = normalize(read('src/components/NotificationFeed.svelte'));
+    expect(feed).not.toContain(':activity');
+    expect(feed).toContain('route: `company:${company}`');
+
+    const widget = normalize(read('src/components/Widget.svelte'));
+    expect(widget).not.toContain(':activity');
+  });
+
+  it('keeps the Overview activity digest wired to get_company_activity', () => {
+    // The DATA path survives — only the page surface was removed. The digest
+    // on the company Overview still reads via the shared company store.
+    const digest = normalize(read('src/desktop-alt/components/OverviewActivityDigest.svelte'));
+    expect(digest).toContain('companyStore.loadActivity<Partial<CompanyActivity>>(slug)');
+
+    const companyStore = normalize(read('src/desktop-alt/lib/company-store.svelte.ts'));
+    expect(companyStore).toContain(
       "activity: (slug: string) => withActivityRequestDeadline(invoke<unknown>('get_company_activity', { slug }))",
     );
-    expect(panel).toContain("err instanceof ActivityRequestTimeoutError ? 'The activity service took too long to respond. Try again.'");
-    expect(panel).toContain('return () => { cancelled = true; };');
-    expect(panel).toContain('function retry() { if (loading) return; error = null; loading = true; reloadToken += 1; }');
-    expect(panel).toContain("console.error('get_company_activity failed:', err)");
+    const tauriMain = read('src-tauri/src/main.rs');
     expect(tauriMain).toContain('commands::desktop_alt::get_company_activity');
-  });
-
-  it('renders four stat tiles with the required 14-day labels and defaults', () => {
-    const panel = normalize(activityPanel);
-
-    expect(panel).toContain('<StatTile label="New files · 14d" value={activity.stats.files7} {loading} />');
-    expect(panel).toContain('<StatTile label="Edits · 14d" value={activity.stats.edits7} {loading} />');
-    expect(panel).toContain('<StatTile label="Members" value={activity.stats.members} {loading} />');
-    expect(panel).toContain('<StatTile label="Vault size" value={activity.stats.vaultSize || \'0\'} {loading} />');
-    expect(panel).toContain('files7: 0');
-    expect(panel).toContain('edits7: 0');
-    expect(panel).toContain('members: 0');
-    expect(statTile).toContain('aria-busy={loading}');
-    expect(statTile).toContain('.label-skeleton');
-    expect(statTile).toContain('.value-skeleton');
-  });
-
-  it('implements the prototype sparkline math and CSS bar height animation', () => {
-    const panel = normalize(activityPanel);
-    const spark = normalize(sparkline);
-
-    expect(spark).toContain('const max = $derived(Math.max(1, ...data))');
-    expect(spark).toContain('const stepX = $derived(data.length > 1 ? width / (data.length - 1) : width)');
-    expect(spark).toContain('`${(index * stepX).toFixed(1)},${(height - (value / max) * (height - 2) - 1).toFixed(1)}`');
-    expect(spark).toContain('<polyline points={points} fill="none" stroke="currentColor" stroke-width="1" opacity="0.85" />');
-    expect(panel).toContain('<Sparkline data={activity.sparkline} width={120} height={20} />');
-    expect(panel).toContain('{#each activity.sparkline as value, index (index)}');
-    expect(panel).toContain('style={`height: ${barHeight(value)}`}');
-    expect(panel).toContain('transition: height 300ms ease');
-    expect(panel).toContain('{#each Array(14) as _, index (index)}');
-  });
-
-  it('renders empty states and per-section skeleton loaders while loading', () => {
-    const panel = normalize(activityPanel);
-
-    expect(panel).toContain('<div class="chart-skeleton" aria-label="Loading edits over time">');
-    expect(panel).toContain('<div class="contributor-skeleton" aria-label="Loading top contributors">');
-    expect(panel).toContain('<div class="recent-skeleton" aria-label="Loading recent files">');
-    expect((activityPanel.match(/No activity yet/g) ?? []).length).toBe(2);
-    expect(panel).toContain('No file activity yet');
-    expect(panel).toContain('Recent file details are unavailable.');
-    expect(panel).toContain('{#if loading}');
-    expect(panel).toContain('{:else if activity.sparkline.length > 0}');
-    expect(panel).toContain('{:else if activity.top.length > 0}');
-    expect(panel).toContain('{:else if recentGroups.length > 0}');
-  });
-
-  it('renders top contributor bars and the V4 actor-grouped recent feed from backend data', () => {
-    const panel = normalize(activityPanel);
-
-    expect(panel).toContain('const contributorMax = $derived(Math.max(1, ...activity.top.map((contributor) => contributor.edits)))');
-    expect(panel).toContain('return `${(edits / contributorMax) * 100}%`;');
-    expect(panel).toContain('<span class="contributor-fill" style={`width: ${contributorWidth(contributor.edits)}`} ></span>');
-    expect(panel).toContain('{#each activity.top as contributor, index (`${contributor.who}:${index}`)}');
-    expect(panel).toContain("let activityDirection = $state<ActivityDirection>('all')");
-    expect(panel).toContain('const filteredRecent = $derived(activity.recent.filter((entry) => matchesDirection(entry, activityDirection)))');
-    expect(panel).toContain('const recentGroups = $derived(groupRecentActivity(filteredRecent))');
-    expect(panel).toContain('class:is-active={activityDirection === \'outgoing\'}');
-    expect(panel).toContain('{#each recentGroups as group (`actor:${group.who}`)}');
-    expect(panel).toContain('<header class="actor-header">');
-    expect(panel).toContain('<span class="avatar" title={group.who}>{initialFor(group.who)}</span>');
-    expect(panel).toContain('{#each group.entries as entry, index (`${entry.file}:${entry.when}:${index}`)}');
-    expect(panel).toContain('<span class="verb-lane" title={entry.what}>{verbLane(entry.what)}</span>');
-    expect(panel).toContain('<strong title={entry.file}>{entry.file}</strong>');
-    expect(panel).toContain('<span>{entry.what}</span>');
-    expect(panel).toContain('<time class="date-chip">{dateChip(entry.when)}</time>');
-    // US-012: the per-recent-row "Open" affordance is now a live Claude Code
-    // drill-in (replacing the old `disabled` placeholder button), gated to
-    // entries that actually name a file.
-    expect(panel).toContain("import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte'");
-    expect(panel).toContain("{#if entry.file && entry.file !== 'Untitled file'}");
-    expect(panel).toContain('<OpenFileInClaudeCode file={entry.file} folder={hqFolderPath} label="Open" />');
   });
 });
