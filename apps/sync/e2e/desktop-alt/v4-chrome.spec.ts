@@ -81,7 +81,9 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
     expect(desktopApp).toContain('<V4TitleBar');
-    expect(desktopApp).toContain('<V4Sidebar');
+    // US-003: chat-first primary sidebar (V4Sidebar remains in src for workspace IA).
+    expect(desktopApp).toContain('<ChatSidebar');
+    expect(desktopApp).toContain("import ChatSidebar from './chat/ChatSidebar.svelte'");
     expect(desktopApp).toContain('let companies = $state<Workspace[]>(cachedCompanies)');
     expect(desktopApp).toContain('const nextCompanies = getDesktopCompanies(nextWorkspaces)');
     expect(desktopApp).toContain('companies = nextCompanies');

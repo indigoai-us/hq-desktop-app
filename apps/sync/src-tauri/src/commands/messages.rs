@@ -50,7 +50,8 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    build_create_payload, build_group_payload, build_reaction_payload, build_reactions_url,
+    build_create_payload, build_create_payload_with_project, build_group_payload,
+    build_reaction_payload, build_reactions_url,
     esc_seg, invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
     ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     MessageReactions, ReactionAggregate, RequestsResponse, UnreadSummary,
@@ -429,6 +430,7 @@ pub async fn get_unread_summary(app: AppHandle) -> Result<UnreadSummary, String>
 //
 //   `list_channels`         — GET    /v1/notify/channels
 //   `fetch_channel`         — GET    /v1/notify/channels/{id}/messages (+ meta)
+//   `fetch_channel_files`   — GET    /v1/notify/channels/{id}/files
 //   `create_channel`        — POST   /v1/notify/channels
 //   `join_channel`          — POST   /v1/notify/channels/{id}/members (self)
 //   `invite_to_channel`     — POST   /v1/notify/channels/{id}/members (others)
@@ -486,36 +488,132 @@ pub async fn fetch_channel(
     Ok(out)
 }
 
+// ── Channel files list (US-008 desktop Files tab / hq-pro US-007) ────────────
+//
+// `GET /v1/notify/channels/{id}/files` returns attachment references posted in
+// the channel (newest-first). Content is NOT included — the desktop previews
+// via the existing authorized file commands which enforce ACL natively.
+// Older servers that lack the route surface a 404; the frontend treats that as
+// an empty list (absent-safe), never a crash.
+
+/// Wire attachment on a channel-files list row (hq-pro US-007).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelFileAttachment {
+    pub vault_path: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// One file listed on `GET /v1/notify/channels/{id}/files`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelFileRow {
+    pub event_id: String,
+    pub message_event_id: String,
+    pub attachment: ChannelFileAttachment,
+    /// Uploader person/agent uid (agents may use `agt_` / `agent:` prefixes).
+    pub from_uid: String,
+    #[serde(default)]
+    pub from_display_name: String,
+    pub created_at: String,
+}
+
+/// Response envelope for the channel files list endpoint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelFilesResponse {
+    #[serde(default)]
+    pub files: Vec<ChannelFileRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Tauri command: list files attached in a channel (newest-first).
+/// `GET /v1/notify/channels/{id}/files`. Auth matches channel message reads.
+/// Attachments are references only — content is loaded through the authorized
+/// preview path. A missing endpoint (older server) returns an error string the
+/// frontend classifies as unsupported → empty state.
+#[tauri::command]
+pub async fn fetch_channel_files(
+    channel_id: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+) -> Result<ChannelFilesResponse, String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_FILES").await?;
+    let mut url = format!("{base}/v1/notify/channels/{}/files", esc_seg(id));
+    let mut sep = '?';
+    if let Some(n) = limit {
+        url.push_str(&format!("{sep}limit={n}"));
+        sep = '&';
+    }
+    if let Some(c) = cursor.as_deref().filter(|c| !c.is_empty()) {
+        url.push_str(&format!("{sep}cursor={}", esc_seg(c)));
+    }
+    let out: ChannelFilesResponse = get_json(&url, &token, "MESSAGES_CHANNEL_FILES").await?;
+    log(
+        LOG_TAG,
+        &format!(
+            "MESSAGES_CHANNEL_FILES_OK id={id} files={}",
+            out.files.len()
+        ),
+    );
+    Ok(out)
+}
+
 /// Tauri command: create a channel. `POST /v1/notify/channels`. `scope` is
-/// "personal" | "company"; a company channel requires `company_uid`. Optional
-/// `invite` seeds initial members by personUid. Returns the created `Channel`.
+/// "personal" | "company" | "project"; a company/project channel requires
+/// `company_uid`. Project scope also requires `project_id` (invite-only; no
+/// company auto-join). Optional `invite` seeds initial members by personUid.
+/// Returns the created `Channel`.
 #[tauri::command]
 pub async fn create_channel(
     name: String,
     scope: String,
     company_uid: Option<String>,
     invite: Option<Vec<String>>,
+    project_id: Option<String>,
 ) -> Result<Channel, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Channel name must not be empty".to_string());
     }
     let scope_norm = scope.trim().to_ascii_lowercase();
-    if scope_norm != "personal" && scope_norm != "company" {
-        return Err("Channel scope must be 'personal' or 'company'".to_string());
+    if scope_norm != "personal" && scope_norm != "company" && scope_norm != "project" {
+        return Err("Channel scope must be 'personal', 'company', or 'project'".to_string());
     }
     let company = company_uid
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    if scope_norm == "company" && company.is_none() {
-        return Err("A company channel requires a companyUid".to_string());
+    if (scope_norm == "company" || scope_norm == "project") && company.is_none() {
+        return Err("A company/project channel requires a companyUid".to_string());
+    }
+    let project = project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if scope_norm == "project" && project.is_none() {
+        return Err("A project channel requires a projectId".to_string());
     }
     let invites = invite.unwrap_or_default();
 
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_CREATE").await?;
     let url = format!("{base}/v1/notify/channels");
-    let payload = build_create_payload(trimmed, &scope_norm, company, &invites);
+    let payload = build_create_payload_with_project(
+        trimmed,
+        &scope_norm,
+        company,
+        project,
+        &invites,
+    );
     // The server wraps the created channel in an envelope: `{"channel": {…}}`.
     // Decoding into `Channel` directly failed with `missing field channelId` even
     // though the channel WAS created — so the user saw an error, retried, and hit

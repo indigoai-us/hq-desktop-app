@@ -66,7 +66,7 @@ pub struct RequestsResponse {
 }
 
 /// One channel the caller can see. Tolerant of server additions — unknown
-/// fields are ignored. `company_uid` is present only for company-scoped
+/// fields are ignored. `company_uid` is present only for company/project-scoped
 /// channels. Mirrors the TS `Channel` shape in `src/lib/channels.ts`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,11 +74,14 @@ pub struct Channel {
     pub channel_id: String,
     #[serde(default)]
     pub name: String,
-    /// "personal" | "company" | "group".
+    /// "personal" | "company" | "group" | "project".
     #[serde(default)]
     pub scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company_uid: Option<String>,
+    /// Present when `scope == "project"` (invite-only, bound to a board project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company_name: Option<String>,
     /// "all" | "owner" — who may post.
@@ -174,9 +177,27 @@ pub struct ChannelMembersResponse {
     pub members: Vec<ChannelMember>,
 }
 
+/// File attachment metadata on a channel message (hq-pro chat wire).
+/// All size/kind fields are optional — the UI omits the size caption when
+/// `size_bytes` is absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageAttachment {
+    pub vault_path: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
 /// One channel message, as returned by `/v1/notify/channels/{id}/messages`.
 /// `direction` is tagged by the server relative to the caller ("in"/"out") so
 /// the shared `<Conversation showAuthors>` renders it identically to a DM.
+///
+/// Optional chat-tab fields (`message_kind`, `system_event`, `attachment`) are
+/// absent-safe: older servers omit them, and the desktop UI parses only known
+/// shapes (unknown `systemEvent.type` / version → render nothing).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelMessage {
@@ -194,6 +215,16 @@ pub struct ChannelMessage {
     pub created_at: String,
     #[serde(default)]
     pub direction: String,
+    /// `"system"` for bridge events; absent for normal human/agent posts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
+    /// Versioned system-event envelope (`{ v, type, ... }`). Kept as raw JSON
+    /// so unknown types/extra keys stay absent-safe on the frontend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_event: Option<serde_json::Value>,
+    /// Optional file attachment card payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<MessageAttachment>,
 }
 
 /// The full channel view: its metadata + a page of messages (newest-first).
@@ -231,12 +262,24 @@ pub fn esc_seg(s: &str) -> String {
 
 /// Build the `POST /v1/notify/channels` create body. Exactly the fields the
 /// server contract expects: `name`, `scope`, optional `companyUid` (required
-/// only for company scope), optional `invite` (personUids). Pure so the wire
-/// shape is unit-testable.
+/// for company + project scope), optional `projectId` (project scope), optional
+/// `invite` (personUids). Pure so the wire shape is unit-testable.
 pub fn build_create_payload(
     name: &str,
     scope: &str,
     company_uid: Option<&str>,
+    invite: &[String],
+) -> serde_json::Value {
+    build_create_payload_with_project(name, scope, company_uid, None, invite)
+}
+
+/// Same as [`build_create_payload`] with optional `projectId` for project-scoped
+/// channels (`scope == "project"`).
+pub fn build_create_payload_with_project(
+    name: &str,
+    scope: &str,
+    company_uid: Option<&str>,
+    project_id: Option<&str>,
     invite: &[String],
 ) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
@@ -252,6 +295,12 @@ pub fn build_create_payload(
         obj.insert(
             "companyUid".to_string(),
             serde_json::Value::String(uid.to_string()),
+        );
+    }
+    if let Some(pid) = project_id.map(str::trim).filter(|s| !s.is_empty()) {
+        obj.insert(
+            "projectId".to_string(),
+            serde_json::Value::String(pid.to_string()),
         );
     }
     if !invite.is_empty() {
@@ -420,6 +469,64 @@ mod tests {
         assert_eq!(channel.channel_id, "chn_1");
         assert_eq!(detail.messages.len(), 1);
         assert_eq!(detail.messages[0].body, "hi");
+    }
+
+    #[test]
+    fn channel_message_optional_chat_fields_round_trip() {
+        // Absent-safe: minimal messages still decode with None optionals.
+        let minimal = r#"{
+            "eventId": "evt_min",
+            "fromPersonUid": "prs_a",
+            "body": "hi",
+            "createdAt": "2026-06-10T16:00:00Z",
+            "direction": "in"
+        }"#;
+        let m: ChannelMessage = serde_json::from_str(minimal).expect("minimal message");
+        assert!(m.message_kind.is_none());
+        assert!(m.system_event.is_none());
+        assert!(m.attachment.is_none());
+
+        let full = r#"{
+            "eventId": "evt_sys",
+            "fromPersonUid": "bridge",
+            "body": "",
+            "createdAt": "2026-06-10T16:00:00Z",
+            "direction": "in",
+            "messageKind": "system",
+            "systemEvent": {
+                "v": 1,
+                "type": "run_complete",
+                "meshThreadId": "th_1",
+                "meshEventId": "ev_1",
+                "title": "Deploy finished",
+                "summary": "All green",
+                "previewUrl": "https://example.com/preview",
+                "diffUrl": "https://example.com/diff"
+            },
+            "attachment": {
+                "vaultPath": "companies/acme/notes.md",
+                "name": "notes.md",
+                "sizeBytes": 1024,
+                "kind": "file"
+            }
+        }"#;
+        let m: ChannelMessage = serde_json::from_str(full).expect("full message");
+        assert_eq!(m.message_kind.as_deref(), Some("system"));
+        let se = m.system_event.clone().expect("systemEvent present");
+        assert_eq!(se["type"], "run_complete");
+        assert_eq!(se["v"], 1);
+        let att = m.attachment.clone().expect("attachment present");
+        assert_eq!(att.vault_path, "companies/acme/notes.md");
+        assert_eq!(att.name, "notes.md");
+        assert_eq!(att.size_bytes, Some(1024));
+        assert_eq!(att.kind.as_deref(), Some("file"));
+
+        // Serialize back uses camelCase and keeps optionals.
+        let v = serde_json::to_value(&m).expect("serialize");
+        assert_eq!(v["messageKind"], "system");
+        assert!(v.get("systemEvent").is_some());
+        assert_eq!(v["attachment"]["vaultPath"], "companies/acme/notes.md");
+        assert_eq!(v["attachment"]["sizeBytes"], 1024);
     }
 
     #[test]
@@ -610,6 +717,25 @@ mod tests {
         // A blank companyUid is treated as absent.
         let blank = build_create_payload("x", "company", Some("   "), &[]);
         assert!(!blank.as_object().unwrap().contains_key("companyUid"));
+    }
+
+    #[test]
+    fn create_payload_project_includes_project_id() {
+        let invites = vec!["prs_a".to_string()];
+        let payload = build_create_payload_with_project(
+            "hq-desktop",
+            "project",
+            Some("cmp_indigo"),
+            Some("hq-desktop-app"),
+            &invites,
+        );
+        assert_eq!(payload["scope"], "project");
+        assert_eq!(payload["companyUid"], "cmp_indigo");
+        assert_eq!(payload["projectId"], "hq-desktop-app");
+        assert_eq!(payload["invite"][0], "prs_a");
+        // Blank projectId is treated as absent.
+        let blank = build_create_payload_with_project("x", "project", Some("c"), Some("  "), &[]);
+        assert!(!blank.as_object().unwrap().contains_key("projectId"));
     }
 
     #[test]

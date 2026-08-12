@@ -434,6 +434,7 @@ fn main() {
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::NotificationSessionState::new())
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
+        .manage(commands::dm_notify::PairUnreadState::new())
         .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::dm_notify::SeenChannelState::new())
         .manage(commands::dm_notify::ActiveThreadState::new())
@@ -720,6 +721,7 @@ fn main() {
             commands::dm_notify::set_watched_shares,
             commands::dm_notify::list_dm_requests,
             commands::dm_notify::respond_dm_request,
+            commands::dm_notify::mark_dm_thread_read,
             commands::messages::open_messages_window,
             commands::messages::messages_window_ready,
             commands::messages::take_pending_messages_target,
@@ -729,6 +731,7 @@ fn main() {
             commands::messages::get_unread_summary,
             commands::messages::list_channels,
             commands::messages::fetch_channel,
+            commands::messages::fetch_channel_files,
             commands::messages::create_channel,
             commands::messages::create_group_dm,
             commands::messages::join_channel,

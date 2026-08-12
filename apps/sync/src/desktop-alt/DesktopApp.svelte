@@ -84,7 +84,9 @@
     HomeCoreState,
     HomeDeleteRefusal,
   } from './v4/home-model';
-  import V4Sidebar from './v4/V4Sidebar.svelte';
+  // V4Sidebar remains in the codebase (workspace IA, company children, specs).
+  // US-003 mounts ChatSidebar as the primary conversation surface.
+  import ChatSidebar from './chat/ChatSidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
@@ -1690,6 +1692,8 @@
     oncommand={handleOpenCommandPalette}
     onaccount={handleAccountMenu}
     onOpenSettings={handleOpenSettings}
+    onopenMeetings={() => navigate({ kind: 'meetings' })}
+    onopenNotifications={() => navigate({ kind: 'inbox' })}
   />
 
   <div class="desktop-body">
@@ -1705,14 +1709,15 @@
           onexit={exitFilesMode}
         />
       {:else}
-        <V4Sidebar
-          {route}
+        <!-- US-003: chat-first primary sidebar. V4Sidebar stays in the tree for
+             workspace IA specs / palette-driven company destinations. -->
+        <ChatSidebar
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
-          {brand}
-          {cloudReachable}
-          onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
-          onnavigate={(next) => navigate(fromV4Route(next))}
+          accountInitials={accountIdentity.initials}
+          oncommand={handleOpenCommandPalette}
+          onnavigateMessages={() => navigate({ kind: 'messages' })}
+          onopenSettings={() => handleOpenSettings('general')}
         />
       {/if}
     {/if}

@@ -55,9 +55,9 @@ pub use hq_desktop_core::dm_notify::{
     dm_notifications_enabled, esc_thread_seg, normalize_scope, partition_unnotified,
     read_cursor_entry_for_account, respond_action_path, respond_action_state, try_set_in_flight,
     write_cursor_entry_for_account, ActiveConversationInner, ActiveConversationState,
-    ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent, InboxResponse, PendingDmEvents,
-    RequestsListResponse, SeenChannelState, SeenRequestState, SendDmOutcome, ThreadReply,
-    ThreadResponse, ThreadView, UnreadDmState,
+    ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent, InboxResponse, PairUnread,
+    PairUnreadState, PendingDmEvents, RequestsListResponse, SeenChannelState, SeenRequestState,
+    SendDmOutcome, ThreadReply, ThreadResponse, ThreadView, UnreadDmState,
 };
 
 const LOG_TAG: &str = "dm-notify";
@@ -65,6 +65,13 @@ const LOG_TAG: &str = "dm-notify";
 /// Tauri event emitted when new DMs are found (frontend may surface a badge
 /// or inbox view; currently informational, mirrors `share:new-events`).
 pub const EVENT_DM_NEW_EVENTS: &str = "dm:new-events";
+
+/// Tauri event emitted when the inbox poll (or mark-read) updates per-pair DM
+/// unread rollups (hq-pro US-010 / desktop US-011). Payload:
+/// `{ pairUnreads: [{ withPersonUid, lastReadAt?, unreadCount }] }`.
+/// ChatSidebar merges these into DM row badges. Absent on older servers → the
+/// poll never emits this after a legacy payload (empty pairUnreads = no-op).
+pub const EVENT_DM_PAIR_UNREADS: &str = "dm:pair-unreads";
 
 /// Tauri event emitted by the SINGLE poll path when a new reply lands in the
 /// thread the user currently has open (US-022). A "thread" wake on the person
@@ -417,6 +424,9 @@ async fn transition_notification_session_if_generation_expected<R: Runtime>(
         if let Some(state) = app.try_state::<UnreadDmState>() {
             *state.0.lock().unwrap_or_else(|p| p.into_inner()) = 0;
         }
+        if let Some(state) = app.try_state::<PairUnreadState>() {
+            state.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        }
         if let Some(state) = app.try_state::<PendingDmEvents>() {
             state.0.lock().unwrap_or_else(|p| p.into_inner()).clear();
         }
@@ -448,6 +458,10 @@ async fn transition_notification_session_if_generation_expected<R: Runtime>(
 
         let summary = serde_json::json!({ "unreadDms": 0u32, "pendingRequests": 0u32 });
         let _ = app.emit(EVENT_DM_UNREAD_SUMMARY, &summary);
+        let _ = app.emit(
+            EVENT_DM_PAIR_UNREADS,
+            &serde_json::json!({ "pairUnreads": [] }),
+        );
         for channel_id in cleared_channel_ids {
             let unread = serde_json::json!({ "channelId": channel_id, "unread": 0u32 });
             let _ = app.emit(EVENT_CHANNEL_UNREAD_CHANGED, &unread);
@@ -850,6 +864,82 @@ pub fn reset_unread_dms<R: Runtime>(app: &AppHandle<R>) {
     crate::commands::dock::set_badge(app, 0);
 }
 
+/// Merge a page of pair-unread rollups into managed state and emit
+/// `dm:pair-unreads` so the chat sidebar can paint numeric DM badges.
+/// No-op when the page is empty (legacy servers or no pairs on this page).
+fn apply_pair_unreads_page(app: &AppHandle, page: &[PairUnread]) {
+    if page.is_empty() {
+        return;
+    }
+    let Some(state) = app.try_state::<PairUnreadState>() else {
+        return;
+    };
+    let snapshot = {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        for entry in page {
+            let uid = entry.with_person_uid.trim();
+            if uid.is_empty() {
+                continue;
+            }
+            guard.insert(uid.to_string(), entry.unread_count);
+        }
+        pair_unreads_payload(&guard, page)
+    };
+    let _ = app.emit(EVENT_DM_PAIR_UNREADS, &snapshot);
+}
+
+/// Build the frontend payload: prefer page metadata (lastReadAt) when present,
+/// fall back to bare `{ withPersonUid, unreadCount }` from the map.
+fn pair_unreads_payload(
+    map: &std::collections::HashMap<String, u32>,
+    page: &[PairUnread],
+) -> serde_json::Value {
+    let by_uid: std::collections::HashMap<&str, &PairUnread> = page
+        .iter()
+        .map(|p| (p.with_person_uid.as_str(), p))
+        .collect();
+    let pair_unreads: Vec<serde_json::Value> = map
+        .iter()
+        .map(|(uid, count)| {
+            let last_read = by_uid
+                .get(uid.as_str())
+                .and_then(|p| p.last_read_at.as_ref());
+            let mut obj = serde_json::json!({
+                "withPersonUid": uid,
+                "unreadCount": count,
+            });
+            if let Some(at) = last_read {
+                obj["lastReadAt"] = serde_json::Value::String(at.clone());
+            }
+            obj
+        })
+        .collect();
+    serde_json::json!({ "pairUnreads": pair_unreads })
+}
+
+/// Zero one pair's local unread and re-emit so the sidebar clears the badge
+/// immediately after mark-read (server is source of truth on next poll).
+fn clear_pair_unread_local(app: &AppHandle, with_person_uid: &str) {
+    let Some(state) = app.try_state::<PairUnreadState>() else {
+        return;
+    };
+    let snapshot = {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.insert(with_person_uid.to_string(), 0);
+        let pair_unreads: Vec<serde_json::Value> = guard
+            .iter()
+            .map(|(uid, count)| {
+                serde_json::json!({
+                    "withPersonUid": uid,
+                    "unreadCount": count,
+                })
+            })
+            .collect();
+        serde_json::json!({ "pairUnreads": pair_unreads })
+    };
+    let _ = app.emit(EVENT_DM_PAIR_UNREADS, &snapshot);
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────────
 
 /// Fire one DM inbox poll. Singleton-guarded; safe to call from the shared
@@ -1185,6 +1275,103 @@ pub async fn list_dm_requests() -> Result<RequestsListResponse, String> {
         &format!("DM_NOTIFY_REQUESTS_OK count={}", out.requests.len()),
     );
     Ok(out)
+}
+
+/// Tauri command: mark a 1:1 DM thread read (hq-pro US-010 / desktop US-011).
+///
+/// `POST /v1/notify/thread/read` with `{ withPersonUid }`. Mirrors
+/// `mark_channel_read` for the channel path — called from the chat sidebar when
+/// a DM row is opened. Local pair-unread is zeroed and `dm:pair-unreads` is
+/// re-emitted so the numeric badge clears immediately. Network/auth failures
+/// are logged and returned; the UI treats them as non-fatal (optimistic clear
+/// already happened).
+#[tauri::command]
+pub async fn mark_dm_thread_read(app: AppHandle, with_person_uid: String) -> Result<(), String> {
+    let auth = resolve_notification_auth_snapshot(&app)
+        .await
+        .map_err(|error| format!("Not signed in: {error}"))?;
+    let uid = with_person_uid.trim();
+    if uid.is_empty() {
+        return Err("withPersonUid must not be empty".to_string());
+    }
+    let base = resolve_vault_api_url()
+        .map(|url| url.trim_end_matches('/').to_string())
+        .map_err(|error| {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_THREAD_READ_ERROR vault url: {error}"),
+            );
+            format!("Could not resolve server URL: {error}")
+        })?;
+    let url = format!("{base}/v1/notify/thread/read");
+    let payload = serde_json::json!({ "withPersonUid": uid });
+
+    // Account-owned write: same mutation lease as channel read / request respond
+    // so a mid-flight account switch cannot publish against a stale bearer.
+    let sent = with_current_notification_mutation(&app, &auth, || async {
+        build_client()
+            .post(&url)
+            .header("authorization", format!("Bearer {}", auth.access_token))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                log(LOG_TAG, &format!("DM_NOTIFY_THREAD_READ_NETWORK_FAIL {e}"));
+                format!("Network error: {e}")
+            })
+    })
+    .await;
+
+    let resp = match sent {
+        None => {
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_THREAD_READ_STALE uid={uid} auth session changed before send"),
+            );
+            return Ok(());
+        }
+        Some(Err(error)) => {
+            // Non-fatal to the UI: log and surface, caller swallows.
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_THREAD_READ_ERROR uid={uid} err={error}"),
+            );
+            return Err(error);
+        }
+        Some(Ok(resp)) => resp,
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!(
+                "DM_NOTIFY_THREAD_READ_ERROR uid={uid} status={status} msg={server_msg:?}"
+            ),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Request failed (status {})", status.as_u16()))
+        );
+    }
+
+    let committed = with_current_notification_auth_snapshot(&app, &auth, || {
+        clear_pair_unread_local(&app, uid);
+    })
+    .await;
+    if committed.is_none() {
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_THREAD_READ_STALE uid={uid} auth session changed"),
+        );
+        return Ok(());
+    }
+    log(LOG_TAG, &format!("DM_NOTIFY_THREAD_READ_OK uid={uid}"));
+    Ok(())
 }
 
 /// Tauri command: respond to a pending connection request (US-011).
@@ -2358,6 +2545,18 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
         return;
     }
 
+    // Apply additive pair-unread rollups even when there are no new events —
+    // the sidebar needs badge counts without inventing a second poller.
+    if with_current_notification_auth_snapshot(app, auth, || {
+        apply_pair_unreads_page(app, &body.pair_unreads);
+    })
+    .await
+    .is_none()
+    {
+        log(LOG_TAG, "DM_NOTIFY_POLL_STALE before pair-unreads apply");
+        return;
+    }
+
     if body.events.is_empty() {
         log(LOG_TAG, "DM_NOTIFY_POLL_OK no new DMs");
         return;
@@ -2861,6 +3060,7 @@ mod tests {
     fn mk_channel(id: &str, unread: u32) -> crate::commands::messages::Channel {
         crate::commands::messages::Channel {
             channel_id: id.to_string(),
+            project_id: None,
             name: format!("#{id}"),
             scope: "company".to_string(),
             company_uid: Some("ent_co".to_string()),
@@ -2961,6 +3161,7 @@ mod tests {
     fn mk_owned_group(id: &str) -> crate::commands::messages::Channel {
         crate::commands::messages::Channel {
             channel_id: id.to_string(),
+            project_id: None,
             name: String::new(),
             scope: "group".to_string(),
             company_uid: None,

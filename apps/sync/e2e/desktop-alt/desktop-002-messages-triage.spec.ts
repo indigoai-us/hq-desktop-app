@@ -124,14 +124,20 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(shell).toContain('open_claude_code_link');
   });
 
-  it('keeps the composer text-only with no attachment affordance', () => {
+  it('keeps message attachments reference-only (no raw file upload input)', () => {
+    // US-004/US-007 superseded the old "text-only composer" contract: the
+    // channel composer gains an attach affordance and attachment CARDS, but
+    // attachments remain vault-path REFERENCES — never raw file uploads.
     for (const src of [conversation, compose]) {
       expect(src).not.toMatch(/type=["']file["']/);
-      expect(src).not.toMatch(/paperclip/i);
-      expect(src).not.toMatch(/attachment/i);
-      expect(src).not.toMatch(/file-transfer/i);
       expect(src).not.toMatch(/<input[^>]+type=["']file["']/);
+      expect(src).not.toMatch(/file-transfer/i);
     }
+    // The new-message compose surface stays text-only.
+    expect(compose).not.toMatch(/attachment/i);
+    expect(compose).not.toMatch(/paperclip/i);
+    // Timeline attachments render as reference cards (US-007 wire shape).
+    expect(conversation).toContain('FileAttachmentCard');
     // Text entry surfaces remain textarea / send only.
     expect(compose).toContain('class="compose-body"');
     expect(compose).toContain('aria-label="Message body"');

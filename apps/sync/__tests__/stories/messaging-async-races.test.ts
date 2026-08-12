@@ -353,7 +353,9 @@ describe('MessagesShell async ownership', () => {
     await tick();
     flushSync();
 
-    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
+    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
+      'Bob · direct message',
+    );
     expect(host.textContent).toContain('Bob loaded first');
     expect(host.textContent).not.toContain('Stale Alice success');
   });
@@ -393,7 +395,7 @@ describe('MessagesShell async ownership', () => {
       flushSync();
       expect(host.textContent).toContain('Bob is current');
     });
-    expect(titleWhileBPending).toBe('Bob');
+    expect(titleWhileBPending).toBe('Bob · direct message');
     expect(busyWhileBPending).toBe('true');
     expect(staleAlertWhileBPending).toBeNull();
     expect(host.textContent).not.toContain('Alice offline');
@@ -428,7 +430,9 @@ describe('MessagesShell async ownership', () => {
     railButton('direct-message', 'Bob').click();
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
+      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
+        'Bob · direct message',
+      );
     });
     expect(host.querySelector<HTMLButtonElement>('.btn-send')?.getAttribute('aria-busy')).toBe(
       'false',
@@ -443,7 +447,9 @@ describe('MessagesShell async ownership', () => {
       toPersonUid: 'person-a',
       body: 'for Alice only',
     });
-    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
+    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
+      'Bob · direct message',
+    );
     expect(host.textContent).not.toContain('for Alice only');
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
@@ -472,7 +478,9 @@ describe('MessagesShell async ownership', () => {
     railButton('direct-message', 'Bob').click();
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
+      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
+        'Bob · direct message',
+      );
     });
 
     sendA.reject(new Error('Alice send failed'));
@@ -480,7 +488,9 @@ describe('MessagesShell async ownership', () => {
     await tick();
     flushSync();
 
-    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
+    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
+      'Bob · direct message',
+    );
     expect(host.querySelector<HTMLButtonElement>('.btn-send')?.getAttribute('aria-busy')).toBe(
       'false',
     );

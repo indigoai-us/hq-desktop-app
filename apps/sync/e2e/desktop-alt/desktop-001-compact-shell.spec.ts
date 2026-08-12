@@ -191,7 +191,8 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(app).toContain('accountLabel={accountIdentity.label}');
     expect(app).toContain('let sidebarCollapsed = $state(false)');
     expect(app).toContain('class:sidebar-collapsed={sidebarCollapsed}');
-    expect(app).toContain('<V4Sidebar');
+    // US-003: chat-first primary sidebar.
+    expect(app).toContain('<ChatSidebar');
     expect(app).not.toContain('<DesktopStatusBar');
     expect(app).not.toContain("import DesktopStatusBar");
     // Secondary remains for library/settings only.
