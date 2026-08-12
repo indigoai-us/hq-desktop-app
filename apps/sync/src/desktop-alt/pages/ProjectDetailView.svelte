@@ -36,7 +36,6 @@
     projectDisplayName,
     projectFilesRootFromPrdPath,
     projectProgress,
-    sessionActivityCardView,
     storyLiveRunView,
     TASK_COLUMNS,
     TASK_COLUMN_LABEL,
@@ -399,20 +398,7 @@
   }
 
   // Project-scoped live sessions for Activity tab (real sessions only).
-  // Matched by cwd/repo/project tokens — includes LOCAL Claude/Codex sessions
-  // (the mission-control-local guarantee; console Telescope can't see these).
   const projectSessions = $derived(liveSessionsForProject(project, sessions));
-
-  // ---- PRD / README quick-open actions (US-007 V2) -------------------------
-  // Open the document in the Files tab preview — reading without leaving the
-  // workspace, reusing the scoped tree + FilePreviewPane.
-  function openProjectDoc(fileName: string): void {
-    const root = projectFilesRoot;
-    if (!root) return;
-    tab = 'files';
-    if (selectedStory) oncloseStory?.();
-    selectedFilePath = `${root}/${fileName}`;
-  }
 
   function onDocClick(event: MouseEvent) {
     const target = event.target as HTMLElement | null;
@@ -633,26 +619,6 @@
         >
           {claudeBusy ? 'Opening…' : 'Open in Claude Code'}
         </button>
-        {#if hasPrd && projectFilesRoot}
-          <button
-            type="button"
-            class="toolbar-action"
-            data-testid="open-project-prd"
-            onclick={() => openProjectDoc('prd.json')}
-          >
-            PRD
-          </button>
-        {/if}
-        {#if hasReadme && projectFilesRoot}
-          <button
-            type="button"
-            class="toolbar-action"
-            data-testid="open-project-readme"
-            onclick={() => openProjectDoc('README.md')}
-          >
-            README
-          </button>
-        {/if}
         {#if claudeMessage}
           <span class="action-status" role="status">{claudeMessage}</span>
         {/if}
@@ -1039,30 +1005,27 @@
               {:else}
                 <ul class="session-list">
                   {#each projectSessions as session (`${session.project}:${session.startedAt ?? session.cwd}:${session.status}`)}
-                    {@const card = sessionActivityCardView(session, now)}
-                    <li class="session-row" data-testid="project-session-card">
+                    <li class="session-row">
                       <div class="session-main">
-                        <span class="session-status" data-status={card.status}>
-                          {card.status}
+                        <span class="session-status" data-status={session.status}>
+                          {session.status}
                         </span>
                         <strong class="session-project">{session.project || project.id}</strong>
-                        {#if card.model}
-                          <span class="session-meta" data-testid="session-model">{card.model}</span>
+                        {#if session.model}
+                          <span class="session-meta">{session.model}</span>
                         {/if}
-                        {#if card.runtime}
-                          <span class="session-meta" data-testid="session-runtime">{card.runtime}</span>
+                        {#if session.tool}
+                          <span class="session-meta">{session.tool}</span>
                         {/if}
                       </div>
                       <div class="session-foot">
-                        {#if card.elapsed}
-                          <span data-testid="session-elapsed">{card.elapsed} elapsed</span>
-                        {:else if session.lastActivityAt}
+                        {#if session.lastActivityAt}
                           <span>{relativeActivity(session.lastActivityAt, now)}</span>
                         {:else}
                           <span>signal unavailable</span>
                         {/if}
-                        {#if card.cwd}
-                          <span class="session-cwd" data-testid="session-cwd" title={card.cwd}>{card.cwd}</span>
+                        {#if session.cwd}
+                          <span class="session-cwd" title={session.cwd}>{session.cwd}</span>
                         {/if}
                       </div>
                     </li>

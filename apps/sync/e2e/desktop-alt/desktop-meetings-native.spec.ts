@@ -58,23 +58,6 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(agenda).toContain('class="day-heading"');
   });
 
-  it('US-014: signal stats render only when signal data exists and hide cleanly when absent', () => {
-    // The Signals stat is gated on at least one signal-carrying meeting —
-    // never a misleading "0a · 0d · 0r from 0 meetings" placeholder.
-    const statIdx = page.indexOf('data-testid="meetings-signals-stat"');
-    expect(statIdx).toBeGreaterThan(-1);
-    const gateIdx = page.indexOf('{#if signalMeetingCount > 0}');
-    expect(gateIdx).toBeGreaterThan(-1);
-    expect(gateIdx).toBeLessThan(statIdx);
-    // Counts + "from N meetings" caption stay inside the gate.
-    const closeIdx = page.indexOf('{/if}', statIdx);
-    const block = page.slice(gateIdx, closeIdx);
-    expect(block).toContain('{signalTotals.actions}a · {signalTotals.decisions}d · {signalTotals.risks}r');
-    expect(block).toContain('from {signalMeetingCount} meeting');
-    // Per-row counts hide via signalSummary returning '' for zero counts.
-    expect(model).toContain('return parts.join(');
-  });
-
   it('keeps the main canvas naked: hairlines + whitespace, rounded only for live monitor / controls / status', () => {
     // Agenda drops rounded meeting-card shells.
     expect(agenda).toMatch(/\.agenda-list\s*\{[\s\S]*?border-radius:\s*0;/);

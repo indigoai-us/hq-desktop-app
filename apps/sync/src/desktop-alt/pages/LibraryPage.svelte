@@ -2,9 +2,9 @@
   /**
    * LibraryPage — the root/shared Library surface (a top-level desktop-alt
    * destination, ⌘4). Lists every shared/public worker plus root + personal
-   * skills across Skills / Workers / Marketplace / Installed / Profile tabs
-   * plus the routed Publish-a-pack footer surface (Marketplace folded back into
-   * the Library sub-nav — US-015), with a text filter and a detail slide-over.
+   * skills across Skills / Workers / Installed / Profile tabs plus the routed
+   * Publish-a-pack footer surface (Marketplace is top-level now — US-007), with
+   * a text filter and a detail slide-over.
    *
    * Data is loaded from the local FS via get_library_root on mount and re-loaded
    * on `refreshNonce` bumps. The shared LibraryBrowser owns the filter/toggle/
@@ -34,7 +34,6 @@
   const HEADINGS: Record<LibraryTab, string> = {
     skills: 'Skills',
     workers: 'Workers',
-    marketplace: 'Marketplace',
     installed: 'Installed',
     submit: 'Publish a pack',
     profile: 'Profile',
@@ -46,8 +45,6 @@
       ? `${items.skills.length} ${items.skills.length === 1 ? 'skill' : 'skills'} available to you`
       : tab === 'workers'
         ? `${items.workers.length} ${items.workers.length === 1 ? 'worker' : 'workers'} available to you`
-        : tab === 'marketplace'
-        ? 'Discover and install skills and workers'
         : tab === 'installed'
           ? 'Marketplace packs installed in your HQ'
           : tab === 'submit'

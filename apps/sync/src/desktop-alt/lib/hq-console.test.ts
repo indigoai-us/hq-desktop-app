@@ -5,7 +5,6 @@ import {
   companyConsoleUrl,
   companySettingsUrl,
   companyInviteUrl,
-  companyTeamUrl,
   HQ_CONSOLE_INTEGRATIONS_URL,
   HQ_CONSOLE_CREATORS_URL,
   creatorProfileUrl,
@@ -38,14 +37,7 @@ describe('hq-console URLs', () => {
     expect(companyInviteUrl('indigo')).toContain('/companies/');
   });
 
-  // US-011: the desktop Team page's "Open console" deep-links to the roster.
-  it('team link points to the company /companies/{slug}/team roster page', () => {
-    expect(companyTeamUrl('indigo')).toBe(`${HQ_CONSOLE_BASE}/companies/indigo/team`);
-    expect(companyTeamUrl('indigo')).toContain('/companies/');
-  });
-
   it('encodes slugs that need escaping', () => {
-    expect(companyTeamUrl('a b')).toBe(`${HQ_CONSOLE_BASE}/companies/a%20b/team`);
     expect(companyConsoleUrl('a b/c')).toBe(
       `${HQ_CONSOLE_BASE}/companies/a%20b%2Fc`,
     );

@@ -12,13 +12,9 @@
 
   let { conflicts, onresolve, onopen, ondismiss }: Props = $props();
 
-  // V2 rescue-card header: "N conflicts need you" (approved rescue-card
-  // design). Counts every unresolved conflict, so the header tracks the
-  // remaining work rather than the original total.
   let pendingCount = $derived(
     conflicts.filter((c) => c.status === 'pending').length
   );
-  let headerCount = $derived(pendingCount > 0 ? pendingCount : conflicts.length);
   let hasPending = $derived(pendingCount > 0);
   let resolvedCount = $derived(
     conflicts.filter((c) => c.status === 'resolved').length
@@ -43,9 +39,8 @@
         <path d="M8 6v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
         <circle cx="8" cy="11.5" r="0.75" fill="currentColor" />
       </svg>
-      <h2 class="modal-title" data-testid="rescue-card-header">
-        {headerCount} conflict{headerCount === 1 ? '' : 's'} need{headerCount === 1 ? 's' : ''} you
-      </h2>
+      <h2 class="modal-title">Resolve Conflicts</h2>
+      <span class="count-badge">{conflicts.length}</span>
     </div>
     <div class="header-right">
       <CopyPromptButton
@@ -85,7 +80,7 @@
         }
       }}
     >
-      Keep all local
+      All → Keep Local
     </button>
     <button
       class="bulk-btn bulk-remote"
@@ -96,7 +91,7 @@
         }
       }}
     >
-      Keep all cloud
+      All → Keep Remote
     </button>
   </div>
 </div>
@@ -143,6 +138,20 @@
     color: var(--popover-text-heading, #ffffff);
     margin: 0;
     line-height: 1.2;
+  }
+
+  .count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 0.35rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    border-radius: 10px;
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
   }
 
   .dismiss-btn {

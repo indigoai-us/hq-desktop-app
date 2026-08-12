@@ -49,18 +49,6 @@ pub struct MeetingDetectNotifyPrefs {
 #[serde(rename_all = "camelCase")]
 pub struct MenubarPrefs {
     pub hq_path: Option<String>,
-    /// V2 "Cloud Off" (US-001): when true, sync is paused on THIS device.
-    /// Every sync initiation path — the manual `start_sync` command (V2
-    /// window AND menubar popover), the watch daemon (auto-sync), the
-    /// supervisor respawn, and event-driven instant push (an argument of the
-    /// watch runner) — is gated on this flag in Rust (`is_cloud_paused` /
-    /// the `start_sync` + `start_daemon_with_origin` preflights), so the
-    /// titlebar switch and reality can never disagree. Defaults to false
-    /// (connected) when absent. Persisted here (not localStorage) so a
-    /// webview-data reset or a non-V2 surface can't silently resume sync;
-    /// the frontend migrates the legacy localStorage flag on first read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cloud_paused: Option<bool>,
     pub sync_on_launch: Option<bool>,
     pub notifications: Option<bool>,
     pub start_at_login: Option<bool>,
@@ -249,26 +237,6 @@ pub struct MenubarPrefs {
     /// the app already owns a taskbar presence there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dock_icon: Option<bool>,
-    /// V2 Appearance — color theme: `"system"` (default), `"light"`, or
-    /// `"dark"`. Absent in pre-V2 menubar.json files → treated as `"system"`
-    /// by the frontend (`normalizeColorTheme`); this field only round-trips
-    /// the Settings choice so it survives relaunch and webview-data resets.
-    /// Applied live by `installAppearancePreferences` (tokens flip via
-    /// `data-force-theme` + the native window theme setter).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,
-    /// V2 Appearance — window opacity percent (35–100). 100 is fully solid;
-    /// lower values reveal more native vibrancy (Liquid Glass / Mica).
-    /// Absent → the frontend default (see `DEFAULT_WINDOW_TRANSPARENCY` in
-    /// appearancePreferences.ts); values are clamped at the frontend
-    /// boundary, so a hand-edited out-of-range number degrades safely.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_opacity: Option<u8>,
-    /// V2 Appearance — interface size percent (75–150, default 100). Scales
-    /// every HQ WebView via native zoom (`installDesktopZoom`); ⌘/Ctrl +, −,
-    /// 0 adjust it live. Absent → 100. Clamped at the frontend boundary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interface_size: Option<u16>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
@@ -765,40 +733,6 @@ mod tests {
         let json = r#"{"hqPath": "/custom/HQ"}"#;
         let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.instant_sync, None);
-    }
-
-    #[test]
-    fn test_menubar_prefs_appearance_fields_round_trip() {
-        // US-016: theme / windowOpacity / interfaceSize persist the V2
-        // Appearance section in menubar.json, camelCased on the wire.
-        let json = r#"{"theme": "dark", "windowOpacity": 65, "interfaceSize": 120}"#;
-        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
-        assert_eq!(prefs.theme, Some("dark".to_string()));
-        assert_eq!(prefs.window_opacity, Some(65));
-        assert_eq!(prefs.interface_size, Some(120));
-
-        let out = serde_json::to_string(&prefs).unwrap();
-        assert!(out.contains("\"theme\":\"dark\""));
-        assert!(out.contains("\"windowOpacity\":65"));
-        assert!(out.contains("\"interfaceSize\":120"));
-        assert!(!out.contains("window_opacity"));
-        assert!(!out.contains("interface_size"));
-    }
-
-    #[test]
-    fn test_menubar_prefs_appearance_fields_absent_deserialize_none() {
-        // Backwards compatibility: pre-V2 menubar.json files predate these
-        // fields and must continue to load. None = absent = frontend default;
-        // absence adds no constraint and is not re-serialized.
-        let json = r#"{"hqPath": "/custom/HQ"}"#;
-        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
-        assert_eq!(prefs.theme, None);
-        assert_eq!(prefs.window_opacity, None);
-        assert_eq!(prefs.interface_size, None);
-        let out = serde_json::to_string(&prefs).unwrap();
-        assert!(!out.contains("theme"));
-        assert!(!out.contains("windowOpacity"));
-        assert!(!out.contains("interfaceSize"));
     }
 
     #[test]

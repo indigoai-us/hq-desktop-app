@@ -78,13 +78,6 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
 /// non-empty `accessToken`. The onboarding UI uses this only to choose its
 /// friendly reauth copy; `get_auth_state` still validates whether the session
 /// is usable and is the sole source of truth for skipping sign-in.
-/// The signed-in user's email claim, for the V2 sidebar footer user card
-/// (hq-desktop-v2 US-001). Display-only; `None` while signed out.
-#[tauri::command]
-pub async fn get_account_email() -> Result<Option<String>, String> {
-    Ok(crate::util::feature_gate::signed_in_email().await)
-}
-
 #[tauri::command]
 pub async fn has_stored_token() -> Result<bool, String> {
     cognito::has_non_empty_stored_token().await

@@ -1,7 +1,6 @@
 import type { Workspace } from '../../lib/workspaces';
 import { formatRelativeTime } from '../route';
 import type { Project } from '../lib/projects-model';
-import { checksPassing } from '../lib/overview-model';
 import {
   companyLabel,
   eventStart,
@@ -650,12 +649,10 @@ export interface HomeStat {
 }
 
 /**
- * The Home stat strip — glanceable, fully-real counts:
+ * The Home stat strip — three glanceable, fully-real counts:
  *   • Companies     — connected company workspaces (excludes the personal vault)
  *   • Active projects — local projects with work remaining
  *   • Open stories  — unfinished stories summed across those active projects
- *   • Checks passing — percent of stories with `passes == true` across accepted
- *     portfolio projects (reuses {@link checksPassing}; omitted when denominator 0)
  * No storage / latency / "edits 7d" tiles: there is no honest source for them.
  */
 export function getHomePortfolioStats(input: {
@@ -672,25 +669,19 @@ export function getHomePortfolioStats(input: {
   // `get_local_projects` scans disk independently from membership hydration,
   // so it can include stale projects for a pending/revoked/unknown company.
   // Only accepted portfolio work may contribute to Home aggregates.
-  const portfolioProjects = input.projects.filter((project) =>
-    acceptedPortfolioSlugs.has(project.company),
+  const active = input.projects.filter(
+    (project) =>
+      acceptedPortfolioSlugs.has(project.company) && isActiveProject(project),
   );
-  const active = portfolioProjects.filter(isActiveProject);
   const openStories = active.reduce(
     (sum, p) => sum + Math.max(0, p.storiesTotal - p.storiesComplete),
     0,
   );
-  const stats: HomeStat[] = [
+  return [
     { label: companies.length === 1 ? 'Company' : 'Companies', value: companies.length.toLocaleString() },
     { label: 'Active projects', value: active.length.toLocaleString() },
     { label: 'Open stories', value: openStories.toLocaleString() },
   ];
-  // Shared formula with Overview pulse — never invent "0%" when there are no stories.
-  const checks = checksPassing(portfolioProjects);
-  if (checks) {
-    stats.push({ label: 'Checks passing', value: `${checks.percent}%` });
-  }
-  return stats;
 }
 
 // ── Company portfolio table ─────────────────────────────────────────────────
@@ -767,9 +758,9 @@ export interface HomeAgendaItem {
 
 /**
  * Today's meetings, chronological. Filtered to the current day from the
- * already-loaded meetings cache; cancelled events are excluded; capped so the
- * rail stays calm. Action items are NOT included — board cards carry an age
- * string, not a due date, so "due today" can't be derived honestly yet.
+ * already-loaded meetings cache; capped so the rail stays calm. Action items
+ * are NOT included — board cards carry an age string, not a due date, so
+ * "due today" can't be derived honestly yet.
  */
 export function getHomeTodayAgenda(input: {
   events: MeetingEvent[];
@@ -780,10 +771,7 @@ export function getHomeTodayAgenda(input: {
   const now = input.now ?? new Date();
   const limit = input.limit ?? 6;
   return input.events
-    .filter(
-      (e) =>
-        e.status !== 'cancelled' && isToday(e, now) && eventStart(e) !== null,
-    )
+    .filter((e) => isToday(e, now) && eventStart(e) !== null)
     .sort(sortByStart)
     .slice(0, limit)
     .map((e) => ({

@@ -1,28 +1,168 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolvePendingDesktopRoute } from '../../src/desktop-alt/route';
-import { companyConsoleUrl } from '../../src/desktop-alt/lib/hq-console';
 
-describe('US-012 company secrets (US-021 console drop — no secrets request)', () => {
-  it('removes SecretsPanel / SecretEnvRow and the get_company_secrets command', () => {
-    expect(existsSync(resolve(process.cwd(), 'src/desktop-alt/panels/SecretsPanel.svelte'))).toBe(
-      false,
+function readIfExists(p: string): string {
+  try {
+    return readFileSync(resolve(process.cwd(), p), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+const companyPage = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/pages/CompanyPage.svelte'),
+  'utf8',
+);
+const secretsPanel = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/panels/SecretsPanel.svelte'),
+  'utf8',
+);
+const secretEnvRow = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/components/SecretEnvRow.svelte'),
+  'utf8',
+);
+const desktopAltCommand =
+  readIfExists('src-tauri/src/commands/desktop_alt.rs') +
+  '\n' +
+  readIfExists('../../crates/hq-desktop-core/src/desktop_alt.rs');
+const tauriMain = readFileSync(resolve(process.cwd(), 'src-tauri/src/main.rs'), 'utf8');
+
+function normalize(source: string): string {
+  return source.replace(/\s+/g, ' ');
+}
+
+function blockFrom(source: string, start: string, end: string): string {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+
+  expect(startIndex).toBeGreaterThanOrEqual(0);
+  expect(endIndex).toBeGreaterThan(startIndex);
+
+  return source.slice(startIndex, endIndex);
+}
+
+describe('US-012: Secrets panel reads metadata only with no plaintext values', () => {
+  it('wires the secrets tab to get_company_secrets with the selected company slug', () => {
+    const page = normalize(companyPage);
+    const panel = normalize(secretsPanel);
+    const operations = normalize(
+      readFileSync(
+        resolve(process.cwd(), 'src/desktop-alt/panels/CompanyOperationsPanel.svelte'),
+        'utf8',
+      ),
     );
-    expect(
-      existsSync(resolve(process.cwd(), 'src/desktop-alt/components/SecretEnvRow.svelte')),
-    ).toBe(false);
-    const main = readFileSync(resolve(process.cwd(), 'src-tauri/src/main.rs'), 'utf8');
-    const cmd = readFileSync(
-      resolve(process.cwd(), 'src-tauri/src/commands/desktop_alt.rs'),
-      'utf8',
+
+    // DESKTOP-010: Secrets mounts inside the operations workspace under More.
+    expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
+    expect(page).toContain('isCompanyOperationsTab(tab)');
+    expect(page).toContain('<CompanyOperationsPanel');
+    expect(page).toContain('slug={company.slug}');
+    expect(page).toContain('{cloudBacked}');
+    expect(page).toContain('const cloudBacked = $derived');
+    expect(operations).toContain('<SecretsPanel {slug} {cloudBacked} {syncEnabled} />');
+    expect(panel).toContain('if (!slug || !resourcesEnabled)');
+    expect(panel).toContain('void companyStore.loadSecrets(slug');
+    expect(panel).toContain('return () => { cancelled = true; };');
+    expect(panel).toContain('function retry() { if (loading) return; error = null; loading = true; reloadToken += 1; }');
+    expect(panel).toContain("console.error('get_company_secrets failed:', err)");
+    expect(tauriMain).toContain('commands::desktop_alt::get_company_secrets');
+  });
+
+  it('returns only env/count/items metadata from the Tauri command and registers no plaintext DTO fields', () => {
+    const command = normalize(desktopAltCommand);
+
+    expect(command).toContain('pub struct SecretItem { pub key: String, pub upd: String, pub rot: String, }');
+    expect(command).toContain('pub struct SecretEnv { pub env: String, pub count: usize, pub items: Vec<SecretItem>, }');
+    expect(command).toContain('pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String>');
+    expect(command).toContain('SecretEnv { env, count: items.len(), items, }');
+    expect(command).toContain('grouped.entry(env).or_default().push(SecretItem { key, upd: secret_updated_at(row), rot: secret_rotation(row), });');
+    expect(command).toContain('let serialized = serde_json::to_value(&envs).unwrap();');
+    expect(command).toContain('assert!(!serialized_text.contains("\\\"value\\\""));');
+    expect(command).toContain('assert!(!serialized_text.contains("\\\"secret\\\""));');
+    expect(command).toContain('assert!(serialized.get(0).unwrap().get("value").is_none());');
+  });
+
+  it('uses a metadata-list GET endpoint and does not call a fetch-secret/value endpoint', () => {
+    const getCompanySecrets = normalize(
+      blockFrom(
+        desktopAltCommand,
+        'pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String>',
+        '/// Open or focus the expanded desktop window (GA — any signed-in user).',
+      ),
     );
-    expect(main).not.toContain('get_company_secrets');
-    expect(cmd).not.toContain('pub async fn get_company_secrets');
-    expect(resolvePendingDesktopRoute('company:indigo:secrets')).toEqual({
-      mode: 'console',
-      url: `${companyConsoleUrl('indigo')}/secrets`,
-      landOn: { kind: 'company', slug: 'indigo', tab: 'overview' },
-    });
+    const urlBuilder = normalize(
+      blockFrom(desktopAltCommand, 'fn secrets_url(base: &str, company_uid: &str)', 'fn parse_board_response'),
+    );
+
+    expect(getCompanySecrets).toContain('let url = secrets_url(&vault_base()?, &company_uid)?;');
+    expect(getCompanySecrets).toContain('build_client() .get(&url)');
+    expect(getCompanySecrets).toContain('parse_secrets_response(status, &text)');
+    expect(urlBuilder).toContain('format!( "{}/secrets/{}", base.trim_end_matches(\'/\'), company_uid )');
+    expect(getCompanySecrets).not.toMatch(/\.(post|put|patch)\s*\(/);
+    expect(getCompanySecrets).not.toMatch(/fetch[_-]?secret|read[_-]?secret|get[_-]?secret[_-]?value/i);
+    expect(urlBuilder).not.toMatch(/\/secret\/|\/value|\/reveal|\/decrypt/i);
+  });
+
+  it('renders collapsed-by-default environment rows with production sealed and non-production open pills', () => {
+    const row = normalize(secretEnvRow);
+
+    expect(row).toContain('let expanded = $state(false);');
+    expect(row).toContain("return ['prod', 'production'].includes(env.trim().toLowerCase());");
+    expect(row).toContain("const pill = $derived(isSealedSecretEnv(secretEnv.env) ? 'sealed' : 'open')");
+    expect(row).toContain('<button class="env-button" type="button" aria-expanded={expanded} aria-controls={rowId} onclick={toggleExpanded} >');
+    expect(row).toContain('<span class="env-name" title={secretEnv.env}>{secretEnv.env}</span>');
+    expect(row).toContain('<span class={`env-pill ${pill}`}>{pill}</span>');
+    expect(row).toContain('<span class="env-count">{secretEnv.count} keys</span>');
+    expect(row).toContain('{#if expanded}');
+    expect(row).toContain('.env-pill.sealed');
+    expect(row).toContain('.env-pill.open');
+  });
+
+  it('expands an environment tree to key names and last-updated/rotation metadata with no value field rendered', () => {
+    const row = normalize(secretEnvRow);
+    const itemMarkup = blockFrom(secretEnvRow, '<div class="secret-list">', '{/each}');
+
+    expect(row).toContain('<span>Key</span> <span>Updated</span> <span>Rotated</span>');
+    expect(row).toContain('{#each secretEnv.items as item, index (`${secretEnv.env}:${item.key}:${index}`)}');
+    expect(row).toContain('<span class="secret-key" title={item.key}>{item.key}</span>');
+    expect(row).toContain('<time title={item.upd}>{item.upd}</time>');
+    expect(row).toContain('<time title={item.rot}>{item.rot}</time>');
+    expect(itemMarkup).not.toContain('item.value');
+    expect(itemMarkup).not.toContain('item.secret');
+    expect(itemMarkup).not.toMatch(/<span[^>]*>\s*Value\s*<\/span>|<input|<textarea/i);
+  });
+
+  it('renders safe HQ workflow toolbar affordances, exact doc note, and exact empty state', () => {
+    const panel = normalize(secretsPanel);
+
+    expect(panel).toContain('Read-only metadata. Values are never sent to the client — use /hq-secrets to fetch a value.');
+    expect(panel).toContain("onclick={() => void openSecretsPrompt('export')}");
+    expect(panel).toContain("onclick={() => void openSecretsPrompt('new')}");
+    expect(panel).toContain('/hq-secrets ${slug}');
+    expect(panel).toContain("invoke('open_claude_code_link', { url })");
+    expect(panel).toContain("{actionBusy === 'export' ? 'Opening…' : 'Export .env'}");
+    expect(panel).toContain("{actionBusy === 'new' ? 'Opening…' : 'New key'}");
+    expect(panel).toContain('<div class="empty-state">No secrets yet</div>');
+  });
+
+  it('normalizes and renders env rows from production/staging/preview metadata with count fallbacks', () => {
+    const panel = normalize(secretsPanel);
+    const row = normalize(secretEnvRow);
+
+    expect(panel).toContain('secrets = Array.isArray(result) ? normalizeSecretEnvs(result) : [];');
+    expect(panel).toContain('function normalizeSecretEnvs(entries: SecretEnvPayload[]): SecretEnv[]');
+    expect(panel).toContain("const label = stringOrFallback(entry.env, 'unknown')");
+    expect(panel).toContain('const identity = label.trim().toLowerCase()');
+    expect(panel).toContain('entry.key ? [ normalizeSecretItem({ key: entry.key, upd: entry.upd, rot: entry.rot, })');
+    expect(panel).toContain('current.items.set(item.key.trim().toLowerCase(), item)');
+    expect(panel).toContain('count: normalizedItems.length || declaredCount');
+    expect(panel).toContain('key: stringOrFallback(item.key, \'UNTITLED_KEY\')');
+    expect(panel).toContain('upd: stringOrFallback(item.upd, \'-\')');
+    expect(panel).toContain('rot: stringOrFallback(item.rot, \'-\')');
+    expect(panel).toContain('{#each secrets as secretEnv, index (`${secretEnv.env}:${index}`)}');
+    expect(panel).toContain('<SecretEnvRow {secretEnv} />');
+    expect(row).toContain('<span class="env-name" title={secretEnv.env}>{secretEnv.env}</span>');
+    expect(row).toContain('<span class="env-count">{secretEnv.count} keys</span>');
   });
 });

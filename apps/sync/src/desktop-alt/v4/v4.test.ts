@@ -2,9 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
   accountIdentityFromWorkspaces,
-  getV2ActiveWorkspace,
-  getV2SidebarModel,
-  getV2WorkspaceSwitcherItems,
   getV4SidebarModel,
   getV4TitleBarModel,
   sortV4CompaniesConnectedFirst,
@@ -127,7 +124,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       'workers',
       'knowledge',
       'team',
-      
+      'more',
     ]);
     expect(hpo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
     expect(model.companies.filter((row) => row.slug !== 'hpo').every((row) => !row.expanded)).toBe(
@@ -202,7 +199,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
   it('lights no row on palette-only and unknown routes (US-007: at most one active row)', () => {
     const routes: V4Route[] = [
       { kind: 'home' },
-      
+      { kind: 'mission-control' },
       { kind: 'moderation' },
       { kind: 'company', slug: 'missing' },
       { kind: 'some-future-kind' },
@@ -403,11 +400,10 @@ describe('US-001 V4 title bar model', () => {
       watchedCount: 12,
       lastSyncLabel: 'just now',
     });
-    // V2 (US-001): the synced-age reads in the sentence next to the green dot.
     expect(model).toEqual({
       tone: 'ok',
-      sentence: 'Synced just now',
-      meta: '12 watched',
+      sentence: 'All synced',
+      meta: '12 watched · just now',
       action: { id: 'sync', label: 'Sync Now' },
     });
   });
@@ -445,148 +441,5 @@ describe('US-001 V4 title bar model', () => {
     const model = getV4TitleBarModel({ syncState: 'conflict', watchedCount: 3 });
     expect(model.tone).toBe('warn');
     expect(model.action).toEqual({ id: 'resolve', label: 'Resolve' });
-  });
-});
-
-describe('hq-desktop-v2 US-001: V2 sidebar model', () => {
-  const companies = [
-    company({ slug: 'indigo', displayName: 'Indigo', state: 'synced' }),
-    company({ slug: 'acme', displayName: 'Acme', state: 'local-only' }),
-  ];
-
-  it('renders the seven workspace sections and the GENERAL group without Marketplace or Settings rows', () => {
-    const model = getV2SidebarModel({ kind: 'inbox' }, companies);
-    expect(model.sections.map((row) => row.label)).toEqual([
-      'Overview',
-      'Goals',
-      'Projects',
-      'Skills',
-      'Workers',
-      'Knowledge',
-      'Team',
-    ]);
-    expect(model.general.map((row) => row.label)).toEqual([
-      'Inbox',
-      'Messages',
-      'Meetings',
-      'Library',
-      'Files',
-    ]);
-    expect(model.general.some((row) => row.id === 'marketplace')).toBe(false);
-  });
-
-  it('resolves the active workspace: routed company first, then first connected non-personal', () => {
-    expect(getV2ActiveWorkspace({ kind: 'company', slug: 'acme' }, companies)?.slug).toBe('acme');
-    expect(getV2ActiveWorkspace({ kind: 'inbox' }, companies)?.slug).toBe('indigo');
-    expect(getV2ActiveWorkspace({ kind: 'inbox' }, [])).toBeNull();
-  });
-
-  it('lights exactly one row: a workspace section on company tabs, a GENERAL row on globals, the footer on settings', () => {
-    const onGoals = getV2SidebarModel({ kind: 'company', slug: 'indigo', tab: 'goals' }, companies);
-    expect(onGoals.sections.filter((row) => row.active).map((row) => row.id)).toEqual(['goals']);
-    expect(onGoals.general.every((row) => !row.active)).toBe(true);
-    expect(onGoals.settingsActive).toBe(false);
-
-    const onInbox = getV2SidebarModel({ kind: 'inbox' }, companies);
-    expect(onInbox.general.filter((row) => row.active).map((row) => row.id)).toEqual(['inbox']);
-    expect(onInbox.sections.every((row) => !row.active)).toBe(true);
-
-    const onSettings = getV2SidebarModel({ kind: 'settings' }, companies);
-    expect(onSettings.settingsActive).toBe(true);
-    expect(onSettings.general.every((row) => !row.active)).toBe(true);
-    expect(onSettings.sections.every((row) => !row.active)).toBe(true);
-  });
-});
-
-describe('hq-desktop-v2 US-001: Cloud Off titlebar state', () => {
-  it('shows the paused sentence with an idle dot while keeping Sync Now available', () => {
-    const model = getV4TitleBarModel({
-      syncState: 'idle',
-      watchedCount: 3,
-      lastSyncLabel: '5m ago',
-      cloudPaused: true,
-    });
-    expect(model.tone).toBe('idle');
-    expect(model.sentence).toBe('Cloud Off');
-    expect(model.meta).toBe('sync paused on this device');
-    expect(model.action).toEqual({ id: 'sync', label: 'Sync Now' });
-  });
-
-  it('never masks authoritative operational states', () => {
-    const syncing = getV4TitleBarModel({ syncState: 'syncing', watchedCount: 3, cloudPaused: true });
-    expect(syncing.sentence).toBe('Syncing…');
-    const error = getV4TitleBarModel({ syncState: 'error', watchedCount: 3, cloudPaused: true });
-    expect(error.sentence).toBe('Sync failed');
-  });
-});
-
-describe('hq-desktop-v2 US-002: workspace switcher items', () => {
-  const now = Date.parse('2026-08-11T12:00:00.000Z');
-
-  it('orders non-personal companies first (connected-first), Personal last with ⌘0', () => {
-    const workspaces: Workspace[] = [
-      personal,
-      company({
-        slug: 'zeta',
-        displayName: 'Zeta',
-        state: 'local-only',
-        cloudUid: null,
-        lastSyncedAt: null,
-      }),
-      company({
-        slug: 'acme',
-        displayName: 'Acme',
-        state: 'synced',
-        lastSyncedAt: new Date(now - 5 * 60_000).toISOString(),
-      }),
-      company({
-        slug: 'pending',
-        displayName: 'Pending Co',
-        state: 'cloud-only',
-        membershipStatus: 'pending',
-        lastSyncedAt: null,
-      }),
-    ];
-    const items = getV2WorkspaceSwitcherItems(workspaces, 'acme', now);
-    // Connected companies first (Acme), then idle/pending (Pending Co, Zeta), Personal last.
-    expect(items.map((item) => item.slug)).toEqual(['acme', 'pending', 'zeta', 'personal']);
-    expect(items.map((item) => item.hotkey)).toEqual(['⌘1', '⌘2', '⌘3', '⌘0']);
-    expect(items.find((item) => item.slug === 'personal')).toMatchObject({
-      isPersonal: true,
-      label: 'Personal',
-      syncAgeLabel: 'local',
-      hotkey: '⌘0',
-    });
-  });
-
-  it('sets sync age labels, active flag, pending invite, and tones', () => {
-    const workspaces: Workspace[] = [
-      company({
-        slug: 'acme',
-        displayName: 'Acme',
-        state: 'synced',
-        lastSyncedAt: new Date(now - 5 * 60_000).toISOString(),
-      }),
-      company({
-        slug: 'invite',
-        displayName: 'Invite',
-        state: 'cloud-only',
-        membershipStatus: 'pending',
-      }),
-      personal,
-    ];
-    const items = getV2WorkspaceSwitcherItems(workspaces, 'invite', now);
-    expect(items.find((item) => item.slug === 'acme')).toMatchObject({
-      syncAgeLabel: '5m ago',
-      active: false,
-      pendingInvite: false,
-      tone: 'ok',
-    });
-    expect(items.find((item) => item.slug === 'invite')).toMatchObject({
-      active: true,
-      pendingInvite: true,
-      tone: 'idle',
-    });
-    expect(items.find((item) => item.slug === 'personal')?.active).toBe(false);
   });
 });

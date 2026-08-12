@@ -16,11 +16,8 @@ describe('Settings > Appearance', () => {
       label: 'Appearance',
     });
     expect(resolvePendingDesktopRoute('settings:appearance')).toEqual({
-      mode: 'internal',
-      route: {
-    kind: 'settings',
-    tab: 'appearance',
-      },
+      kind: 'settings',
+      tab: 'appearance',
     });
   });
 
@@ -39,51 +36,6 @@ describe('Settings > Appearance', () => {
     expect(page).toMatch(
       /\.settings-card\s*\{[\s\S]*?border:\s*0;[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
     );
-  });
-
-  it('persists appearance durably in MenubarPrefs and hydrates it on load (US-016)', () => {
-    const page = source('src/desktop-alt/pages/SettingsPage.svelte');
-
-    // The saveSettings patch carries the three durable appearance fields …
-    expect(page).toMatch(/theme:\s*appearance\.colorTheme/);
-    expect(page).toMatch(
-      /windowOpacity:\s*windowOpacityFromTransparency\(/,
-    );
-    expect(page).toMatch(
-      /interfaceSize:\s*Math\.round\(interfaceZoom \* 100\)/,
-    );
-    // … and load hydration applies persisted values back to the live stores,
-    // treating absent fields as "no constraint" for old menubar.json files.
-    expect(page).toContain('settings.theme ?? null');
-    expect(page).toContain('settings.windowOpacity ?? null');
-    expect(page).toContain('settings.interfaceSize ?? null');
-    expect(page).toContain('normalizeColorTheme(wireTheme)');
-    expect(page).toContain('windowTransparencyFromOpacity(wireOpacity)');
-    expect(page).toContain('normalizeDesktopZoom(wireSize / 100)');
-
-    // The Rust side models the same three fields with serde defaults so old
-    // configs load and absent fields stay absent (pass-through, no coercion).
-    const config = readFileSync(
-      root('..', '..', 'crates', 'hq-desktop-core', 'src', 'config.rs'),
-      'utf8',
-    );
-    expect(config).toContain('pub theme: Option<String>');
-    expect(config).toContain('pub window_opacity: Option<u8>');
-    expect(config).toContain('pub interface_size: Option<u16>');
-    const settingsCmd = source('src-tauri/src/commands/settings.rs');
-    expect(settingsCmd).toContain('theme: prefs.theme');
-    expect(settingsCmd).toContain('window_opacity: prefs.window_opacity');
-    expect(settingsCmd).toContain('interface_size: prefs.interface_size');
-  });
-
-  it('spans the US-016 slider ranges: opacity 35–100%, interface size 75–150%', async () => {
-    const page = source('src/desktop-alt/pages/SettingsPage.svelte');
-    expect(page).toMatch(/aria-label="Window opacity"[\s\S]{0,400}/);
-    expect(page).toMatch(/min="35"\s*\n\s*max="100"/);
-
-    const zoom = await import('../../src/lib/desktopZoom');
-    expect(zoom.MIN_DESKTOP_ZOOM).toBe(0.75);
-    expect(zoom.MAX_DESKTOP_ZOOM).toBe(1.5);
   });
 
   it('installs native theme propagation before both desktop hosts mount', () => {

@@ -1,18 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { CompanySummary } from './company-summary.svelte';
 import type { CompanyBoard } from './company-board.svelte';
+import type { DeploymentEntry } from '../components/DeploymentRow.svelte';
+import type { SecretEnv } from '../components/SecretEnvRow.svelte';
 import { createResourceCache } from './resource-cache.svelte';
 import { withActivityRequestDeadline } from './activity-request';
 
-/**
- * Cached company cloud resources for the desktop shell.
- *
- * US-021: secrets and the deployments panel loader are gone — the desktop
- * never requests company secrets. Activity remains for the Overview digest;
- * summary/board power Overview + board surfaces. Deployments count still
- * arrives inside `get_company_summary` when the backend aggregates it.
- */
-export type CompanyResource = 'summary' | 'board' | 'activity';
+export type CompanyResource = 'summary' | 'board' | 'activity' | 'deployments' | 'secrets';
 
 const POLL_INTERVAL_MS = 30_000;
 const cache = createResourceCache({ ttlMs: POLL_INTERVAL_MS });
@@ -28,6 +22,14 @@ const loaders = {
   // `inFlight`, so Retry and focus refreshes can issue a fresh request.
   activity: (slug: string) =>
     withActivityRequestDeadline(invoke<unknown>('get_company_activity', { slug })),
+  deployments: (slug: string) =>
+    invoke<Partial<DeploymentEntry>[]>('get_company_deployments', { slug }).then((v) =>
+      Array.isArray(v) ? v : [],
+    ),
+  secrets: (slug: string) =>
+    invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug }).then((v) =>
+      Array.isArray(v) ? v : [],
+    ),
 };
 
 function load<R extends CompanyResource>(
@@ -81,8 +83,13 @@ export const companyStore = {
   summary: (slug: string) => cache.read<CompanySummary>(key('summary', slug)),
   board: (slug: string) => cache.read<CompanyBoard>(key('board', slug)),
   activity: (slug: string) => cache.read<unknown>(key('activity', slug)),
+  deployments: (slug: string) =>
+    cache.read<Partial<DeploymentEntry>[]>(key('deployments', slug)),
+  secrets: (slug: string) => cache.read<Partial<SecretEnv>[]>(key('secrets', slug)),
   loadSummary: (slug: string, force = false) => load('summary', slug, force),
   loadBoard: (slug: string, force = false) => load('board', slug, force),
   loadActivity: <T = unknown>(slug: string, force = false) =>
     load('activity', slug, force) as Promise<T>,
+  loadDeployments: (slug: string, force = false) => load('deployments', slug, force),
+  loadSecrets: (slug: string, force = false) => load('secrets', slug, force),
 };

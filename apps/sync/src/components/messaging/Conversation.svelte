@@ -35,11 +35,6 @@
     // text (e.g. "Pending — waiting for Ada to accept").
     pending?: boolean;
     pendingLabel?: string | null;
-    // Delivery state (US-013). An optimistic outbound message is appended with
-    // `delivered: false` ("Sending…") and flipped to `true` when the send ack
-    // resolves ("Delivered"). Server-loaded history omits the field — those
-    // messages are delivered by definition and keep the group-end receipt.
-    delivered?: boolean;
     // Threads (US-022). A root message carries its own eventId as `rootEventId`
     // and a `replyCount`; when `replyCount > 0` a tap-visible "{n} replies · last
     // {time}" affordance renders under the bubble and opens the thread via
@@ -597,8 +592,6 @@
         <span class="dm-msg-pending">
           {sanitizeVisibleIdentifiers(msg.pendingLabel || 'Pending')}
         </span>
-      {:else if msg.direction === 'out' && msg.delivered === false}
-        <span class="dm-msg-time">Sending…</span>
       {:else if msg.direction === 'out' && groupEnd}
         <span class="dm-msg-time">Delivered</span>
       {:else if !groupEnd}

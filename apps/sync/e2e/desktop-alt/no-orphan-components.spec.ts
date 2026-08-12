@@ -36,23 +36,8 @@ describe('desktop-alt component-mount gate', () => {
       .map((f) => f.replace(/\.svelte$/, '')),
   );
 
-  // hq-desktop-v2 US-001: V4Sidebar is intentionally unmounted — the V2 shell
-  // mounts V2Sidebar instead — but the file stays because a dozen source-
-  // contract specs still read it (DesktopStatusBar precedent). US-002 (the IA
-  // restructure) deletes it together with those contracts. The exemption is
-  // narrow: DesktopApp must still NOT import it (checked below), so it cannot
-  // silently remount.
-  const legacyUnmounted = new Set(['V4Sidebar']);
-
-  it('the legacy V4Sidebar stays unmounted in DesktopApp (V2 shell owns the sidebar)', () => {
-    const app = readFileSync(join(root, 'src/desktop-alt/DesktopApp.svelte'), 'utf8');
-    expect(app).not.toContain("import V4Sidebar");
-    expect(app).toContain("import V2Sidebar");
-  });
-
   it('every page/card component has at least one importer', () => {
     const orphans = components.filter((name) => {
-      if (legacyUnmounted.has(name)) return false;
       const importRe = new RegExp(`import\\s+${name}\\b[^\\n]*from`);
       return !sources.some(
         ({ path, body }) => !path.endsWith(`${name}.svelte`) && importRe.test(body),

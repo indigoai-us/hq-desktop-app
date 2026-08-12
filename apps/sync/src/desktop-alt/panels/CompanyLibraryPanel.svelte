@@ -1,17 +1,13 @@
 <script lang="ts">
   /**
-   * CompanyWorkersPage — first-class company Workers page (hq-desktop-v2
-   * US-009), promoted from the deep-link-only CompanyLibraryPanel workers tab.
-   * Scoped to the ACTIVE workspace slug: header ("Company-scoped agents and
-   * specialist roles"), live count, text search, and the shared Library card
-   * grid — each card carries name, worker type chip (e.g. OpsWorker), scope
-   * chip, and one-line description; the detail slide-over reuses
-   * LibraryDetailPanel.
+   * CompanyLibraryPanel — the per-company Library tab. Lists a single company's
+   * private workers + company-scoped skills via get_library_company, reusing the
+   * shared LibraryBrowser (Workers|Skills toggle + text filter + detail).
    *
-   * Load convention mirrors the other company pages: slug-keyed $effect with a
+   * Load convention mirrors the other company panels: slug-keyed $effect with a
    * cancel flag so switching companies fast can't paint stale data. A second
    * $effect subscribes to window focus / sync:complete and bumps `refreshNonce`,
-   * so a worker created in another tool surfaces without remounting the page.
+   * so a worker created in another tool surfaces without remounting the panel.
    */
   import { loadLibraryCompany, type LibraryItems } from '../lib/library';
   import { subscribeLibraryRefresh } from '../lib/library-refresh';
@@ -19,18 +15,39 @@
   import LibraryBrowser from '../components/LibraryBrowser.svelte';
 
   interface Props {
-    /** The active company/workspace slug this page is scoped to. */
+    /** The company/workspace slug this library is scoped to. */
     slug: string;
+    /**
+     * When set (company Skills / Workers top-level tabs), force that filter and
+     * hide the in-body Workers|Skills toggle — the company secondary sidebar owns switching.
+     */
+    forcedFilter?: 'skills' | 'workers';
   }
 
-  let { slug }: Props = $props();
+  let { slug, forcedFilter }: Props = $props();
 
   let items = $state<LibraryItems>({ workers: [], skills: [] });
   let loading = $state(true);
   let error = $state<string | null>(null);
   /** Bumped by the focus / sync:complete refresh subscription to re-fetch. */
   let refreshNonce = $state(0);
-  const visibleCount = $derived(items.workers.length);
+  const visibleCount = $derived(
+    forcedFilter === 'workers'
+      ? items.workers.length
+      : forcedFilter === 'skills'
+        ? items.skills.length
+        : items.workers.length + items.skills.length,
+  );
+  const title = $derived(
+    forcedFilter === 'workers' ? 'Workers' : forcedFilter === 'skills' ? 'Skills' : 'Library',
+  );
+  const summary = $derived(
+    forcedFilter === 'workers'
+      ? 'Company-scoped agents and specialist roles'
+      : forcedFilter === 'skills'
+        ? 'Company-scoped workflows and operating knowledge'
+        : 'Company-scoped workers and skills',
+  );
 
   $effect(() => {
     const activeSlug = slug;
@@ -54,7 +71,7 @@
       } catch (err) {
         console.error('loadLibraryCompany failed:', err);
         if (!cancelled) {
-          error = 'Workers unavailable. Try again after a sync.';
+          error = 'Library unavailable. Try again after a sync.';
           items = { workers: [], skills: [] };
         }
       } finally {
@@ -68,7 +85,7 @@
   });
 
   // Re-fetch on window focus / sync:complete so a worker created elsewhere
-  // appears without remounting the page. Wired once.
+  // appears without remounting the panel. Wired once.
   $effect(() => {
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
@@ -87,23 +104,35 @@
   });
 </script>
 
-<section class="company-library" aria-label="Workers" data-testid="company-workers-panel">
+<section
+  class="company-library"
+  aria-label={forcedFilter === 'workers' ? 'Workers' : forcedFilter === 'skills' ? 'Skills' : 'Library'}
+  data-testid={forcedFilter === 'workers'
+    ? 'company-workers-panel'
+    : forcedFilter === 'skills'
+      ? 'company-skills-panel'
+      : 'company-library-panel'}
+>
   <header class="company-library-header">
     <div>
-      <h2>Workers</h2>
-      <p>Company-scoped agents and specialist roles</p>
+      <h2>{title}</h2>
+      <p>{summary}</p>
     </div>
-    <span
-      >{loading ? 'Loading' : `${visibleCount} ${visibleCount === 1 ? 'worker' : 'workers'}`}</span
-    >
+    <span>{loading ? 'Loading' : `${visibleCount} ${visibleCount === 1 ? 'item' : 'items'}`}</span>
   </header>
 
-  {#if !loading && !error && items.workers.length === 0}
+  {#if !loading && !error && items.workers.length === 0 && items.skills.length === 0}
     <div class="empty-state">
-      No company-specific workers yet. Shared workers live in the top-level Library.
+      {#if forcedFilter === 'skills'}
+        No company-specific skills yet. Shared skills live in the top-level Library.
+      {:else if forcedFilter === 'workers'}
+        No company-specific workers yet. Shared workers live in the top-level Library.
+      {:else}
+        No company-specific workers or skills yet. Shared ones live in the top-level Library.
+      {/if}
     </div>
   {:else}
-    <LibraryBrowser {items} {loading} {error} forcedFilter="workers" />
+    <LibraryBrowser {items} {loading} {error} {forcedFilter} />
   {/if}
 </section>
 

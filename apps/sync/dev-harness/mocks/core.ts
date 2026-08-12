@@ -1,16 +1,9 @@
 // Mock of @tauri-apps/api/core for the browser preview harness.
-// Returns fixture data whose shapes match production Tauri command contracts
-// (Rust serde camelCase) so components mount without inventing fields.
+// Returns plausible fixture data per command so components mount and render
+// without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
-import {
-  companyActivityEmpty,
-  companyActivityPopulated,
-} from '../fixtures';
 import { emit } from './event';
 
-// Mirrors MenubarPrefs wire shape from get_settings / save_settings.
-// Appearance fields default to null (production: Option None = no constraint
-// for old menubar.json files — frontend owns system theme / 100% size defaults).
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
   syncOnLaunch: false,
@@ -33,12 +26,6 @@ const settings = {
   telemetryEnabled: true,
   widgetEnabled: true,
   widgetDisplay: null as string | null,
-  // Dock icon defaults ON (settings.rs / MenubarPrefs).
-  dockIcon: true as boolean | null,
-  // Appearance (US-016) — null = frontend defaults (absent-safe).
-  theme: null as string | null,
-  windowOpacity: null as number | null,
-  interfaceSize: null as number | null,
 };
 
 function harnessScenario(): string | null {
@@ -793,9 +780,23 @@ This final paragraph verifies spacing after a thematic break.
     { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
-  // US-021: get_company_secrets removed — desktop never fetches company secrets.
+  get_company_secrets: () => [
+    {
+      env: 'production',
+      count: 2,
+      items: [
+        { key: 'DATABASE_URL', upd: '2d ago', rot: '21d' },
+        { key: 'SENTRY_AUTH_TOKEN', upd: '8d ago', rot: '90d' },
+      ],
+    },
+    {
+      env: 'staging',
+      count: 1,
+      items: [{ key: 'API_BASE_URL', upd: '1d ago', rot: '—' }],
+    },
+  ],
   desktop_alt_is_admin: () => true,
-  get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 0 }),
+  get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
   // Creator per project (from the cloud board's S3 created-by). Some projects
   // intentionally omitted → they stay honestly "Unassigned" in the Lead column.
   get_company_project_creators: () => [
@@ -804,30 +805,36 @@ This final paragraph verifies spacing after a thematic break.
     { id: 'in-proj-125', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', creator: 'corey@getindigo.ai' },
     { id: 'in-proj-204', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', creator: 'jacob@getindigo.ai' },
   ],
-  // Team vault analytics (US-019). Production: GET /companies/{uid}/activity
-  // via get_company_activity — empty vault is HTTP 200 zeroed stats, never 404.
-  // Optional membersDetail / stats.vaultBytes only present when populated.
-  // Scenarios: ?scenario=analytics-empty | analytics-populated (default populated).
-  get_company_activity: () => {
-    const scenario = harnessScenario();
-    if (scenario === 'analytics-empty') {
-      // Zeroed production shape — no membersDetail / vaultBytes keys at all.
-      return {
-        stats: { ...companyActivityEmpty.stats },
-        sparkline: [...companyActivityEmpty.sparkline],
-        recent: [],
-        top: [...companyActivityEmpty.top],
-      };
-    }
-    // Default + analytics-populated: full shape including optional US-019 fields.
-    return {
-      stats: { ...companyActivityPopulated.stats },
-      sparkline: [...companyActivityPopulated.sparkline],
-      recent: companyActivityPopulated.recent.map((row) => ({ ...row })),
-      top: companyActivityPopulated.top.map((row) => ({ ...row })),
-      membersDetail: companyActivityPopulated.membersDetail?.map((row) => ({ ...row })),
-    };
-  },
+  get_company_activity: () => ({
+    stats: { files7: 128, edits7: 342, members: 5, vaultSize: '2.4 GB' },
+    sparkline: [4, 9, 2, 14, 7, 21, 5, 12, 3, 18, 9, 11, 6, 16],
+    recent: [
+      {
+        who: 'corey@getindigo.ai',
+        what: 'Updated',
+        file: 'companies/indigo/projects/desktop-experience/README.md',
+        when: 'just now',
+      },
+      {
+        who: 'maya@getindigo.ai',
+        what: 'Created',
+        file: 'companies/indigo/knowledge/release-notes.md',
+        when: '2h ago',
+      },
+      {
+        who: 'jacob@getindigo.ai',
+        what: 'Synced from cloud',
+        file: 'companies/indigo/policies/desktop.md',
+        when: 'Yesterday',
+      },
+    ],
+    top: [
+      { who: 'corey@getindigo.ai', edits: 142 },
+      { who: 'maya@getindigo.ai', edits: 88 },
+      { who: 'sam@liverecover.com', edits: 51 },
+      { who: 'jacob@getindigo.ai', edits: 23 },
+    ],
+  }),
   get_local_company_goals: () => COMPANY_GOALS,
   get_local_projects: () => COMPANY_PROJECTS,
   list_agent_sessions: () => ({
@@ -921,32 +928,13 @@ This final paragraph verifies spacing after a thematic break.
     if (scenario === 'settings-load-error') {
       throw new Error('Preview: menubar.json could not be read');
     }
-    // ?scenario=appearance-persisted hydrates durable Appearance fields so the
-    // Settings > Appearance section can be inspected with non-default values
-    // (theme dark, 65% opacity, 120% interface size) matching MenubarPrefs wire.
-    if (scenario === 'appearance-persisted') {
-      return {
-        ...settings,
-        theme: 'dark',
-        windowOpacity: 65,
-        interfaceSize: 120,
-        dockIcon: true,
-      };
-    }
     return {
       ...settings,
-      // Pass-through nulls for appearance when never persisted (production).
-      theme: settings.theme,
-      windowOpacity: settings.windowOpacity,
-      interfaceSize: settings.interfaceSize,
-      dockIcon: settings.dockIcon,
       widgetDisplay: scenario === 'widget-disconnected' ? 'Studio Display' : settings.widgetDisplay,
     };
   },
   save_settings: (args) => {
-    // Production save_settings accepts MenubarPrefs (flat prefs), not nested.
-    // SettingsPage routes through updateSettings which invokes with { prefs }.
-    const prefs = (args?.prefs ?? args ?? {}) as Partial<typeof settings>;
+    const prefs = (args?.prefs ?? {}) as Partial<typeof settings>;
     Object.assign(settings, prefs);
     return null;
   },
@@ -1139,8 +1127,6 @@ This final paragraph verifies spacing after a thematic break.
     return null;
   },
   get_hq_version: () => harnessCoreVersion,
-  // V2 sidebar footer user card (hq-desktop-v2 US-001).
-  get_account_email: () => 'corey@getindigo.ai',
   install_hq_core_update: () => runHarnessCoreInstall(),
   run_replace_from_staging: () => runHarnessCoreInstall(),
   list_displays: () =>
@@ -1283,14 +1269,12 @@ This final paragraph verifies spacing after a thematic break.
       },
     };
     const person = people[peer] ?? people.prs_ada;
-    // Outbound messages carry `delivered: true` once acked (US-013). Server
-    // history is always delivered; optimistic "Sending…" is client-only.
     return {
       messages: [
         { eventId: 'm1', fromPersonUid: peer, fromDisplayName: person.name, fromEmail: person.email, body: 'Hey — did the Phase 1 backend land in prod?', createdAt: '2026-06-09T19:40:00.000Z', direction: 'in' },
-        { eventId: 'm2', fromPersonUid: 'prs_me', fromDisplayName: 'You', fromEmail: 'me@coreyepstein.com', body: 'Yep, just went live. Connection routes are up and the send path is verified.', createdAt: '2026-06-09T19:41:00.000Z', direction: 'out', delivered: true },
+        { eventId: 'm2', fromPersonUid: 'prs_me', fromDisplayName: 'You', fromEmail: 'me@coreyepstein.com', body: 'Yep, just went live. Connection routes are up and the send path is verified.', createdAt: '2026-06-09T19:41:00.000Z', direction: 'out' },
         { eventId: 'm3', fromPersonUid: peer, fromDisplayName: person.name, fromEmail: person.email, body: 'Amazing. Want me to take the Messages window for a spin?', createdAt: '2026-06-09T19:42:30.000Z', direction: 'in' },
-        { eventId: 'm4', fromPersonUid: peer === 'prs_katherine' ? peer : 'prs_me', fromDisplayName: peer === 'prs_katherine' ? person.name : 'You', fromEmail: peer === 'prs_katherine' ? person.email : 'me@coreyepstein.com', body: person.latest, createdAt: '2026-06-09T19:43:10.000Z', direction: peer === 'prs_katherine' ? 'in' : 'out', delivered: peer === 'prs_katherine' ? undefined : true },
+        { eventId: 'm4', fromPersonUid: peer === 'prs_katherine' ? peer : 'prs_me', fromDisplayName: peer === 'prs_katherine' ? person.name : 'You', fromEmail: peer === 'prs_katherine' ? person.email : 'me@coreyepstein.com', body: person.latest, createdAt: '2026-06-09T19:43:10.000Z', direction: peer === 'prs_katherine' ? 'in' : 'out' },
       ],
       nextCursor: null,
     };
@@ -1317,50 +1301,8 @@ This final paragraph verifies spacing after a thematic break.
   toggle_reaction: () => ({ ok: true, added: true }),
   set_active_conversation: () => null,
   set_watched_shares: () => null,
-  // SendDmOutcome (hq-desktop-core): serde tag="state" + rename_all=camelCase
-  // → { state: "delivered" } | { state: "connectionRequested" }.
-  // ?scenario=dm-delivered forces the 200 path; default is connection-requested
-  // so compose "Pending" governance is visible in the harness.
-  send_dm_to_email: () =>
-    harnessScenario() === 'dm-delivered'
-      ? { state: 'delivered' }
-      : { state: 'connectionRequested' },
+  send_dm_to_email: () => ({ state: 'connection_requested' }),
   respond_dm_request: () => null,
-  // Threads UI (US-022 messaging): fetch_thread returns pinned root + replies.
-  fetch_thread: (args) => {
-    const rootEventId = String(args?.rootEventId ?? 'm1');
-    return {
-      root: {
-        eventId: rootEventId,
-        fromPersonUid: 'prs_ada',
-        fromDisplayName: 'Ada Lovelace',
-        fromEmail: 'ada@getindigo.ai',
-        body: 'Hey — did the Phase 1 backend land in prod?',
-        createdAt: '2026-06-09T19:40:00.000Z',
-        direction: 'in',
-      },
-      replies: [
-        {
-          eventId: `${rootEventId}-r1`,
-          fromPersonUid: 'prs_me',
-          fromDisplayName: 'You',
-          fromEmail: 'me@coreyepstein.com',
-          body: 'Yep — and the delivery receipt path is verified.',
-          createdAt: '2026-06-09T19:41:30.000Z',
-          direction: 'out',
-          delivered: true,
-          rootEventId,
-        },
-      ],
-      replyCount: 1,
-      nextCursor: null,
-    };
-  },
-  send_thread_reply: () => ({
-    eventId: 'thread-reply-1',
-    createdAt: new Date().toISOString(),
-  }),
-  set_active_thread: () => null,
   open_desktop_alt_window: (args) => {
     const route = String(args?.route ?? '').trim();
     if (!route) return null;

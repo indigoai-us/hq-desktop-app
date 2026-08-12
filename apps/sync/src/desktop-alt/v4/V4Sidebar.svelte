@@ -309,6 +309,9 @@
                   onclick={() => goCompanySection(row.slug, child.id)}
                 >
                   <span class="v4-row-label">{child.label}</span>
+                  {#if child.id === 'more'}
+                    <span class="v4-child-meta" aria-hidden="true">•••</span>
+                  {/if}
                 </button>
               {/each}
             </div>

@@ -1428,19 +1428,6 @@
     <div class="window" style={`--toph: ${topHeight};`}>
       <div class="drag-strip" data-tauri-drag-region></div>
       <div class="grad"></div>
-      <!-- US-018 (hq-desktop-v2): V2 city-artwork treatment for the welcome
-           step only. A token-driven gradient + skyline silhouette fades in
-           over the shared artwork band while panel 0 is active and fades out
-           on the same curve as the band's height change, so steps 2-9 render
-           pixel-identical to before. -->
-      <div class="v2-art" class:on={panelStep === 0} aria-hidden="true">
-        <svg class="v2-skyline" viewBox="0 0 640 88" preserveAspectRatio="xMidYMax slice" xmlns="http://www.w3.org/2000/svg">
-          <path
-            fill="currentColor"
-            d="M0 88V52h18V38h10v14h14V24h6v-8h6v8h6v28h12V40h16v48h10V30h8v-6h8v6h8v58h14V46h20V34h8v-8h8v8h8v12h14v42h12V20h6v-8h8v8h6v68h16V44h18v44h10V28h8v-6h10v6h6v60h14V50h16v-8h14v46h12V36h8v-10h8v10h8v52h14V48h18v40h12V32h6v-8h8v8h6v56h16V54h14v-14h10v14h12v34h10V42h18v46h8V26h8v-8h6v8h8v62Z"
-          />
-        </svg>
-      </div>
 
       <div class="gfxwrap" aria-hidden="true">
         <div
@@ -1572,14 +1559,14 @@
 
       <div class="panelwrap">
         <section
-          class="panel v2-welcome"
+          class="panel"
           class:on={panelStep === 0 && panelOn}
           data-p="0"
           data-testid="onboarding-signin"
           aria-labelledby="onboarding-title-signin"
         >
           <h2 class="h" id="onboarding-title-signin">Welcome to HQ</h2>
-          <p class="body tagline">One home for your whole team and every AI tool you use. Your knowledge, your best work, and your way of doing things all in one place, getting better over time.</p>
+          <p class="body">One home for your whole team and every AI tool you use. Your knowledge, your best work, and your way of doing things all in one place, getting better over time.</p>
           <!-- The telemetry consent checkbox used to live here, pre-ticked. It is
                gone on purpose: a pre-ticked box is not a real choice, and posting
                the answer here (before setup provisions the person entity) meant the
@@ -2197,30 +2184,6 @@
   .panelwrap { position:absolute; left:0; right:0; bottom:0; top:var(--toph); background:var(--c-bg); border-top:1px solid rgba(0,0,0,0.05); overflow:hidden; transition:top .55s cubic-bezier(.65,0,.35,1); z-index:2; }
   .panel { position:absolute; inset:0; padding:24px; display:flex; flex-direction:column; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; opacity:0; pointer-events:none; transition:opacity .3s ease; }
   .panel.on { opacity:1; pointer-events:auto; }
-
-  /* ── US-018: V2 welcome card (sign-in step only) ─────────────────────────
-     Scoped to `.v2-art` (artwork band overlay, visible only while panelStep
-     is 0) and `.panel.v2-welcome` (the sign-in panel). No shared class is
-     restyled, so steps 2-9 keep their exact current rendering. */
-  .v2-art {
-    position:absolute; top:0; left:0; right:0; height:var(--toph);
-    background:linear-gradient(180deg, rgba(17,17,17,0.30) 0%, rgba(17,17,17,0.12) 42%, rgba(17,17,17,0.55) 100%);
-    opacity:0; pointer-events:none;
-    transition:opacity .55s cubic-bezier(.65,0,.35,1), height .55s cubic-bezier(.65,0,.35,1);
-    z-index:0;
-  }
-  .v2-art.on { opacity:1; }
-  .v2-skyline { position:absolute; left:0; right:0; bottom:0; width:100%; height:88px; color:rgba(255,255,255,0.16); display:block; }
-
-  .panel.v2-welcome { align-items:center; justify-content:center; text-align:center; gap:0; }
-  .panel.v2-welcome .h { font-size:26px; line-height:34px; letter-spacing:-0.8px; }
-  .panel.v2-welcome .tagline { margin:8px auto 0; max-width:440px; }
-  .panel.v2-welcome .inline-note { margin-left:auto; margin-right:auto; max-width:440px; }
-  .panel.v2-welcome .btns {
-    flex-direction:column; margin:22px auto 0; width:100%; max-width:300px; gap:8px;
-  }
-  .panel.v2-welcome .btn { width:100%; border-radius:var(--v4-radius-button, 8px); font-weight:500; }
-  .panel.v2-welcome .btn-secondary { box-shadow:inset 0 0 0 1px var(--v4-control-border, rgba(0,0,0,0.08)); }
 
   .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
   .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }

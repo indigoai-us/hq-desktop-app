@@ -62,7 +62,7 @@ describe('US-006 shared resource cache', () => {
 
     expect(app).toContain('startCompanyStore();');
     expect(app).not.toMatch(/startCompanyStore\(\s*nextCompanies/);
-    expect(store.match(/invoke<.*?>?\('get_company_/g)?.length).toBe(3);
+    expect(store.match(/invoke<.*?>?\('get_company_/g)?.length).toBe(5);
     expect(store).toContain('setActiveCompanyResource');
     expect(store).toContain('invalidateCompanyResources');
   });

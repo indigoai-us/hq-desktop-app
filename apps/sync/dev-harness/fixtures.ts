@@ -1,9 +1,5 @@
 // Fixture props for rendering Popover in the browser preview harness.
-// Shapes mirror production Tauri command / Rust serde (camelCase) contracts —
-// do not invent fields production never returns.
 import type { Workspace } from '../src/lib/workspaces';
-import type { ConflictFile } from '../src/stores/conflicts';
-import type { CompanyActivity } from '../src/desktop-alt/lib/team-activity';
 
 const minsAgo = (mins: number) => new Date(Date.now() - mins * 60 * 1000).toISOString();
 
@@ -143,27 +139,6 @@ export const coreState = {
   scannedAt: new Date().toISOString(),
 };
 
-/**
- * Conflict rows for the popover rescue card (US-017). Shape matches
- * `ConflictFile` from stores/conflicts.ts (path + hashes + canAutoResolve + status).
- */
-export const conflictFixtures: ConflictFile[] = [
-  {
-    path: 'companies/indigo/projects/hq-desktop-app/prd.json',
-    localHash: 'local-preview-a',
-    remoteHash: 'remote-preview-a',
-    canAutoResolve: false,
-    status: 'pending',
-  },
-  {
-    path: 'companies/indigo/knowledge/release-notes.md',
-    localHash: 'local-preview-b',
-    remoteHash: 'remote-preview-b',
-    canAutoResolve: true,
-    status: 'pending',
-  },
-];
-
 // Minimal notification-panel popover props (US-001 chrome strip — no header
 // tabs, overflow menu, or desktop-view footer).
 export const popoverProps = {
@@ -177,51 +152,16 @@ export const popoverProps = {
   cloudReachable: true,
   cloudError: null,
   manifestError: null,
-  conflicts: [] as ConflictFile[],
+  conflicts: [],
   showConflictModal: false,
   updateAvailable: null,
   updateInstalling: false,
-  // US-017 version / drift rows — production defaults when no core state.
-  hqVersion: '15.0.16' as string | null,
-  coreDriftCount: 0,
-  coreNeedsUpdate: false,
-  coreInstalling: false,
   onsync: () => console.debug('[harness] sync'),
-  onresolve: (_path: string, _strategy: 'keep-local' | 'keep-remote') => {},
-  onopen: (_path: string) => {},
+  onresolve: () => {},
+  onopen: () => {},
   ondismissconflicts: () => {},
   oninstallupdate: () => {},
-  oninstallcore: () => {},
-  onopendrift: () => {},
   bindStatsRefresh: () => {},
-};
-
-/**
- * Popover props for `?view=popover&scenario=rescue` — live conflict rescue card
- * with Keep local / Keep cloud + Open in editor (US-017).
- */
-export const popoverRescueProps = {
-  ...popoverProps,
-  syncState: 'conflict' as const,
-  conflicts: conflictFixtures,
-  showConflictModal: true,
-  conflictCount: conflictFixtures.length,
-  conflictCompany: 'indigo',
-};
-
-/**
- * Popover props for `?view=popover&scenario=drift` — HQ core drift + restore
- * and a pending desktop app update row (US-017).
- */
-export const popoverDriftProps = {
-  ...popoverProps,
-  coreDriftCount: 2,
-  coreNeedsUpdate: true,
-  updateAvailable: {
-    version: '0.10.36-beta.1',
-    body: 'Desktop surface repairs and updater recovery.',
-    date: '2026-07-26',
-  },
 };
 
 /**
@@ -231,73 +171,6 @@ export const popoverDriftProps = {
 export const hqCliUpdateAvailable = {
   local: '5.38.2',
   latest: '5.41.0',
-};
-
-/**
- * Team vault analytics — empty / zeroed (HTTP 200 empty vault). Matches
- * `CompanyActivity` (hq-desktop-core + team-activity.ts). Optional extension
- * fields (`membersDetail`, `stats.vaultBytes`) are deliberately ABSENT so the
- * UI treats them as no-data (hq-absent-field-never-means-constraining-value).
- */
-export const companyActivityEmpty: CompanyActivity = {
-  stats: {
-    files7: 0,
-    edits7: 0,
-    members: 0,
-    vaultSize: '',
-  },
-  sparkline: [],
-  top: [],
-};
-
-/**
- * Team vault analytics — populated production shape plus optional US-019
- * extensions (`vaultBytes`, `membersDetail`). Includes `recent` only when
- * used via the Tauri wire (see mocks/core.ts); the TS adapter omits recent.
- */
-export const companyActivityPopulated: CompanyActivity & {
-  recent: Array<{ who: string; what: string; file: string; when: string }>;
-} = {
-  stats: {
-    files7: 128,
-    edits7: 342,
-    members: 5,
-    vaultSize: '2.4 GB',
-    vaultBytes: 2_576_980_377,
-  },
-  sparkline: [4, 9, 2, 14, 7, 21, 5, 12, 3, 18, 9, 11, 6, 16],
-  recent: [
-    {
-      who: 'corey@getindigo.ai',
-      what: 'Updated',
-      file: 'companies/indigo/projects/desktop-experience/README.md',
-      when: 'just now',
-    },
-    {
-      who: 'maya@getindigo.ai',
-      what: 'Created',
-      file: 'companies/indigo/knowledge/release-notes.md',
-      when: '2h ago',
-    },
-    {
-      who: 'jacob@getindigo.ai',
-      what: 'Synced from cloud',
-      file: 'companies/indigo/policies/desktop.md',
-      when: 'Yesterday',
-    },
-  ],
-  top: [
-    { who: 'corey@getindigo.ai', edits: 142 },
-    { who: 'maya@getindigo.ai', edits: 88 },
-    { who: 'sam@liverecover.com', edits: 51 },
-    { who: 'jacob@getindigo.ai', edits: 23 },
-  ],
-  membersDetail: [
-    { who: 'corey@getindigo.ai', edits: 142, bytes: 1_048_576 },
-    { who: 'maya@getindigo.ai', edits: 88, bytes: 524_288 },
-    { who: 'sam@liverecover.com', edits: 51, bytes: 262_144 },
-    { who: 'jacob@getindigo.ai', edits: 23, bytes: 131_072 },
-  ],
 };
 
 /**

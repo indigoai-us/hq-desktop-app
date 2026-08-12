@@ -18,7 +18,6 @@
   import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations';
   import {
     APPEARANCE_CHANGE_EVENT,
-    normalizeColorTheme,
     readBrowserAppearancePreferences,
     requestAppearancePreferenceChange,
     windowOpacityFromTransparency,
@@ -30,7 +29,6 @@
     DESKTOP_ZOOM_CHANGE_EVENT,
     MAX_DESKTOP_ZOOM,
     MIN_DESKTOP_ZOOM,
-    normalizeDesktopZoom,
     readBrowserDesktopZoom,
     requestDesktopZoom,
   } from '../../lib/desktopZoom';
@@ -93,12 +91,6 @@
     defaultRecordingCompanyUid?: string | null;
     telemetryEnabled?: boolean | null;
     dockIcon?: boolean | null;
-    // Appearance (US-016) — durable copies of the live localStorage-backed
-    // preferences. `null`/absent = "never persisted here"; the frontend
-    // defaults apply and no constraint is added for old menubar.json files.
-    theme?: string | null;
-    windowOpacity?: number | null;
-    interfaceSize?: number | null;
   }
 
   interface UpdateInfo {
@@ -433,62 +425,12 @@
       : `Restore v${coreState.targetVersion}`;
   });
 
-  // ---- Appearance persistence (US-016) ------------------------------------
-  // The localStorage-backed appearance/zoom stores stay the LIVE cross-window
-  // sync mechanism; menubar.json is the durable copy that survives webview-data
-  // resets and is what a fresh webview hydrates from. Persistence is debounced
-  // because the two sliders fire per pixel of a drag, and every persisted write
-  // is a full get_settings→save_settings round-trip through the shared queue.
-  const APPEARANCE_PERSIST_DEBOUNCE_MS = 400;
-  let appearancePersistTimer: ReturnType<typeof setTimeout> | null = null;
-  // Snapshot of the values last known to be in menubar.json, so a hydration
-  // echo (our own request* call re-dispatching the change event) or a silent
-  // settings refresh never triggers a redundant disk write.
-  let persistedAppearanceKey: string | null = null;
-
-  function appearanceKey(
-    theme: ColorTheme,
-    opacity: number,
-    sizePercent: number,
-  ): string {
-    return `${theme}|${opacity}|${sizePercent}`;
-  }
-
-  function currentAppearanceKey(): string {
-    return appearanceKey(
-      appearance.colorTheme,
-      windowOpacityFromTransparency(appearance.windowTransparency),
-      Math.round(interfaceZoom * 100),
-    );
-  }
-
-  function scheduleAppearancePersist(): void {
-    if (!settingsReady) return;
-    if (currentAppearanceKey() === persistedAppearanceKey) return;
-    if (appearancePersistTimer) clearTimeout(appearancePersistTimer);
-    appearancePersistTimer = setTimeout(() => {
-      appearancePersistTimer = null;
-      const key = currentAppearanceKey();
-      if (key === persistedAppearanceKey) return;
-      persistedAppearanceKey = key;
-      void saveSettings({
-        theme: appearance.colorTheme,
-        windowOpacity: windowOpacityFromTransparency(
-          appearance.windowTransparency,
-        ),
-        interfaceSize: Math.round(interfaceZoom * 100),
-      });
-    }, APPEARANCE_PERSIST_DEBOUNCE_MS);
-  }
-
   function updateAppearance(patch: Partial<AppearancePreferences>): void {
     appearance = requestAppearancePreferenceChange(patch);
-    scheduleAppearancePersist();
   }
 
   function updateInterfaceZoom(value: number): void {
     interfaceZoom = requestDesktopZoom(value);
-    scheduleAppearancePersist();
   }
 
   onMount(() => {
@@ -496,27 +438,17 @@
       appearance = (
         event as CustomEvent<AppearancePreferences>
       ).detail;
-      // Mirrors changes made outside this page's controls (another window via
-      // the storage event) into menubar.json; the key guard skips echoes.
-      scheduleAppearancePersist();
     };
     const onZoomChange = (event: Event) => {
       interfaceZoom = (
         event as CustomEvent<{ zoom: number }>
       ).detail.zoom;
-      // ⌘/Ctrl +, −, 0 land here — persist so the shortcut-chosen size
-      // survives relaunch through menubar.json too.
-      scheduleAppearancePersist();
     };
     window.addEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
     window.addEventListener(DESKTOP_ZOOM_CHANGE_EVENT, onZoomChange);
     return () => {
       window.removeEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
       window.removeEventListener(DESKTOP_ZOOM_CHANGE_EVENT, onZoomChange);
-      if (appearancePersistTimer) {
-        clearTimeout(appearancePersistTimer);
-        appearancePersistTimer = null;
-      }
     };
   });
 
@@ -669,33 +601,6 @@
     // the local `settings.telemetryEnabled` is only the offline cache and must
     // never be shown as the current answer while the server is reachable.
     releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
-
-    // Appearance (US-016): menubar.json is the durable copy; apply persisted
-    // values to the live localStorage-backed stores so they survive a
-    // webview-data reset. Absent fields apply nothing (no constraint for old
-    // configs). Skip while a local change is still debouncing toward disk —
-    // the freshly changed control must not snap back to the stale snapshot.
-    if (appearancePersistTimer === null) {
-      const wireTheme = settings.theme ?? null;
-      const wireOpacity = settings.windowOpacity ?? null;
-      const appearancePatch: Partial<AppearancePreferences> = {};
-      if (wireTheme !== null) {
-        appearancePatch.colorTheme = normalizeColorTheme(wireTheme);
-      }
-      if (wireOpacity !== null) {
-        appearancePatch.windowTransparency =
-          windowTransparencyFromOpacity(wireOpacity);
-      }
-      if (Object.keys(appearancePatch).length > 0) {
-        appearance = requestAppearancePreferenceChange(appearancePatch);
-      }
-      const wireSize = settings.interfaceSize ?? null;
-      if (wireSize !== null) {
-        const zoom = normalizeDesktopZoom(wireSize / 100);
-        if (zoom !== interfaceZoom) interfaceZoom = requestDesktopZoom(zoom);
-      }
-      persistedAppearanceKey = currentAppearanceKey();
-    }
   }
 
   async function loadSettings() {
@@ -2356,7 +2261,7 @@
           <span class="range-control">
             <input
               type="range"
-              min="35"
+              min="0"
               max="100"
               step="5"
               value={windowOpacity}
@@ -2383,7 +2288,7 @@
               type="range"
               min={MIN_DESKTOP_ZOOM}
               max={MAX_DESKTOP_ZOOM}
-              step="0.05"
+              step="0.1"
               value={interfaceZoom}
               aria-label="Interface size"
               aria-valuetext={`${Math.round(interfaceZoom * 100)}%`}

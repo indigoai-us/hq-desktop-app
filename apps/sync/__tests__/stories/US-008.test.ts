@@ -125,10 +125,8 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
     expect(inboxPage).not.toContain("open_messages_window");
     expect(inboxPage).not.toContain("open_inbox_window");
     expect(inboxPage).toContain('density="comfortable"');
-    // US-012 superseded the US-008 "no header controls" lock: the merged feed
-    // V2 header carries an explicit Mark-all-read affordance (badge clearing
-    // across sidebar / tray / widget). Tabs and sync chrome remain forbidden.
-    expect(inboxPage).toContain('data-testid="inbox-mark-all-read"');
+    expect(inboxPage).not.toContain('Mark all read');
+    expect(inboxPage).not.toContain('mark-read');
     expect(inboxPage).not.toContain('role="tablist"');
   });
 
@@ -193,15 +191,12 @@ describe('US-008: combined Inbox page shows both streams as one-line rows with u
 
 describe('US-008: navigation intents resolve to their complete surfaces', () => {
   it('routes messages to Messages and notifications/inbox to Inbox', () => {
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ mode: 'internal', route: { kind: 'messages' } });
-    expect(resolvePendingDesktopRoute('inbox')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
+    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('settings:notifications')).toEqual({
-      mode: 'internal',
-      route: {
-    kind: 'settings',
-    tab: 'notifications',
-      },
+      kind: 'settings',
+      tab: 'notifications',
     });
   });
 
@@ -211,13 +206,15 @@ describe('US-008: navigation intents resolve to their complete surfaces', () => 
     expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
   });
 
-  it('workspace hotkeys never resolve to messages or notifications (US-002)', () => {
+  it('⌘1 is Inbox and no hotkey resolves to messages or notifications', () => {
     const companies = getDesktopCompanies(workspaces);
-    for (const key of ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']) {
+    expect(
+      getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
+    ).toEqual({ kind: 'inbox' });
+    for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       const routed = getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
       expect(routed?.kind).not.toBe('messages');
       expect(routed?.kind).not.toBe('notifications');
-      expect(routed?.kind).not.toBe('inbox');
     }
   });
 });

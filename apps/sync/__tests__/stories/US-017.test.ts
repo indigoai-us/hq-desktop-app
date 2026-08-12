@@ -44,9 +44,7 @@ describe('US-017: full-suite verification release guard', () => {
 
   it('keeps the critical safety and secrets specs wired', () => {
     expect(secretsSpec).toContain('desktop-alt secrets never leak');
-    // US-021: strengthened — no company-secrets request at all.
-    expect(secretsSpec).toContain('never requests company secrets');
-    expect(secretsSpec).toContain('get_company_secrets');
+    expect(secretsSpec).toContain('metadata only');
     // V4 safety flows are handled inline (NeedsYouCard) rather than by dedicated
     // pages; the spec asserts the real conflict/drift wiring and the abort-only
     // guard (hard policy hq-sync-bulk-asymmetry-breaker-means-abort).

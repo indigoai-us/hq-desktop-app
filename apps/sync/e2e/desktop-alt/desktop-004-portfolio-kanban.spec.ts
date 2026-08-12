@@ -60,13 +60,7 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(PORTFOLIO_COLUMN_LABEL.active).toBe('Active');
     expect(PORTFOLIO_COLUMN_LABEL.complete).toBe('Complete');
 
-    // V2 (US-006): Board/List preference is persisted, defaulting to board.
-    expect(page).toContain('viewMode = $state<PortfolioViewMode>(storedViewMode())');
-    expect(page).toContain("const PROJECTS_VIEW_MODE_KEY = 'hq-desktop-alt.projects-view-mode'");
-    expect(page).toContain('localStorage.setItem(PROJECTS_VIEW_MODE_KEY, mode)');
-    expect(page).toContain("localStorage.getItem(PROJECTS_VIEW_MODE_KEY) === 'list' ? 'list' : 'board'");
-    expect(page).toContain("onclick={() => setViewMode('board')}");
-    expect(page).toContain("onclick={() => setViewMode('list')}");
+    expect(page).toContain("viewMode = $state<PortfolioViewMode>('board')");
     expect(page).toContain('data-testid="portfolio-kanban"');
     expect(page).toContain('data-testid={`portfolio-column-${column}`}');
     expect(page).toContain('PORTFOLIO_COLUMNS');
@@ -92,19 +86,6 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('disabled={newProjectPending}');
     expect(page).toContain('aria-busy={newProjectPending}');
     expect(page).toContain('class="primary-action"');
-    // V2 (US-006): New project creates a local scaffold in-app via the
-    // projects_local write command, with the Claude Code planning handoff
-    // demoted to an optional secondary action.
-    expect(page).toContain('data-testid="new-project-form"');
-    expect(page).toContain('data-testid="new-project-name"');
-    expect(page).toContain('data-testid="new-project-create"');
-    expect(page).toContain('createLocalProject(slug, name)');
-    const localProjects = readRepoFile('src/desktop-alt/lib/local-projects.ts');
-    expect(localProjects).toContain(
-      "invoke<string>('create_local_project', { companySlug, name })",
-    );
-    const mainRs = readRepoFile('src-tauri/src/main.rs');
-    expect(mainRs).toContain('commands::projects_local::create_local_project');
     // Control order: search → state → owner → (legacy) → Board/List.
     const tools = page.indexOf('data-testid="portfolio-tools"');
     const search = page.indexOf('data-testid="project-search"');

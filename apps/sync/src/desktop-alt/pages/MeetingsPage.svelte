@@ -524,18 +524,13 @@
           {/if}
         </span>
       </div>
-      <!-- US-014: signal counts render only when extracted signal data exists;
-           with no signal-carrying meetings the stat hides cleanly rather than
-           painting a misleading "0a · 0d · 0r from 0 meetings". -->
-      {#if signalMeetingCount > 0}
-        <div class="health-item" data-testid="meetings-signals-stat">
-          <span class="health-label">Signals</span>
-          <span class="health-value">
-            {signalTotals.actions}a · {signalTotals.decisions}d · {signalTotals.risks}r
-            <span class="health-sub">from {signalMeetingCount} meeting{signalMeetingCount === 1 ? '' : 's'}</span>
-          </span>
-        </div>
-      {/if}
+      <div class="health-item">
+        <span class="health-label">Signals</span>
+        <span class="health-value">
+          {signalTotals.actions}a · {signalTotals.decisions}d · {signalTotals.risks}r
+          <span class="health-sub">from {signalMeetingCount} meeting{signalMeetingCount === 1 ? '' : 's'}</span>
+        </span>
+      </div>
     </section>
 
     <!-- 4. Upcoming agenda — naked hairline rows, primary surface. -->
