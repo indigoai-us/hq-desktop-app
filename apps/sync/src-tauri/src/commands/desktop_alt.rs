@@ -50,7 +50,8 @@ pub use hq_desktop_core::desktop_alt::{
     parse_board_response, parse_company_activity, parse_company_board,
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
-    parse_secrets_response, read_file_bytes_capped, read_file_content, read_file_content_capped,
+    parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
+    read_file_content, read_file_content_capped,
     resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
     secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
     string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
@@ -183,7 +184,12 @@ pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>
 #[tauri::command]
 pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
     let slug = normalize_slug(&slug)?;
-    let company_uid = resolve_company_uid(&slug).await?;
+    // Resolution failures (not found / not synced / not connected) get a
+    // machine-readable code prefix so the board panel can render a calm state
+    // instead of the raw diagnostic. Non-resolution errors pass through.
+    let company_uid = resolve_company_uid(&slug)
+        .await
+        .map_err(prefix_company_resolution_error)?;
     let url = board_url(&vault_base()?, &company_uid)?;
     let token = cognito::get_valid_access_token()
         .await

@@ -41,6 +41,7 @@
     type StoryState,
   } from '../lib/projects-model';
   import { useCompanyBoard, type CompanyBoardCard } from '../lib/company-board.svelte';
+  import { presentBoardError } from '../lib/board-error';
   import { useCompanySummary } from '../lib/company-summary.svelte';
   import ProjectListView from '../components/ProjectListView.svelte';
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
@@ -260,10 +261,13 @@
       });
     }
     if (error || boardState.error) {
+      // Calm copy only — the raw diagnostic (resolution / auth / HTTP detail)
+      // stays in the console (company-board.svelte.ts logs the rejection).
+      const boardIssue = boardState.error ? presentBoardError(boardState.error) : null;
       cards.push({
         id: 'board-error',
         title: 'Company board could not refresh',
-        sub: error || boardState.error || 'Try again after a sync',
+        sub: boardIssue?.message ?? error ?? 'Try again after a sync',
         tone: 'error',
         actions: [{ id: 'inspect', label: 'Inspect', kind: 'secondary' }],
       });
