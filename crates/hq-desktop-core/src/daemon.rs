@@ -77,14 +77,15 @@ pub fn resolve_hq_folder_path() -> Result<String, String> {
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
 ///   - `--poll-remote-ms 15000` — pulls remote changes every 15 seconds (fixed)
-///   - `--event-push` — when the user's Instant-sync setting is ON (Phase 2 GA)
+///   - `--event-push` — when both runner compatibility and the user's
+///     Instant-sync setting permit that optional runner capability
 ///
-/// As of hq-cloud 5.26 the runner's chokidar watcher is real. Phase 2 GA
-/// (2026-05-23) opened event-driven push to ALL users: we append `--event-push`
-/// (requires `--watch`, always set) whenever the user's Instant-sync setting is
-/// ON — which it is by default. Local edits then upload within seconds of the
-/// filesystem event. Toggling Instant-sync OFF drops back to poll-only without
-/// disabling Auto-sync.
+/// As of hq-cloud 5.26 the runner's chokidar watcher is real. `--event-push`
+/// is only a local runner capability: it permits the runner to consider its
+/// existing event-driven V1 behavior. It never enrolls a scope in V2, issues a
+/// lease, or authorizes a mutation; those decisions stay server-owned.
+/// Toggling Instant-sync OFF drops back to poll-only without disabling
+/// Auto-sync.
 ///
 /// Instant-sync OFF stays poll-only: the remote→local pull runs on the 15-second
 /// cadence and a local push waits for the next pass — there is no second-by-second
@@ -102,28 +103,28 @@ pub fn resolve_hq_folder_path() -> Result<String, String> {
 
 /// Pure decision: should the watch runner get `--event-push`?
 ///
-/// As of Phase 2 GA (2026-05-23) eligibility is universal, so this effectively
-/// reduces to "is the user's Instant-sync setting ON?". Kept as a pure
-/// `(eligible, instant_sync) -> bool` so the decision stays unit-testable and a
-/// future targeted re-gate (flip `event_push_eligible`) works without touching
-/// this logic.
-pub fn should_event_push(eligible: bool, instant_sync: bool) -> bool {
-    eligible && instant_sync
+/// A capability/preference decision only. This function deliberately has no
+/// account, token, tenant, or rollout input, because none can be desktop
+/// enrollment authority. It cannot select V2 or claim a first-push path.
+pub fn should_event_push(runner_supports_event_push: bool, instant_sync: bool) -> bool {
+    runner_supports_event_push && instant_sync
 }
 
-/// Resolve whether the signed-in user is eligible for event-driven push.
+/// Compatibility export for app shells built against the old desktop API.
 ///
-/// Phase 2 (2026-05-23): event-driven push is GA — every signed-in user is
-/// eligible. The per-user Instant-sync setting (`is_instant_sync_enabled`,
-/// default-on) is now the sole gate. Kept as a function (rather than inlining
-/// `true` at the call site) so the `should_event_push` seam stays intact and a
-/// future targeted re-gate is a one-line change here.
+/// The former implementation returned `true` for every signed-in user. That
+/// universal enrollment decision is intentionally gone: callers that have not
+/// yet moved to the runner-capability seam receive `false` and cannot select
+/// any V2 path. Server inventory and leases remain the only enrollment
+/// authority.
 pub fn event_push_eligible() -> bool {
-    true
+    false
 }
 
 pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
-    use crate::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
+    use crate::hq_cloud::{
+        HQ_CLOUD_PACKAGE, HQ_CLOUD_RUNNER_CAPABILITIES, HQ_CLOUD_VERSION, RUNNER_BIN,
+    };
 
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
@@ -161,11 +162,14 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         poll_ms.to_string(),
     ];
 
-    // Phase 2 GA: event-driven push is gated solely by the user's Instant-sync
-    // setting (eligibility is now universal — see `event_push_eligible`). The
-    // hq-cloud runner requires --watch for --event-push (already set above), so
-    // appending here is safe for both spawn paths below.
-    if should_event_push(event_push_eligible(), is_instant_sync_enabled()) {
+    // `--event-push` is a runner capability, never V2 enrollment. The
+    // hq-cloud runner requires --watch for it (already set above), so appending
+    // it is safe for both spawn paths below. V2 mutation support stays false
+    // until U59 wires the server-authorized compiled boundary.
+    if should_event_push(
+        HQ_CLOUD_RUNNER_CAPABILITIES.event_push,
+        is_instant_sync_enabled(),
+    ) {
         runner_args.push("--event-push".to_string());
     }
 
@@ -293,11 +297,10 @@ pub fn is_realtime_sync_enabled() -> bool {
 /// Check if the user-facing Instant-sync (event-driven) flag is enabled in
 /// menubar.json.
 ///
-/// Defaults to true when the field is missing so eligible (@getindigo.ai)
-/// users get instant push on a fresh install without discovering the toggle,
-/// matching the `realtime_sync` default-on convention. An explicit `false`
-/// written by `save_settings` still wins. Note this is only consulted for
-/// `event_push_eligible()` users — see `should_event_push`.
+/// Defaults to true when the field is missing so a runner that supports the
+/// optional event-push capability can use it on a fresh install. An explicit
+/// `false` written by `save_settings` still wins. This setting is local-disable
+/// only; it cannot enroll a scope or select V2.
 pub fn is_instant_sync_enabled() -> bool {
     read_menubar_bool(|p| p.instant_sync, true)
 }
@@ -953,36 +956,37 @@ mod tests {
         );
     }
 
-    // ── event-push gating (Phase 2 GA) ─────────────────────────────────────
-    //
-    // Phase 2 GA (2026-05-23): eligibility is universal (`event_push_eligible`
-    // => true), so --event-push is appended whenever the user's Instant-sync
-    // setting is ON. The pure `should_event_push` still models the
-    // (eligible × setting) AND, so a future targeted re-gate is a one-liner.
+    // ── event-push capability (U16) ────────────────────────────────────────
 
     #[test]
-    fn test_event_push_eligible_is_universal_phase2_ga() {
-        // GA: every signed-in user is eligible — no token/email required.
-        assert!(event_push_eligible());
-    }
-
-    #[test]
-    fn test_should_event_push_eligible_and_instant_on_pushes() {
-        // (i) Instant-sync ON + eligible => event-driven push.
+    fn test_should_event_push_requires_runner_capability_and_local_preference() {
+        // The flag exposes a local runner capability only; it is not account
+        // eligibility and cannot enroll a scope in V2.
         assert!(should_event_push(true, true));
-    }
-
-    #[test]
-    fn test_should_event_push_eligible_but_instant_off_is_poll_only() {
-        // (ii) Instant-sync OFF => poll-only, no --event-push.
         assert!(!should_event_push(true, false));
-    }
-
-    #[test]
-    fn test_should_event_push_ineligible_never_pushes_regardless_of_setting() {
-        // (iii) The seam still holds: were eligibility ever re-gated to false,
-        // the Instant-sync setting could not override it.
         assert!(!should_event_push(false, true));
         assert!(!should_event_push(false, false));
+    }
+
+    #[test]
+    fn test_legacy_event_push_eligibility_export_fails_closed() {
+        assert!(!event_push_eligible());
+    }
+
+    #[test]
+    fn test_watch_runner_capability_never_claims_v2_mutation_or_first_push() {
+        use crate::hq_cloud::HQ_CLOUD_RUNNER_CAPABILITIES;
+
+        let args = build_watch_runner_args("/any");
+        assert!(!HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
+        assert!(args.args.contains(&"hq-sync-runner".to_string()));
+        assert!(
+            !args
+                .args
+                .windows(2)
+                .any(|args| args == ["sync", "mutation"]),
+            "U16 must not select the later hq-cloud sync mutation boundary: {:?}",
+            args.args
+        );
     }
 }
