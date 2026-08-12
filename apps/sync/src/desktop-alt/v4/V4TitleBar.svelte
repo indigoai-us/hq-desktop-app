@@ -7,6 +7,8 @@
   import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte';
   import { getV4TitleBarModel, type V4HydrationIssue } from './model';
   import { titlebarDayDate } from '../chat/sidebar-model';
+  import type { HomeConflict } from './home-model';
+  import CorePopover from './CorePopover.svelte';
   import './tokens.css';
 
   /**
@@ -59,6 +61,20 @@
      * display caps at 99+ (formatting owned by the caller or inline).
      */
     unreadCount?: number;
+    /** V2 Cloud Off (US-001 / US-016): true when sync is paused on this device. */
+    cloudPaused?: boolean;
+    /** Live per-file conflicts for the Core popover rescue card (US-016). */
+    conflicts?: HomeConflict[];
+    oncloudtoggle?: (paused: boolean) => void;
+    onresolveconflict?: (
+      path: string,
+      strategy: 'keep-local' | 'keep-remote',
+    ) => void | Promise<void>;
+    onopenconflict?: (path: string) => void | Promise<void>;
+    onopendrift?: () => void | Promise<void>;
+    /** US-016 / US-017: open Library overlay (stub route is fine). */
+    onopenLibrary?: () => void;
+    onopenMarketplace?: () => void;
   }
 
   let {
@@ -91,6 +107,14 @@
     onopenMeetings,
     onopenNotifications,
     unreadCount = 0,
+    cloudPaused = false,
+    conflicts = [],
+    oncloudtoggle,
+    onresolveconflict,
+    onopenconflict,
+    onopendrift,
+    onopenLibrary,
+    onopenMarketplace,
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
@@ -117,6 +141,8 @@
   });
   let versionOpen = $state(false);
   let versionContainer: HTMLDivElement | null = $state(null);
+  let coreOpen = $state(false);
+  let coreContainer: HTMLDivElement | null = $state(null);
   let coreVersion = $state<string | null>(null);
   let coreVersionLoading = $state(true);
   let coreVersionError = $state(false);
@@ -213,9 +239,32 @@
   });
 
   $effect(() => {
+    if (!coreOpen) return;
+
+    function onMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Node)) return;
+      if (coreContainer && !coreContainer.contains(event.target)) {
+        coreOpen = false;
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') coreOpen = false;
+    }
+
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  });
+
+  $effect(() => {
     // Read once on mount and again whenever the update popout opens/closes so
     // a Core update completed in Settings becomes visible without relaunching.
     versionOpen;
+    coreOpen;
     void refreshCoreVersion();
     return () => {
       coreVersionLoadGeneration += 1;
@@ -256,6 +305,22 @@
       <span class="v4-meta">{model.meta}</span>
     {/if}
   </div>
+
+  <button
+    type="button"
+    class="v4-cloud-switch"
+    class:off={cloudPaused}
+    role="switch"
+    aria-checked={!cloudPaused}
+    data-testid="cloud-connected-switch"
+    title={cloudPaused
+      ? 'Cloud is off — sync is paused on this device'
+      : 'Cloud connected — click to pause sync on this device'}
+    onclick={() => oncloudtoggle?.(!cloudPaused)}
+  >
+    <span class={`v4-dot ${cloudPaused ? 'idle' : 'ok'}`} aria-hidden="true"></span>
+    {cloudPaused ? 'Cloud Off' : 'Cloud Connected'}
+  </button>
 
   <!-- Flexible noninteractive pad between status and actions — primary drag. -->
   <div class="v4-drag-pad v4-drag-flex" data-tauri-drag-region aria-hidden="true"></div>
@@ -309,7 +374,44 @@
         </span>
       {/if}
     </button>
-    <span class="v4-core-pill" data-testid="titlebar-core-pill" title="Core">Core</span>
+    <div class="v4-core-wrap" bind:this={coreContainer}>
+      <button
+        type="button"
+        class="v4-core-pill"
+        data-testid="titlebar-core-pill"
+        title="Core"
+        aria-expanded={coreOpen}
+        aria-haspopup="dialog"
+        aria-label="Open Core popover"
+        onclick={() => {
+          coreOpen = !coreOpen;
+          if (coreOpen) versionOpen = false;
+        }}
+      >
+        <span class="v4-core-dot" aria-hidden="true">●</span>
+        Core
+        <span class="v4-core-caret" aria-hidden="true">⌄</span>
+      </button>
+      {#if coreOpen}
+        <CorePopover
+          appVersion={version}
+          {conflicts}
+          {cloudPaused}
+          onclose={() => (coreOpen = false)}
+          onresolve={onresolveconflict}
+          onopeneditor={onopenconflict}
+          {onopendrift}
+          onopenLibrary={() => {
+            onopenLibrary?.();
+            coreOpen = false;
+          }}
+          onopenMarketplace={() => {
+            onopenMarketplace?.();
+            coreOpen = false;
+          }}
+        />
+      {/if}
+    </div>
     <button
       type="button"
       class="v4-icon-btn"
@@ -486,20 +588,90 @@
     white-space: nowrap;
   }
 
-  .v4-core-pill {
+  .v4-cloud-switch {
+    appearance: none;
+    -webkit-appearance: none;
     display: inline-flex;
     align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--type-metadata, 11px);
+    font-weight: 550;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .v4-cloud-switch.off {
+    color: var(--v4-text-3);
+  }
+
+  .v4-cloud-switch:hover {
+    border-color: var(--v4-control-border);
+    background: var(--v4-secondary-bg, var(--v4-active-row));
+    color: var(--v4-text-1);
+  }
+
+  .v4-cloud-switch:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
+  .v4-core-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .v4-core-pill {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     height: 22px;
     padding: 0 9px;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
+    font: inherit;
     font-size: var(--type-metadata, 11px);
     font-weight: 500;
     letter-spacing: 0.04em;
     line-height: 1;
     white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .v4-core-pill:hover,
+  .v4-core-pill[aria-expanded='true'] {
+    border-color: var(--v4-control-border);
+    background: var(--v4-secondary-bg, var(--v4-active-row));
+    color: var(--v4-text-1);
+  }
+
+  .v4-core-pill:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
+  .v4-core-dot {
+    color: var(--v4-ok);
+    font-size: 8px;
+    line-height: 1;
+  }
+
+  .v4-core-caret {
+    color: var(--v4-text-3);
+    font-size: 11px;
+    line-height: 1;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap

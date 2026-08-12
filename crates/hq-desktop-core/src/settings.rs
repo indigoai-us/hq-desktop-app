@@ -50,6 +50,7 @@ mod tests {
     fn empty_prefs() -> MenubarPrefs {
         MenubarPrefs {
             hq_path: None,
+            cloud_paused: None,
             sync_on_launch: None,
             notifications: None,
             start_at_login: None,
@@ -81,6 +82,7 @@ mod tests {
     fn apply_defaults(prefs: MenubarPrefs) -> MenubarPrefs {
         MenubarPrefs {
             hq_path: prefs.hq_path,
+            cloud_paused: Some(prefs.cloud_paused.unwrap_or(false)),
             sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(true)),
             notifications: Some(prefs.notifications.unwrap_or(true)),
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
@@ -161,6 +163,7 @@ mod tests {
     fn test_explicit_values_preserved() {
         let prefs = MenubarPrefs {
             hq_path: Some("/custom/path".to_string()),
+            cloud_paused: None,
             sync_on_launch: Some(true),
             notifications: Some(false),
             start_at_login: Some(false),
@@ -215,6 +218,7 @@ mod tests {
     fn test_roundtrip_serialization() {
         let prefs = MenubarPrefs {
             hq_path: Some("/Users/test/HQ".to_string()),
+            cloud_paused: None,
             sync_on_launch: Some(true),
             notifications: Some(true),
             start_at_login: Some(false),

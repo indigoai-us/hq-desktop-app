@@ -305,6 +305,32 @@ pub fn is_instant_sync_enabled() -> bool {
     read_menubar_bool(|p| p.instant_sync, true)
 }
 
+/// User-facing message every gated sync entry point returns while Cloud is
+/// off. One constant so the popover, the V2 window, and the daemon agree.
+pub const CLOUD_PAUSED_MESSAGE: &str =
+    "Cloud is off — sync is paused on this device. Turn Cloud on to resume.";
+
+/// Check the V2 "Cloud Off" switch (US-001 / US-016) in menubar.json.
+///
+/// Defaults to false (connected) when the field is missing so existing
+/// installs keep syncing. This is THE choke-point flag: `start_sync`, the
+/// watch-daemon starts (renderer / app-launch / supervisor-respawn origins),
+/// and therefore auto-sync and instant push all consult it before initiating
+/// any sync.
+pub fn is_cloud_paused() -> bool {
+    read_menubar_bool(|p| p.cloud_paused, false)
+}
+
+/// Common preflight for every sync initiation path: `Err(CLOUD_PAUSED_MESSAGE)`
+/// while Cloud is off, `Ok(())` otherwise.
+pub fn ensure_cloud_sync_allowed() -> Result<(), String> {
+    if is_cloud_paused() {
+        Err(CLOUD_PAUSED_MESSAGE.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Check if personal-vault sync is enabled in menubar.json.
 ///
 /// Defaults to true (matches Settings + Sync Now). When false, the watch
@@ -454,8 +480,20 @@ pub fn should_terminate_job_on_path(already_cancelled: bool, path: DaemonFailure
 
 /// Pure decision for the supervisor: respawn the watch daemon iff auto-sync
 /// should be on (the user-facing realtime-sync toggle or the autostart devtools
-/// flag) AND it isn't currently alive. Extracted (like `should_event_push`) so
-/// the decision stays unit-testable.
+/// flag) AND it isn't currently alive AND Cloud isn't paused (`is_cloud_paused`,
+/// the V2 Cloud Off switch — while it's set, no sync path may start). Extracted
+/// (like `should_event_push`) so the decision stays unit-testable.
+pub fn should_respawn_daemon_gated(
+    realtime_sync: bool,
+    autostart: bool,
+    daemon_alive: bool,
+    cloud_paused: bool,
+) -> bool {
+    !cloud_paused && should_respawn_daemon(realtime_sync, autostart, daemon_alive)
+}
+
+/// See `should_respawn_daemon_gated` — the ungated auto-sync half of the
+/// supervisor decision.
 pub fn should_respawn_daemon(realtime_sync: bool, autostart: bool, daemon_alive: bool) -> bool {
     (realtime_sync || autostart) && !daemon_alive
 }
@@ -519,6 +557,66 @@ mod tests {
         assert!(!should_respawn_daemon(false, false, false));
         // Auto-sync off, daemon alive → no-op.
         assert!(!should_respawn_daemon(false, false, true));
+    }
+
+    // ── Cloud Off gating (V2 US-001 / US-016) ─────────────────────────────
+
+    #[test]
+    fn test_should_respawn_daemon_gated_on_cloud_paused() {
+        // Cloud paused dominates every auto-sync-on combination.
+        assert!(!should_respawn_daemon_gated(true, false, false, true));
+        assert!(!should_respawn_daemon_gated(false, true, false, true));
+        assert!(!should_respawn_daemon_gated(true, true, false, true));
+        // Cloud connected → falls through to the plain auto-sync decision.
+        assert!(should_respawn_daemon_gated(true, false, false, false));
+        assert!(!should_respawn_daemon_gated(true, false, true, false));
+        assert!(!should_respawn_daemon_gated(false, false, false, false));
+    }
+
+    #[test]
+    fn test_is_cloud_paused_reads_menubar_and_defaults_connected() {
+        let _g = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+
+        // No menubar.json → connected (never paused by default).
+        assert!(!is_cloud_paused());
+        assert!(ensure_cloud_sync_allowed().is_ok());
+
+        // Absent field → connected.
+        std::fs::write(tmp.path().join(".hq/menubar.json"), r#"{}"#).unwrap();
+        assert!(!is_cloud_paused());
+
+        // Explicit pause → every sync initiation gate refuses with the
+        // shared user-facing message.
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"cloudPaused":true}"#,
+        )
+        .unwrap();
+        assert!(is_cloud_paused());
+        assert_eq!(
+            ensure_cloud_sync_allowed(),
+            Err(CLOUD_PAUSED_MESSAGE.to_string())
+        );
+
+        // Toggling back on restores sync.
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"cloudPaused":false}"#,
+        )
+        .unwrap();
+        assert!(!is_cloud_paused());
+        assert!(ensure_cloud_sync_allowed().is_ok());
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]

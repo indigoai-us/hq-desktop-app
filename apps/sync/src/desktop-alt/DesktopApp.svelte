@@ -79,6 +79,11 @@
     type V4HydrationIssue,
     V4_CHROME_LAYOUT,
   } from './v4/model';
+  import {
+    loadCloudPaused,
+    readCloudPaused,
+    setCloudPaused,
+  } from './lib/cloud-connection';
   import type {
     HomeConflict,
     HomeCoreState,
@@ -261,6 +266,9 @@
   let driftRestoring = $state(false);
   // Local hq-core version ("15.0.15") for Home's meta line; null = unreadable.
   let hqVersion = $state<string | null>(null);
+  // V2 Cloud Off (US-001 / US-016): mirror-first for instant render; settings
+  // (menubar.json — the store the Rust sync gates read) is authoritative.
+  let cloudPaused = $state(readCloudPaused());
   // Resolved HQ folder from get_config, used for path labels and handoffs.
   let hqFolderPath = $state<string | null>(null);
   // `realtimeSync` preference (auto-sync cadence in Home's meta line).
@@ -1003,8 +1011,32 @@
     renderCompanies = patch(renderCompanies);
   }
 
+  function handleCloudToggle(paused: boolean) {
+    cloudPaused = paused;
+    // Write-through to menubar.json so the Rust gates (start_sync + the watch
+    // daemon) see the switch, then reconcile the running watcher: pausing
+    // stops it; unpausing lets auto-sync resume immediately instead of
+    // waiting for the supervisor's next tick. Both are best-effort — the
+    // Rust-side gates are the enforcement, not these calls.
+    void setCloudPaused(paused)
+      .then(async () => {
+        if (paused) {
+          await invoke('stop_daemon').catch(() => undefined);
+        } else {
+          await invoke('start_daemon').catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
+  }
+
   async function handleSyncAll() {
     if (syncState === 'syncing') return;
+    // Cloud Off (V2 US-001 / US-016): sync is paused on this device. The
+    // titlebar switch is the way back on; a manual Sync press is a no-op.
+    if (cloudPaused) {
+      flashToast('Cloud is off — turn it on to sync', 'error');
+      return;
+    }
     resetRunState();
     manualSyncTelemetryPending = true;
     try {
@@ -1347,6 +1379,10 @@
     const meetingStatusInterval = window.setInterval(() => {
       hydrateMeetingStatus();
     }, 30_000);
+
+    void loadCloudPaused().then((paused) => {
+      if (mounted) cloudPaused = paused;
+    });
 
     if (renderCompanies.length > 0) queueDesktopRenderAudit();
     void refreshRealState();
@@ -1813,6 +1849,14 @@
     onopenMeetings={() => navigate({ kind: 'meetings' })}
     onopenNotifications={openNotifications}
     unreadCount={notificationsUnreadCount}
+    {cloudPaused}
+    conflicts={homeConflicts}
+    oncloudtoggle={handleCloudToggle}
+    onresolveconflict={handleResolveConflict}
+    onopenconflict={handleCompareConflict}
+    onopendrift={handleViewDrift}
+    onopenLibrary={() => navigate({ kind: 'library' })}
+    onopenMarketplace={() => navigate({ kind: 'marketplace' })}
   />
 
   <div class="desktop-body">
