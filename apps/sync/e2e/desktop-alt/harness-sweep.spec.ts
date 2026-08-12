@@ -375,9 +375,14 @@ describe('visual QA round 2 source contracts', () => {
     const chatSidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
     const corePopover = readRepoFile('src/desktop-alt/v4/CorePopover.svelte');
     const channelView = readRepoFile('src/components/messaging/ChannelView.svelte');
+    // CorePopover exempted from the solid-surface rule: Daybook parity
+    // override (prd.json decisions) gives panels Lizzie Liu's translucent
+    // rgba(44,44,54,0.94)/rgba(252,252,253,0.96) chrome with
+    // blur(40px) saturate(1.5) backdrop, which prevents bleed-through.
+    expect(corePopover).toContain('background: var(--panel-bg');
+    expect(corePopover).toContain('backdrop-filter: blur(40px) saturate(1.5)');
     for (const [name, src] of [
       ['ChatSidebar', chatSidebar],
-      ['CorePopover', corePopover],
       ['ChannelView', channelView],
     ] as const) {
       expect(src, `${name} popover must use --v4-surface-solid`).toContain(

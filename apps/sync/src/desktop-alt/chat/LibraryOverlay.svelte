@@ -36,6 +36,7 @@
     type MarketplaceBadge,
   } from './library-overlay-model';
   import '../v4/tokens.css';
+  import './chat-tokens.css';
 
   interface Props {
     /** Routed library tab — mapped onto overlay Skills/Workers/Marketplace. */
@@ -171,7 +172,7 @@
 </script>
 
 <section
-  class="library-overlay"
+  class="library-overlay chat-shell"
   aria-label="Library"
   data-testid="library-overlay"
 >
@@ -354,8 +355,8 @@
     flex-direction: column;
     min-height: 0;
     background: var(--v4-bg, var(--desktop-bg, #0c0c0c));
-    color: var(--v4-text-1);
-    font-family: var(--font-sans);
+    color: var(--t1);
+    font: 400 13px/1.45 var(--font-ui);
   }
 
   .lo-header {
@@ -363,8 +364,10 @@
     align-items: center;
     gap: 12px;
     flex: 0 0 auto;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--v4-rowline);
+    padding: 0 20px;
+    height: 52px;
+    flex: 0 0 52px;
+    border-bottom: 1px solid var(--line);
   }
 
   .lo-back {
@@ -373,13 +376,13 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
+    font-size: 12px;
     font-weight: 500;
     line-height: 16px;
     cursor: pointer;
   }
   .lo-back:hover {
-    color: var(--v4-text-1);
+    color: var(--t1);
   }
   .lo-back:focus-visible {
     outline: 2px solid var(--v4-text-1);
@@ -388,16 +391,16 @@
 
   .lo-title {
     margin: 0;
-    color: var(--v4-text-1);
-    font-size: var(--type-detail, 18px);
-    font-weight: 500;
+    color: var(--t1);
+    font-size: 15px;
+    font-weight: 600;
     line-height: 1.2;
-    letter-spacing: -0.01em;
+    white-space: nowrap;
   }
 
   .lo-body {
     display: grid;
-    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-columns: 210px minmax(0, 1fr);
     flex: 1 1 auto;
     min-height: 0;
   }
@@ -406,34 +409,34 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 12px 10px;
-    border-right: 1px solid var(--v4-rowline);
+    padding: 16px 20px;
+    border-right: 1px solid var(--line);
     overflow: auto;
   }
 
   .lo-nav-row {
     display: flex;
     align-items: center;
+    gap: 9px;
     width: 100%;
-    padding: 8px 10px;
+    padding: 7px 10px;
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-radius: 8px;
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--t2);
     font: inherit;
-    font-size: var(--type-body, 12px);
-    font-weight: 500;
-    line-height: 16px;
+    font-size: 13px;
+    font-weight: 400;
     text-align: left;
     cursor: pointer;
   }
   .lo-nav-row:hover {
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
+    background: var(--hover);
   }
   .lo-nav-row.active {
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
+    background: var(--sel);
+    color: var(--t1);
+    font-weight: 500;
   }
   .lo-nav-row:focus-visible {
     outline: 2px solid var(--v4-text-1);
@@ -446,7 +449,7 @@
     gap: 12px;
     min-width: 0;
     min-height: 0;
-    padding: 12px 16px 20px;
+    padding: 16px 20px 20px;
     overflow: auto;
   }
 
@@ -458,20 +461,22 @@
     width: 100%;
     max-width: 420px;
     padding: 7px 10px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-inset);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--type-body, 12px);
-    line-height: 18px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg);
+    color: var(--t1);
+    font: 400 12px var(--font-ui);
+    transition: border-color 0.12s;
   }
   .lo-search::placeholder {
-    color: var(--v4-text-3);
+    color: var(--t3);
+  }
+  .lo-search:hover {
+    border-color: var(--line2);
   }
   .lo-search:focus {
     outline: none;
-    border-color: var(--v4-text-3);
+    border-color: var(--border-active);
   }
 
   .lo-panel {
@@ -480,29 +485,35 @@
 
   .lo-status {
     padding: 16px 0;
-    color: var(--v4-text-3);
-    font-size: var(--type-body, 12px);
+    color: var(--t3);
+    font-size: 13px;
     line-height: 18px;
   }
   .lo-install-error {
-    color: var(--v4-error);
+    color: var(--warn-ink);
   }
 
   .lo-cards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 14px;
+    align-content: start;
   }
 
   .lo-card {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
-    padding: 12px;
-    border: 1px solid var(--v4-rowline);
-    border-radius: var(--v4-radius-button);
-    background: transparent;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--raised);
+  }
+
+  .lo-card:hover {
+    background: var(--btn-bg);
+    border-color: var(--line2);
   }
 
   .lo-card-head {
@@ -514,26 +525,27 @@
 
   .lo-card-title {
     min-width: 0;
-    color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 500;
-    line-height: 16px;
+    color: var(--t1);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
   }
 
   .lo-card-slug {
-    color: var(--v4-text-3);
+    color: var(--t3);
     font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
+    font-size: 10px;
     line-height: 14px;
   }
 
   .lo-card-tag {
     align-self: flex-start;
-    padding: 1px 7px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-pill);
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent);
+    border-radius: 6px;
+    background: var(--btn-bg);
+    color: var(--t2);
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.04em;
     line-height: 14px;
@@ -542,9 +554,9 @@
 
   .lo-card-desc {
     margin: 0;
-    color: var(--v4-text-2);
-    font-size: var(--type-secondary, 11px);
-    line-height: 16px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 17px;
     display: -webkit-box;
     -webkit-line-clamp: 3;
     line-clamp: 3;
@@ -553,18 +565,19 @@
   }
 
   .lo-card-meta {
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    color: var(--t3);
+    font-size: 10px;
     line-height: 14px;
   }
 
   .lo-badge {
     flex: 0 0 auto;
-    padding: 2px 7px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-pill);
-    color: var(--v4-text-2);
-    font-size: var(--type-metadata, 10px);
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--ok) 10%, transparent);
+    color: var(--ok-ink);
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.04em;
     line-height: 14px;
@@ -572,21 +585,29 @@
     white-space: nowrap;
   }
   .lo-badge.update {
-    color: var(--v4-text-1);
+    border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+    color: var(--warn-ink);
   }
 
   .lo-get {
     flex: 0 0 auto;
-    padding: 4px 10px;
+    padding: 3px 10px;
     border: 1px solid transparent;
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
+    border-radius: 6px;
+    background: var(--btn-bg);
+    color: var(--t1);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
+    font-size: 11px;
     font-weight: 500;
-    line-height: 14px;
     cursor: pointer;
+    transition: border-color 0.12s;
+  }
+  .lo-get:hover:not(:disabled) {
+    border-color: var(--line2);
+  }
+  .lo-get:active:not(:disabled) {
+    border-color: var(--border-active);
   }
   .lo-get:disabled {
     opacity: 0.55;
@@ -605,7 +626,7 @@
       flex-direction: row;
       flex-wrap: wrap;
       border-right: 0;
-      border-bottom: 1px solid var(--v4-rowline);
+      border-bottom: 1px solid var(--line);
     }
   }
 </style>

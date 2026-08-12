@@ -287,7 +287,9 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     expect(tokens).toContain('--v4-glass-border: var(--v4-hairline)');
 
     for (const [name, source] of [
-      ['title bar', titleBar],
+      // Title bar exempted: Daybook parity override (prd.json decisions) —
+      // the chat-shell titlebar is transparent chrome over the window
+      // material (no per-element glass filter), per design/desktop-os-redesign.
       ['primary sidebar', sidebar],
       ['secondary sidebar', secondarySidebar],
       ['files sidebar', filesSidebar],

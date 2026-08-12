@@ -148,7 +148,9 @@ describe('DESKTOP-013: flat structural surfaces', () => {
 
   it('keeps navigation and list-selection rows square', () => {
     for (const [name, source, selectors] of [
-      ['primary sidebar', sidebar, ['.chat-row']],
+      // ChatSidebar .chat-row exempted: Daybook parity override (prd.json
+      // decisions) gives chat rows Lizzie Liu's 8px radius; covered by
+      // chat-sidebar.spec.ts + chat-token-parity.spec.ts instead.
       ['secondary sidebar', secondarySidebar, ['.v4-row']],
       ['files sidebar', filesSidebar, ['.fs-company-row']],
       ['team', team, ['.team-member-row', '.team-member-row.is-selected']],

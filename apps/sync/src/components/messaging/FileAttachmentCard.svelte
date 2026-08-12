@@ -57,14 +57,14 @@
   .file-card {
     display: flex;
     align-items: center;
-    gap: 0.625rem;
+    gap: 8px;
     width: min(320px, 100%);
     margin: 0.25rem 0;
-    padding: 0.625rem 0.75rem;
-    border: 1px solid var(--border, var(--pop-border));
-    border-radius: 8px;
-    background: var(--surface-raise, var(--pop-hover));
-    color: var(--fg, var(--pop-text));
+    padding: 8px 12px;
+    border: 1px solid var(--line, var(--pop-border));
+    border-radius: 10px;
+    background: var(--raised, var(--pop-hover));
+    color: var(--t1, var(--pop-text));
     text-align: left;
     font: inherit;
     cursor: pointer;
@@ -72,8 +72,8 @@
   }
 
   .file-card:hover {
-    background: var(--row-hover, var(--c-field-bg));
-    border-color: var(--border, var(--pop-border));
+    background: var(--raised, var(--c-field-bg));
+    border-color: var(--line2, var(--pop-border));
   }
 
   .file-card:focus-visible {
@@ -84,7 +84,7 @@
   .file-card-icon {
     display: inline-flex;
     flex: 0 0 auto;
-    color: var(--muted-2, var(--pop-muted));
+    color: var(--t3, var(--muted-2, var(--pop-muted)));
   }
 
   .file-card-copy {
@@ -95,9 +95,9 @@
   }
 
   .file-card-name {
-    font-size: var(--text-base);
-    font-weight: 600;
-    color: var(--fg, var(--pop-text));
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--t1, var(--pop-text));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -105,10 +105,8 @@
 
   .file-card-caption {
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: var(--text-micro, 0.6875rem);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--muted, var(--pop-muted));
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--t2, var(--pop-muted));
   }
 </style>

@@ -6,6 +6,7 @@
   import type { HomeConflict } from './home-model';
   import CorePopover from './CorePopover.svelte';
   import './tokens.css';
+  import '../chat/chat-tokens.css';
 
   /**
    * Minimal native title bar (visual QA D-04): traffic-light inset, sidebar
@@ -201,7 +202,7 @@
   });
 </script>
 
-<header class="v4-titlebar" aria-label="Window chrome">
+<header class="v4-titlebar chat-shell" aria-label="Window chrome">
   <div class="v4-titlebar-leading">
     <!-- Padded dead space under the native traffic lights — safe drag only. -->
     <div class="v4-drag-pad v4-drag-lights" data-tauri-drag-region aria-hidden="true"></div>
@@ -318,17 +319,14 @@
     z-index: 10;
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex: 0 0 40px;
-    height: 40px;
+    gap: 8px;
+    flex: 0 0 48px;
+    height: 48px;
     overflow: visible;
-    padding: 0 12px 0 0;
-    border-bottom: 1px solid var(--v4-hairline);
-    background: var(--v4-chrome);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
-    box-shadow: inset 0 1px 0 var(--v4-glass-highlight);
-    font-family: var(--font-sans);
+    padding: 0 16px 0 0;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    font: 400 13px/1.45 var(--font-ui);
   }
 
   .v4-titlebar-leading {
@@ -342,19 +340,19 @@
 
   .v4-wordmark {
     flex: 0 0 auto;
-    color: var(--v4-text-1);
-    font-size: var(--type-body, 14px);
-    font-weight: 500;
-    letter-spacing: 0.04em;
+    color: var(--t1);
+    font-size: 13px;
+    font-weight: 600;
     line-height: 1;
   }
 
   .v4-day-date {
     flex: 0 0 auto;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 11px);
-    font-weight: 500;
-    letter-spacing: 0.06em;
+    color: var(--t3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
     line-height: 1;
     text-transform: uppercase;
     white-space: nowrap;
@@ -370,27 +368,23 @@
     -webkit-appearance: none;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    height: 22px;
-    padding: 0 9px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg);
+    color: var(--t2);
     font: inherit;
-    font-size: var(--type-metadata, 11px);
+    font-size: 12px;
     font-weight: 500;
-    letter-spacing: 0.04em;
-    line-height: 1;
     white-space: nowrap;
     cursor: pointer;
   }
 
   .v4-core-pill:hover,
   .v4-core-pill[aria-expanded='true'] {
-    border-color: var(--v4-control-border);
-    background: var(--v4-secondary-bg, var(--v4-active-row));
-    color: var(--v4-text-1);
+    border-color: var(--line2);
+    color: var(--t1);
   }
 
   .v4-core-pill:focus-visible {
@@ -399,14 +393,14 @@
   }
 
   .v4-core-dot {
-    color: var(--v4-ok);
-    font-size: 8px;
+    color: var(--ok);
+    font-size: 7px;
     line-height: 1;
   }
 
   .v4-core-caret {
-    color: var(--v4-text-3);
-    font-size: 11px;
+    color: var(--t3);
+    font-size: 10px;
     line-height: 1;
   }
 
@@ -455,18 +449,18 @@
     height: 28px;
     padding: 0;
     border: 1px solid transparent;
-    border-radius: var(--v4-radius-button);
+    border-radius: 8px;
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--t2);
     font: inherit;
     cursor: pointer;
+    transition: color 0.12s, background 0.12s;
   }
 
   .v4-icon-btn:hover,
   .v4-icon-btn.active {
-    border-color: var(--v4-hairline);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+    background: var(--hover);
+    color: var(--t1);
   }
 
   /* Pressed global controls stay visibly selected without inheriting the OS
@@ -484,8 +478,8 @@
   }
 
   .v4-icon {
-    width: 14px;
-    height: 14px;
+    width: 15px;
+    height: 15px;
   }
 
   .v4-notif-btn {
@@ -495,12 +489,12 @@
   /* Plain monochrome unread DOT — no red pill/count (D-04). */
   .v4-notif-dot {
     position: absolute;
-    top: 4px;
-    right: 4px;
+    top: 5px;
+    right: 5px;
     width: 6px;
     height: 6px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-text-1);
+    border-radius: 50%;
+    background: var(--ice-ink);
   }
 
   @media (prefers-reduced-transparency: reduce) {

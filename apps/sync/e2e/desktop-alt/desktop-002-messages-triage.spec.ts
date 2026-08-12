@@ -177,6 +177,8 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(notifications).not.toMatch(/>\s*People\s*</);
     expect(notifications).not.toMatch(/>\s*Requests\s*</);
     expect(notifications).not.toContain('role="tablist"');
-    expect(notifications).toContain('border-radius: 0');
+    // Daybook parity override (prd.json decisions): notification rows carry
+    // Lizzie Liu's 10px card radius.
+    expect(notifications).toContain('border-radius: 10px');
   });
 });

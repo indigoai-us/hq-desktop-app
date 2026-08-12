@@ -93,9 +93,11 @@ describe('US-005: balanced spacing + fixed-height company names with fade', () =
       /\.fs-company-row\.active\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*inset 0 -1px 0 var\(--v4-hairline\)/,
     );
 
+    // Daybook parity override (prd.json decisions): chat active rows use
+    // Lizzie Liu's neutral --sel fill instead of the transparent baseline.
     const chatCss = normalize(chatSidebar);
     expect(chatCss).toMatch(
-      /\.chat-row\.active\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*inset 0 -1px 0 var\(--v4-hairline\)/,
+      /\.chat-row\.active\s*\{[^}]*background:\s*var\(--sel\);[^}]*box-shadow:\s*none/,
     );
   });
 

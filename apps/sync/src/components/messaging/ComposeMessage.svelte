@@ -266,20 +266,23 @@
     width: 100%;
     box-sizing: border-box;
     resize: none;
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--surface-raise);
-    color: var(--fg);
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line2, var(--border));
+    background: var(--raised, var(--surface-raise));
+    color: var(--t1, var(--fg));
+    font: 400 13px var(--font-ui, var(--font-sans));
     line-height: 1.45;
+    transition: border-color 0.12s;
+  }
+
+  .compose-body::placeholder {
+    color: var(--t3, var(--muted));
   }
 
   .compose-body:focus {
     outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
+    border-color: var(--border-active, var(--accent));
   }
 
   .compose-body:disabled {
@@ -326,12 +329,18 @@
 
   .btn-send {
     margin-left: auto;
-    background: var(--accent);
-    color: var(--accent-fg);
+    border-radius: 6px;
+    background: var(--ice-ink, var(--accent));
+    color: var(--badge-fg, var(--accent-fg));
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .btn-send:hover:not(:disabled) {
-    filter: brightness(1.1);
+    opacity: 0.88;
+  }
+
+  .btn-send:active:not(:disabled) {
+    transform: scale(0.95);
   }
 
   .btn-send:disabled {

@@ -405,7 +405,9 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
       expect(source).not.toMatch(/border-(?:left|inline-start)\s*:\s*[^;]*--(?:v4-)?(?:warn|error|unread)/);
     }
     expect(notificationsView).toContain('background: transparent');
-    expect(notificationsView).toContain('border-radius: 0');
+    // Daybook parity override (prd.json decisions): notification rows carry
+    // Lizzie Liu's 10px card radius instead of the square baseline.
+    expect(notificationsView).toContain('border-radius: 10px');
     expect(notificationsView).not.toContain('var(--v4-warn)');
   });
 

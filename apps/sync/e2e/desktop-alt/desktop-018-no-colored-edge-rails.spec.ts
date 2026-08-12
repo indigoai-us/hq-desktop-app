@@ -124,12 +124,6 @@ describe('DESKTOP-018: no colored edge rails', () => {
   it('uses transparent neutral bottom rules for persistent row selection', () => {
     for (const [path, baseSelector, selectedSelector, label] of [
       [
-        'desktop-alt/chat/ChatSidebar.svelte',
-        '.chat-row',
-        '.chat-row.active',
-        'primary conversation navigation',
-      ],
-      [
         'desktop-alt/v4/V4SecondarySidebar.svelte',
         '.v4-row',
         '.v4-row.active',
@@ -191,6 +185,16 @@ describe('DESKTOP-018: no colored edge rails', () => {
         label,
       );
     }
+
+    // ChatSidebar: Daybook parity override (prd.json decisions) — active
+    // rows use Lizzie Liu's neutral --sel fill with no edge rails.
+    const chatSidebar = readFileSync(
+      join(SOURCE_ROOT, 'desktop-alt/chat/ChatSidebar.svelte'),
+      'utf8',
+    );
+    expect(rule(chatSidebar, '.chat-row.active')).toContain('background: var(--sel)');
+    expect(rule(chatSidebar, '.chat-row.active')).toContain('box-shadow: none');
+    expect(rule(chatSidebar, '.chat-row.active')).not.toContain('border-left:');
 
     const messages = readFileSync(
       join(SOURCE_ROOT, 'components/messaging/MessagesShell.svelte'),
