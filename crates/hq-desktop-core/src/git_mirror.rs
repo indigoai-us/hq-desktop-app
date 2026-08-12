@@ -894,11 +894,15 @@ fn carried_episode(
         }
         // MIGRATION track (one-time legacy repair, keyed on the absent field): no
         // durable wedge clock yet. Anchor the wedge at the earliest usable
-        // same-wedge stamp, and — only here — infer how far up the finite ladder
-        // this wedge had already climbed from its TRUE age. This both subsumes the
-        // r1 pre-field upgrade bridge (identical results for its cases) and repairs
-        // the poisoned `Some(0)` a gap-as-recovery re-mint left behind on the
-        // 0.10.96–0.10.99 builds.
+        // same-wedge stamp. A *positive* persisted count is an exact record of the
+        // banners the r1 build already emitted (each emit persisted its incremented
+        // count, so `Some(1)` proves only the first confirmation fired and the 24h
+        // rung did not), so it is trusted verbatim exactly like the steady track —
+        // never age-raised, which would skip a legitimately-due rung the old build's
+        // gap bug had suppressed. Age inference is reserved for the poisoned `Some(0)`
+        // and pre-field `None` shapes the gap-as-recovery re-mint produced on the
+        // 0.10.96–0.10.99 builds. This subsumes the r1 pre-field upgrade bridge
+        // (identical results for its `None` cases) and repairs the poison.
         None => {
             // A report stamp belongs to the still-standing wedge when there have
             // been zero recoveries since it (so the banner is this wedge's, even if
@@ -913,27 +917,30 @@ fn carried_episode(
                 Some(at) if recovered == 0 => started.min(at),
                 _ => started,
             };
-            let reports = match same_wedge_report {
-                Some(_) => {
-                    // Infer one for the first confirmation plus one per rung the
-                    // wedge's true age has already crossed; the ascending ladder
-                    // saturates this at `len() + 1` on its own — the budget a build
-                    // that had shipped the ladder from the start would already have
-                    // spent. `max` so a record that legitimately climbed higher
-                    // than its age suggests is never walked back into a live rung.
-                    let wedge_age = elapsed_since_wall(wedge_started, now).unwrap_or(age);
-                    let inferred = 1 + escalation_ages
-                        .iter()
-                        .filter(|rung| wedge_age >= **rung)
-                        .count();
-                    state.episode_reports.unwrap_or(0).max(inferred)
-                }
-                // No same-wedge anchor: a never-reported wedge (or one whose only
-                // report belongs to a recovered predecessor) migrates to its
-                // persisted count — zero for `Some(0)`/`None`, a missing/unparsable/
-                // future report stamp degrading the same way — and still earns its
-                // first banner rather than being silenced by an inferred spend.
-                None => state.episode_reports.unwrap_or(0),
+            let reports = match state.episode_reports {
+                // A positive legacy count is trusted verbatim: the natural ladder
+                // then emits each still-due rung once (spaced by the cooldown floor),
+                // rather than pre-spending them and skipping a due escalation.
+                Some(reports) if reports > 0 => reports,
+                // Poisoned `Some(0)` or pre-field `None`: infer one for the first
+                // confirmation plus one per rung the wedge's TRUE age has already
+                // crossed, but only when a same-wedge report anchor proves the wedge
+                // has bannered. The ascending ladder saturates the inference at
+                // `len() + 1` on its own.
+                _ => match same_wedge_report {
+                    Some(_) => {
+                        let wedge_age = elapsed_since_wall(wedge_started, now).unwrap_or(age);
+                        1 + escalation_ages
+                            .iter()
+                            .filter(|rung| wedge_age >= **rung)
+                            .count()
+                    }
+                    // No same-wedge anchor: a never-reported wedge (or one whose only
+                    // report belongs to a recovered predecessor) keeps its zero budget
+                    // and still earns its first banner rather than being silenced by
+                    // an inferred spend.
+                    None => 0,
+                },
             };
             (wedge_started, reports)
         }
@@ -4656,6 +4663,71 @@ mod tests {
         assert!(
             persisted(&git_dir).wedge_started_at.is_some(),
             "the migrated wedge clock is persisted so later passes stay steady-state"
+        );
+    }
+
+    /// A *positive* legacy budget (no durable clock yet) is an exact record of the
+    /// banners the r1 build emitted, so migration trusts it verbatim rather than
+    /// age-raising it: a `Some(1)` wedge whose true age has reached 24h must still
+    /// escalate at that rung, not have it pre-spent and skipped. Age inference is
+    /// reserved for the poisoned `Some(0)`/`None` shapes; raising a positive count
+    /// would silently drop a legitimately-due escalation.
+    #[test]
+    fn a_positive_legacy_budget_is_trusted_and_still_escalates_at_the_due_rung() {
+        let _serial = serial();
+        reset_refusal_report_state();
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "git-dir");
+        let set = staged("set-a", 162, b"core/a.md\0");
+        let wall = epoch();
+        let stamp = |at: DateTime<Utc>| Some(at.to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        // A legacy record with a genuine one-banner count (r1 emitted first-confirmed
+        // and persisted Some(1)), no durable wedge clock, still refusing, whose true
+        // age is 25h — the 24h rung is due and was never emitted (the gap bug kept
+        // the episode clock from reaching it on the old build).
+        write_persisted_state(
+            &git_dir,
+            &PersistedRefusalState {
+                episode_reports: Some(1),
+                episode_started_at: stamp(wall - chrono::Duration::hours(25)),
+                episode_last_refusal_at: stamp(
+                    wall - chrono::Duration::seconds(MIN_MIRROR_INTERVAL.as_secs() as i64),
+                ),
+                episode_occurrences: 9_999,
+                episode_distinct_sets: 1,
+                last_reported_at: stamp(
+                    wall - chrono::Duration::hours(24) - chrono::Duration::minutes(30),
+                ),
+                recovered_episodes_since_report: 0,
+                ..PersistedRefusalState::default()
+            },
+        );
+        assert!(
+            persisted(&git_dir).wedge_started_at.is_none(),
+            "a legacy record has no durable wedge clock by construction"
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            refuse_at("/hq", &git_dir, &set, 1_356, Instant::now(), wall);
+        });
+        reset_refusal_report_state();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "a positive legacy budget is trusted, so its still-due 24h rung escalates \
+             rather than being pre-spent and skipped"
+        );
+        assert_eq!(
+            events[0].tags.get("report_source").map(String::as_str),
+            Some("episode-escalation")
+        );
+        assert_eq!(
+            events[0].tags.get("episode_reports").map(String::as_str),
+            Some("2"),
+            "the trusted budget of one spends its second banner on the due rung, not \
+             an age-inferred jump to the 7-day rung"
         );
     }
 
