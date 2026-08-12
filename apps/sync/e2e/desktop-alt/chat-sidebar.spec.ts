@@ -72,8 +72,10 @@ describe('US-003: ChatSidebar structure', () => {
     // Channel open clears server unread via existing path.
     expect(chatSidebar).toContain("invoke('mark_channel_read'");
     expect(chatSidebar).toContain('clearChannelUnread');
-    // DMs clear local dots only.
+    // DMs clear local dots + numeric pair unread, then mark_dm_thread_read.
     expect(chatSidebar).toContain('clearDmDot');
+    expect(chatSidebar).toContain('clearPairUnread');
+    expect(chatSidebar).toContain("invoke('mark_dm_thread_read'");
   });
 
   it('loads list_contacts + list_channels (cache-first) and opens command palette via oncommand', () => {
@@ -164,7 +166,9 @@ describe('US-003: pure model surface', () => {
     expect(sidebarModel).toContain('export function sortConversations');
     expect(sidebarModel).toContain('export function loadPins');
     expect(sidebarModel).toContain('export function normalizeDm');
-    expect(sidebarModel).toContain('// Intentionally omit unreadCount');
+    // US-011: numeric pair unread when present; legacy dot when absent.
+    expect(sidebarModel).toContain('hasServerUnread');
+    expect(sidebarModel).toContain('export function applyPairUnreads');
     expect(sidebarModel).toContain("PINS_STORAGE_KEY = 'hq.chat.pins'");
     expect(sidebarModel).toContain('LAST WEEK');
   });

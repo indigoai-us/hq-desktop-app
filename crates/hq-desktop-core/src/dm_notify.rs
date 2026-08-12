@@ -31,12 +31,45 @@ pub struct DmEvent {
     pub created_at: String,
 }
 
+/// Per-counterparty DM unread rollup from `GET /v1/notify/inbox` (hq-pro
+/// US-010). Additive — older servers omit the entire `pairUnreads` array.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PairUnread {
+    pub with_person_uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_at: Option<String>,
+    #[serde(default)]
+    pub unread_count: u32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxResponse {
     pub events: Vec<DmEvent>,
     #[allow(dead_code)]
     pub next_cursor: Option<String>,
+    /// ADDITIVE page-scoped per-pair unread rollup. Absent on older servers →
+    /// empty via `#[serde(default)]` so deserialization stays backward-compatible.
+    #[serde(default)]
+    pub pair_unreads: Vec<PairUnread>,
+}
+
+/// Managed state: latest pair-unread counts observed from the inbox poll
+/// (personUid → unreadCount). Frontend merges these into sidebar DM rows;
+/// `mark_dm_thread_read` zeros a pair optimistically after a successful POST.
+pub struct PairUnreadState(pub Mutex<HashMap<String, u32>>);
+
+impl PairUnreadState {
+    pub fn new() -> Self {
+        PairUnreadState(Mutex::new(HashMap::new()))
+    }
+}
+
+impl Default for PairUnreadState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// One incoming connection request as returned by
@@ -837,6 +870,55 @@ mod tests {
         assert_eq!(dm.body, "hi");
         assert!(dm.prompt.is_none());
         assert!(dm.details.is_none());
+    }
+
+    #[test]
+    fn inbox_response_pair_unreads_absent_safe() {
+        // Older servers omit pairUnreads entirely — must still deserialize.
+        let legacy = r#"{
+            "events": [{
+                "eventId": "evt_1",
+                "fromPersonUid": "prs_sender",
+                "fromEmail": "a@b.com",
+                "fromDisplayName": "Ada",
+                "body": "hi",
+                "createdAt": "2026-05-29T00:00:00Z"
+            }],
+            "nextCursor": null
+        }"#;
+        let legacy_body: InboxResponse =
+            serde_json::from_str(legacy).expect("legacy inbox without pairUnreads");
+        assert_eq!(legacy_body.events.len(), 1);
+        assert!(legacy_body.pair_unreads.is_empty());
+
+        // Newer servers include the additive rollup.
+        let modern = r#"{
+            "events": [],
+            "pairUnreads": [
+                {
+                    "withPersonUid": "prs_ada",
+                    "lastReadAt": "2026-08-01T00:00:00Z",
+                    "unreadCount": 3
+                },
+                {
+                    "withPersonUid": "prs_grace",
+                    "unreadCount": 0
+                }
+            ]
+        }"#;
+        let modern_body: InboxResponse =
+            serde_json::from_str(modern).expect("modern inbox with pairUnreads");
+        assert!(modern_body.events.is_empty());
+        assert_eq!(modern_body.pair_unreads.len(), 2);
+        assert_eq!(modern_body.pair_unreads[0].with_person_uid, "prs_ada");
+        assert_eq!(modern_body.pair_unreads[0].unread_count, 3);
+        assert_eq!(
+            modern_body.pair_unreads[0].last_read_at.as_deref(),
+            Some("2026-08-01T00:00:00Z")
+        );
+        assert_eq!(modern_body.pair_unreads[1].with_person_uid, "prs_grace");
+        assert_eq!(modern_body.pair_unreads[1].unread_count, 0);
+        assert!(modern_body.pair_unreads[1].last_read_at.is_none());
     }
 
     fn mk_dm(event_id: &str, created_at: &str) -> DmEvent {

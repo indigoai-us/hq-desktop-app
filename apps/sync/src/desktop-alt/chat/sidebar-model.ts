@@ -23,9 +23,9 @@ export interface ConversationRow {
   title: string;
   /** Company scope when known; null for personal / pure DMs / group DMs. */
   companyUid: string | null;
-  /** Numeric unread — channels only. Never set for DMs (absent-safe). */
+  /** Numeric unread — channels, and DMs when server pairUnreads is present. */
   unreadCount?: number;
-  /** Dot indicator for activity (DMs / optional channel activity). */
+  /** Dot indicator for activity (DMs without numeric unread / optional channel activity). */
   unreadDot: boolean;
   /** Epoch-ms of most recent activity (0 when unknown). */
   lastActivityAt: number;
@@ -153,8 +153,14 @@ export interface DmContactInput {
   lastMessageAt?: string | null;
   lastActivityAt?: string | null;
   lastDmAt?: string | null;
-  /** Local-only activity dot — never a numeric unread field. */
+  /** Local-only activity dot — used when server pair unread is absent. */
   activityDot?: boolean;
+  /**
+   * Server pair unread (hq-pro US-010 `pairUnreads`). Absent/undefined/null →
+   * legacy dot-only behavior. `0` = read (no badge/dot from this source);
+   * `> 0` = numeric badge.
+   */
+  unreadCount?: number | null;
 }
 
 export interface NormalizeOptions {
@@ -207,7 +213,13 @@ export function normalizeChannel(
 
 /**
  * DM contact → ConversationRow.
- * Never reads a numeric unread field from the contact (absent-safe).
+ *
+ * Unread is absent-safe across server generations:
+ * - `unreadCount` number > 0 → numeric badge (no server-driven dot)
+ * - `unreadCount` === 0 → read from server; no badge/dot from this source
+ *   (local `dmDots` / `activityDot` may still light a dot)
+ * - field absent/undefined/null → legacy dot-only behavior exactly as before
+ *   US-011 (activityDot + local dmDots only)
  */
 export function normalizeDm(
   contact: DmContactInput,
@@ -225,21 +237,60 @@ export function normalizeDm(
     parseActivityMs(contact.lastActivityAt),
     parseActivityMs(contact.lastDmAt),
   );
-  // Absent-safe: only an explicit local dot (or contact.activityDot) lights it.
-  const unreadDot = contact.activityDot === true || dmDots.has(contact.personUid);
+  const localDot = contact.activityDot === true || dmDots.has(contact.personUid);
+  const serverUnread = contact.unreadCount;
+  const hasServerUnread = typeof serverUnread === 'number' && Number.isFinite(serverUnread);
+  const unreadCount =
+    hasServerUnread && (serverUnread as number) > 0 ? Math.floor(serverUnread as number) : undefined;
+  // Numeric badge replaces the server-driven dot; local dots still apply when
+  // the server says zero (or when the field is absent and only local dots exist).
+  const unreadDot = hasServerUnread
+    ? (serverUnread as number) > 0
+      ? false
+      : localDot
+    : localDot;
 
   return {
     id,
     kind: 'dm',
     title,
     companyUid: contact.companyUid?.trim() || null,
-    // Intentionally omit unreadCount — DMs have no numeric unread yet.
+    ...(unreadCount != null ? { unreadCount } : {}),
     unreadDot,
     lastActivityAt: activity,
     pinned: pinnedIds.has(id),
     personUid: contact.personUid,
     email: contact.email ?? null,
   };
+}
+
+/** Merge server pair-unread rollups onto DM contacts (absent-safe). */
+export function applyPairUnreads(
+  contacts: DmContactInput[],
+  pairUnreads: ReadonlyMap<string, number> | Readonly<Record<string, number>>,
+): DmContactInput[] {
+  const map =
+    pairUnreads instanceof Map
+      ? pairUnreads
+      : new Map(Object.entries(pairUnreads));
+  if (map.size === 0) return contacts;
+  return contacts.map((c) => {
+    if (!map.has(c.personUid)) return c;
+    return { ...c, unreadCount: map.get(c.personUid) ?? 0 };
+  });
+}
+
+/** Optimistically zero one pair's numeric unread (DM row opened). */
+export function clearPairUnread(
+  pairUnreads: ReadonlyMap<string, number> | Readonly<Record<string, number>>,
+  personUid: string,
+): Map<string, number> {
+  const next =
+    pairUnreads instanceof Map
+      ? new Map(pairUnreads)
+      : new Map(Object.entries(pairUnreads));
+  next.set(personUid, 0);
+  return next;
 }
 
 export function normalizeConversations(

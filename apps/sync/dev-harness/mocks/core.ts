@@ -1237,6 +1237,7 @@ This final paragraph verifies spacing after a thematic break.
     };
   },
   mark_channel_read: () => null,
+  mark_dm_thread_read: () => null,
   send_channel_message: () => ({ eventId: 'channel-sent-1', createdAt: new Date().toISOString() }),
   list_company_members: () => ({
     members: [

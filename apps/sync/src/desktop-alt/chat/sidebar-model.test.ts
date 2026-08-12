@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Channel } from '../../lib/channels';
 import {
+  applyPairUnreads,
   applySidebarFilters,
   buildScopeOptions,
   clearDmDot,
+  clearPairUnread,
   daySectionLabel,
   distinctDmPeople,
   filterByCompanyScope,
@@ -127,18 +129,49 @@ describe('normalizeChannel / normalizeDm', () => {
     expect(row.title).toContain('Sam');
   });
 
-  it('DM unread is absent-safe — never invents a numeric field', () => {
+  it('DM unread is absent-safe — never invents a numeric field from unrelated keys', () => {
     const contact = dm({
       personUid: 'p-alex',
-      // Deliberately include a fake unread-like field on the raw object; the
-      // normalizer must not read it.
-      ...({ unread: 99, unreadCount: 99 } as object),
+      // `unread` alone is not the server pair-unread field — ignore it.
+      ...({ unread: 99 } as object),
     }) as DmContactInput;
     const row = normalizeDm(contact);
     expect(row.kind).toBe('dm');
     expect(row.unreadCount).toBeUndefined();
     expect(row.unreadDot).toBe(false);
-    expect('unreadCount' in row ? row.unreadCount : undefined).toBeUndefined();
+  });
+
+  it('DM unreadCount > 0 renders a numeric badge (no server-driven dot)', () => {
+    const row = normalizeDm(dm({ personUid: 'p1', unreadCount: 4 }));
+    expect(row.unreadCount).toBe(4);
+    expect(row.unreadDot).toBe(false);
+  });
+
+  it('DM unreadCount 0 means read — no badge/dot from server (local dots may still show)', () => {
+    const read = normalizeDm(dm({ personUid: 'p1', unreadCount: 0 }));
+    expect(read.unreadCount).toBeUndefined();
+    expect(read.unreadDot).toBe(false);
+
+    const withLocalDot = normalizeDm(dm({ personUid: 'p2', unreadCount: 0 }), {
+      dmDots: ['p2'],
+    });
+    expect(withLocalDot.unreadCount).toBeUndefined();
+    expect(withLocalDot.unreadDot).toBe(true);
+  });
+
+  it('DM unreadCount absent/null/undefined falls back to legacy dot behavior', () => {
+    expect(normalizeDm(dm({ personUid: 'p-a' })).unreadDot).toBe(false);
+    expect(normalizeDm(dm({ personUid: 'p-b', unreadCount: null })).unreadDot).toBe(
+      false,
+    );
+    expect(
+      normalizeDm(dm({ personUid: 'p-c', unreadCount: undefined }), {
+        dmDots: ['p-c'],
+      }).unreadDot,
+    ).toBe(true);
+    expect(
+      normalizeDm(dm({ personUid: 'p-d', activityDot: true })).unreadDot,
+    ).toBe(true);
   });
 
   it('DM activityDot / dmDots set lights the local-only unread dot', () => {
@@ -146,6 +179,50 @@ describe('normalizeChannel / normalizeDm', () => {
     expect(
       normalizeDm(dm({ personUid: 'p2' }), { dmDots: ['p2'] }).unreadDot,
     ).toBe(true);
+  });
+
+  it('applyPairUnreads merges server rollups; clearPairUnread zeros one pair', () => {
+    const contacts = [
+      dm({ personUid: 'p1', displayName: 'Ada' }),
+      dm({ personUid: 'p2', displayName: 'Grace' }),
+    ];
+    const merged = applyPairUnreads(contacts, { p1: 3 });
+    expect(merged[0]?.unreadCount).toBe(3);
+    expect(merged[1]?.unreadCount).toBeUndefined();
+
+    const cleared = clearPairUnread({ p1: 3, p2: 1 }, 'p1');
+    expect(cleared.get('p1')).toBe(0);
+    expect(cleared.get('p2')).toBe(1);
+  });
+
+  it('recent sort still favors numeric DM unread over quiet rows', () => {
+    const rows = normalizeConversations(
+      [],
+      [
+        dm({
+          personUid: 'quiet',
+          displayName: 'Quiet',
+          lastMessageAt: iso(msOnDay(0, 14)),
+          unreadCount: 0,
+        }),
+        dm({
+          personUid: 'hot',
+          displayName: 'Hot',
+          lastMessageAt: iso(msOnDay(0, 10)),
+          unreadCount: 5,
+        }),
+      ],
+    );
+    // Same day, quiet is more recent by activity — but when activity ties on
+    // the secondary key, unread tilts. Here activity differs so recency wins;
+    // force equal activity to prove unread secondary sort.
+    const equalActivity: ConversationRow[] = rows.map((r) => ({
+      ...r,
+      lastActivityAt: NOW,
+    }));
+    const sorted = sortConversations(equalActivity, 'recent');
+    expect(sorted[0]?.personUid).toBe('hot');
+    expect(sorted[0]?.unreadCount).toBe(5);
   });
 
   it('pins apply to both channels and DMs', () => {

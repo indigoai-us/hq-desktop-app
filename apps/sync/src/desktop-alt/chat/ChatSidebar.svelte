@@ -18,11 +18,18 @@
   } from '../../lib/channels';
   import { requestConversation } from '../../lib/pendingConversation';
   import type { Workspace } from '../../lib/workspaces';
-  import { requestChannelOpen } from './open-target';
+  import {
+    type DmRequest,
+    addRequest,
+    removeRequest,
+  } from '../../lib/dmRequests';
+  import { requestChannelOpen, requestDmRequestsOpen } from './open-target';
   import CreateProjectChannel from './CreateProjectChannel.svelte';
   import {
+    applyPairUnreads,
     applySidebarFilters,
     clearDmDot,
+    clearPairUnread,
     distinctDmPeople,
     filterTypeahead,
     groupByDay,
@@ -76,6 +83,17 @@
   interface ChannelsResponse {
     channels?: Channel[];
   }
+  interface RequestsResponse {
+    requests?: DmRequest[];
+  }
+  interface PairUnreadEntry {
+    withPersonUid: string;
+    lastReadAt?: string | null;
+    unreadCount: number;
+  }
+  interface PairUnreadsPayload {
+    pairUnreads?: PairUnreadEntry[];
+  }
 
   const storage =
     typeof window !== 'undefined' ? window.localStorage : null;
@@ -88,6 +106,10 @@
   );
   let pins = $state<string[]>(loadPins(storage));
   let dmDots = $state<string[]>(loadDmDots(storage));
+  /** personUid → unreadCount from inbox `pairUnreads` (absent-safe). */
+  let pairUnreads = $state<Map<string, number>>(new Map());
+  /** Pending incoming connection requests (same source as MessagesShell). */
+  let pendingRequests = $state<DmRequest[]>([]);
 
   let scope = $state<CompanyScope>('all');
   let sortMode = $state<SortMode>('recent');
@@ -119,12 +141,16 @@
       })),
   );
 
+  const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
+
   const allRows = $derived(
-    normalizeConversations(channels, contacts, {
+    normalizeConversations(channels, contactsWithUnreads, {
       pinnedIds: pins,
       dmDots,
     }),
   );
+
+  const pendingRequestCount = $derived(pendingRequests.length);
 
   const filteredRows = $derived(
     applySidebarFilters(allRows, {
@@ -149,7 +175,7 @@
     loading = true;
     loadError = null;
     try {
-      const [contactsResp, channelsResp] = await Promise.all([
+      const [contactsResp, channelsResp, requestsResp] = await Promise.all([
         invoke<ContactsResponse>('list_contacts').catch((err) => {
           console.error('chat-sidebar: list_contacts failed', err);
           return { contacts: contacts } as ContactsResponse;
@@ -158,9 +184,14 @@
           console.error('chat-sidebar: list_channels failed', err);
           return { channels } as ChannelsResponse;
         }),
+        invoke<RequestsResponse>('list_dm_requests').catch((err) => {
+          console.error('chat-sidebar: list_dm_requests failed', err);
+          return { requests: pendingRequests } as RequestsResponse;
+        }),
       ]);
       contacts = Array.isArray(contactsResp?.contacts) ? contactsResp.contacts : [];
       channels = Array.isArray(channelsResp?.channels) ? channelsResp.channels : [];
+      pendingRequests = Array.isArray(requestsResp?.requests) ? requestsResp.requests : [];
       saveConversationCache(
         { channels, contacts, cachedAt: Date.now() },
         storage,
@@ -171,6 +202,27 @@
     } finally {
       loading = false;
     }
+  }
+
+  function mergePairUnreadsPayload(payload: PairUnreadsPayload | null | undefined): void {
+    const entries = payload?.pairUnreads;
+    if (!Array.isArray(entries)) return;
+    // Empty array on account switch clears the map; page rollups merge in.
+    if (entries.length === 0) {
+      pairUnreads = new Map();
+      return;
+    }
+    const next = new Map(pairUnreads);
+    for (const entry of entries) {
+      const uid = entry?.withPersonUid?.trim();
+      if (!uid) continue;
+      const count =
+        typeof entry.unreadCount === 'number' && Number.isFinite(entry.unreadCount)
+          ? Math.max(0, Math.floor(entry.unreadCount))
+          : 0;
+      next.set(uid, count);
+    }
+    pairUnreads = next;
   }
 
   onMount(() => {
@@ -202,6 +254,21 @@
     }).then(track);
 
     void listen('channel:unread-changed', () => {
+      void refreshLists();
+    }).then(track);
+
+    // Per-pair DM unreads from the SINGLE inbox poll (hq-pro US-010).
+    void listen<PairUnreadsPayload>('dm:pair-unreads', (e) => {
+      mergePairUnreadsPayload(e.payload);
+    }).then(track);
+
+    void listen<DmRequest>('dm:request-new', (e) => {
+      pendingRequests = addRequest(pendingRequests, e.payload);
+    }).then(track);
+
+    void listen<{ pairKey: string }>('dm:request-update', (e) => {
+      pendingRequests = removeRequest(pendingRequests, e.payload.pairKey);
+      // Accept may promote a new contact — refresh so the conversation appears.
       void refreshLists();
     }).then(track);
 
@@ -249,8 +316,16 @@
     onnavigateMessages?.();
 
     if (row.kind === 'dm' && row.personUid) {
+      // Optimistic clear (local dot + numeric pair unread), then server mark-read.
       dmDots = clearDmDot(dmDots, row.personUid);
       saveDmDots(dmDots, storage);
+      pairUnreads = clearPairUnread(pairUnreads, row.personUid);
+      try {
+        await invoke('mark_dm_thread_read', { withPersonUid: row.personUid });
+      } catch (err) {
+        // Non-fatal — optimistic clear already applied; next poll reconciles.
+        console.error('chat-sidebar: mark_dm_thread_read failed', err);
+      }
       requestConversation({
         personUid: row.personUid,
         email: row.email ?? '',
@@ -268,6 +343,11 @@
       }
       requestChannelOpen(row.channelId);
     }
+  }
+
+  function openConnectionRequests() {
+    onnavigateMessages?.();
+    requestDmRequestsOpen();
   }
 
   function openFromTypeahead(row: ConversationRow) {
@@ -494,6 +574,26 @@
     </header>
 
     <div class="chat-scroll" data-testid="chat-conversation-list">
+      {#if pendingRequestCount > 0}
+        <button
+          type="button"
+          class="chat-row chat-requests-row"
+          data-testid="chat-connection-requests"
+          aria-label={`Connection requests, ${pendingRequestCount} pending`}
+          onclick={openConnectionRequests}
+        >
+          <span class="chat-glyph requests" aria-hidden="true">·</span>
+          <span class="chat-row-title">Connection requests</span>
+          <span
+            class="chat-unread-badge"
+            data-testid="chat-requests-count"
+            aria-hidden="true"
+          >
+            {pendingRequestCount > 99 ? '99+' : pendingRequestCount}
+          </span>
+        </button>
+      {/if}
+
       {#if grouped.pinned.length > 0}
         <div class="chat-section-label" id="chat-pinned-label">Pinned</div>
         <div class="chat-list" role="list" aria-labelledby="chat-pinned-label">

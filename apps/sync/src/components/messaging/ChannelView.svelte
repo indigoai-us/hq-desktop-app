@@ -47,6 +47,8 @@
   } from '../../desktop-alt/chat/channel-status-model';
   import { isProjectChannel } from '../../desktop-alt/chat/project-channel-model';
   import BoardTab from '../../desktop-alt/chat/BoardTab.svelte';
+  import ChannelFilesTab from './ChannelFilesTab.svelte';
+  import type { FileAttachmentModel } from './channelMessageModels';
 
   interface Props {
     channel: Channel;
@@ -116,9 +118,11 @@
     untrack(() => channel.memberCount ?? null),
   );
 
-  /** Project channel tabs (US-005). Chat is live; Board/Files are placeholders. */
+  /** Project channel tabs (US-005 / US-008 Files). Chat + Board + Files. */
   type ProjectTab = 'chat' | 'board' | 'files';
   let projectTab = $state<ProjectTab>('chat');
+  /** Deep-link target from an in-chat file attachment card (US-008). */
+  let highlightVaultPath = $state<string | null>(null);
   let statusModel = $state<ChannelStatusModel | null>(null);
   let statusLoading = $state(false);
 
@@ -535,6 +539,13 @@
     onchannelchange?.(current);
   }
 
+  /** In-chat file card → Files tab (US-008). Window event still fires from the card. */
+  function handleOpenFile(model: FileAttachmentModel): void {
+    const path = model.vaultPath?.trim() || model.name?.trim() || '';
+    projectTab = 'files';
+    highlightVaultPath = path || null;
+  }
+
   // Reload when the selected channel changes (parent swaps `channel`).
   $effect(() => {
     // Touch channelId so the effect re-runs on selection change.
@@ -563,6 +574,7 @@
     statusOpen = false;
     statusModel = null;
     projectTab = 'chat';
+    highlightVaultPath = null;
     void id;
     void load();
   });
@@ -629,13 +641,23 @@
   });
 </script>
 
-<header class="channel-header" class:project={isProject} data-tauri-drag-region>
+<header
+  class="channel-header"
+  class:project={isProject}
+  class:group-dm={isGroup}
+  data-tauri-drag-region
+  data-testid={isGroup ? 'group-dm-header' : 'channel-header'}
+>
   <div class="channel-title-block">
     <div class="channel-title">
-      {#if isProject}
+      {#if isGroup}
+        <!-- Reduced chrome for group DMs (US-011): name list + "group message",
+             no scope chip, no tabs, no members button. -->
+        <h2 data-testid="group-dm-title">{title} · group message</h2>
+      {:else if isProject}
         <h2 data-testid="project-channel-title">{projectHeaderTitle}</h2>
       {:else}
-        {#if !isGroup}<span class="channel-hash" aria-hidden="true">#</span>{/if}
+        <span class="channel-hash" aria-hidden="true">#</span>
         <h2>{title}</h2>
         <span class="scope-chip" class:personal={isPersonal} title={`Scope: ${chip}`}>
           {#if isPersonal}
@@ -671,23 +693,25 @@
       </nav>
     {/if}
   </div>
-  <button
-    class="member-count-btn"
-    type="button"
-    data-testid="channel-member-count"
-    onclick={openMembersSurface}
-    title={isProject ? 'Members and status' : 'View members'}
-    aria-label={memberCount != null
-      ? `View ${memberCount} ${memberCount === 1 ? 'member' : 'members'}`
-      : 'View members'}
-    aria-expanded={isProject ? statusOpen : rosterOpen}
-  >
-    {#if memberCount != null}
-      {memberCount} {memberCount === 1 ? 'member' : 'members'}
-    {:else}
-      Members
-    {/if}
-  </button>
+  {#if !isGroup}
+    <button
+      class="member-count-btn"
+      type="button"
+      data-testid="channel-member-count"
+      onclick={openMembersSurface}
+      title={isProject ? 'Members and status' : 'View members'}
+      aria-label={memberCount != null
+        ? `View ${memberCount} ${memberCount === 1 ? 'member' : 'members'}`
+        : 'View members'}
+      aria-expanded={isProject ? statusOpen : rosterOpen}
+    >
+      {#if memberCount != null}
+        {memberCount} {memberCount === 1 ? 'member' : 'members'}
+      {:else}
+        Members
+      {/if}
+    </button>
+  {/if}
 </header>
 
 {#if isProject && projectTab === 'board'}
@@ -697,10 +721,10 @@
     onOpenInChannel={() => (projectTab = 'chat')}
   />
 {:else if isProject && projectTab === 'files'}
-  <div class="project-placeholder" data-testid="project-tab-files" role="status">
-    <p class="project-placeholder-title">Files</p>
-    <p class="project-placeholder-copy">Project files land in a later story.</p>
-  </div>
+  <ChannelFilesTab
+    channelId={current.channelId}
+    highlightVaultPath={highlightVaultPath}
+  />
 {:else if invited}
   <!-- Invited-but-not-joined: the thread is a read-only preview. `readonly`
        hides the composer and renders a static "preview" note in its place — the
@@ -759,6 +783,7 @@
     {loadingOlder}
     {hasOlder}
     onretrysend={retryFailedSend}
+    onopenfile={handleOpenFile}
   />
 {/if}
 
@@ -955,29 +980,6 @@
     color: var(--fg, var(--pop-text));
     font-weight: 500;
     border-bottom-color: var(--fg, var(--pop-text));
-  }
-
-  .project-placeholder {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-    padding: 1.5rem 1.25rem;
-    min-height: 0;
-  }
-
-  .project-placeholder-title {
-    margin: 0;
-    font-size: var(--text-base);
-    font-weight: 500;
-    color: var(--fg, var(--pop-text));
-  }
-
-  .project-placeholder-copy {
-    margin: 0;
-    font-size: var(--text-base);
-    font-weight: 400;
-    color: var(--muted-2, var(--pop-muted));
   }
 
   .status-backdrop {
