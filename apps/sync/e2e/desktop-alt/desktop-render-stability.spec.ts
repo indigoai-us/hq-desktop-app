@@ -53,7 +53,11 @@ describe('desktop render stability', () => {
     expect(harness).toContain("emit('sync:conflict'");
     expect(harness).toContain("emit('sync:error'");
     expect(mocks).toContain('function currentHarnessCoreState()');
-    expect(mocks).toContain("harnessScenario() !== 'drift'");
+    // US-019: drift is selected via wantsCoreDrift / scenario catalog
+    // (drift | no-drift | chat shell default), not a single !== 'drift' guard.
+    expect(mocks).toContain('function wantsCoreDrift(');
+    expect(mocks).toContain("scenario === 'drift'");
+    expect(mocks).toContain("scenario === 'no-drift'");
     expect(mocks).toContain('check_core_state: () => currentHarnessCoreState()');
   });
 

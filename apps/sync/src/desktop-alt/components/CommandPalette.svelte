@@ -225,6 +225,7 @@
   <div
     bind:this={paletteEl}
     class="command-palette"
+    data-testid="command-palette"
     role="dialog"
     aria-modal="true"
     aria-labelledby="command-palette-title"

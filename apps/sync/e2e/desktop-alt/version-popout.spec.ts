@@ -109,8 +109,10 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(harness).toContain("scenario === 'update-available'");
     expect(harness).toContain('check_for_updates: () =>');
     expect(harness).toContain('get_pending_update: () =>');
+    // US-019: chat shell may swap the update body via currentHarnessAppUpdate().
     expect(harness).toContain(
-      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null',
+      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? currentHarnessAppUpdate() : null',
     );
+    expect(harness).toContain('function currentHarnessAppUpdate(');
   });
 });
