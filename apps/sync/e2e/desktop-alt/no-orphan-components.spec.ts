@@ -30,10 +30,17 @@ describe('desktop-alt component-mount gate', () => {
   // Mountable views (pages) + V4 cards/chrome. Each is meant to be imported
   // (rendered) by another component; a zero-importer entry is dead code.
   const mountDirs = ['src/desktop-alt/pages', 'src/desktop-alt/v4'];
+  // Deliberate exceptions, each tied to a story decision. Keep this list SHORT
+  // and remove entries as soon as the component is re-mounted or deleted.
+  // - V4Sidebar: US-003 (chat-first sidebar) intentionally unmounted it but keeps
+  //   it in the tree for workspace-IA specs / palette-driven company destinations
+  //   (see the comment at the ChatSidebar mount in DesktopApp.svelte).
+  const intentionallyUnmounted = new Set(['V4Sidebar']);
   const components = mountDirs.flatMap((dir) =>
     readdirSync(join(root, dir))
       .filter((f) => f.endsWith('.svelte'))
-      .map((f) => f.replace(/\.svelte$/, '')),
+      .map((f) => f.replace(/\.svelte$/, ''))
+      .filter((name) => !intentionallyUnmounted.has(name)),
   );
 
   it('every page/card component has at least one importer', () => {
