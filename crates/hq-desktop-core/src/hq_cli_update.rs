@@ -2695,18 +2695,21 @@ pub fn is_windows_locked_binary_failure(exit_code: Option<i32>, detail: &str) ->
 ///
 /// Keyed on npm's OWN `ENOSPC` code (the same way [`is_npm_bin_collision`] keys
 /// on `EEXIST`) so an unrelated defect whose stderr merely mentions `ENOSPC`
-/// cannot be swallowed. The phrase fallback is gated on
-/// `!has_npm_lifecycle_failure_marker` so a third-party build script that ran
-/// out of space stays on the lifecycle path (its `disk-space` cause and
-/// per-package signature unchanged): npm reports an all-digit or `ELIFECYCLE`
-/// code for a lifecycle failure, so the code clause can never match one, and the
-/// phrase clause is excluded for it too.
+/// cannot be swallowed. The phrase fallback is additionally excluded whenever npm
+/// reported a lifecycle failure — checked with `npm_lifecycle_failure`, which
+/// recognizes BOTH the modern `npm error` and legacy `npm ERR!` spellings — so a
+/// third-party build script that ran out of space keeps its lifecycle event, its
+/// `disk-space` cause, and its per-package signature. (`has_npm_lifecycle_failure_marker`
+/// alone misses the legacy `npm ERR! command failed` spelling, so the authoritative
+/// lifecycle check is required.) npm reports an all-digit or `ELIFECYCLE` code for a
+/// lifecycle failure, so the code clause can never match one either.
 pub fn is_disk_exhaustion_failure(detail: &str) -> bool {
     if npm_error_code(detail) == "ENOSPC" {
         return true;
     }
     detail.to_ascii_lowercase().contains("no space left on device")
         && !has_npm_lifecycle_failure_marker(detail)
+        && !npm_lifecycle_failure(detail).failed
 }
 
 /// Stable classification for a failed npm install. Expected local-machine
@@ -5558,6 +5561,35 @@ mod tests {
             npm error command sh -c prebuild-install || node-gyp rebuild\n\
             npm error path /usr/local/lib/node_modules/better-sqlite3\n\
             gyp ERR! ENOSPC: no space left on device";
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::UnexpectedLifecycle
+        );
+        assert!(install_failure_report(Some(1), detail, Some("/usr/local")).is_some());
+        assert_eq!(
+            install_failure_signature(
+                InstallFailureKind::UnexpectedLifecycle,
+                detail,
+                Some("/usr/local")
+            ),
+            "lifecycle:better-sqlite3:disk-space"
+        );
+    }
+
+    #[test]
+    fn legacy_npm_err_lifecycle_failure_mentioning_enospc_stays_a_lifecycle_failure() {
+        // Regression for the LEGACY `npm ERR!` spelling.
+        // `has_npm_lifecycle_failure_marker` only recognizes the modern `npm error`
+        // spelling, so without the additional `npm_lifecycle_failure()` gate the
+        // disk-full phrase fallback would swallow an old-npm build failure that ran
+        // out of space. It must stay UnexpectedLifecycle, keep reporting, and keep
+        // its per-package disk-space signature.
+        let detail = "npm ERR! code 1\n\
+            npm ERR! command failed\n\
+            npm ERR! command sh -c prebuild-install || node-gyp rebuild\n\
+            npm ERR! path /usr/local/lib/node_modules/better-sqlite3\n\
+            gyp ERR! ENOSPC: no space left on device";
+        assert!(!is_disk_exhaustion_failure(detail));
         assert_eq!(
             classify_install_failure(Some(1), detail, Some("/usr/local")),
             InstallFailureKind::UnexpectedLifecycle

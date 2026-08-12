@@ -1343,3 +1343,33 @@ fn a_lifecycle_failure_carrying_enospc_still_captures() {
     );
     assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
 }
+
+/// The same negative control for the LEGACY `npm ERR!` spelling: an old-npm build
+/// that ran out of disk space must still capture at the real envelope boundary,
+/// not be swallowed by the disk-full suppression. The disk-full predicate gates on
+/// npm_lifecycle_failure (which recognizes both `npm error` and `npm ERR!`), so
+/// this stays an UnexpectedLifecycle event with its per-package disk-space signature.
+#[test]
+fn a_legacy_npm_err_lifecycle_failure_carrying_enospc_still_captures() {
+    let lifecycle = format!(
+        "npm ERR! code 1\n\
+         npm ERR! path {SELECTED_PREFIX}/lib/node_modules/better-sqlite3\n\
+         npm ERR! command failed\n\
+         npm ERR! command sh -c prebuild-install || node-gyp rebuild\n\
+         gyp ERR! stack Error: ENOSPC: no space left on device"
+    );
+    let event = single_event(captured_events(|| {
+        report_install_failure(Some(1), &lifecycle, Some(SELECTED_PREFIX))
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (lifecycle:better-sqlite3:disk-space)")
+    );
+    assert_eq!(tag(&event, "npm_lifecycle_cause"), Some("disk-space"));
+    assert_eq!(
+        tag(&event, "install_failure_kind"),
+        Some("unexpected-lifecycle")
+    );
+    assert_path_safe(&event, &["/Users/", "alice", ".npm-global"]);
+}
