@@ -507,6 +507,7 @@ fn main() {
             commands::first_run::set_main_window_vibrancy,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
+            commands::lifecycle::get_setup_status,
             commands::session_end_observer::session_end_observer_status,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,

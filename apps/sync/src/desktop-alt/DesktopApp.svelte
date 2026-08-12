@@ -26,6 +26,7 @@
     type CachedBrand,
   } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
+  import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryOverlay from './chat/LibraryOverlay.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
@@ -1927,6 +1928,7 @@
         {#key routeKey}
           {#if route.kind === 'home'}
             <div class="page">
+              <SetupIncompleteCard />
               <HomePage
                 {syncState}
                 {ready}
