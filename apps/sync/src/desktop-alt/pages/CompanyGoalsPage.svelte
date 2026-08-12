@@ -12,7 +12,6 @@
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
     applyProjectProvenance,
-    createCompanyGoal,
     emptyProjectProvenanceIndex,
     indexProjectProvenance,
     loadCompanyGoals,
@@ -20,17 +19,11 @@
     loadLocalProjects,
     loadLocalProjectStories,
     projectIdentity,
-    saveGoalProjectLink,
     withProjectStatus,
     type KeyResult,
     type Objective,
     type ProjectProvenanceIndex,
   } from '../lib/local-projects';
-  import {
-    goalLinkRef,
-    goalLinkedProjects,
-    isProjectLinkedToGoal,
-  } from '../lib/goal-links';
   import {
     projectDisplayName,
     type Project,
@@ -173,9 +166,6 @@
     provenanceUnavailable = false;
     error = null;
     selectedGoalId = null;
-    newGoalOpen = false;
-    newGoalError = null;
-    linkPickerOpen = false;
     selected = null;
     stories = [];
     storiesError = null;
@@ -286,14 +276,40 @@
     return kr.title || kr.metric || 'Key result';
   }
 
-  /**
-   * Linked projects via the shared goal-links matcher — the SAME association
-   * helper the Overview rollup reads (`goalLinkedProjects` in
-   * `lib/goal-links.ts`), backed by the durable `initiativeIds` written into
-   * the company `board.json` by `saveGoalProjectLink`.
-   */
+  function normalizeId(value: string | null | undefined): string {
+    return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+
+  function objectiveIds(objective: Objective): Set<string> {
+    const ids = new Set<string>();
+    for (const id of objective.initiativeIds ?? []) {
+      const normalized = normalizeId(id);
+      if (normalized) ids.add(normalized);
+    }
+    const linearId = normalizeId(objective.linearInitiativeId);
+    if (linearId) ids.add(linearId);
+    const ownId = normalizeId(objective.id);
+    if (ownId) ids.add(ownId);
+    return ids;
+  }
+
+  function projectTokens(project: Project): string[] {
+    return [
+      project.id,
+      project.name,
+      project.title,
+      project.prdPath.split('/').filter(Boolean).at(-2),
+    ]
+      .map(normalizeId)
+      .filter(Boolean);
+  }
+
   function linkedProjects(objective: Objective): Project[] {
-    return goalLinkedProjects(objective, companyProjects);
+    const ids = objectiveIds(objective);
+    if (ids.size === 0) return [];
+    return companyProjects.filter((project) =>
+      projectTokens(project).some((token) => ids.has(token)),
+    );
   }
 
   function overflowCount(items: Project[]): number {
@@ -359,13 +375,11 @@
 
   function selectGoal(objective: Objective): void {
     selectedGoalId = goalKey(objective);
-    linkPickerOpen = false;
   }
 
   function clearGoalSelection(): void {
     // Narrow collapse: return to the full-width list without losing portfolio data.
     selectedGoalId = null;
-    linkPickerOpen = false;
   }
 
   /**
@@ -432,109 +446,14 @@
     }
   }
 
-  // ---- US-005: in-app goal creation + goal-project linking ----------------
-
-  let newGoalOpen = $state(false);
-  let newGoalTitle = $state('');
-  let newGoalDescription = $state('');
-  let newGoalYear = $state(String(new Date().getFullYear()));
-  let newGoalBusy = $state(false);
-  let newGoalError = $state<string | null>(null);
-
-  let linkPickerOpen = $state(false);
-  let linkBusy = $state<string | null>(null);
-
-  const linkableProjects = $derived(
-    selectedGoal
-      ? companyProjects.filter(
-          (project) => !isProjectLinkedToGoal(selectedGoal, project),
-        )
-      : [],
-  );
-
-  /** Re-read this company's goals from the local store after a write. */
-  async function reloadGoals(): Promise<void> {
-    const activeSlug = slug;
-    const goals = await loadCompanyGoals(activeSlug);
-    if (slug !== activeSlug) return;
-    objectives = goals.objectives;
-  }
-
-  /** Toggle the inline "New goal" form (title / description / target year). */
   function newGoal() {
-    newGoalOpen = !newGoalOpen;
-    newGoalError = null;
-  }
-
-  function cancelNewGoal(): void {
-    newGoalOpen = false;
-    newGoalError = null;
-  }
-
-  async function submitNewGoal(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const title = newGoalTitle.trim();
-    if (!title || newGoalBusy) return;
-    newGoalBusy = true;
-    newGoalError = null;
-    try {
-      const goalId = await createCompanyGoal(
-        slug,
-        title,
-        newGoalDescription.trim(),
-        newGoalYear.trim(),
-      );
-      await reloadGoals();
-      selectedGoalId = goalId;
-      newGoalOpen = false;
-      newGoalTitle = '';
-      newGoalDescription = '';
-      actionMessage = 'Goal created.';
-    } catch (err) {
-      console.error('create_local_company_goal failed:', err);
-      newGoalError = 'Could not create the goal. Try again after a sync.';
-    } finally {
-      newGoalBusy = false;
-    }
-  }
-
-  function toggleLinkPicker(): void {
-    linkPickerOpen = !linkPickerOpen;
-  }
-
-  /**
-   * Connect a project to the selected goal: optimistic `initiativeIds` update
-   * + durable write into the goal's own store (company board.json) via
-   * `saveGoalProjectLink`. A thrown write rolls the optimistic update back.
-   */
-  async function connectProject(project: Project): Promise<void> {
-    const goal = selectedGoal;
-    if (!goal || linkBusy) return;
-    const ref = goalLinkRef(project);
-    const goalId = goal.id || goal.title;
-    if (!ref || !goalId) {
-      actionMessage = 'Could not link project.';
-      return;
-    }
-    const targetKey = goalKey(goal);
-    const previous = objectives;
-    linkBusy = projectIdentity(project);
-    objectives = objectives.map((objective) =>
-      goalKey(objective) === targetKey
-        ? { ...objective, initiativeIds: [...objective.initiativeIds, ref] }
-        : objective,
-    );
-    try {
-      await saveGoalProjectLink(slug, goalId, ref);
-      actionMessage = 'Project linked.';
-      linkPickerOpen = false;
-    } catch (err) {
-      console.error('link_local_goal_project failed:', err);
-      objectives = previous;
-      actionMessage = 'Could not link project.';
-    } finally {
-      linkBusy = null;
-    }
+    const prompt = [
+      `/goals ${slug}`,
+      '',
+      `Create a new measurable company goal for ${slug}.`,
+      'Interview me for the missing objective, owner, target quarter, and key results, then update the local company goals source so it appears in HQ.',
+    ].join('\n');
+    void openHqPrompt('new-goal', prompt);
   }
 
   function reviewProposal(objective: Objective) {
@@ -679,71 +598,13 @@
           class="new-goal-button"
           data-testid="new-goal-button"
           onclick={newGoal}
-          aria-expanded={newGoalOpen}
+          disabled={actionBusy !== null}
+          aria-busy={actionBusy === 'new-goal'}
         >
-          {newGoalOpen ? 'Close' : 'New goal'}
+          {actionBusy === 'new-goal' ? 'Opening…' : 'New goal'}
         </button>
       </div>
     </header>
-
-    {#if newGoalOpen}
-      <form class="new-goal-form" data-testid="new-goal-form" onsubmit={submitNewGoal}>
-        <div class="new-goal-fields">
-          <label class="new-goal-field title-stack">
-            <span class="section-label">Title</span>
-            <input
-              type="text"
-              data-testid="new-goal-title"
-              placeholder="What should this goal achieve?"
-              bind:value={newGoalTitle}
-              required
-            />
-          </label>
-          <label class="new-goal-field new-goal-year title-stack">
-            <span class="section-label">Target year</span>
-            <input
-              type="text"
-              data-testid="new-goal-year"
-              placeholder="2026"
-              bind:value={newGoalYear}
-            />
-          </label>
-        </div>
-        <label class="new-goal-field title-stack">
-          <span class="section-label">Description</span>
-          <textarea
-            rows="2"
-            data-testid="new-goal-description"
-            placeholder="Optional context for this goal"
-            bind:value={newGoalDescription}
-          ></textarea>
-        </label>
-        {#if newGoalError}
-          <div class="goals-error" role="alert" data-testid="new-goal-error">
-            {newGoalError}
-          </div>
-        {/if}
-        <div class="new-goal-form-actions">
-          <button
-            type="submit"
-            class="new-goal-button"
-            data-testid="new-goal-create"
-            disabled={newGoalBusy || !newGoalTitle.trim()}
-            aria-busy={newGoalBusy}
-          >
-            {newGoalBusy ? 'Creating…' : 'Create goal'}
-          </button>
-          <button
-            type="button"
-            class="new-goal-cancel"
-            data-testid="new-goal-cancel"
-            onclick={cancelNewGoal}
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
-    {/if}
 
     {#if error}
       <div class="goals-error" role="alert" data-testid="goals-error">{error}</div>
@@ -758,7 +619,7 @@
     {:else if objectives.length === 0}
       <div class="empty-state" data-testid="empty-goals-state">
         <span>No goals yet</span>
-        <p>Create your first goal with New goal, or wait for goals to sync into the local workspace.</p>
+        <p>Company goals will appear here after goals sync into the local workspace.</p>
       </div>
     {:else}
       <!-- DESKTOP-007: scan-friendly list + stable selected-goal detail (no card grid, no modal). -->
@@ -930,41 +791,6 @@
                     {/if}
                   {/if}
                 </div>
-                <button
-                  type="button"
-                  class="link-goal-button"
-                  data-testid="link-goal-button"
-                  aria-expanded={linkPickerOpen}
-                  onclick={toggleLinkPicker}
-                >
-                  {linkPickerOpen ? 'Close' : 'Connect'}
-                </button>
-                {#if linkPickerOpen}
-                  <div class="link-project-picker" data-testid="link-project-picker">
-                    {#if linkableProjects.length === 0}
-                      <span class="link-picker-empty" data-testid="link-picker-empty">
-                        {companyProjects.length === 0
-                          ? 'No projects in this company yet'
-                          : 'Every project is already linked to this goal'}
-                      </span>
-                    {:else}
-                      {#each linkableProjects as project (projectIdentity(project))}
-                        <button
-                          type="button"
-                          class="link-project-option"
-                          data-testid="link-project-option"
-                          disabled={linkBusy !== null}
-                          aria-busy={linkBusy === projectIdentity(project)}
-                          onclick={() => connectProject(project)}
-                        >
-                          {linkBusy === projectIdentity(project)
-                            ? 'Linking…'
-                            : projectDisplayName(project)}
-                        </button>
-                      {/each}
-                    {/if}
-                  </div>
-                {/if}
               </footer>
             </article>
           {:else}
@@ -1447,145 +1273,11 @@
 
   .linked-row {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     min-width: 0;
     padding-top: var(--v4-space-2);
     border-top: 1px solid var(--v4-hairline);
-  }
-
-  .link-goal-button,
-  .new-goal-cancel {
-    flex: 0 0 auto;
-    margin-left: auto;
-    min-height: 24px;
-    padding: 0 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
-    font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 500;
-    cursor: pointer;
-  }
-
-  .new-goal-cancel {
-    margin-left: 0;
-  }
-
-  .link-goal-button:hover,
-  .new-goal-cancel:hover {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
-  }
-
-  .link-goal-button:focus-visible,
-  .new-goal-cancel:focus-visible,
-  .link-project-option:focus-visible,
-  .new-goal-form input:focus-visible,
-  .new-goal-form textarea:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
-  }
-
-  .link-project-picker {
-    display: flex;
-    flex-basis: 100%;
-    flex-wrap: wrap;
-    gap: 8px;
-    min-width: 0;
-    padding-top: var(--v4-space-2);
-    border-top: 1px solid var(--v4-rowline);
-  }
-
-  .link-project-option {
-    display: inline-flex;
-    max-width: 260px;
-    align-items: center;
-    min-height: 24px;
-    padding: 0 8px;
-    overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: transparent;
-    color: var(--v4-text-2);
-    font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 500;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .link-project-option:hover:not(:disabled) {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
-  }
-
-  .link-project-option:disabled {
-    opacity: 0.52;
-    cursor: default;
-  }
-
-  .link-picker-empty {
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
-    line-height: 1.3;
-  }
-
-  .new-goal-form {
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    gap: var(--v4-space-2);
-    min-width: 0;
-    padding: var(--v4-space-2) 0;
-    border-top: 1px solid var(--v4-hairline);
-    border-bottom: 1px solid var(--v4-hairline);
-  }
-
-  .new-goal-fields {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    min-width: 0;
-  }
-
-  .new-goal-field {
-    flex: 1 1 220px;
-    min-width: 0;
-  }
-
-  .new-goal-field.new-goal-year {
-    flex: 0 1 120px;
-  }
-
-  .new-goal-form input,
-  .new-goal-form textarea {
-    width: 100%;
-    min-width: 0;
-    padding: 6px 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: transparent;
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--type-body, var(--text-base));
-    line-height: 1.3;
-  }
-
-  .new-goal-form textarea {
-    resize: vertical;
-  }
-
-  .new-goal-form-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
   }
 
   .project-chips {

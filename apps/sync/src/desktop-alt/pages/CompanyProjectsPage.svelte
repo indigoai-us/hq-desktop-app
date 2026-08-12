@@ -12,14 +12,12 @@
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
     applyProjectProvenance,
-    createLocalProject,
     emptyProjectProvenanceIndex,
     indexProjectProvenance,
     loadCompanyGoals,
     loadCompanyProjectProvenance,
     loadLocalProjects,
     loadLocalProjectStories,
-    normalizeProjectPath,
     projectIdentity,
     type ProjectProvenanceIndex,
     type Objective,
@@ -76,24 +74,8 @@
   let stateFilter = $state<PortfolioStateFilter>('all');
   /** Owner filter — empty string means Anyone. */
   let ownerFilter = $state('');
-  /** Persisted Board/List preference (V2). Board is the DESKTOP-004 default. */
-  const PROJECTS_VIEW_MODE_KEY = 'hq-desktop-alt.projects-view-mode';
-  function storedViewMode(): PortfolioViewMode {
-    try {
-      return localStorage.getItem(PROJECTS_VIEW_MODE_KEY) === 'list' ? 'list' : 'board';
-    } catch {
-      return 'board';
-    }
-  }
-  let viewMode = $state<PortfolioViewMode>(storedViewMode());
-  function setViewMode(mode: PortfolioViewMode): void {
-    viewMode = mode;
-    try {
-      localStorage.setItem(PROJECTS_VIEW_MODE_KEY, mode);
-    } catch {
-      // Persistence is best-effort; the in-session toggle still works.
-    }
-  }
+  /** Board is the DESKTOP-004 default. */
+  let viewMode = $state<PortfolioViewMode>('board');
   /**
    * Legacy projectFilter still supports the needs-link cycle used by Link goal
    * empty-state contracts and company-work-actions.
@@ -187,55 +169,13 @@
     }
   }
 
-  /** Inline in-app project scaffold form (US-006). */
-  let newProjectOpen = $state(false);
-  let newProjectName = $state('');
-
-  /** New project toggles the inline scaffold form. */
   async function createProject(): Promise<void> {
-    if (newProjectPending) return;
-    newProjectOpen = !newProjectOpen;
-    if (newProjectOpen) actionMessage = null;
-  }
-
-  /** Create the local project scaffold and open the fresh project. */
-  async function submitNewProject(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const name = newProjectName.trim();
-    if (!name || newProjectPending) return;
+    if (!onnewproject || newProjectPending) return;
     newProjectPending = true;
-    try {
-      const prdPath = await createLocalProject(slug, name);
-      const refreshed = await loadLocalProjects();
-      projects = refreshed;
-      newProjectOpen = false;
-      newProjectName = '';
-      actionMessage = 'Project created';
-      const created = refreshed.find(
-        (project) =>
-          project.company === slug &&
-          normalizeProjectPath(project.prdPath) === normalizeProjectPath(prdPath),
-      );
-      if (created) {
-        void openProject(applyProjectProvenance(created, cloudProvenance));
-      }
-    } catch (err) {
-      console.error('create_local_project failed:', err);
-      actionMessage = err instanceof Error ? err.message : String(err);
-    } finally {
-      newProjectPending = false;
-    }
-  }
-
-  /** Optional handoff to a Claude Code planning session (legacy affordance). */
-  let planHandoffPending = $state(false);
-  async function planInClaudeCode(): Promise<void> {
-    if (!onnewproject || planHandoffPending) return;
-    planHandoffPending = true;
     try {
       await onnewproject();
     } finally {
-      planHandoffPending = false;
+      newProjectPending = false;
     }
   }
 
@@ -655,71 +595,19 @@
         {#if actionMessage}
           <span class="action-status" role="status">{actionMessage}</span>
         {/if}
-        <button
-          type="button"
-          class="primary-action"
-          onclick={createProject}
-          disabled={newProjectPending}
-          aria-busy={newProjectPending}
-          aria-expanded={newProjectOpen}
-          data-testid="new-project-toggle"
-        >
-          New project
-        </button>
-      </div>
-    </header>
-
-    {#if newProjectOpen}
-      <form
-        class="new-project-form"
-        data-testid="new-project-form"
-        onsubmit={submitNewProject}
-      >
-        <label class="project-search new-project-name">
-          <span class="visually-hidden">New project name</span>
-          <!-- svelte-ignore a11y_autofocus -->
-          <input
-            type="text"
-            placeholder="Project name…"
-            bind:value={newProjectName}
-            data-testid="new-project-name"
-            autofocus
-          />
-        </label>
-        <button
-          type="submit"
-          class="primary-action"
-          data-testid="new-project-create"
-          disabled={newProjectPending || !newProjectName.trim()}
-          aria-busy={newProjectPending}
-        >
-          {newProjectPending ? 'Creating…' : 'Create'}
-        </button>
-        <button
-          type="button"
-          class="tool-button"
-          data-testid="new-project-cancel"
-          onclick={() => {
-            newProjectOpen = false;
-            newProjectName = '';
-          }}
-        >
-          Cancel
-        </button>
         {#if onnewproject}
           <button
             type="button"
-            class="tool-button"
-            data-testid="new-project-plan-handoff"
-            onclick={planInClaudeCode}
-            disabled={planHandoffPending}
-            aria-busy={planHandoffPending}
+            class="primary-action"
+            onclick={createProject}
+            disabled={newProjectPending}
+            aria-busy={newProjectPending}
           >
-            {planHandoffPending ? 'Opening…' : 'Plan in Claude Code'}
+            {newProjectPending ? 'Opening…' : 'New project'}
           </button>
         {/if}
-      </form>
-    {/if}
+      </div>
+    </header>
 
     <div class="portfolio-tools" data-testid="portfolio-tools">
       <label class="project-search">
@@ -776,7 +664,7 @@
           class:is-active={viewMode === 'board'}
           aria-pressed={viewMode === 'board'}
           data-testid="view-toggle-board"
-          onclick={() => setViewMode('board')}
+          onclick={() => (viewMode = 'board')}
         >
           Board
         </button>
@@ -786,7 +674,7 @@
           class:is-active={viewMode === 'list'}
           aria-pressed={viewMode === 'list'}
           data-testid="view-toggle-list"
-          onclick={() => setViewMode('list')}
+          onclick={() => (viewMode = 'list')}
         >
           List
         </button>
@@ -1064,19 +952,6 @@
     flex-wrap: wrap;
     gap: 8px;
     min-height: 36px;
-  }
-
-  .new-project-form {
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-    flex-wrap: wrap;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .new-project-name input {
-    min-width: 200px;
   }
 
   .project-search input,

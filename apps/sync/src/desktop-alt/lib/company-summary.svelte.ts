@@ -6,6 +6,7 @@ export interface CompanySummary {
     last7d: number;
   };
   deployments: number;
+  secrets: number;
 }
 
 export const emptyCompanySummary = (): CompanySummary => ({
@@ -14,6 +15,7 @@ export const emptyCompanySummary = (): CompanySummary => ({
     last7d: 0,
   },
   deployments: 0,
+  secrets: 0,
 });
 
 export function useCompanySummary(options: { slug: () => string | null; enabled?: () => boolean }) {

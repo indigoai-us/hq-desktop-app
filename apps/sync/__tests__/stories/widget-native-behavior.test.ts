@@ -153,8 +153,6 @@ async function waitForNativeReady(): Promise<void> {
         'channel:new-message',
         'channel:updated',
         'dm:unread-summary',
-        // US-012: desktop Inbox Mark-all-read broadcast clears widget unread.
-        'hq:notifications-all-read',
         'sync:complete',
         'update:available',
         'update:cleared',
@@ -278,9 +276,9 @@ afterAll(() => {
 
 describe('Widget restored native standalone behavior', () => {
   it.each([
-    { zoom: 0.75, width: 50, height: 33 },
+    { zoom: 0.8, width: 53, height: 35 },
     { zoom: 1, width: 66, height: 43 },
-    { zoom: 1.5, width: 99, height: 65 },
+    { zoom: 1.6, width: 106, height: 69 },
   ])(
     'resizes its fixed native viewport with the initial $zoom zoom',
     async ({ zoom, width, height }) => {
@@ -304,15 +302,15 @@ describe('Widget restored native standalone behavior', () => {
 
     window.dispatchEvent(
       new CustomEvent('hq:desktop-zoom-change', {
-        detail: { zoom: 1.5 },
+        detail: { zoom: 1.6 },
       }),
     );
 
     await vi.waitFor(() => {
       expect(tauri.invoke).toHaveBeenCalledWith('resize_widget', {
-        width: 99,
-        height: 65,
-        zoom: 1.5,
+        width: 106,
+        height: 69,
+        zoom: 1.6,
       });
     });
   });
@@ -433,7 +431,7 @@ describe('Widget restored native standalone behavior', () => {
 
     await unmount(component!);
     component = null;
-    expect([...unlisteners.values()]).toHaveLength(10);
+    expect([...unlisteners.values()]).toHaveLength(9);
     for (const unlisten of unlisteners.values()) {
       expect(unlisten).toHaveBeenCalledOnce();
     }

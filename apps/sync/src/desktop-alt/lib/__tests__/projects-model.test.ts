@@ -34,9 +34,6 @@ import {
   classifyTasks,
   groupByTaskColumn,
   projectFilesRootFromPrdPath,
-  projectFolderFromPrdPath,
-  runStoryPrompt,
-  sessionActivityCardView,
   TASK_COLUMNS,
   TASK_COLUMN_LABEL,
   type Story,
@@ -687,38 +684,6 @@ describe('DESKTOP-005 task columns + live match', () => {
     expect(groups.active.map((c) => c.story.id)).toEqual(['live']);
   });
 
-  it('builds Activity session cards with model, runtime, elapsed, and cwd (US-007 V2)', () => {
-    const session = (overrides: Partial<PortfolioSessionRef> = {}): PortfolioSessionRef => ({
-      project: 'hq-desktop-app',
-      company: 'indigo',
-      cwd: '/Users/x/HQ/companies/indigo/projects/hq-desktop-app',
-      status: 'running',
-      startedAt: '2026-07-18T12:00:00Z',
-      lastActivityAt: '2026-07-18T12:05:00Z',
-      ...overrides,
-    });
-    const now = Date.parse('2026-07-18T12:10:00Z');
-    const card = sessionActivityCardView(
-      session({ model: 'claude-opus-4-8', tool: 'Claude', startedAt: '2026-07-18T12:00:00Z' }),
-      now,
-    );
-    expect(card.model).toBe('claude-opus-4-8');
-    expect(card.runtime).toBe('claude');
-    expect(card.elapsed).toBe('10:00');
-    expect(card.cwd).toBe('/Users/x/HQ/companies/indigo/projects/hq-desktop-app');
-    expect(card.status).toBe('running');
-
-    // Missing fields stay null — never fabricated.
-    const sparse = sessionActivityCardView(
-      session({ model: '', tool: undefined, startedAt: undefined, cwd: ' ' }),
-      now,
-    );
-    expect(sparse.model).toBeNull();
-    expect(sparse.runtime).toBeNull();
-    expect(sparse.elapsed).toBeNull();
-    expect(sparse.cwd).toBeNull();
-  });
-
   it('derives project files root from prdPath without inventing paths', () => {
     expect(
       projectFilesRootFromPrdPath('/Users/x/HQ/companies/indigo/projects/hq-desktop-app/prd.json'),
@@ -728,34 +693,5 @@ describe('DESKTOP-005 task columns + live match', () => {
     );
     expect(projectFilesRootFromPrdPath(null)).toBeNull();
     expect(projectFilesRootFromPrdPath('/tmp/elsewhere/prd.json')).toBeNull();
-  });
-});
-
-describe('US-008 (V2) Run story handoff shape', () => {
-  it('runStoryPrompt is /execute-task {project}/{story-id}', () => {
-    expect(runStoryPrompt('hq-desktop-v2', 'US-008')).toBe(
-      '/execute-task hq-desktop-v2/US-008',
-    );
-  });
-
-  it('projectFolderFromPrdPath resolves the project directory', () => {
-    // Absolute prd path → its directory.
-    expect(
-      projectFolderFromPrdPath(
-        '/Users/x/HQ/companies/indigo/projects/hq-desktop-v2/prd.json',
-        '/Users/x/HQ',
-      ),
-    ).toBe('/Users/x/HQ/companies/indigo/projects/hq-desktop-v2');
-    // HQ-relative prd path → joined onto the HQ folder.
-    expect(
-      projectFolderFromPrdPath('companies/indigo/projects/foo/prd.json', '/Users/x/HQ/'),
-    ).toBe('/Users/x/HQ/companies/indigo/projects/foo');
-    // Relative path with no HQ folder known → still a usable relative folder.
-    expect(projectFolderFromPrdPath('companies/indigo/projects/foo/prd.json', '')).toBe(
-      'companies/indigo/projects/foo',
-    );
-    // Unresolvable → falls back to the HQ root (matches other agent handoffs).
-    expect(projectFolderFromPrdPath('', '/Users/x/HQ')).toBe('/Users/x/HQ');
-    expect(projectFolderFromPrdPath(null, '/Users/x/HQ')).toBe('/Users/x/HQ');
   });
 });

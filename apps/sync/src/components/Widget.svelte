@@ -905,7 +905,6 @@
     let unlistenUpdateCleared: (() => void) | undefined;
     let unlistenChannelMessage: (() => void) | undefined;
     let unlistenChannelUpdated: (() => void) | undefined;
-    let unlistenAllRead: (() => void) | undefined;
     let historyReloadTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
 
@@ -956,12 +955,6 @@
       unlistenUpdateCleared = await listen('update:cleared', scheduleHistoryRefresh);
       unlistenChannelMessage = await listen('channel:new-message', scheduleHistoryRefresh);
       unlistenChannelUpdated = await listen('channel:updated', scheduleHistoryRefresh);
-      // US-012 badge consistency: the desktop Inbox's Mark-all-read broadcasts
-      // app-wide so the widget's unread superscript clears in the same click
-      // as the sidebar badge and the tray/Dock DM badge.
-      unlistenAllRead = await listen('hq:notifications-all-read', () => {
-        stack = markRecentRead(stack);
-      });
 
       const { invoke } = await import('@tauri-apps/api/core');
       if (cancelled) return;
@@ -991,7 +984,6 @@
       safeUnlisten(unlistenUpdateCleared)();
       safeUnlisten(unlistenChannelMessage)();
       safeUnlisten(unlistenChannelUpdated)();
-      safeUnlisten(unlistenAllRead)();
       if (historyReloadTimer !== undefined) {
         clearTimeout(historyReloadTimer);
         historyReloadTimer = undefined;

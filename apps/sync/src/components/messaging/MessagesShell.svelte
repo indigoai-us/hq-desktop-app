@@ -496,8 +496,6 @@
             prompt: null,
             createdAt: new Date().toISOString(),
             direction: 'out',
-            // Compose's 200 send outcome IS the server ack (US-013).
-            delivered: true,
           },
         ];
       }
@@ -594,19 +592,6 @@
     return conversations.filter((item) => railSearchText(item).toLocaleLowerCase().includes(query));
   });
   const visibleRailItems = $derived(filteredRailItems.slice(0, railVisibleCount));
-  // US-013 governance: pending DM requests stay directly reachable in the rail
-  // (accept/decline via the shared DmRequestCard pane), in addition to the
-  // Mentions & activity surface. Console has no messaging, so this window is
-  // the only place the accept/decline governance lives.
-  const visibleRequestItems = $derived.by(() => {
-    const query = railQuery.trim().toLocaleLowerCase();
-    if (!query) return requests;
-    return requests.filter((request) =>
-      `${requestDisplayName(request)} connection request`
-        .toLocaleLowerCase()
-        .includes(query),
-    );
-  });
   const visibleDirectItems = $derived(
     visibleRailItems.filter(
       (item) => item.kind === 'dm' || (item.kind === 'channel' && item.channel.scope === 'group'),
@@ -1471,8 +1456,6 @@
             prompt: null,
             createdAt: sentAt,
             direction: 'out',
-            // The 200 ack means delivered; the 202 path renders the Pending chip.
-            delivered: pending ? undefined : true,
             pending,
             pendingLabel: pending
               ? `Pending — waiting for ${displayLabel(peer)} to accept`
@@ -1481,15 +1464,14 @@
         ];
       } else {
         const sentAt = new Date().toISOString();
-        const localId = `local-${messages.length}-${text.length}`;
-        // US-013 delivery states: append the outbound bubble immediately with
-        // `delivered: false` ("Sending…"); the send ack below flips it to
-        // "Delivered". The durable copy lands in the mirror and shows on the
-        // next thread load.
+        await invoke('send_dm', { toPersonUid: peer.personUid, body: text });
+        if (!dmSendIsCurrent(peer, generation)) return;
+        // Optimistic append — the durable copy lands in the mirror and shows on
+        // the next thread load.
         messages = [
           ...messages,
           {
-            eventId: localId,
+            eventId: `local-${messages.length}-${text.length}`,
             fromPersonUid: 'me',
             fromEmail: '',
             fromDisplayName: 'You',
@@ -1498,24 +1480,8 @@
             prompt: null,
             createdAt: sentAt,
             direction: 'out',
-            delivered: false,
           },
         ];
-        try {
-          await invoke('send_dm', { toPersonUid: peer.personUid, body: text });
-        } catch (sendErr) {
-          // Failed send — drop the optimistic bubble so the error message isn't
-          // contradicted by a stuck "Sending…" row.
-          if (dmSendIsCurrent(peer, generation)) {
-            messages = messages.filter((m) => m.eventId !== localId);
-          }
-          throw sendErr;
-        }
-        if (!dmSendIsCurrent(peer, generation)) return;
-        // Server ack — the message is Delivered.
-        messages = messages.map((m) =>
-          m.eventId === localId ? { ...m, delivered: true } : m,
-        );
         contacts = sortContactsByRecentActivity(
           contacts.map((contact) =>
             contact.personUid === peer.personUid
@@ -1906,16 +1872,6 @@
               aria-busy={loadingRequests}
             >{loadingRequests ? 'Retrying…' : 'Retry'}</button>
           </div>
-        {/if}
-        {#if visibleRequestItems.length > 0}
-          <div class="rail-section-heading">
-            <span>Connection requests</span>
-          </div>
-          <ul class="contact-list compact-list">
-            {#each visibleRequestItems as req (req.pairKey)}
-              {@render requestRow(req)}
-            {/each}
-          </ul>
         {/if}
         <div class="rail-section-heading">
           <span>Direct messages</span>

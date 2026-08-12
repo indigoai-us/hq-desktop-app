@@ -14,7 +14,6 @@
   import type { MeetingEvent } from '../lib/meetings-model';
   import ActivityDigest from '../v4/ActivityDigest.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
-  import TodayScheduleRail from '../components/TodayScheduleRail.svelte';
   import { pendingInviteWorkspaces } from '../../lib/workspaces';
   import {
     formatClock,
@@ -28,6 +27,7 @@
     getHomeMetaLine,
     getHomePortfolioStats,
     getHomeProgressModel,
+    getHomeTodayAgenda,
     getInviteCardModel,
     getNeedsYouCount,
     type HomeConflict,
@@ -195,6 +195,7 @@
   // Merged-Home portfolio — all real, all from already-loaded data.
   const portfolioStats = $derived(getHomePortfolioStats({ workspaces, projects }));
   const companyRows = $derived(getHomeCompanyRows({ workspaces, projects }));
+  const todayAgenda = $derived(getHomeTodayAgenda({ events: meetingEvents, companyNamesByUid }));
 
   async function handleConflictAction(path: string, actionId: string): Promise<void> {
     if (actionId === 'compare') await oncompareconflict?.(path);
@@ -429,8 +430,28 @@
         <ActivityDigest groups={digestGroups} {onopenlog} />
       </div>
 
-      <!-- Owns calendar hydrate + live refresh; renders nothing when hidden. -->
-      <TodayScheduleRail {meetingEvents} {companyNamesByUid} />
+      <div class="home-col home-col-rail">
+        <section class="home-section" aria-label="Today">
+          <h2 class="home-label">
+            Today{todayAgenda.length ? ` · ${todayAgenda.length}` : ''}
+          </h2>
+          {#if todayAgenda.length > 0}
+            <div class="home-agenda">
+              {#each todayAgenda as item (item.id)}
+                <div class="home-agenda-row">
+                  <span class="home-agenda-time">{item.time}</span>
+                  <span class="home-agenda-copy">
+                    <span class="home-agenda-title">{item.title}</span>
+                    <span class="home-agenda-company">{item.company}</span>
+                  </span>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="home-empty">No meetings today.</p>
+          {/if}
+        </section>
+      </div>
     </div>
   {:else}
     <div class="home-skeleton" aria-busy="true">
@@ -486,19 +507,12 @@
     font-weight: 400;
   }
 
-  /* ── Two-column body (portfolio + activity | today) ──────────────────────
-     Default single column; expand to a Today rail only when the rail mounts
-     (it renders nothing when accounts/events are absent or agenda is empty). */
+  /* ── Two-column body (portfolio + activity | today) ────────────────────── */
   .home-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 300px;
     gap: var(--v4-space-5);
     align-items: start;
-  }
-
-  /* Rail root is scoped inside TodayScheduleRail — match via :global. */
-  .home-grid:has(> :global(.home-col-rail)) {
-    grid-template-columns: minmax(0, 1fr) 300px;
   }
 
   .home-col {
@@ -512,7 +526,7 @@
      1040px window supplies roughly 800px here and the wide table + Today rail
      otherwise forces the right edge off-screen. */
   @container home (max-width: 900px) {
-    .home-grid:has(> :global(.home-col-rail)) {
+    .home-grid {
       grid-template-columns: minmax(0, 1fr);
     }
   }
@@ -640,6 +654,62 @@
 
   .home-td.updated {
     color: var(--v4-text-3);
+  }
+
+  /* ── Today agenda ──────────────────────────────────────────────────────── */
+  .home-agenda {
+    display: grid;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+  }
+
+  .home-agenda-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+
+  .home-agenda-row:last-child {
+    border-bottom: none;
+  }
+
+  .home-agenda-time {
+    flex: 0 0 60px;
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+  }
+
+  .home-agenda-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .home-agenda-title {
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    line-height: 1.3;
+  }
+
+  .home-agenda-company {
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+  }
+
+  .home-empty {
+    margin: 0;
+    padding: 12px 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
   }
 
   .home-header {

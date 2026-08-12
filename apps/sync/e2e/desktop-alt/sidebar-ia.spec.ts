@@ -12,14 +12,14 @@ import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
 
 /**
- * US-006 — US-007 sidebar IA (behavioral route helpers + source contracts),
- * updated for hq-desktop-v2 US-002 single-active-workspace hotkeys.
+ * US-006 — US-007 sidebar IA (behavioral route helpers + source contracts).
  *
  * Locks the V4 primary-nav shape and landing rules:
- *  - ⌘1–⌘9 = non-personal companies in connected-first order; ⌘0 = Personal.
+ *  - ⌘1–⌘4 = Inbox / Meetings / Marketplace / Library; company digits map
+ *    connected-first order.
  *  - Legacy intents resolve (messages → Messages, notifications → Inbox,
  *    home/sync → home,
- *    mission-control palette-only, library:marketplace → Library marketplace tab, US-015).
+ *    mission-control palette-only, library:marketplace → top-level marketplace).
  *  - getDesktopLandingRoute uses last-visited company then first sidebar row.
  *  - Source: no Home / Mission Control / Companies primary rows; Marketplace
  *    is top-level; Library secondary tabs drop Marketplace; last-company key.
@@ -49,15 +49,13 @@ function hotkey(key: string): Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>
   return { key, metaKey: true, ctrlKey: false };
 }
 
-describe('US-006 / US-007 / US-002: sidebar IA — hotkeys (behavioral)', () => {
-  it('⌘1 → first company; keys past the company count stay quiet', () => {
+describe('US-006 / US-007: sidebar IA — hotkeys (behavioral)', () => {
+  it("⌘1 → inbox, ⌘3 → marketplace", () => {
     const companies = [workspace({})];
-    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({
-      kind: 'company',
-      slug: 'indigo',
-    });
-    expect(getDesktopHotkeyRoute(hotkey('2'), companies)).toBeNull();
-    expect(getDesktopHotkeyRoute(hotkey('3'), companies)).toBeNull();
+    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({ kind: 'inbox' });
+    expect(getDesktopHotkeyRoute(hotkey('3'), companies)).toEqual({ kind: 'marketplace' });
+    expect(getDesktopHotkeyRoute(hotkey('2'), companies)).toEqual({ kind: 'meetings' });
+    expect(getDesktopHotkeyRoute(hotkey('4'), companies)).toEqual({ kind: 'library' });
   });
 
   it('company digits map into connected-first sidebar order', () => {
@@ -67,16 +65,16 @@ describe('US-006 / US-007 / US-002: sidebar IA — hotkeys (behavioral)', () => 
       workspace({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
       workspace({ slug: 'beta', displayName: 'Beta', state: 'synced' }),
     ];
-    // ⌘1 = first connected company (Acme before Beta alphabetically).
-    expect(getDesktopHotkeyRoute(hotkey('1'), companies)).toEqual({
+    // ⌘5 = first connected company (Acme before Beta alphabetically).
+    expect(getDesktopHotkeyRoute(hotkey('5'), companies)).toEqual({
       kind: 'company',
       slug: 'acme',
     });
-    expect(getDesktopHotkeyRoute(hotkey('2'), companies)).toEqual({
+    expect(getDesktopHotkeyRoute(hotkey('6'), companies)).toEqual({
       kind: 'company',
       slug: 'beta',
     });
-    expect(getDesktopHotkeyRoute(hotkey('3'), companies)).toEqual({
+    expect(getDesktopHotkeyRoute(hotkey('7'), companies)).toEqual({
       kind: 'company',
       slug: 'zebra',
     });
@@ -85,21 +83,25 @@ describe('US-006 / US-007 / US-002: sidebar IA — hotkeys (behavioral)', () => 
 
 describe('US-006 / US-007: sidebar IA — legacy intent resolution (behavioral)', () => {
   it("messages → Messages; notifications → Inbox", () => {
-    expect(resolvePendingDesktopRoute('messages')).toEqual({ mode: 'internal', route: { kind: 'messages' } });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ mode: 'internal', route: { kind: 'inbox' } });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
   });
 
-  it("home / sync → home; mission-control remaps to console/home (US-021)", () => {
-    expect(resolvePendingDesktopRoute('home')).toEqual({ mode: 'internal', route: { kind: 'home' } });
-    expect(resolvePendingDesktopRoute('sync')).toEqual({ mode: 'internal', route: { kind: 'home' } });
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ mode: 'internal', route: { kind: 'home' } });
+  it("home / sync → home; mission-control stays reachable", () => {
+    expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('sync')).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({
+      kind: 'mission-control',
+    });
   });
 
-  it("library:marketplace routes to the Library marketplace tab (US-015 fold-in)", () => {
-    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({ mode: 'internal', route: { kind: 'library', tab: 'marketplace' } });
-    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ mode: 'internal', route: { kind: 'marketplace' } });
+  it("legacy library:marketplace alias → top-level marketplace", () => {
+    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
+      kind: 'marketplace',
+    });
+    expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
   });
 });
 
@@ -157,23 +159,24 @@ describe('US-006 / US-007: sidebar IA — source contracts', () => {
     expect(sidebar).toContain('id="v4-companies-label">Companies</div>');
   });
 
-  it('Library secondary tabs include the Marketplace fold-in entry (US-015)', () => {
+  it('Library secondary tabs no longer include Marketplace', () => {
     expect(LIBRARY_SECTIONS.map((s) => s.id)).toEqual([
       'skills',
       'workers',
-      'marketplace',
       'installed',
       'profile',
     ]);
+    expect(LIBRARY_SECTIONS.map((s) => s.id)).not.toContain('marketplace');
 
     const route = readRepoFile('src/desktop-alt/route.ts');
-    expect(route).toContain('Marketplace is folded back into the Library sub-nav (US-015)');
+    expect(route).toContain("Marketplace is top-level now (US-007), not a Library tab");
 
     const libraryPage = readRepoFile('src/desktop-alt/pages/LibraryPage.svelte');
     expect(libraryPage).toContain(
-      'Skills / Workers / Marketplace / Installed / Profile tabs',
+      'Skills / Workers / Installed / Profile tabs plus the routed',
     );
-    expect(libraryPage).toContain('the Library sub-nav — US-015)');
+    expect(libraryPage).toContain('Publish-a-pack footer surface (Marketplace is');
+    expect(libraryPage).toContain('top-level now — US-007)');
   });
 
   it('landing persistence key lives in DesktopApp', () => {

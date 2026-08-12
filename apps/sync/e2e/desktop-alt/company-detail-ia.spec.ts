@@ -19,6 +19,10 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'workers',
       'knowledge',
       'team',
+      'activity',
+      'deployments',
+      'secrets',
+      'settings',
     ]);
     expect(ids).not.toContain('accounts');
     expect(ids).not.toContain('tasks');
@@ -26,33 +30,37 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
   });
 
   it('redirects legacy company deep-links', () => {
-    expect(resolvePendingDesktopRoute('company:indigo:accounts')).toEqual({
-      mode: 'internal',
-      route: { kind: 'company', slug: 'indigo', tab: 'overview' },
-    });
+    expect(resolvePendingDesktopRoute('company:indigo:accounts')?.kind).toBe('company');
+    expect(
+      resolvePendingDesktopRoute('company:indigo:accounts') &&
+        'tab' in (resolvePendingDesktopRoute('company:indigo:accounts') as object)
+        ? (resolvePendingDesktopRoute('company:indigo:accounts') as { tab?: string }).tab
+        : undefined,
+    ).toBe('overview');
     expect(resolvePendingDesktopRoute('company:indigo:tasks')).toEqual({
-      mode: 'internal',
-      route: { kind: 'company', slug: 'indigo', tab: 'projects' },
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'projects',
     });
     expect(resolvePendingDesktopRoute('company:indigo:library')).toEqual({
-      mode: 'internal',
-      route: { kind: 'company', slug: 'indigo', tab: 'skills' },
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'skills',
     });
   });
 
   it('maps Knowledge deep-link to inline company knowledge tab', () => {
     expect(resolvePendingDesktopRoute('company:indigo:knowledge')).toEqual({
-      mode: 'internal',
-      route: { kind: 'company', slug: 'indigo', tab: 'knowledge' },
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'knowledge',
     });
   });
 
   it('CompanyPage mounts Skills/Workers/Team panels (source contract)', () => {
     const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
-    // US-009: Skills/Workers are first-class company pages, not forced-filter
-    // library panels.
-    expect(page).toContain('<CompanySkillsPage slug={company.slug} />');
-    expect(page).toContain('<CompanyWorkersPage slug={company.slug} />');
+    expect(page).toContain('forcedFilter="skills"');
+    expect(page).toContain('forcedFilter="workers"');
     expect(page).toContain('TeamPanel');
     expect(page).not.toContain("tab === 'accounts'");
     expect(page).not.toContain("tab === 'tasks'");

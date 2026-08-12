@@ -5,9 +5,7 @@
   import {
     buildNotificationGroups,
     type DayGroup,
-    type DmEvent,
     type Item,
-    type ShareEvent,
   } from '../lib/notificationGroups';
   import {
     loadNotificationTimeline,
@@ -47,16 +45,6 @@
     includeUpdates?: boolean;
     /** Explicit successful hydration signal for read-watermark owners. */
     onloadstatechange?: (loaded: boolean) => void;
-    /**
-     * In-shell open overrides (hq-desktop-v2 US-012). When a host supplies
-     * these, rows navigate INSIDE the hosting shell instead of opening the
-     * separate quick windows: DMs → the Messages conversation workspace,
-     * shares → Files preview, workspace events → the company screen. The
-     * menubar popover omits them and keeps the quick-window defaults.
-     */
-    onopendm?: (dm: DmEvent) => void | Promise<void>;
-    onopenshare?: (share: ShareEvent) => void | Promise<void>;
-    onopenworkspace?: (company: string) => void | Promise<void>;
   }
 
   let {
@@ -67,9 +55,6 @@
     density = 'compact',
     includeUpdates = true,
     onloadstatechange,
-    onopendm,
-    onopenshare,
-    onopenworkspace,
   }: Props = $props();
 
   let loading = $state(true);
@@ -214,15 +199,8 @@
     void load();
   }
 
-  // US-012: hosts inside the desktop shell pass onopendm / onopenshare /
-  // onopenworkspace so rows open the relevant in-shell surface. Without them
-  // (menubar popover, widget), the pre-existing quick-window paths remain.
   async function openDm(it: Item): Promise<void> {
     if (!it.dm) return;
-    if (onopendm) {
-      await onopendm(it.dm);
-      return;
-    }
     try {
       await invoke('open_dm_detail', { event: it.dm });
     } catch (e) {
@@ -233,10 +211,6 @@
 
   async function openShare(it: Item): Promise<void> {
     if (!it.share) return;
-    if (onopenshare) {
-      await onopenshare(it.share);
-      return;
-    }
     try {
       await invoke('open_share_detail', { events: [it.share] });
     } catch (e) {
@@ -247,10 +221,6 @@
 
   async function openCompanyActivity(company: string): Promise<void> {
     if (!company) return;
-    if (onopenworkspace) {
-      await onopenworkspace(company);
-      return;
-    }
     try {
       await invoke('open_desktop_alt_window', {
         route: `company:${company}:activity`,

@@ -36,23 +36,4 @@ describe('company Overview recent-activity digest (DESKTOP-003)', () => {
     expect(c).toContain('>Recent activity<');
     expect(c).toContain('Open inbox');
   });
-
-  it('US-019: team vault analytics client is pure + absent-field safe', () => {
-    const c = read('src/desktop-alt/components/OverviewActivityDigest.svelte');
-    const lib = read('src/desktop-alt/lib/team-activity.ts');
-
-    expect(c).toContain("from '../lib/team-activity'");
-    expect(c).toContain('teamActivityWindowLabel');
-    expect(c).toContain('TEAM_ACTIVITY_WINDOW_DAYS');
-    expect(c).toContain('teamMemberRows');
-    expect(c).toContain('data-testid="overview-activity-member-row"');
-
-    // membersDetail handling is present and absent-safe (undefined, not []).
-    expect(lib).toContain('membersDetail');
-    expect(lib).toContain('vaultBytes');
-    expect(lib).toContain('membersDetail !== undefined');
-    // Never throws / never invents constraining zeros for optional extensions.
-    expect(lib).toMatch(/membersDetail.*undefined|undefined.*membersDetail/);
-    expect(lib).toContain("means NO DATA");
-  });
 });

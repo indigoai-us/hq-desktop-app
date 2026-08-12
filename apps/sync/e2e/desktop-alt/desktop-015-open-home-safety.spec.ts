@@ -26,10 +26,14 @@ describe('DESKTOP-015: open Home hierarchy and safe-delete visibility', () => {
     expect(list).toContain('border-top: 1px solid var(--v4-rowline)');
   });
 
-  it('opens the Home stats, portfolio, and loading structures', () => {
-    // Home currently ships stats / portfolio table / skeleton (no separate
-    // agenda or empty card classes in the stylesheet).
-    for (const selector of ['.home-stats', '.home-table', '.home-skeleton']) {
+  it('opens the Home stats, portfolio, agenda, empty, and loading structures', () => {
+    for (const selector of [
+      '.home-stats',
+      '.home-table',
+      '.home-agenda',
+      '.home-empty',
+      '.home-skeleton',
+    ]) {
       const block = rule(home, selector);
       expect(block, `${selector} should exist`).not.toBe('');
       expect(block, `${selector} retains a closed perimeter`).toContain('border: 0');

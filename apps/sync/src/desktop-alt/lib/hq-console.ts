@@ -33,16 +33,6 @@ export function companySettingsUrl(slug: string): string {
 }
 
 /**
- * A company's team roster in the console — `/companies/{slug}/team` (route
- * `companies/[slug]/team`), the deep-management surface for members and roles.
- * The desktop Team page's "Open console" button deep-links here (US-011)
- * rather than the company home, so roster management is one click away.
- */
-export function companyTeamUrl(slug: string): string {
-  return `${companyConsoleUrl(slug)}/team`;
-}
-
-/**
  * A company's invite surface in the console — the admin Team → Invites page at
  * `/companies/{slug}/team/invites` (route `companies/[slug]/team/invites`),
  * which carries the "Invite teammate" send flow. (Per-token accept links live

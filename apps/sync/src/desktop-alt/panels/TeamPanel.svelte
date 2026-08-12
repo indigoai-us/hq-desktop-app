@@ -12,7 +12,7 @@
    */
   import { invoke } from '@tauri-apps/api/core';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
-  import { companyInviteUrl, companyTeamUrl } from '../lib/hq-console';
+  import { companyConsoleUrl, companyInviteUrl } from '../lib/hq-console';
   import {
     defaultTelemetryRange,
     memberKindLabel,
@@ -158,8 +158,7 @@
   }
 
   async function openConsole(): Promise<void> {
-    // US-011: deep-link straight to the console team roster for management.
-    await openExternalDestination('console', companyTeamUrl(slug));
+    await openExternalDestination('console', companyConsoleUrl(slug));
   }
 
   function memberListMeta(member: TeamMember): string {
@@ -256,7 +255,7 @@
         type="button"
         class="team-action-button secondary"
         data-testid="team-open-console"
-        aria-label="Open company team roster in HQ console"
+        aria-label="Open company team in HQ console"
         onclick={() => void openConsole()}
         disabled={externalActionBusy !== null}
         aria-busy={externalActionBusy === 'console'}

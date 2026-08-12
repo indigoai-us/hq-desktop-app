@@ -180,29 +180,6 @@
   --v4-shadow-window: var(--shadow-window-dark, 0 40px 100px rgba(0, 0, 0, 0.78));
 }
 
-/* ── V2 shell tokens (hq-desktop-v2 US-001) ─────────────────────────────────
-   The V2 concept keeps the sidebar/titlebar translucent (they alias the V4
-   glass surfaces) but gives the content canvas a SOLID fill in both
-   appearances so page content never depends on the desktop wallpaper for
-   contrast. Existing --v4-* token names are unchanged; V2 only adds. */
-:root,
-:root[data-force-theme='light'] {
-  --v2-sidebar: var(--v4-sidebar);
-  --v2-chrome: var(--v4-chrome);
-  --v2-canvas: #f5f5f4;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --v2-canvas: #1b1b1b;
-  }
-}
-
-.dark,
-:root[data-force-theme='dark'] {
-  --v2-canvas: #1b1b1b;
-}
-
 /* Deterministic appearance override for the local visual-QA harness. The
    production windows never set data-force-theme; they continue to follow the
    system appearance through prefers-color-scheme. */

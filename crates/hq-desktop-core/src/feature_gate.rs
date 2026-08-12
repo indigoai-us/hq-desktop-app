@@ -35,13 +35,6 @@ async fn current_email_claim() -> Option<String> {
     }
 }
 
-/// The signed-in user's email claim (None when signed out / unresolvable).
-/// Uncached on purpose — the V2 footer user card should track sign-in/out
-/// within the process rather than pinning the first observed claim.
-pub async fn signed_in_email() -> Option<String> {
-    current_email_claim().await
-}
-
 static CACHED_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
 static CACHED_GA_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
 

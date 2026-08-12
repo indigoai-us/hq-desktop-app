@@ -86,13 +86,13 @@ describe('DESKTOP-003: actionable company overview', () => {
     expect(companyPage).toContain("{inviteOpening ? 'Opening…' : 'Invite'}");
     expect(companyPage).toContain("New project");
     expect(companyPage).toContain('onclick={() => void startNewProject()}');
-    // Toolbar no longer surfaces Settings; ops live in HQ Console (US-021).
+    // Toolbar no longer surfaces Settings; ops live under sidebar More.
     expect(companyPage).not.toContain(
       '<button type="button" onclick={openCompanySettings}>Settings</button>',
     );
     expect(companyPage).toContain('DESKTOP-003');
-    expect(companyPage).toContain('void openExternal(companyConsoleUrl(company.slug));');
-    expect(companyPage).toContain('Open in HQ Console');
+    // Console settings helper remains available for deep links / future More.
+    expect(companyPage).toContain('void openExternal(companySettingsUrl(company.slug));');
   });
 
   it('preserves real actions: review/inspect/connect, goal/project nav, sync honesty, invites, errors', () => {
@@ -146,113 +146,5 @@ describe('DESKTOP-003: actionable company overview', () => {
       expect(src).toMatch(/var\(--type-metadata/);
     }
     expect(panel).toMatch(/var\(--type-secondary/);
-  });
-});
-
-describe('US-004: V2 overview board — pulse, Needs-you queue, projects/goals/activity cards', () => {
-  const panel = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
-  const model = readRepoFile('src/desktop-alt/lib/overview-model.ts');
-  const digest = readRepoFile('src/desktop-alt/components/OverviewActivityDigest.svelte');
-  const collection = readRepoFile('src/desktop-alt/lib/progressive-collection.ts');
-
-  it('computes checks-passing desktop-side and hides it when the denominator is 0', () => {
-    // Formula lives in overview-model.ts per references.md — passed/total stories.
-    expect(model).toContain('checksPassing%');
-    expect(model).toContain('if (total === 0) return null;');
-    expect(panel).toContain('checksPassing(companyProjects)');
-    // Rendered only when non-null — never a fake 0% failing state.
-    expect(panel).toMatch(/\{#if checks\}[\s\S]*?pulse-checks-passing[\s\S]*?\{\/if\}/);
-    expect(panel).toContain('checks passing');
-  });
-
-  it('Needs-you aggregates conflicts, paused sync, goal nudges, and pending invites', () => {
-    // Sync conflicts from the popover conflict store, with rescue actions.
-    expect(panel).toContain("import { conflictStore } from '../../stores/conflicts'");
-    expect(panel).toContain('conflictsNeedsYouCard(conflictCount, conflictsResolving)');
-    expect(panel).toContain('conflictStore.resolveAll');
-    expect(model).toContain("id: 'keep-local'");
-    expect(model).toContain("id: 'keep-cloud'");
-    // Paused Cloud Off state with Inspect.
-    expect(panel).toContain('Sync is paused on this device');
-    expect(panel).toContain("{ id: 'inspect-paused', label: 'Inspect', kind: 'secondary' }");
-    // Goals-without-linked-work nudge + Connect.
-    expect(panel).toContain('unlinkedGoals');
-    expect(panel).toContain("{ id: 'connect', label: 'Connect', kind: 'primary' }");
-    // Pending invites + Accept (claim-by-email), cross-company.
-    expect(panel).toContain('pendingInviteWorkspaces');
-    expect(panel).toContain('getInviteCardModel(workspace, acceptingInviteSlug === workspace.slug)');
-    expect(panel).toContain("await invoke('claim_pending_company_invite', { companySlug: inviteSlug })");
-  });
-
-  it('Projects card previews 3 rows with a View projects link; Goals card keeps KR line + View all', () => {
-    expect(collection).toContain('export const OVERVIEW_PROJECT_LIMIT = 3');
-    expect(panel).toContain('OVERVIEW_PROJECT_LIMIT');
-    expect(panel).toContain('data-testid="overview-view-projects"');
-    expect(panel).toContain('data-testid="overview-view-goals"');
-    expect(panel).toContain('progress={objectiveProgress(objective)}');
-  });
-
-  it('Team activity card renders the activity contract or a clean empty state — US-019 client shipped', () => {
-    expect(digest).toContain('No activity yet — it appears here after files sync.');
-    // Reuses the existing get_company_activity client via companyStore only.
-    expect(digest).toContain('companyStore.loadActivity');
-    expect(digest).not.toContain('fetch(');
-    // US-019 pure client: member rows + window label from team-activity module.
-    expect(digest).toContain('teamMemberRows');
-    expect(digest).toContain('teamActivityWindowLabel');
-    const teamActivity = readRepoFile('src/desktop-alt/lib/team-activity.ts');
-    expect(teamActivity).toContain('membersDetail');
-    expect(teamActivity).toContain('vaultBytes');
-    // Absent-safe defaults — optional extensions never invent constraining values.
-    expect(teamActivity).toMatch(/membersDetail[\s\S]*undefined|undefined[\s\S]*membersDetail/);
-    expect(teamActivity).toContain('means NO DATA');
-  });
-});
-
-describe('US-001: Cloud Off gates EVERY sync path (review-critical fix)', () => {
-  const cloudConnection = readRepoFile('src/desktop-alt/lib/cloud-connection.ts');
-  const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-  const popoverApp = readRepoFile('src/App.svelte');
-  const popover = readRepoFile('src/components/Popover.svelte');
-  const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
-  const daemonRs = readRepoFile('src-tauri/src/commands/daemon.rs');
-
-  it('persists the paused flag in menubar.json (settings), not localStorage-only', () => {
-    // Write-through: the toggle persists via the settings mutation queue
-    // (get/save_settings → menubar.json `cloudPaused`) — the SAME store the
-    // Rust gates read — with localStorage demoted to a render mirror plus a
-    // one-time legacy migration.
-    expect(cloudConnection).toContain("updateSettings({ cloudPaused: paused })");
-    expect(cloudConnection).toContain('resolveCloudPaused');
-    expect(cloudConnection).toContain('migrateLegacy');
-    expect(desktopApp).toContain('setCloudPaused(paused)');
-    expect(desktopApp).toContain('loadCloudPaused()');
-  });
-
-  it('Rust refuses start_sync and every watch-daemon origin while paused', () => {
-    // Manual sync choke point (V2 window AND popover both invoke start_sync).
-    expect(syncRs).toContain('start_sync_cloud_gate()?;');
-    expect(syncRs).toContain('ensure_cloud_sync_allowed()');
-    // Watch daemon (auto-sync + instant/event push): gated for renderer,
-    // app-launch, and supervisor-respawn origins at the common entry, and the
-    // supervisor respawn decision itself is pause-aware.
-    expect(daemonRs).toContain('hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;');
-    expect(daemonRs).toContain('should_respawn_daemon_gated(');
-    expect(daemonRs).toContain('hq_desktop_core::daemon::is_cloud_paused()');
-  });
-
-  it('popover manual sync is gated too and shows the paused state', () => {
-    // handleSyncNow re-checks the settings-backed flag before starting a run.
-    expect(popoverApp).toContain('if (await refreshCloudPaused()) return;');
-    expect(popoverApp).toContain("import { loadCloudPaused } from './desktop-alt/lib/cloud-connection'");
-    // The popover reuses the system-notice machinery to say sync is paused.
-    expect(popover).toContain('data-kind="cloud-paused"');
-    expect(popover).toContain('Sync is paused on this device');
-    expect(popover).toMatch(/\(cloudPaused \? 1 : 0\) \+/);
-  });
-
-  it('toggling Cloud back on restores sync (stop/start reconciliation)', () => {
-    expect(desktopApp).toContain("await invoke('stop_daemon')");
-    expect(desktopApp).toContain("await invoke('start_daemon')");
   });
 });

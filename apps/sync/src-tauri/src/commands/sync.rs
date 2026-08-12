@@ -1903,13 +1903,6 @@ fn unprovisioned_node_repair_failed_message(reason: &str) -> String {
     format!("HQ tried to install its Node runtime and could not: {reason}")
 }
 
-/// V2 Cloud Off gate for `start_sync` (first statement of the command).
-/// Extracted `pub(crate)` so the unit test exercises the exact function the
-/// command calls against a real menubar.json.
-pub(crate) fn start_sync_cloud_gate() -> Result<(), String> {
-    hq_desktop_core::daemon::ensure_cloud_sync_allowed()
-}
-
 /// Spawn `hq-sync-runner` for all companies or one company as a child process.
 ///
 /// - Only one sync can run at a time (singleton handle).
@@ -1920,11 +1913,6 @@ pub(crate) fn start_sync_cloud_gate() -> Result<(), String> {
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
 pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<String, String> {
-    // V2 Cloud Off (US-001): sync is paused on this device. Gate EVERY caller
-    // of this command — the V2 window's Sync, the menubar popover's Sync Now,
-    // sync-on-launch, and notification retries — at the single Rust choke
-    // point so no surface can start a sync while the titlebar says Cloud Off.
-    start_sync_cloud_gate()?;
     let scope = parse_sync_scope(company_slug)?;
     log("sync", &format!("scope={scope:?}"));
     log("sync", "start_sync invoked");
@@ -2583,41 +2571,6 @@ mod tests {
         let base = resolve_vault_api_url().unwrap();
 
         assert_eq!(base, "https://hqapi.hq.computer");
-    }
-
-    // ── Cloud Off gating (V2 US-001) ─────────────────────────────────────────────
-
-    /// `start_sync` calls `start_sync_cloud_gate()` as its first statement, so
-    /// this pins the whole command's paused behavior: while menubar.json has
-    /// `cloudPaused: true`, every manual/launch sync path is refused with the
-    /// shared user-facing message; clearing the flag restores sync.
-    #[test]
-    fn test_start_sync_gate_respects_cloud_paused() {
-        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
-        let _home = scoped_home(tmp.path());
-
-        // Default (no flag) → sync allowed.
-        assert!(start_sync_cloud_gate().is_ok());
-
-        fs::write(
-            tmp.path().join(".hq/menubar.json"),
-            r#"{"cloudPaused":true}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            start_sync_cloud_gate(),
-            Err(hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE.to_string())
-        );
-
-        // Toggle back on → sync allowed again.
-        fs::write(
-            tmp.path().join(".hq/menubar.json"),
-            r#"{"cloudPaused":false}"#,
-        )
-        .unwrap();
-        assert!(start_sync_cloud_gate().is_ok());
     }
 
     // ── resolve_jwt_impl ─────────────────────────────────────────────────────────

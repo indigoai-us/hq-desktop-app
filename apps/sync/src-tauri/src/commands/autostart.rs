@@ -147,7 +147,6 @@ mod tests {
     fn prefs_with_start(start: Option<bool>) -> MenubarPrefs {
         MenubarPrefs {
             hq_path: None,
-            cloud_paused: None,
             sync_on_launch: None,
             notifications: None,
             start_at_login: start,
@@ -168,9 +167,6 @@ mod tests {
             widget_enabled: None,
             widget_display: None,
             dock_icon: None,
-            theme: None,
-            window_opacity: None,
-            interface_size: None,
         }
     }
 

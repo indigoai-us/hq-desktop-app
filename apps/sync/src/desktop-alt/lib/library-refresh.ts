@@ -2,7 +2,7 @@
  * Keep a Library surface fresh.
  *
  * The desktop Library reads workers/skills from the local HQ folder once, when a
- * page mounts (`LibraryPage` / `CompanySkillsPage` / `CompanyWorkersPage`). Without a refresh signal a
+ * page mounts (`LibraryPage` / `CompanyLibraryPanel`). Without a refresh signal a
  * worker created in another tool — e.g. `/newworker` in Claude Code, or hand-
  * authoring a `worker.yaml` — does not appear until the page is remounted
  * (navigate to another section and back, or reopen the desktop window). That

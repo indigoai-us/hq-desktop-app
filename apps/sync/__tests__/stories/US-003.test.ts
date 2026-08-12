@@ -97,31 +97,30 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     ).toMatchObject({ slug: 'acme' });
   });
 
-  it('switches the main pane to the second company when the user presses ⌘2 (US-002 workspace hotkeys)', () => {
+  it('switches the main pane to Meetings when the user presses ⌘2 (US-008 renumber)', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
       { key: '2', metaKey: true, ctrlKey: false },
       companies,
     );
 
-    // Connected-first + alpha non-personal: Acme Corp, Globex.
-    expect(nextRoute).toEqual({ kind: 'company', slug: 'globex' });
-    expect(getDesktopRouteKey(nextRoute as DesktopRoute)).toBe('company:globex');
-    expect(getDesktopActiveCompany(nextRoute as DesktopRoute, companies)).toMatchObject({
-      slug: 'globex',
-    });
+    expect(nextRoute).toEqual({ kind: 'meetings' });
+    expect(getDesktopRouteKey(nextRoute as DesktopRoute)).toBe('meetings');
+    // Meetings is a non-company route — no active company resolves.
+    expect(getDesktopActiveCompany(nextRoute as DesktopRoute, companies)).toBeNull();
   });
 
   it('gives personal a navigable page and marks a clicked company row active', () => {
     const companies = getDesktopCompanies(workspaces);
 
-    // US-002: ⌘1–⌘9 = non-personal companies in connected-first order;
-    // ⌘0 = Personal. Acme Corp then Globex; Personal is ⌘0.
+    // Company hotkeys start at ⌘5 (US-008 renumber after the Inbox merge) and
+    // follow the rendered sidebar order (connected-first + alphabetical):
+    // Acme Corp, Globex, Personal.
     expect(
-      getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'acme' });
     expect(
-      getDesktopHotkeyRoute({ key: '0', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'personal' });
 
     const nextRoute: DesktopRoute = { kind: 'company', slug: 'acme' };

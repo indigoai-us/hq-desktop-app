@@ -1,17 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
-  import { emit } from '@tauri-apps/api/event';
   import NotificationFeed from '../../components/NotificationFeed.svelte';
   import { markAllNotificationsRead } from '../../lib/notificationFeedData';
-  import type { DmEvent, ShareEvent } from '../../lib/notificationGroups';
-  import { requestConversation } from '../../lib/pendingConversation';
-  import {
-    dmConversationTarget,
-    shareFilesRoute,
-    workspaceActivityRoute,
-  } from '../lib/inbox-routing';
-  import type { DesktopRoute } from '../route';
   import '../v4/tokens.css';
 
   // Inbox is the unified notification chronology. Hosts the SAME
@@ -23,24 +13,9 @@
   // full text with quick-reply + emoji reacts).
   //
   // Header: title + unread/total subtitle. No tabs, no sync button, no overflow menus (US-008).
-  //
-  // US-012 (Inbox merged feed V2): the Inbox is the PRIMARY notification
-  // surface — rows open the relevant in-shell destination instead of the
-  // separate quick windows. DMs stash a conversation target and route to the
-  // Messages workspace, shares open a Files preview, and workspace activity
-  // opens the company screen. The quick-window components stay for the
-  // menubar popover; Inbox just no longer routes to them.
-
-  interface Props {
-    /** In-shell navigation supplied by DesktopApp (US-012 routing glue). */
-    onnavigate?: (route: DesktopRoute) => void;
-  }
-
-  let { onnavigate }: Props = $props();
 
   let unread = $state(0);
   let total = $state(0);
-  let feed = $state<NotificationFeed | undefined>();
 
   // Viewing the Inbox counts as reading it (notification-center pattern): the
   // read watermark advances when the user LEAVES the surface — navigate-away
@@ -62,40 +37,6 @@
   function commitRead(): void {
     if (!feedLoaded) return;
     markAllNotificationsRead();
-  }
-
-  /**
-   * Explicit Mark all read (US-012): clears every unread dot in the feed and
-   * keeps the OTHER badge surfaces consistent — the sidebar Inbox badge
-   * recomputes via the `hq:notifications-read` broadcast inside
-   * markAllNotificationsRead, the tray/Dock unread-DM badge clears through
-   * `mark_messages_viewed`, and the app-wide `hq:notifications-all-read`
-   * Tauri event lets the always-on widget clear its own unread stack.
-   */
-  function markAllRead(): void {
-    feed?.markAllRead();
-    void invoke('mark_messages_viewed').catch(() => undefined);
-    void emit('hq:notifications-all-read').catch(() => undefined);
-  }
-
-  // ── US-012 in-shell row destinations (replace quick-window routing) ────────
-
-  /** DM rows: stash the sender as the conversation target, then route to the
-   *  Messages workspace. DesktopApp listens for the stash announcement and
-   *  navigates even without the explicit onnavigate glue. */
-  function openDmConversation(dm: DmEvent): void {
-    requestConversation(dmConversationTarget(dm));
-    onnavigate?.({ kind: 'messages' });
-  }
-
-  /** Share rows: preview the shared path inside Files mode. */
-  function openShareInFiles(share: ShareEvent): void {
-    onnavigate?.(shareFilesRoute(share));
-  }
-
-  /** Workspace-activity rows: open the relevant company screen. */
-  function openWorkspace(company: string): void {
-    onnavigate?.(workspaceActivityRoute(company));
   }
 
   const subtitle = $derived.by(() => {
@@ -127,29 +68,15 @@
         {subtitle}
       </p>
     </div>
-    {#if unread > 0}
-      <button
-        class="inbox-mark-read"
-        type="button"
-        data-testid="inbox-mark-all-read"
-        onclick={markAllRead}
-      >
-        Mark all read
-      </button>
-    {/if}
   </header>
 
   <div class="inbox-feed notif-host">
     <NotificationFeed
-      bind:this={feed}
       showDayLabels={false}
       density="comfortable"
       onunreadchange={handleUnreadChange}
       onitemschange={handleItemsChange}
       onloadstatechange={(loaded) => (feedLoaded = loaded)}
-      onopendm={openDmConversation}
-      onopenshare={openShareInFiles}
-      onopenworkspace={openWorkspace}
     />
   </div>
 </section>
@@ -198,41 +125,6 @@
     font-weight: 650;
     line-height: 1.08;
     letter-spacing: -0.025em;
-  }
-
-  .inbox-mark-read {
-    flex: 0 0 auto;
-    margin-top: 4px;
-    padding: 5px 12px;
-    border: 1px solid var(--v4-rowline, var(--border));
-    border-radius: 7px;
-    background: var(--v4-control-faint, var(--c-field-bg));
-    color: var(--v4-text-2, var(--fg));
-    font-family: inherit;
-    font-size: var(--type-metadata, 13px);
-    font-weight: 600;
-    line-height: 1.2;
-    cursor: pointer;
-    transition: transform 120ms var(--ease-out);
-  }
-
-  .inbox-mark-read:hover,
-  .inbox-mark-read:focus-visible {
-    background: var(--v4-active-row, var(--row-hover));
-    outline: none;
-  }
-
-  .inbox-mark-read:active {
-    transform: scale(0.97);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .inbox-mark-read {
-      transition: none;
-    }
-    .inbox-mark-read:active {
-      transform: none;
-    }
   }
 
   .inbox-subtitle {

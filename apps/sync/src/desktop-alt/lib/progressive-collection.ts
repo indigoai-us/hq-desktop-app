@@ -1,9 +1,8 @@
 /** Initial render budget for each full Projects group/column. */
 export const PROJECT_RENDER_BATCH = 24;
 
-/** Overview projects-card preview budget (US-004 V2: 3 rows + View projects);
- *  full data remains available in Projects. */
-export const OVERVIEW_PROJECT_LIMIT = 3;
+/** Small overview preview budget; full data remains available in Projects. */
+export const OVERVIEW_PROJECT_LIMIT = 8;
 
 export interface ProgressiveWindow<T> {
   items: T[];

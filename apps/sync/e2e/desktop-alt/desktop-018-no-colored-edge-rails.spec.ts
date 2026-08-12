@@ -177,7 +177,12 @@ describe('DESKTOP-018: no colored edge rails', () => {
         '.team-member-row.is-selected',
         'team member list',
       ],
-      // US-021: CompanyOperationsPanel / .ops-nav-item removed.
+      [
+        'desktop-alt/panels/CompanyOperationsPanel.svelte',
+        '.ops-nav-item',
+        '.ops-nav-item.is-selected',
+        'operations navigation',
+      ],
     ] as const) {
       expectOpenPersistentSelection(
         readFileSync(join(SOURCE_ROOT, path), 'utf8'),
