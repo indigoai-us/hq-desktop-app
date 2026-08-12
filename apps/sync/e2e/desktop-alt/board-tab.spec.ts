@@ -26,9 +26,10 @@ describe('US-006: Board tab wiring', () => {
     expect(channelView).not.toContain('Project board lands in a later story.');
   });
 
-  it('keeps files-tab placeholder untouched', () => {
-    expect(channelView).toContain('data-testid="project-tab-files"');
-    expect(channelView).toContain('Project files land in a later story.');
+  it('files tab is the live ChannelFilesTab (US-008), not a placeholder', () => {
+    // Root testid moved onto ChannelFilesTab when the placeholder was replaced.
+    expect(channelView).toContain('<ChannelFilesTab');
+    expect(channelView).not.toContain('Project files land in a later story.');
   });
 });
 

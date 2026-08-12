@@ -72,8 +72,10 @@ describe('US-005: project channel header + tabs', () => {
     expect(channelView).toContain('>Chat<');
     expect(channelView).toContain('>Board<');
     expect(channelView).toContain('>Files<');
-    expect(channelView).toContain('data-testid="project-tab-board"');
-    expect(channelView).toContain('data-testid="project-tab-files"');
+    // US-006/US-008: the tab-body testids moved onto the live BoardTab /
+    // ChannelFilesTab roots when the placeholders were replaced.
+    expect(channelView).toContain('<BoardTab');
+    expect(channelView).toContain('<ChannelFilesTab');
     expect(statusModel).toContain('projectChannelHeaderTitle');
     expect(statusModel).toContain('project channel');
   });
