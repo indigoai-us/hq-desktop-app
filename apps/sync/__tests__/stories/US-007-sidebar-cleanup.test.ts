@@ -172,8 +172,9 @@ describe('US-007: Marketplace is a top-level destination', () => {
       'installed',
       'profile',
     ]);
-    const library = getDesktopSecondarySidebar({ kind: 'library' }, workspaces);
-    expect(library?.items.some((item) => item.label === 'Marketplace')).toBe(false);
+    // US-017: library secondary column removed (overlay owns nav); sections stay.
+    expect(LIBRARY_SECTIONS.some((s) => s.label === 'Marketplace')).toBe(false);
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, workspaces)).toBeNull();
     expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({ kind: 'marketplace' });
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
   });

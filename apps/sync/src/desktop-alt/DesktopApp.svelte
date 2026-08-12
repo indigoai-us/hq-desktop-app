@@ -28,7 +28,7 @@
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
-  import LibraryPage from './pages/LibraryPage.svelte';
+  import LibraryOverlay from './chat/LibraryOverlay.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
   import InboxPage from './pages/InboxPage.svelte';
   import MessagesShell from '../components/messaging/MessagesShell.svelte';
@@ -492,14 +492,14 @@
       label: 'Go to Library',
       detail: 'Skills, workers, and installed packs',
       shortcut: '⌘4',
-      action: () => navigate({ kind: 'library' }),
+      action: () => openLibrary({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
       (section) => ({
         id: `command-go-library-${section.id}`,
         label: `Go to Library ${section.label}`,
         detail: `Show ${section.label.toLowerCase()} in the library`,
-        action: () => navigate({ kind: 'library', tab: section.id }),
+        action: () => openLibrary({ kind: 'library', tab: section.id }),
       }),
     ),
     {
@@ -609,6 +609,9 @@
   let routeBeforeNotifications = $state<DesktopRoute>({ kind: 'home' });
   let notificationsUnreadCount = $state(0);
 
+  // US-017: previous route for Library overlay Back (fallback inbox/home).
+  let routeBeforeLibrary = $state<DesktopRoute>({ kind: 'inbox' });
+
   function openNotifications(): void {
     if (route.kind !== 'notifications') {
       routeBeforeNotifications = route;
@@ -618,6 +621,18 @@
 
   function exitNotifications(): void {
     navigate(routeBeforeNotifications ?? { kind: 'home' });
+  }
+
+  function openLibrary(next: DesktopRoute = { kind: 'library' }): void {
+    navigate(next);
+  }
+
+  function exitLibrary(): void {
+    const fallback =
+      routeBeforeLibrary.kind === 'library'
+        ? ({ kind: 'inbox' } satisfies DesktopRoute)
+        : routeBeforeLibrary;
+    navigate(fallback);
   }
 
   async function refreshNotificationsBadge(): Promise<void> {
@@ -687,6 +702,11 @@
   }
 
   function navigate(nextRoute: DesktopRoute) {
+    // US-017: remember where we came from so Library overlay Back works for
+    // hotkeys, palette, and sidebar destinations alike.
+    if (nextRoute.kind === 'library' && route.kind !== 'library') {
+      routeBeforeLibrary = route;
+    }
     userNavigated = true;
     const sequence = ++navigationSequence;
     navigationPending = true;
@@ -1209,7 +1229,7 @@
     if (route.kind === 'company') {
       navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab });
     } else if (route.kind === 'library') {
-      navigate({ kind: 'library', tab: id as LibraryTab });
+      openLibrary({ kind: 'library', tab: id as LibraryTab });
     } else if (route.kind === 'settings') {
       // The Settings page renders all sections in one scroll; the secondary
       // rows are a section index. Setting the tab drives both the active-row
@@ -1220,7 +1240,7 @@
 
   function handleSecondaryFooter() {
     if (secondarySidebar?.surface === 'library') {
-      navigate({ kind: 'library', tab: 'submit' });
+      openLibrary({ kind: 'library', tab: 'submit' });
     }
   }
 
@@ -1855,7 +1875,7 @@
     onresolveconflict={handleResolveConflict}
     onopenconflict={handleCompareConflict}
     onopendrift={handleViewDrift}
-    onopenLibrary={() => navigate({ kind: 'library' })}
+    onopenLibrary={() => openLibrary({ kind: 'library' })}
     onopenMarketplace={() => navigate({ kind: 'marketplace' })}
   />
 
@@ -1957,9 +1977,7 @@
               <MeetingsPage />
             </div>
           {:else if route.kind === 'library'}
-            <div class="page">
-              <LibraryPage tab={libraryTab} />
-            </div>
+            <!-- US-017: library is a full-screen overlay host (see below). -->
           {:else if route.kind === 'marketplace'}
             <div class="page">
               <MarketplacePage />
@@ -2062,6 +2080,16 @@
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
   {/if}
 
+  {#if route.kind === 'library'}
+    <div class="library-overlay-host" data-testid="library-overlay-host">
+      <LibraryOverlay
+        tab={libraryTab}
+        onback={exitLibrary}
+        onnavigatetab={(t) => navigate({ kind: 'library', tab: t })}
+      />
+    </div>
+  {/if}
+
   {#if actionToast}
     <div class={`action-toast ${actionToast.tone}`} role="status">
       <span class="toast-dot" aria-hidden="true"></span>
@@ -2075,7 +2103,16 @@
   /* Keep the shell itself clear: the main canvas and each glass chrome region
      paint exactly one material layer. */
   .desktop-shell {
+    position: relative;
     background: transparent;
+  }
+
+  /* US-017 Library full-screen takeover over the whole shell (incl. sidebars). */
+  .library-overlay-host {
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+    min-height: 0;
   }
 
   .desktop-content {

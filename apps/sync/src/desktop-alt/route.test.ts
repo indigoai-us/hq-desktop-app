@@ -384,26 +384,27 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
   });
 
-  it('shows the four library sections — without Marketplace — with the routed tab active', () => {
-    const configuredPath = ['', 'Users', 'corey', 'Documents', 'HQ'].join('/');
-    const model = getDesktopSecondarySidebar(
-      { kind: 'library', tab: 'installed' },
-      companies,
-      { hqFolderPath: configuredPath },
-    );
-    expect(model?.surface).toBe('library');
-    expect(model?.meta).toBe('~/Documents/HQ');
-    expect(model?.items.map((item) => item.id)).toEqual(LIBRARY_SECTIONS.map((s) => s.id));
-    expect(model?.items.some((item) => item.label === 'Marketplace')).toBe(false);
-    expect(model?.activeId).toBe('installed');
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.activeId).toBe('skills');
-
-    const submitModel = getDesktopSecondarySidebar(
-      { kind: 'library', tab: 'submit' },
-      companies,
-    );
-    expect(submitModel?.activeId).toBe('submit');
-    expect(submitModel?.footer).toEqual({ label: 'Publish a pack', active: true });
+  it('US-017: library has no permanent secondary sidebar (overlay owns left nav)', () => {
+    // Route tabs + LIBRARY_SECTIONS still drive palette / deep links; the
+    // secondary column is suppressed in favor of LibraryOverlay.
+    expect(LIBRARY_SECTIONS.map((s) => s.id)).toEqual([
+      'skills',
+      'workers',
+      'installed',
+      'profile',
+    ]);
+    expect(LIBRARY_SECTIONS.map((s) => s.label)).not.toContain('Marketplace');
+    expect(
+      getDesktopSecondarySidebar(
+        { kind: 'library', tab: 'installed' },
+        companies,
+        { hqFolderPath: ['', 'Users', 'corey', 'Documents', 'HQ'].join('/') },
+      ),
+    ).toBeNull();
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).toBeNull();
+    expect(
+      getDesktopSecondarySidebar({ kind: 'library', tab: 'submit' }, companies),
+    ).toBeNull();
   });
 
   it('shows the generally available settings sections and a version meta', () => {

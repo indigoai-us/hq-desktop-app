@@ -35,7 +35,10 @@ describe('desktop-alt component-mount gate', () => {
   // - V4Sidebar: US-003 (chat-first sidebar) intentionally unmounted it but keeps
   //   it in the tree for workspace-IA specs / palette-driven company destinations
   //   (see the comment at the ChatSidebar mount in DesktopApp.svelte).
-  const intentionallyUnmounted = new Set(['V4Sidebar']);
+  // - LibraryPage: US-017 mounts LibraryOverlay for route.kind === 'library';
+  //   LibraryPage is retained as salvage reference (company LibraryBrowser still
+  //   ships) but is no longer imported by DesktopApp.
+  const intentionallyUnmounted = new Set(['V4Sidebar', 'LibraryPage']);
   const components = mountDirs.flatMap((dir) =>
     readdirSync(join(root, dir))
       .filter((f) => f.endsWith('.svelte'))

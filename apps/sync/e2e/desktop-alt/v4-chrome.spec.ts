@@ -61,7 +61,7 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(indigo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
   });
 
-  it('shows the secondary sidebar only on library / settings surfaces', () => {
+  it('shows the secondary sidebar only on settings (library is US-017 overlay)', () => {
     const companies = [workspace({})];
     for (const route of [
       { kind: 'home' },
@@ -70,10 +70,10 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
       { kind: 'meetings' },
       { kind: 'moderation' },
       { kind: 'company', slug: 'indigo' },
+      { kind: 'library' },
     ] satisfies DesktopRoute[]) {
       expect(getDesktopSecondarySidebar(route, companies)).toBeNull();
     }
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).not.toBeNull();
     expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)).not.toBeNull();
   });
 
@@ -103,7 +103,7 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).not.toContain('{#key renderWorkspaceCount}');
     expect(desktopApp).not.toContain('chromeReady');
     expect(desktopApp).not.toContain('companies={workspaces}');
-    // Secondary remains for library/settings; company secondary is gone.
+    // Secondary remains for settings; library is US-017 overlay; company secondary is gone.
     expect(desktopApp).toContain('{#if secondarySidebar');
     expect(desktopApp).toContain('<V4SecondarySidebar');
     expect(desktopApp).not.toContain('DesktopSidebar');

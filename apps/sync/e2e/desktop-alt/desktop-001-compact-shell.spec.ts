@@ -174,7 +174,8 @@ describe('DESKTOP-001: compact native shell', () => {
 
   it('never mounts a permanent company secondary sidebar', () => {
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies)).toBeNull();
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.surface).toBe('library');
+    // US-017: library is a full-screen overlay — no permanent secondary column.
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).toBeNull();
     expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)?.surface).toBe('settings');
   });
 

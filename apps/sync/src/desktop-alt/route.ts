@@ -489,10 +489,11 @@ export interface DesktopSecondarySidebarOptions {
 }
 
 /**
- * SPEC section 4 + DESKTOP-001: the secondary sidebar exists ONLY on Library
- * and Settings. Company navigation expands inline in the primary sidebar, so
- * company routes never render a permanent secondary column. Home, Mission
- * Control, Marketplace, Meetings, Inbox, Messages, Files, and Moderation have
+ * SPEC section 4 + DESKTOP-001 / US-017: the secondary sidebar exists ONLY on
+ * Settings. Library is a full-screen overlay (no permanent secondary column).
+ * Company navigation expands inline in the primary sidebar, so company routes
+ * never render a permanent secondary column. Home, Mission Control,
+ * Marketplace, Meetings, Inbox, Messages, Files, Library, and Moderation have
  * none.
  */
 export function getDesktopSecondarySidebar(
@@ -504,17 +505,13 @@ export function getDesktopSecondarySidebar(
   // permanent company secondary sidebar. Keep `companies` in the signature so
   // call sites and library/settings meta helpers stay stable.
   void companies;
+  // hqFolderPath was Library secondary meta; overlay owns its own chrome.
+  void options.hqFolderPath;
 
+  // US-017: Library is a takeover overlay with its own left nav — no secondary
+  // sidebar. LIBRARY_SECTIONS remain for command-palette / route tab params.
   if (route.kind === 'library') {
-    return {
-      surface: 'library',
-      header: 'Library',
-      headerTone: null,
-      meta: formatHqFolderMeta(options.hqFolderPath),
-      items: LIBRARY_SECTIONS.map(({ id, label }) => ({ id, label })),
-      activeId: route.tab ?? DEFAULT_LIBRARY_TAB,
-      footer: { label: 'Publish a pack', active: route.tab === 'submit' },
-    };
+    return null;
   }
 
   if (route.kind === 'settings') {

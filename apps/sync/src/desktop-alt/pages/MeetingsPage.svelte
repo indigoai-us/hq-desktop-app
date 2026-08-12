@@ -28,15 +28,23 @@
     eventStart,
     eventMeetingUrl,
     extractedSignalLabels,
-    groupByDay,
     isPlausibleMeetingUrl,
     pickLiveMeeting,
     pickUpNext,
-    sortByStart,
     timeLabel,
     totalSignalCounts,
     type MeetingEvent,
   } from '../lib/meetings-model';
+  import {
+    MEETINGS_PAGE_DEK,
+    MEETINGS_PAST_EMPTY,
+    MEETINGS_UPCOMING_EMPTY,
+    formatMeetingsFooterLabel,
+    groupMeetingsForAgenda,
+    partitionUpcomingPast,
+    type MeetingsAgendaTab,
+  } from '../lib/meetings-view-model';
+  import { HQ_CONSOLE_INTEGRATIONS_URL } from '../lib/hq-console';
   import '../v4/tokens.css';
 
   // Store-backed data. The singleton (started at app launch in
@@ -89,14 +97,39 @@
   // The calendar event id behind the live detection, so the agenda can mark
   // exactly that row "Live" (recall bots carry the originating event id).
   const liveEventId = $derived(liveMeeting?.sourceEventId ?? null);
-  // Multi-day agenda: `meetings_list_upcoming` already returns events across
-  // the server's sync window, so we show them all grouped by day rather than
-  // narrowing to today (the old `isToday` filter hid every non-today meeting,
-  // which read as an empty "no meetings" view).
-  const upcomingEvents = $derived([...events].sort(sortByStart));
-  const dayGroups = $derived(groupByDay(upcomingEvents));
+  // US-017: Upcoming | Past partition over the already-fetched snapshot.
+  // Upcoming = end >= now (existing pickUpNext behavior); Past = end < now,
+  // newest first. No new backend command.
+  let agendaTab = $state<MeetingsAgendaTab>('upcoming');
+  let lastSyncedAt = $state<Date | null>(null);
+  let wasLoading = $state(false);
+
+  const partitioned = $derived(partitionUpcomingPast(events));
+  const upcomingEvents = $derived(partitioned.upcoming);
+  const pastEvents = $derived(partitioned.past);
+  const agendaEvents = $derived(
+    agendaTab === 'past' ? pastEvents : upcomingEvents,
+  );
+  const dayGroups = $derived(groupMeetingsForAgenda(agendaEvents));
   const upNext = $derived(pickUpNext(upcomingEvents));
   const signalTotals = $derived(totalSignalCounts(upcomingEvents));
+  const agendaEmptyMessage = $derived(
+    agendaTab === 'past' ? MEETINGS_PAST_EMPTY : MEETINGS_UPCOMING_EMPTY,
+  );
+  const agendaTitle = $derived(agendaTab === 'past' ? 'Past' : 'Upcoming');
+
+  // Stamp last-synced when a store refresh completes (loading true → false).
+  $effect(() => {
+    if (loading) {
+      wasLoading = true;
+      return;
+    }
+    if (wasLoading || lastSyncedAt === null) {
+      lastSyncedAt = new Date();
+      wasLoading = false;
+    }
+  });
+
   const connectedRows = $derived(
     buildConnectedCalendarRows(
       accounts,
@@ -105,6 +138,12 @@
       events,
       memberships,
     ),
+  );
+  const footerLabel = $derived(
+    formatMeetingsFooterLabel({
+      calendarCount: connectedRows.length,
+      lastSyncedAt,
+    }),
   );
   const recentlySynced = $derived(
     events
@@ -285,7 +324,7 @@
     if (integrationsOpening) return;
     integrationsOpening = true;
     try {
-      await openExternal('https://hq.computer/integrations');
+      await openExternal(HQ_CONSOLE_INTEGRATIONS_URL);
     } catch (err) {
       flashToast('warn', `Couldn't open HQ Console: ${String(err)}`);
     } finally {
@@ -369,7 +408,8 @@
   <header class="page-header meetings-toolbar">
     <div class="ph-titles">
       <h1>Meetings</h1>
-      <div class="subtitle">{toolbarMeta}</div>
+      <div class="subtitle" data-testid="meetings-dek">{MEETINGS_PAGE_DEK}</div>
+      <div class="subtitle toolbar-meta">{toolbarMeta}</div>
       {#if fetchError}
         <div class="page-error" role="status" data-testid="meetings-refresh-error">
           <span class="error-pill" title={fetchError}>Refresh issue</span>
@@ -394,11 +434,21 @@
       <button
         type="button"
         class="btn subtle"
+        data-testid="meetings-connect-calendar"
+        onclick={openIntegrations}
+        disabled={integrationsOpening}
+        aria-busy={integrationsOpening}
+      >
+        <span class="icon">{@render iconCalendar()}</span>
+        {integrationsOpening ? 'Opening…' : 'Connect calendar'}
+      </button>
+      <button
+        type="button"
+        class="btn subtle"
         onclick={openCalendar}
         disabled={calendarOpening}
         aria-busy={calendarOpening}
       >
-        <span class="icon">{@render iconCalendar()}</span>
         {calendarOpening ? 'Opening…' : 'Open calendar'}
       </button>
       <button
@@ -464,6 +514,34 @@
         onclick={onUrlInvite}
       >
         {urlInviting ? 'Inviting…' : 'Invite'}
+      </button>
+    </div>
+
+    <div
+      class="agenda-toggle"
+      role="group"
+      aria-label="Agenda range"
+      data-testid="meetings-agenda-toggle"
+    >
+      <button
+        type="button"
+        class="agenda-toggle-btn"
+        class:active={agendaTab === 'upcoming'}
+        aria-pressed={agendaTab === 'upcoming'}
+        data-testid="meetings-tab-upcoming"
+        onclick={() => (agendaTab = 'upcoming')}
+      >
+        Upcoming
+      </button>
+      <button
+        type="button"
+        class="agenda-toggle-btn"
+        class:active={agendaTab === 'past'}
+        aria-pressed={agendaTab === 'past'}
+        data-testid="meetings-tab-past"
+        onclick={() => (agendaTab = 'past')}
+      >
+        Past
       </button>
     </div>
 
@@ -537,7 +615,9 @@
     <MeetingsAgenda
       groups={dayGroups}
       {upNext}
-      totalCount={upcomingEvents.length}
+      totalCount={agendaEvents.length}
+      agendaTitle={agendaTitle}
+      emptyMessage={agendaEmptyMessage}
       companyNames={companyNamesByUid}
       {liveEventId}
       {botsByEventId}
@@ -612,6 +692,20 @@
         </div>
       </section>
     </div>
+
+    <footer class="meetings-footer" data-testid="meetings-footer">
+      <span class="footer-meta">{footerLabel}</span>
+      <button
+        type="button"
+        class="footer-manage"
+        data-testid="meetings-manage"
+        onclick={openIntegrations}
+        disabled={integrationsOpening}
+        aria-busy={integrationsOpening}
+      >
+        Manage
+      </button>
+    </footer>
   </div>
 </div>
 
@@ -1050,6 +1144,82 @@
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+
+  .toolbar-meta {
+    margin-top: 1px;
+  }
+
+  .agenda-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    padding: 2px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-inset);
+  }
+  .agenda-toggle-btn {
+    padding: 4px 10px;
+    border: 0;
+    border-radius: var(--v4-radius-button);
+    background: transparent;
+    color: var(--v4-text-3);
+    font: inherit;
+    font-size: var(--type-secondary, 11px);
+    font-weight: 500;
+    line-height: 16px;
+    cursor: pointer;
+  }
+  .agenda-toggle-btn.active {
+    background: var(--v4-secondary-bg);
+    color: var(--v4-text-1);
+  }
+  .agenda-toggle-btn:focus-visible {
+    outline: 2px solid var(--v4-text-1);
+    outline-offset: 1px;
+  }
+
+  .meetings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 4px;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--v4-rowline);
+  }
+  .footer-meta {
+    min-width: 0;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    line-height: 14px;
+    text-transform: uppercase;
+  }
+  .footer-manage {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--type-metadata, 10px);
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    line-height: 14px;
+    text-transform: uppercase;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .footer-manage:hover:not(:disabled) { color: var(--v4-text-2); }
+  .footer-manage:disabled { opacity: 0.55; cursor: default; }
+  .footer-manage:focus-visible {
+    outline: 2px solid var(--v4-text-1);
+    outline-offset: 2px;
   }
 
   @media (max-width: 820px) {

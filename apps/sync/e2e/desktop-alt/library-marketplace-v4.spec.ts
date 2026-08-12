@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
-describe('desktop-alt V4 library and marketplace family (US-014)', () => {
+describe('desktop-alt V4 library and marketplace family (US-014 / US-017)', () => {
   const libraryPage = readRepoFile('src/desktop-alt/pages/LibraryPage.svelte');
   const libraryBrowser = readRepoFile('src/desktop-alt/components/LibraryBrowser.svelte');
+  const libraryOverlay = readRepoFile('src/desktop-alt/chat/LibraryOverlay.svelte');
   const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const secondarySidebar = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const submit = readRepoFile('src/desktop-alt/panels/SubmitPanel.svelte');
@@ -11,16 +12,27 @@ describe('desktop-alt V4 library and marketplace family (US-014)', () => {
   const profile = readRepoFile('src/desktop-alt/panels/ProfilePanel.svelte');
   const moderation = readRepoFile('src/desktop-alt/panels/ModerationPanel.svelte');
 
-  it('library renders a card-grid browser with a detail panel', () => {
+  it('library overlay (US-017) is the DesktopApp destination; LibraryPage file stays intact', () => {
+    expect(desktopApp).toContain("import LibraryOverlay from './chat/LibraryOverlay.svelte'");
+    expect(desktopApp).toContain('<LibraryOverlay');
+    expect(desktopApp).toContain('data-testid="library-overlay-host"');
+    expect(desktopApp).toContain('onback={exitLibrary}');
+    expect(desktopApp).not.toContain("import LibraryPage from './pages/LibraryPage.svelte'");
+    // Legacy page + browser retained for company library / salvage reference.
     expect(libraryPage).toContain('<LibraryBrowser {items} {loading} {error} forcedFilter={tab} />');
     expect(libraryBrowser).toContain('card grid');
     expect(libraryBrowser).toContain('detail slide-over');
-    expect(libraryBrowser).toContain('{ id: \'installed\', label: \'Installed\' }');
-    expect(libraryBrowser).toContain('{ id: \'marketplace\', label: \'Marketplace\' }');
+    expect(libraryBrowser).toContain("{ id: 'installed', label: 'Installed' }");
+    expect(libraryBrowser).toContain("{ id: 'marketplace', label: 'Marketplace' }");
+    expect(libraryOverlay).toContain('data-testid="library-overlay"');
+    expect(libraryOverlay).toContain('data-testid="library-back"');
   });
 
-  it('routes the Publish a pack footer to the real Submit panel', () => {
-    expect(desktopApp).toContain("navigate({ kind: 'library', tab: 'submit' })");
+  it('library overlay owns Skills / Workers / Marketplace nav; Submit panel still exists', () => {
+    expect(libraryOverlay).toContain("data-testid={`library-nav-${row.id}`}");
+    expect(libraryOverlay).toContain('data-testid="library-marketplace-panel"');
+    expect(libraryOverlay).toContain('installMarketplacePack');
+    // Submit surface remains available via LibraryBrowser salvage / palette paths.
     expect(libraryPage).toContain("submit: 'Publish a pack'");
     expect(libraryBrowser).toContain('<SubmitPanel />');
     expect(submit).toContain('data-testid="submit-panel"');

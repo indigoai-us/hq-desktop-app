@@ -27,7 +27,8 @@ describe('desktop-alt command palette coverage', () => {
       "LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB)",
     );
     expect(desktopApp).toContain('command-go-library-${section.id}');
-    expect(desktopApp).toContain("navigate({ kind: 'library', tab: section.id })");
+    // US-017: library destinations go through openLibrary (Back-route tracking).
+    expect(desktopApp).toContain("openLibrary({ kind: 'library', tab: section.id })");
   });
 
   it('enumerates every Settings sub-section into the palette (minus the default landing tab)', () => {

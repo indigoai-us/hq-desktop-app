@@ -18,6 +18,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
   it('uses a compact toolbar without an oversized title block or three summary cards', () => {
     expect(page).toContain('class="page-header meetings-toolbar"');
     expect(page).toContain('<h1>Meetings</h1>');
+    expect(page).toContain('MEETINGS_PAGE_DEK');
     expect(page).toContain('{toolbarMeta}');
     expect(page).toMatch(
       /\.ph-titles\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
@@ -34,15 +35,20 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(page).toMatch(
       /\.detail-primary-actions\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/,
     );
+    // US-017: Connect calendar + Open calendar + Refresh.
+    expect(page).toContain('Connect calendar');
     expect(page).toContain('Open calendar');
     expect(page).toContain("meetingsStore.refresh()");
+    expect(page).toContain('data-testid="meetings-agenda-toggle"');
+    expect(page).toContain('data-testid="meetings-footer"');
   });
 
   it('orders Live now, Up next, meeting-bot health, then day-grouped agenda', () => {
-    const liveIdx = page.indexOf('<LiveNowCard');
+    // Prefer the markup usage (not the import line) for MeetingsAgenda order.
+    const liveIdx = page.indexOf('<LiveNowCard\n');
     const upNextIdx = page.indexOf('data-testid="meetings-up-next"');
     const botIdx = page.indexOf('data-testid="meetings-bot-health"');
-    const agendaIdx = page.indexOf('<MeetingsAgenda');
+    const agendaIdx = page.lastIndexOf('<MeetingsAgenda');
 
     expect(liveIdx).toBeGreaterThan(-1);
     expect(upNextIdx).toBeGreaterThan(liveIdx);
@@ -134,7 +140,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(live).toContain("onclick={() => onstart(meeting.windowId)}");
     expect(live).toContain("onclick={() => onstop(meeting.windowId)}");
 
-    // Row open / invite / uninvite / join-now.
+    // Row open / invite / uninvite / join-now + US-017 notetaker toggle.
     expect(agenda).toContain('aria-label="Open meeting in browser"');
     expect(agenda).toContain(
       "aria-label={invitePending ? 'Inviting bot' : recurring ? 'Invite bot to series' : 'Invite bot'}",
@@ -145,6 +151,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(agenda).toContain(
       "aria-label={joinNowPending ? 'Telling bot to join now' : 'Tell bot to join now'}",
     );
+    expect(agenda).toContain('data-testid="meeting-notetaker-toggle"');
     expect(agenda).toContain('aria-busy={invitePending}');
     expect(agenda.match(/aria-busy=\{uninvitePending\}/g)).toHaveLength(3);
     expect(agenda).toContain('aria-busy={joinNowPending}');
@@ -165,7 +172,8 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(page).toContain('{row.calendar} -> {row.routingTarget}');
     expect(page).toContain('No calendars connected yet');
     expect(page).toContain('Open HQ Console Integrations');
-    expect(agenda).toContain('No meetings in your synced calendars yet.');
+    expect(agenda).toContain('MEETINGS_UPCOMING_EMPTY');
+    expect(agenda).toContain('MEETINGS_PAST_EMPTY');
     expect(page).toContain('data-testid="meetings-feature-hidden"');
   });
 
