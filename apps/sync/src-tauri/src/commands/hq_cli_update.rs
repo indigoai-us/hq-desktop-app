@@ -2092,6 +2092,7 @@ mod tests {
             InstallFailureKind::ExpectedWindowsLockedBinary,
             InstallFailureKind::ExpectedTransientRegistry,
             InstallFailureKind::ExpectedBinCollision,
+            InstallFailureKind::ExpectedDiskFull,
             InstallFailureKind::Unexpected,
         ] {
             assert!(

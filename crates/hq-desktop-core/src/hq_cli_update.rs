@@ -2683,6 +2683,35 @@ pub fn is_windows_locked_binary_failure(exit_code: Option<i32>, detail: &str) ->
         || detail.contains("errno -4048")
 }
 
+/// Whether a failed npm install is the EXPECTED "the machine's disk is full"
+/// condition (`ENOSPC`). npm surfaces disk exhaustion two ways: as its own
+/// structured `code ENOSPC` line when the install could not write a file (the
+/// reported HQ-DESKTOP-53 shape: `code ENOSPC`, `syscall write`), or — for an
+/// OS-level write that never produced a clean npm `code` line — as the literal
+/// `no space left on device` errno text. Both are a local-machine condition the
+/// user fixes by freeing space, not an updater defect: no code change can
+/// install packages onto a full disk, and the app already falls back to the
+/// copy-the-command UI while retaining the raw npm output in the local log.
+///
+/// Keyed on npm's OWN `ENOSPC` code (the same way [`is_npm_bin_collision`] keys
+/// on `EEXIST`) so an unrelated defect whose stderr merely mentions `ENOSPC`
+/// cannot be swallowed. The phrase fallback is additionally excluded whenever npm
+/// reported a lifecycle failure — checked with `npm_lifecycle_failure`, which
+/// recognizes BOTH the modern `npm error` and legacy `npm ERR!` spellings — so a
+/// third-party build script that ran out of space keeps its lifecycle event, its
+/// `disk-space` cause, and its per-package signature. (`has_npm_lifecycle_failure_marker`
+/// alone misses the legacy `npm ERR! command failed` spelling, so the authoritative
+/// lifecycle check is required.) npm reports an all-digit or `ELIFECYCLE` code for a
+/// lifecycle failure, so the code clause can never match one either.
+pub fn is_disk_exhaustion_failure(detail: &str) -> bool {
+    if npm_error_code(detail) == "ENOSPC" {
+        return true;
+    }
+    detail.to_ascii_lowercase().contains("no space left on device")
+        && !has_npm_lifecycle_failure_marker(detail)
+        && !npm_lifecycle_failure(detail).failed
+}
+
 /// Stable classification for a failed npm install. Expected local-machine
 /// failures stay actionable in the UI/local log and normally do not page
 /// Sentry. A bin collision that survived npm's forced remedy is the exception:
@@ -2695,6 +2724,7 @@ pub enum InstallFailureKind {
     ExpectedWindowsLockedBinary,
     ExpectedTransientRegistry,
     ExpectedBinCollision,
+    ExpectedDiskFull,
     UnexpectedLifecycle,
     Unexpected,
 }
@@ -2723,7 +2753,15 @@ pub fn classify_install_failure_with_final_attempt(
     prefix: Option<&str>,
     final_attempt_forced: bool,
 ) -> InstallFailureKind {
-    if is_prefix_permission_failure(detail, prefix)
+    // Disk exhaustion is decided FIRST, mirroring the precedence documented on
+    // `npm_lifecycle_cause` ("disk exhaustion is unambiguous and dominates"). The
+    // arms stay disjoint by construction: this one requires npm's own `ENOSPC`
+    // code (or the unambiguous errno phrase with no lifecycle marker), while the
+    // permission, Windows-EPERM and bin-collision arms require EACCES, EPERM/-4048
+    // and EEXIST respectively.
+    if is_disk_exhaustion_failure(detail) {
+        InstallFailureKind::ExpectedDiskFull
+    } else if is_prefix_permission_failure(detail, prefix)
         || is_global_prefix_permission_failure(exit_code, detail)
     {
         InstallFailureKind::ExpectedPrefixPermission
@@ -2756,6 +2794,7 @@ impl InstallFailureKind {
             Self::ExpectedWindowsLockedBinary => "expected-windows-locked-binary",
             Self::ExpectedTransientRegistry => "expected-transient-registry",
             Self::ExpectedBinCollision => "expected-bin-collision",
+            Self::ExpectedDiskFull => "expected-disk-full",
             Self::UnexpectedLifecycle => "unexpected-lifecycle",
             Self::Unexpected => "unexpected",
         }
@@ -2818,6 +2857,13 @@ fn install_failure_signature(
     )
 }
 
+/// Free-up-space guidance shared by BOTH disk-full paths — the lifecycle
+/// `disk-space` cause arm (a build ran out of space) and the top-level
+/// `ExpectedDiskFull` early return (npm itself hit `ENOSPC`). Reusing one literal
+/// keeps the two paths in agreement and prevents drift, and keeps the "copied
+/// command" UI escape hatch so a full disk never shows the user raw npm stderr.
+const DISK_FULL_DETAIL: &str = "The install ran out of disk space while building a component hq needs. Free up disk space, then run the copied command in a terminal.";
+
 /// User-facing fallback text for an install failure that did not include useful
 /// npm stderr. The desktop UI always offers the copy-command escape hatch; the
 /// Windows abort wording tells the user why retrying after closing competing
@@ -2852,6 +2898,11 @@ pub fn install_failure_detail_with_final_attempt(
             detail.trim()
         );
     }
+    if kind == InstallFailureKind::ExpectedDiskFull {
+        // A full disk shows the free-up-space remedy, never the raw npm stderr
+        // the passthrough below would otherwise surface.
+        return DISK_FULL_DETAIL.to_string();
+    }
     if npm_lifecycle_failure(detail).failed {
         // Cause-specific, actionable wording. Every branch keeps the copyable
         // command escape hatch ("copied command") so the UI fallback is intact
@@ -2860,7 +2911,7 @@ pub fn install_failure_detail_with_final_attempt(
             "toolchain-missing" => "A dependency needs to build a native component, but the build tools are missing. On macOS, install them by running `xcode-select --install`, then run the copied command in a terminal.",
             "prebuild-unavailable" => "Your installed Node.js version has no prebuilt binary for a component hq needs, so npm tried to build it from source and failed. Install the supported Node.js (version 22), then run the copied command in a terminal.",
             "network" => "A prebuilt component could not be downloaded while installing hq. Check your network or proxy, then run the copied command in a terminal to retry.",
-            "disk-space" => "The install ran out of disk space while building a component hq needs. Free up disk space, then run the copied command in a terminal.",
+            "disk-space" => DISK_FULL_DETAIL,
             _ => "A dependency build step failed while npm was installing hq. Run the copied command in a terminal to see the full build output and repair the local toolchain.",
         }
         .to_string();
@@ -2885,6 +2936,9 @@ pub fn install_failure_detail_with_final_attempt(
             "An existing hq shim is blocking this update. Remove or rename the stale shim, then run the copied command in a fresh terminal."
                 .to_string()
         }
+        // Unreachable in practice — `ExpectedDiskFull` returns early above,
+        // before the empty-stderr fallback — but the match must stay exhaustive.
+        InstallFailureKind::ExpectedDiskFull => DISK_FULL_DETAIL.to_string(),
         InstallFailureKind::Unexpected | InstallFailureKind::UnexpectedLifecycle => format!(
             "npm install exited with status {}",
             exit_code
@@ -2898,11 +2952,13 @@ pub fn install_failure_detail_with_final_attempt(
 /// what message. Returns `None` for expected local-machine failures except a
 /// post-force bin collision, which is captured once at Warning — the
 /// permission failure at the selected npm global prefix (HQ-SYNC-WEB-Y: exit
-/// 243, 180 events / 7 users), the Windows child abort codes, and the Windows
-/// `EPERM` locked-binary condition (HQ-DESKTOP-3N: exit -4048). The app already
-/// handles each gracefully (the UI falls back to the copy-the-command path and
-/// the failure is kept in the local diagnostic log for Connect diagnostics), so
-/// an Error-level capture on every auto-update cycle is pure noise. Returns
+/// 243, 180 events / 7 users), the Windows child abort codes, the Windows
+/// `EPERM` locked-binary condition (HQ-DESKTOP-3N: exit -4048), and a full disk
+/// (HQ-DESKTOP-53: `ENOSPC`, where no code change can install packages onto a
+/// full disk). The app already handles each gracefully (the UI falls back to the
+/// copy-the-command path and the failure is kept in the local diagnostic log for
+/// Connect diagnostics), so an Error-level capture on every auto-update cycle is
+/// pure noise. Returns
 /// `Some(message)` for every genuine, unexpected failure, including permission
 /// errors at another path — that is the real signal we want to stay loud at
 /// Error level.
@@ -2934,7 +2990,8 @@ pub fn install_failure_report_with_final_attempt(
         InstallFailureKind::ExpectedPrefixPermission
         | InstallFailureKind::ExpectedWindowsAbort
         | InstallFailureKind::ExpectedWindowsLockedBinary
-        | InstallFailureKind::ExpectedTransientRegistry => return None,
+        | InstallFailureKind::ExpectedTransientRegistry
+        | InstallFailureKind::ExpectedDiskFull => return None,
     }
     // Title the capture with the same signature the fingerprint groups on, so a
     // Sentry issue's title cannot drift across the events inside it. The raw
@@ -5358,10 +5415,18 @@ mod tests {
         }
     }
 
+    /// The exact reported HQ-DESKTOP-53 shape: npm's own `ENOSPC` code, a `write`
+    /// syscall, no `npm error path` line (npm_path_shape=none), exit 1.
+    const DISK_FULL_STDERR: &str = "npm error code ENOSPC\n\
+        npm error syscall write\n\
+        npm error errno -28\n\
+        npm error ENOSPC: no space left on device, write";
+
     #[test]
     fn no_prefix_non_permission_nontransient_failures_stay_loud() {
+        // EINTEGRITY and EEXIST are genuine, non-permission, non-transient
+        // failures: they must stay loud (Unexpected) and keep reporting.
         for detail in [
-            "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
             "npm error code EINTEGRITY\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
             "npm error code EEXIST\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
         ] {
@@ -5370,7 +5435,174 @@ mod tests {
                 InstallFailureKind::Unexpected,
                 "detail: {detail}"
             );
+            assert!(
+                install_failure_report(Some(1), detail, None).is_some(),
+                "detail: {detail}"
+            );
         }
+        // ENOSPC now routes to the dedicated disk-full arm (a full disk is not an
+        // updater defect). The property THIS test guards — the permission arm does
+        // not over-widen onto a non-permission failure — is preserved verbatim:
+        // ENOSPC classifies as ExpectedDiskFull, explicitly NOT ExpectedPrefixPermission.
+        let enospc = "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
+        assert_eq!(
+            classify_install_failure(Some(1), enospc, None),
+            InstallFailureKind::ExpectedDiskFull
+        );
+        assert_ne!(
+            classify_install_failure(Some(1), enospc, None),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+    }
+
+    #[test]
+    fn the_reported_enospc_shape_is_disk_full_and_never_reports() {
+        // HQ-DESKTOP-53. Across the prefixes the installer may pass and whether or
+        // not npm's retry ladder forced a final attempt, npm's own `ENOSPC`
+        // classifies ExpectedDiskFull and produces NO Sentry report.
+        for prefix in [None, Some("/usr/local")] {
+            for forced in [false, true] {
+                assert_eq!(
+                    classify_install_failure_with_final_attempt(
+                        Some(1),
+                        DISK_FULL_STDERR,
+                        prefix,
+                        forced
+                    ),
+                    InstallFailureKind::ExpectedDiskFull,
+                    "prefix={prefix:?} forced={forced}"
+                );
+                assert_eq!(
+                    install_failure_report_with_final_attempt(
+                        Some(1),
+                        DISK_FULL_STDERR,
+                        prefix,
+                        forced
+                    ),
+                    None,
+                    "prefix={prefix:?} forced={forced}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_disk_full_failure_shows_the_free_up_space_copy_not_raw_stderr() {
+        // The user sees the actionable free-up-space remedy, never the raw npm
+        // stderr the passthrough would otherwise surface.
+        let detail = install_failure_detail(Some(1), DISK_FULL_STDERR, None);
+        assert!(detail.contains("disk space"), "got: {detail}");
+        assert!(detail.contains("copied command"), "got: {detail}");
+        assert!(
+            !detail.contains("npm error"),
+            "raw npm stderr leaked to the user: {detail}"
+        );
+    }
+
+    #[test]
+    fn disk_full_arm_leaves_every_other_classification_untouched() {
+        // The disk-full arm is FIRST, so prove it did not widen onto any other
+        // shape. Each keeps exactly the kind it had before this change.
+        assert_eq!(
+            classify_install_failure(Some(243), REAL_EACCES_STDERR, Some("/usr/local")),
+            InstallFailureKind::ExpectedPrefixPermission
+        );
+        assert_eq!(
+            classify_install_failure(
+                Some(-4048),
+                "npm error code EPERM\nnpm error errno -4048",
+                None
+            ),
+            InstallFailureKind::ExpectedWindowsLockedBinary
+        );
+        assert_eq!(
+            classify_install_failure_with_final_attempt(
+                Some(1),
+                "npm error code EEXIST\nnpm error path /usr/local/bin/hq",
+                None,
+                true,
+            ),
+            InstallFailureKind::ExpectedBinCollision
+        );
+        assert_eq!(
+            classify_install_failure(
+                Some(1),
+                "npm error code ETARGET\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+                None,
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        for detail in [
+            "npm error code EINTEGRITY\nnpm error path /usr/local/lib/node_modules/@indigoai-us",
+            "npm error code ENOTDIR\nnpm error syscall mkdir\nnpm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli",
+        ] {
+            assert_eq!(
+                classify_install_failure(Some(1), detail, None),
+                InstallFailureKind::Unexpected,
+                "detail: {detail}"
+            );
+            assert!(
+                install_failure_report(Some(1), detail, None).is_some(),
+                "detail: {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn third_party_lifecycle_failure_mentioning_enospc_stays_a_lifecycle_failure() {
+        // A third-party build script that ran out of disk space carries npm's
+        // lifecycle markers (an all-digit `code` and `command failed`), so the
+        // disk-full arm's code clause cannot match and its phrase clause is gated
+        // off by `!has_npm_lifecycle_failure_marker`. It must stay UnexpectedLifecycle,
+        // keep reporting, and keep its per-package `disk-space` signature — the
+        // disk-full arm must never widen onto the lifecycle path.
+        let detail = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c prebuild-install || node-gyp rebuild\n\
+            npm error path /usr/local/lib/node_modules/better-sqlite3\n\
+            gyp ERR! ENOSPC: no space left on device";
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::UnexpectedLifecycle
+        );
+        assert!(install_failure_report(Some(1), detail, Some("/usr/local")).is_some());
+        assert_eq!(
+            install_failure_signature(
+                InstallFailureKind::UnexpectedLifecycle,
+                detail,
+                Some("/usr/local")
+            ),
+            "lifecycle:better-sqlite3:disk-space"
+        );
+    }
+
+    #[test]
+    fn legacy_npm_err_lifecycle_failure_mentioning_enospc_stays_a_lifecycle_failure() {
+        // Regression for the LEGACY `npm ERR!` spelling.
+        // `has_npm_lifecycle_failure_marker` only recognizes the modern `npm error`
+        // spelling, so without the additional `npm_lifecycle_failure()` gate the
+        // disk-full phrase fallback would swallow an old-npm build failure that ran
+        // out of space. It must stay UnexpectedLifecycle, keep reporting, and keep
+        // its per-package disk-space signature.
+        let detail = "npm ERR! code 1\n\
+            npm ERR! command failed\n\
+            npm ERR! command sh -c prebuild-install || node-gyp rebuild\n\
+            npm ERR! path /usr/local/lib/node_modules/better-sqlite3\n\
+            gyp ERR! ENOSPC: no space left on device";
+        assert!(!is_disk_exhaustion_failure(detail));
+        assert_eq!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::UnexpectedLifecycle
+        );
+        assert!(install_failure_report(Some(1), detail, Some("/usr/local")).is_some());
+        assert_eq!(
+            install_failure_signature(
+                InstallFailureKind::UnexpectedLifecycle,
+                detail,
+                Some("/usr/local")
+            ),
+            "lifecycle:better-sqlite3:disk-space"
+        );
     }
 
     #[test]
@@ -5479,12 +5711,20 @@ mod tests {
     }
 
     #[test]
-    fn derived_prefix_non_permission_failure_at_an_unmatched_global_target_stays_loud() {
+    fn derived_prefix_disk_full_failure_at_an_unmatched_global_target_is_disk_full_not_permission() {
+        // Formerly asserted ENOSPC -> Unexpected. ENOSPC now routes to the
+        // dedicated disk-full arm, but the property this test guards is unchanged:
+        // a non-permission failure at a global target that differs from the derived
+        // prefix must NOT be swallowed by the permission arm.
         let detail =
             "npm error code ENOSPC\nnpm error path /opt/homebrew/lib/node_modules/@indigoai-us";
         assert_eq!(
             classify_install_failure(Some(1), detail, Some("/usr/local")),
-            InstallFailureKind::Unexpected
+            InstallFailureKind::ExpectedDiskFull
+        );
+        assert_ne!(
+            classify_install_failure(Some(1), detail, Some("/usr/local")),
+            InstallFailureKind::ExpectedPrefixPermission
         );
     }
 
