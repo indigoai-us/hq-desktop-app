@@ -24,6 +24,7 @@
     type NotificationsFeedState,
     type NotificationsFilter,
   } from './notifications-model';
+  import { presentPanelError } from '../lib/panel-error';
   import '../v4/tokens.css';
   import './chat-tokens.css';
 
@@ -102,9 +103,7 @@
         listError =
           kind === 'auth'
             ? 'Sign in to see notifications'
-            : err instanceof Error
-              ? err.message
-              : String(err);
+            : presentPanelError(err, { surface: 'notifications' }).message;
       }
     } finally {
       if (generation === loadGeneration) loading = false;

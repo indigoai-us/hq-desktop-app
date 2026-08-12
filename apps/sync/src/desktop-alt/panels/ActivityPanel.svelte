@@ -5,6 +5,7 @@
   import StatTile from '../components/StatTile.svelte';
   import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte';
   import { ActivityRequestTimeoutError } from '../lib/activity-request';
+  import { presentPanelError } from '../lib/panel-error';
 
   interface Props {
     slug: string;
@@ -144,7 +145,10 @@
           error =
             err instanceof ActivityRequestTimeoutError
               ? 'The activity service took too long to respond. Try again.'
-              : 'Couldn’t load activity. Check your connection and try again.';
+              : presentPanelError(err, {
+                  surface: 'activity',
+                  fallback: 'Couldn’t load activity. Check your connection and try again.',
+                }).message;
           if (companyStore.activity(slug) == null) activity = emptyActivity();
         }
       })

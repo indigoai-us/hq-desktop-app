@@ -10,6 +10,7 @@
   import { onMount } from 'svelte';
   import type { Channel } from '../../lib/channels';
   import { loadLocalProjects, loadLocalProjectPrd } from '../lib/local-projects';
+  import { presentBoardError } from '../lib/board-error';
   import type { Project } from '../lib/projects-model';
   import type { MissionControlSnapshot } from '../lib/sessions';
   import {
@@ -217,7 +218,8 @@
       branchName = BOARD_FIXTURE_PRD.branchName ?? null;
       prdName = BOARD_FIXTURE_PRD.name ?? null;
       usingFixtures = true;
-      loadError = err instanceof Error ? err.message : String(err);
+      // Calm copy only — the raw diagnostic is already in the console above.
+      loadError = presentBoardError(err).message;
     } finally {
       loading = false;
     }
