@@ -32,6 +32,7 @@
     type StoryActivityItem,
     type StoryPanelModel,
   } from './board-model';
+  import './chat-tokens.css';
 
   interface BoardMessage {
     eventId: string;
@@ -257,7 +258,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div
-  class="board-tab"
+  class="board-tab chat-shell"
   data-testid="project-tab-board"
   role="region"
   aria-label="Project board"
@@ -446,6 +447,8 @@
     min-width: 0;
     height: 100%;
     background: transparent;
+    font: 400 13px/1.45 var(--font-ui);
+    color: var(--t1);
   }
 
   .board-empty {
@@ -453,9 +456,9 @@
     align-items: center;
     justify-content: center;
     flex: 1;
-    padding: var(--v4-space-5, 1.25rem);
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-secondary, var(--text-base));
+    padding: 20px;
+    color: var(--t3);
+    font-size: 13px;
   }
 
   .board-layout {
@@ -471,13 +474,13 @@
     min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: var(--v4-space-3, 0.75rem) var(--v4-space-4, 1rem);
+    padding: 20px;
   }
 
   .board-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(160px, 1fr));
-    gap: var(--v4-space-4, 1rem);
+    grid-template-columns: repeat(3, minmax(200px, 1fr));
+    gap: 14px;
     min-width: 540px;
     height: 100%;
   }
@@ -493,27 +496,22 @@
   .column-header {
     display: flex;
     align-items: center;
-    gap: var(--v4-space-2, 0.5rem);
-    padding: var(--v4-space-2, 0.5rem) 0;
-    border-bottom: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
+    gap: 8px;
   }
 
   .column-title {
-    color: var(--v4-text-2, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
-    font-weight: 500;
-    letter-spacing: 0.06em;
+    color: var(--t2);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   .column-count {
     display: inline-flex;
     align-items: center;
-    padding: 0 6px;
-    border-radius: 0;
-    background: var(--v4-control-faint, rgba(128, 128, 128, 0.12));
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
+    color: var(--t3);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
     line-height: 16px;
@@ -523,48 +521,50 @@
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: var(--v4-space-2, 0.5rem);
+    gap: 10px;
     min-height: 0;
-    margin-top: var(--v4-space-2, 0.5rem);
+    margin-top: 10px;
     overflow-y: auto;
-    padding-right: var(--v4-space-1, 0.25rem);
+    padding-right: 4px;
   }
 
   .column-empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: var(--v4-space-5, 1.25rem);
+    padding: 20px;
   }
 
   .column-empty span {
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-secondary, var(--text-base));
+    color: var(--t3);
+    font-size: 13px;
   }
 
   .board-card {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.375rem;
+    gap: 6px;
     width: 100%;
-    padding: var(--v4-space-3, 0.75rem);
-    border: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
-    border-radius: 0;
-    background: var(--v4-raised, var(--surface, transparent));
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--raised);
     color: inherit;
     font: inherit;
     text-align: left;
     cursor: pointer;
-    transition: background 140ms ease, border-color 140ms ease;
+    transition: background 0.12s, border-color 0.12s;
   }
 
   .board-card:hover {
-    background: var(--v4-active-row, rgba(128, 128, 128, 0.08));
+    background: var(--btn-bg);
+    border-color: var(--line2);
   }
 
   .board-card.selected {
-    border-color: var(--v4-text-2, var(--muted-2, var(--pop-muted)));
+    background: var(--btn-bg);
+    border-color: var(--line2);
   }
 
   .board-card:focus-visible {
@@ -573,15 +573,15 @@
   }
 
   .card-label {
-    color: var(--v4-text-1, var(--text, inherit));
-    font-size: var(--type-body, var(--text-base));
+    color: var(--t1);
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.35;
   }
 
   .card-status {
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
+    color: var(--t2);
+    font-size: 10px;
     font-weight: 400;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -592,53 +592,52 @@
   .story-panel {
     display: flex;
     flex-direction: column;
-    flex: 0 0 min(320px, 42%);
-    width: min(320px, 42%);
+    flex: 0 0 340px;
+    width: 340px;
     min-height: 0;
-    border-left: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
-    background: var(--v4-raised, var(--surface, transparent));
+    border-left: 1px solid var(--line);
+    background: var(--side-bg);
     border-radius: 0;
   }
 
   .panel-header {
     display: flex;
     align-items: flex-start;
-    gap: var(--v4-space-2, 0.5rem);
-    padding: var(--v4-space-3, 0.75rem) var(--v4-space-4, 1rem);
-    border-bottom: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
+    gap: 10px;
+    padding: 16px 20px 0;
   }
 
   .panel-header-text {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 6px;
     min-width: 0;
     flex: 1;
   }
 
   .panel-story-id {
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
-    font-weight: 500;
-    letter-spacing: 0.04em;
+    color: var(--t3);
+    font-size: 11px;
+    font-weight: 400;
   }
 
   .panel-title {
     margin: 0;
-    color: var(--v4-text-1, var(--text, inherit));
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 500;
+    color: var(--t1);
+    font-size: 15px;
+    font-weight: 600;
     line-height: 1.3;
   }
 
   .panel-status-badge {
     align-self: flex-start;
-    margin-top: 0.25rem;
-    padding: 0.125rem 0.375rem;
-    border: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
-    border-radius: 0;
-    color: var(--v4-text-2, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
+    margin-top: 2px;
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent);
+    border-radius: 6px;
+    background: var(--btn-bg);
+    color: var(--t2);
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -646,39 +645,43 @@
 
   .panel-close {
     appearance: none;
+    display: grid;
+    place-items: center;
     flex: 0 0 auto;
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 24px;
+    height: 24px;
     border: none;
-    border-radius: 0;
+    border-radius: 6px;
     background: transparent;
-    color: var(--v4-text-2, var(--muted-2, var(--pop-muted)));
-    font-size: 1.25rem;
+    color: var(--t3);
+    font-size: 16px;
     line-height: 1;
     cursor: pointer;
+    transition: color 0.12s, background 0.12s;
   }
 
   .panel-close:hover {
-    color: var(--v4-text-1, var(--text, inherit));
+    color: var(--t1);
+    background: var(--hover);
   }
 
   .panel-body {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--v4-space-3, 0.75rem) var(--v4-space-4, 1rem);
+    padding: 14px 20px 20px;
   }
 
   .panel-section {
-    margin-bottom: var(--v4-space-4, 1rem);
+    margin-bottom: 18px;
   }
 
   .panel-section-label {
-    margin: 0 0 0.5rem;
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
-    font-weight: 500;
-    letter-spacing: 0.06em;
+    margin: 0 0 6px;
+    color: var(--t2);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
@@ -695,16 +698,16 @@
   }
 
   .ac-count {
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
+    color: var(--t3);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
   }
 
   .panel-description {
     margin: 0;
-    color: var(--v4-text-1, var(--text, inherit));
-    font-size: var(--type-secondary, var(--text-base));
-    line-height: 1.45;
+    color: var(--t2);
+    font-size: 13px;
+    line-height: 20px;
     white-space: pre-wrap;
   }
 
@@ -717,20 +720,21 @@
     grid-template-columns: 5.5rem 1fr;
     gap: 0.5rem;
     padding: 0.35rem 0;
-    border-bottom: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
+    border-bottom: 1px solid var(--line);
   }
 
   .field-row dt {
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
-    font-weight: 500;
-    letter-spacing: 0.04em;
+    color: var(--t3);
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
   }
 
   .field-row dd {
     margin: 0;
-    color: var(--v4-text-1, var(--text, inherit));
-    font-size: var(--type-secondary, var(--text-base));
+    color: var(--t1);
+    font-size: 12px;
     word-break: break-word;
   }
 
@@ -751,75 +755,87 @@
   .ac-check {
     margin-top: 0.15rem;
     flex: 0 0 auto;
-    accent-color: var(--v4-text-2, var(--muted-2, var(--pop-muted)));
+    accent-color: var(--ok-ink);
   }
 
   .ac-text {
-    color: var(--v4-text-1, var(--text, inherit));
-    font-size: var(--type-secondary, var(--text-base));
-    line-height: 1.4;
+    color: var(--t2);
+    font-size: 13px;
+    line-height: 20px;
   }
 
   .ac-item.done .ac-text {
     text-decoration: line-through;
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
+    color: var(--t3);
   }
 
   .panel-muted {
     margin: 0;
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-secondary, var(--text-base));
+    color: var(--t3);
+    font-size: 13px;
   }
 
   .activity-item {
     display: flex;
     flex-direction: column;
     gap: 0.125rem;
-    padding: 0.4rem 0;
-    border-bottom: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
+    padding: 3px 0;
+    border-bottom: none;
   }
 
   .activity-at {
-    color: var(--v4-text-3, var(--muted-2, var(--pop-muted)));
-    font-size: var(--type-metadata, var(--text-micro, 0.6875rem));
+    color: var(--t3);
+    font-size: 10px;
   }
 
   .activity-text {
-    color: var(--v4-text-1, var(--text, inherit));
-    font-size: var(--type-secondary, var(--text-base));
+    color: var(--t3);
+    font-size: 11px;
     line-height: 1.35;
   }
 
   .panel-footer {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--v4-space-2, 0.5rem);
-    padding: var(--v4-space-3, 0.75rem) var(--v4-space-4, 1rem);
-    border-top: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
+    gap: 8px;
+    padding: 12px 20px 20px;
   }
 
   .panel-btn {
     appearance: none;
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 0.45rem 0.75rem;
-    border: 1px solid var(--v4-hairline, var(--border, var(--pop-divider)));
-    border-radius: 0;
-    background: var(--v4-text-1, var(--text, #111));
-    color: var(--v4-ground, var(--surface, #fff));
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: var(--btn-bg);
+    color: var(--t1);
     font-family: inherit;
-    font-size: var(--type-secondary, var(--text-base));
+    font-size: 11px;
     font-weight: 500;
     cursor: pointer;
   }
 
-  .panel-btn-secondary {
-    background: transparent;
-    color: var(--v4-text-1, var(--text, inherit));
+  .panel-btn:hover {
+    border-color: var(--line2);
   }
 
-  .panel-btn:hover {
-    opacity: 0.9;
+  .panel-btn:active {
+    border-color: var(--border-active);
+  }
+
+  .panel-btn-secondary {
+    background: transparent;
+    color: var(--t2);
+    border-color: var(--line2);
+  }
+
+  .panel-btn-secondary:hover {
+    background: var(--hover);
+    color: var(--t1);
+    border-color: var(--line2);
   }
 
   .panel-btn:focus-visible {

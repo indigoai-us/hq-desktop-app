@@ -125,10 +125,13 @@ describe('US-003: titlebar chat-era chrome', () => {
 });
 
 describe('US-003: hard UI rules on new chat files', () => {
-  it('conversation rows and cards use border-radius 0 (avatars may be round)', () => {
+  it('conversation rows use the Daybook 8px radius (avatars may be round)', () => {
     const css = chatSidebar;
-    // Structural surfaces stay square.
-    expect(css).toMatch(/\.chat-row\s*\{[\s\S]*?border-radius:\s*0/);
+    // Daybook parity override (prd.json decisions): the chat shell ports
+    // Lizzie Liu's design/desktop-os-redesign values verbatim — rounded row
+    // radii, 600-weight headers, and her palette are intentional for chat
+    // surfaces and win over the no-rounded-corners/monochrome policies.
+    expect(css).toMatch(/\.chat-row\s*\{[\s\S]*?border-radius:\s*8px/);
     expect(css).toMatch(/\.chat-popover\s*\{[\s\S]*?border-radius:\s*0/);
     expect(css).toMatch(/\.chat-modal\s*\{[\s\S]*?border-radius:\s*0/);
     expect(css).toMatch(/\.chat-user-card\s*\{[\s\S]*?border-radius:\s*0/);
@@ -137,15 +140,20 @@ describe('US-003: hard UI rules on new chat files', () => {
     expect(css).toMatch(/\.chat-avatar\s*\{[\s\S]*?border-radius:\s*50%/);
   });
 
-  it('never uses font-weight above 500 in chat sidebar styles', () => {
+  it('never uses font-weight above 600 in chat sidebar styles', () => {
+    // Daybook parity override (prd.json decisions): the chat shell ports
+    // Lizzie Liu's design/desktop-os-redesign values verbatim — rounded row
+    // radii, 600-weight headers, and her palette are intentional for chat
+    // surfaces and win over the no-rounded-corners/monochrome policies.
+    // Daybook caps chat typography at 600 (scope pill, group headers).
     const weights = [...chatSidebar.matchAll(/font-weight:\s*([0-9]+)/g)].map((m) =>
       Number(m[1]),
     );
     expect(weights.length).toBeGreaterThan(0);
     for (const w of weights) {
-      expect(w, `font-weight ${w} exceeds 500`).toBeLessThanOrEqual(500);
+      expect(w, `font-weight ${w} exceeds 600`).toBeLessThanOrEqual(600);
     }
-    expect(chatSidebar).not.toMatch(/font-weight:\s*(bold|bolder|600|700|800|900)/i);
+    expect(chatSidebar).not.toMatch(/font-weight:\s*(bold|bolder|700|800|900)/i);
   });
 
   it('stays monochrome (no accent rails / rainbow) aside from the SYNCED status dot', () => {
@@ -153,7 +161,8 @@ describe('US-003: hard UI rules on new chat files', () => {
     expect(chatSidebar).not.toMatch(/border-left:\s*[0-9]+px\s+solid\s+#(f|e|c|a|9)/i);
     expect(chatSidebar).not.toMatch(/--v4-brand-accent/);
     // Status dot may use semantic success green.
-    expect(chatSidebar).toContain('background: var(--v4-ok)');
+    // Daybook parity: the chat shell's status dot uses her --ok token.
+    expect(chatSidebar).toContain('background: var(--ok)');
     // No emoji in UI chrome strings.
     expect(chatSidebar).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
     expect(sidebarModel).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);

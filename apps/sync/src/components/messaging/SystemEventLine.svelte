@@ -50,13 +50,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.375rem;
+    gap: 12px;
     width: 100%;
     max-width: 100%;
     margin: 0.375rem 0;
     padding: 0.125rem 0.5rem;
-    color: var(--muted, var(--pop-muted));
-    font-size: var(--text-sm, var(--text-base));
+    color: var(--t3, var(--muted, var(--pop-muted)));
+    font-size: 11px;
     line-height: 1.4;
     text-align: center;
   }
@@ -64,16 +64,17 @@
   .sys-icon {
     display: inline-flex;
     flex: 0 0 auto;
-    color: var(--muted-2, var(--pop-muted));
+    color: var(--t3, var(--muted-2, var(--pop-muted)));
+    opacity: 0.7;
   }
 
   .sys-title {
-    font-weight: 550;
-    color: var(--muted-2, var(--pop-muted));
+    font-weight: 500;
+    color: var(--t3, var(--muted-2, var(--pop-muted)));
   }
 
   .sys-summary {
-    color: var(--muted, var(--pop-muted));
+    color: var(--t3, var(--muted, var(--pop-muted)));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

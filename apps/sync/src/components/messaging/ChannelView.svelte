@@ -1005,9 +1005,10 @@
   .channel-header {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1.25rem;
-    border-bottom: 1px solid var(--border, var(--pop-divider));
+    gap: 10px;
+    height: 52px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--line, var(--border, var(--pop-divider)));
     flex-shrink: 0;
   }
 
@@ -1043,6 +1044,10 @@
     display: flex;
     align-items: center;
     gap: 2px;
+    background: var(--raised, transparent);
+    border: none;
+    border-radius: 8px;
+    padding: 2px;
   }
 
   .project-tab {
@@ -1051,31 +1056,27 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.35rem;
-    min-height: 32px;
-    min-width: 64px;
-    padding: 0.35rem 0.65rem;
-    border: 1px solid transparent;
-    border-radius: 0;
+    gap: 5px;
+    padding: 4px 10px;
+    border: none;
+    border-radius: 6px;
     background: transparent;
-    color: var(--muted-2, var(--pop-muted));
+    color: var(--t2, var(--muted-2, var(--pop-muted)));
     font-family: inherit;
-    font-size: var(--text-base);
-    font-weight: 400;
+    font-size: 12px;
+    font-weight: 500;
     line-height: 1;
     cursor: pointer;
+    transition: color 0.12s;
   }
 
   .project-tab:hover {
-    color: var(--fg, var(--pop-text));
-    background: color-mix(in srgb, var(--fg, #000) 5%, transparent);
+    color: var(--t1, var(--fg, var(--pop-text)));
   }
 
   .project-tab.active {
-    color: var(--fg, var(--pop-text));
-    font-weight: 500;
-    border-bottom-color: var(--fg, var(--pop-text));
-    box-shadow: inset 0 -1px 0 var(--fg, var(--pop-text));
+    color: var(--t1, var(--fg, var(--pop-text)));
+    background: var(--sel, var(--pop-hover));
   }
 
   .project-tab:focus-visible {
@@ -1094,21 +1095,20 @@
     -webkit-appearance: none;
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    min-height: 28px;
-    padding: 0 0.5rem 0 0.4rem;
-    border: 1px solid var(--border, var(--pop-divider));
-    border-radius: 0;
-    background: transparent;
-    color: var(--fg, var(--pop-text));
+    gap: 6px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg, transparent);
+    color: var(--t2, var(--pop-text));
     font: inherit;
-    font-size: var(--text-base);
-    font-weight: 400;
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
   }
 
   .member-count-btn:hover {
-    background: color-mix(in srgb, var(--fg, #000) 5%, transparent);
+    border-color: var(--line2, var(--pop-divider));
+    color: var(--t1, var(--fg, var(--pop-text)));
   }
 
   .member-count-icon {
@@ -1342,16 +1342,16 @@
   }
 
   .channel-hash {
-    font-size: var(--text-base);
+    font-size: 15px;
     font-weight: 600;
-    color: var(--muted, var(--pop-muted));
+    color: var(--t3, var(--muted, var(--pop-muted)));
   }
 
   .channel-title h2 {
     margin: 0;
-    font-size: var(--text-base);
+    font-size: 15px;
     font-weight: 600;
-    color: var(--fg, var(--pop-text));
+    color: var(--t1, var(--fg, var(--pop-text)));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1362,14 +1362,13 @@
     align-items: center;
     gap: 0.1875rem;
     flex-shrink: 0;
-    font-size: var(--text-base);
-    font-weight: 560;
-    letter-spacing: 0.02em;
+    font-size: 12px;
+    font-weight: 400;
     padding: 0;
     border: 0;
     border-radius: 0;
     background: transparent;
-    color: var(--muted-2, var(--pop-muted));
+    color: var(--t3, var(--muted-2, var(--pop-muted)));
   }
 
   .scope-chip.personal {
@@ -1385,15 +1384,15 @@
   .member-count-btn {
     margin-left: auto;
     flex-shrink: 0;
-    border: 0;
-    border-bottom: 1px solid transparent;
-    border-radius: 0;
-    background: transparent;
-    color: var(--muted-2, var(--pop-muted));
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg, transparent);
+    color: var(--t2, var(--muted-2, var(--pop-muted)));
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: 12px;
     font-weight: 500;
-    padding: 0.25rem 0;
+    padding: 5px 12px;
+    white-space: nowrap;
     cursor: pointer;
     transition:
       transform 120ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)),
@@ -1525,8 +1524,8 @@
 
   @media (hover: hover) and (pointer: fine) {
     .member-count-btn:hover {
-      border-bottom-color: currentColor;
-      color: var(--fg, var(--pop-text));
+      border-color: var(--line2, currentColor);
+      color: var(--t1, var(--fg, var(--pop-text)));
     }
   }
 

@@ -56,14 +56,14 @@
   .run-card {
     display: flex;
     flex-direction: column;
-    gap: 0.625rem;
+    gap: 6px;
     width: min(420px, 100%);
     margin: 0.5rem auto;
-    padding: 0.75rem 0.875rem;
-    border: 1px solid var(--border, var(--pop-border));
-    border-radius: 8px;
-    background: var(--surface-panel, var(--pop-hover));
-    color: var(--fg, var(--pop-text));
+    padding: 12px 14px;
+    border: 1px solid var(--line, var(--pop-border));
+    border-radius: 10px;
+    background: var(--raised, var(--pop-hover));
+    color: var(--t1, var(--pop-text));
   }
 
   .run-card-body {
@@ -75,43 +75,43 @@
 
   .run-card-title {
     margin: 0;
-    font-size: var(--text-base);
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--fg, var(--pop-text));
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t1, var(--pop-text));
   }
 
   .run-card-summary {
     margin: 0;
-    font-size: var(--text-base);
+    font-size: 12px;
     line-height: 1.45;
-    color: var(--muted, var(--pop-muted));
+    color: var(--t2, var(--pop-muted));
   }
 
   .run-card-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.375rem;
+    gap: 8px;
+    margin-top: 4px;
   }
 
   .run-card-btn {
     display: inline-flex;
     align-items: center;
-    height: 1.75rem;
-    padding: 0 0.625rem;
-    border: 1px solid var(--border, var(--pop-border));
+    gap: 5px;
+    padding: 3px 10px;
+    border: 1px solid transparent;
     border-radius: 6px;
-    background: transparent;
-    color: var(--fg, var(--pop-text));
+    background: var(--btn-bg, transparent);
+    color: var(--t1, var(--pop-text));
     font: inherit;
-    font-size: var(--text-sm, var(--text-base));
-    font-weight: 550;
+    font-size: 11px;
+    font-weight: 500;
     cursor: pointer;
-    transition: background-color 0.12s ease;
+    transition: border-color 0.12s ease, background-color 0.12s ease;
   }
 
   .run-card-btn:hover {
-    background: var(--row-hover, var(--pop-hover));
+    border-color: var(--line2, var(--pop-border));
   }
 
   .run-card-btn:focus-visible {

@@ -989,21 +989,25 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 1rem 1.25rem;
+    padding: 24px 24px 12px;
     display: flex;
     flex-direction: column;
     gap: 0;
     scrollbar-width: thin;
-    scrollbar-color: var(--pop-muted) transparent;
+    scrollbar-color: var(--line, var(--pop-muted)) transparent;
   }
 
   .dm-thread::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
 
   .dm-thread::-webkit-scrollbar-thumb {
-    background: var(--pop-hover);
-    border-radius: 3px;
+    background: var(--line, var(--pop-hover));
+    border-radius: 999px;
+  }
+
+  .dm-thread::-webkit-scrollbar-thumb:hover {
+    background: var(--line2, var(--pop-hover));
   }
 
   .dm-thread-status {
@@ -1102,9 +1106,9 @@
   }
 
   .dm-msg-author {
-    font-size: var(--text-base);
+    font-size: 13px;
     font-weight: 600;
-    color: var(--pop-muted);
+    color: var(--t1, var(--pop-text));
     margin: 0 0.25rem 0.125rem;
   }
 
@@ -1201,16 +1205,16 @@
   }
 
   .dm-bubble-body {
-    --message-markdown-text: var(--fg, var(--pop-text, #e8e8e8));
-    --message-markdown-muted: var(--muted, var(--pop-muted, #a0a0a0));
-    --message-markdown-border: var(--border, var(--pop-divider, rgba(255, 255, 255, 0.14)));
-    --message-markdown-surface: var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06)));
+    --message-markdown-text: var(--t2, var(--fg, var(--pop-text, #e8e8e8)));
+    --message-markdown-muted: var(--t3, var(--muted, var(--pop-muted, #a0a0a0)));
+    --message-markdown-border: var(--line, var(--border, var(--pop-divider, rgba(255, 255, 255, 0.14))));
+    --message-markdown-surface: var(--raised, var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06))));
     min-width: 0;
     max-width: 100%;
     margin: 0;
-    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
-    font-size: var(--text-base);
-    line-height: 1.55;
+    font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));
+    font-size: 13px;
+    line-height: 19px;
     color: var(--message-markdown-text);
     white-space: normal;
     overflow-wrap: anywhere;
@@ -1466,8 +1470,9 @@
   }
 
   .dm-msg-time {
-    font-size: var(--text-base);
-    color: var(--pop-muted);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 10px;
+    color: var(--t3, var(--pop-muted));
     margin: 0.125rem 0.25rem 0;
   }
 
@@ -1484,10 +1489,12 @@
   .date-separator {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 12px;
     margin: 0.5rem 0;
-    color: var(--pop-muted);
-    font-size: var(--text-base);
+    color: var(--t3, var(--pop-muted));
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
   }
 
   .date-separator::before,
@@ -1495,7 +1502,7 @@
     content: '';
     height: 1px;
     flex: 1;
-    background: var(--pop-divider);
+    background: var(--line, var(--pop-divider));
   }
 
   .sr-only {
@@ -1573,12 +1580,18 @@
   }
 
   .btn-copy {
-    background: var(--pop-hover);
-    color: var(--pop-text);
+    padding: 3px 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--btn-bg, var(--pop-hover));
+    color: var(--t1, var(--pop-text));
   }
 
   .btn-copy:hover {
-    background: var(--c-field-bg);
+    border-color: var(--line2, var(--c-field-border));
+    background: var(--btn-bg, var(--c-field-bg));
   }
 
   .dm-bubble-cta-row {
@@ -1826,9 +1839,18 @@
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    padding: 0.875rem 1.25rem 1rem;
-    border-top: 1px solid var(--pop-divider);
+    align-items: stretch;
+    gap: 6px;
+    margin: 12px 24px 20px;
+    padding: 12px 8px 8px 14px;
+    background: var(--raised, var(--pop-hover));
+    border: 1px solid var(--line2, var(--pop-border));
+    border-radius: 10px;
+    transition: border-color 0.12s;
+  }
+
+  .dm-reply:focus-within {
+    border-color: var(--border-active, var(--c-field-border));
   }
 
   .dm-reply-composer {
@@ -1892,20 +1914,21 @@
     width: 100%;
     box-sizing: border-box;
     resize: none;
-    padding: 0.5rem 0.625rem;
-    border-radius: 8px;
-    border: 1px solid var(--pop-border);
-    background: var(--pop-hover);
-    color: var(--pop-text);
-    font-family: inherit;
-    font-size: var(--text-base);
-    line-height: 1.4;
+    padding: 0;
+    border-radius: 0;
+    border: none;
+    background: none;
+    color: var(--t1, var(--pop-text));
+    font: 400 13px var(--font-ui, inherit);
+    line-height: 1.45;
+  }
+
+  .dm-reply-input::placeholder {
+    color: var(--t3, var(--pop-muted));
   }
 
   .dm-reply-input:focus {
     outline: none;
-    border-color: var(--c-field-border);
-    background: var(--c-field-bg);
   }
 
   .dm-reply-input:disabled {
@@ -1921,27 +1944,28 @@
   .dm-reply-tools {
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 2px;
+    margin-left: -6px;
   }
 
   .dm-tool-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.75rem;
-    height: 1.75rem;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
     padding: 0;
     border: 0;
     border-radius: 6px;
     background: transparent;
-    color: var(--muted, var(--pop-muted));
+    color: var(--t3, var(--pop-muted));
     cursor: pointer;
+    transition: color 0.12s, background 0.12s;
   }
 
   .dm-tool-btn:hover,
   .dm-tool-btn:focus-visible {
-    background: var(--row-hover, var(--pop-hover));
-    color: var(--fg, var(--pop-text));
+    background: var(--hover, var(--pop-hover));
+    color: var(--t1, var(--pop-text));
     outline: none;
   }
 
@@ -1963,13 +1987,24 @@
   }
 
   .btn-send {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 26px;
+    padding: 0;
     margin-left: auto;
-    background: var(--c-btn-bg);
-    color: var(--c-btn-fg);
+    border-radius: 6px;
+    background: var(--ice-ink, var(--c-btn-bg));
+    color: var(--badge-fg, var(--c-btn-fg));
+    transition: opacity 0.15s, transform 0.1s;
   }
 
   .btn-send:hover:not(:disabled) {
-    filter: brightness(0.94);
+    opacity: 0.88;
+  }
+
+  .btn-send:active:not(:disabled) {
+    transform: scale(0.95);
   }
 
   .btn-send:disabled {
