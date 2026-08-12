@@ -321,6 +321,23 @@ pub const HQ_CLOUD_PACKAGE: &str = "@indigoai-us/hq-cloud";
 /// not match the package name.
 pub const RUNNER_BIN: &str = "hq-sync-runner";
 
+/// Desktop-visible capabilities of the bundled runner invocation.
+///
+/// These describe only local command-line compatibility. They are never
+/// enrollment authority: V2 admission remains exclusively an authenticated
+/// server inventory and lease decision. In particular, this compatibility
+/// step deliberately does not claim the V2 mutation boundary that U59 adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HqCloudRunnerCapabilities {
+    pub event_push: bool,
+    pub v2_mutation: bool,
+}
+
+pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities = HqCloudRunnerCapabilities {
+    event_push: true,
+    v2_mutation: false,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +356,11 @@ mod tests {
     #[test]
     fn runner_bin_is_hq_sync_runner() {
         assert_eq!(RUNNER_BIN, "hq-sync-runner");
+    }
+
+    #[test]
+    fn runner_capabilities_describe_local_compatibility_not_v2_mutation_support() {
+        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.event_push);
+        assert!(!HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
     }
 }
