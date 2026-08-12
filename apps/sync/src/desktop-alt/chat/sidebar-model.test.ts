@@ -6,27 +6,37 @@ import {
   buildScopeOptions,
   clearDmDot,
   clearPairUnread,
+  companyLabelFor,
+  conversationKindLabel,
+  conversationQueryScore,
   daySectionLabel,
   distinctDmPeople,
   filterByCompanyScope,
   filterByShow,
   filterTypeahead,
+  formatSearchHitTime,
   groupByDay,
+  historySearchScopeLabel,
   initialsFor,
   loadPins,
   normalizeChannel,
   normalizeConversations,
   normalizeDm,
   nextScope,
+  rankPaletteConversations,
+  resolveSearchHitRow,
   savePins,
   scopeFromHotkey,
   scopePillLabel,
+  searchCompanyUidFromScope,
   searchHistory,
+  searchHitSnippet,
   sortConversations,
   titlebarDayDate,
   togglePin,
   type ConversationRow,
   type DmContactInput,
+  type MessageSearchHit,
 } from './sidebar-model';
 
 // Fixed "now": Wednesday Aug 12, 2026 15:00 local — tests use local day math.
@@ -541,5 +551,169 @@ describe('typeahead / history / people helpers', () => {
   it('initialsFor builds monograms', () => {
     expect(initialsFor('Alex Rivera')).toBe('AR');
     expect(initialsFor('Bo')).toBe('BO');
+  });
+});
+
+describe('US-013 palette conversation ranking', () => {
+  const paletteRows: ConversationRow[] = [
+    {
+      id: 'ch:launch',
+      kind: 'channel',
+      title: 'launch',
+      companyUid: 'cmp_acme',
+      unreadDot: false,
+      lastActivityAt: 100,
+      pinned: false,
+      channelId: 'chn_launch',
+    },
+    {
+      id: 'dm:bob',
+      kind: 'dm',
+      title: 'Bob Smith',
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: 200,
+      pinned: false,
+      personUid: 'prs_bob',
+      email: 'bob@example.com',
+    },
+    {
+      id: 'ch:design',
+      kind: 'channel',
+      title: 'design-system',
+      companyUid: 'cmp_acme',
+      unreadDot: false,
+      lastActivityAt: 300,
+      pinned: false,
+      channelId: 'chn_design',
+    },
+    {
+      id: 'grp:1',
+      kind: 'group',
+      title: 'Launch crew',
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: 50,
+      pinned: false,
+      channelId: 'chn_grp',
+      memberCount: 3,
+    },
+  ];
+
+  it('conversationKindLabel maps kinds', () => {
+    expect(conversationKindLabel('channel')).toBe('Channel');
+    expect(conversationKindLabel('dm')).toBe('DM');
+    expect(conversationKindLabel('group')).toBe('Group');
+  });
+
+  it('conversationQueryScore prefers starts-with over contains', () => {
+    expect(conversationQueryScore(paletteRows[0]!, 'lau')).toBe(3);
+    expect(conversationQueryScore(paletteRows[3]!, 'crew')).toBe(2);
+    expect(conversationQueryScore(paletteRows[1]!, 'bob@')).toBe(1);
+    expect(conversationQueryScore(paletteRows[1]!, 'zzz')).toBe(0);
+  });
+
+  it('rankPaletteConversations ranks match then recency and is cross-company', () => {
+    const ranked = rankPaletteConversations(paletteRows, 'lau');
+    // "launch" starts with lau (score 3) beats "Launch crew" contains (score 2)
+    expect(ranked.map((r) => r.id)).toEqual(['ch:launch', 'grp:1']);
+    // Empty query keeps recency order (design 300, bob 200, launch 100, crew 50)
+    expect(rankPaletteConversations(paletteRows, '', 3).map((r) => r.id)).toEqual([
+      'ch:design',
+      'dm:bob',
+      'ch:launch',
+    ]);
+  });
+
+  it('companyLabelFor resolves scope labels', () => {
+    const companies = [{ companyUid: 'cmp_acme', label: 'Acme' }];
+    expect(companyLabelFor('cmp_acme', companies)).toBe('Acme');
+    expect(companyLabelFor(null, companies)).toBeNull();
+  });
+});
+
+describe('US-013 message search helpers', () => {
+  const companies = [
+    { companyUid: 'cmp_acme', label: 'Acme' },
+    { companyUid: 'cmp_beta', label: 'Beta' },
+  ];
+
+  it('searchCompanyUidFromScope only passes specific companies', () => {
+    expect(searchCompanyUidFromScope('all')).toBeNull();
+    expect(searchCompanyUidFromScope('personal')).toBeNull();
+    expect(searchCompanyUidFromScope('cmp_acme')).toBe('cmp_acme');
+  });
+
+  it('historySearchScopeLabel surfaces company name', () => {
+    expect(historySearchScopeLabel('all', companies)).toBe('All companies');
+    expect(historySearchScopeLabel('personal', companies)).toBe('Personal');
+    expect(historySearchScopeLabel('cmp_acme', companies)).toBe('Acme');
+  });
+
+  it('searchHitSnippet prefers snippet then body', () => {
+    expect(
+      searchHitSnippet({
+        messageId: 'm1',
+        scope: 'dm',
+        snippet: '  snip  ',
+        body: 'body',
+        createdAt: '2026-08-11T10:00:00.000Z',
+      }),
+    ).toBe('snip');
+    expect(
+      searchHitSnippet({
+        messageId: 'm2',
+        scope: 'channel',
+        body: ' only body ',
+        createdAt: '2026-08-11T10:00:00.000Z',
+      }),
+    ).toBe('only body');
+  });
+
+  it('resolveSearchHitRow maps dm/channel onto local rows', () => {
+    const rows: ConversationRow[] = [
+      {
+        id: 'dm:prs_bob',
+        kind: 'dm',
+        title: 'Bob',
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: 1,
+        pinned: false,
+        personUid: 'prs_bob',
+      },
+      {
+        id: 'ch:chn_1',
+        kind: 'channel',
+        title: 'launch',
+        companyUid: 'cmp_acme',
+        unreadDot: false,
+        lastActivityAt: 2,
+        pinned: false,
+        channelId: 'chn_1',
+      },
+    ];
+    const dmHit: MessageSearchHit = {
+      messageId: 'msg_y',
+      scope: 'dm',
+      counterpartyUid: 'prs_bob',
+      body: 'review from yesterday',
+      createdAt: '2026-08-11T09:00:00.000Z',
+    };
+    expect(resolveSearchHitRow(dmHit, rows).title).toBe('Bob');
+    const chHit: MessageSearchHit = {
+      messageId: 'msg_c',
+      scope: 'channel',
+      channelId: 'chn_1',
+      snippet: 'ship it',
+      createdAt: '2026-08-11T10:00:00.000Z',
+    };
+    expect(resolveSearchHitRow(chHit, rows).id).toBe('ch:chn_1');
+  });
+
+  it('formatSearchHitTime labels yesterday hits', () => {
+    const yesterdayIso = new Date(NOW - 86_400_000).toISOString();
+    const label = formatSearchHitTime(yesterdayIso, NOW);
+    expect(label.startsWith('Yesterday')).toBe(true);
   });
 });

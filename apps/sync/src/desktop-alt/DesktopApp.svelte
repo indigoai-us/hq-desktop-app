@@ -87,6 +87,16 @@
   // V4Sidebar remains in the codebase (workspace IA, company children, specs).
   // US-003 mounts ChatSidebar as the primary conversation surface.
   import ChatSidebar from './chat/ChatSidebar.svelte';
+  import {
+    companyLabelFor,
+    conversationKindLabel,
+    loadConversationCache,
+    normalizeConversations,
+    type ConversationRow,
+    type DmContactInput,
+  } from './chat/sidebar-model';
+  import { requestChannelOpen } from './chat/open-target';
+  import type { Channel } from '../lib/channels';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
@@ -269,6 +279,18 @@
   let refreshingRealState = $state(false);
   const refreshCoordinator = new LatestRequestCoordinator();
   let commandPaletteOpen = $state(false);
+  /** Conversations for ⌘K CONVERSATIONS section (cache-first, refreshed on open). */
+  let paletteConversations = $state<ConversationRow[]>(
+    (() => {
+      const cache =
+        typeof window !== 'undefined' ? loadConversationCache(window.localStorage) : null;
+      if (!cache) return [];
+      return normalizeConversations(
+        cache.channels as Channel[],
+        cache.contacts as DmContactInput[],
+      );
+    })(),
+  );
   let navigationPending = $state(false);
   let navigationSequence = 0;
   let desktopDestroyed = false;
@@ -524,6 +546,27 @@
           }),
         )
       : []),
+    // Cross-company conversations (US-013) — type-tagged + company label; the
+    // palette ranks these by match then recency under a CONVERSATIONS section.
+    ...paletteConversations.map((row) => {
+      const kind = conversationKindLabel(row.kind);
+      const company = companyLabelFor(
+        row.companyUid,
+        (renderCompanies ?? [])
+          .filter((w) => w.kind !== 'personal' && w.cloudUid)
+          .map((w) => ({
+            companyUid: w.cloudUid as string,
+            label: w.displayName?.trim() || w.slug,
+          })),
+      );
+      return {
+        id: `conversation-${row.id}`,
+        label: row.title,
+        detail: company ? `${kind} · ${company}` : kind,
+        lastActivityAt: row.lastActivityAt,
+        action: () => openPaletteConversation(row),
+      };
+    }),
   ]);
 
   // Plain-language error summary for the V4 title bar's error state.
@@ -551,6 +594,7 @@
   // return the user to where they were (default Home). Updated on every
   // navigation AWAY from a non-files route (US-010).
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
+
 
   function mapMessagesTarget(payload: {
     personUid?: string;
@@ -1125,8 +1169,49 @@
     sidebarCollapsed = !sidebarCollapsed;
   }
 
+  async function refreshPaletteConversations(): Promise<void> {
+    try {
+      const [contactsResp, channelsResp] = await Promise.all([
+        invoke<{ contacts?: DmContactInput[] }>('list_contacts').catch(() => null),
+        invoke<{ channels?: Channel[] } | null>('list_channels').catch(() => null),
+      ]);
+      const contacts = Array.isArray(contactsResp?.contacts) ? contactsResp.contacts : [];
+      const channels = Array.isArray(channelsResp?.channels) ? channelsResp.channels : [];
+      if (contacts.length > 0 || channels.length > 0) {
+        paletteConversations = normalizeConversations(channels, contacts);
+      } else {
+        const cache =
+          typeof window !== 'undefined' ? loadConversationCache(window.localStorage) : null;
+        if (cache) {
+          paletteConversations = normalizeConversations(
+            cache.channels as Channel[],
+            cache.contacts as DmContactInput[],
+          );
+        }
+      }
+    } catch (err) {
+      console.error('command-palette: conversation refresh failed', err);
+    }
+  }
+
   function handleOpenCommandPalette() {
     commandPaletteOpen = true;
+    void refreshPaletteConversations();
+  }
+
+  function openPaletteConversation(row: ConversationRow) {
+    navigate({ kind: 'messages' });
+    if (row.kind === 'dm' && row.personUid) {
+      requestConversation({
+        personUid: row.personUid,
+        email: row.email ?? '',
+        displayName: row.title,
+      });
+      return;
+    }
+    if (row.channelId) {
+      requestChannelOpen(row.channelId);
+    }
   }
 
   function handleAccountMenu() {

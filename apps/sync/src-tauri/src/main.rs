@@ -722,6 +722,7 @@ fn main() {
             commands::dm_notify::list_dm_requests,
             commands::dm_notify::respond_dm_request,
             commands::dm_notify::mark_dm_thread_read,
+            commands::message_search::search_messages,
             commands::messages::open_messages_window,
             commands::messages::messages_window_ready,
             commands::messages::take_pending_messages_target,

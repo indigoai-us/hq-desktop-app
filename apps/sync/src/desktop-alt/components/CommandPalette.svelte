@@ -7,6 +7,11 @@
     detail: string;
     shortcut?: string;
     action: () => void | Promise<void>;
+    /**
+     * When set (conversation rows, US-013), the palette ranks by match then
+     * recency instead of the generic command fuzzy filter alone.
+     */
+    lastActivityAt?: number;
   }
 
   interface Props {
@@ -15,8 +20,8 @@
   }
 
   interface CommandPaletteSection {
-    id: 'actions' | 'navigate';
-    label: 'ACTIONS' | 'NAVIGATE';
+    id: 'actions' | 'navigate' | 'conversations';
+    label: 'ACTIONS' | 'NAVIGATE' | 'CONVERSATIONS';
     items: CommandPaletteItem[];
   }
   interface CommandActionError {
@@ -52,13 +57,49 @@
     return true;
   }
 
-  const filteredCommands = $derived(
-    commands.filter((command) =>
+  function isConversationItem(command: CommandPaletteItem): boolean {
+    return command.id.startsWith('conversation-');
+  }
+
+  /** Match score for conversation rows: starts-with > contains > none. */
+  function conversationMatchScore(command: CommandPaletteItem, needle: string): number {
+    const q = needle.trim().toLowerCase();
+    if (!q) return 1;
+    const title = command.label.toLowerCase();
+    if (title.startsWith(q)) return 3;
+    if (title.includes(q)) return 2;
+    if (command.detail.toLowerCase().includes(q)) return 1;
+    return 0;
+  }
+
+  const filteredCommands = $derived.by((): CommandPaletteItem[] => {
+    const actionNav = commands.filter((command) => !isConversationItem(command));
+    const conversationItems = commands.filter(isConversationItem);
+
+    const filteredActionNav = actionNav.filter((command) =>
       fuzzyMatch(`${command.label} ${command.detail} ${command.shortcut ?? ''}`, query),
-    ),
-  );
+    );
+
+    const rankedConversations = conversationItems
+      .map((command) => ({ command, score: conversationMatchScore(command, query) }))
+      .filter((entry) => (query.trim() ? entry.score > 0 : true))
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        const aAt = a.command.lastActivityAt ?? 0;
+        const bAt = b.command.lastActivityAt ?? 0;
+        if (bAt !== aAt) return bAt - aAt;
+        return a.command.label.localeCompare(b.command.label);
+      })
+      .slice(0, 12)
+      .map((entry) => entry.command);
+
+    // Commands first, then ranked conversations under them (US-013).
+    return [...filteredActionNav, ...rankedConversations];
+  });
 
   function sectionId(command: CommandPaletteItem): CommandPaletteSection['id'] {
+    // Conversations (US-013) sit under their own section after actions/navigate.
+    if (command.id.startsWith('conversation-')) return 'conversations';
     return command.id.startsWith('command-go-') ? 'navigate' : 'actions';
   }
 
@@ -66,6 +107,7 @@
     const sections: CommandPaletteSection[] = [
       { id: 'actions', label: 'ACTIONS', items: [] },
       { id: 'navigate', label: 'NAVIGATE', items: [] },
+      { id: 'conversations', label: 'CONVERSATIONS', items: [] },
     ];
     for (const command of filteredCommands) {
       const target = sections.find((section) => section.id === sectionId(command));

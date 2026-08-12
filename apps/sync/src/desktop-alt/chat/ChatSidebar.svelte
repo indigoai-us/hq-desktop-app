@@ -30,25 +30,33 @@
     applySidebarFilters,
     clearDmDot,
     clearPairUnread,
+    conversationKindLabel,
     distinctDmPeople,
     filterTypeahead,
+    formatSearchHitTime,
     groupByDay,
+    historySearchScopeLabel,
     initialsFor,
     loadConversationCache,
     loadDmDots,
     loadPins,
     nextScope,
     normalizeConversations,
+    resolveSearchHitRow,
     saveConversationCache,
     saveDmDots,
     savePins,
     scopeFromHotkey,
     scopePillLabel,
+    searchCompanyUidFromScope,
     searchHistory,
+    searchHitSnippet,
     togglePin,
     type CompanyScope,
     type ConversationRow,
     type DmContactInput,
+    type MessageSearchHit,
+    type MessageSearchResult,
     type ShowFilter,
     type SortMode,
   } from './sidebar-model';
@@ -119,6 +127,11 @@
   let lastWeekExpanded = $state(false);
   let historyOpen = $state(false);
   let historyQuery = $state('');
+  /** Server message-content hits for non-empty history query (US-013). */
+  let messageSearchHits = $state<MessageSearchHit[]>([]);
+  let messageSearchLoading = $state(false);
+  let messageSearchError = $state<string | null>(null);
+  let messageSearchSeq = 0;
   let newMessageOpen = $state(false);
   let newMessageQuery = $state('');
   let createProjectChannelOpen = $state(false);
@@ -165,11 +178,51 @@
   const people = $derived(distinctDmPeople(allRows));
   const typeaheadRows = $derived(filterTypeahead(allRows, newMessageQuery));
   const historyRows = $derived(searchHistory(filteredRows, historyQuery));
+  const historyScopeLabel = $derived(historySearchScopeLabel(scope, scopeCompanies));
+  const historyCompanyUid = $derived(searchCompanyUidFromScope(scope));
+  const historyHasQuery = $derived(historyQuery.trim().length > 0);
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
   const displayName = $derived(accountLabel?.trim() || 'Account');
   const initials = $derived(
     (accountInitials?.trim() || initialsFor(displayName)).slice(0, 2).toUpperCase(),
   );
+
+  $effect(() => {
+    if (!historyOpen) return;
+    const q = historyQuery.trim();
+    if (!q) {
+      messageSearchHits = [];
+      messageSearchError = null;
+      messageSearchLoading = false;
+      return;
+    }
+    const companyUid = historyCompanyUid;
+    const seq = ++messageSearchSeq;
+    messageSearchLoading = true;
+    messageSearchError = null;
+    const handle = setTimeout(() => {
+      void (async () => {
+        try {
+          const resp = await invoke<MessageSearchResult>('search_messages', {
+            q,
+            companyUid: companyUid ?? undefined,
+            limit: 50,
+          });
+          if (seq !== messageSearchSeq) return;
+          messageSearchHits = Array.isArray(resp?.results) ? resp.results : [];
+        } catch (err) {
+          if (seq !== messageSearchSeq) return;
+          messageSearchHits = [];
+          messageSearchError =
+            typeof err === 'string' ? err : 'Could not search recent messages';
+          console.error('chat-sidebar: search_messages failed', err);
+        } finally {
+          if (seq === messageSearchSeq) messageSearchLoading = false;
+        }
+      })();
+    }, 220);
+    return () => clearTimeout(handle);
+  });
 
   async function refreshLists(): Promise<void> {
     loading = true;
@@ -310,7 +363,10 @@
     savePins(pins, storage);
   }
 
-  async function openRow(row: ConversationRow) {
+  async function openRow(
+    row: ConversationRow,
+    focus?: { messageId?: string | null; createdAt?: string | null },
+  ) {
     activeId = row.id;
     onselect?.(row);
     onnavigateMessages?.();
@@ -341,7 +397,10 @@
       } catch (err) {
         console.error('chat-sidebar: mark_channel_read failed', err);
       }
-      requestChannelOpen(row.channelId);
+      requestChannelOpen(row.channelId, {
+        messageId: focus?.messageId,
+        createdAt: focus?.createdAt,
+      });
     }
   }
 
@@ -378,10 +437,24 @@
   function openHistory() {
     historyOpen = true;
     historyQuery = '';
+    messageSearchHits = [];
+    messageSearchError = null;
+    messageSearchLoading = false;
   }
 
   function closeHistory() {
     historyOpen = false;
+    historyQuery = '';
+    messageSearchHits = [];
+    messageSearchError = null;
+  }
+
+  function openSearchHit(hit: MessageSearchHit) {
+    const row = resolveSearchHitRow(hit, allRows);
+    void openRow(row, {
+      messageId: hit.messageId,
+      createdAt: hit.createdAt,
+    });
   }
 
   async function signOut() {
@@ -407,36 +480,84 @@
           Back
         </button>
         <span class="chat-section-label">History</span>
+        <span class="chat-history-scope" data-testid="chat-history-scope">
+          {historyScopeLabel}
+        </span>
       </div>
       <input
         class="chat-search-input"
         type="search"
-        placeholder="Search titles"
+        placeholder="Search recent messages"
         bind:value={historyQuery}
         aria-label="Search conversation history"
+        data-testid="chat-history-search"
       />
-      <div class="chat-list" role="list">
-        {#each historyRows as row (row.id)}
-          <button
-            type="button"
-            class="chat-row"
-            class:unread={!!row.unreadCount || row.unreadDot}
-            class:active={activeId === row.id}
-            role="listitem"
-            onclick={() => void openRow(row)}
-          >
-            {#if row.kind === 'channel'}
-              <span class="chat-glyph" aria-hidden="true">#</span>
-            {:else if row.kind === 'group'}
-              <span class="chat-avatar group" aria-hidden="true">
-                {row.memberCount ?? row.members?.length ?? 0}
-              </span>
-            {:else}
-              <span class="chat-avatar" aria-hidden="true">{initialsFor(row.title)}</span>
-            {/if}
-            <span class="chat-row-title">{row.title}</span>
-          </button>
-        {/each}
+      <p class="chat-history-helper" data-testid="chat-history-helper">
+        Searches recent messages (about the last 1,000)
+      </p>
+      <div class="chat-list" role="list" data-testid="chat-history-results">
+        {#if historyHasQuery}
+          {#if messageSearchLoading && messageSearchHits.length === 0}
+            <div class="chat-empty" role="status">Searching…</div>
+          {:else if messageSearchError}
+            <div class="chat-empty" role="alert">{messageSearchError}</div>
+          {:else if messageSearchHits.length === 0}
+            <div class="chat-empty">No matching messages</div>
+          {:else}
+            {#each messageSearchHits as hit (hit.messageId + (hit.createdAt ?? ''))}
+              {@const row = resolveSearchHitRow(hit, allRows)}
+              <button
+                type="button"
+                class="chat-row chat-search-hit"
+                role="listitem"
+                data-testid="chat-search-hit"
+                onclick={() => openSearchHit(hit)}
+              >
+                {#if row.kind === 'channel'}
+                  <span class="chat-glyph" aria-hidden="true">#</span>
+                {:else if row.kind === 'group'}
+                  <span class="chat-avatar group" aria-hidden="true">
+                    {row.memberCount ?? row.members?.length ?? 0}
+                  </span>
+                {:else}
+                  <span class="chat-avatar" aria-hidden="true">{initialsFor(row.title)}</span>
+                {/if}
+                <span class="chat-search-hit-copy">
+                  <span class="chat-row-title">{row.title}</span>
+                  <span class="chat-search-snippet">{searchHitSnippet(hit)}</span>
+                </span>
+                <span class="chat-search-meta">
+                  <span class="chat-type-tag">{conversationKindLabel(row.kind)}</span>
+                  <span class="chat-search-time">{formatSearchHitTime(hit.createdAt)}</span>
+                </span>
+              </button>
+            {/each}
+          {/if}
+        {:else}
+          {#each historyRows as row (row.id)}
+            <button
+              type="button"
+              class="chat-row"
+              class:unread={!!row.unreadCount || row.unreadDot}
+              class:active={activeId === row.id}
+              role="listitem"
+              onclick={() => void openRow(row)}
+            >
+              {#if row.kind === 'channel'}
+                <span class="chat-glyph" aria-hidden="true">#</span>
+              {:else if row.kind === 'group'}
+                <span class="chat-avatar group" aria-hidden="true">
+                  {row.memberCount ?? row.members?.length ?? 0}
+                </span>
+              {:else}
+                <span class="chat-avatar" aria-hidden="true">{initialsFor(row.title)}</span>
+              {/if}
+              <span class="chat-row-title">{row.title}</span>
+            </button>
+          {:else}
+            <div class="chat-empty">No conversations</div>
+          {/each}
+        {/if}
       </div>
     </div>
   {:else}
@@ -1189,6 +1310,74 @@
     align-items: center;
     gap: 8px;
     padding: 0 4px 8px;
+  }
+
+  .chat-history-scope {
+    margin-left: auto;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 11px);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .chat-history-helper {
+    margin: 0 4px 8px;
+    padding: 0 6px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 11px);
+    font-weight: 400;
+    line-height: 1.35;
+  }
+
+  .chat-search-hit {
+    align-items: flex-start;
+    min-height: 44px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .chat-search-hit-copy {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .chat-search-snippet {
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 12px);
+    font-weight: 400;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-search-meta {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    max-width: 88px;
+  }
+
+  .chat-type-tag {
+    color: var(--v4-text-3);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .chat-search-time {
+    color: var(--v4-text-3);
+    font-size: 10px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .chat-search-input {

@@ -82,6 +82,9 @@ describe('desktop-alt command palette coverage', () => {
     expect(palette).toContain("command.id.startsWith('command-go-') ? 'navigate' : 'actions'");
     expect(palette).toContain("label: 'ACTIONS'");
     expect(palette).toContain("label: 'NAVIGATE'");
+    // US-013: conversation rows get their own section under commands.
+    expect(palette).toContain("command.id.startsWith('conversation-')");
+    expect(palette).toContain("label: 'CONVERSATIONS'");
   });
 
   it('the section tables it enumerates carry every routable tab', () => {

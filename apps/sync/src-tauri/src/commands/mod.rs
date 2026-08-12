@@ -37,6 +37,7 @@ pub mod lifecycle;
 pub mod long_paths;
 pub mod marketplace;
 pub mod meetings;
+pub mod message_search;
 pub mod messages;
 pub mod new_files;
 pub mod notification_history;

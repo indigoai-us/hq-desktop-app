@@ -667,3 +667,184 @@ export function initialsFor(title: string): string {
   }
   return title.trim().slice(0, 2).toUpperCase() || '?';
 }
+
+// ── Command palette conversation ranking (US-013) ────────────────────────────
+
+export type ConversationKindLabel = 'Channel' | 'DM' | 'Group';
+
+/** Human type tag for palette / search result rows. */
+export function conversationKindLabel(kind: ConversationKind): ConversationKindLabel {
+  if (kind === 'channel') return 'Channel';
+  if (kind === 'group') return 'Group';
+  return 'DM';
+}
+
+/**
+ * Match score for palette ranking. Higher is better.
+ *  - 3: title starts with query
+ *  - 2: title contains query
+ *  - 1: email / member name contains query
+ *  - 0: no match (caller usually filters these out when query is non-empty)
+ */
+export function conversationQueryScore(row: ConversationRow, query: string): number {
+  const q = query.trim().toLowerCase();
+  if (!q) return 1; // empty query: treat as weakly matched so recency can rank
+  const title = row.title.toLowerCase();
+  if (title.startsWith(q)) return 3;
+  if (title.includes(q)) return 2;
+  if (row.email?.toLowerCase().includes(q)) return 1;
+  if (row.members?.some((m) => m.displayName.toLowerCase().includes(q))) return 1;
+  return 0;
+}
+
+/**
+ * Filter + rank conversations for the ⌘K palette (cross-company).
+ * Rank: query match strength, then recency, then title. Caps at `limit`.
+ */
+export function rankPaletteConversations(
+  rows: ConversationRow[],
+  query: string,
+  limit: number = 12,
+): ConversationRow[] {
+  const q = query.trim();
+  const scored = rows
+    .map((row) => ({ row, score: conversationQueryScore(row, q) }))
+    .filter((entry) => (q ? entry.score > 0 : true));
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.row.lastActivityAt !== a.row.lastActivityAt) {
+      return b.row.lastActivityAt - a.row.lastActivityAt;
+    }
+    return a.row.title.localeCompare(b.row.title) || a.row.id.localeCompare(b.row.id);
+  });
+  return scored.slice(0, limit).map((e) => e.row);
+}
+
+/** Company label lookup for palette rows (uid → display name). */
+export function companyLabelFor(
+  companyUid: string | null | undefined,
+  companies: ScopeCompany[],
+): string | null {
+  if (!companyUid) return null;
+  return companies.find((c) => c.companyUid === companyUid)?.label ?? null;
+}
+
+// ── Message content search (all-history, US-013) ─────────────────────────────
+
+/** Wire hit from `search_messages` / `GET /v1/notify/search`. */
+export interface MessageSearchHit {
+  messageId: string;
+  scope: 'dm' | 'channel' | string;
+  channelId?: string | null;
+  counterpartyUid?: string | null;
+  companyUid?: string | null;
+  projectId?: string | null;
+  snippet?: string | null;
+  body?: string | null;
+  createdAt: string;
+}
+
+export interface MessageSearchResult {
+  results: MessageSearchHit[];
+}
+
+/**
+ * Resolve the companyUid argument for `search_messages` from the sidebar scope.
+ * Specific company → that uid; All / Personal → null (no company filter).
+ */
+export function searchCompanyUidFromScope(scope: CompanyScope): string | null {
+  if (scope === 'all' || scope === 'personal') return null;
+  const uid = scope.trim();
+  return uid || null;
+}
+
+/** Scope label shown near the all-history search input. */
+export function historySearchScopeLabel(
+  scope: CompanyScope,
+  companies: ScopeCompany[],
+): string {
+  if (scope === 'all') return 'All companies';
+  if (scope === 'personal') return 'Personal';
+  return companies.find((c) => c.companyUid === scope)?.label ?? 'Company';
+}
+
+/** Prefer snippet, fall back to body. */
+export function searchHitSnippet(hit: MessageSearchHit): string {
+  const snippet = hit.snippet?.trim();
+  if (snippet) return snippet;
+  return hit.body?.trim() || '';
+}
+
+/**
+ * Map a search hit onto a local ConversationRow when possible (title + kind).
+ * Falls back to a synthetic row from hit metadata so the UI can still open.
+ */
+export function resolveSearchHitRow(
+  hit: MessageSearchHit,
+  rows: ConversationRow[],
+): ConversationRow {
+  if (hit.scope === 'dm' && hit.counterpartyUid) {
+    const existing = rows.find(
+      (r) => r.kind === 'dm' && r.personUid === hit.counterpartyUid,
+    );
+    if (existing) return existing;
+    return {
+      id: `dm:${hit.counterpartyUid}`,
+      kind: 'dm',
+      title: hit.counterpartyUid,
+      companyUid: hit.companyUid ?? null,
+      unreadDot: false,
+      lastActivityAt: parseActivityMs(hit.createdAt),
+      pinned: false,
+      personUid: hit.counterpartyUid,
+    };
+  }
+  if (hit.channelId) {
+    const existing = rows.find(
+      (r) =>
+        (r.kind === 'channel' || r.kind === 'group') && r.channelId === hit.channelId,
+    );
+    if (existing) return existing;
+    return {
+      id: `ch:${hit.channelId}`,
+      kind: 'channel',
+      title: hit.channelId,
+      companyUid: hit.companyUid ?? null,
+      unreadDot: false,
+      lastActivityAt: parseActivityMs(hit.createdAt),
+      pinned: false,
+      channelId: hit.channelId,
+    };
+  }
+  // Unknown shape — best-effort synthetic id so the list can still key rows.
+  return {
+    id: `search:${hit.messageId}`,
+    kind: hit.scope === 'dm' ? 'dm' : 'channel',
+    title: searchHitSnippet(hit).slice(0, 48) || hit.messageId,
+    companyUid: hit.companyUid ?? null,
+    unreadDot: false,
+    lastActivityAt: parseActivityMs(hit.createdAt),
+    pinned: false,
+    ...(hit.channelId ? { channelId: hit.channelId } : {}),
+    ...(hit.counterpartyUid ? { personUid: hit.counterpartyUid } : {}),
+  };
+}
+
+/** Compact relative/absolute timestamp for search result rows. */
+export function formatSearchHitTime(
+  createdAt: string,
+  now: number = Date.now(),
+): string {
+  const ms = parseActivityMs(createdAt);
+  if (!ms) return '';
+  const todayStart = startOfLocalDay(now);
+  const yesterdayStart = todayStart - 86_400_000;
+  const day = startOfLocalDay(ms);
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const time = `${hh}:${mm}`;
+  if (day === todayStart) return time;
+  if (day === yesterdayStart) return `Yesterday ${time}`;
+  return `${MONTHS[d.getMonth()]} ${d.getDate()} ${time}`;
+}
