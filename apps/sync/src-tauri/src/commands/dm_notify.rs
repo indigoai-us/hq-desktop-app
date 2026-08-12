@@ -3060,6 +3060,7 @@ mod tests {
     fn mk_channel(id: &str, unread: u32) -> crate::commands::messages::Channel {
         crate::commands::messages::Channel {
             channel_id: id.to_string(),
+            project_id: None,
             name: format!("#{id}"),
             scope: "company".to_string(),
             company_uid: Some("ent_co".to_string()),
@@ -3160,6 +3161,7 @@ mod tests {
     fn mk_owned_group(id: &str) -> crate::commands::messages::Channel {
         crate::commands::messages::Channel {
             channel_id: id.to_string(),
+            project_id: None,
             name: String::new(),
             scope: "group".to_string(),
             company_uid: None,
