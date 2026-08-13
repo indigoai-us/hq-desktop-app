@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { AgencyTeam, AgencyQuestion, AgencyMessage } from './agency';
+import { createGatedPoller } from './visibility-poller';
 
 // ---------------------------------------------------------------------------
 // Agency store (Mission Control). Module-level runes singleton — the same shape
@@ -16,10 +17,21 @@ let selected = $state<{ company: string; team: string } | null>(null);
 let loading = $state(true);
 let error = $state('');
 
-let started = false;
-let timer: ReturnType<typeof setInterval> | null = null;
+/**
+ * Perf: was a 4s app-lifetime interval issuing 3 Tauri invokes forever — the
+ * worst CPU offender in the desktop window. Now 30s, refcounted to mounted
+ * agency surfaces, and skipped entirely while the document is hidden
+ * (visibility-poller). The data is on-disk chat files; 30s is plenty.
+ */
+export const AGENCY_REFRESH_MS = 30_000;
 
-const REFRESH_MS = 4000;
+const poller = createGatedPoller({
+  intervalMs: AGENCY_REFRESH_MS,
+  tick: () => void refresh(),
+});
+
+/** Legacy lifetime lease held by startAgencyStore/stopAgencyStore. */
+let lifetimeRelease: (() => void) | null = null;
 
 /** Keep `selected` pointing at a team that still exists (default: the first). */
 function reconcileSelection(): void {
@@ -51,18 +63,29 @@ async function refresh(): Promise<void> {
   }
 }
 
-/** Idempotent lifetime singleton — starts the interval refresh. */
+/**
+ * Acquire a polling lease for a mounted agency surface. The refresh interval
+ * only runs while at least one lease is held; call the returned release in
+ * onDestroy. Ticks are skipped while the document is hidden.
+ */
+export function acquireAgencyStore(): () => void {
+  return poller.acquire();
+}
+
+/** Idempotent lifetime lease — kept for callers without a mount lifecycle. */
 export function startAgencyStore(): void {
-  if (started) return;
-  started = true;
-  void refresh();
-  timer = setInterval(() => void refresh(), REFRESH_MS);
+  if (lifetimeRelease) return;
+  lifetimeRelease = poller.acquire();
 }
 
 export function stopAgencyStore(): void {
-  if (timer) clearInterval(timer);
-  timer = null;
-  started = false;
+  lifetimeRelease?.();
+  lifetimeRelease = null;
+}
+
+/** True while the refresh interval is scheduled (test hook). */
+export function agencyPollerRunning(): boolean {
+  return poller.isRunning();
 }
 
 /** Answer a question — writes back to the manager inbox, then refreshes so the

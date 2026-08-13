@@ -51,9 +51,11 @@
     // Lifetime singleton; idempotent. Keeps the panel self-sufficient (tests /
     // direct mount) just like the live panel.
     startSessionsStore();
+    // Perf: this tick only drives relative-time labels; 60s is plenty and
+    // quarters the $derived invalidations over the full session list.
     const tick = setInterval(() => {
       now = Date.now();
-    }, 15_000);
+    }, 60_000);
     return () => clearInterval(tick);
   });
 

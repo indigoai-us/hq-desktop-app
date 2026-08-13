@@ -4,7 +4,11 @@
    * operator has the full context behind a pending question, plus a composer to
    * post a message straight into the team-manager inbox (no liaison needed).
    */
-  import { agencyStore, sendAgencyMessage, selectAgencyTeam } from '../lib/agency-store.svelte';
+  import { onMount } from 'svelte';
+  import { acquireAgencyStore, agencyStore, sendAgencyMessage, selectAgencyTeam } from '../lib/agency-store.svelte';
+
+  // Perf: agency polling only runs while an agency surface is mounted.
+  onMount(() => acquireAgencyStore());
   import { senderTone, relativeTime, type AgencyMessage } from '../lib/agency';
 
   const teams = $derived(agencyStore.teams);

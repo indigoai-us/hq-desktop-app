@@ -6,7 +6,11 @@
    * AskUserQuestion. Mirrors alongside the liaison — the [ans:<id>] dedup keeps
    * either side from double-answering.
    */
-  import { agencyStore, submitAnswer } from '../lib/agency-store.svelte';
+  import { onMount } from 'svelte';
+  import { acquireAgencyStore, agencyStore, submitAnswer } from '../lib/agency-store.svelte';
+
+  // Perf: agency polling only runs while an agency surface is mounted.
+  onMount(() => acquireAgencyStore());
   import { relativeTime, type AgencyQuestion } from '../lib/agency';
 
   let drafts = $state<Record<string, string>>({});

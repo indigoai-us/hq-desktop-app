@@ -1,6 +1,10 @@
 <script lang="ts">
   /** Mission Control — running hq-pack-agency teams + per-worker status. */
-  import { agencyStore } from '../lib/agency-store.svelte';
+  import { onMount } from 'svelte';
+  import { acquireAgencyStore, agencyStore } from '../lib/agency-store.svelte';
+
+  // Perf: agency polling only runs while an agency surface is mounted.
+  onMount(() => acquireAgencyStore());
   import { statusTone, relativeTime, shortDuration, type AgencyWorker } from '../lib/agency';
 
   const teams = $derived(agencyStore.teams);

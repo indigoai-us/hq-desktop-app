@@ -22,6 +22,8 @@ const agency = vi.hoisted(() => ({
 vi.mock('../../src/desktop-alt/lib/agency-store.svelte', () => ({
   agencyStore: { questions: [agency.question] },
   submitAnswer: agency.submitAnswer,
+  // Perf lease acquired on panel mount — inert in this story harness.
+  acquireAgencyStore: () => () => {},
 }));
 
 import { flushSync, mount, unmount } from 'svelte';

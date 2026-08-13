@@ -33,6 +33,7 @@
     type StoryActivityItem,
     type StoryPanelModel,
   } from './board-model';
+  import { documentIsHidden } from '../lib/visibility-poller';
   import './chat-tokens.css';
 
   interface BoardMessage {
@@ -228,6 +229,9 @@
   onMount(() => {
     void refreshBoard();
     const timer = setInterval(() => {
+      // Perf: skip background refreshes while the window is hidden — the
+      // next visible tick refreshes.
+      if (documentIsHidden()) return;
       void refreshBoard();
     }, BOARD_POLL_MS);
     return () => clearInterval(timer);
