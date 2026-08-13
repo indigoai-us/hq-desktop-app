@@ -309,7 +309,34 @@
 /// serving the old runner. Raising the floor changes the npx cache key, which
 /// is what actually delivers the fix to existing users.
 /// `~6.14.47` -> `~6.14.49`: floor the pin at hq-cloud 6.14.49, which ships the session-log capture fix that matches a harness-recorded cwd against the realpath'd HQ root (so symlinked / case-aliased roots capture correctly). Raising the floor also changes the npx cache key so an existing `~6.14.47` resolution can't keep serving the older runner (hq-cloud#298).
-pub const HQ_CLOUD_VERSION: &str = "~6.14.49";
+///
+/// `~6.14.49` -> `~6.15.0`: a deliberate MINOR bump (the "ship a new behavior
+/// set" lever this module documents at the top of `commands/sync.rs`) to keep
+/// the desktop "Update / Restore" rescue on the SAME hq-cloud line the CLI
+/// `hq rescue` already resolves. The CLI declares `@indigoai-us/hq-cloud`
+/// `^6.14.50`, which npm resolves to the newest 6.x (6.15.0 at the time of this
+/// bump). The old `~6.14.49` tilde was capped at `<6.15.0`, so the Update pill
+/// was stranded on 6.14.x and could NOT pick up the hq-core rescue's 6.15 line —
+/// most importantly the `.claude/settings.json` recompose + drift-to-
+/// `settings.local.json` contract that lands there. Pinning `~6.15.0` puts both
+/// surfaces on the same engine so drift/settings semantics are identical. The
+/// cross-surface floor and its regression guard live in
+/// `RESCUE_CONTRACT_FLOOR` below (mirrored in hq-cli's rescue parity test); when
+/// a future rescue-behavior change cuts a new hq-cloud minor, bump the floor and
+/// re-pin BOTH surfaces onto it — the parity tests fail closed until you do.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.0";
+
+/// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
+/// rescue contract — the `.claude/settings.json` recompose + drift relocation
+/// into `.claude/settings.local.json` semantics (hq-cloud 6.15 line). This is
+/// the single cross-surface source of truth for rescue-engine parity: BOTH the
+/// desktop `HQ_CLOUD_VERSION` pin above and the hq-cli
+/// `@indigoai-us/hq-cloud` dependency range MUST resolve to a version that
+/// satisfies this floor, so `hq rescue` and the "Update / Restore" pill can
+/// never silently run different rescue semantics. hq-cli mirrors this constant
+/// in `src/commands/rescue.parity.test.ts`; keep the two in lockstep. See
+/// `version_pin_satisfies_rescue_contract_floor` below for the desktop guard.
+pub const RESCUE_CONTRACT_FLOOR: &str = "6.15.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -351,6 +378,59 @@ mod tests {
     fn version_is_nonempty_tilde_pin() {
         assert!(!HQ_CLOUD_VERSION.is_empty());
         assert!(HQ_CLOUD_VERSION.starts_with('~'));
+    }
+
+    /// Rescue-engine PARITY GUARD (desktop leg).
+    ///
+    /// The desktop "Update / Restore" pill spawns
+    /// `npx --package=@indigoai-us/hq-cloud@{HQ_CLOUD_VERSION} hq-rescue`, so
+    /// whatever `HQ_CLOUD_VERSION` resolves to IS the rescue engine the pill
+    /// runs. The CLI `hq rescue` resolves the hq-cloud package independently.
+    /// If the desktop pin falls behind the shared `RESCUE_CONTRACT_FLOOR`, the
+    /// two surfaces silently run different rescue semantics (e.g. the pill
+    /// misses the `.claude/settings.json` recompose contract) — the exact drift
+    /// this test exists to catch. It fails closed: a `~6.14.x` pin does NOT
+    /// satisfy a `6.15.0` floor, so the pre-fix pin would fail here.
+    #[test]
+    fn version_pin_satisfies_rescue_contract_floor() {
+        // The pin is an npx-style `~X.Y.Z` string; `semver::VersionReq` parses
+        // the tilde range directly.
+        let req = semver::VersionReq::parse(HQ_CLOUD_VERSION)
+            .expect("HQ_CLOUD_VERSION must be a valid semver range");
+        let floor = semver::Version::parse(RESCUE_CONTRACT_FLOOR)
+            .expect("RESCUE_CONTRACT_FLOOR must be a valid semver version");
+        assert!(
+            req.matches(&floor),
+            "desktop HQ_CLOUD_VERSION pin `{HQ_CLOUD_VERSION}` does not satisfy the \
+             rescue-contract floor `{RESCUE_CONTRACT_FLOOR}` — the Update / Restore \
+             pill would run an older rescue engine than `hq rescue`. Re-pin the \
+             desktop onto the floor's minor line (and keep the mirrored floor in \
+             hq-cli's rescue parity test in lockstep)."
+        );
+    }
+
+    /// The floor must itself be a lower bound the tilde pin actually tracks:
+    /// a tilde pin `~X.Y.Z` only matches `>=X.Y.Z <X.(Y+1).0`, so the floor's
+    /// minor line must equal the pin's minor line. This catches the subtler
+    /// drift where the pin is raised past the floor's minor (e.g. floor
+    /// `6.15.0`, pin `~6.17.0`) — then the desktop would run a NEWER engine than
+    /// the documented contract and the floor constant is stale.
+    #[test]
+    fn version_pin_tracks_contract_floor_minor_line() {
+        let pin_floor = semver::VersionReq::parse(HQ_CLOUD_VERSION)
+            .expect("valid range")
+            .comparators
+            .first()
+            .map(|c| (c.major, c.minor.unwrap_or(0)))
+            .expect("tilde pin has a lower-bound comparator");
+        let floor = semver::Version::parse(RESCUE_CONTRACT_FLOOR).expect("valid version");
+        assert_eq!(
+            pin_floor,
+            (floor.major, floor.minor),
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` and RESCUE_CONTRACT_FLOOR \
+             `{RESCUE_CONTRACT_FLOOR}` are on different minor lines — bump both \
+             together so the pin and the documented rescue contract stay in sync."
+        );
     }
 
     #[test]
