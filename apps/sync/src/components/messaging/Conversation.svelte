@@ -415,12 +415,19 @@
   }
 
   function formatDateSeparator(iso: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    const today = new Date();
+    const start = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const diffDays = Math.round((start(today) - start(date)) / 86_400_000);
+    if (diffDays === 0) return 'TODAY';
+    if (diffDays === 1) return 'YESTERDAY';
     try {
       return new Intl.DateTimeFormat(undefined, {
+        weekday: 'short',
         month: 'short',
         day: 'numeric',
-        year: 'numeric',
-      }).format(new Date(iso));
+      }).format(date).toUpperCase();
     } catch {
       return '';
     }
@@ -457,12 +464,32 @@
     return elapsed >= 0 && elapsed <= MESSAGE_GROUP_WINDOW_MS;
   }
 
+  function isHumanBubble(message: ConversationMessage | undefined): boolean {
+    if (!message) return false;
+    if (isSpecialTimelineRow(message)) return false;
+    return Boolean(message.body?.trim() || messageAttachment(message) || message.share);
+  }
+
+  function previousHumanBubble(index: number): ConversationMessage | undefined {
+    for (let i = index - 1; i >= 0; i -= 1) {
+      if (isHumanBubble(timelineMessages[i])) return timelineMessages[i];
+    }
+    return undefined;
+  }
+
+  function nextHumanBubble(index: number): ConversationMessage | undefined {
+    for (let i = index + 1; i < timelineMessages.length; i += 1) {
+      if (isHumanBubble(timelineMessages[i])) return timelineMessages[i];
+    }
+    return undefined;
+  }
+
   function startsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(timelineMessages[index - 1], timelineMessages[index]);
+    return !messagesShareGroup(previousHumanBubble(index), timelineMessages[index]);
   }
 
   function endsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(timelineMessages[index], timelineMessages[index + 1]);
+    return !messagesShareGroup(timelineMessages[index], nextHumanBubble(index));
   }
 
   // Short relative-time stamp for the "last {time}" reply affordance (US-022).
@@ -565,7 +592,7 @@
   }
 </script>
 
-<div class="dm-thread-wrap">
+<div class="dm-thread-wrap chat-shell">
   <div
     class="dm-thread"
     bind:this={scrollEl}
@@ -616,10 +643,21 @@
       </div>
     {/if}
     {#if systemModel?.kind === 'line'}
-      <SystemEventLine model={systemModel} />
+      <SystemEventLine model={systemModel} who={messageAuthor(msg)} />
     {:else if systemModel?.kind === 'run_complete'}
-      <RunCompleteCard model={systemModel} />
-    {:else}
+      <div class="dm-msg dm-msg-in dm-msg-group-start" data-testid="run-complete-row">
+        <span class="dm-msg-avatar">
+          <IdentityMark kind="agent" label={messageAuthor(msg)} size="regular" />
+        </span>
+        <div class="dm-msg-column">
+          <div class="dm-msg-meta">
+            <span class="dm-msg-author">{messageAuthor(msg)}</span>
+            <span class="dm-msg-header-time">{formatTime(msg.createdAt)}</span>
+          </div>
+          <RunCompleteCard model={systemModel} />
+        </div>
+      </div>
+    {:else if msg.body?.trim() || attachmentModel || msg.share}
       <div
         class="dm-msg dm-msg-{msg.direction}"
         class:dm-msg-group-start={groupStart}
@@ -627,7 +665,11 @@
       >
       {#if groupStart}
         <span class="dm-msg-avatar">
-          <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
+          {#if (msg.fromPersonUid ?? '').startsWith('agt_') || /agent/i.test(messageAuthor(msg))}
+            <IdentityMark kind="agent" label={messageAuthor(msg)} size="regular" />
+          {:else}
+            <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
+          {/if}
         </span>
       {:else}
         <span class="dm-msg-avatar-spacer" aria-hidden="true"></span>
@@ -744,10 +786,10 @@
             <div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>
           {/if}
         {/if}
-        {#if msg.details}
+        {#if msg.details && msg.body?.trim()}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
         {/if}
-        {#if msg.prompt || msg.share}
+        {#if (msg.prompt || msg.share) && msg.body?.trim()}
           <div class="dm-bubble-cta-row">
             {#if msg.prompt}
               <button
@@ -853,7 +895,7 @@
           </span>
         {/if}
       {:else if msg.direction === 'out' && groupEnd}
-        <span class="dm-msg-time">Delivered</span>
+        <span class="sr-only">Delivered</span>
       {:else if !groupEnd}
         <span class="sr-only">
           Sent at {formatTime(msg.createdAt)}{msg.direction === 'out' ? ' · Delivered' : ''}
@@ -863,6 +905,11 @@
       </div>
     {/if}
     {/each}
+    {#if !loading && !error && timelineMessages.length === 0}
+      <div class="dm-thread-empty" data-testid="conversation-empty" role="status">
+        No messages yet
+      </div>
+    {/if}
   </div>
 
   {#if newMessagesAvailable}
@@ -948,11 +995,24 @@
             <EmojiPicker onpick={insertComposerEmoji} onclose={() => (composerEmojiOpen = false)} />
           {/if}
         </div>
+        {#if replyText.startsWith('/') || showAgentMenu}
+          <button
+            type="button"
+            class="dm-tool-btn"
+            aria-label="Run an agent"
+            title="Type / to run an agent"
+            onclick={() => {
+              if (!replyText.startsWith('/')) replyText = `/${replyText}`;
+              replyInputEl?.focus();
+            }}
+          >
+            <span aria-hidden="true" style="font: 600 13px/1 var(--font-mono, ui-monospace);">/</span>
+          </button>
+        {/if}
       </div>
+      <!-- S4: no persistent "⌘↵ to send" hint — not in the design mock. -->
       {#if sendError}
         <span class="dm-reply-error" role="alert">{sendError}</span>
-      {:else}
-        <span class="dm-reply-hint">⌘↵ to send</span>
       {/if}
       <button
         class="btn btn-send"
@@ -966,8 +1026,8 @@
         {#if sending}
           <span class="inline-spinner" aria-hidden="true"></span>
         {:else}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M8 13V3M8 3 3.75 7.25M8 3l4.25 4.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z" />
           </svg>
         {/if}
       </button>
@@ -989,7 +1049,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 24px 24px 12px;
+    padding: 32px 24px 12px;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -1008,6 +1068,14 @@
 
   .dm-thread::-webkit-scrollbar-thumb:hover {
     background: var(--line2, var(--pop-hover));
+  }
+
+  .dm-thread-empty {
+    margin: auto;
+    padding: 48px 16px;
+    color: var(--t3, var(--pop-muted));
+    font-size: 13px;
+    text-align: center;
   }
 
   .dm-thread-status {
@@ -1457,16 +1525,11 @@
   }
 
   .dm-bubble-details {
-    font-size: var(--text-base);
-    line-height: 1.5;
-    color: var(--pop-text);
-    background: transparent;
+    display: none;
     border: 0;
-    border-top: 1px solid var(--c-field-border);
-    padding: 0.5rem 0 0;
+    border-top: 1px solid var(--line, var(--pop-border));
     border-radius: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
+    background: transparent;
   }
 
   .dm-msg-time {
@@ -1490,11 +1553,13 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 0.5rem 0;
+    margin: 8px 24px;
     color: var(--t3, var(--pop-muted));
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
   }
 
   .date-separator::before,
@@ -1595,9 +1660,14 @@
   }
 
   .dm-bubble-cta-row {
-    display: flex;
+    display: none;
     flex-wrap: wrap;
     gap: 0.375rem;
+  }
+
+  .dm-msg:hover .dm-bubble-cta-row,
+  .dm-msg:focus-within .dm-bubble-cta-row {
+    display: flex;
   }
 
   .dm-action-error {
@@ -1994,8 +2064,8 @@
     padding: 0;
     margin-left: auto;
     border-radius: 6px;
-    background: var(--ice-ink, var(--c-btn-bg));
-    color: var(--badge-fg, var(--c-btn-fg));
+    background: #c9d6e4;
+    color: #101014;
     transition: opacity 0.15s, transform 0.1s;
   }
 
@@ -2010,6 +2080,12 @@
   .btn-send:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+
+  :global(html[data-force-theme='light']) .btn-send,
+  :global(:root[data-force-theme='light']) .btn-send {
+    background: #3e5a75;
+    color: #ffffff;
   }
 
   /* ── Compact communications window ──────────────────────────────────────
@@ -2398,10 +2474,10 @@
   :global([data-window='messages']) .dm-msg,
   :global(html[data-window='dm-detail']) .dm-msg {
     display: grid;
-    grid-template-columns: 28px minmax(0, 720px);
+    grid-template-columns: 32px minmax(0, 1fr);
     align-self: stretch;
     align-items: start;
-    gap: 0.625rem;
+    gap: 12px;
     width: 100%;
     max-width: none;
     margin-top: 0.1875rem;
@@ -2428,7 +2504,8 @@
   .dm-msg-avatar,
   .dm-msg-avatar-spacer {
     display: block;
-    width: 28px;
+    width: 32px;
+    flex: 0 0 32px;
     min-height: 1px;
   }
 
@@ -2471,13 +2548,23 @@
     white-space: nowrap;
   }
 
+  /* S1: timestamps hidden at rest, hover-revealed — mono 10px per the
+     canonical token contract (.when: opacity 0 at rest, F1 10px). */
   .dm-msg-header-time {
     flex: 0 0 auto;
     color: var(--muted-3, var(--pop-muted));
-    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
-    font-size: var(--text-xs, 0.75rem);
-    font-weight: 450;
-    line-height: 1.3;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 10px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.45;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .dm-msg:hover .dm-msg-header-time,
+  .dm-msg:focus-within .dm-msg-header-time {
+    opacity: 1;
   }
 
   .dm-bubble,

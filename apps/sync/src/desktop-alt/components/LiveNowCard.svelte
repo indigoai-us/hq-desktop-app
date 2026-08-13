@@ -179,16 +179,16 @@
     background: var(--v4-raised);
   }
   .card.live {
-    border-color: var(--v4-control-border);
+    border-color: color-mix(in srgb, var(--ok, #34c759) 32%, transparent);
+    background: color-mix(in srgb, var(--ok, #34c759) 9%, transparent);
+    border-radius: 10px;
+  }
+
+  .standby {
+    display: none;
   }
   .card-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--v4-rowline);
-    background: transparent;
+    display: none;
   }
   .card-header h3 {
     margin: 0;
@@ -207,7 +207,13 @@
     line-height: 14px;
   }
   .card-body {
-    padding: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+  }
+  .live-company {
+    display: none;
   }
   .live-main {
     display: flex;
@@ -277,10 +283,7 @@
     cursor: pointer;
   }
   .live-company {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 12px;
+    display: none;
   }
   .lc-label {
     flex: 0 0 auto;

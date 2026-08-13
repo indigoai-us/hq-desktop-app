@@ -660,7 +660,11 @@ pub async fn open_desktop_alt_window_inner(
     }
 
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
+        // Re-run the full reveal (glass + show + focus on the main thread)
+        // rather than a bare show(): if the first-page-load reveal never
+        // fired (wry can drop the Finished event — observed on macOS 26 dev
+        // builds), the window exists but is still hidden and glass-less.
+        reveal_desktop_alt_window(&window);
         window.set_focus().map_err(|e| e.to_string())?;
         // Already mounted: it won't re-consume a pending route, so push the
         // navigation live. Fire-and-forget — a missing listener is harmless.
@@ -719,13 +723,7 @@ pub async fn open_desktop_alt_window_inner(
                 }
 
                 let window = loaded_window;
-                let dispatcher = window.clone();
-                let _ = dispatcher.run_on_main_thread(move || {
-                    crate::glass::apply_liquid_glass_window(&window);
-                    crate::glass::refresh_liquid_glass_window(&window);
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                });
+                reveal_desktop_alt_window(&window);
             });
     }
 
@@ -744,6 +742,26 @@ pub async fn open_desktop_alt_window_inner(
     }
 
     let _window = builder.build().map_err(|e| e.to_string())?;
+
+    // Reveal watchdog (macOS): the atomic reveal depends on wry delivering a
+    // `PageLoadEvent::Finished` for the first load. That event can be dropped
+    // (observed on macOS 26: window stays alive + hidden forever, webview
+    // loaded fine). If the page-load reveal hasn't fired within the deadline,
+    // reveal anyway — a briefly glass-less frame beats a window that never
+    // appears.
+    #[cfg(target_os = "macos")]
+    {
+        let watchdog = _window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if !watchdog.is_visible().unwrap_or(false) {
+                eprintln!(
+                    "[desktop-alt] reveal watchdog: first-page-load reveal never fired; forcing reveal"
+                );
+                reveal_desktop_alt_window(&watchdog);
+            }
+        });
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -783,6 +801,30 @@ pub async fn open_desktop_alt_window_inner(
     }
 
     Ok(())
+}
+
+/// Reveal the desktop-alt window atomically: apply the native glass material,
+/// then show + focus, all marshalled to AppKit's main thread. Idempotent —
+/// safe to call from the page-load handler, the reveal watchdog, and the
+/// existing-window open path.
+#[cfg(target_os = "macos")]
+fn reveal_desktop_alt_window(window: &tauri::WebviewWindow) {
+    let window = window.clone();
+    let dispatcher = window.clone();
+    let _ = dispatcher.run_on_main_thread(move || {
+        crate::glass::apply_liquid_glass_window(&window);
+        crate::glass::refresh_liquid_glass_window(&window);
+        if let Err(e) = window.show() {
+            eprintln!("[desktop-alt] reveal: show failed: {e}");
+        }
+        let _ = window.set_focus();
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reveal_desktop_alt_window(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// Build an autoreleased NSString for WKWebView background-color KVC.

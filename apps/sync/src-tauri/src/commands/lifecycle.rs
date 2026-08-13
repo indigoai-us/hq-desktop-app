@@ -135,6 +135,38 @@ pub fn get_lifecycle_state(state: State<'_, LifecycleStateHandle>) -> String {
     lifecycle_state_str(state.0).to_string()
 }
 
+/// Fresh (non-cached) setup status for UI surfaces that need to know whether
+/// the HQ tree actually exists *right now* — unlike `get_lifecycle_state`,
+/// whose verdict is resolved once at startup and cached for the process
+/// lifetime. Used by the desktop window's "Finish setting up HQ" card.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStatus {
+    pub hq_root_valid: bool,
+    pub configured: bool,
+    pub hq_folder_path: String,
+}
+
+#[tauri::command]
+pub fn get_setup_status() -> SetupStatus {
+    let menubar = paths::menubar_json_path()
+        .ok()
+        .map(|path| hq_desktop_core::first_run::read_menubar_obj(&path))
+        .unwrap_or_else(Map::new);
+    let config = crate::commands::config::read_hq_config_lenient()
+        .ok()
+        .flatten();
+    let hq_root = paths::resolve_hq_folder(
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar.get("hqPath").and_then(Value::as_str),
+    );
+    SetupStatus {
+        hq_root_valid: hq_root_valid(&hq_root),
+        configured: config.is_some(),
+        hq_folder_path: hq_root.to_string_lossy().to_string(),
+    }
+}
+
 pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {
     matches!(
         state,

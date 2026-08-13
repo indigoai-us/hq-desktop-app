@@ -109,36 +109,21 @@ describe('US-006 / US-007 / US-018: sidebar IA — legacy intent resolution (beh
   });
 });
 
-describe('US-006 / US-007: sidebar IA — landing route (behavioral)', () => {
-  it('returns last-visited company when it still exists', () => {
+describe('G1: landing route is always the conversation surface (behavioral)', () => {
+  it('ignores the persisted last-visited company — lands on Messages', () => {
     const companies = [
       workspace({ slug: 'acme', displayName: 'Acme' }),
       workspace({ slug: 'indigo', displayName: 'Indigo' }),
     ];
     expect(getDesktopLandingRoute(companies, 'indigo')).toEqual({
-      kind: 'company',
-      slug: 'indigo',
+      kind: 'messages',
     } satisfies DesktopRoute);
+    expect(getDesktopLandingRoute(companies, 'gone')).toEqual({ kind: 'messages' });
+    expect(getDesktopLandingRoute(companies, null)).toEqual({ kind: 'messages' });
   });
 
-  it('falls back to first sidebar company when last-visited is missing', () => {
-    const companies = [
-      workspace({ slug: 'zebra', displayName: 'Zebra', state: 'local-only' }),
-      workspace({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
-    ];
-    // Connected-first → Acme is first row.
-    expect(getDesktopLandingRoute(companies, 'gone')).toEqual({
-      kind: 'company',
-      slug: 'acme',
-    });
-    expect(getDesktopLandingRoute(companies, null)).toEqual({
-      kind: 'company',
-      slug: 'acme',
-    });
-  });
-
-  it('falls back to home when there are no companies', () => {
-    expect(getDesktopLandingRoute([], 'anything')).toEqual({ kind: 'home' });
+  it('lands on the Messages empty state when there are no companies', () => {
+    expect(getDesktopLandingRoute([], 'anything')).toEqual({ kind: 'messages' });
   });
 });
 

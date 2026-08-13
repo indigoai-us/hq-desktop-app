@@ -185,10 +185,14 @@ describe('US-004: Single-window activation and navigation', () => {
       expect(idx).toBeGreaterThan(-1);
       const body = src.slice(idx, idx + 2500);
       expect(body).toMatch(/get_webview_window\(WINDOW_LABEL\)/);
-      expect(body).toMatch(/window\.show\(\)/);
+      // Reuse path re-runs the full reveal (glass + show) instead of a bare
+      // show(): wry can drop the first Finished event, leaving a hidden window.
+      expect(body).toMatch(/reveal_desktop_alt_window\(&window\)/);
       expect(body).toMatch(/set_focus\(\)/);
       expect(body).toContain('desktop:navigate');
       expect(body).toContain('set_pending_route');
+      // The helper is what actually shows the existing window.
+      expect(src).toMatch(/fn reveal_desktop_alt_window[\s\S]*window\.show\(\)/);
       // Single builder path uses the fixed desktop-alt label.
       expect(body).toContain('WINDOW_LABEL');
       expect(src).toMatch(/const WINDOW_LABEL:\s*&str\s*=\s*"desktop-alt"/);

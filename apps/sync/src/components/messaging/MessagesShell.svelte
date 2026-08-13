@@ -2127,10 +2127,9 @@
           {#if selected.source === 'agent'}
             <h2>{displayLabel(selected)}</h2>
           {:else}
-            <!-- Reduced chrome (US-011): "<Name> · direct message", no tabs/email. -->
-            <h2 data-testid="dm-header-title">
-              {displayLabel(selected)} · direct message
-            </h2>
+            <!-- Reduced chrome (US-011): name + dim "direct message" subtitle. -->
+            <h2 data-testid="dm-header-title">{displayLabel(selected)}</h2>
+            <span class="pane-sub">direct message</span>
           {/if}
         </div>
       </header>
@@ -2694,30 +2693,33 @@
   }
 
   .pane-title-stack {
-    display: grid;
-    grid-template-rows: auto auto;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--v4-row-stack-gap, 3px);
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
     min-width: 0;
     flex: 1;
   }
 
   .pane-header h2 {
     margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--type-section, var(--text-section, 14px));
+    font-family: var(--font-ui, var(--font-display));
+    font-size: 15px;
     font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--fg);
+    line-height: 1.45;
+    letter-spacing: 0;
+    color: var(--t1, var(--fg));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .pane-sub {
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, var(--text-micro));
-    color: var(--muted);
+    font-family: var(--font-ui, inherit);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    color: var(--t3, var(--muted));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

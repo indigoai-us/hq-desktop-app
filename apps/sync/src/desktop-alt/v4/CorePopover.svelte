@@ -29,8 +29,9 @@
     /** Settings-backed Cloud Off flag. */
     cloudPaused?: boolean;
     /**
-     * When true (default in visual QA), inject fixture packs/update if the
-     * live sources are empty so Core always demos conflict/update/packs/paused.
+     * Visual-QA only (D-08): inject fixture conflicts/packs/update when live
+     * sources are empty. MUST stay false on real-data paths — defaulting true
+     * put a fake conflict card and a phantom "4 packs" header in production.
      */
     useFixtures?: boolean;
     /** Sync/hydration recovery card from the titlebar status model (D-04). */
@@ -73,7 +74,7 @@
     appVersion,
     conflicts = [],
     cloudPaused = false,
-    useFixtures = true,
+    useFixtures = false,
     recovery = null,
     onrecovery,
     onclose,
@@ -386,7 +387,15 @@
             {model.driftPill}
           </button>
         {:else}
-          <span class="core-pill" data-testid="core-popover-no-drift">{model.driftPill}</span>
+          <span
+            class="core-pill"
+            class:neutral={model.driftPillTone === 'neutral'}
+            data-testid={model.coreDetected
+              ? 'core-popover-no-drift'
+              : 'core-popover-core-undetected'}
+          >
+            {model.driftPill}
+          </span>
         {/if}
         {#if model.showRestore}
           <button
@@ -451,7 +460,9 @@
     </button>
     {#if packsExpanded}
       <ul class="core-pack-list" data-testid="core-popover-pack-list">
-        {#if packs.length === 0}
+        <!-- G6: body list and header count derive from the SAME source
+             (model.packs) so the count can never contradict the rows. -->
+        {#if model.packs.length === 0}
           <li class="core-pack-empty">No packs installed</li>
         {:else}
           {#each model.packs as pack (pack.name)}
@@ -716,6 +727,11 @@
 
   .core-pill.drifted {
     color: var(--warn-ink);
+  }
+
+  /* Not-detected core: neutral, never the green success ink (G6). */
+  .core-pill.neutral {
+    color: var(--t3);
   }
 
   button.core-pill:hover:not(:disabled) {

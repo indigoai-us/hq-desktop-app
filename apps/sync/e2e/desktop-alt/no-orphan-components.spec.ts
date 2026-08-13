@@ -40,9 +40,11 @@ describe('desktop-alt component-mount gate', () => {
   // - LibraryPage: US-017 mounts LibraryOverlay for route.kind === 'library';
   //   LibraryPage is retained as salvage reference (company LibraryBrowser still
   //   ships) but is no longer imported by DesktopApp.
+  // - CompanyPage: Daybook has no company dashboard. DesktopApp remaps
+  //   kind === 'company' to Messages + sidebar scope; the page stays for salvage.
   // US-018 retired V4Sidebar / InboxPage / MissionControlPage entirely — they
   // must not reappear as "intentionally unmounted" exceptions.
-  const intentionallyUnmounted = new Set(['LibraryPage']);
+  const intentionallyUnmounted = new Set(['LibraryPage', 'CompanyPage']);
   const components = mountDirs.flatMap((dir) =>
     readdirSync(join(root, dir))
       .filter((f) => f.endsWith('.svelte'))

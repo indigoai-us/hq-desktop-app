@@ -354,7 +354,7 @@ describe('MessagesShell async ownership', () => {
     flushSync();
 
     expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-      'Bob · direct message',
+      'Bob',
     );
     expect(host.textContent).toContain('Bob loaded first');
     expect(host.textContent).not.toContain('Stale Alice success');
@@ -395,7 +395,7 @@ describe('MessagesShell async ownership', () => {
       flushSync();
       expect(host.textContent).toContain('Bob is current');
     });
-    expect(titleWhileBPending).toBe('Bob · direct message');
+    expect(titleWhileBPending).toBe('Bob');
     expect(busyWhileBPending).toBe('true');
     expect(staleAlertWhileBPending).toBeNull();
     expect(host.textContent).not.toContain('Alice offline');
@@ -431,7 +431,7 @@ describe('MessagesShell async ownership', () => {
     await vi.waitFor(() => {
       flushSync();
       expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-        'Bob · direct message',
+        'Bob',
       );
     });
     expect(host.querySelector<HTMLButtonElement>('.btn-send')?.getAttribute('aria-busy')).toBe(
@@ -448,7 +448,7 @@ describe('MessagesShell async ownership', () => {
       body: 'for Alice only',
     });
     expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-      'Bob · direct message',
+      'Bob',
     );
     expect(host.textContent).not.toContain('for Alice only');
     expect(host.querySelector('[role="alert"]')).toBeNull();
@@ -479,7 +479,7 @@ describe('MessagesShell async ownership', () => {
     await vi.waitFor(() => {
       flushSync();
       expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-        'Bob · direct message',
+        'Bob',
       );
     });
 
@@ -489,7 +489,7 @@ describe('MessagesShell async ownership', () => {
     flushSync();
 
     expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-      'Bob · direct message',
+      'Bob',
     );
     expect(host.querySelector<HTMLButtonElement>('.btn-send')?.getAttribute('aria-busy')).toBe(
       'false',

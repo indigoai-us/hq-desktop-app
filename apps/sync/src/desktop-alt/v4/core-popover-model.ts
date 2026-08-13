@@ -65,8 +65,12 @@ export interface CorePopoverViewModel {
   conflictHeader: string;
   conflictCount: number;
   hqVersionLabel: string;
-  /** Uppercase pill: "NO DRIFT" or "N drifted". */
+  /** False when no local hq-core install was detected (version unreadable). */
+  coreDetected: boolean;
+  /** Uppercase pill: "NO DRIFT" / "N drifted" / "NOT CHECKED" (undetected). */
   driftPill: string;
+  /** 'ok' | 'warn' | 'neutral' — drives pill color. */
+  driftPillTone: 'ok' | 'warn' | 'neutral';
   driftCount: number;
   /** Drift count is clickable when > 0. */
   driftOpenable: boolean;
@@ -125,9 +129,38 @@ export function conflictAgoLabel(updatedAtMs?: number | null, now: number = Date
   return `${days}d ago`;
 }
 
-export function driftPillLabel(count: number): string {
+export function driftPillLabel(count: number, coreDetected: boolean = true): string {
+  // G6: "HQ core not detected" must never pair with a green NO DRIFT — an
+  // undetected core was never checked, so the pill reads neutral instead.
+  if (!coreDetected) return 'NOT CHECKED';
   const n = Math.max(0, Math.floor(count));
   return n > 0 ? `${n} drifted` : 'NO DRIFT';
+}
+
+export function driftPillTone(
+  count: number,
+  coreDetected: boolean = true,
+): 'ok' | 'warn' | 'neutral' {
+  if (!coreDetected) return 'neutral';
+  return Math.max(0, Math.floor(count)) > 0 ? 'warn' : 'ok';
+}
+
+/**
+ * Titlebar Core pill dot tone (G7): amber whenever a conflict / attention item
+ * is pending; green only when healthy.
+ */
+export function corePillDotTone(input: {
+  conflictCount?: number;
+  syncState?: string | null;
+  driftCount?: number;
+  cloudPaused?: boolean;
+}): 'ok' | 'warn' {
+  if ((input.conflictCount ?? 0) > 0) return 'warn';
+  const s = (input.syncState ?? '').toLowerCase();
+  if (s === 'conflict' || s === 'error' || s === 'auth-error') return 'warn';
+  if ((input.driftCount ?? 0) > 0) return 'warn';
+  if (input.cloudPaused) return 'warn';
+  return 'ok';
 }
 
 export function coreNeedsRestore(versionBehind: boolean, driftCount: number): boolean {
@@ -184,6 +217,7 @@ export function buildCorePopoverViewModel(input: BuildCorePopoverInput = {}): Co
 
   const core = input.core ?? null;
   const driftCount = Math.max(0, Math.floor(core?.driftCount ?? 0));
+  const coreDetected = Boolean(core?.hqVersion && core.hqVersion.trim());
   const packs = [...(input.packs ?? [])];
   const cloudPaused = Boolean(input.cloudPaused);
 
@@ -192,7 +226,9 @@ export function buildCorePopoverViewModel(input: BuildCorePopoverInput = {}): Co
     conflictHeader: conflictHeaderLabel(conflictCount, ago),
     conflictCount,
     hqVersionLabel: hqVersionLabel(core?.hqVersion),
-    driftPill: driftPillLabel(driftCount),
+    coreDetected,
+    driftPill: driftPillLabel(driftCount, coreDetected),
+    driftPillTone: driftPillTone(driftCount, coreDetected),
     driftCount,
     driftOpenable: driftCount > 0,
     showRestore: Boolean(core?.needsRestore),
