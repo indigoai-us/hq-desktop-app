@@ -206,9 +206,17 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
   // e2eTest 1 (listed): root top-level folders by default
   // -------------------------------------------------------------------------
   it('the tree is rooted at the HQ root by default and scopes on company select', () => {
-    // No company → empty root path; company → companies/<slug>.
-    expect(sidebar).toContain("activeSlug ? `companies/${activeSlug}` : ''");
+    // No company → empty root path; company → the shared workspace scope-root
+    // helper (companies/<slug>, or the HQ-root personal/ tree for the personal
+    // workspace — knowledge-path fixes).
+    expect(sidebar).toContain("activeSlug ? filesScopeRootPath(activeSlug) : ''");
     expect(sidebar).toContain('rootPath={treeRootPath}');
+    // The helper's derivation stays pinned: companies scope to their subtree,
+    // ONLY the exact personal slug maps to the HQ-root personal tree.
+    expect(lib).toContain("PERSONAL_WORKSPACE_SLUG = 'personal'");
+    expect(lib).toContain(
+      "slug === PERSONAL_WORKSPACE_SLUG ? 'personal' : `companies/${slug}`",
+    );
     // The tree loads the root level on mount, not a pre-walked company tree.
     expect(sidebar).not.toContain("get_company_file_tree");
   });
@@ -231,10 +239,11 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
     // affordance also sends null.
     expect(sidebar).toContain('row.slug === activeSlug ? null : row.slug');
     expect(sidebar).toContain('onselectcompany?.(null)');
-    // The active filter is visually indicated (scope chip) and labelled root
-    // when no filter is set.
+    // The active filter is visually indicated (scope chip showing the derived
+    // scope root — companies/<slug>, or personal/ for the personal workspace)
+    // and labelled root when no filter is set.
     expect(sidebar).toContain('fs-scope');
-    expect(sidebar).toContain('companies/{activeSlug}');
+    expect(sidebar).toContain('fs-scope-label">{treeRootPath}');
     expect(sidebar).toContain('HQ root');
   });
 
