@@ -5,6 +5,7 @@
   import { titlebarDayDate } from '../chat/sidebar-model';
   import type { HomeConflict } from './home-model';
   import CorePopover from './CorePopover.svelte';
+  import { corePillDotTone } from './core-popover-model';
   import './tokens.css';
   import '../chat/chat-tokens.css';
 
@@ -51,6 +52,8 @@
     unreadCount?: number;
     cloudPaused?: boolean;
     conflicts?: HomeConflict[];
+    /** USER-EDIT drift count from the shell's core-state scan (G7 dot tone). */
+    driftCount?: number;
     oncloudtoggle?: (paused: boolean) => void;
     onresolveconflict?: (
       path: string,
@@ -87,6 +90,7 @@
     unreadCount = 0,
     cloudPaused = false,
     conflicts = [],
+    driftCount = 0,
     onresolveconflict,
     onopenconflict,
     onopendrift,
@@ -174,6 +178,16 @@
   );
   let coreOpen = $state(false);
   let coreContainer: HTMLDivElement | null = $state(null);
+
+  /** G7: amber dot while a conflict/attention item is pending; green when healthy. */
+  const coreDotTone = $derived(
+    corePillDotTone({
+      conflictCount: Math.max(conflictCount, conflicts.length),
+      syncState,
+      driftCount,
+      cloudPaused,
+    }),
+  );
 
   function openCore(): void {
     coreOpen = !coreOpen;
@@ -284,7 +298,13 @@
         aria-label="Open Core popover"
         onclick={openCore}
       >
-        <span class="v4-core-dot" aria-hidden="true">●</span>
+        <span
+          class="v4-core-dot"
+          class:warn={coreDotTone === 'warn'}
+          data-testid="titlebar-core-dot"
+          data-tone={coreDotTone}
+          aria-hidden="true"
+        >●</span>
         Core
         <span class="v4-core-caret" aria-hidden="true">⌄</span>
       </button>
@@ -396,6 +416,12 @@
     color: var(--ok);
     font-size: 7px;
     line-height: 1;
+  }
+
+  /* Attention pending (conflicts / sync error / paused): amber, tokens
+     rgb(240,168,0) light / rgb(250,204,21) dark via --warn (G7). */
+  .v4-core-dot.warn {
+    color: var(--warn);
   }
 
   .v4-core-caret {

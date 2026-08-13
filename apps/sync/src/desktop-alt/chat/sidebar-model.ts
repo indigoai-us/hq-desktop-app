@@ -130,26 +130,26 @@ export function daySectionLabel(dayStart: number, now: number = Date.now()): str
   const bucket = startOfLocalDay(dayStart);
   const day = new Date(bucket);
 
+  const date = `${MONTHS[day.getMonth()]} ${day.getDate()}`;
   if (bucket === todayStart) {
-    return `TODAY · ${MONTHS[day.getMonth()]} ${day.getDate()}`;
+    return `TODAY · ${date}`;
   }
   if (bucket === yesterdayStart) {
-    return 'YESTERDAY';
+    return `YESTERDAY · ${date}`;
   }
-  // 2–7 days ago: weekday name.
+  // 2–7 days ago: weekday name + calendar date (Daybook `.grp .d`).
   const ageDays = Math.floor((todayStart - bucket) / 86_400_000);
   if (ageDays >= 2 && ageDays <= 7) {
-    return WEEKDAYS[day.getDay()];
+    return `${WEEKDAYS[day.getDay()]} · ${date}`;
   }
   // Older than a week: still produce a real date label if used as a section.
-  return `${MONTHS[day.getMonth()]} ${day.getDate()}`;
+  return date;
 }
 
-/** Titlebar "DAY · DATE" chrome, e.g. "TUE · AUG 12". */
+/** Titlebar "DAY · DATE" chrome, e.g. "WEDNESDAY · AUG 12". */
 export function titlebarDayDate(now: number = Date.now()): string {
   const d = new Date(now);
-  const day = WEEKDAYS[d.getDay()].slice(0, 3);
-  return `${day} · ${MONTHS[d.getMonth()]} ${d.getDate()}`;
+  return `${WEEKDAYS[d.getDay()]} · ${MONTHS[d.getMonth()]} ${d.getDate()}`;
 }
 
 // ── Normalization ────────────────────────────────────────────────────────────
@@ -177,6 +177,8 @@ export interface NormalizeOptions {
   /** Local DM activity dots (personUid set). Absent-safe. */
   dmDots?: ReadonlySet<string> | readonly string[];
   now?: number;
+  /** Local project id → title so provisioned "Project slug hash" rows read as names. */
+  projectTitles?: ReadonlyArray<{ id: string; title?: string | null; name?: string | null }>;
 }
 
 function toIdSet(value: ReadonlySet<string> | readonly string[] | undefined): Set<string> {
@@ -203,7 +205,7 @@ export function normalizeChannel(
   return {
     id,
     kind: isGroup ? 'group' : 'channel',
-    title: channelDisplayName(channel),
+    title: channelDisplayName(channel, { projectTitles: options.projectTitles }),
     companyUid:
       isGroup || channel.scope === 'personal'
         ? null
@@ -302,14 +304,45 @@ export function clearPairUnread(
   return next;
 }
 
+/**
+ * True when a contact represents an actual DM conversation (any activity
+ * timestamp, a server unread, or a local activity dot) rather than a bare
+ * directory entry. The people directory (including raw `agt_*` ids the server
+ * returns as contacts) must NOT render as sidebar conversation rows — contacts
+ * without a conversation belong only in the new-message typeahead (G3).
+ */
+export function contactHasConversation(
+  contact: DmContactInput,
+  options: NormalizeOptions = {},
+): boolean {
+  const activity = Math.max(
+    parseActivityMs(contact.lastMessageAt),
+    parseActivityMs(contact.lastActivityAt),
+    parseActivityMs(contact.lastDmAt),
+  );
+  if (activity > 0) return true;
+  if (typeof contact.unreadCount === 'number' && contact.unreadCount > 0) return true;
+  if (contact.activityDot === true) return true;
+  return toIdSet(options.dmDots).has(contact.personUid);
+}
+
 export function normalizeConversations(
   channels: Channel[],
   contacts: DmContactInput[],
-  options: NormalizeOptions = {},
+  options: NormalizeOptions & {
+    /**
+     * Include contacts with no conversation signal (typeahead / palette /
+     * people search). Default false: the sidebar shows conversations only.
+     */
+    includeContactsWithoutConversation?: boolean;
+  } = {},
 ): ConversationRow[] {
+  const dmContacts = options.includeContactsWithoutConversation
+    ? contacts
+    : contacts.filter((c) => contactHasConversation(c, options));
   const rows: ConversationRow[] = [
     ...channels.map((c) => normalizeChannel(c, options)),
-    ...contacts.map((c) => normalizeDm(c, options)),
+    ...dmContacts.map((c) => normalizeDm(c, options)),
   ];
   return rows;
 }

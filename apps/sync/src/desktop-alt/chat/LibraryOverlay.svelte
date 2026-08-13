@@ -26,7 +26,6 @@
     buildLibraryNavRows,
     filterSkillCards,
     filterWorkerCards,
-    formatNavLabel,
     overlayTabToLibraryTab,
     resolveOverlayTab,
     toMarketplaceCards,
@@ -184,9 +183,13 @@
       aria-label="Back"
       onclick={() => onback?.()}
     >
-      ← Back
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10 3.5 5.5 8 10 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      Back
     </button>
     <h1 class="lo-title" data-testid="library-overlay-title">Library</h1>
+    <span class="lo-sub">skills, workers, and packs</span>
   </header>
 
   <div class="lo-body">
@@ -200,25 +203,50 @@
           aria-current={activeTab === row.id ? 'page' : undefined}
           onclick={() => selectTab(row.id)}
         >
-          <span class="lo-nav-label">{formatNavLabel(row)}</span>
+          <span class="lo-nav-ic" aria-hidden="true">
+            {#if row.id === 'skills'}
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+              </svg>
+            {:else if row.id === 'workers'}
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="5.25" r="2.25" stroke="currentColor" stroke-width="1.3" />
+                <path d="M3.5 13c.4-2.3 2.1-3.5 4.5-3.5s4.1 1.2 4.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+              </svg>
+            {:else}
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M3 5.5 8 2.5 13 5.5v5L8 13.5 3 10.5v-5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                <path d="M8 2.5v11M3 5.5l5 3 5-3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+              </svg>
+            {/if}
+          </span>
+          <span class="lo-nav-label">{row.label}</span>
+          {#if row.count != null}
+            <span class="lo-nav-count">{row.count}</span>
+          {/if}
         </button>
       {/each}
     </nav>
 
     <div class="lo-main">
       <div class="lo-search-row">
-        <input
-          type="search"
-          class="lo-search"
-          data-testid="library-overlay-search"
-          placeholder={activeTab === 'marketplace'
-            ? 'Search packs…'
-            : activeTab === 'workers'
-              ? 'Search workers…'
-              : 'Search skills…'}
-          aria-label="Filter library"
-          bind:value={query}
-        />
+        <div class="lo-search-wrap">
+          <span class="lo-search-ic" aria-hidden="true">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <circle cx="7" cy="7" r="4.25" stroke="currentColor" stroke-width="1.3" />
+              <path d="M10.4 10.4 13.5 13.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+            </svg>
+          </span>
+          <input
+            type="search"
+            class="lo-search"
+            data-testid="library-overlay-search"
+            placeholder="Search library — files, skills, workers…"
+            aria-label="Filter library"
+            bind:value={query}
+          />
+        </div>
       </div>
 
       {#if activeTab === 'skills'}
@@ -239,6 +267,12 @@
             <div class="lo-cards" data-testid="library-skills-grid">
               {#each skillCards as card (card.key)}
                 <article class="lo-card" data-testid="library-skill-card">
+                  <span class="lo-card-ic" aria-hidden="true">
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                      <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                      <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                    </svg>
+                  </span>
                   <div class="lo-card-title">{card.name}</div>
                   <div class="lo-card-slug">{card.slug}</div>
                   <span class="lo-card-tag">{card.tag}</span>
@@ -268,6 +302,12 @@
             <div class="lo-cards" data-testid="library-workers-grid">
               {#each workerCards as card (card.key)}
                 <article class="lo-card" data-testid="library-worker-card">
+                  <span class="lo-card-ic" aria-hidden="true">
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="5.25" r="2.25" stroke="currentColor" stroke-width="1.3" />
+                      <path d="M3.5 13c.4-2.3 2.1-3.5 4.5-3.5s4.1 1.2 4.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                    </svg>
+                  </span>
                   <div class="lo-card-title">{card.name}</div>
                   <div class="lo-card-slug">{card.type}</div>
                   {#if card.team}
@@ -371,10 +411,14 @@
   }
 
   .lo-back {
-    padding: 4px 0;
-    border: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    border-radius: 8px;
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--t2, var(--v4-text-2));
     font: inherit;
     font-size: 12px;
     font-weight: 500;
@@ -382,6 +426,7 @@
     cursor: pointer;
   }
   .lo-back:hover {
+    background: var(--hover);
     color: var(--t1);
   }
   .lo-back:focus-visible {
@@ -395,6 +440,17 @@
     font-size: 15px;
     font-weight: 600;
     line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .lo-sub {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -414,6 +470,17 @@
     overflow: auto;
   }
 
+  .lo-nav-ic {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    color: var(--t3);
+  }
+  .lo-nav-row.active .lo-nav-ic {
+    color: var(--t2);
+  }
+
   .lo-nav-row {
     display: flex;
     align-items: center;
@@ -429,6 +496,20 @@
     font-weight: 400;
     text-align: left;
     cursor: pointer;
+  }
+
+  .lo-nav-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .lo-nav-count {
+    margin-left: auto;
+    color: var(--t3);
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 10px;
   }
   .lo-nav-row:hover {
     background: var(--hover);
@@ -455,28 +536,48 @@
 
   .lo-search-row {
     flex: 0 0 auto;
+    padding: 0 0 4px;
   }
 
-  .lo-search {
+  .lo-search-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     width: 100%;
-    max-width: 420px;
+    max-width: none;
     padding: 7px 10px;
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--btn-bg);
+    transition: border-color 0.12s;
+  }
+  .lo-search-wrap:hover {
+    border-color: var(--line2);
+  }
+  .lo-search-wrap:focus-within {
+    border-color: var(--border-active);
+  }
+
+  .lo-search-ic {
+    display: inline-flex;
+    color: var(--t3);
+  }
+
+  .lo-search {
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: var(--t1);
     font: 400 12px var(--font-ui);
-    transition: border-color 0.12s;
   }
   .lo-search::placeholder {
     color: var(--t3);
   }
-  .lo-search:hover {
-    border-color: var(--line2);
-  }
   .lo-search:focus {
     outline: none;
-    border-color: var(--border-active);
   }
 
   .lo-panel {
@@ -494,26 +595,34 @@
   }
 
   .lo-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-    gap: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     align-content: start;
   }
 
   .lo-card {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
     min-width: 0;
-    padding: 16px;
+    min-height: 40px;
+    padding: 10px 14px;
     border: 1px solid var(--line);
-    border-radius: 12px;
+    border-radius: 10px;
     background: var(--raised);
   }
 
   .lo-card:hover {
     background: var(--btn-bg);
     border-color: var(--line2);
+  }
+
+  .lo-card-ic {
+    display: inline-flex;
+    flex: 0 0 auto;
+    color: var(--t2);
   }
 
   .lo-card-head {
@@ -525,43 +634,38 @@
 
   .lo-card-title {
     min-width: 0;
+    flex: 1 1 auto;
     color: var(--t1);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .lo-card-slug {
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 14px;
+    display: none;
   }
 
   .lo-card-tag {
-    align-self: flex-start;
-    padding: 2px 8px;
-    border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent);
-    border-radius: 6px;
-    background: var(--btn-bg);
-    color: var(--t2);
+    margin-left: auto;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--t3);
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 10px;
-    font-weight: 500;
+    font-weight: 400;
     letter-spacing: 0.04em;
     line-height: 14px;
     text-transform: uppercase;
   }
 
   .lo-card-desc {
-    margin: 0;
-    color: var(--t2);
-    font-size: 12px;
-    line-height: 17px;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+    display: none;
   }
 
   .lo-card-meta {
