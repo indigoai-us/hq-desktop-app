@@ -45,9 +45,11 @@
     // The store is a lifetime singleton; calling start here keeps the panel
     // self-sufficient (tests / direct mount) and is idempotent.
     startSessionsStore();
+    // Perf: this tick only drives relative-time labels; 60s is plenty and
+    // quarters the $derived invalidations over the full session list.
     const tick = setInterval(() => {
       now = Date.now();
-    }, 15_000);
+    }, 60_000);
     return () => clearInterval(tick);
   });
 

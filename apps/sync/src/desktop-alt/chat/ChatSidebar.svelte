@@ -48,12 +48,14 @@
     loadConversationCache,
     loadDmDots,
     loadPins,
+    loadShowFilter,
     normalizeChannel,
     normalizeConversations,
     resolveSearchHitRow,
     saveConversationCache,
     saveDmDots,
     savePins,
+    saveShowFilter,
     scopeFromHotkey,
     scopePillLabel,
     searchCompanyUidFromScope,
@@ -136,7 +138,14 @@
     if (scopeUid) scope = scopeUid;
   });
   let sortMode = $state<SortMode>('recent');
-  let showFilter = $state<ShowFilter>('all');
+  // Defaults new/unset users to 'mine' ("My projects"); persisted choice wins.
+  let showFilter = $state<ShowFilter>(loadShowFilter(storage));
+
+  function setShowFilter(next: ShowFilter): void {
+    showFilter = next;
+    saveShowFilter(next, storage);
+    filterOpen = false;
+  }
   let personFilter = $state<string | null>(null);
 
   let lastWeekExpanded = $state(false);
@@ -876,7 +885,7 @@
           <button
             type="button"
             class="chat-icon-btn"
-            class:on={showFilter !== 'all' || personFilter != null}
+            class:on={showFilter !== 'mine' || personFilter != null}
             data-testid="chat-filter"
             aria-label="Filter conversations"
             aria-expanded={filterOpen}
@@ -918,8 +927,17 @@
               <button
                 type="button"
                 class="chat-popover-row"
+                data-testid="chat-filter-mine"
+                class:active={showFilter === 'mine'}
+                onclick={() => setShowFilter('mine')}
+              >
+                My projects
+              </button>
+              <button
+                type="button"
+                class="chat-popover-row"
                 class:active={showFilter === 'all'}
-                onclick={() => { showFilter = 'all'; filterOpen = false; }}
+                onclick={() => setShowFilter('all')}
               >
                 All
               </button>
@@ -927,7 +945,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'projects'}
-                onclick={() => { showFilter = 'projects'; filterOpen = false; }}
+                onclick={() => setShowFilter('projects')}
               >
                 Projects
               </button>
@@ -935,7 +953,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'dms'}
-                onclick={() => { showFilter = 'dms'; filterOpen = false; }}
+                onclick={() => setShowFilter('dms')}
               >
                 DMs
               </button>
@@ -947,7 +965,7 @@
                   class="chat-popover-row"
                   data-testid="chat-filter-company-projects"
                   class:active={showFilter === 'company-projects'}
-                  onclick={() => { showFilter = 'company-projects'; filterOpen = false; }}
+                  onclick={() => setShowFilter('company-projects')}
                 >
                   All company projects
                 </button>
