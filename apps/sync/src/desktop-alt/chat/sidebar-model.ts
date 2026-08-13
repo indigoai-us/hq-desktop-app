@@ -39,6 +39,11 @@ export interface ConversationRow {
   /** Underlying person uid when kind is dm. */
   personUid?: string;
   email?: string | null;
+  /**
+   * US-021: an org owner/admin browse-only row — a project channel the caller
+   * is NOT a member of, surfaced only under the "All company projects" filter.
+   */
+  browseOnly?: boolean;
 }
 
 /** Company option for the scope pill (order preserved from caller). */
@@ -50,7 +55,11 @@ export interface ScopeCompany {
 export type CompanyScope = 'all' | 'personal' | string;
 
 export type SortMode = 'recent' | 'type';
-export type ShowFilter = 'all' | 'projects' | 'dms';
+/**
+ * `company-projects` (US-021) is the org owner/admin-only view: member project
+ * channels PLUS browse-only rows for other members' project channels.
+ */
+export type ShowFilter = 'all' | 'projects' | 'dms' | 'company-projects';
 
 export interface DaySection {
   /** Stable key for {#each}. */
@@ -332,12 +341,18 @@ export function filterByShow(
   rows: ConversationRow[],
   show: ShowFilter,
 ): ConversationRow[] {
-  if (show === 'all') return rows.slice();
-  if (show === 'projects') {
+  // US-021: browse-only rows (other members' project channels, owner view)
+  // surface ONLY under 'company-projects'; every other view hides them.
+  if (show === 'company-projects') {
     return rows.filter((row) => row.kind === 'channel');
   }
+  const mine = rows.filter((row) => !row.browseOnly);
+  if (show === 'all') return mine;
+  if (show === 'projects') {
+    return mine.filter((row) => row.kind === 'channel');
+  }
   // DMs: 1:1 + group DMs
-  return rows.filter((row) => row.kind === 'dm' || row.kind === 'group');
+  return mine.filter((row) => row.kind === 'dm' || row.kind === 'group');
 }
 
 /** Filter to a single DM counterpart (personUid). */

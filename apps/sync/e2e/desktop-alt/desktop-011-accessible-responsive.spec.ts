@@ -50,7 +50,6 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
   const chatSidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
-  const secondary = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const messages = readRepoFile('src/components/messaging/MessagesShell.svelte');
   const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
   const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
@@ -136,12 +135,7 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(chatSidebar).toMatch(
       /\.chat-user-copy\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;[\s\S]*?gap:\s*2px/,
     );
-    expect(secondary).toMatch(
-      /\.v4-context\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
-    expect(secondary).toMatch(
-      /\.v4-footer\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
+    // US-020: V4SecondarySidebar retired with the secondary column.
     expect(messages).toMatch(
       /\.contact-meta\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
     );

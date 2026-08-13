@@ -12,6 +12,7 @@
   import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
   import TeamPanel from '../panels/TeamPanel.svelte';
   import {
+    DEFAULT_COMPANY_OPERATIONS_TAB,
     DEFAULT_COMPANY_TAB,
     isCompanyOperationsTab,
     type CompanyOperationsTab,
@@ -32,7 +33,7 @@
     /** Open the global Inbox (overview recent activity). */
     onopeninbox?: () => void;
     /**
-     * Switch operations internal destination (Activity / Deployments / Secrets /
+     * Switch operations internal destination (Deployments / Secrets /
      * Settings) while staying under More (DESKTOP-010).
      */
     onopenoperations?: (destination: CompanyOperationsTab) => void;
@@ -76,7 +77,7 @@
 
   /** Active operations destination when the company tab is under More. */
   const operationsDestination = $derived<CompanyOperationsTab>(
-    isCompanyOperationsTab(tab) ? tab : 'activity',
+    isCompanyOperationsTab(tab) ? tab : DEFAULT_COMPANY_OPERATIONS_TAB,
   );
 
   const connectable = $derived(company.state === 'local-only' || company.state === 'broken');
@@ -323,7 +324,7 @@
         {:else if tab === 'team'}
           <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
         {:else if isCompanyOperationsTab(tab)}
-          <!-- DESKTOP-010: Activity / Deployments / Secrets / Settings under More. -->
+          <!-- DESKTOP-010: Deployments / Secrets / Settings under More (US-020 removed Activity). -->
           <CompanyOperationsPanel
             slug={company.slug}
             {cloudBacked}

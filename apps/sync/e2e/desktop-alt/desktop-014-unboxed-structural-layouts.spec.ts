@@ -66,7 +66,6 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     'src/desktop-alt/panels/CompanyOperationsPanel.svelte',
   );
   const team = readRepoFile('src/desktop-alt/panels/TeamPanel.svelte');
-  const activity = readRepoFile('src/desktop-alt/panels/ActivityPanel.svelte');
   const statTile = readRepoFile('src/desktop-alt/components/StatTile.svelte');
   const deployments = readRepoFile(
     'src/desktop-alt/panels/DeploymentsPanel.svelte',
@@ -173,7 +172,6 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
 
   it('uses open operational sections with only header and row dividers', () => {
     for (const [source, selector, label] of [
-      [activity, '.activity-card', 'activity section'],
       [deployments, '.deployments-card', 'deployments section'],
       [secrets, '.secrets-card', 'secrets section'],
       [companyOperations, '.ops-settings-list', 'operations settings list'],
@@ -223,14 +221,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
   });
 
   it('renders summary and KPI groups as open data strips with responsive dividers', () => {
-    expectOpenStructure(statTile, '.stat-tile', 'activity summary metric');
-    expect(rule(activity, '.stats-grid')).toContain('gap: 0');
-    expect(
-      rule(activity, '.stats-grid :global(.stat-tile + .stat-tile)'),
-    ).toContain('border-left:');
-    expect(
-      rule(activity, '.stats-grid :global(.stat-tile:nth-child(n + 3))'),
-    ).toContain('border-top:');
+    expectOpenStructure(statTile, '.stat-tile', 'summary metric');
 
     expectOpenStructure(projectDetail, '.kpi-tile', 'project summary metric');
     expect(rule(projectDetail, '.kpi-strip')).toContain('gap: 0');
@@ -397,7 +388,6 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
       [agencyChat, '.tabs', 'agency conversation tabs'],
       [projectList, '.status-pills', 'project status filters'],
       [projectList, '.group-toggle', 'project grouping selector'],
-      [activity, '.direction-toggle', 'activity direction filter'],
       [popoverCss, '.seg-track', 'legacy popover selector'],
     ] as const) {
       expectOpenStructure(source, selector, label);
@@ -415,7 +405,6 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
       [agencyChat, '.tab', '.tab.active', 'agency conversation tab'],
       [projectList, '.status-pill', '.status-pill.is-active', 'project status option'],
       [projectList, '.group-segment', '.group-segment.is-active', 'project grouping option'],
-      [activity, '.direction-toggle button', '.direction-toggle button.is-active', 'activity direction option'],
       [popoverCss, '.seg', '.seg.active', 'legacy popover option'],
     ] as const) {
       const control = rule(source, selector);

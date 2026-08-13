@@ -193,3 +193,54 @@ describe('chat-tokens.css source contract', () => {
     }
   });
 });
+
+// ── US-020: single-pane Settings rides the same parity tokens ──────────────
+// The Settings page joined the chat-shell scope when it became single-pane.
+// Its in-place section index must be styled off the canonical Daybook tokens
+// (raised rows, hover fill, t1/t2/t3 ink) — not ad-hoc colors — and the page
+// must never reintroduce a second nav column.
+
+describe('US-020 settings single-pane token parity', () => {
+  const SETTINGS_SOURCE = readFileSync(
+    join(__dirname, '../../src/desktop-alt/pages/SettingsPage.svelte'),
+    'utf8',
+  );
+
+  it('opts the settings page into the chat-shell token scope', () => {
+    expect(SETTINGS_SOURCE).toContain("import '../chat/chat-tokens.css'");
+    expect(SETTINGS_SOURCE).toContain('class="settings-page chat-shell"');
+  });
+
+  it('styles the section index rows with the canonical tokens', () => {
+    const style = SETTINGS_SOURCE.split('<style>')[1] ?? '';
+    const indexRow = block('.settings-index-row {', style);
+    expect(indexRow).toContain('background: var(--raised);');
+    expect(indexRow).toContain('color: var(--t1);');
+    const hover = block('.settings-index-row:hover {', style);
+    expect(hover).toContain('background: var(--hover);');
+    const chevron = block('.settings-index-chevron {', style);
+    expect(chevron).toContain('color: var(--t3);');
+    const back = block('.settings-back {', style);
+    expect(back).toContain('color: var(--t2);');
+  });
+
+  it('renders one pane: in-place index + one visible section, no side column', () => {
+    // The index is a vertical flex list, not a grid with a nav column.
+    const index = block('.settings-index {', SETTINGS_SOURCE.split('<style>')[1] ?? '');
+    expect(index).toContain('flex-direction: column;');
+    expect(SETTINGS_SOURCE).not.toContain('grid-template-columns: 180px');
+    // Every section is gated on the single active tab.
+    for (const id of [
+      'sync',
+      'notifications',
+      'widget',
+      'updates',
+      'general',
+      'appearance',
+      'meetings',
+    ]) {
+      expect(SETTINGS_SOURCE).toContain(`hidden={activeTab !== '${id}'}`);
+    }
+    expect(SETTINGS_SOURCE).toContain('data-testid="settings-back"');
+  });
+});

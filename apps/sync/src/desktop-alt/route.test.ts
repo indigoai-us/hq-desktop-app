@@ -118,7 +118,6 @@ describe('US-002 V4 desktop routes', () => {
       'workers',
       'knowledge',
       'team',
-      'activity',
       'deployments',
       'secrets',
       'settings',
@@ -294,7 +293,9 @@ describe('US-002 / US-018 pending-route aliases (desktop_alt_consume_pending_rou
       ['company:indigo:accounts', { kind: 'company', slug: 'indigo', tab: 'overview' }],
       ['company:indigo:tasks', { kind: 'company', slug: 'indigo', tab: 'projects' }],
       ['company:indigo:library', { kind: 'company', slug: 'indigo', tab: 'skills' }],
-      ['company:indigo:more', { kind: 'company', slug: 'indigo', tab: 'activity' }],
+      ['company:indigo:more', { kind: 'company', slug: 'indigo', tab: 'deployments' }],
+      // US-020: the Activity page is gone — legacy links land on Overview.
+      ['company:indigo:activity', { kind: 'company', slug: 'indigo', tab: 'overview' }],
     ];
     for (const [name, expected] of legacyLive) {
       expect(resolvePendingDesktopRoute(name), name).toEqual(expected);
@@ -342,7 +343,7 @@ describe('US-002 / US-018 V4Route payload narrowing', () => {
       kind: 'company',
       slug: 'indigo',
     });
-    // DESKTOP-001: primary child clicks carry a tab; More aliases to activity.
+    // DESKTOP-001: primary child clicks carry a tab; More aliases to deployments (US-020).
     expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'projects' })).toEqual({
       kind: 'company',
       slug: 'indigo',
@@ -351,7 +352,13 @@ describe('US-002 / US-018 V4Route payload narrowing', () => {
     expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'more' })).toEqual({
       kind: 'company',
       slug: 'indigo',
-      tab: 'activity',
+      tab: 'deployments',
+    });
+    // US-020: legacy activity tab remaps to Overview (digest lives there).
+    expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'activity' })).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'overview',
     });
     expect(fromV4Route({ kind: 'settings' })).toEqual({ kind: 'settings' });
     expect(fromV4Route({ kind: 'library' })).toEqual({ kind: 'library' });
@@ -396,12 +403,11 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
       'more',
     ]);
     expect(companyPrimarySectionForTab('overview')).toBe('overview');
-    expect(companyPrimarySectionForTab('activity')).toBe('more');
     expect(companyPrimarySectionForTab('deployments')).toBe('more');
     expect(companyPrimarySectionForTab('secrets')).toBe('more');
     expect(companyPrimarySectionForTab('skills')).toBe('skills');
     expect(companyPrimarySectionForTab('workers')).toBe('workers');
-    expect(companyTabForPrimarySection('more')).toBe('activity');
+    expect(companyTabForPrimarySection('more')).toBe('deployments');
     expect(companyTabForPrimarySection('skills')).toBe('skills');
     expect(companyTabForPrimarySection('workers')).toBe('workers');
     expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
@@ -430,15 +436,23 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     ).toBeNull();
   });
 
-  it('shows the generally available settings sections and a version meta', () => {
-    const model = getDesktopSecondarySidebar({ kind: 'settings' }, companies, {
-      version: '1.2.3',
-    });
-    expect(model?.surface).toBe('settings');
-    expect(model?.meta).toBe('HQ v1.2.3');
-    expect(model?.items.map((item) => item.id)).toEqual(SETTINGS_SECTIONS.map((s) => s.id));
-    expect(model?.items.find((item) => item.id === 'meetings')?.note).toBeNull();
-    expect(model?.activeId).toBe('sync');
+  it('US-020: settings never renders a secondary sidebar (single pane)', () => {
+    expect(
+      getDesktopSecondarySidebar({ kind: 'settings' }, companies, { version: '1.2.3' }),
+    ).toBeNull();
+    expect(
+      getDesktopSecondarySidebar({ kind: 'settings', tab: 'general' }, companies),
+    ).toBeNull();
+    // The section index survives as the in-page single-pane list + ⌘K entries.
+    expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual([
+      'sync',
+      'notifications',
+      'widget',
+      'updates',
+      'general',
+      'appearance',
+      'meetings',
+    ]);
   });
 
   it('has no secondary sidebar on full-width global surfaces', () => {

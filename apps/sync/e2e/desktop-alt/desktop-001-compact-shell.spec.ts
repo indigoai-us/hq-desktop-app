@@ -153,7 +153,6 @@ describe('DESKTOP-001: compact native shell', () => {
   });
 
   it('operational tabs light More while Skills and Workers light visible primary children', () => {
-    expect(v4CompanyPrimaryForTab('activity')).toBe('more');
     expect(v4CompanyPrimaryForTab('deployments')).toBe('more');
     expect(v4CompanyPrimaryForTab('secrets')).toBe('more');
     expect(v4CompanyPrimaryForTab('settings')).toBe('more');
@@ -163,7 +162,7 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(companyPrimarySectionForTab('settings')).toBe('more');
     expect(companyPrimarySectionForTab('skills')).toBe('skills');
     expect(companyPrimarySectionForTab('workers')).toBe('workers');
-    expect(companyTabForPrimarySection('more')).toBe('activity');
+    expect(companyTabForPrimarySection('more')).toBe('deployments');
 
     const rows = sortV4CompaniesConnectedFirst(companies, 'indigo', 'more');
     expect(
@@ -174,7 +173,6 @@ describe('DESKTOP-001: compact native shell', () => {
     for (const tab of [
       'skills',
       'workers',
-      'activity',
       'deployments',
       'secrets',
       'settings',
@@ -189,7 +187,13 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'more' })).toEqual({
       kind: 'company',
       slug: 'indigo',
-      tab: 'activity',
+      tab: 'deployments',
+    });
+    // US-020: the Activity page is gone — its deep link lands on Overview.
+    expect(resolvePendingDesktopRoute('company:indigo:activity')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'overview',
     });
   });
 
@@ -197,7 +201,8 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies)).toBeNull();
     // US-017: library is a full-screen overlay — no permanent secondary column.
     expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).toBeNull();
-    expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)?.surface).toBe('settings');
+    // US-020: settings is single-pane — no secondary sidebar anywhere.
+    expect(getDesktopSecondarySidebar({ kind: 'settings' }, companies)).toBeNull();
   });
 
   it('DesktopApp composes compact shell: titlebar controls, no status bar, no company secondary', () => {
@@ -218,9 +223,9 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(app).not.toContain('<V4Sidebar');
     expect(app).not.toContain('<DesktopStatusBar');
     expect(app).not.toContain("import DesktopStatusBar");
-    // Secondary remains for library/settings only.
-    expect(app).toContain('{#if secondarySidebar}');
-    expect(app).toContain('<V4SecondarySidebar');
+    // US-020: no secondary sidebar mounts at all.
+    expect(app).not.toContain('secondarySidebar');
+    expect(app).not.toContain('V4SecondarySidebar');
 
     expect(css).toContain('/* DESKTOP-001: titlebar + body only — bottom status bar grid row removed. */');
     // Shell grid is titlebar + body only (no status-bar row).

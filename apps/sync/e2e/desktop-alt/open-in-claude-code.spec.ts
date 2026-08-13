@@ -12,13 +12,13 @@ import { readRepoFile } from './harness';
  *      command — it does NOT reimplement link building, and does NOT widen to
  *      plugin-shell open().
  *   2. The US-008 StoryDetailPanel files section wires that affordance per file.
- *   3. ActivityPanel recent entries become a clickable drill-in over the file
- *      the entry already carries (no invented fields).
+ *   3. (US-020 removed ActivityPanel — its recent-file drill-in retired with
+ *      the Activity page; the Overview digest owns activity display now.)
  *   4. The drill-in affordances (hover / pointer cursor / focus-visible ring)
  *      are consistent with the board + deployments rows, and stay token-driven.
  */
 
-describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => {
+describe('desktop-alt open-in-Claude-Code drill-ins (US-012)', () => {
   const affordance = readRepoFile(
     'src/desktop-alt/components/OpenFileInClaudeCode.svelte',
   );
@@ -27,7 +27,6 @@ describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => 
   const panel = readRepoFile(
     'src/desktop-alt/components/StoryDetailPanel.svelte',
   );
-  const activity = readRepoFile('src/desktop-alt/panels/ActivityPanel.svelte');
 
   it('preflights Claude deep links against HQ root + hook health before dispatch', () => {
     expect(appRs).toContain('preflight_claude_code_url');
@@ -83,21 +82,6 @@ describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => 
     expect(panel).toContain("invoke<{ hqFolderPath?: string }>('get_config')");
   });
 
-  it('makes activity entries a clickable drill-in over the file they already carry', () => {
-    expect(activity).toContain(
-      "import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte'",
-    );
-    expect(activity).toContain('data-testid="activity-row"');
-    // Drill-in uses ONLY the file the entry data already carries — no invented
-    // fields (the ActivityEntry shape is who/what/file/when).
-    expect(activity).toContain('file={entry.file}');
-    expect(activity).toContain('folder={hqFolderPath}');
-    // Guarded behind a real file name (normalizer falls back to "Untitled file").
-    expect(activity).toContain("entry.file !== 'Untitled file'");
-    // No fabricated activity fields leaked into the drill-in.
-    expect(activity).not.toMatch(/entry\.(path|url|repo|sha|commit|line)\b/);
-  });
-
   it('gives both surfaces consistent drill-in affordances (cursor, hover, focus ring)', () => {
     const affordanceStyle = affordance.split('<style>')[1] ?? '';
     expect(affordanceStyle).toContain('cursor: pointer');
@@ -105,18 +89,14 @@ describe('desktop-alt open-in-Claude-Code + activity drill-ins (US-012)', () => 
     expect(affordanceStyle).toContain('.open-claude-btn:focus-visible');
     expect(affordanceStyle).toContain('outline: 2px solid var(--blue)');
 
-    // Story files row + activity row both reveal the affordance on hover/focus.
+    // Story files row reveals the affordance on hover/focus.
     const panelStyle = panel.split('<style>')[1] ?? '';
     expect(panelStyle).toContain('.file-item:hover');
     expect(panelStyle).toContain(':focus-visible)');
-
-    const activityStyle = activity.split('<style>')[1] ?? '';
-    expect(activityStyle).toContain('.recent-row:hover :global(.open-claude-btn)');
-    expect(activityStyle).toContain(':focus-visible)');
   });
 
   it('keeps every US-012 surface token-driven (no hardcoded hex)', () => {
-    for (const src of [affordance, panel, activity]) {
+    for (const src of [affordance, panel]) {
       const styleBlock = src.split('<style>')[1] ?? '';
       expect(styleBlock).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     }

@@ -144,7 +144,9 @@ describe('desktop meetings + library overlay (US-017)', () => {
     expect(desktopApp).toContain('routeBeforeLibrary');
     expect(desktopApp).not.toContain("import LibraryPage from './pages/LibraryPage.svelte'");
     expect(route).toContain("'library'");
-    expect(route).toMatch(/if \(route\.kind === 'library'\) \{\s*return null;/);
+    // US-020: getDesktopSecondarySidebar is a constant-null invariant now
+    // (settings became single-pane), so the library branch is gone with it.
+    expect(route).toContain('return null;');
   });
 
   it('Library overlay exposes back, nav tabs, search, marketplace badges', () => {
