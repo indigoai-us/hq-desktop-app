@@ -3657,6 +3657,33 @@ mod tests {
     }
 
     #[test]
+    fn prefix_company_resolution_error_is_idempotent() {
+        // The prefix is now applied inside the shared `resolve_company_uid`
+        // wrapper that every desktop-alt company command uses (board, activity,
+        // secrets, CRM projection, creators, team telemetry). If a caller ever
+        // re-applies it on top, an already-prefixed error must pass through
+        // unchanged — never `COMPANY_NOT_FOUND: COMPANY_NOT_FOUND: …`.
+        let once =
+            super::prefix_company_resolution_error("company 'acme' was not found".to_string());
+        assert_eq!(super::classify_company_resolution_error(&once), None);
+        assert_eq!(super::prefix_company_resolution_error(once.clone()), once);
+
+        let synced = super::prefix_company_resolution_error(
+            "company 'acme' is not synced: manifest cloud_uid cmp_old not found in your cloud memberships"
+                .to_string(),
+        );
+        assert_eq!(super::prefix_company_resolution_error(synced.clone()), synced);
+
+        let connected = super::prefix_company_resolution_error(
+            "company 'cloud' is not connected to cloud".to_string(),
+        );
+        assert_eq!(
+            super::prefix_company_resolution_error(connected.clone()),
+            connected
+        );
+    }
+
+    #[test]
     fn company_board_maps_live_projects_into_columns() {
         let board = super::parse_board_response(
             reqwest::StatusCode::OK,

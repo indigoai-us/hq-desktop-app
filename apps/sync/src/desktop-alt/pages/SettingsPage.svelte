@@ -33,6 +33,7 @@
     requestDesktopZoom,
   } from '../../lib/desktopZoom';
   import { isMac } from '../lib/platform';
+  import { presentPanelError } from '../lib/panel-error';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
 
@@ -628,7 +629,10 @@
       availableChannels = (Array.isArray(channels) ? channels : []).filter(isChannel);
       settingsReady = true;
     } catch (err) {
-      if (generation === settingsLoadGeneration) error = String(err);
+      // Raw diagnostic goes to the console only — the page line stays calm.
+      console.error('settings load failed:', err);
+      if (generation === settingsLoadGeneration)
+        error = presentPanelError(err, { surface: 'settings' }).message;
     } finally {
       settingsLoadsInFlight -= 1;
       if (generation === settingsLoadGeneration) loading = false;
@@ -709,7 +713,11 @@
         await saveSettings({ hqPath });
       }
     } catch (err) {
-      error = String(err);
+      console.error('pick_folder failed:', err);
+      error = presentPanelError(err, {
+        surface: 'settings',
+        fallback: 'Couldn’t open the folder picker — try again',
+      }).message;
     } finally {
       hqFolderChanging = false;
     }
@@ -724,7 +732,11 @@
     try {
       await invoke('open_meeting_permissions_window');
     } catch (err) {
-      error = String(err);
+      console.error('open_meeting_permissions_window failed:', err);
+      error = presentPanelError(err, {
+        surface: 'settings',
+        fallback: 'Couldn’t open the permissions window — try again',
+      }).message;
     } finally {
       meetingPermissionsOpening = false;
     }

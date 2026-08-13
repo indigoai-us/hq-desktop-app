@@ -12,41 +12,20 @@
  * console logging only — it must never be the primary card line.
  */
 
-export interface BoardErrorPresentation {
-  /** Calm, user-facing message for the primary card line. */
-  message: string;
-  /** Raw diagnostic for console logging / a details affordance — never the card line. */
-  detail: string;
-  /** True when the failure is an expired/invalid session (route to sign-in). */
-  authRequired: boolean;
-}
+import { presentPanelError, type PanelErrorPresentation } from './panel-error';
 
-const CODE_MESSAGES: ReadonlyArray<[prefix: string, message: string]> = [
-  ['AUTH_REQUIRED:', 'Session expired — sign in again'],
-  ['COMPANY_NOT_CONNECTED:', "This company isn't connected to cloud yet"],
-  [
-    'COMPANY_NOT_SYNCED:',
-    'This company needs to be reconnected — open the menubar and sync',
-  ],
-  [
-    'COMPANY_NOT_FOUND:',
-    "This company isn't available on this device yet — run a sync to pull it",
-  ],
-];
-
-const FALLBACK_MESSAGE = 'The board could not refresh — try again after a sync';
+export type BoardErrorPresentation = PanelErrorPresentation;
 
 /**
  * Map a raw `get_company_board` rejection (any shape — Tauri rejections are
- * stringified) to its calm presentation. Unknown errors fall back to a generic
- * retry message with the raw text preserved in `detail`.
+ * stringified) to its calm presentation. Thin delegation to the shared
+ * `presentPanelError` (panel-error.ts) with the board's established fallback
+ * line. Unknown errors fall back to that generic retry message with the raw
+ * text preserved in `detail`.
  */
 export function presentBoardError(raw: unknown): BoardErrorPresentation {
-  const detail = String(raw ?? '').trim();
-  for (const [prefix, message] of CODE_MESSAGES) {
-    if (detail.startsWith(prefix)) {
-      return { message, detail, authRequired: prefix === 'AUTH_REQUIRED:' };
-    }
-  }
-  return { message: FALLBACK_MESSAGE, detail, authRequired: false };
+  return presentPanelError(raw, {
+    surface: 'the board',
+    fallback: 'The board could not refresh — try again after a sync',
+  });
 }

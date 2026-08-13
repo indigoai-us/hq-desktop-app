@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { openAgentWorkflow } from '../lib/agent-workflow';
   import { companyStore } from '../lib/company-store.svelte';
+  import { presentPanelError } from '../lib/panel-error';
   import DeploymentRow, {
     type DeploymentEntry,
     type DeploymentState,
@@ -65,9 +66,10 @@
         }
       })
       .catch((err) => {
+        // Raw diagnostic goes to the console only — the panel line stays calm.
         console.error('get_company_deployments failed:', err);
         if (!cancelled) {
-          error = String(err);
+          error = presentPanelError(err, { surface: 'deployments' }).message;
           if (companyStore.deployments(slug) === null) deployments = [];
         }
       })
