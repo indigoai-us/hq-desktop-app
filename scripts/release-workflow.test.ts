@@ -125,17 +125,31 @@ describe("release workflow channel contract", () => {
     expect(clientClassifier).toContain('pre_ids[1].parse::<u64>()');
   });
 
-  it("requires the exact tag commit to be merged into main", () => {
+  it("requires stable on main and rejects alpha/beta prereleases on main", () => {
     const validate = jobBody("validate");
 
+    // Shared ancestry probe: is the tag commit contained in origin/main?
     expect(validate).toContain(
       'git -C "$GITHUB_WORKSPACE" fetch --no-tags origin',
     );
     expect(validate).toContain(
       '"${TAG}^{commit}" refs/remotes/origin/main',
     );
+
+    // The branch rule splits by channel, keyed off the classified prerelease
+    // flag: stable must ship from main; alpha/beta must NOT be on main.
+    expect(validate).toContain('if [ "$PRERELEASE" = "true" ]; then');
     expect(validate).toContain(
-      "Release tag $TAG is not contained in origin/main",
+      "Stable release tag $TAG is not contained in origin/main",
+    );
+    expect(validate).toContain(
+      "alpha and beta releases may only be cut from non-main branches",
+    );
+
+    // The check runs only on a fresh tag push. A workflow_dispatch retry of an
+    // existing, immutable tag must not be re-gated by the branch policy.
+    expect(validate).toMatch(
+      /- name: Enforce release branch policy\n {8}if: \$\{\{ github\.event_name == 'push' \}\}/,
     );
   });
 
@@ -217,13 +231,16 @@ describe("release workflow channel contract", () => {
     }
   });
 
-  it("syncs the released version back to main after publishing", () => {
+  it("syncs the released version back to main only for stable releases", () => {
     const sync = jobBody("sync-version");
 
     // Runs only after a successful publish, so a branch it cannot push never
     // blocks or masks a shipped release.
     expect(sync).toContain("needs: [validate, publish]");
     expect(sync).toContain("needs.publish.result == 'success'");
+    // alpha/beta prereleases are cut from non-main branches, so their version
+    // is never stamped onto main — sync-back is gated to stable releases only.
+    expect(sync).toContain("needs.validate.outputs.prerelease != 'true'");
     expect(sync).toContain("ref: main");
 
     // main is protected with no role bypass, and GitHub will not accept the
