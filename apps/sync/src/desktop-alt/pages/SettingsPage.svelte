@@ -5,7 +5,7 @@
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
-  import { formatHqFolderMeta, type SettingsTab } from '../route';
+  import { formatHqFolderMeta, SETTINGS_SECTIONS, type SettingsTab } from '../route';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
@@ -36,10 +36,24 @@
   import { presentPanelError } from '../lib/panel-error';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
+  import '../chat/chat-tokens.css';
 
-  // The secondary sidebar drives which section is in view; this page renders all
-  // sections in one scroll and reacts to `activeTab` by scrolling it into view.
-  let { activeTab = 'sync' }: { activeTab?: SettingsTab } = $props();
+  // US-020 single-pane Settings: no second nav column, one section at a time.
+  // `activeTab === null` renders the in-place section index; a SettingsTab
+  // renders only that section with a Back affordance. Navigation goes through
+  // `onnavigate` so the shell route (`settings` / `settings:<tab>`) stays the
+  // source of truth for deep links and ⌘K.
+  let {
+    activeTab = null,
+    onnavigate,
+  }: {
+    activeTab?: SettingsTab | null;
+    onnavigate?: (tab: SettingsTab | null) => void;
+  } = $props();
+
+  const activeSection = $derived(
+    SETTINGS_SECTIONS.find((section) => section.id === activeTab) ?? null,
+  );
 
   // Evaluated once: the host OS cannot change while the window is open.
   const isMacOS = isMac();
@@ -548,22 +562,6 @@
       if (coreLogOpenTimeout) clearTimeout(coreLogOpenTimeout);
       if (savedTimeout) clearTimeout(savedTimeout);
     };
-  });
-
-  // Scroll the active section into view when the sidebar selection changes (and
-  // once sections first render after load). No-op for the default top section.
-  $effect(() => {
-    const id = activeTab;
-    if (loading) return;
-    const target = document.getElementById(id);
-    const scroller = target?.closest<HTMLElement>('.desktop-main-scroll');
-    if (!target || !scroller) return;
-    const top =
-      target.getBoundingClientRect().top -
-      scroller.getBoundingClientRect().top +
-      scroller.scrollTop -
-      12;
-    scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
   });
 
   function applyPersistedSettings(
@@ -1615,12 +1613,29 @@
   });
 </script>
 
-<section class="settings-page" aria-labelledby="settings-title" aria-busy={loading}>
+<section
+  class="settings-page chat-shell"
+  aria-labelledby="settings-title"
+  aria-busy={loading}
+  data-testid="settings-single-pane"
+>
   <main class="settings-main">
     <header class="page-header">
       <div>
-        <p>{saved ? 'Saved' : 'menubar.json'}</p>
-        <h1 id="settings-title">Settings</h1>
+        {#if activeSection}
+          <button
+            type="button"
+            class="settings-back"
+            data-testid="settings-back"
+            onclick={() => onnavigate?.(null)}
+          >
+            &lsaquo; Settings
+          </button>
+          <h1 id="settings-title">{activeSection.label}</h1>
+        {:else}
+          <p>{saved ? 'Saved' : 'menubar.json'}</p>
+          <h1 id="settings-title">Settings</h1>
+        {/if}
       </div>
     </header>
 
@@ -1638,8 +1653,27 @@
       </div>
     {/if}
 
+    {#if !activeSection}
+      <!-- US-020: single-pane section index — navigates in place, never a
+           second sidebar column. -->
+      <nav class="settings-index" aria-label="Settings sections" data-testid="settings-index">
+        {#each SETTINGS_SECTIONS as section (section.id)}
+          <button
+            type="button"
+            class="settings-index-row"
+            data-testid="settings-index-row"
+            data-section={section.id}
+            onclick={() => onnavigate?.(section.id)}
+          >
+            <span class="settings-index-label">{section.label}</span>
+            <span class="settings-index-chevron" aria-hidden="true">&rsaquo;</span>
+          </button>
+        {/each}
+      </nav>
+    {/if}
+
     <fieldset class="settings-controls" disabled={!settingsReady}>
-    <section id="sync" class="settings-section">
+    <section id="sync" class="settings-section" hidden={activeTab !== 'sync'}>
       <h2>Sync</h2>
       <div class="settings-card">
         <div class="setting-row">
@@ -1717,7 +1751,7 @@
       </div>
     </section>
 
-    <section id="notifications" class="settings-section">
+    <section id="notifications" class="settings-section" hidden={activeTab !== 'notifications'}>
       <h2>Notifications</h2>
       <div class="settings-card">
         <label class="setting-row">
@@ -1799,14 +1833,14 @@
       </div>
     </section>
 
-    <section id="widget" class="settings-section">
+    <section id="widget" class="settings-section" hidden={activeTab !== 'widget'}>
       <h2>Widget</h2>
       <div class="settings-card">
         <WidgetSettings showLoadError={false} />
       </div>
     </section>
 
-    <section id="updates" class="settings-section">
+    <section id="updates" class="settings-section" hidden={activeTab !== 'updates'}>
       <h2>Updates</h2>
       <div class="settings-card">
         <!-- Master automatic-updates switch (default ON). One toggle governs
@@ -2105,7 +2139,7 @@
       {/if}
     </section>
 
-    <section id="general" class="settings-section">
+    <section id="general" class="settings-section" hidden={activeTab !== 'general'}>
       <h2>General</h2>
       <div class="settings-card">
         <label class="setting-row">
@@ -2241,7 +2275,7 @@
     </section>
     </fieldset>
 
-    <section id="appearance" class="settings-section" data-testid="settings-appearance">
+    <section id="appearance" class="settings-section" hidden={activeTab !== 'appearance'} data-testid="settings-appearance">
       <h2>Appearance</h2>
       <div class="settings-card">
         <div class="setting-row appearance-row">
@@ -2314,7 +2348,7 @@
     </section>
 
     <fieldset class="settings-controls" disabled={!settingsReady}>
-    <section id="meetings" class="settings-section">
+    <section id="meetings" class="settings-section" hidden={activeTab !== 'meetings'}>
       <h2>Meetings</h2>
       <div class="settings-card">
         <label class="setting-row" class:gated-row={!meetingsEnabled}>
@@ -2422,6 +2456,64 @@
     font-family: var(--font-sans);
   }
 
+  /* ── US-020 single-pane section index — parity-token styling ─────────── */
+  .settings-index {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .settings-index-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--raised);
+    color: var(--t1);
+    font-family: inherit;
+    font-size: var(--text-base);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .settings-index-row:hover {
+    background: var(--hover);
+  }
+
+  .settings-index-row + .settings-index-row {
+    margin-top: 4px;
+  }
+
+  .settings-index-label {
+    font-weight: 500;
+  }
+
+  .settings-index-chevron {
+    color: var(--t3);
+    font-size: var(--text-base);
+    line-height: 1;
+  }
+
+  .settings-back {
+    margin: 0 0 2px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--t2);
+    font-family: inherit;
+    font-size: var(--text-base);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .settings-back:hover {
+    color: var(--t1);
+  }
+
   .settings-controls {
     display: grid;
     gap: var(--v4-space-5);
@@ -2463,6 +2555,24 @@
     display: grid;
     gap: 8px;
     scroll-margin-top: 12px;
+  }
+
+  /* US-020 single pane: `display: grid` above would defeat the `hidden`
+     attribute (author styles beat the UA [hidden] rule), so re-assert it —
+     exactly one section may be visible at a time. */
+  .settings-section[hidden] {
+    display: none;
+  }
+
+  /* The page h1 already names the open section — the in-section h2 would
+     read twice in the single pane. Kept in the DOM for structure/AT. */
+  .settings-section > h2 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .settings-card {

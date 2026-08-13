@@ -64,7 +64,6 @@
     getDesktopHotkeyRoute,
     getDesktopLandingRoute,
     getDesktopRouteKey,
-    getDesktopSecondarySidebar,
     resolvePendingDesktopRoute,
     type CompanyTab,
     type DesktopRoute,
@@ -103,7 +102,6 @@
   import type { Channel } from '../lib/channels';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
-  import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
   import V4TitleBar from './v4/V4TitleBar.svelte';
   import CommandPalette, {
     type CommandPaletteItem,
@@ -339,7 +337,7 @@
     route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
   );
   const polledCompanyResource = $derived<CompanyResource | null>(
-    companyTab === 'activity' || companyTab === 'deployments' || companyTab === 'secrets'
+    companyTab === 'deployments' || companyTab === 'secrets'
       ? companyTab
       : companyTab === 'overview'
         ? 'summary'
@@ -399,14 +397,6 @@
     }
     route = { kind: 'files' };
   });
-  // Secondary (contextual) sidebar — Library / Settings only (DESKTOP-001
-  // removed the permanent company secondary column). Null hides the column.
-  const secondarySidebar = $derived(
-    getDesktopSecondarySidebar(route, shellCompanies, {
-      version: __APP_VERSION__,
-      hqFolderPath,
-    }),
-  );
   const effectiveTotalFiles = $derived(
     computeEffectiveTotalFiles({
       planReceived: syncPlanReceived,
@@ -1214,27 +1204,6 @@
     }
   }
 
-  // Secondary-sidebar row selection — the id is the section/tab for the
-  // current contextual surface (company / library / settings).
-  function handleSecondarySelect(id: string) {
-    if (route.kind === 'company') {
-      navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab });
-    } else if (route.kind === 'library') {
-      openLibrary({ kind: 'library', tab: id as LibraryTab });
-    } else if (route.kind === 'settings') {
-      // The Settings page renders all sections in one scroll; the secondary
-      // rows are a section index. Setting the tab drives both the active-row
-      // highlight and SettingsPage's scroll-into-view (US-013).
-      navigate({ kind: 'settings', tab: id as SettingsTab });
-    }
-  }
-
-  function handleSecondaryFooter() {
-    if (secondarySidebar?.surface === 'library') {
-      openLibrary({ kind: 'library', tab: 'submit' });
-    }
-  }
-
   function handleOpenSettings(tab?: SettingsTab) {
     navigate({ kind: 'settings', tab });
   }
@@ -1895,19 +1864,6 @@
       {/if}
     {/if}
 
-    {#if secondarySidebar}
-      <V4SecondarySidebar
-        header={secondarySidebar.header}
-        headerTone={secondarySidebar.headerTone}
-        meta={secondarySidebar.meta}
-        items={secondarySidebar.items}
-        activeId={secondarySidebar.activeId}
-        footer={secondarySidebar.footer}
-        onselect={handleSecondarySelect}
-        onfooterselect={handleSecondaryFooter}
-      />
-    {/if}
-
     <div class="desktop-content" aria-busy={navigationPending}>
       <div class="route-progress" class:active={navigationPending} aria-hidden="true">
         <span></span>
@@ -1980,7 +1936,10 @@
             </div>
           {:else if route.kind === 'settings'}
             <div class="page">
-              <SettingsPage activeTab={route.tab ?? 'sync'} />
+              <SettingsPage
+                activeTab={route.kind === 'settings' ? route.tab ?? null : null}
+                onnavigate={(tab) => navigate(tab ? { kind: 'settings', tab } : { kind: 'settings' })}
+              />
             </div>
           {:else if route.kind === 'notifications'}
             <div class="page">
