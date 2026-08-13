@@ -6,9 +6,10 @@
 
   interface Props {
     model: SystemEventLineModel;
+    who?: string | null;
   }
 
-  let { model }: Props = $props();
+  let { model, who = null }: Props = $props();
 </script>
 
 <div class="sys-line" data-testid="system-event-line" data-system-type={model.type} role="status">
@@ -39,6 +40,9 @@
       </svg>
     {/if}
   </span>
+  {#if who}
+    <span class="sys-who">{who}</span>
+  {/if}
   <span class="sys-title">{model.title}</span>
   {#if model.summary}
     <span class="sys-summary">· {model.summary}</span>
@@ -53,8 +57,10 @@
     gap: 12px;
     width: 100%;
     max-width: 100%;
-    margin: 2px 0;
-    padding: 0 20px 0 24px;
+    box-sizing: border-box;
+    min-height: 16px;
+    margin: 6px 0;
+    padding: 0;
     color: var(--t3, var(--muted, var(--pop-muted)));
     font-size: 11px;
     line-height: 1.45;
@@ -71,8 +77,13 @@
     opacity: 0.7;
   }
 
-  .sys-title {
+  .sys-who {
     font-weight: 500;
+    color: var(--t3, var(--muted-2, var(--pop-muted)));
+  }
+
+  .sys-title {
+    font-weight: 400;
     color: var(--t3, var(--muted-2, var(--pop-muted)));
   }
 

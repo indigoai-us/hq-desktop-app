@@ -177,6 +177,8 @@ export interface NormalizeOptions {
   /** Local DM activity dots (personUid set). Absent-safe. */
   dmDots?: ReadonlySet<string> | readonly string[];
   now?: number;
+  /** Local project id → title so provisioned "Project slug hash" rows read as names. */
+  projectTitles?: ReadonlyArray<{ id: string; title?: string | null; name?: string | null }>;
 }
 
 function toIdSet(value: ReadonlySet<string> | readonly string[] | undefined): Set<string> {
@@ -203,7 +205,7 @@ export function normalizeChannel(
   return {
     id,
     kind: isGroup ? 'group' : 'channel',
-    title: channelDisplayName(channel),
+    title: channelDisplayName(channel, { projectTitles: options.projectTitles }),
     companyUid:
       isGroup || channel.scope === 'personal'
         ? null

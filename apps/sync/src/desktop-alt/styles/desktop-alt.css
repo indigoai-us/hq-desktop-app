@@ -283,6 +283,13 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
 }
 
+.page.settings-fullbleed {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: 0;
+}
+
 /* The native window is supported down to 960px. At that width the persistent
    primary rail leaves a compact (rather than phone-sized) canvas, so trim only
    the page gutter and let each surface's container queries adapt to the space

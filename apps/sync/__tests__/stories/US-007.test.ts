@@ -120,9 +120,10 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // command palette / CompanyPage callbacks instead.
     expect(desktop).toContain('tab: section.id');
     expect(desktop).toContain("kind: 'company'");
-    expect(desktop).toContain('<CompanyPage');
-    expect(desktop).toContain('company={activeCompany}');
-    expect(desktop).toContain('tab={companyTab}');
+    // Daybook: company is a sidebar scope, not a dashboard page.
+    expect(desktop).toContain("nextRoute = { kind: 'messages' }");
+    expect(desktop).toContain('sidebarScopeUid');
+    expect(desktop).not.toContain('<CompanyPage');
 
     // The company page opens on the Overview board (company-scoped goals/
     // projects/in-flight via CompanyBoardPanel). The old flat vault BoardPanel

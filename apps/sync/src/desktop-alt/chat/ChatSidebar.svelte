@@ -77,6 +77,8 @@
     accountInitials?: string | null;
     /** Currently selected conversation id (`ch:…` / `dm:…`). */
     selectedId?: string | null;
+    /** External company scope (cloud uid). Daybook: picking a company filters the daybook. */
+    scopeUid?: string | null;
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
@@ -88,6 +90,7 @@
     accountLabel = null,
     accountInitials = null,
     selectedId = null,
+    scopeUid = null,
     oncommand,
     onnavigateMessages,
     onopenSettings,
@@ -129,6 +132,9 @@
   let pendingRequests = $state<DmRequest[]>([]);
 
   let scope = $state<CompanyScope>('all');
+  $effect(() => {
+    if (scopeUid) scope = scopeUid;
+  });
   let sortMode = $state<SortMode>('recent');
   let showFilter = $state<ShowFilter>('all');
   let personFilter = $state<string | null>(null);
@@ -170,10 +176,16 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
+  let localProjects = $state<LocalProjectLike[]>([]);
+  const projectTitles = $derived(
+    localProjects.map((p) => ({ id: p.id, title: p.title ?? p.name ?? null })),
+  );
+
   const allRows = $derived(
     normalizeConversations(channels, contactsWithUnreads, {
       pinnedIds: pins,
       dmDots,
+      projectTitles,
     }),
   );
 
@@ -184,6 +196,7 @@
       pinnedIds: pins,
       dmDots,
       includeContactsWithoutConversation: true,
+      projectTitles,
     }),
   );
 
@@ -195,7 +208,10 @@
   const browseRows = $derived(
     showFilter === 'company-projects'
       ? browseOnlyCompanyProjectChannels(channels, companyProjectChannels).map(
-          (c) => ({ ...normalizeChannel(c, { pinnedIds: pins }), browseOnly: true }),
+          (c) => ({
+            ...normalizeChannel(c, { pinnedIds: pins, projectTitles }),
+            browseOnly: true,
+          }),
         )
       : [],
   );
@@ -393,16 +409,28 @@
   async function provisionProjectChannels(): Promise<void> {
     try {
       const projects = await invoke<LocalProjectLike[] | null>('get_local_projects');
+      localProjects = Array.isArray(projects) ? projects : [];
       channelProvisioner.schedule(
-        collectEnsureTargets(projects ?? [], companies ?? []),
+        collectEnsureTargets(localProjects, companies ?? []),
       );
     } catch {
       // Local project listing is best-effort; provisioning must never surface.
     }
   }
 
+  let provisionedOnce = false;
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleRefresh(): void {
+    if (refreshTimer != null) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      void refreshLists();
+    }, 400);
+  }
+
   async function refreshLists(): Promise<void> {
-    loading = true;
+    const firstPaint = channels.length === 0 && contacts.length === 0;
+    if (firstPaint) loading = true;
     loadError = null;
     try {
       const [contactsResp, channelsResp, requestsResp] = await Promise.all([
@@ -426,8 +454,12 @@
         { channels, contacts, cachedAt: Date.now() },
         storage,
       );
-      // US-021: activate channels for member projects after each list load.
-      void provisionProjectChannels();
+      // Provision once per session — doing it on every unread refresh
+      // re-walks every local project and stalls the sidebar.
+      if (!provisionedOnce) {
+        provisionedOnce = true;
+        void provisionProjectChannels();
+      }
     } catch (err) {
       loadError = typeof err === 'string' ? err : 'Could not load conversations';
       console.error('chat-sidebar: refresh failed', err);
@@ -486,7 +518,7 @@
     }).then(track);
 
     void listen('channel:unread-changed', () => {
-      void refreshLists();
+      scheduleRefresh();
     }).then(track);
 
     // Per-pair DM unreads from the SINGLE inbox poll (hq-pro US-010).
@@ -501,7 +533,7 @@
     void listen<{ pairKey: string }>('dm:request-update', (e) => {
       pendingRequests = removeRequest(pendingRequests, e.payload.pairKey);
       // Accept may promote a new contact — refresh so the conversation appears.
-      void refreshLists();
+      scheduleRefresh();
     }).then(track);
 
     function onKeyDown(event: KeyboardEvent) {
@@ -844,6 +876,7 @@
           <button
             type="button"
             class="chat-icon-btn"
+            class:on={showFilter !== 'all' || personFilter != null}
             data-testid="chat-filter"
             aria-label="Filter conversations"
             aria-expanded={filterOpen}
@@ -886,7 +919,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'all'}
-                onclick={() => (showFilter = 'all')}
+                onclick={() => { showFilter = 'all'; filterOpen = false; }}
               >
                 All
               </button>
@@ -894,7 +927,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'projects'}
-                onclick={() => (showFilter = 'projects')}
+                onclick={() => { showFilter = 'projects'; filterOpen = false; }}
               >
                 Projects
               </button>
@@ -902,7 +935,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'dms'}
-                onclick={() => (showFilter = 'dms')}
+                onclick={() => { showFilter = 'dms'; filterOpen = false; }}
               >
                 DMs
               </button>
@@ -914,7 +947,7 @@
                   class="chat-popover-row"
                   data-testid="chat-filter-company-projects"
                   class:active={showFilter === 'company-projects'}
-                  onclick={() => (showFilter = 'company-projects')}
+                  onclick={() => { showFilter = 'company-projects'; filterOpen = false; }}
                 >
                   All company projects
                 </button>
@@ -925,7 +958,7 @@
                   type="button"
                   class="chat-popover-row"
                   class:active={personFilter == null}
-                  onclick={() => (personFilter = null)}
+                  onclick={() => { personFilter = null; filterOpen = false; }}
                 >
                   Everyone
                 </button>
@@ -934,7 +967,7 @@
                     type="button"
                     class="chat-popover-row"
                     class:active={personFilter === person.personUid}
-                    onclick={() => (personFilter = person.personUid)}
+                    onclick={() => { personFilter = person.personUid; filterOpen = false; }}
                   >
                     {person.label}
                   </button>
@@ -1370,6 +1403,7 @@
     transition: color 0.12s, background 0.12s;
   }
 
+  .chat-icon-btn.on,
   .chat-icon-btn:hover,
   .chat-icon-btn[aria-expanded='true'] {
     border-color: transparent;
@@ -1489,6 +1523,12 @@
     line-height: 1.2;
     text-align: left;
     cursor: pointer;
+  }
+
+  .chat-requests-row {
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 500;
   }
 
   .chat-row:hover {

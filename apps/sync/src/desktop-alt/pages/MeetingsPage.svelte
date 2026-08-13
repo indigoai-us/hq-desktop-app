@@ -46,6 +46,12 @@
   } from '../lib/meetings-view-model';
   import { HQ_CONSOLE_INTEGRATIONS_URL } from '../lib/hq-console';
   import '../v4/tokens.css';
+  import '../chat/chat-tokens.css';
+
+  interface MeetingsPageProps {
+    onback?: () => void;
+  }
+  let { onback }: MeetingsPageProps = $props();
 
   // Store-backed data. The singleton (started at app launch in
   // DesktopApp.onMount) loads once + polls every 30s, so this page is a thin
@@ -407,6 +413,11 @@
 
   <header class="page-header meetings-toolbar chat-shell">
     <div class="ph-titles">
+      {#if onback}
+        <button type="button" class="meetings-back" data-testid="meetings-back" onclick={onback}>
+          ← Back
+        </button>
+      {/if}
       <h1>Meetings</h1>
       <div class="subtitle" data-testid="meetings-dek">{MEETINGS_PAGE_DEK}</div>
       <div class="subtitle toolbar-meta">{toolbarMeta}</div>
@@ -444,7 +455,7 @@
       </button>
       <button
         type="button"
-        class="btn subtle"
+        class="btn subtle meetings-open-cal"
         onclick={openCalendar}
         disabled={calendarOpening}
         aria-busy={calendarOpening}
@@ -453,7 +464,7 @@
       </button>
       <button
         type="button"
-        class="btn"
+        class="btn subtle"
         data-testid="meetings-refresh"
         onclick={() => void meetingsStore.refresh()}
         disabled={loading}
@@ -472,7 +483,13 @@
 
   <div class="content">
     <div class="url-invite-bar">
-      <input
+      <div class="url-field">
+        <span class="url-lead" aria-hidden="true">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <path d="M6.4 9.6a3.2 3.2 0 0 1 0-4.53l1.7-1.7a3.2 3.2 0 1 1 4.53 4.53l-.85.85M9.6 6.4a3.2 3.2 0 0 1 0 4.53l-1.7 1.7a3.2 3.2 0 1 1-4.53-4.53l.85-.85" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+          </svg>
+        </span>
+        <input
         type="url"
         inputmode="url"
         autocomplete="off"
@@ -489,6 +506,7 @@
           }
         }}
       />
+      </div>
       {#if urlInput.trim().length > 0}
         <!-- Destination picker. Only renders once the user starts typing —
              keeps the idle bar clean. `null` = Personal (the default). -->
@@ -509,7 +527,7 @@
       {/if}
       <button
         type="button"
-        class="btn url-invite-btn"
+        class="btn subtle url-invite-btn"
         data-testid="meetings-url-invite"
         disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim())}
         aria-busy={urlInviting}
@@ -739,6 +757,25 @@
     gap: 12px;
     margin-bottom: 0;
   }
+  .meetings-open-cal {
+    display: none;
+  }
+
+  .meetings-back {
+    appearance: none;
+    -webkit-appearance: none;
+    height: 29.4px;
+    padding: 5px 10px;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    border-radius: 8px;
+    background: transparent;
+    color: var(--t2, var(--v4-text-2));
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
   .ph-titles {
     min-width: 0;
     display: flex;
@@ -886,27 +923,51 @@
   .content {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-4, 16px);
-    margin-top: var(--v4-space-4, 16px);
+    gap: 8px;
+    margin-top: 8px;
     background: transparent;
+  }
+
+  /* Daybook meetings: no dashboard chrome — live is a row, agenda is the page. */
+  .next-strip,
+  .health-strip,
+  .secondary-grid {
+    display: none;
   }
 
   .url-invite-bar {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 0 10px;
-    border-bottom: 1px solid var(--v4-rowline);
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line, var(--v4-rowline));
     background: transparent;
+  }
+  .url-field {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg, var(--v4-inset));
+  }
+  .url-field:hover { border-color: var(--line2, var(--v4-control-border)); }
+  .url-field:focus-within { border-color: var(--border-active, var(--v4-text-3)); }
+  .url-lead {
+    display: inline-flex;
+    color: var(--t3, var(--v4-text-3));
   }
   .url-input {
     flex: 1 1 auto; min-width: 0;
-    padding: 6px 10px; border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-field); background: var(--v4-inset);
-    color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 18px;
+    padding: 0; border: 0;
+    background: transparent;
+    color: var(--t1, var(--v4-text-1)); font: inherit; font-size: 12px; line-height: 18px;
   }
-  .url-input::placeholder { color: var(--v4-text-3); }
-  .url-input:focus { outline: none; border-color: var(--v4-text-3); }
+  .url-input::placeholder { color: var(--t3, var(--v4-text-3)); }
+  .url-input:focus { outline: none; }
   .url-input:disabled { opacity: 0.55; cursor: default; }
   /* Styled (non-native-looking) destination dropdown (D-18). */
   .url-invite-company-wrap {
@@ -1177,27 +1238,27 @@
   .agenda-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0;
+    gap: 2px;
     padding: 2px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-inset);
+    border: none;
+    border-radius: 8px;
+    background: var(--raised, var(--v4-inset));
   }
   .agenda-toggle-btn {
     padding: 4px 10px;
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-radius: 6px;
     background: transparent;
-    color: var(--v4-text-3);
+    color: var(--t2, var(--v4-text-3));
     font: inherit;
-    font-size: var(--type-secondary, 11px);
+    font-size: 12px;
     font-weight: 500;
-    line-height: 16px;
+    line-height: 17.4px;
     cursor: pointer;
   }
   .agenda-toggle-btn.active {
-    background: var(--v4-secondary-bg);
-    color: var(--v4-text-1);
+    background: var(--sel, var(--v4-secondary-bg));
+    color: var(--t1, var(--v4-text-1));
   }
   .agenda-toggle-btn:focus-visible {
     outline: 2px solid var(--v4-text-1);
@@ -1224,21 +1285,25 @@
   }
   .footer-manage {
     flex: 0 0 auto;
-    padding: 0;
-    border: 0;
+    margin-left: auto;
+    padding: 3px 10px;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    border-radius: 6px;
     background: transparent;
-    color: var(--v4-text-1);
+    color: var(--t2, var(--v4-text-2));
     font: inherit;
-    font-size: var(--type-metadata, 10px);
+    font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
     line-height: 14px;
-    text-transform: uppercase;
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    text-transform: none;
+    text-decoration: none;
     cursor: pointer;
   }
-  .footer-manage:hover:not(:disabled) { color: var(--v4-text-2); }
+  .footer-manage:hover:not(:disabled) {
+    background: var(--hover, var(--v4-active-row));
+    color: var(--t1, var(--v4-text-1));
+  }
   .footer-manage:disabled { opacity: 0.55; cursor: default; }
   .footer-manage:focus-visible {
     outline: 2px solid var(--v4-text-1);
@@ -1279,5 +1344,16 @@
     .next-strip {
       background: transparent;
     }
+  }
+
+  /* Daybook meetings: hide leftover dashboard chrome. !important wins over
+     later display:grid rules on the same selectors. */
+  .next-strip,
+  .health-strip,
+  .secondary-grid,
+  .meetings-open-cal,
+  .toolbar-meta,
+  :global([data-testid="meetings-live-now"]) {
+    display: none !important;
   }
 </style>

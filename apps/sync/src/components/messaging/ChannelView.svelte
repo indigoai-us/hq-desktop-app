@@ -140,7 +140,8 @@
   // reactions surface).
   let reactionsCtl = $state<ReactionController | null>(null);
 
-  const title = $derived(channelDisplayName(current));
+  let projectTitleHints = $state<Array<{ id: string; title?: string | null; name?: string | null }>>([]);
+  const title = $derived(channelDisplayName(current, { projectTitles: projectTitleHints }));
   const chip = $derived(scopeChipLabel(current));
   const isPersonal = $derived(current.scope === 'personal');
   const isGroup = $derived(current.scope === 'group');
@@ -165,6 +166,11 @@
       let projects: Project[] = [];
       try {
         projects = await loadLocalProjects();
+        projectTitleHints = projects.map((p) => ({
+          id: p.id,
+          title: p.title ?? p.name ?? null,
+          name: p.name ?? p.title ?? null,
+        }));
       } catch (err) {
         console.error('channel-view: get_local_projects failed', err);
       }
@@ -654,6 +660,7 @@
   });
 </script>
 
+<div class="channel-shell chat-shell">
 <header
   class="channel-header chat-shell"
   class:project={isProject}
@@ -749,13 +756,9 @@
             <path d="M11.5 9.5c1.2.2 2.2 1.1 2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
           </svg>
         </span>
-        <span class="member-count-num">
-          {#if memberCount != null}
-            {memberCount}
-          {:else}
-            —
-          {/if}
-        </span>
+        {#if memberCount != null}
+          <span class="member-count-num">{memberCount}</span>
+        {/if}
         <span class="member-count-chevron" aria-hidden="true">⌄</span>
       </button>
     {/if}
@@ -834,6 +837,7 @@
     onopenfile={handleOpenFile}
   />
 {/if}
+</div>
 
 <!-- Escape dismisses the members/status popovers regardless of where focus
      sits (aligned with the other popovers) — the backdrop keydown alone only
@@ -998,6 +1002,15 @@
 {/if}
 
 <style>
+  .channel-shell {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .channel-header {
     display: flex;
     align-items: center;

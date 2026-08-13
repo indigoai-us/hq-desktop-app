@@ -66,7 +66,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(agenda).toMatch(/\.agenda-list\s*\{[\s\S]*?border-radius:\s*0;/);
     expect(agenda).toMatch(/\.agenda-panel\s*\{[\s\S]*?background:\s*transparent;/);
     expect(agenda).toMatch(
-      /\.meeting-row\s*\{[\s\S]*?border-bottom:\s*1px solid var\(--v4-rowline\)/,
+      /\.meeting-row\s*\{[\s\S]*?border-radius:\s*10px/,
     );
     expect(agenda).not.toContain('box-shadow: var(--v4-shadow-card)');
     // Secondary sections are hairline, not raised cards.
@@ -108,7 +108,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(page).toContain('var(--v4-row-stack-gap, 3px)');
 
     expect(agenda).toMatch(
-      /\.mmeta\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
+      /\.mmeta\s*\{[\s\S]*?display:\s*flex/,
     );
     expect(agenda).toContain('--type-section');
     expect(agenda).toContain('--type-body');

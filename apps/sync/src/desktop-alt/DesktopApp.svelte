@@ -30,7 +30,7 @@
   import LibraryOverlay from './chat/LibraryOverlay.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
   import MessagesShell from '../components/messaging/MessagesShell.svelte';
-  import CompanyPage from './pages/CompanyPage.svelte';
+
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
@@ -520,7 +520,7 @@
     ...orderedCompanies.map((row, index) => ({
       id: `command-go-company-${row.slug}`,
       label: `Go to ${row.label}`,
-      detail: 'Show company overview',
+      detail: 'Filter conversations to this company',
       shortcut: companyHotkey(index),
       action: () => navigate({ kind: 'company', slug: row.slug }),
     })),
@@ -592,6 +592,8 @@
 
   // US-017: previous route for Library overlay Back (fallback notifications/home).
   let routeBeforeLibrary = $state<DesktopRoute>({ kind: 'notifications' });
+  /** Daybook company scope (cloud uid). Set when a company route remaps to messages. */
+  let sidebarScopeUid = $state<string | null>(null);
 
   function openNotifications(): void {
     if (route.kind !== 'notifications') {
@@ -687,6 +689,14 @@
     // hotkeys, palette, and sidebar destinations alike.
     if (nextRoute.kind === 'library' && route.kind !== 'library') {
       routeBeforeLibrary = route;
+    }
+    // Daybook: a company is a sidebar scope, not a dashboard page.
+    if (nextRoute.kind === 'company') {
+      const uid = (renderCompanies ?? workspaces)
+        .find((w) => w.slug === nextRoute.slug)
+        ?.cloudUid?.trim();
+      if (uid) sidebarScopeUid = uid;
+      nextRoute = { kind: 'messages' };
     }
     userNavigated = true;
     const sequence = ++navigationSequence;
@@ -1852,15 +1862,16 @@
           onselectfile={navigateFilesPath}
           onexit={exitFilesMode}
         />
-      {:else}
-        <!-- US-003 / US-018: chat-first primary sidebar. -->
+      {:else if route.kind !== 'library' && route.kind !== 'settings'}
+        <!-- US-003 / US-018: chat-first primary sidebar. Library is full-bleed. -->
         <ChatSidebar
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
           accountInitials={accountIdentity.initials}
+          scopeUid={sidebarScopeUid}
           oncommand={handleOpenCommandPalette}
           onnavigateMessages={() => navigate({ kind: 'messages' })}
-          onopenSettings={() => handleOpenSettings('general')}
+          onopenSettings={() => handleOpenSettings()}
         />
       {/if}
     {/if}
@@ -1869,7 +1880,7 @@
       <div class="route-progress" class:active={navigationPending} aria-hidden="true">
         <span></span>
       </div>
-      <!-- D-10: Library overlay sits over main content; titlebar + ChatSidebar remain. -->
+      <!-- Library is full-bleed (Daybook): titlebar stays, conversation sidebar hides. -->
       {#if route.kind === 'library'}
         <div class="library-overlay-host" data-testid="library-overlay-host">
           <LibraryOverlay
@@ -1927,7 +1938,7 @@
             </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
-              <MeetingsPage />
+              <MeetingsPage onback={() => navigate({ kind: 'messages' })} />
             </div>
           {:else if route.kind === 'library'}
             <!-- US-017: library is a full-screen overlay host (see below). -->
@@ -1936,10 +1947,10 @@
               <MarketplacePage />
             </div>
           {:else if route.kind === 'settings'}
-            <div class="page">
+            <div class="page settings-fullbleed">
               <SettingsPage
-                activeTab={route.kind === 'settings' ? route.tab ?? null : null}
-                onnavigate={(tab) => navigate(tab ? { kind: 'settings', tab } : { kind: 'settings' })}
+                activeTab={route.kind === 'settings' ? route.tab ?? 'sync' : 'sync'}
+                onnavigate={(tab) => navigate(tab ? { kind: 'settings', tab } : { kind: 'messages' })}
               />
             </div>
           {:else if route.kind === 'notifications'}
@@ -1990,25 +2001,9 @@
                 </div>
               {/if}
             </div>
-          {:else if activeCompany}
-            <div class="page">
-              <CompanyPage
-                company={activeCompany}
-                tab={companyTab}
-                {cloudReachable}
-                onopenprojects={() =>
-                  navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
-                }
-                onopengoals={() =>
-                  navigate({ kind: 'company', slug: activeCompany.slug, tab: 'goals' })
-                }
-                onopeninbox={() => navigate({ kind: 'notifications' })}
-                onopenoperations={(destination) =>
-                  navigate({ kind: 'company', slug: activeCompany.slug, tab: destination })
-                }
-                onworkspaceschanged={() => void refreshRealState()}
-              />
-            </div>
+          {:else if route.kind === 'company'}
+            <!-- Daybook: company is a scope, not a page. navigate() remaps here. -->
+            <MessagesShell embedded={true} />
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
               <div class="page-header">
@@ -2057,6 +2052,8 @@
     z-index: 40;
     min-height: 0;
   }
+
+
 
   .desktop-content {
     position: relative;

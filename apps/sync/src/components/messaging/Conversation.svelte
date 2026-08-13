@@ -464,12 +464,32 @@
     return elapsed >= 0 && elapsed <= MESSAGE_GROUP_WINDOW_MS;
   }
 
+  function isHumanBubble(message: ConversationMessage | undefined): boolean {
+    if (!message) return false;
+    if (isSpecialTimelineRow(message)) return false;
+    return Boolean(message.body?.trim() || messageAttachment(message) || message.share);
+  }
+
+  function previousHumanBubble(index: number): ConversationMessage | undefined {
+    for (let i = index - 1; i >= 0; i -= 1) {
+      if (isHumanBubble(timelineMessages[i])) return timelineMessages[i];
+    }
+    return undefined;
+  }
+
+  function nextHumanBubble(index: number): ConversationMessage | undefined {
+    for (let i = index + 1; i < timelineMessages.length; i += 1) {
+      if (isHumanBubble(timelineMessages[i])) return timelineMessages[i];
+    }
+    return undefined;
+  }
+
   function startsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(timelineMessages[index - 1], timelineMessages[index]);
+    return !messagesShareGroup(previousHumanBubble(index), timelineMessages[index]);
   }
 
   function endsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(timelineMessages[index], timelineMessages[index + 1]);
+    return !messagesShareGroup(timelineMessages[index], nextHumanBubble(index));
   }
 
   // Short relative-time stamp for the "last {time}" reply affordance (US-022).
@@ -623,10 +643,21 @@
       </div>
     {/if}
     {#if systemModel?.kind === 'line'}
-      <SystemEventLine model={systemModel} />
+      <SystemEventLine model={systemModel} who={messageAuthor(msg)} />
     {:else if systemModel?.kind === 'run_complete'}
-      <RunCompleteCard model={systemModel} />
-    {:else}
+      <div class="dm-msg dm-msg-in dm-msg-group-start" data-testid="run-complete-row">
+        <span class="dm-msg-avatar">
+          <IdentityMark kind="agent" label={messageAuthor(msg)} size="regular" />
+        </span>
+        <div class="dm-msg-column">
+          <div class="dm-msg-meta">
+            <span class="dm-msg-author">{messageAuthor(msg)}</span>
+            <span class="dm-msg-header-time">{formatTime(msg.createdAt)}</span>
+          </div>
+          <RunCompleteCard model={systemModel} />
+        </div>
+      </div>
+    {:else if msg.body?.trim() || attachmentModel || msg.share}
       <div
         class="dm-msg dm-msg-{msg.direction}"
         class:dm-msg-group-start={groupStart}
@@ -634,7 +665,13 @@
       >
       {#if groupStart}
         <span class="dm-msg-avatar">
-          <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
+          <IdentityMark
+            kind={(msg.fromPersonUid ?? '').startsWith('agt_') || /agent/i.test(messageAuthor(msg))
+              ? 'agent'
+              : 'person'}
+            label={messageAuthor(msg)}
+            size="regular"
+          />
         </span>
       {:else}
         <span class="dm-msg-avatar-spacer" aria-hidden="true"></span>
@@ -751,10 +788,10 @@
             <div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>
           {/if}
         {/if}
-        {#if msg.details}
+        {#if msg.details && msg.body?.trim()}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
         {/if}
-        {#if msg.prompt || msg.share}
+        {#if (msg.prompt || msg.share) && msg.body?.trim()}
           <div class="dm-bubble-cta-row">
             {#if msg.prompt}
               <button
@@ -870,6 +907,11 @@
       </div>
     {/if}
     {/each}
+    {#if !loading && !error && timelineMessages.length === 0}
+      <div class="dm-thread-empty" data-testid="conversation-empty" role="status">
+        No messages yet
+      </div>
+    {/if}
   </div>
 
   {#if newMessagesAvailable}
@@ -955,6 +997,20 @@
             <EmojiPicker onpick={insertComposerEmoji} onclose={() => (composerEmojiOpen = false)} />
           {/if}
         </div>
+        {#if replyText.startsWith('/') || showAgentMenu}
+          <button
+            type="button"
+            class="dm-tool-btn"
+            aria-label="Run an agent"
+            title="Type / to run an agent"
+            onclick={() => {
+              if (!replyText.startsWith('/')) replyText = `/${replyText}`;
+              replyInputEl?.focus();
+            }}
+          >
+            <span aria-hidden="true" style="font: 600 13px/1 var(--font-mono, ui-monospace);">/</span>
+          </button>
+        {/if}
       </div>
       <!-- S4: no persistent "⌘↵ to send" hint — not in the design mock. -->
       {#if sendError}
@@ -973,7 +1029,7 @@
           <span class="inline-spinner" aria-hidden="true"></span>
         {:else}
           <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M5.2 3.15c0-.55.6-.88 1.07-.6l7.1 4.35a.7.7 0 0 1 0 1.2l-7.1 4.35a.7.7 0 0 1-1.07-.6V3.15Z" />
+            <path d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z" />
           </svg>
         {/if}
       </button>
@@ -995,7 +1051,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 24px 24px 12px;
+    padding: 32px 24px 12px;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -1014,6 +1070,14 @@
 
   .dm-thread::-webkit-scrollbar-thumb:hover {
     background: var(--line2, var(--pop-hover));
+  }
+
+  .dm-thread-empty {
+    margin: auto;
+    padding: 48px 16px;
+    color: var(--t3, var(--pop-muted));
+    font-size: 13px;
+    text-align: center;
   }
 
   .dm-thread-status {
@@ -1463,16 +1527,7 @@
   }
 
   .dm-bubble-details {
-    font-size: var(--text-base);
-    line-height: 1.5;
-    color: var(--pop-text);
-    background: transparent;
-    border: 0;
-    border-top: 1px solid var(--c-field-border);
-    padding: 0.5rem 0 0;
-    border-radius: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
+    display: none;
   }
 
   .dm-msg-time {
@@ -1603,9 +1658,14 @@
   }
 
   .dm-bubble-cta-row {
-    display: flex;
+    display: none;
     flex-wrap: wrap;
     gap: 0.375rem;
+  }
+
+  .dm-msg:hover .dm-bubble-cta-row,
+  .dm-msg:focus-within .dm-bubble-cta-row {
+    display: flex;
   }
 
   .dm-action-error {
@@ -2412,10 +2472,10 @@
   :global([data-window='messages']) .dm-msg,
   :global(html[data-window='dm-detail']) .dm-msg {
     display: grid;
-    grid-template-columns: 28px minmax(0, 720px);
+    grid-template-columns: 32px minmax(0, 1fr);
     align-self: stretch;
     align-items: start;
-    gap: 0.625rem;
+    gap: 12px;
     width: 100%;
     max-width: none;
     margin-top: 0.1875rem;
@@ -2442,7 +2502,8 @@
   .dm-msg-avatar,
   .dm-msg-avatar-spacer {
     display: block;
-    width: 28px;
+    width: 32px;
+    flex: 0 0 32px;
     min-height: 1px;
   }
 

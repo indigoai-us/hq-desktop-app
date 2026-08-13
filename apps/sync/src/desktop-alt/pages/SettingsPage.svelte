@@ -50,9 +50,10 @@
     onnavigate?: (tab: SettingsTab | null) => void;
   } = $props();
 
-  const activeSection = $derived(
+  const _activeSection = $derived(
     SETTINGS_SECTIONS.find((section) => section.id === activeTab) ?? null,
   );
+  void _activeSection;
 
   // Evaluated once: the host OS cannot change while the window is open.
   const isMacOS = isMac();
@@ -1608,23 +1609,20 @@
   data-testid="settings-single-pane"
 >
   <main class="settings-main">
-    <header class="page-header">
-      <div>
-        {#if activeSection}
-          <button
-            type="button"
-            class="settings-back"
-            data-testid="settings-back"
-            onclick={() => onnavigate?.(null)}
-          >
-            &lsaquo; Settings
-          </button>
-          <h1 id="settings-title">{activeSection.label}</h1>
-        {:else}
-          <p>{saved ? 'Saved' : 'menubar.json'}</p>
-          <h1 id="settings-title">Settings</h1>
-        {/if}
-      </div>
+    <header class="page-header settings-head">
+      <button
+        type="button"
+        class="settings-back"
+        data-testid="settings-back"
+        onclick={() => onnavigate?.(null)}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M10 3.5 5.5 8 10 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Back
+      </button>
+      <h1 id="settings-title">Settings</h1>
+      <span class="settings-sub">{saved ? 'Saved' : 'yours — desktop'}</span>
     </header>
 
     {#if error}
@@ -1641,14 +1639,14 @@
       </div>
     {/if}
 
-    {#if !activeSection}
-      <!-- US-020: single-pane section index — navigates in place, never a
-           second sidebar column. -->
+    <div class="settings-split">
+      <!-- In-page section index (US-020: not a shell secondary sidebar). -->
       <nav class="settings-index" aria-label="Settings sections" data-testid="settings-index">
         {#each SETTINGS_SECTIONS as section (section.id)}
           <button
             type="button"
             class="settings-index-row"
+            class:on={activeTab === section.id || (activeTab == null && section.id === 'sync')}
             data-testid="settings-index-row"
             data-section={section.id}
             onclick={() => onnavigate?.(section.id)}
@@ -1658,7 +1656,7 @@
           </button>
         {/each}
       </nav>
-    {/if}
+      <div class="settings-pane">
 
     <fieldset class="settings-controls" disabled={!settingsReady}>
     <section id="sync" class="settings-section" hidden={activeTab !== 'sync'}>
@@ -2432,16 +2430,50 @@
       </div>
     </section>
     </fieldset>
+      </div>
+    </div>
   </main>
 </section>
 
 <style>
   .settings-page {
-    display: block;
+    display: flex;
+    flex-direction: column;
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
+  }
+
+  .settings-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 52px;
+    height: 52px;
+    padding: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .settings-sub {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--t3);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .settings-split {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .settings-pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: auto;
   }
 
   /* ── US-020 single-pane section index — parity-token styling ─────────── */
@@ -2449,7 +2481,12 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    flex: 0 0 210px;
+    width: 210px;
     min-width: 0;
+    padding: 16px 20px;
+    border-right: 1px solid var(--line);
+    overflow: auto;
   }
 
   .settings-index-row {
@@ -2457,13 +2494,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    padding: 10px 12px;
+    padding: 7px 10px;
     border: 0;
     border-radius: 8px;
     background: var(--raised);
     color: var(--t1);
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -2471,9 +2508,18 @@
   .settings-index-row:hover {
     background: var(--hover);
   }
+  .settings-index .settings-index-row:not(.on) {
+    background: transparent;
+    color: var(--t2);
+  }
+  .settings-index-row.on {
+    background: var(--sel);
+    color: var(--t1);
+    font-weight: 500;
+  }
 
   .settings-index-row + .settings-index-row {
-    margin-top: 4px;
+    margin-top: 0;
   }
 
   .settings-index-label {
@@ -2484,16 +2530,24 @@
     color: var(--t3);
     font-size: var(--text-base);
     line-height: 1;
+    opacity: 0;
+    width: 0;
+    overflow: hidden;
   }
 
   .settings-back {
-    margin: 0 0 2px;
-    padding: 0;
-    border: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    padding: 5px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
     background: none;
     color: var(--t2);
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: 12px;
+    font-weight: 500;
     text-align: left;
     cursor: pointer;
   }
@@ -2523,20 +2577,20 @@
   .settings-main {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-5);
+    gap: 0;
     min-width: 0;
+    flex: 1 1 auto;
+    min-height: 0;
     container-name: settings-main;
     container-type: inline-size;
-    /* The shell's .desktop-main-scroll is the single vertical scroller.
-       Keeping this wrapper non-scrolling lets scrollIntoView move the section
-       index to the requested anchor instead of stopping at a nested container. */
     overflow: visible;
   }
 
   h1 {
-    margin: 2px 0 0;
-    font-size: var(--text-lg);
-    font-weight: 500;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   .settings-section {
@@ -2578,8 +2632,11 @@
     align-items: center;
     gap: 12px;
     min-height: 48px;
-    padding: 10px 12px;
-    border-top: 1px solid var(--v4-rowline);
+    margin-bottom: 10px;
+    padding: 14px 16px;
+    border: 1px solid var(--line, var(--v4-rowline));
+    border-radius: 10px;
+    background: var(--raised, var(--v4-raised));
   }
 
   .setting-row:first-child {
