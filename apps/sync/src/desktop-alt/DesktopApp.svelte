@@ -685,23 +685,25 @@
   }
 
   function navigate(nextRoute: DesktopRoute) {
+    const incoming = nextRoute;
+    let dest: DesktopRoute = incoming;
     // US-017: remember where we came from so Library overlay Back works for
     // hotkeys, palette, and sidebar destinations alike.
-    if (nextRoute.kind === 'library' && route.kind !== 'library') {
+    if (incoming.kind === 'library' && route.kind !== 'library') {
       routeBeforeLibrary = route;
     }
     // Daybook: a company is a sidebar scope, not a dashboard page.
-    if (nextRoute.kind === 'company') {
+    if (incoming.kind === 'company') {
       const uid = (renderCompanies ?? workspaces)
-        .find((w) => w.slug === nextRoute.slug)
+        .find((w) => w.slug === incoming.slug)
         ?.cloudUid?.trim();
       if (uid) sidebarScopeUid = uid;
-      nextRoute = { kind: 'messages' };
+      dest = { kind: 'messages' };
     }
     userNavigated = true;
     const sequence = ++navigationSequence;
     navigationPending = true;
-    void commitNavigation(nextRoute, sequence);
+    void commitNavigation(dest, sequence);
   }
 
   onDestroy(() => {

@@ -121,7 +121,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(desktop).toContain('tab: section.id');
     expect(desktop).toContain("kind: 'company'");
     // Daybook: company is a sidebar scope, not a dashboard page.
-    expect(desktop).toContain("nextRoute = { kind: 'messages' }");
+    expect(desktop).toContain("dest = { kind: 'messages' }");
     expect(desktop).toContain('sidebarScopeUid');
     expect(desktop).not.toContain('<CompanyPage');
 

@@ -665,13 +665,11 @@
       >
       {#if groupStart}
         <span class="dm-msg-avatar">
-          <IdentityMark
-            kind={(msg.fromPersonUid ?? '').startsWith('agt_') || /agent/i.test(messageAuthor(msg))
-              ? 'agent'
-              : 'person'}
-            label={messageAuthor(msg)}
-            size="regular"
-          />
+          {#if (msg.fromPersonUid ?? '').startsWith('agt_') || /agent/i.test(messageAuthor(msg))}
+            <IdentityMark kind="agent" label={messageAuthor(msg)} size="regular" />
+          {:else}
+            <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
+          {/if}
         </span>
       {:else}
         <span class="dm-msg-avatar-spacer" aria-hidden="true"></span>
@@ -1528,6 +1526,10 @@
 
   .dm-bubble-details {
     display: none;
+    border: 0;
+    border-top: 1px solid var(--line, var(--pop-border));
+    border-radius: 0;
+    background: transparent;
   }
 
   .dm-msg-time {

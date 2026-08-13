@@ -2635,6 +2635,7 @@
     margin-bottom: 10px;
     padding: 14px 16px;
     border: 1px solid var(--line, var(--v4-rowline));
+    border-top: 1px solid var(--v4-rowline);
     border-radius: 10px;
     background: var(--raised, var(--v4-raised));
   }

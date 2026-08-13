@@ -290,7 +290,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     expect(route).toContain("case 'sync':");
     expect(desktopApp).toContain("route.kind === 'home'");
     expect(desktopApp).toContain("route.kind === 'meetings'");
-    expect(desktopApp).toContain("nextRoute = { kind: 'messages' }");
+    expect(desktopApp).toContain("dest = { kind: 'messages' }");
     expect(desktopApp).toContain('sidebarScopeUid');
     expect(desktopApp).not.toContain('<CompanyPage');
   }
