@@ -354,9 +354,7 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(channelView).toContain(
       'let current = $state<Channel>(untrack(() => channel));',
     );
-    expect(channelView).toContain(
-      'untrack(() => channel.memberCount ?? null)',
-    );
+    expect(channelView).toContain('untrack(() =>\n      channel.memberCount ??');
     expect(createChannel).toContain("import { untrack } from 'svelte'");
     expect(createChannel).toContain(
       "untrack(() => presetCompanyUid ?? 'personal')",

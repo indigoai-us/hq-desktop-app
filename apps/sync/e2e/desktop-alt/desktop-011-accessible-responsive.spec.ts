@@ -139,8 +139,10 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     expect(messages).toMatch(
       /\.contact-meta\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
     );
+    // Token contract §3: the pane header is an inline baseline row
+    // (title + subtitle), not a stacked 3px grid.
     expect(messages).toMatch(
-      /\.pane-title-stack\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
+      /\.pane-title-stack\s*\{[\s\S]*?align-items:\s*baseline/,
     );
   });
 

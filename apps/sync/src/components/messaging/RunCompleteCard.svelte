@@ -57,8 +57,9 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    width: min(420px, 100%);
-    margin: 0.5rem auto;
+    width: 100%;
+    max-width: none;
+    margin: 6px 0 0;
     padding: 12px 14px;
     border: 1px solid var(--line, var(--pop-border));
     border-radius: 10px;

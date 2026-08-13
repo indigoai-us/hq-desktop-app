@@ -60,8 +60,8 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(companyPage).toContain('CompanyOperationsPanel');
     expect(companyPage).toContain('isCompanyOperationsTab(tab)');
     expect(companyPage).toContain('destination={operationsDestination}');
-    expect(desktopApp).toContain('onopenoperations={(destination) =>');
-    expect(desktopApp).toContain("tab: destination");
+    expect(desktopApp).toContain("incoming.kind === 'company'");
+    expect(desktopApp).toContain("dest = { kind: 'messages' }");
   });
 
   it('keeps More as the active primary child for all operations destinations', () => {

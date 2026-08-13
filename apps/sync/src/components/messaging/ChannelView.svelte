@@ -40,9 +40,7 @@
   import type { MissionControlSnapshot } from '../../desktop-alt/lib/sessions';
   import {
     buildChannelStatusModel,
-    CHANNEL_STATUS_FIXTURE_MEMBERS,
-    CHANNEL_STATUS_FIXTURE_PRD,
-    projectChannelHeaderTitle,
+    projectChannelHeaderParts,
     resolveMemberPillCount,
     type ChannelStatusModel,
     type StatusMemberInput,
@@ -118,7 +116,14 @@
   let rosterOpen = $state(false);
   let statusOpen = $state(false);
   let memberCount = $state<number | null>(
-    untrack(() => channel.memberCount ?? null),
+    // Group DMs often ship a roster but no memberCount — count the OTHER
+    // members + self so the pill has a real number (G8).
+    untrack(() =>
+      channel.memberCount ??
+      (channel.scope === 'group' && channel.members?.length
+        ? channel.members.length + 1
+        : null),
+    ),
   );
 
   /** Project channel tabs (US-005 / US-008 Files). Chat + Board + Files. */
@@ -135,15 +140,14 @@
   // reactions surface).
   let reactionsCtl = $state<ReactionController | null>(null);
 
-  const title = $derived(channelDisplayName(current));
+  let projectTitleHints = $state<Array<{ id: string; title?: string | null; name?: string | null }>>([]);
+  const title = $derived(channelDisplayName(current, { projectTitles: projectTitleHints }));
   const chip = $derived(scopeChipLabel(current));
   const isPersonal = $derived(current.scope === 'personal');
   const isGroup = $derived(current.scope === 'group');
   const isProject = $derived(isProjectChannel(current));
   const companyLabel = $derived(companyNameFor(current) ?? current.companyName?.trim() ?? null);
-  const projectHeaderTitle = $derived(
-    projectChannelHeaderTitle(title, companyLabel),
-  );
+  const projectHeader = $derived(projectChannelHeaderParts(title, companyLabel));
   const invited = $derived(isInvitedNotJoined(current));
   const conversationLabel = $derived(isGroup ? title : `#${title}`);
   const composerPlaceholder = $derived(
@@ -162,6 +166,11 @@
       let projects: Project[] = [];
       try {
         projects = await loadLocalProjects();
+        projectTitleHints = projects.map((p) => ({
+          id: p.id,
+          title: p.title ?? p.name ?? null,
+          name: p.name ?? p.title ?? null,
+        }));
       } catch (err) {
         console.error('channel-view: get_local_projects failed', err);
       }
@@ -217,9 +226,9 @@
         console.error('channel-view: list_channel_members failed', err);
       }
 
-      // D-06: fall back to fixture humans + agents when roster is empty.
-      const statusMembers =
-        members.length > 0 ? members : CHANNEL_STATUS_FIXTURE_MEMBERS;
+      // Real data only (design-gap G8): no fixture members/agents/PRD on the
+      // live path — sections simply hide when their data is absent.
+      const statusMembers = members;
       const statusPrd = prd
         ? {
             name: prd.name,
@@ -231,10 +240,8 @@
             })),
             metadata: prd.metadata,
             prdPath: project?.prdPath ?? null,
-            repoPath: CHANNEL_STATUS_FIXTURE_PRD.repoPath,
-            previewUrl: CHANNEL_STATUS_FIXTURE_PRD.previewUrl,
           }
-        : CHANNEL_STATUS_FIXTURE_PRD;
+        : null;
       statusModel = buildChannelStatusModel({
         project: project ?? {
           id: projectId,
@@ -653,8 +660,9 @@
   });
 </script>
 
+<div class="channel-shell chat-shell">
 <header
-  class="channel-header"
+  class="channel-header chat-shell"
   class:project={isProject}
   class:group-dm={isGroup}
   data-tauri-drag-region
@@ -663,20 +671,15 @@
   <div class="channel-title-block">
     <div class="channel-title">
       {#if isGroup}
-        <!-- Reduced chrome for group DMs (US-011): name list + "group message",
-             no scope chip, no tabs, no members button. -->
-        <h2 data-testid="group-dm-title">{title} · group message</h2>
+        <h2 data-testid="group-dm-title">{title}</h2>
+        <span class="channel-sub">group message</span>
       {:else if isProject}
-        <h2 data-testid="project-channel-title">{projectHeaderTitle}</h2>
+        <h2 data-testid="project-channel-title">{projectHeader.title}</h2>
+        <span class="channel-sub" data-testid="project-channel-sub">{projectHeader.subtitle}</span>
       {:else}
         <span class="channel-hash" aria-hidden="true">#</span>
         <h2>{title}</h2>
-        <span class="scope-chip" class:personal={isPersonal} title={`Scope: ${chip}`}>
-          {#if isPersonal}
-            <span class="scope-glyph" aria-hidden="true">◐</span>
-          {/if}
-          {chip}
-        </span>
+        <span class="channel-sub">{chip}</span>
       {/if}
     </div>
   </div>
@@ -732,7 +735,8 @@
         </button>
       </nav>
     {/if}
-    {#if !isGroup}
+    <!-- G8: the members pill shows on every conversation kind, group DMs included. -->
+    {#if !invited}
       <button
         class="member-count-btn"
         type="button"
@@ -752,13 +756,9 @@
             <path d="M11.5 9.5c1.2.2 2.2 1.1 2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
           </svg>
         </span>
-        <span class="member-count-num">
-          {#if memberCount != null}
-            {memberCount}
-          {:else}
-            —
-          {/if}
-        </span>
+        {#if memberCount != null}
+          <span class="member-count-num">{memberCount}</span>
+        {/if}
         <span class="member-count-chevron" aria-hidden="true">⌄</span>
       </button>
     {/if}
@@ -837,6 +837,7 @@
     onopenfile={handleOpenFile}
   />
 {/if}
+</div>
 
 <!-- Escape dismisses the members/status popovers regardless of where focus
      sits (aligned with the other popovers) — the backdrop keydown alone only
@@ -971,14 +972,13 @@
           {/if}
         </section>
 
-        <section class="status-section" aria-label="Agents">
-          <div class="status-section-label">
-            <span>Agents</span>
-            <span class="status-section-count">({statusModel.agents.length})</span>
-          </div>
-          {#if statusModel.agents.length === 0}
-            <p class="status-empty">No agents</p>
-          {:else}
+        <!-- G8: agent-status section renders only when agent data exists. -->
+        {#if statusModel.agents.length > 0}
+          <section class="status-section" aria-label="Agents">
+            <div class="status-section-label">
+              <span>Agents</span>
+              <span class="status-section-count">({statusModel.agents.length})</span>
+            </div>
             <ul class="status-list">
               {#each statusModel.agents as a (a.personUid)}
                 <li class="status-person">
@@ -992,8 +992,8 @@
                 </li>
               {/each}
             </ul>
-          {/if}
-        </section>
+          </section>
+        {/if}
       {:else}
         <p class="status-empty" role="status">Status unavailable</p>
       {/if}
@@ -1002,6 +1002,15 @@
 {/if}
 
 <style>
+  .channel-shell {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .channel-header {
     display: flex;
     align-items: center;
@@ -1018,17 +1027,39 @@
 
   .channel-title-block {
     display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
     min-width: 0;
     flex: 1;
   }
 
   .channel-title {
     display: flex;
-    align-items: center;
-    gap: 0.4375rem;
+    align-items: baseline;
+    gap: 8px;
     min-width: 0;
+  }
+
+  .channel-title h2 {
+    margin: 0;
+    color: var(--t1, inherit);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .channel-sub {
+    color: var(--t3, var(--muted-3, var(--pop-muted)));
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* D-11: tabs right-aligned as icon+label; full hit-target buttons. */

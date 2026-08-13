@@ -50,7 +50,10 @@ describe('US-016: Core popover in V4 titlebar', () => {
     expect(popover).toContain('data-testid="core-popover-core-row"');
     expect(popover).toContain('data-testid="core-popover-app-row"');
     expect(popover).toContain('data-testid="core-popover-drift-count"');
-    expect(popover).toContain('data-testid="core-popover-no-drift"');
+    // G6: the pill testid is state-derived — green NO DRIFT only for a
+    // detected core; an undetected core renders the neutral variant.
+    expect(popover).toContain("'core-popover-no-drift'");
+    expect(popover).toContain("'core-popover-core-undetected'");
     expect(popover).toContain('data-testid="core-popover-core-restore"');
     expect(popover).toContain('data-testid="core-popover-app-update"');
     expect(popover).toContain("'get_hq_version'");

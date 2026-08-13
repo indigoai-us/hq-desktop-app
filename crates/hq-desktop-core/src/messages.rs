@@ -109,6 +109,14 @@ pub struct Channel {
     pub unread: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_count: Option<u32>,
+    /// Server-supplied activity timestamps (ISO-8601). These MUST survive the
+    /// Rust round-trip: the sidebar day-grouping (TODAY / YESTERDAY / weekday /
+    /// LAST WEEK) keys off them — dropping them here made every real channel
+    /// deserialize with no timestamp and bucket under LAST WEEK (epoch 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<String>,
     /// Server-supplied creation timestamp (ISO-8601). Carried through so the
     /// rail can order group DMs (which ship no activity timestamp) by creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -425,6 +433,29 @@ pub fn build_reactions_url(base_url: &str, message_scope: &str, message_id: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_activity_timestamps_survive_round_trip() {
+        // Regression (design-gap G2): the server sends lastActivityAt /
+        // lastMessageAt on real channel rows; serde used to drop them (fields
+        // undeclared), so the sidebar day-grouping saw epoch 0 and folded every
+        // channel under LAST WEEK. They must parse AND re-serialize.
+        let json = r#"{
+            "channelId": "ch_1",
+            "name": "hq-dev",
+            "scope": "company",
+            "companyUid": "ent_co",
+            "lastActivityAt": "2026-08-12T09:30:00Z",
+            "lastMessageAt": "2026-08-12T09:29:00Z",
+            "createdAt": "2026-05-01T00:00:00Z"
+        }"#;
+        let c: Channel = serde_json::from_str(json).expect("Channel parses");
+        assert_eq!(c.last_activity_at.as_deref(), Some("2026-08-12T09:30:00Z"));
+        assert_eq!(c.last_message_at.as_deref(), Some("2026-08-12T09:29:00Z"));
+        let out = serde_json::to_value(&c).expect("Channel serializes");
+        assert_eq!(out["lastActivityAt"], "2026-08-12T09:30:00Z");
+        assert_eq!(out["lastMessageAt"], "2026-08-12T09:29:00Z");
+    }
 
     #[test]
     fn contact_deserializes_camel_case_minimal() {

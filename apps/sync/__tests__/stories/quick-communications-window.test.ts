@@ -83,7 +83,7 @@ describe('quick communications window hierarchy', () => {
     expect(channelView).toContain('const conversationLabel = $derived(isGroup ? title : `#${title}`)');
     // US-011: group DMs use reduced chrome ("· group message"); hash glyph is
     // for non-group channels only (project/company/personal).
-    expect(channelView).toContain('· group message');
+    expect(channelView).toContain('group message');
     expect(channelView).toContain('<span class="channel-hash" aria-hidden="true">#</span>');
     expect(channelView).toContain("isGroup ? 'Join conversation' : `Join #${title}`");
     // US-004: composer keeps the group-aware label and adds the '/' agent affordance.

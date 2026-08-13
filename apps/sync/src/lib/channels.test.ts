@@ -29,6 +29,22 @@ describe('channelDisplayName', () => {
   it('falls back to channelId when name is empty', () => {
     expect(channelDisplayName(ch({ channelId: 'c1', name: '   ' }))).toBe('c1');
   });
+  it('strips ensure_project_channel "Project slug hash" chrome', () => {
+    expect(
+      channelDisplayName(ch({ channelId: 'c1', name: 'Project hpo-proj-032 ed2d27ec' })),
+    ).toBe('hpo-proj-032');
+    expect(
+      channelDisplayName(ch({ channelId: 'c1', name: 'Project curriculum-expansion' })),
+    ).toBe('curriculum-expansion');
+  });
+  it('prefers a local project title when projectId matches', () => {
+    expect(
+      channelDisplayName(
+        ch({ channelId: 'c1', name: 'Project abg-2026-model-refr abcdef12', projectId: 'abg-2026-model-refresh' }),
+        { projectTitles: [{ id: 'abg-2026-model-refresh', title: 'ABG 2026 model refresh' }] },
+      ),
+    ).toBe('ABG 2026 model refresh');
+  });
 });
 
 describe('group DMs', () => {
