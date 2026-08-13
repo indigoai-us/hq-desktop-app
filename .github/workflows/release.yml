@@ -123,7 +123,13 @@ jobs:
       #     branch, so their tag must NOT be on main. A prerelease tag whose
       #     commit is already in main's history is rejected: promote it to a
       #     stable tag instead of shipping alpha/beta off main.
+      # Only enforced when a tag is first pushed. A workflow_dispatch run is a
+      # deliberate re-release of an already-existing, immutable tag whose branch
+      # was vetted at creation time — re-checking it here would break retries of
+      # historical prereleases (and of an off-main prerelease after its branch
+      # later merges to main), so dispatch retries skip the branch check.
       - name: Enforce release branch policy
+        if: ${{ github.event_name == 'push' }}
         env:
           TAG: ${{ steps.classify.outputs.tag }}
           CHANNEL: ${{ steps.classify.outputs.channel }}

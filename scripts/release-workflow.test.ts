@@ -145,6 +145,12 @@ describe("release workflow channel contract", () => {
     expect(validate).toContain(
       "alpha and beta releases may only be cut from non-main branches",
     );
+
+    // The check runs only on a fresh tag push. A workflow_dispatch retry of an
+    // existing, immutable tag must not be re-gated by the branch policy.
+    expect(validate).toMatch(
+      /- name: Enforce release branch policy\n {8}if: \$\{\{ github\.event_name == 'push' \}\}/,
+    );
   });
 
   it("allows an equal stable rerun but rejects a rollback below public latest", () => {
