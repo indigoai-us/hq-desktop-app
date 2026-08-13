@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
+  classifyRootLoadError,
   companySlugForHqPath,
   dirEntryToLazyNode,
   fileAccessibleCompanies,
@@ -13,6 +14,7 @@ import {
   isFilesRouteAllowed,
   isRootNotFoundError,
   knowledgeRootPath,
+  rootLoadErrorMessage,
   parentPathOf,
   sortNodes,
   type DirEntry,
@@ -612,5 +614,49 @@ describe('isRootNotFoundError (missing-root empty state)', () => {
     expect(isRootNotFoundError(null)).toBe(false);
     expect(isRootNotFoundError(undefined)).toBe(false);
     expect(isRootNotFoundError('')).toBe(false);
+  });
+});
+
+describe('classifyRootLoadError (scope + authorization calm states)', () => {
+  it('maps missing directories to not-found', () => {
+    expect(classifyRootLoadError('directory not found: "companies/acme/knowledge"')).toBe(
+      'not-found',
+    );
+  });
+
+  it('maps scope-gate rejections to scope (exact scope_gate.rs shapes)', () => {
+    expect(
+      classifyRootLoadError(
+        'company scope not bound: reading companies/acme/ requires an active company context',
+      ),
+    ).toBe('scope');
+    expect(
+      classifyRootLoadError(
+        'cross-company read blocked: active company is "acme", path targets "zed"',
+      ),
+    ).toBe('scope');
+  });
+
+  it('maps membership rejections to unauthorized', () => {
+    expect(classifyRootLoadError('company files are not authorized: "acme"')).toBe('unauthorized');
+    expect(classifyRootLoadError(new Error('company projects are not authorized: "acme"'))).toBe(
+      'unauthorized',
+    );
+  });
+
+  it('keeps everything else on the generic unknown path', () => {
+    expect(classifyRootLoadError('file explorer requires a signed-in user')).toBe('unknown');
+    expect(classifyRootLoadError('path escapes the HQ folder: "../x"')).toBe('unknown');
+    expect(classifyRootLoadError(null)).toBe('unknown');
+  });
+
+  it('renders distinct calm copy per kind, generic only for unknown', () => {
+    const scope = rootLoadErrorMessage('scope');
+    const unauthorized = rootLoadErrorMessage('unauthorized');
+    expect(scope).not.toBe('Files unavailable');
+    expect(unauthorized).not.toBe('Files unavailable');
+    expect(unauthorized).toMatch(/sync/i);
+    expect(scope).not.toBe(unauthorized);
+    expect(rootLoadErrorMessage('unknown')).toBe('Files unavailable');
   });
 });

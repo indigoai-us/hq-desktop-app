@@ -25,12 +25,13 @@
    * radius, faint hover) via V4 tokens. No purple (hard Indigo policy).
    */
   import {
+    classifyRootLoadError,
     dirEntryToLazyNode,
     fileTreeRowMeta,
     filterLazyNodes,
     flattenLazy,
-    isRootNotFoundError,
     parentPathOf,
+    rootLoadErrorMessage,
     type DirEntry,
     type LazyNode,
   } from '../lib/file-tree';
@@ -115,12 +116,15 @@
         if (!cancelled && generation === treeGeneration) {
           // A nonexistent ROOT (missing dir / dangling symlink) is an expected
           // shape — e.g. a company with no knowledge/ directory yet — and
-          // renders as a calm empty state. Every other failure stays a real,
-          // retryable error. Applies to the root load ONLY.
-          if (isRootNotFoundError(err)) {
+          // renders as a calm empty state. Scope-gate and authorization
+          // rejections get calm, retryable copy of their own; only genuinely
+          // unknown failures keep the generic error. Root load ONLY —
+          // subdirectory failures are never reclassified.
+          const kind = classifyRootLoadError(err);
+          if (kind === 'not-found') {
             rootMissing = true;
           } else {
-            rootError = String(err);
+            rootError = rootLoadErrorMessage(kind);
           }
           roots = [];
         }
@@ -330,7 +334,7 @@
     </div>
   {:else if rootError}
     <div class="ft-status ft-root-error" role="alert" data-testid="file-tree-error">
-      <span>Files unavailable</span>
+      <span>{rootError}</span>
       <button
         type="button"
         class="ft-retry"

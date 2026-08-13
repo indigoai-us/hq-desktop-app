@@ -303,6 +303,33 @@ export function getDesktopActiveCompany(
   return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
+/**
+ * The company slug the native `DesktopSessionScope` read gate should be bound
+ * to for the current route (via `set_desktop_active_company`).
+ *
+ * The rule is: bind the workspace being VIEWED. Files mode binds its (already
+ * membership-validated) company filter; a company/workspace route binds that
+ * workspace's slug; every other surface unbinds.
+ *
+ * Deliberately independent of the workspace's sync-enabled state. The original
+ * PR #309 derivation left the scope UNBOUND whenever sync was paused/disabled
+ * on the viewed company — which does not tighten anything (Rust-side
+ * membership authorization in `require_company_file_access` is independent and
+ * still fail-closed), it just made EVERY same-company local read fail with
+ * `company scope not bound`, breaking knowledge/files/board surfaces for
+ * local-only and sync-paused companies. Binding the viewed company is the
+ * strictly narrower state: reads outside that company remain cross-company
+ * blocked by the gate.
+ */
+export function getDesktopSessionScopeSlug(
+  route: DesktopRoute,
+  companies: Workspace[],
+  filesActiveSlug: string | null,
+): string | null {
+  if (route.kind === 'files') return filesActiveSlug;
+  return getDesktopActiveCompany(route, companies)?.slug ?? null;
+}
+
 /** First ⌘ hotkey assigned to a company row (after the four primary destinations). */
 const COMPANY_HOTKEY_BASE = 5;
 

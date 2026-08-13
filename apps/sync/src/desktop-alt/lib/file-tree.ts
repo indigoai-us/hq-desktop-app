@@ -101,8 +101,7 @@ export function filesScopeRootPath(slug: string): string {
  * must apply it to the ROOT load only, never to subdirectory loads.
  */
 export function isRootNotFoundError(err: unknown): boolean {
-  const message =
-    err instanceof Error ? err.message : typeof err === 'string' ? err : String(err ?? '');
+  const message = errorText(err);
   if (message.includes('directory not found:')) return true;
   if (!message.includes('could not resolve')) return false;
   const lower = message.toLowerCase();
@@ -112,6 +111,60 @@ export function isRootNotFoundError(err: unknown): boolean {
     lower.includes('cannot find the file') ||
     lower.includes('cannot find the path')
   );
+}
+
+/** Normalize an unknown thrown value into its message text. */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : typeof err === 'string' ? err : String(err ?? '');
+}
+
+/**
+ * How a ROOT directory-listing failure should be presented.
+ *
+ * - `not-found`     the directory itself doesn't exist → calm empty state.
+ * - `scope`         the native `DesktopSessionScope` read gate rejected the
+ *                   read (`company scope not bound` / `cross-company read
+ *                   blocked`, see crates/hq-desktop-core/src/scope_gate.rs).
+ *                   After the viewed-company scope-binding fix this is a
+ *                   transient race at worst — retry succeeds once the bind
+ *                   lands — so it renders calm, retryable copy instead of the
+ *                   scary generic failure.
+ * - `unauthorized`  workspace membership does not grant this company's local
+ *                   files on this machine (`company files/projects are not
+ *                   authorized`) — typically an un-synced cloud company.
+ * - `unknown`       anything else → the generic retryable error row.
+ */
+export type RootLoadErrorKind = 'not-found' | 'scope' | 'unauthorized' | 'unknown';
+
+/** Classify a root-listing failure. Pure; root loads only (never subdirs). */
+export function classifyRootLoadError(err: unknown): RootLoadErrorKind {
+  if (isRootNotFoundError(err)) return 'not-found';
+  const message = errorText(err);
+  if (
+    message.includes('company scope not bound') ||
+    message.includes('cross-company read blocked')
+  ) {
+    return 'scope';
+  }
+  if (
+    message.includes('company files are not authorized') ||
+    message.includes('company projects are not authorized')
+  ) {
+    return 'unauthorized';
+  }
+  return 'unknown';
+}
+
+/** Calm user-facing copy for a classified non-missing root-load failure. */
+export function rootLoadErrorMessage(kind: Exclude<RootLoadErrorKind, 'not-found'>): string {
+  switch (kind) {
+    case 'scope':
+      return 'These files aren’t ready in this view yet';
+    case 'unauthorized':
+      return 'This company’s files aren’t available on this Mac yet — run a sync';
+    default:
+      return 'Files unavailable';
+  }
 }
 
 /**

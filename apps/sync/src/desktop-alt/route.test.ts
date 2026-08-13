@@ -12,6 +12,7 @@ import {
   getDesktopLandingRoute,
   getDesktopRouteKey,
   getDesktopSecondarySidebar,
+  getDesktopSessionScopeSlug,
   isDesktopRouteActive,
   LIBRARY_SECTIONS,
   resolvePendingDesktopRoute,
@@ -527,5 +528,69 @@ describe('US-018 Inbox retirement — deep link remaps to Notifications', () => 
     expect(
       isDesktopRouteActive({ kind: 'notifications' }, { kind: 'messages' }),
     ).toBe(false);
+  });
+});
+
+describe('desktop session read-scope binding (knowledge-path fixes)', () => {
+  const personal: Workspace = {
+    ...baseCompany,
+    slug: 'personal',
+    displayName: 'Personal',
+    kind: 'personal',
+    state: 'personal',
+    cloudUid: null,
+    membershipStatus: null,
+    role: null,
+  };
+
+  it('binds the viewed company on a company route', () => {
+    const workspaces = [company({ slug: 'acme' })];
+    expect(
+      getDesktopSessionScopeSlug({ kind: 'company', slug: 'acme', tab: 'knowledge' }, workspaces, null),
+    ).toBe('acme');
+  });
+
+  it('binds sync-paused and local-only companies too — sync state must not unbind the viewed company (fleet board/knowledge regression)', () => {
+    const paused = company({ slug: 'acme', syncEnabled: false });
+    const localOnly = company({
+      slug: 'localco',
+      state: 'local-only',
+      cloudUid: null,
+      membershipStatus: null,
+      syncEnabled: false,
+    });
+    expect(
+      getDesktopSessionScopeSlug({ kind: 'company', slug: 'acme', tab: 'knowledge' }, [paused], null),
+    ).toBe('acme');
+    expect(
+      getDesktopSessionScopeSlug({ kind: 'company', slug: 'localco' }, [localOnly], null),
+    ).toBe('localco');
+  });
+
+  it('binds the personal workspace when its surface is viewed', () => {
+    expect(
+      getDesktopSessionScopeSlug(
+        { kind: 'company', slug: 'personal', tab: 'knowledge' },
+        [personal, company({ slug: 'acme' })],
+        null,
+      ),
+    ).toBe('personal');
+  });
+
+  it('files mode binds the membership-validated files filter, not the company route', () => {
+    const workspaces = [company({ slug: 'acme' })];
+    expect(getDesktopSessionScopeSlug({ kind: 'files' }, workspaces, null)).toBeNull();
+    expect(getDesktopSessionScopeSlug({ kind: 'files', slug: 'acme' }, workspaces, 'acme')).toBe(
+      'acme',
+    );
+  });
+
+  it('unbinds on non-company, non-files surfaces and unknown slugs', () => {
+    const workspaces = [company({ slug: 'acme' })];
+    expect(getDesktopSessionScopeSlug({ kind: 'home' }, workspaces, null)).toBeNull();
+    expect(getDesktopSessionScopeSlug({ kind: 'library' }, workspaces, null)).toBeNull();
+    expect(
+      getDesktopSessionScopeSlug({ kind: 'company', slug: 'ghost' }, workspaces, null),
+    ).toBeNull();
   });
 });

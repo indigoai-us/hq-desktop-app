@@ -65,6 +65,7 @@
     getDesktopLandingRoute,
     getDesktopRouteKey,
     getDesktopSecondarySidebar,
+    getDesktopSessionScopeSlug,
     resolvePendingDesktopRoute,
     type CompanyTab,
     type DesktopRoute,
@@ -371,12 +372,13 @@
   const filesSelectedPath = $derived<string | null>(
     filesRouteAllowed && route.kind === 'files' ? route.path ?? null : null,
   );
+  // Bind the native read-scope gate to the workspace being VIEWED — including
+  // local-only / sync-paused companies, whose local board/knowledge/files
+  // reads all failed with `company scope not bound` under the previous
+  // sync-enabled-gated derivation. Membership authorization stays enforced
+  // independently in Rust (require_company_file_access, fail-closed).
   const sessionBoundCompanySlug = $derived<string | null>(
-    route.kind === 'files'
-      ? filesActiveSlug
-      : activeCompanySyncEnabled
-        ? activeCompany?.slug ?? null
-        : null,
+    getDesktopSessionScopeSlug(route, shellCompanies, filesActiveSlug),
   );
   $effect(() => {
     void invoke('set_desktop_active_company', {
