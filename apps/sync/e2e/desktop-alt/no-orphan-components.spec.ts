@@ -117,7 +117,9 @@ describe('US-018 legacy shell retirement', () => {
       ['company:indigo:accounts', { kind: 'company', slug: 'indigo', tab: 'overview' }],
       ['company:indigo:tasks', { kind: 'company', slug: 'indigo', tab: 'projects' }],
       ['company:indigo:library', { kind: 'company', slug: 'indigo', tab: 'skills' }],
-      ['company:indigo:more', { kind: 'company', slug: 'indigo', tab: 'activity' }],
+      ['company:indigo:more', { kind: 'company', slug: 'indigo', tab: 'deployments' }],
+      // US-020: the Activity page is gone — legacy links land on Overview.
+      ['company:indigo:activity', { kind: 'company', slug: 'indigo', tab: 'overview' }],
     ];
     for (const [name, expected] of remaps) {
       expect(resolvePendingDesktopRoute(name), name).toEqual(expected);

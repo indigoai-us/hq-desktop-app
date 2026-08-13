@@ -26,7 +26,6 @@ function expectOpenStatusRow(source: string, selector: string, label: string): v
 describe('DESKTOP-016: neutral semantic surfaces', () => {
   const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
   const storyCard = readRepoFile('src/desktop-alt/components/StoryCard.svelte');
-  const activity = readRepoFile('src/desktop-alt/panels/ActivityPanel.svelte');
   const deployments = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
   const secrets = readRepoFile('src/desktop-alt/panels/SecretsPanel.svelte');
   const submit = readRepoFile('src/desktop-alt/panels/SubmitPanel.svelte');
@@ -42,7 +41,6 @@ describe('DESKTOP-016: neutral semantic surfaces', () => {
 
   it('renders operational errors as neutral open rows', () => {
     for (const [source, selector, label] of [
-      [activity, '.activity-error', 'activity error'],
       [deployments, '.deployments-error', 'deployments error'],
       [secrets, '.secrets-error', 'secrets error'],
       [installed, '.state-error', 'installed-pack error'],
@@ -130,7 +128,6 @@ describe('DESKTOP-016: neutral semantic surfaces', () => {
 
   it('uses error red for actual failures and neutral marketplace decoration', () => {
     for (const [source, selector] of [
-      [activity, '.activity-error'],
       [deployments, '.deployments-error'],
       [secrets, '.secrets-error'],
       [marketplace, '.state-error'],

@@ -26,6 +26,13 @@
   import { requestChannelOpen, requestDmRequestsOpen } from './open-target';
   import CreateProjectChannel from './CreateProjectChannel.svelte';
   import {
+    adminCompanyUids,
+    browseOnlyCompanyProjectChannels,
+    collectEnsureTargets,
+    createProjectChannelProvisioner,
+    type LocalProjectLike,
+  } from './channel-provisioning';
+  import {
     applyPairUnreads,
     applySidebarFilters,
     clearDmDot,
@@ -41,6 +48,7 @@
     loadConversationCache,
     loadDmDots,
     loadPins,
+    normalizeChannel,
     normalizeConversations,
     resolveSearchHitRow,
     saveConversationCache,
@@ -169,10 +177,23 @@
     }),
   );
 
+  // US-021: owner/admin-only "All company projects" view. `companyProjectChannels`
+  // is the owner-scoped fetch; browse rows are the ones the caller is NOT in.
+  const ownerCompanyUids = $derived(adminCompanyUids(companies ?? []));
+  const canSeeCompanyProjects = $derived(ownerCompanyUids.length > 0);
+  let companyProjectChannels = $state<Channel[]>([]);
+  const browseRows = $derived(
+    showFilter === 'company-projects'
+      ? browseOnlyCompanyProjectChannels(channels, companyProjectChannels).map(
+          (c) => ({ ...normalizeChannel(c, { pinnedIds: pins }), browseOnly: true }),
+        )
+      : [],
+  );
+
   const pendingRequestCount = $derived(pendingRequests.length);
 
   const filteredRows = $derived(
-    applySidebarFilters(allRows, {
+    applySidebarFilters([...allRows, ...browseRows], {
       scope,
       show: showFilter,
       sort: sortMode,
@@ -329,6 +350,47 @@
     return () => clearTimeout(handle);
   });
 
+  // US-021: debounced owner-scoped fetch while the company-projects view is on.
+  let companyProjectsSeq = 0;
+  $effect(() => {
+    if (showFilter !== 'company-projects' || !canSeeCompanyProjects) return;
+    const uids = ownerCompanyUids;
+    const seq = ++companyProjectsSeq;
+    const timer = setTimeout(async () => {
+      const collected: Channel[] = [];
+      for (const uid of uids) {
+        try {
+          const resp = await invoke<ChannelsResponse | null>('list_channels', {
+            companyUid: uid,
+            includeCompanyProjects: true,
+          });
+          for (const c of resp?.channels ?? []) collected.push(c);
+        } catch (err) {
+          // Absent-safe: old servers / non-owner races degrade to member-only.
+          console.warn('chat-sidebar: company project listing failed', err);
+        }
+      }
+      if (seq === companyProjectsSeq) companyProjectChannels = collected;
+    }, 250);
+    return () => clearTimeout(timer);
+  });
+
+  // US-021: auto-activate project channels for the user's member projects.
+  // Debounced + per-session deduped; silent no-op against old servers.
+  const channelProvisioner = createProjectChannelProvisioner({
+    invoke: (cmd, args) => invoke(cmd, args),
+  });
+  async function provisionProjectChannels(): Promise<void> {
+    try {
+      const projects = await invoke<LocalProjectLike[] | null>('get_local_projects');
+      channelProvisioner.schedule(
+        collectEnsureTargets(projects ?? [], companies ?? []),
+      );
+    } catch {
+      // Local project listing is best-effort; provisioning must never surface.
+    }
+  }
+
   async function refreshLists(): Promise<void> {
     loading = true;
     loadError = null;
@@ -354,6 +416,8 @@
         { channels, contacts, cachedAt: Date.now() },
         storage,
       );
+      // US-021: activate channels for member projects after each list load.
+      void provisionProjectChannels();
     } catch (err) {
       loadError = typeof err === 'string' ? err : 'Could not load conversations';
       console.error('chat-sidebar: refresh failed', err);
@@ -454,6 +518,7 @@
     return () => {
       disposed = true;
       for (const u of unlisteners) u();
+      channelProvisioner.dispose();
       window.removeEventListener('keydown', onKeyDown, true);
     };
   });
@@ -816,6 +881,19 @@
               >
                 DMs
               </button>
+              {#if canSeeCompanyProjects}
+                <!-- US-021: org owners/admins only — includes other members'
+                     project channels (browse-only rows). -->
+                <button
+                  type="button"
+                  class="chat-popover-row"
+                  data-testid="chat-filter-company-projects"
+                  class:active={showFilter === 'company-projects'}
+                  onclick={() => (showFilter = 'company-projects')}
+                >
+                  All company projects
+                </button>
+              {/if}
               {#if people.length > 0}
                 <div class="chat-section-label pad-top">People</div>
                 <button

@@ -7,7 +7,9 @@ describe('menubar popover routes into V4 desktop surfaces', () => {
 
   it('opens new-file notifications in the desktop company Activity screen', () => {
     expect(feed).toContain("invoke('open_desktop_alt_window'");
-    expect(feed).toContain('route: `company:${company}:activity`');
+    // US-020: the Activity page is gone — new-file rows land on the company Overview.
+    expect(feed).toContain('route: `company:${company}`');
+    expect(feed).not.toContain(':activity');
     expect(feed).toContain("it.kind === 'new-file'");
     expect(feed).toContain('openCompanyActivity');
     expect(route).toContain("kind === 'company'");

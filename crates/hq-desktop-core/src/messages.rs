@@ -157,6 +157,18 @@ pub struct ChannelsResponse {
     pub channels: Vec<Channel>,
 }
 
+/// Response of `POST /v1/notify/channels/ensure-project` (US-021).
+/// `Default` (channel: None) doubles as the absent-safe "old server without
+/// the route" value — the 404 path resolves to it and callers no-op.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureProjectChannelResponse {
+    #[serde(default)]
+    pub created: bool,
+    #[serde(default)]
+    pub channel: Option<Channel>,
+}
+
 /// One member of a channel. `role` is "owner" | "member".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -315,6 +327,18 @@ pub fn build_create_payload_with_project(
         );
     }
     serde_json::Value::Object(obj)
+}
+
+/// Build the `POST /v1/notify/channels/ensure-project` body (US-021):
+/// idempotent auto-provision of a project's invite-only channel.
+pub fn build_ensure_project_channel_payload(
+    company_uid: &str,
+    project_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "companyUid": company_uid.trim(),
+        "projectId": project_id.trim(),
+    })
 }
 
 /// Build the `POST /v1/notify/channels` body for a GROUP DM:
@@ -831,5 +855,35 @@ mod tests {
         assert_eq!(v["messageScope"], "dm:prs_x");
         assert_eq!(v["messageId"], "evt_1");
         assert_eq!(v["reactions"][0]["reactedByMe"], true);
+    }
+
+    #[test]
+    fn ensure_project_channel_payload_trims_and_shapes() {
+        let v = build_ensure_project_channel_payload("  ent_co  ", " hq-mobile ");
+        assert_eq!(v["companyUid"], "ent_co");
+        assert_eq!(v["projectId"], "hq-mobile");
+        assert_eq!(v.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn ensure_project_channel_response_default_is_absent_safe_noop() {
+        // 404 from an old server resolves to Default: no channel, not created.
+        let d = EnsureProjectChannelResponse::default();
+        assert!(!d.created);
+        assert!(d.channel.is_none());
+    }
+
+    #[test]
+    fn ensure_project_channel_response_parses_created_channel() {
+        let json = r#"{
+            "created": true,
+            "channel": { "channelId": "chn_1", "name": "Project x", "scope": "project",
+                         "companyUid": "ent_co", "projectId": "hq-mobile" },
+            "membership": { "joined": true }
+        }"#;
+        let r: EnsureProjectChannelResponse =
+            serde_json::from_str(json).expect("response parses");
+        assert!(r.created);
+        assert_eq!(r.channel.as_ref().unwrap().channel_id, "chn_1");
     }
 }

@@ -540,7 +540,12 @@ describe('Settings deep regressions', () => {
       appearance?.querySelectorAll<HTMLInputElement>('input') ?? [],
     );
     const backendControls = controls.filter(
-      (control) => !appearance?.contains(control),
+      (control) =>
+        !appearance?.contains(control) &&
+        // US-020 single-pane navigation (Back / section index) is local UI —
+        // it must stay usable during hydration, like Appearance.
+        control.dataset.testid !== 'settings-back' &&
+        control.dataset.testid !== 'settings-index-row',
     );
     expect(controls.length).toBeGreaterThan(0);
     expect(disabledGroups).toHaveLength(2);

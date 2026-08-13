@@ -28,7 +28,6 @@ function normalize(source: string): string {
 const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
 const filesSidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
 const chatSidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
-const secondary = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
 const desktopAltCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
 
 describe('US-005: balanced spacing + fixed-height company names with fade', () => {
@@ -101,11 +100,7 @@ describe('US-005: balanced spacing + fixed-height company names with fade', () =
     );
   });
 
-  it('applies the shared row-height + gap tokens across the secondary sidebar and list rows', () => {
-    const secondaryCss = normalize(secondary);
-    expect(secondaryCss).toMatch(/\.v4-row\s*\{[^}]*height:\s*var\(--v4-row-h\)/);
-    expect(secondaryCss).toMatch(/\.v4-menu\s*\{[^}]*gap:\s*var\(--v4-row-gap\)/);
-
+  it('applies the shared row-height + gap tokens across list rows (US-020 retired the secondary sidebar)', () => {
     // Files company list uses the same gap token.
     expect(normalize(filesSidebar)).toMatch(
       /\.fs-company-list\s*\{[^}]*gap:\s*var\(--v4-row-gap\)/,

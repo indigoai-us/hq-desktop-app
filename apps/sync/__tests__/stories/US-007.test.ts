@@ -99,7 +99,6 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       'workers',
       'knowledge',
       'team',
-      'activity',
       'deployments',
       'secrets',
       'settings',
@@ -117,8 +116,9 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // The route drives the section; the in-page segmented control is gone.
     expect(page).toContain('tab = DEFAULT_COMPANY_TAB');
     expect(page).not.toContain('CompanyTabs');
-    // Knowledge intercept may appear first; company tab navigate still present.
-    expect(desktop).toContain("tab: id as CompanyTab");
+    // US-020: the secondary sidebar is gone; company tab navigation rides the
+    // command palette / CompanyPage callbacks instead.
+    expect(desktop).toContain('tab: section.id');
     expect(desktop).toContain("kind: 'company'");
     expect(desktop).toContain('<CompanyPage');
     expect(desktop).toContain('company={activeCompany}');
@@ -128,7 +128,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // projects/in-flight via CompanyBoardPanel). The old flat vault BoardPanel
     // stays retired.
     expect(page).not.toContain('<BoardPanel slug={company.slug} />');
-    // DESKTOP-010: Activity / Deployments / Secrets / Settings live under More
+    // DESKTOP-010: Deployments / Secrets / Settings live under More (US-020)
     // via CompanyOperationsPanel (child panels still preserve backend wiring).
     expect(page).toContain("import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte'");
     expect(page).toContain('<CompanyBoardPanel');

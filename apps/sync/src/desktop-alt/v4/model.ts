@@ -117,12 +117,11 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
     case 'knowledge':
     case 'team':
       return tab;
-    case 'activity':
     case 'deployments':
     case 'secrets':
     case 'settings':
     case 'more':
-      // DESKTOP-010: all four operations destinations light More.
+      // DESKTOP-010: all operations destinations light More (US-020 removed Activity).
       return 'more';
     default:
       return null;
