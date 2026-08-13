@@ -9,6 +9,7 @@
 import {
   channelDisplayName,
   type Channel,
+  type ChannelMembership,
   type ChannelParticipant,
 } from '../../lib/channels';
 
@@ -44,6 +45,13 @@ export interface ConversationRow {
    * is NOT a member of, surfaced only under the "All company projects" filter.
    */
   browseOnly?: boolean;
+  /**
+   * Caller's membership state in the underlying channel (`joined` / `invited` /
+   * `none`). Absent on DM rows and on older payloads (treated as `joined` —
+   * the channels list endpoint only returns the caller's own channels, so
+   * membership counts as "mine" when ownership data is unavailable).
+   */
+  membership?: ChannelMembership;
 }
 
 /** Company option for the scope pill (order preserved from caller). */
@@ -59,7 +67,27 @@ export type SortMode = 'recent' | 'type';
  * `company-projects` (US-021) is the org owner/admin-only view: member project
  * channels PLUS browse-only rows for other members' project channels.
  */
-export type ShowFilter = 'all' | 'projects' | 'dms' | 'company-projects';
+export type ShowFilter = 'mine' | 'all' | 'projects' | 'dms' | 'company-projects';
+
+/** Default Show filter for users with no persisted choice ("My projects"). */
+export const DEFAULT_SHOW_FILTER: ShowFilter = 'mine';
+
+export const SHOW_FILTER_STORAGE_KEY = 'hq.chat.show-filter';
+
+const SHOW_FILTER_VALUES: readonly ShowFilter[] = [
+  'mine',
+  'all',
+  'projects',
+  'dms',
+  'company-projects',
+];
+
+export function isShowFilter(value: unknown): value is ShowFilter {
+  return (
+    typeof value === 'string' &&
+    (SHOW_FILTER_VALUES as readonly string[]).includes(value)
+  );
+}
 
 export interface DaySection {
   /** Stable key for {#each}. */
@@ -219,6 +247,7 @@ export function normalizeChannel(
     memberCount: channel.memberCount,
     members: channel.members,
     channelId: channel.channelId,
+    ...(channel.membership != null ? { membership: channel.membership } : {}),
   };
 }
 
@@ -381,11 +410,34 @@ export function filterByShow(
   }
   const mine = rows.filter((row) => !row.browseOnly);
   if (show === 'all') return mine;
+  if (show === 'mine') {
+    // "My projects" (default): channels the user actually participates in
+    // (or owns) plus all direct conversations. Conservative — ownership data
+    // is often absent, so membership counts as mine; only rows explicitly
+    // marked non-member (`membership: 'none'`, e.g. owner-browse payloads
+    // merged without the browseOnly flag) are excluded.
+    return mine.filter(
+      (row) => row.kind !== 'channel' || isMineChannelRow(row),
+    );
+  }
   if (show === 'projects') {
     return mine.filter((row) => row.kind === 'channel');
   }
   // DMs: 1:1 + group DMs
   return mine.filter((row) => row.kind === 'dm' || row.kind === 'group');
+}
+
+/**
+ * True when a channel row counts as the current user's own under the "My
+ * projects" filter: any membership except an explicit `'none'`. Absent
+ * membership counts as mine (the channels endpoint only lists the caller's
+ * channels; be conservative when ownership data is missing).
+ */
+export function isMineChannelRow(
+  row: Pick<ConversationRow, 'membership' | 'browseOnly'>,
+): boolean {
+  if (row.browseOnly) return false;
+  return (row.membership ?? 'joined') !== 'none';
 }
 
 /** Filter to a single DM counterpart (personUid). */
@@ -592,6 +644,37 @@ export function togglePin(
   if (set.has(conversationId)) set.delete(conversationId);
   else set.add(conversationId);
   return [...set];
+}
+
+// ── Show-filter persistence ──────────────────────────────────────────────────
+
+/**
+ * Load the persisted Show filter. New/unset users default to `'mine'`
+ * ("My projects"); an existing persisted choice (including `'all'`) is
+ * always respected.
+ */
+export function loadShowFilter(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+): ShowFilter {
+  if (!storage) return DEFAULT_SHOW_FILTER;
+  try {
+    const raw = storage.getItem(SHOW_FILTER_STORAGE_KEY);
+    return isShowFilter(raw) ? raw : DEFAULT_SHOW_FILTER;
+  } catch {
+    return DEFAULT_SHOW_FILTER;
+  }
+}
+
+export function saveShowFilter(
+  filter: ShowFilter,
+  storage: Pick<Storage, 'setItem'> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(SHOW_FILTER_STORAGE_KEY, filter);
+  } catch {
+    // Quota / private mode — best-effort.
+  }
 }
 
 // ── DM dots (local-only) ─────────────────────────────────────────────────────

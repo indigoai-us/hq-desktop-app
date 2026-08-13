@@ -19,6 +19,11 @@ import {
   historySearchScopeLabel,
   initialsFor,
   loadPins,
+  loadShowFilter,
+  saveShowFilter,
+  DEFAULT_SHOW_FILTER,
+  SHOW_FILTER_STORAGE_KEY,
+  isMineChannelRow,
   normalizeChannel,
   normalizeConversations,
   normalizeDm,
@@ -472,6 +477,158 @@ describe('sort + show filters', () => {
       personUid: 'p1',
     });
     expect(result.map((r) => r.id)).toEqual(['dm:1']);
+  });
+});
+
+describe("show filter 'mine' (default sidebar = my projects)", () => {
+  const mineRows: ConversationRow[] = [
+    {
+      id: 'ch:member',
+      kind: 'channel',
+      title: 'Mine (membership absent)',
+      companyUid: 'c',
+      unreadDot: false,
+      lastActivityAt: 10,
+      pinned: false,
+    },
+    {
+      id: 'ch:joined',
+      kind: 'channel',
+      title: 'Mine (joined)',
+      companyUid: 'c',
+      unreadDot: false,
+      lastActivityAt: 12,
+      pinned: false,
+      membership: 'joined',
+    },
+    {
+      id: 'ch:none',
+      kind: 'channel',
+      title: 'Not a member',
+      companyUid: 'c',
+      unreadDot: false,
+      lastActivityAt: 14,
+      pinned: false,
+      membership: 'none',
+    },
+    {
+      id: 'ch:browse',
+      kind: 'channel',
+      title: 'Browse-only (owner view)',
+      companyUid: 'c',
+      unreadDot: false,
+      lastActivityAt: 16,
+      pinned: false,
+      browseOnly: true,
+    },
+    {
+      id: 'dm:1',
+      kind: 'dm',
+      title: 'A person',
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: 20,
+      pinned: false,
+      personUid: 'p1',
+    },
+    {
+      id: 'ch:g',
+      kind: 'group',
+      title: 'Group',
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: 30,
+      pinned: false,
+    },
+  ];
+
+  it("'mine' keeps member channels + DMs + groups; drops browse-only and explicit non-member rows", () => {
+    expect(filterByShow(mineRows, 'mine').map((r) => r.id).sort()).toEqual([
+      'ch:g',
+      'ch:joined',
+      'ch:member',
+      'dm:1',
+    ]);
+  });
+
+  it("absent membership counts as mine (conservative when ownership data is missing)", () => {
+    expect(isMineChannelRow({})).toBe(true);
+    expect(isMineChannelRow({ membership: 'joined' })).toBe(true);
+    expect(isMineChannelRow({ membership: 'invited' })).toBe(true);
+    expect(isMineChannelRow({ membership: 'none' })).toBe(false);
+    expect(isMineChannelRow({ browseOnly: true })).toBe(false);
+  });
+
+  it("'mine' composes through applySidebarFilters", () => {
+    const result = applySidebarFilters(mineRows, { show: 'mine', sort: 'recent' });
+    expect(result.map((r) => r.id)).toEqual(['ch:g', 'dm:1', 'ch:joined', 'ch:member']);
+  });
+
+  it('normalizeChannel carries channel membership onto the row', () => {
+    const row = normalizeChannel({
+      channelId: 'ch9',
+      scope: 'company',
+      companyUid: 'c',
+      name: 'proj',
+      membership: 'none',
+    } as never);
+    expect(row.membership).toBe('none');
+    const noMembership = normalizeChannel({
+      channelId: 'ch10',
+      scope: 'company',
+      companyUid: 'c',
+      name: 'proj',
+    } as never);
+    expect(noMembership.membership).toBeUndefined();
+  });
+});
+
+describe('show filter persistence (default mine, persisted choice wins)', () => {
+  function memStorage(initial: Record<string, string> = {}) {
+    const map = new Map(Object.entries(initial));
+    return {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      dump: () => Object.fromEntries(map),
+    };
+  }
+
+  it("defaults new/unset users to 'mine'", () => {
+    expect(DEFAULT_SHOW_FILTER).toBe('mine');
+    expect(loadShowFilter(memStorage())).toBe('mine');
+    expect(loadShowFilter(null)).toBe('mine');
+    expect(loadShowFilter(undefined)).toBe('mine');
+  });
+
+  it('respects an existing persisted filter (including a deliberate all)', () => {
+    expect(loadShowFilter(memStorage({ [SHOW_FILTER_STORAGE_KEY]: 'all' }))).toBe('all');
+    expect(loadShowFilter(memStorage({ [SHOW_FILTER_STORAGE_KEY]: 'dms' }))).toBe('dms');
+    expect(
+      loadShowFilter(memStorage({ [SHOW_FILTER_STORAGE_KEY]: 'company-projects' })),
+    ).toBe('company-projects');
+  });
+
+  it("falls back to 'mine' on invalid persisted values", () => {
+    expect(loadShowFilter(memStorage({ [SHOW_FILTER_STORAGE_KEY]: 'bogus' }))).toBe('mine');
+    expect(loadShowFilter(memStorage({ [SHOW_FILTER_STORAGE_KEY]: '' }))).toBe('mine');
+  });
+
+  it('saveShowFilter round-trips through loadShowFilter', () => {
+    const storage = memStorage();
+    saveShowFilter('projects', storage);
+    expect(storage.dump()[SHOW_FILTER_STORAGE_KEY]).toBe('projects');
+    expect(loadShowFilter(storage)).toBe('projects');
+  });
+
+  it('save is a no-op without storage and load survives a throwing storage', () => {
+    expect(() => saveShowFilter('mine', null)).not.toThrow();
+    expect(
+      loadShowFilter({
+        getItem: () => {
+          throw new Error('denied');
+        },
+      }),
+    ).toBe('mine');
   });
 });
 
