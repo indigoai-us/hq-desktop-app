@@ -1379,10 +1379,14 @@ jobs:
   # vX.Y.Z`; the version commit lands on main here, after the release is
   # already public. Runs last on purpose — a branch this cannot push must never
   # block shipping, and the published artifacts are correct either way.
+  #
+  # Only stable releases sync their version to main. beta/alpha prereleases are
+  # cut from non-main branches (enforced in `validate`), so stamping their
+  # version onto main would push a prerelease version to the trunk — skip them.
   sync-version:
     name: Sync released version to main
     needs: [validate, publish]
-    if: ${{ needs.publish.result == 'success' }}
+    if: ${{ needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' }}
     concurrency:
       # Serialize with itself so two releases finishing together cannot race
       # each other's push and burn all the retries.
