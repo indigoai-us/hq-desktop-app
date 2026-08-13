@@ -22,10 +22,12 @@
     loadLocalProjectStories,
     loadCompanyGoals,
     projectIdentity,
+    type CompanyGoals,
     type Objective,
     type ProjectProvenanceIndex,
     withProjectStatus,
   } from '../lib/local-projects';
+  import { PERSONAL_WORKSPACE_SLUG } from '../lib/file-tree';
   import type { WorkProvenance } from '../lib/provenance';
   import {
     OVERVIEW_PROJECT_LIMIT,
@@ -358,9 +360,16 @@
 
     void (async () => {
       try {
+        // The personal workspace has no company-shaped goals surface —
+        // `get_local_company_goals` authorizes `companies/<slug>`, which never
+        // exists for the personal workspace, so the fetch is guaranteed to
+        // reject and painted the healthy Personal overview with the "Board
+        // unavailable" error. Resolve empty goals instead of asking.
         const [allProjects, goals] = await Promise.all([
           loadLocalProjects(),
-          loadCompanyGoals(activeSlug),
+          activeSlug === PERSONAL_WORKSPACE_SLUG
+            ? Promise.resolve<CompanyGoals>({ objectives: [], initiatives: [] })
+            : loadCompanyGoals(activeSlug),
         ]);
         if (cancelled) return;
         projects = allProjects;

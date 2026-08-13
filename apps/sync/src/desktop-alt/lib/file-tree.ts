@@ -51,6 +51,123 @@ export interface DirEntry {
 }
 
 /**
+ * Reserved slug of the personal workspace. Its knowledge lives at the HQ ROOT
+ * (`personal/knowledge`), NOT under `companies/personal/` — the backend
+ * synthesizes the personal workspace row without a `companies/` directory
+ * (see `src-tauri/src/commands/workspaces.rs`), so company-shaped paths for
+ * this slug point at a tree that never exists.
+ */
+export const PERSONAL_WORKSPACE_SLUG = 'personal';
+
+/**
+ * Knowledge-tree root for a workspace slug.
+ *
+ * Companies keep knowledge at `companies/<slug>/knowledge`; the personal
+ * workspace keeps it at `personal/knowledge` in the HQ root. Pure — the
+ * lexical scope guard in CompanyKnowledgePanel derives from this same value so
+ * root and guard can never disagree.
+ */
+export function knowledgeRootPath(slug: string): string {
+  return slug === PERSONAL_WORKSPACE_SLUG
+    ? 'personal/knowledge'
+    : `companies/${slug}/knowledge`;
+}
+
+/**
+ * Files-mode scope root for a workspace slug filter.
+ *
+ * Companies scope the tree to `companies/<slug>`; the personal workspace's
+ * content root is the top-level `personal/` directory.
+ */
+export function filesScopeRootPath(slug: string): string {
+  return slug === PERSONAL_WORKSPACE_SLUG ? 'personal' : `companies/${slug}`;
+}
+
+/**
+ * Classify a directory-listing failure as "the directory does not exist"
+ * (missing dir or dangling symlink) so the UI can render a calm empty state
+ * instead of a scary load-failure row.
+ *
+ * The backend surfaces a missing directory through two error shapes:
+ *  - `list_dir_entries` — `directory not found: "<path>"` (path exists check)
+ *  - `canonical_hq_relative_path` — `could not resolve "<path>": <io error>`,
+ *    where the io error is ENOENT/ENOTDIR-flavored (`No such file or
+ *    directory (os error 2)` on unix; `The system cannot find the file/path
+ *    specified. (os error 2|3)` on Windows). Canonicalization runs BEFORE the
+ *    listing in `list_hq_dir`, so a missing root usually fails here first.
+ *
+ * A `could not resolve` with any other io error (e.g. permission denied) is
+ * NOT a not-found and stays a real error. Pure string classification — callers
+ * must apply it to the ROOT load only, never to subdirectory loads.
+ */
+export function isRootNotFoundError(err: unknown): boolean {
+  const message = errorText(err);
+  if (message.includes('directory not found:')) return true;
+  if (!message.includes('could not resolve')) return false;
+  const lower = message.toLowerCase();
+  return (
+    /\(os error [23]\)/.test(lower) ||
+    lower.includes('no such file or directory') ||
+    lower.includes('cannot find the file') ||
+    lower.includes('cannot find the path')
+  );
+}
+
+/** Normalize an unknown thrown value into its message text. */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : typeof err === 'string' ? err : String(err ?? '');
+}
+
+/**
+ * How a ROOT directory-listing failure should be presented.
+ *
+ * - `not-found`     the directory itself doesn't exist → calm empty state.
+ * - `scope`         the native `DesktopSessionScope` read gate rejected the
+ *                   read (`company scope not bound` / `cross-company read
+ *                   blocked`, see crates/hq-desktop-core/src/scope_gate.rs).
+ *                   After the viewed-company scope-binding fix this is a
+ *                   transient race at worst — retry succeeds once the bind
+ *                   lands — so it renders calm, retryable copy instead of the
+ *                   scary generic failure.
+ * - `unauthorized`  workspace membership does not grant this company's local
+ *                   files on this machine (`company files/projects are not
+ *                   authorized`) — typically an un-synced cloud company.
+ * - `unknown`       anything else → the generic retryable error row.
+ */
+export type RootLoadErrorKind = 'not-found' | 'scope' | 'unauthorized' | 'unknown';
+
+/** Classify a root-listing failure. Pure; root loads only (never subdirs). */
+export function classifyRootLoadError(err: unknown): RootLoadErrorKind {
+  if (isRootNotFoundError(err)) return 'not-found';
+  const message = errorText(err);
+  if (
+    message.includes('company scope not bound') ||
+    message.includes('cross-company read blocked')
+  ) {
+    return 'scope';
+  }
+  if (
+    message.includes('company files are not authorized') ||
+    message.includes('company projects are not authorized')
+  ) {
+    return 'unauthorized';
+  }
+  return 'unknown';
+}
+
+/** Calm user-facing copy for a classified non-missing root-load failure. */
+export function rootLoadErrorMessage(kind: Exclude<RootLoadErrorKind, 'not-found'>): string {
+  switch (kind) {
+    case 'scope':
+      return 'These files aren’t ready in this view yet';
+    case 'unauthorized':
+      return 'This company’s files aren’t available on this Mac yet — run a sync';
+    default:
+      return 'Files unavailable';
+  }
+}
+
+/**
  * Companies whose filesystem content the current membership may expose.
  *
  * Only an active cloud membership, or a genuinely local-only/no-cloud-identity

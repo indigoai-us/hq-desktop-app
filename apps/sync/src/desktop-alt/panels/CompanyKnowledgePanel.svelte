@@ -14,7 +14,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import CompanyFileTree from '../components/CompanyFileTree.svelte';
   import FilePreviewPane from '../components/FilePreviewPane.svelte';
-  import type { DirEntry } from '../lib/file-tree';
+  import { knowledgeRootPath, type DirEntry } from '../lib/file-tree';
   import '../v4/tokens.css';
 
   interface Props {
@@ -26,7 +26,10 @@
   let selectedPath = $state<string | null>(null);
   let searchQuery = $state('');
 
-  const rootPath = $derived(`companies/${slug}/knowledge`);
+  // Company knowledge lives under `companies/<slug>/knowledge`; the personal
+  // workspace's knowledge lives at the HQ-root `personal/knowledge` tree.
+  // `inKnowledgeScope` derives from this same value, so guard and root agree.
+  const rootPath = $derived(knowledgeRootPath(slug));
 
   // Reset selection + search when the company changes.
   $effect(() => {
@@ -106,7 +109,7 @@
         />
       </label>
       <span class="knowledge-scope-meta" data-testid="knowledge-scope-meta">
-        companies/{slug}/knowledge
+        {rootPath}
       </span>
     </div>
 
@@ -118,6 +121,7 @@
           selectedPath={selectedPath}
           filterQuery={searchQuery}
           onselect={handleSelect}
+          rootMissingLabel="No knowledge here yet"
         />
       {/key}
     </div>
