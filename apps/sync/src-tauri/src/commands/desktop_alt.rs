@@ -50,7 +50,8 @@ pub use hq_desktop_core::desktop_alt::{
     parse_board_response, parse_company_activity, parse_company_board,
     parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
-    parse_secrets_response, read_file_bytes_capped, read_file_content, read_file_content_capped,
+    parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
+    read_file_content, read_file_content_capped,
     resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
     secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
     string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
@@ -183,6 +184,10 @@ pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>
 #[tauri::command]
 pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
     let slug = normalize_slug(&slug)?;
+    // Resolution failures (not found / not synced / not connected) arrive with
+    // a machine-readable code prefix (applied inside `resolve_company_uid`, for
+    // every company surface) so the board panel can render a calm state instead
+    // of the raw diagnostic. Non-resolution errors pass through.
     let company_uid = resolve_company_uid(&slug).await?;
     let url = board_url(&vault_base()?, &company_uid)?;
     let token = cognito::get_valid_access_token()
@@ -844,9 +849,18 @@ fn desktop_alt_ns_string(value: &str) -> *mut objc2::runtime::AnyObject {
     }
 }
 
+/// Resolve a company slug to its cloud UID for every desktop-alt company
+/// command (board, activity, secrets, CRM projection, project creators, team
+/// telemetry). Resolution failures (not found / not synced / not connected)
+/// get a machine-readable code prefix (`COMPANY_NOT_FOUND:` /
+/// `COMPANY_NOT_SYNCED:` / `COMPANY_NOT_CONNECTED:`) so the frontend's shared
+/// `presentPanelError` can render a calm state instead of the raw diagnostic.
+/// Non-resolution errors pass through unchanged, and prefixed errors stay
+/// non-auth, so `get_company_summary` still degrades them to a zero count.
 async fn resolve_company_uid(slug: &str) -> Result<String, String> {
     let result = crate::commands::workspaces::list_syncable_workspaces().await?;
     resolve_company_uid_from_workspaces(result.workspaces, slug)
+        .map_err(prefix_company_resolution_error)
 }
 
 fn vault_base() -> Result<String, String> {

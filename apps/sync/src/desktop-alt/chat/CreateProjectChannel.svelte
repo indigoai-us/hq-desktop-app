@@ -14,6 +14,7 @@
   import type { Channel } from '../../lib/channels';
   import type { Workspace } from '../../lib/workspaces';
   import { loadLocalProjects } from '../lib/local-projects';
+  import { presentPanelError } from '../lib/panel-error';
   import type { Project } from '../lib/projects-model';
   import type { MissionControlSnapshot } from '../lib/sessions';
   import {
@@ -72,7 +73,10 @@
       projects = list;
       pickerRows = list.map(toProjectPickerRow);
     } catch (err) {
-      projectsError = typeof err === 'string' ? err : 'Could not load local projects';
+      projectsError = presentPanelError(err, {
+        surface: 'local projects',
+        fallback: 'Could not load local projects',
+      }).message;
       console.error('create-project-channel: get_local_projects failed', err);
     } finally {
       projectsLoading = false;

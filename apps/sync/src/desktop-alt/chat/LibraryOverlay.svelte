@@ -14,6 +14,7 @@
     type LibraryItems,
   } from '../lib/library';
   import { subscribeLibraryRefresh } from '../lib/library-refresh';
+  import { presentPanelError } from '../lib/panel-error';
   import {
     installMarketplacePack,
     loadMarketplaceListings,
@@ -108,8 +109,10 @@
       marketLoaded = true;
     } catch (err) {
       console.error('library-overlay: marketplace load failed', err);
-      marketError =
-        err instanceof Error ? err.message : 'Marketplace unavailable right now.';
+      marketError = presentPanelError(err, {
+        surface: 'the marketplace',
+        fallback: 'Marketplace unavailable right now.',
+      }).message;
       listings = [];
     } finally {
       marketLoading = false;
