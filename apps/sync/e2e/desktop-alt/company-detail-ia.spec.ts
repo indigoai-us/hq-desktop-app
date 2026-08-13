@@ -86,7 +86,14 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
 
   it('CompanyKnowledgePanel is tenant-scoped to the company knowledge subtree (source contract)', () => {
     const panel = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
-    expect(panel).toContain('`companies/${slug}/knowledge`');
+    const fileTreeLib = readRepoFile('src/desktop-alt/lib/file-tree.ts');
+    // Root derives from the shared knowledgeRootPath helper, whose tenant
+    // mapping is pinned: companies scope to their own knowledge subtree; only
+    // the exact personal slug maps to the HQ-root personal/knowledge tree.
+    expect(panel).toContain('knowledgeRootPath(slug)');
+    expect(fileTreeLib).toContain(': `companies/${slug}/knowledge`');
+    expect(fileTreeLib).toContain("? 'personal/knowledge'");
+    expect(fileTreeLib).toContain('slug === PERSONAL_WORKSPACE_SLUG');
     expect(panel).toContain('CompanyFileTree');
     expect(panel).toContain('FilePreviewPane');
     expect(panel).toContain('inKnowledgeScope');
