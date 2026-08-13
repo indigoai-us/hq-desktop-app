@@ -116,18 +116,42 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Require release tag commit on main
+      # Branch policy, split by channel:
+      #   - stable (vX.Y.Z) MUST ship from main — the release commit has to be
+      #     merged before it is tagged.
+      #   - beta / alpha prereleases are testing builds cut from a feature
+      #     branch, so their tag must NOT be on main. A prerelease tag whose
+      #     commit is already in main's history is rejected: promote it to a
+      #     stable tag instead of shipping alpha/beta off main.
+      - name: Enforce release branch policy
         env:
           TAG: ${{ steps.classify.outputs.tag }}
+          CHANNEL: ${{ steps.classify.outputs.channel }}
+          PRERELEASE: ${{ steps.classify.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
           git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
             "+refs/heads/main:refs/remotes/origin/main"
-          if ! git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
+          if git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
             "${TAG}^{commit}" refs/remotes/origin/main; then
-            echo "::error::Release tag $TAG is not contained in origin/main. Merge the release commit before tagging."
-            exit 1
+            ON_MAIN="true"
+          else
+            ON_MAIN="false"
+          fi
+
+          if [ "$PRERELEASE" = "true" ]; then
+            if [ "$ON_MAIN" = "true" ]; then
+              echo "::error::$CHANNEL prerelease tag $TAG points at a commit on origin/main. alpha and beta releases may only be cut from non-main branches — tag a commit that has not been merged to main, or promote it to a stable vX.Y.Z tag."
+              exit 1
+            fi
+            echo "$CHANNEL prerelease $TAG is off main — allowed."
+          else
+            if [ "$ON_MAIN" != "true" ]; then
+              echo "::error::Stable release tag $TAG is not contained in origin/main. Merge the release commit before tagging a stable release."
+              exit 1
+            fi
+            echo "Stable release $TAG is on main — allowed."
           fi
 
       - name: Confirm the release tag exists
