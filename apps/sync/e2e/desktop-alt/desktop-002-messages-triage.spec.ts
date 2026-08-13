@@ -78,7 +78,7 @@ describe('DESKTOP-002: unified messages and notification triage', () => {
     expect(conversation).toContain("msg.direction === 'out' ? 'You'");
     expect(conversation).toContain('<IdentityMark kind="person" label={messageAuthor(msg)}');
     expect(conversation).toContain('class="dm-msg-meta"');
-    expect(conversation).toContain('grid-template-columns: 28px minmax(0, 720px)');
+    expect(conversation).toContain('grid-template-columns: 32px minmax(0, 1fr)');
     expect(conversation).toMatch(/\.dm-msg-out\s*\{[\s\S]*?align-self:\s*stretch/);
     expect(conversation).toMatch(/\.dm-msg-out \.dm-bubble[\s\S]*?background:\s*transparent/);
   });

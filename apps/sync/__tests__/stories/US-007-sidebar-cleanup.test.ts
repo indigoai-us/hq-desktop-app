@@ -78,12 +78,12 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
     }
   });
 
-  it('lands a fresh desktop on the first sidebar company row (connected-first order)', () => {
-    // No persisted slug → the first rendered company row: Acme (alpha within
-    // the connected group) leads Indigo; the local-only row trails both.
-    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'company', slug: 'acme' });
-    // A workspace-less install falls back to Home, the palette-only exception surface.
-    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'home' });
+  it('lands a fresh desktop on Messages — never a company page (design-gap G1)', () => {
+    // The chat-first shell always opens on the conversation surface; the
+    // legacy company/project-overview landing routed real data there.
+    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'messages' });
+    // Even a workspace-less install lands on the Messages empty state.
+    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'messages' });
     // DesktopApp seeds its route state from the landing helper + the slug
     // persisted by the previous session (frozen at startup).
     expect(desktopApp).toContain('const initialLastCompanySlug = readLastCompanySlug()');
@@ -123,17 +123,10 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
   });
 });
 
-describe('US-007: last-visited company landing (persisted)', () => {
-  it('lands on company B when B was the last visited and still exists', () => {
-    expect(getDesktopLandingRoute(workspaces, 'indigo')).toEqual({
-      kind: 'company',
-      slug: 'indigo',
-    });
-    // A stale slug (workspace removed) falls back to the first company row.
-    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({
-      kind: 'company',
-      slug: 'acme',
-    });
+describe('US-007: last-visited company landing (superseded by G1)', () => {
+  it('ignores a persisted last-visited slug — landing is always Messages', () => {
+    expect(getDesktopLandingRoute(workspaces, 'indigo')).toEqual({ kind: 'messages' });
+    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({ kind: 'messages' });
   });
 
   it('DesktopApp persists the visited company and re-resolves landing after the real workspace load', () => {

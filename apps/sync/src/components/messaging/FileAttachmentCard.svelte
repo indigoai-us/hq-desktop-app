@@ -58,8 +58,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    width: min(320px, 100%);
-    margin: 0.25rem 0;
+    width: auto;
+    max-width: min(100%, 420px);
+    align-self: flex-start;
+    margin: 6px 0;
     padding: 8px 12px;
     border: 1px solid var(--line, var(--pop-border));
     border-radius: 10px;

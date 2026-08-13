@@ -149,10 +149,9 @@
     ></textarea>
 
     <div class="compose-footer">
+      <!-- S4: no persistent "⌘↵ to send" hint — not in the design mock. -->
       {#if sendError}
         <span class="compose-error" role="alert">{sendError}</span>
-      {:else}
-        <span class="compose-hint">⌘↵ to send</span>
       {/if}
       <button class="btn btn-send" type="button" onclick={send} disabled={!canSend}>
         {sendLabel}
@@ -293,14 +292,6 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
-  }
-
-  .compose-hint {
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
   }
 
   .compose-error {

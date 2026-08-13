@@ -66,7 +66,7 @@ describe('US-005: create project channel flow', () => {
 
 describe('US-005: project channel header + tabs', () => {
   it('renders # name · company · project channel with Chat | Board | Files', () => {
-    expect(channelView).toContain('projectChannelHeaderTitle');
+    expect(channelView).toContain('projectChannelHeaderParts');
     expect(channelView).toContain('data-testid="project-channel-title"');
     expect(channelView).toContain('data-testid="project-channel-tabs"');
     expect(channelView).toContain('>Chat<');

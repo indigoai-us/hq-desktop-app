@@ -125,10 +125,29 @@ export interface ChannelGroup {
   channels: Channel[];
 }
 
+/** Strip auto-provision chrome: "Project foo-bar ab12cd" → "foo-bar". */
+export function humanizeChannelName(raw: string): string {
+  let s = raw.trim().replace(/^#+/, '').trim();
+  s = s.replace(/^Project\s+/i, '');
+  s = s.replace(/\s+[0-9a-f]{4,12}$/i, '');
+  return s.trim();
+}
+
+export interface ChannelNameHints {
+  /** Local project id → title, used when the wire name is a slug/hash. */
+  projectTitles?: ReadonlyArray<{ id: string; title?: string | null; name?: string | null }>;
+}
+
 /** Best display name for a channel — its `name`, `#`-stripped + trimmed. Group
  * DMs are unnamed, so they're labeled by their participants. */
-export function channelDisplayName(c: Channel): string {
-  const trimmed = c.name.trim().replace(/^#+/, '');
+export function channelDisplayName(c: Channel, hints: ChannelNameHints = {}): string {
+  const pid = c.projectId?.trim();
+  if (pid && hints.projectTitles?.length) {
+    const hit = hints.projectTitles.find((p) => p.id === pid);
+    const titled = hit?.title?.trim() || hit?.name?.trim();
+    if (titled) return humanizeChannelName(titled);
+  }
+  const trimmed = humanizeChannelName(c.name);
   if (trimmed) return trimmed;
   if (c.scope === 'group') return groupDmLabel(c);
   return c.channelId;

@@ -141,3 +141,56 @@ describe('core-popover-model (US-016)', () => {
     });
   });
 });
+
+// ── Design-gap wave regressions (G6 / G7) ────────────────────────────────────
+
+import { corePillDotTone, driftPillTone } from './core-popover-model';
+
+describe('G6: undetected core never pairs with green NO DRIFT', () => {
+  it('shows a neutral NOT CHECKED pill when hq core is not detected', () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: null, driftCount: 0, needsRestore: false },
+    });
+    expect(vm.hqVersionLabel).toBe('HQ core not detected');
+    expect(vm.coreDetected).toBe(false);
+    expect(vm.driftPill).toBe('NOT CHECKED');
+    expect(vm.driftPillTone).toBe('neutral');
+  });
+
+  it('keeps NO DRIFT green only for a detected, drift-free core', () => {
+    const vm = buildCorePopoverViewModel({
+      core: { hqVersion: '15.0.15', driftCount: 0, needsRestore: false },
+    });
+    expect(vm.driftPill).toBe('NO DRIFT');
+    expect(vm.driftPillTone).toBe('ok');
+    expect(driftPillTone(3, true)).toBe('warn');
+  });
+
+  it('derives the packs header count from the same list the body renders', () => {
+    // Real failure shape: zero installed packs — header said "4 packs
+    // installed" (fixtures) while the body said "No packs installed".
+    const vm = buildCorePopoverViewModel({ packs: [] });
+    expect(vm.packs).toHaveLength(0);
+    expect(vm.packsSummary).toBe('No packs installed');
+    const one = buildCorePopoverViewModel({ packs: [{ name: 'engineering' }] });
+    expect(one.packsSummary).toBe('1 pack installed');
+    expect(one.packs).toHaveLength(1);
+  });
+});
+
+describe('G7: core pill dot tone', () => {
+  it('is amber whenever a conflict/attention item is pending', () => {
+    expect(corePillDotTone({ conflictCount: 1 })).toBe('warn');
+    expect(corePillDotTone({ syncState: 'conflict' })).toBe('warn');
+    expect(corePillDotTone({ syncState: 'error' })).toBe('warn');
+    expect(corePillDotTone({ syncState: 'auth-error' })).toBe('warn');
+    expect(corePillDotTone({ driftCount: 2 })).toBe('warn');
+    expect(corePillDotTone({ cloudPaused: true })).toBe('warn');
+  });
+
+  it('is green only when healthy', () => {
+    expect(corePillDotTone({})).toBe('ok');
+    expect(corePillDotTone({ syncState: 'idle', conflictCount: 0 })).toBe('ok');
+    expect(corePillDotTone({ syncState: 'syncing' })).toBe('ok');
+  });
+});
