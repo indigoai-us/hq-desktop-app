@@ -74,7 +74,7 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     expect(palette).toContain('fuzzyMatch(`${command.label} ${command.detail} ${command.shortcut ?? \'\'}`, query)');
     expect(app).toMatch(/label: 'Go to Meetings'[\s\S]*detail: 'Show calendar and recordings'[\s\S]*action: \(\) => navigate\(\{ kind: 'meetings' \}\)/);
     expect(app).toContain("{:else if route.kind === 'meetings'}");
-    expect(app).toContain('<MeetingsPage />');
+    expect(app).toContain('<MeetingsPage onback={() => navigate({ kind: \'messages\' })} />');
 
     expect(palette).toContain("if (event.key === 'ArrowDown')");
     expect(palette).toContain("if (event.key === 'ArrowUp')");

@@ -394,14 +394,23 @@ export function resolveMemberPillCount(
   return fetchedMemberCount > 0 ? model.memberCount : previousCount;
 }
 
-/** Header title pieces for a project channel: `# name · company · project channel`. */
+/** Header title pieces for a project channel (Daybook: `# name` + dim subtitle). */
+export function projectChannelHeaderParts(
+  channelName: string,
+  companyLabel: string | null | undefined,
+): { title: string; subtitle: string } {
+  const name = channelName.trim().replace(/^#+/, '') || 'channel';
+  const company = companyLabel?.trim() || 'Company';
+  return { title: `# ${name}`, subtitle: `${company} · project channel` };
+}
+
+/** Combined header string — kept for callers that still want one line. */
 export function projectChannelHeaderTitle(
   channelName: string,
   companyLabel: string | null | undefined,
 ): string {
-  const name = channelName.trim().replace(/^#+/, '') || 'channel';
-  const company = companyLabel?.trim() || 'Company';
-  return `# ${name} · ${company} · project channel`;
+  const { title, subtitle } = projectChannelHeaderParts(channelName, companyLabel);
+  return `${title} · ${subtitle}`;
 }
 
 /** Visual-QA fixture members + agents (D-06). */

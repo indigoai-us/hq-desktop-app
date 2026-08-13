@@ -161,20 +161,20 @@ export type DesktopRoute =
 export type DesktopRouteKind = DesktopRoute['kind'];
 
 /**
- * Default landing (US-007): the last-visited company when it still exists,
- * else the FIRST company row in sidebar order (connected-first sort), else
- * Home — the exception surface for a workspace-less install.
+ * Default landing (chat-first shell, design-gap G1): ALWAYS the Messages
+ * conversation surface — the shell opens on the most recent conversation (or
+ * the Messages empty state) regardless of workspace shape. The legacy
+ * US-007 "last-visited company" landing routed real data onto the legacy
+ * project-overview page; that surface must never be a landing destination.
+ * The parameters remain for call-site compatibility and are ignored.
  */
 export function getDesktopLandingRoute(
   workspaces: Workspace[],
   lastVisitedSlug?: string | null,
 ): DesktopRoute {
-  const rows = sortV4CompaniesConnectedFirst(getDesktopCompanies(workspaces));
-  if (lastVisitedSlug && rows.some((row) => row.slug === lastVisitedSlug)) {
-    return { kind: 'company', slug: lastVisitedSlug };
-  }
-  if (rows[0]) return { kind: 'company', slug: rows[0].slug };
-  return { kind: 'home' };
+  void workspaces;
+  void lastVisitedSlug;
+  return { kind: 'messages' };
 }
 
 /**

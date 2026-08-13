@@ -77,6 +77,8 @@
     accountInitials?: string | null;
     /** Currently selected conversation id (`ch:…` / `dm:…`). */
     selectedId?: string | null;
+    /** External company scope (cloud uid). Daybook: picking a company filters the daybook. */
+    scopeUid?: string | null;
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
@@ -88,6 +90,7 @@
     accountLabel = null,
     accountInitials = null,
     selectedId = null,
+    scopeUid = null,
     oncommand,
     onnavigateMessages,
     onopenSettings,
@@ -129,6 +132,9 @@
   let pendingRequests = $state<DmRequest[]>([]);
 
   let scope = $state<CompanyScope>('all');
+  $effect(() => {
+    if (scopeUid) scope = scopeUid;
+  });
   let sortMode = $state<SortMode>('recent');
   let showFilter = $state<ShowFilter>('all');
   let personFilter = $state<string | null>(null);
@@ -170,10 +176,27 @@
 
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
+  let localProjects = $state<LocalProjectLike[]>([]);
+  const projectTitles = $derived(
+    localProjects.map((p) => ({ id: p.id, title: p.title ?? p.name ?? null })),
+  );
+
   const allRows = $derived(
     normalizeConversations(channels, contactsWithUnreads, {
       pinnedIds: pins,
       dmDots,
+      projectTitles,
+    }),
+  );
+
+  // Full people directory (contacts WITHOUT a conversation included) — used
+  // only by the new-message typeahead, never rendered as sidebar rows (G3).
+  const directoryRows = $derived(
+    normalizeConversations(channels, contactsWithUnreads, {
+      pinnedIds: pins,
+      dmDots,
+      includeContactsWithoutConversation: true,
+      projectTitles,
     }),
   );
 
@@ -185,7 +208,10 @@
   const browseRows = $derived(
     showFilter === 'company-projects'
       ? browseOnlyCompanyProjectChannels(channels, companyProjectChannels).map(
-          (c) => ({ ...normalizeChannel(c, { pinnedIds: pins }), browseOnly: true }),
+          (c) => ({
+            ...normalizeChannel(c, { pinnedIds: pins, projectTitles }),
+            browseOnly: true,
+          }),
         )
       : [],
   );
@@ -203,7 +229,7 @@
 
   const grouped = $derived(groupByDay(filteredRows));
   const people = $derived(distinctDmPeople(allRows));
-  const typeaheadRows = $derived(filterTypeahead(allRows, newMessageQuery));
+  const typeaheadRows = $derived(filterTypeahead(directoryRows, newMessageQuery));
   const historyRows = $derived(searchHistory(filteredRows, historyQuery));
   const historyScopeLabel = $derived(historySearchScopeLabel(scope, scopeCompanies));
   const historyCompanyUid = $derived(searchCompanyUidFromScope(scope));
@@ -383,16 +409,28 @@
   async function provisionProjectChannels(): Promise<void> {
     try {
       const projects = await invoke<LocalProjectLike[] | null>('get_local_projects');
+      localProjects = Array.isArray(projects) ? projects : [];
       channelProvisioner.schedule(
-        collectEnsureTargets(projects ?? [], companies ?? []),
+        collectEnsureTargets(localProjects, companies ?? []),
       );
     } catch {
       // Local project listing is best-effort; provisioning must never surface.
     }
   }
 
+  let provisionedOnce = false;
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleRefresh(): void {
+    if (refreshTimer != null) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      void refreshLists();
+    }, 400);
+  }
+
   async function refreshLists(): Promise<void> {
-    loading = true;
+    const firstPaint = channels.length === 0 && contacts.length === 0;
+    if (firstPaint) loading = true;
     loadError = null;
     try {
       const [contactsResp, channelsResp, requestsResp] = await Promise.all([
@@ -416,8 +454,12 @@
         { channels, contacts, cachedAt: Date.now() },
         storage,
       );
-      // US-021: activate channels for member projects after each list load.
-      void provisionProjectChannels();
+      // Provision once per session — doing it on every unread refresh
+      // re-walks every local project and stalls the sidebar.
+      if (!provisionedOnce) {
+        provisionedOnce = true;
+        void provisionProjectChannels();
+      }
     } catch (err) {
       loadError = typeof err === 'string' ? err : 'Could not load conversations';
       console.error('chat-sidebar: refresh failed', err);
@@ -476,7 +518,7 @@
     }).then(track);
 
     void listen('channel:unread-changed', () => {
-      void refreshLists();
+      scheduleRefresh();
     }).then(track);
 
     // Per-pair DM unreads from the SINGLE inbox poll (hq-pro US-010).
@@ -491,7 +533,7 @@
     void listen<{ pairKey: string }>('dm:request-update', (e) => {
       pendingRequests = removeRequest(pendingRequests, e.payload.pairKey);
       // Accept may promote a new contact — refresh so the conversation appears.
-      void refreshLists();
+      scheduleRefresh();
     }).then(track);
 
     function onKeyDown(event: KeyboardEvent) {
@@ -537,7 +579,16 @@
     onselect?.(row);
     onnavigateMessages?.();
 
+    // G4: stash the open target SYNCHRONOUSLY, before any awaited IPC. The
+    // previous ordering awaited mark-read first, so the mounting MessagesShell
+    // could consume an empty stash and the first click appeared to do nothing
+    // (a second click was needed once the shell was already mounted).
     if (row.kind === 'dm' && row.personUid) {
+      requestConversation({
+        personUid: row.personUid,
+        email: row.email ?? '',
+        displayName: row.title,
+      });
       // Optimistic clear (local dot + numeric pair unread), then server mark-read.
       dmDots = clearDmDot(dmDots, row.personUid);
       saveDmDots(dmDots, storage);
@@ -548,25 +599,20 @@
         // Non-fatal — optimistic clear already applied; next poll reconciles.
         console.error('chat-sidebar: mark_dm_thread_read failed', err);
       }
-      requestConversation({
-        personUid: row.personUid,
-        email: row.email ?? '',
-        displayName: row.title,
-      });
       return;
     }
 
     if (row.channelId) {
+      requestChannelOpen(row.channelId, {
+        messageId: focus?.messageId,
+        createdAt: focus?.createdAt,
+      });
       channels = clearChannelUnread(channels, row.channelId);
       try {
         await invoke('mark_channel_read', { channelId: row.channelId });
       } catch (err) {
         console.error('chat-sidebar: mark_channel_read failed', err);
       }
-      requestChannelOpen(row.channelId, {
-        messageId: focus?.messageId,
-        createdAt: focus?.createdAt,
-      });
     }
   }
 
@@ -741,6 +787,17 @@
           title="Company scope (⌘0 All, ⌘1–5 companies, ⌘P Personal)"
           onclick={openScopeMenu}
         >
+          {#if scope === 'all'}
+            <span class="chat-scope-tile all" aria-hidden="true">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+                <rect x="1.75" y="8.25" width="5.5" height="5.5" rx="1" stroke="currentColor" stroke-width="1.3" />
+                <rect x="8.75" y="8.25" width="5.5" height="5.5" rx="1" stroke="currentColor" stroke-width="1.3" />
+                <rect x="5.25" y="2.25" width="5.5" height="5.5" rx="1" stroke="currentColor" stroke-width="1.3" />
+              </svg>
+            </span>
+          {:else}
+            <span class="chat-scope-tile" aria-hidden="true">{initialsFor(scopeLabel)}</span>
+          {/if}
           {scopeLabel}
           <span class="chat-scope-caret" aria-hidden="true">⌄</span>
         </button>
@@ -819,6 +876,7 @@
           <button
             type="button"
             class="chat-icon-btn"
+            class:on={showFilter !== 'all' || personFilter != null}
             data-testid="chat-filter"
             aria-label="Filter conversations"
             aria-expanded={filterOpen}
@@ -861,7 +919,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'all'}
-                onclick={() => (showFilter = 'all')}
+                onclick={() => { showFilter = 'all'; filterOpen = false; }}
               >
                 All
               </button>
@@ -869,7 +927,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'projects'}
-                onclick={() => (showFilter = 'projects')}
+                onclick={() => { showFilter = 'projects'; filterOpen = false; }}
               >
                 Projects
               </button>
@@ -877,7 +935,7 @@
                 type="button"
                 class="chat-popover-row"
                 class:active={showFilter === 'dms'}
-                onclick={() => (showFilter = 'dms')}
+                onclick={() => { showFilter = 'dms'; filterOpen = false; }}
               >
                 DMs
               </button>
@@ -889,7 +947,7 @@
                   class="chat-popover-row"
                   data-testid="chat-filter-company-projects"
                   class:active={showFilter === 'company-projects'}
-                  onclick={() => (showFilter = 'company-projects')}
+                  onclick={() => { showFilter = 'company-projects'; filterOpen = false; }}
                 >
                   All company projects
                 </button>
@@ -900,7 +958,7 @@
                   type="button"
                   class="chat-popover-row"
                   class:active={personFilter == null}
-                  onclick={() => (personFilter = null)}
+                  onclick={() => { personFilter = null; filterOpen = false; }}
                 >
                   Everyone
                 </button>
@@ -909,7 +967,7 @@
                     type="button"
                     class="chat-popover-row"
                     class:active={personFilter === person.personUid}
-                    onclick={() => (personFilter = person.personUid)}
+                    onclick={() => { personFilter = person.personUid; filterOpen = false; }}
                   >
                     {person.label}
                   </button>
@@ -943,7 +1001,14 @@
       {/if}
 
       {#if grouped.pinned.length > 0}
-        <div class="chat-section-label" id="chat-pinned-label">Pinned</div>
+        <div class="chat-section-label" id="chat-pinned-label">
+          <span class="chat-pin-ic" aria-hidden="true">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M10.2 2.4 13.6 5.8a.8.8 0 0 1-.15 1.26l-2.2 1.27-.7 3.15a.6.6 0 0 1-.98.32L7.2 9.43 4.3 12.32a.55.55 0 0 1-.78-.78L6.4 8.66 4.05 6.3a.6.6 0 0 1 .32-.98l3.15-.7 1.27-2.2A.8.8 0 0 1 10.2 2.4Z" />
+            </svg>
+          </span>
+          PINNED
+        </div>
         <div class="chat-list" role="list" aria-labelledby="chat-pinned-label">
           {#each grouped.pinned as row (row.id)}
             {@render conversationRow(row)}
@@ -1188,6 +1253,29 @@
     min-width: 0;
   }
 
+  .chat-scope-tile {
+    display: grid;
+    place-items: center;
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    background: var(--btn-bg);
+    color: var(--t2);
+    font: 700 9px var(--font-ui);
+    letter-spacing: 0.18px;
+  }
+
+  .chat-scope-tile.all {
+    color: var(--t2);
+  }
+
+  .chat-pin-ic {
+    display: inline-grid;
+    place-items: center;
+    color: var(--t2);
+  }
+
   .chat-scope-pill {
     display: inline-flex;
     align-items: center;
@@ -1224,29 +1312,44 @@
     line-height: 1;
   }
 
+  /* S3: 252px panel, 32px single-line rows (tile + label + chord inline),
+     no wrap and no resting scrollbar artifact — token contract §6 scopePanel. */
   .chat-scope-menu {
     left: 0;
     right: auto;
-    min-width: 200px;
-    max-height: 320px;
+    width: 252px;
+    min-width: 252px;
+    max-height: min(60vh, 420px);
+    overflow-y: auto;
+    scrollbar-width: none;
   }
 
-  .chat-scope-row {
+  .chat-scope-menu::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Double-class beats the later `.chat-popover-row { display: block }`. */
+  .chat-popover-row.chat-scope-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    flex-wrap: nowrap;
+    gap: 9px;
+    box-sizing: border-box;
+    height: 32px;
+    padding: 6px 8px;
+    white-space: nowrap;
   }
 
   .chat-scope-avatar {
     display: grid;
     place-items: center;
-    flex: 0 0 20px;
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
-    background: var(--line2);
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    background: var(--btn-bg);
     color: var(--t2);
-    font: 700 8px var(--font-ui);
+    font: 700 9px var(--font-ui);
     letter-spacing: 0.02em;
   }
 
@@ -1300,6 +1403,7 @@
     transition: color 0.12s, background 0.12s;
   }
 
+  .chat-icon-btn.on,
   .chat-icon-btn:hover,
   .chat-icon-btn[aria-expanded='true'] {
     border-color: transparent;
@@ -1334,10 +1438,14 @@
   .chat-scroll::-webkit-scrollbar-thumb:hover { background: var(--line2); }
 
   .chat-section-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     flex: 0 0 auto;
     margin: 0;
     padding: 12px 8px 4px;
     color: var(--t2);
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.1em;
@@ -1415,6 +1523,12 @@
     line-height: 1.2;
     text-align: left;
     cursor: pointer;
+  }
+
+  .chat-requests-row {
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 500;
   }
 
   .chat-row:hover {

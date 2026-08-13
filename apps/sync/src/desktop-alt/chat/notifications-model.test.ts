@@ -246,7 +246,8 @@ describe('notifications-model (US-012)', () => {
       expect(next.items.every((i) => i.status === 'read')).toBe(true);
       const view = buildNotificationsView(next, NOW);
       expect(view.badgeText).toBeNull();
-      expect(view.headerTitle).toBe('Notifications · 0 unread');
+      expect(view.headerTitle).toBe('Notifications');
+      expect(view.headerUnread).toBe('0 unread');
     });
 
     it('actionUsed disables actions and acks the row', () => {

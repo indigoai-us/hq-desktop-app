@@ -177,7 +177,9 @@ describe('US-019 per-screen testid contracts', () => {
     expect(core).toContain('data-testid="core-popover"');
     expect(core).toContain('data-testid="core-popover-rescue-card"');
     expect(core).toContain('data-testid="core-popover-drift-count"');
-    expect(core).toContain('data-testid="core-popover-no-drift"');
+    // G6: pill testid is state-derived (detected vs undetected core).
+    expect(core).toContain("'core-popover-no-drift'");
+    expect(core).toContain("'core-popover-core-undetected'");
     expect(core).toContain('data-testid="core-popover-app-update"');
     expect(core).toContain('data-testid="core-popover-paused"');
     expect(meetings).toContain('data-testid="desktop-alt-meetings"');

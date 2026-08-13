@@ -259,15 +259,15 @@ describe('day grouping', () => {
 
   it('labels TODAY with real month/day, YESTERDAY, and weekday names for 2–7d', () => {
     expect(daySectionLabel(msOnDay(0), NOW)).toMatch(/^TODAY · AUG 12$/);
-    expect(daySectionLabel(msOnDay(1), NOW)).toBe('YESTERDAY');
+    expect(daySectionLabel(msOnDay(1), NOW)).toBe('YESTERDAY · AUG 11');
     // 2 days before Wed Aug 12 = Monday
-    expect(daySectionLabel(msOnDay(2), NOW)).toBe('MONDAY');
+    expect(daySectionLabel(msOnDay(2), NOW)).toBe('MONDAY · AUG 10');
     // 3 days = Sunday
-    expect(daySectionLabel(msOnDay(3), NOW)).toBe('SUNDAY');
+    expect(daySectionLabel(msOnDay(3), NOW)).toBe('SUNDAY · AUG 9');
   });
 
-  it('titlebar day·date uses weekday abbrev + month day', () => {
-    expect(titlebarDayDate(NOW)).toBe('WED · AUG 12');
+  it('titlebar day·date uses full weekday + month day', () => {
+    expect(titlebarDayDate(NOW)).toBe('WEDNESDAY · AUG 12');
   });
 
   it('groups recent days into sections and collapses >7d into LAST WEEK', () => {
@@ -284,8 +284,8 @@ describe('day grouping', () => {
     expect(grouped.pinned.map((r) => r.id)).toEqual(['pinned-old']);
     expect(grouped.sections.map((s) => s.label)).toEqual([
       'TODAY · AUG 12',
-      'YESTERDAY',
-      'MONDAY',
+      'YESTERDAY · AUG 11',
+      'MONDAY · AUG 10',
     ]);
     expect(grouped.sections[0]?.rows.map((r) => r.id)).toEqual(['today']);
     expect(grouped.lastWeek.map((r) => r.id).sort()).toEqual(['old-a', 'old-b']);
@@ -739,5 +739,99 @@ describe('US-013 message search helpers', () => {
     const yesterdayIso = new Date(NOW - 86_400_000).toISOString();
     const label = formatSearchHitTime(yesterdayIso, NOW);
     expect(label.startsWith('Yesterday')).toBe(true);
+  });
+});
+
+// ── Design-gap wave regressions (G2 / G3) — real failure shapes ─────────────
+
+describe('G2: day grouping on real mixed conversation timestamps', () => {
+  it('splits real ISO-timestamped channels/DMs into TODAY / YESTERDAY / weekday sections, LAST WEEK only for >7d', () => {
+    // Real shape: server ISO strings on channels AND contacts (not epoch/absent).
+    const channels: Channel[] = [
+      channel({ channelId: 'ch_today', name: 'hq-dev', lastActivityAt: iso(msOnDay(0, 9)) }),
+      channel({ channelId: 'ch_yday', name: 'vyg-dev', lastMessageAt: iso(msOnDay(1, 17)) }),
+      channel({ channelId: 'ch_mon', name: 'general', lastActivityAt: iso(msOnDay(3, 8)) }),
+      channel({ channelId: 'ch_old', name: 'crew', lastActivityAt: iso(msOnDay(12, 8)) }),
+    ];
+    const contacts: DmContactInput[] = [
+      dm({ personUid: 'prs_a', displayName: 'Jacob Posel', lastDmAt: iso(msOnDay(0, 10)) }),
+      dm({ personUid: 'prs_b', displayName: 'Alan Saura', lastMessageAt: iso(msOnDay(9, 10)) }),
+    ];
+    const rows = normalizeConversations(channels, contacts);
+    const grouped = groupByDay(applySidebarFilters(rows), NOW);
+
+    // Sections exist for today / yesterday / a weekday — NOT one LAST WEEK dump.
+    expect(grouped.sections.length).toBe(3);
+    expect(grouped.sections[0]!.label.startsWith('TODAY')).toBe(true);
+    expect(grouped.sections[0]!.rows.map((r) => r.id).sort()).toEqual(
+      ['ch:ch_today', 'dm:prs_a'].sort(),
+    );
+    expect(grouped.sections[1]!.label).toBe('YESTERDAY · AUG 11');
+    // 3 days ago (Sunday relative to Wed Aug 12 minus 3 = Sunday) — a weekday name.
+    expect(grouped.sections[2]!.label).toMatch(
+      /^(SUNDAY|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY) · AUG \d+$/,
+    );
+    // Only genuinely old (>7d) rows fold under LAST WEEK.
+    expect(grouped.lastWeek.map((r) => r.id).sort()).toEqual(
+      ['ch:ch_old', 'dm:prs_b'].sort(),
+    );
+  });
+
+  it('channels stripped of timestamps (the pre-fix Rust wire bug shape) would all fold — activity fields must be honored when present', () => {
+    // The regression shape: 106 rows all lastActivityAt=0 → single LAST WEEK fold.
+    const stripped = [
+      channel({ channelId: 'c1', name: 'hq-dev' }),
+      channel({ channelId: 'c2', name: 'general' }),
+    ];
+    const grouped = groupByDay(normalizeConversations(stripped, []), NOW);
+    expect(grouped.sections.length).toBe(0);
+    expect(grouped.lastWeek.length).toBe(2);
+    // Same channels WITH the server timestamps surface in day sections.
+    const withTs = stripped.map((c) => ({ ...c, lastActivityAt: iso(msOnDay(0, 9)) }));
+    const fixed = groupByDay(normalizeConversations(withTs, []), NOW);
+    expect(fixed.lastWeek.length).toBe(0);
+    expect(fixed.sections[0]!.rows.length).toBe(2);
+  });
+});
+
+describe('G3: contacts directory never renders as sidebar conversation rows', () => {
+  // Real failure shape: /v1/notify/contacts returns the whole people directory,
+  // including raw agent ids, with NO conversation timestamps.
+  const directoryContacts: DmContactInput[] = [
+    dm({ personUid: 'agt_01kwcayv2bgw9za9993', displayName: '', email: '' }),
+    dm({ personUid: 'prs_alan', displayName: 'Alan Saura' }),
+    dm({ personUid: 'prs_aleena', displayName: 'Aleena Hassaan' }),
+  ];
+  const realDm = dm({
+    personUid: 'prs_jacob',
+    displayName: 'Jacob Posel',
+    lastDmAt: iso(msOnDay(0, 10)),
+  });
+
+  it('excludes contacts with no conversation signal (incl. agt_* ids)', () => {
+    const rows = normalizeConversations([], [...directoryContacts, realDm]);
+    expect(rows.map((r) => r.id)).toEqual(['dm:prs_jacob']);
+  });
+
+  it('keeps contacts with server unread or a local activity dot', () => {
+    const rows = normalizeConversations(
+      [],
+      [
+        dm({ personUid: 'prs_unread', displayName: 'U', unreadCount: 2 }),
+        dm({ personUid: 'prs_dot', displayName: 'D' }),
+        dm({ personUid: 'prs_silent', displayName: 'S' }),
+      ],
+      { dmDots: ['prs_dot'] },
+    );
+    expect(rows.map((r) => r.id).sort()).toEqual(['dm:prs_dot', 'dm:prs_unread']);
+  });
+
+  it('still exposes the full directory to the new-message typeahead', () => {
+    const rows = normalizeConversations([], [...directoryContacts, realDm], {
+      includeContactsWithoutConversation: true,
+    });
+    expect(rows).toHaveLength(4);
+    const hits = filterTypeahead(rows, 'alan');
+    expect(hits.map((r) => r.personUid)).toContain('prs_alan');
   });
 });

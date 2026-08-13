@@ -3070,6 +3070,8 @@ mod tests {
             membership: Some("joined".to_string()),
             unread: Some(unread),
             member_count: None,
+            last_activity_at: None,
+            last_message_at: None,
             created_at: None,
             members: None,
         }
@@ -3171,6 +3173,8 @@ mod tests {
             membership: Some("joined".to_string()),
             unread: Some(0),
             member_count: Some(5),
+            last_activity_at: None,
+            last_message_at: None,
             created_at: None,
             members: None,
         }

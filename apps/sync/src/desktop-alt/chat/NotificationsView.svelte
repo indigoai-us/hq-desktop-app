@@ -188,6 +188,7 @@
       <h1 id="notifications-title" data-testid="notifications-title">
         {view.headerTitle}
       </h1>
+      <span class="notif-unread" data-testid="notifications-unread">{view.headerUnread}</span>
     </div>
 
     <div class="notif-header-actions">
@@ -377,24 +378,36 @@
   .notif-header {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
+    min-height: 52px;
+    padding: 0 8px 0 0;
   }
 
   .notif-header-leading {
-    display: grid;
-    gap: 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
     min-width: 0;
+  }
+
+  .notif-unread {
+    color: var(--t3);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    white-space: nowrap;
   }
 
   .notif-back {
     appearance: none;
     -webkit-appearance: none;
-    align-self: start;
-    height: 28px;
-    padding: 0 2px;
-    border: 0;
+    align-self: center;
+    height: 29.4px;
+    padding: 5px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
     background: transparent;
     color: var(--t2);
     font: inherit;

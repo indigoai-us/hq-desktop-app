@@ -418,9 +418,7 @@
     </div>
     <div class="column-body">
       {#if column.cards.length === 0}
-        <div class="column-empty">
-          <span>No stories</span>
-        </div>
+        <div class="column-empty" aria-hidden="true"></div>
       {:else}
         {#each column.cards as card (card.storyId)}
           <button
@@ -432,7 +430,11 @@
             onclick={() => openCard(card)}
           >
             <span class="card-label">{card.label}</span>
-            <span class="card-status">{card.statusLine}</span>
+            <span
+              class="card-status"
+              class:ok={/SHIPPED|AGENT RUNNING|CI GREEN|GREEN/.test(card.statusLine)}
+              class:warn={/PR OPEN|REVIEW|WARN/.test(card.statusLine)}
+            >{card.statusLine}</span>
           </button>
         {/each}
       {/if}
@@ -518,6 +520,11 @@
     font-weight: 500;
     line-height: 16px;
   }
+  .column-count::before {
+    content: '·';
+    margin-right: 6px;
+    color: var(--t3);
+  }
 
   .column-body {
     display: flex;
@@ -588,6 +595,12 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     line-height: 1.3;
+  }
+  .card-status.ok {
+    color: var(--ok-ink, #4ade80);
+  }
+  .card-status.warn {
+    color: var(--warn-ink, #fbbf24);
   }
 
   /* Story detail side panel */

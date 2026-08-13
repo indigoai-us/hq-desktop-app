@@ -37,6 +37,8 @@ export interface WorkspaceLike {
 export interface LocalProjectLike {
   id: string;
   company: string;
+  title?: string | null;
+  name?: string | null;
 }
 
 /** Roles that grant company-admin authority. Kept in lockstep with Rust. */

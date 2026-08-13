@@ -26,22 +26,24 @@ describe('US-011: DM + group DM V2 surfaces', () => {
   it('1:1 DM header is reduced chrome: "<Name> · direct message"', () => {
     expect(messagesShell).toContain('data-testid="dm-header"');
     expect(messagesShell).toContain('data-testid="dm-header-title"');
-    expect(messagesShell).toContain('· direct message');
+    expect(messagesShell).toContain('direct message');
     // No tabs / members affordance on the 1:1 path (those live in ChannelView only).
     expect(messagesShell).not.toMatch(
       /selected[\s\S]{0,200}project-channel-tabs|data-testid="project-channel-tabs"/,
     );
   });
 
-  it('group DM header is reduced chrome: members · group message; no tabs/members button', () => {
-    expect(channelView).toContain('· group message');
+  it('group DM header keeps reduced chrome but shows the members pill (design-gap G8)', () => {
+    expect(channelView).toContain('group message');
     expect(channelView).toContain("isGroup ? 'group-dm-header' : 'channel-header'");
     expect(channelView).toContain('data-testid="group-dm-title"');
     expect(channelView).toContain('class:group-dm={isGroup}');
-    // Tabs stay project-only; members button suppressed for group scope.
+    // Tabs stay project-only; the members pill renders on group DMs too (G8),
+    // gated only on the caller actually being a member.
     expect(channelView).toContain('{#if isProject}');
     expect(channelView).toContain('data-testid="project-channel-tabs"');
-    expect(channelView).toContain('{#if !isGroup}');
+    expect(channelView).toContain('{#if !invited}');
+    expect(channelView).not.toContain('{#if !isGroup}');
     expect(channelView).toContain('data-testid="channel-member-count"');
   });
 
