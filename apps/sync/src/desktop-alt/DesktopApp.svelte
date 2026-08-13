@@ -1831,6 +1831,7 @@
     unreadCount={notificationsUnreadCount}
     {cloudPaused}
     conflicts={homeConflicts}
+    driftCount={coreState?.driftReport?.count ?? 0}
     oncloudtoggle={handleCloudToggle}
     onresolveconflict={handleResolveConflict}
     onopenconflict={handleCompareConflict}

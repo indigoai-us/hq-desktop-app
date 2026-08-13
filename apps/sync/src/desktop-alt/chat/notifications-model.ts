@@ -538,11 +538,15 @@ export function formatBadgeCount(unreadCount: number): string | null {
   return String(n);
 }
 
-/** Header title: "Notifications · N unread". */
+/** Combined header string (legacy). Prefer title + unread subtitle. */
 export function formatNotificationsHeader(unreadCount: number): string {
   const n = Number.isFinite(unreadCount) ? Math.max(0, Math.floor(unreadCount)) : 0;
-  const noun = n === 1 ? 'unread' : 'unread';
-  return `Notifications · ${n} ${noun}`;
+  return `Notifications · ${n} unread`;
+}
+
+export function formatNotificationsUnread(unreadCount: number): string {
+  const n = Number.isFinite(unreadCount) ? Math.max(0, Math.floor(unreadCount)) : 0;
+  return `${n} unread`;
 }
 
 export function emptyFeedState(
@@ -646,13 +650,15 @@ export function buildNotificationsView(
 ): {
   groups: NotificationsDayGroup[];
   headerTitle: string;
+  headerUnread: string;
   badgeText: string | null;
   visibleCount: number;
 } {
   const visible = filterNotifications(state.items, state.filter);
   return {
     groups: groupNotificationsByDay(visible, now),
-    headerTitle: formatNotificationsHeader(state.unreadCount),
+    headerTitle: 'Notifications',
+    headerUnread: formatNotificationsUnread(state.unreadCount),
     badgeText: formatBadgeCount(state.unreadCount),
     visibleCount: visible.length,
   };

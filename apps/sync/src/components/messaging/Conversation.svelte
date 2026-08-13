@@ -415,12 +415,19 @@
   }
 
   function formatDateSeparator(iso: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    const today = new Date();
+    const start = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const diffDays = Math.round((start(today) - start(date)) / 86_400_000);
+    if (diffDays === 0) return 'TODAY';
+    if (diffDays === 1) return 'YESTERDAY';
     try {
       return new Intl.DateTimeFormat(undefined, {
+        weekday: 'short',
         month: 'short',
         day: 'numeric',
-        year: 'numeric',
-      }).format(new Date(iso));
+      }).format(date).toUpperCase();
     } catch {
       return '';
     }
@@ -565,7 +572,7 @@
   }
 </script>
 
-<div class="dm-thread-wrap">
+<div class="dm-thread-wrap chat-shell">
   <div
     class="dm-thread"
     bind:this={scrollEl}
@@ -853,7 +860,7 @@
           </span>
         {/if}
       {:else if msg.direction === 'out' && groupEnd}
-        <span class="dm-msg-time">Delivered</span>
+        <span class="sr-only">Delivered</span>
       {:else if !groupEnd}
         <span class="sr-only">
           Sent at {formatTime(msg.createdAt)}{msg.direction === 'out' ? ' · Delivered' : ''}
@@ -949,10 +956,9 @@
           {/if}
         </div>
       </div>
+      <!-- S4: no persistent "⌘↵ to send" hint — not in the design mock. -->
       {#if sendError}
         <span class="dm-reply-error" role="alert">{sendError}</span>
-      {:else}
-        <span class="dm-reply-hint">⌘↵ to send</span>
       {/if}
       <button
         class="btn btn-send"
@@ -966,8 +972,8 @@
         {#if sending}
           <span class="inline-spinner" aria-hidden="true"></span>
         {:else}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M8 13V3M8 3 3.75 7.25M8 3l4.25 4.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M5.2 3.15c0-.55.6-.88 1.07-.6l7.1 4.35a.7.7 0 0 1 0 1.2l-7.1 4.35a.7.7 0 0 1-1.07-.6V3.15Z" />
           </svg>
         {/if}
       </button>
@@ -1490,11 +1496,13 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 0.5rem 0;
+    margin: 8px 24px;
     color: var(--t3, var(--pop-muted));
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
   }
 
   .date-separator::before,
@@ -1994,8 +2002,8 @@
     padding: 0;
     margin-left: auto;
     border-radius: 6px;
-    background: var(--ice-ink, var(--c-btn-bg));
-    color: var(--badge-fg, var(--c-btn-fg));
+    background: #c9d6e4;
+    color: #101014;
     transition: opacity 0.15s, transform 0.1s;
   }
 
@@ -2010,6 +2018,12 @@
   .btn-send:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+
+  :global(html[data-force-theme='light']) .btn-send,
+  :global(:root[data-force-theme='light']) .btn-send {
+    background: #3e5a75;
+    color: #ffffff;
   }
 
   /* ── Compact communications window ──────────────────────────────────────
@@ -2471,13 +2485,23 @@
     white-space: nowrap;
   }
 
+  /* S1: timestamps hidden at rest, hover-revealed — mono 10px per the
+     canonical token contract (.when: opacity 0 at rest, F1 10px). */
   .dm-msg-header-time {
     flex: 0 0 auto;
     color: var(--muted-3, var(--pop-muted));
-    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
-    font-size: var(--text-xs, 0.75rem);
-    font-weight: 450;
-    line-height: 1.3;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 10px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.45;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .dm-msg:hover .dm-msg-header-time,
+  .dm-msg:focus-within .dm-msg-header-time {
+    opacity: 1;
   }
 
   .dm-bubble,

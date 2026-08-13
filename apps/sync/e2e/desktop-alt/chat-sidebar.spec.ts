@@ -56,7 +56,7 @@ describe('US-003: ChatSidebar structure', () => {
     expect(chatSidebar).toContain('data-testid="chat-show-history"');
     expect(chatSidebar).toContain('data-testid="chat-user-card"');
     expect(chatSidebar).toContain('data-testid="chat-user-menu"');
-    expect(chatSidebar).toContain('Pinned');
+    expect(chatSidebar).toContain('PINNED');
     expect(chatSidebar).toContain('Show all history…');
     expect(chatSidebar).toContain('SYNCED');
     expect(chatSidebar).toContain('Settings');

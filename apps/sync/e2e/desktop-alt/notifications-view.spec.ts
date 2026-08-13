@@ -154,6 +154,7 @@ describe('desktop notifications view (US-012)', () => {
 
     const viewModel = buildNotificationsView(after);
     expect(viewModel.badgeText).toBeNull();
-    expect(viewModel.headerTitle).toBe('Notifications · 0 unread');
+    expect(viewModel.headerTitle).toBe('Notifications');
+    expect(viewModel.headerUnread).toBe('0 unread');
   });
 });

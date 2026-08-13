@@ -77,24 +77,23 @@ describe('US-003: Desktop-alt app shell — chat sidebar, route state, ⌘ hotke
     expect(desktopApp).not.toMatch(/<V4Sidebar\b/);
   });
 
-  it('lands on the first connected company and sorts companies connected-first', () => {
+  it('lands on Messages (design-gap G1) and sorts companies connected-first', () => {
     const landing = getDesktopLandingRoute(workspaces, null);
-    expect(landing).toEqual({ kind: 'company', slug: 'acme' });
+    expect(landing).toEqual({ kind: 'messages' });
 
     // Connected-first sort (US-007): personal (always live), acme (synced) and
     // globex (cloud-only) are all connected, so they list alphabetically by
     // display name within the single connected group.
-    const companies = sortV4CompaniesConnectedFirst(workspaces, landing.kind === 'company' ? landing.slug : null);
-    expect(companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
+    const companies = sortV4CompaniesConnectedFirst(workspaces, null);
     expect(companies.map((row) => row.label)).toEqual([
       'Acme Corp',
       'Globex',
       'Personal',
     ]);
-    // The landing route resolves its company.
+    // A non-company landing resolves no active company.
     expect(
       getDesktopActiveCompany(landing, getDesktopCompanies(workspaces)),
-    ).toMatchObject({ slug: 'acme' });
+    ).toBeNull();
   });
 
   it('switches the main pane to Meetings when the user presses ⌘2 (US-008 renumber)', () => {

@@ -405,7 +405,7 @@
     </svg>
   {/snippet}
 
-  <header class="page-header meetings-toolbar">
+  <header class="page-header meetings-toolbar chat-shell">
     <div class="ph-titles">
       <h1>Meetings</h1>
       <div class="subtitle" data-testid="meetings-dek">{MEETINGS_PAGE_DEK}</div>
@@ -741,25 +741,26 @@
   }
   .ph-titles {
     min-width: 0;
-    display: grid;
-    grid-template-rows: auto auto;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--v4-row-stack-gap, 3px);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
   }
   .ph-titles h1 {
     margin: 0;
-    color: var(--v4-text-1);
-    font-family: var(--font-display, var(--font-sans));
-    font-size: var(--type-detail, 18px);
+    color: var(--t1, var(--v4-text-1));
+    font-family: var(--font-ui, var(--font-display, var(--font-sans)));
+    font-size: 15px;
     font-weight: 600;
-    line-height: 1.2;
-    letter-spacing: -0.01em;
+    line-height: 1.45;
+    letter-spacing: 0;
   }
   .subtitle {
     margin: 0;
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
-    line-height: 1.4;
+    color: var(--t3, var(--v4-text-3));
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
   }
   .page-error {
     display: flex;

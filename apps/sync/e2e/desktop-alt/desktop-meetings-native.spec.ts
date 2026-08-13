@@ -16,16 +16,13 @@ describe('Meetings native: compact IA and preserved actions', () => {
   const store = readRepoFile('src/desktop-alt/lib/meetings-store.svelte.ts');
 
   it('uses a compact toolbar without an oversized title block or three summary cards', () => {
-    expect(page).toContain('class="page-header meetings-toolbar"');
+    expect(page).toContain('class="page-header meetings-toolbar chat-shell"');
     expect(page).toContain('<h1>Meetings</h1>');
     expect(page).toContain('MEETINGS_PAGE_DEK');
     expect(page).toContain('{toolbarMeta}');
-    expect(page).toMatch(
-      /\.ph-titles\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
-    );
-    expect(page).toMatch(
-      /\.ph-titles h1\s*\{[\s\S]*?font-size:\s*var\(--type-detail/,
-    );
+    // Token contract §7: meetings reuses the chan-head pattern — 15px w600
+    // title on an inline baseline row (no display-scale grid title block).
+    expect(page).toMatch(/\.ph-titles h1\s*\{[\s\S]*?font-size:\s*15px/);
     // No permanent 3-card dashboard (Live/Up next/Signal pool as equal cards).
     expect(page).not.toContain('class="three-col"');
     expect(page).not.toContain('>Signal pool<');
@@ -105,7 +102,6 @@ describe('Meetings native: compact IA and preserved actions', () => {
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
 
-    expect(page).toContain('--type-detail');
     expect(page).toContain('--type-secondary');
     expect(page).toContain('--type-body');
     expect(page).toContain('--type-metadata');

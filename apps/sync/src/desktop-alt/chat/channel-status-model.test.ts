@@ -5,6 +5,7 @@ import {
   extractStoryId,
   firstOpenStoryId,
   liveAgentRowFromSession,
+  projectChannelHeaderParts,
   projectChannelHeaderTitle,
   resolveMemberPillCount,
   resolvePreviewUrl,
@@ -173,6 +174,10 @@ describe('channel-status-model (US-005 status popover)', () => {
     expect(projectChannelHeaderTitle('#launch', null)).toBe(
       '# launch · Company · project channel',
     );
+    expect(projectChannelHeaderParts('hq-desktop', 'Indigo')).toEqual({
+      title: '# hq-desktop',
+      subtitle: 'Indigo · project channel',
+    });
   });
 
   it('hides preview when no deploy url exists', () => {

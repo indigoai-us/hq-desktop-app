@@ -45,19 +45,18 @@ function company(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('US-002 V4 desktop routes', () => {
-  it('lands on the last-visited company, falling back to the first sidebar company row (US-007)', () => {
+  it('always lands on Messages — never the legacy company/project-overview page (design-gap G1)', () => {
     const workspaces = [
       company({ slug: 'zed', displayName: 'Zed', state: 'synced' }),
       company({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
     ];
-    // Sidebar order is connected-first + alphabetical — Acme is the first row.
-    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'company', slug: 'acme' });
-    // A persisted last-visited slug wins while it still exists…
-    expect(getDesktopLandingRoute(workspaces, 'zed')).toEqual({ kind: 'company', slug: 'zed' });
-    // …and is ignored once the workspace disappears.
-    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({ kind: 'company', slug: 'acme' });
-    // No companies at all → Home, the exception surface (palette-only).
-    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'home' });
+    // Real data (companies + a persisted last-visited slug) must NOT route to
+    // a company page: the chat shell opens on the conversation surface.
+    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'messages' });
+    expect(getDesktopLandingRoute(workspaces, 'zed')).toEqual({ kind: 'messages' });
+    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({ kind: 'messages' });
+    // Even a workspace-less install lands on the Messages empty state.
+    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'messages' });
   });
 
   it('exposes local-first companies plus the personal page in desktop navigation', () => {

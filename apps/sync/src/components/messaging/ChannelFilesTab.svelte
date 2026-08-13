@@ -342,11 +342,15 @@
   .files-list {
     list-style: none;
     margin: 0;
-    padding: 0.5rem 0;
+    padding: 12px 8px;
     overflow-y: auto;
     flex: 1 1 auto;
     min-height: 0;
     width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--ground, transparent);
   }
 
   .files-list > li {
@@ -356,13 +360,15 @@
 
   .file-row {
     display: grid;
-    grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
     align-items: center;
-    gap: 0.625rem;
+    gap: 10px;
+    box-sizing: border-box;
     width: 100%;
-    padding: 0.55rem 1.25rem;
+    height: 29.4px;
+    padding: 6px 12px;
     border: none;
-    border-bottom: 1px solid var(--border, var(--pop-divider));
+    border-radius: 8px;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -394,8 +400,10 @@
 
   .file-icon {
     display: inline-flex;
-    color: var(--muted-2, var(--pop-muted));
-    flex: 0 0 auto;
+    color: var(--t2, var(--muted-2, var(--pop-muted)));
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
   }
 
   .file-name {
@@ -403,20 +411,21 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--text-base);
-    font-weight: 500;
-    color: var(--fg, var(--pop-text));
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    color: var(--t1, var(--fg, var(--pop-text)));
   }
 
   .file-meta {
     flex: 0 0 auto;
     margin-left: auto;
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: var(--text-micro, 0.6875rem);
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.02em;
     text-transform: uppercase;
-    color: var(--muted, var(--pop-muted));
+    color: var(--t3, var(--muted, var(--pop-muted)));
     white-space: nowrap;
   }
 

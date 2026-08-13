@@ -49,21 +49,24 @@
   .sys-line {
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 12px;
     width: 100%;
     max-width: 100%;
-    margin: 0.375rem 0;
-    padding: 0.125rem 0.5rem;
+    margin: 2px 0;
+    padding: 0 20px 0 24px;
     color: var(--t3, var(--muted, var(--pop-muted)));
     font-size: 11px;
-    line-height: 1.4;
-    text-align: center;
+    line-height: 1.45;
+    text-align: left;
   }
 
   .sys-icon {
     display: inline-flex;
-    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    width: 32px;
     color: var(--t3, var(--muted-2, var(--pop-muted)));
     opacity: 0.7;
   }

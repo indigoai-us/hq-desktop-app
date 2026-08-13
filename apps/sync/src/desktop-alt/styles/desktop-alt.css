@@ -107,10 +107,26 @@ html[data-window='messages'] body {
    tokens instead of local dark-first glass values. */
 html[data-window='desktop-alt'] {
   background: transparent;
+  /* S2: canonical window-surface tint (token contract §1 macWindow.bg). The
+     native NSGlassEffectView owns the blur; this alpha tint is what stops
+     wallpaper bleed from washing out text contrast. Light rgba(250,250,252,.82)
+     / dark rgba(14,14,18,.86) — exact computed values from the design source. */
+  --window-surface: rgba(250, 250, 252, 0.82);
+}
+
+html[data-window='desktop-alt'][data-force-theme='dark'],
+html.dark[data-window='desktop-alt'] {
+  --window-surface: rgba(14, 14, 18, 0.86);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-window='desktop-alt']:not([data-force-theme='light']) {
+    --window-surface: rgba(14, 14, 18, 0.86);
+  }
 }
 
 html[data-window='desktop-alt'] body {
-  background: transparent;
+  background: var(--window-surface, transparent);
 }
 
 /* Standalone Messages owns one material layer in `.messages-window`; keeping
