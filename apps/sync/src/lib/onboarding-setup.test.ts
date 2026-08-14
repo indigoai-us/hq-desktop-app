@@ -538,6 +538,26 @@ describe('stage command invocations', () => {
       { command: 'install_deps', required: true },
     ]);
   });
+
+  it('launches startup readiness only after the required git init command', () => {
+    expect(
+      stageCommandInvocations('git-init', { installPath: '/tmp/hq' }),
+    ).toEqual([
+      { command: 'git_init', required: true },
+      { command: 'launch_startup_readiness', required: false },
+    ]);
+  });
+
+  it.each(STAGE_ORDER.filter((id) => id !== 'git-init'))(
+    'does not launch startup readiness for the %s stage',
+    (id) => {
+      expect(
+        stageCommandInvocations(id, { installPath: '/tmp/hq' }),
+      ).not.toContainEqual(
+        expect.objectContaining({ command: 'launch_startup_readiness' }),
+      );
+    },
+  );
 });
 
 describe('SetupScreen install cancellation', () => {
@@ -711,6 +731,106 @@ describe('SetupScreen install cancellation', () => {
     expect(invokeMock).toHaveBeenCalledWith('configure_claude_settings_path', {
       hqPath: '/tmp/hq',
     });
+    await unmount(component);
+  });
+
+  it('invokes startup readiness exactly once after a resumed git init succeeds', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'read_install_manifest') {
+        return Promise.resolve({
+          schemaVersion: 1,
+          installerVersion: '0.0.0-test',
+          installPath: '/tmp/hq',
+          startedAt: '2026-01-01T00:00:00Z',
+          completedAt: null,
+          steps: {
+            content: { status: 'ok' },
+            deps: { status: 'ok' },
+            'initial-sync': { status: 'ok' },
+            packages: { status: 'ok' },
+          },
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const onsetupcomplete = vi.fn();
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { installPath: '/tmp/hq', onsetupcomplete },
+    });
+
+    for (let i = 0; i < 200 && onsetupcomplete.mock.calls.length === 0; i += 1) {
+      await flushMicrotasks();
+    }
+    const commands = invokeMock.mock.calls.map(([command]) => command);
+
+    expect(commands).not.toContain('install_deps');
+    expect(commands.indexOf('git_init')).toBeLessThan(
+      commands.indexOf('launch_startup_readiness'),
+    );
+    expect(
+      commands.filter((command) => command === 'launch_startup_readiness'),
+    ).toHaveLength(1);
+    expect(invokeMock).toHaveBeenCalledWith('launch_startup_readiness');
+    expect(onsetupcomplete).toHaveBeenCalledWith(
+      expect.objectContaining({ needsAttention: false, failedStages: [] }),
+    );
+    await unmount(component);
+  });
+
+  it('does not invoke startup readiness when git init fails', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'git_init') return Promise.reject(new Error('git failed'));
+      return Promise.resolve(undefined);
+    });
+
+    const onsetupcomplete = vi.fn();
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { installPath: '/tmp/hq', onsetupcomplete },
+    });
+
+    for (let i = 0; i < 200 && onsetupcomplete.mock.calls.length === 0; i += 1) {
+      await flushMicrotasks();
+    }
+
+    expect(invokeMock).not.toHaveBeenCalledWith('launch_startup_readiness');
+    expect(invokeMock).toHaveBeenCalledWith('install_menubar_app');
+    expect(onsetupcomplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        needsAttention: true,
+        failedStages: expect.arrayContaining([
+          expect.objectContaining({ id: 'git-init', message: 'git failed' }),
+        ]),
+      }),
+    );
+    await unmount(component);
+  });
+
+  it('keeps setup moving when the readiness launch adapter fails', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'launch_startup_readiness') {
+        return Promise.reject(new Error('bridge unavailable'));
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const onsetupcomplete = vi.fn();
+    const component = mount(SetupScreen, {
+      target: document.body,
+      props: { installPath: '/tmp/hq', onsetupcomplete },
+    });
+
+    for (let i = 0; i < 200 && onsetupcomplete.mock.calls.length === 0; i += 1) {
+      await flushMicrotasks();
+    }
+
+    expect(invokeMock).toHaveBeenCalledWith('launch_startup_readiness');
+    expect(invokeMock).toHaveBeenCalledWith('install_menubar_app');
+    expect(onsetupcomplete).toHaveBeenCalledWith(
+      expect.objectContaining({ needsAttention: false, failedStages: [] }),
+    );
     await unmount(component);
   });
 });
