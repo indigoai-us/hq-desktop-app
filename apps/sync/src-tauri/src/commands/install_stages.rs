@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
@@ -121,6 +121,48 @@ fn claim_startup_readiness_launch(gate: &AtomicBool) -> bool {
         .is_ok()
 }
 
+/// Reset the in-process gate unless the CLI completed a recognized published
+/// observation. This lease also resets during unwinding, so a failed or
+/// panicking detached task cannot permanently suppress a resumed onboarding
+/// attempt in the same app process.
+struct StartupReadinessLaunchLease<'a> {
+    gate: &'a AtomicBool,
+    keep_claimed: bool,
+}
+
+impl<'a> StartupReadinessLaunchLease<'a> {
+    fn new(gate: &'a AtomicBool) -> Self {
+        Self {
+            gate,
+            keep_claimed: false,
+        }
+    }
+
+    fn retain(&mut self) {
+        self.keep_claimed = true;
+    }
+}
+
+impl Drop for StartupReadinessLaunchLease<'_> {
+    fn drop(&mut self) {
+        if !self.keep_claimed {
+            self.gate.store(false, Ordering::Release);
+        }
+    }
+}
+
+fn startup_readiness_invocation(
+    program: paths::ResolvedProgram,
+) -> Result<hq_resolver::HqInvocation, String> {
+    if !program.is_resolved() {
+        return Err("installed hq-cli was not found after dependency setup".to_string());
+    }
+    if cfg!(target_os = "windows") && !program.is_spawnable() {
+        return Err("installed hq-cli is not directly executable on this platform".to_string());
+    }
+    Ok(hq_resolver::HqInvocation::Local(program.path))
+}
+
 fn startup_readiness_command(
     invocation: &hq_resolver::HqInvocation,
     hq_root: &Path,
@@ -131,7 +173,10 @@ fn startup_readiness_command(
         .args(STARTUP_READINESS_ARGS)
         .current_dir(hq_root)
         .env("PATH", path_env)
-        .env("HQ_STARTUP_SOURCE", STARTUP_READINESS_SOURCE);
+        .env("HQ_STARTUP_SOURCE", STARTUP_READINESS_SOURCE)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     command
 }
 
@@ -139,23 +184,12 @@ fn is_completed_startup_readiness_exit(code: Option<i32>) -> bool {
     code.is_some_and(|code| COMPLETED_STARTUP_READINESS_EXITS.contains(&code))
 }
 
-async fn observe_startup_readiness() {
-    let hq_root = match resolve_hq_path() {
-        Ok(path) => PathBuf::from(path),
-        Err(error) => {
-            crate::util::logfile::log(
-                "startup-readiness",
-                &format!("launch failed: resolve HQ root: {error}"),
-            );
-            return;
-        }
-    };
-    let invocation = hq_resolver::resolve_hq();
+async fn observe_startup_readiness(
+    hq_root: PathBuf,
+    invocation: hq_resolver::HqInvocation,
+    path_env: String,
+) -> bool {
     let invocation_label = invocation.label();
-    let path_env = paths::child_path();
-    // Preserve the existing resolver's protection around concurrent npx
-    // self-heal installs. Publication concurrency itself is owned by hq-cli.
-    let _npx_guard = invocation.npx_serial_guard().await;
     let status = startup_readiness_command(&invocation, &hq_root, &path_env)
         .status()
         .await;
@@ -169,6 +203,7 @@ async fn observe_startup_readiness() {
                     status.code().unwrap_or_default()
                 ),
             );
+            true
         }
         Ok(status) => {
             let exit = status
@@ -178,12 +213,14 @@ async fn observe_startup_readiness() {
                 "startup-readiness",
                 &format!("unexpected exit via {invocation_label}: {exit}"),
             );
+            false
         }
         Err(error) => {
             crate::util::logfile::log(
                 "startup-readiness",
                 &format!("spawn failed via {invocation_label}: {error}"),
             );
+            false
         }
     }
 }
@@ -307,6 +344,28 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
 /// readiness state; `hq doctor startup --publish` owns that contract.
 #[tauri::command]
 pub fn launch_startup_readiness() -> Result<(), String> {
+    // Capture the exact root and child PATH at the post-git-init call boundary.
+    // Do not use the generic resolver's npx self-heal fallback here: dependency
+    // setup owns hq-cli installation, and this adapter must remain offline.
+    let hq_root = match resolve_hq_path() {
+        Ok(path) => PathBuf::from(path),
+        Err(error) => {
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!("launch failed: resolve HQ root: {error}"),
+            );
+            return Ok(());
+        }
+    };
+    let invocation = match startup_readiness_invocation(paths::resolve_bin_with_kind("hq")) {
+        Ok(invocation) => invocation,
+        Err(error) => {
+            crate::util::logfile::log("startup-readiness", &format!("launch failed: {error}"));
+            return Ok(());
+        }
+    };
+    let path_env = paths::child_path();
+
     if !claim_startup_readiness_launch(&STARTUP_READINESS_LAUNCHED) {
         crate::util::logfile::log(
             "startup-readiness",
@@ -315,7 +374,12 @@ pub fn launch_startup_readiness() -> Result<(), String> {
         return Ok(());
     }
 
-    tauri::async_runtime::spawn(observe_startup_readiness());
+    let mut lease = StartupReadinessLaunchLease::new(&STARTUP_READINESS_LAUNCHED);
+    tauri::async_runtime::spawn(async move {
+        if observe_startup_readiness(hq_root, invocation, path_env).await {
+            lease.retain();
+        }
+    });
     Ok(())
 }
 
@@ -457,6 +521,34 @@ mod tests {
         assert!(claim_startup_readiness_launch(&gate));
         assert!(!claim_startup_readiness_launch(&gate));
         assert!(!claim_startup_readiness_launch(&gate));
+    }
+
+    #[test]
+    fn failed_startup_readiness_launch_can_be_retried() {
+        let gate = AtomicBool::new(false);
+
+        assert!(claim_startup_readiness_launch(&gate));
+        drop(StartupReadinessLaunchLease::new(&gate));
+        assert!(claim_startup_readiness_launch(&gate));
+
+        let mut completed = StartupReadinessLaunchLease::new(&gate);
+        completed.retain();
+        drop(completed);
+        assert!(!claim_startup_readiness_launch(&gate));
+    }
+
+    #[test]
+    fn startup_readiness_requires_the_installed_cli() {
+        assert!(
+            startup_readiness_invocation(paths::ResolvedProgram::not_resolved("hq")).is_err()
+        );
+        assert!(matches!(
+            startup_readiness_invocation(paths::ResolvedProgram {
+                path: "/test/bin/hq".to_string(),
+                kind: paths::ResolvedProgramKind::Exe,
+            }),
+            Ok(hq_resolver::HqInvocation::Local(path)) if path == "/test/bin/hq"
+        ));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   stageCommandInvocations,
@@ -5,6 +7,14 @@ import {
 } from '../../src/lib/onboarding-setup';
 
 const STARTUP_READINESS_COMMAND = 'launch_startup_readiness';
+const installStagesRs = readFileSync(
+  resolve(process.cwd(), 'src-tauri/src/commands/install_stages.rs'),
+  'utf8',
+);
+const mainRs = readFileSync(
+  resolve(process.cwd(), 'src-tauri/src/main.rs'),
+  'utf8',
+);
 
 function readinessInvocations(
   plan: StageCommandInvocation[],
@@ -15,6 +25,26 @@ function readinessInvocations(
 }
 
 describe('US-013: Launch readiness asynchronously from unified desktop onboarding', () => {
+  it('registers the adapter in the Tauri invoke handler', () => {
+    expect(mainRs).toContain(
+      'commands::install_stages::launch_startup_readiness,',
+    );
+  });
+
+  it('uses only the installed CLI and makes failed detached launches retryable', () => {
+    const launchBody = installStagesRs.slice(
+      installStagesRs.indexOf('pub fn launch_startup_readiness()'),
+      installStagesRs.indexOf('pub async fn register_search_index()'),
+    );
+
+    expect(launchBody).toContain('paths::resolve_bin_with_kind("hq")');
+    expect(launchBody).not.toContain('hq_resolver::resolve_hq()');
+    expect(installStagesRs).toContain('StartupReadinessLaunchLease');
+    expect(installStagesRs).toContain('.stdin(Stdio::null())');
+    expect(installStagesRs).toContain('.stdout(Stdio::null())');
+    expect(installStagesRs).toContain('.stderr(Stdio::null())');
+  });
+
   it('plans one argument-free readiness launch after successful dependency and git-init stages', () => {
     const dependencyPlan = stageCommandInvocations('deps', {
       installPath: '/tmp/hq',
