@@ -363,29 +363,36 @@ fn user_cli_dirs(home: &Path) -> Vec<PathBuf> {
 /// the default location — or, more commonly, nothing at all.
 #[cfg(not(target_os = "windows"))]
 fn user_cli_dirs_with_pnpm_home(home: &Path, pnpm_home: Option<&Path>) -> Vec<PathBuf> {
-    let defaults = [
-        home.join(".npm-global").join("bin"),
-        // pnpm's default global executable directory on macOS.
-        home.join("Library").join("pnpm"),
-        // pnpm's default global executable directory on Linux.
-        home.join(".local").join("share").join("pnpm"),
-        // Bun's default global executable directory on every Unix platform.
-        home.join(".bun").join("bin"),
-    ];
-
-    let mut dirs = Vec::with_capacity(defaults.len() + 1);
+    let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(pnpm_home) = pnpm_home {
-        dirs.push(pnpm_home.to_path_buf());
+        dirs.extend(pnpm_shim_dirs(pnpm_home));
     }
-    // Skip any default the override already covers. `Vec::dedup` would not do
-    // it: PNPM_HOME leads the list while the default it duplicates sits third,
-    // and dedup only collapses ADJACENT equals.
-    dirs.extend(
-        defaults
-            .into_iter()
-            .filter(|dir| Some(dir.as_path()) != pnpm_home),
-    );
+    dirs.push(home.join(".npm-global").join("bin"));
+    // pnpm's default global home on macOS, then on Linux.
+    dirs.extend(pnpm_shim_dirs(&home.join("Library").join("pnpm")));
+    dirs.extend(pnpm_shim_dirs(
+        &home.join(".local").join("share").join("pnpm"),
+    ));
+    // Bun's default global executable directory on every Unix platform.
+    dirs.push(home.join(".bun").join("bin"));
+
+    // Drop repeats — a PNPM_HOME equal to a per-OS default would otherwise be
+    // listed twice. `Vec::dedup` cannot do this: the duplicate is NOT adjacent
+    // (PNPM_HOME leads the list, the default it repeats sits later), and dedup
+    // only collapses adjacent equals.
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|dir| seen.insert(dir.clone()));
     dirs
+}
+
+/// Both directories a pnpm global shim can occupy for a given pnpm home.
+///
+/// pnpm <=10 writes shims flat into the home (`<home>/hq`); pnpm >=11 nests
+/// them one level down (`<home>/bin/hq`). `hq_cli_update` already recognizes
+/// both layouts when it locates an install to upgrade, so the resolver has to
+/// probe both or it fails to find the very shim the updater maintains.
+fn pnpm_shim_dirs(pnpm_home: &Path) -> [PathBuf; 2] {
+    [pnpm_home.to_path_buf(), pnpm_home.join("bin")]
 }
 
 /// `PNPM_HOME` as an absolute path, when set.
@@ -540,10 +547,10 @@ fn extended_search_dirs() -> Vec<PathBuf> {
     // entries a pnpm user's spawn falls through to the bare name and dies with
     // os error 2 (`hq_cli_update` already resolves the same two locations).
     if let Some(pnpm_home) = pnpm_home_dir() {
-        dirs.push(pnpm_home);
+        dirs.extend(pnpm_shim_dirs(&pnpm_home));
     }
     if let Some(local_app) = std::env::var_os("LOCALAPPDATA") {
-        dirs.push(PathBuf::from(local_app).join("pnpm"));
+        dirs.extend(pnpm_shim_dirs(&PathBuf::from(local_app).join("pnpm")));
     }
 
     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
@@ -1545,9 +1552,43 @@ mod tests {
             user_cli_dirs_with_pnpm_home(&home, None),
             vec![
                 PathBuf::from("/Users/testuser/.npm-global/bin"),
+                // Each pnpm home contributes the flat (pnpm <=10) and nested
+                // (pnpm >=11) shim directory.
                 PathBuf::from("/Users/testuser/Library/pnpm"),
+                PathBuf::from("/Users/testuser/Library/pnpm/bin"),
                 PathBuf::from("/Users/testuser/.local/share/pnpm"),
+                PathBuf::from("/Users/testuser/.local/share/pnpm/bin"),
                 PathBuf::from("/Users/testuser/.bun/bin"),
+            ]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_pnpm11_nested_shim() {
+        // pnpm >=11 writes the shim to `<pnpm-home>/bin/hq`, not flat into the
+        // home. `hq_cli_update` maintains installs in this layout, so the
+        // resolver must find them too.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let expected = tmp.path().join("Library/pnpm/bin").join(name);
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn test_pnpm_shim_dirs_cover_flat_and_nested_layouts() {
+        let home = PathBuf::from("/tmp/pnpm-home");
+        assert_eq!(
+            pnpm_shim_dirs(&home),
+            [
+                PathBuf::from("/tmp/pnpm-home"),
+                PathBuf::from("/tmp/pnpm-home/bin"),
             ]
         );
     }
@@ -1561,9 +1602,12 @@ mod tests {
             user_cli_dirs_with_pnpm_home(&home, Some(&pnpm_home)),
             vec![
                 PathBuf::from("/opt/pnpm-bin"),
+                PathBuf::from("/opt/pnpm-bin/bin"),
                 PathBuf::from("/Users/testuser/.npm-global/bin"),
                 PathBuf::from("/Users/testuser/Library/pnpm"),
+                PathBuf::from("/Users/testuser/Library/pnpm/bin"),
                 PathBuf::from("/Users/testuser/.local/share/pnpm"),
+                PathBuf::from("/Users/testuser/.local/share/pnpm/bin"),
                 PathBuf::from("/Users/testuser/.bun/bin"),
             ]
         );
