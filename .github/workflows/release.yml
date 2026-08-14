@@ -116,18 +116,48 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Require release tag commit on main
+      # Branch policy, split by channel:
+      #   - stable (vX.Y.Z) MUST ship from main — the release commit has to be
+      #     merged before it is tagged.
+      #   - beta / alpha prereleases are testing builds cut from a feature
+      #     branch, so their tag must NOT be on main. A prerelease tag whose
+      #     commit is already in main's history is rejected: promote it to a
+      #     stable tag instead of shipping alpha/beta off main.
+      # Only enforced when a tag is first pushed. A workflow_dispatch run is a
+      # deliberate re-release of an already-existing, immutable tag whose branch
+      # was vetted at creation time — re-checking it here would break retries of
+      # historical prereleases (and of an off-main prerelease after its branch
+      # later merges to main), so dispatch retries skip the branch check.
+      - name: Enforce release branch policy
+        if: ${{ github.event_name == 'push' }}
         env:
           TAG: ${{ steps.classify.outputs.tag }}
+          CHANNEL: ${{ steps.classify.outputs.channel }}
+          PRERELEASE: ${{ steps.classify.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
           git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
             "+refs/heads/main:refs/remotes/origin/main"
-          if ! git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
+          if git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
             "${TAG}^{commit}" refs/remotes/origin/main; then
-            echo "::error::Release tag $TAG is not contained in origin/main. Merge the release commit before tagging."
-            exit 1
+            ON_MAIN="true"
+          else
+            ON_MAIN="false"
+          fi
+
+          if [ "$PRERELEASE" = "true" ]; then
+            if [ "$ON_MAIN" = "true" ]; then
+              echo "::error::$CHANNEL prerelease tag $TAG points at a commit on origin/main. alpha and beta releases may only be cut from non-main branches — tag a commit that has not been merged to main, or promote it to a stable vX.Y.Z tag."
+              exit 1
+            fi
+            echo "$CHANNEL prerelease $TAG is off main — allowed."
+          else
+            if [ "$ON_MAIN" != "true" ]; then
+              echo "::error::Stable release tag $TAG is not contained in origin/main. Merge the release commit before tagging a stable release."
+              exit 1
+            fi
+            echo "Stable release $TAG is on main — allowed."
           fi
 
       - name: Confirm the release tag exists
@@ -1355,10 +1385,14 @@ jobs:
   # vX.Y.Z`; the version commit lands on main here, after the release is
   # already public. Runs last on purpose — a branch this cannot push must never
   # block shipping, and the published artifacts are correct either way.
+  #
+  # Only stable releases sync their version to main. beta/alpha prereleases are
+  # cut from non-main branches (enforced in `validate`), so stamping their
+  # version onto main would push a prerelease version to the trunk — skip them.
   sync-version:
     name: Sync released version to main
     needs: [validate, publish]
-    if: ${{ needs.publish.result == 'success' }}
+    if: ${{ needs.publish.result == 'success' && needs.validate.outputs.prerelease != 'true' }}
     concurrency:
       # Serialize with itself so two releases finishing together cannot race
       # each other's push and burn all the retries.

@@ -25,6 +25,15 @@ git push origin vX.Y.Z
 
 Supported tag forms are `vX.Y.Z`, `vX.Y.Z-beta.N`, and `vX.Y.Z-alpha.N`.
 
+Where you tag depends on the channel:
+
+- **Stable** (`vX.Y.Z`) must be cut from `main` — its commit has to be merged
+  before you tag it.
+- **beta / alpha** (`-beta.N` / `-alpha.N`) are testing builds and may **only**
+  be cut from a non-`main` branch. Tagging a prerelease on a commit that is
+  already merged into `main` is rejected; promote it to a stable `vX.Y.Z` tag
+  instead. Prerelease releases never stamp their version back to `main`.
+
 There is no version bump to make first and no release pull request. The tag is
 the single source of truth for the version: the `validate` job stamps
 `[product].version` in `versions.toml` and the four files generated from it —
@@ -42,11 +51,15 @@ Two consequences worth knowing:
   `main` converges immediately afterwards.
 - Re-running an older tag will not drag `main` backwards —
   `scripts/release-version-order.mjs` skips the sync when `main` is already at
-  or ahead of the released version.
+  or ahead of the released version. Prerelease (`-beta.N` / `-alpha.N`) releases
+  never run the sync at all, so they never touch `main`.
 
-The workflow still requires the tag commit to be contained in `main`. Never
-move a pushed tag after a failed release; fix the release path and cut a fresh
-SemVer tag.
+For a **stable** release the workflow requires the tag commit to be contained in
+`main`; a **prerelease** requires the opposite — its commit must not be on
+`main`. This branch check runs only when a tag is first pushed, so a
+`workflow_dispatch` retry of an existing tag is never re-gated. Never move a
+pushed tag after a failed release; fix the release path and cut a fresh SemVer
+tag.
 
 `pnpm version:app` and `pnpm version:check` remain available for local work —
 `pnpm version:app --set-version X.Y.Z` is exactly what CI runs.

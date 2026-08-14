@@ -397,6 +397,48 @@ pub fn resolve_company_uid_from_workspaces(
         .ok_or_else(|| format!("company '{slug}' is not connected to cloud"))
 }
 
+/// Machine-readable codes for company-UID resolution failures on the Board
+/// read path. `resolve_company_uid_from_workspaces` errors run BEFORE
+/// `parse_board_response` gets a chance to gracefully degrade, so without a
+/// well-known prefix the raw diagnostic ("company 'x' is not synced: manifest
+/// cloud_uid … not found in your cloud memberships") leaks verbatim into the
+/// board panel. The frontend maps these codes to calm copy and keeps the raw
+/// detail (everything after the `{code}: ` prefix) for logs only.
+pub const COMPANY_NOT_FOUND_CODE: &str = "COMPANY_NOT_FOUND";
+pub const COMPANY_NOT_SYNCED_CODE: &str = "COMPANY_NOT_SYNCED";
+pub const COMPANY_NOT_CONNECTED_CODE: &str = "COMPANY_NOT_CONNECTED";
+
+/// Classify a `resolve_company_uid_from_workspaces` error string into one of
+/// the well-known company-resolution codes. Returns `None` for anything that
+/// is not a resolution failure (auth, HTTP, parse errors) so those keep their
+/// existing shape.
+pub fn classify_company_resolution_error(error: &str) -> Option<&'static str> {
+    if !error.starts_with("company '") {
+        return None;
+    }
+    if error.ends_with("' was not found") {
+        return Some(COMPANY_NOT_FOUND_CODE);
+    }
+    if error.contains("' is not synced") {
+        return Some(COMPANY_NOT_SYNCED_CODE);
+    }
+    if error.ends_with("' is not connected to cloud") {
+        return Some(COMPANY_NOT_CONNECTED_CODE);
+    }
+    None
+}
+
+/// Prefix a company-resolution failure with its machine-readable code
+/// (`COMPANY_NOT_SYNCED: company 'x' is not synced: …`) so the frontend can
+/// render a calm state instead of the raw diagnostic. Non-resolution errors
+/// pass through unchanged.
+pub fn prefix_company_resolution_error(error: String) -> String {
+    match classify_company_resolution_error(&error) {
+        Some(code) => format!("{code}: {error}"),
+        None => error,
+    }
+}
+
 pub fn live_cloud_uid_from_broken_reason(reason: &str) -> Option<String> {
     let reason = reason.strip_prefix("manifest cloud_uid ")?;
     let (manifest_uid, reason) = reason.split_once(" does not match cloud entity ")?;
@@ -3536,6 +3578,108 @@ mod tests {
             )
             .unwrap_err(),
             "company 'cloud' is not connected to cloud"
+        );
+    }
+
+    #[test]
+    fn company_resolution_errors_classify_into_well_known_codes() {
+        assert_eq!(
+            super::classify_company_resolution_error("company 'acme' was not found"),
+            Some(super::COMPANY_NOT_FOUND_CODE)
+        );
+        // Broken workspace with a memberships-miss reason (the variant the
+        // auto-heal cannot fix) — must classify, never leak raw to the UI.
+        assert_eq!(
+            super::classify_company_resolution_error(
+                "company 'acme' is not synced: manifest cloud_uid cmp_old not found in your cloud memberships"
+            ),
+            Some(super::COMPANY_NOT_SYNCED_CODE)
+        );
+        assert_eq!(
+            super::classify_company_resolution_error(
+                "company 'local' is not synced (state: LocalOnly)"
+            ),
+            Some(super::COMPANY_NOT_SYNCED_CODE)
+        );
+        assert_eq!(
+            super::classify_company_resolution_error("company 'cloud' is not connected to cloud"),
+            Some(super::COMPANY_NOT_CONNECTED_CODE)
+        );
+        // Non-resolution failures pass through unclassified.
+        assert_eq!(
+            super::classify_company_resolution_error("AUTH_REQUIRED: board (HTTP 401)"),
+            None
+        );
+        assert_eq!(
+            super::classify_company_resolution_error("board HTTP 500: boom"),
+            None
+        );
+        assert_eq!(super::classify_company_resolution_error(""), None);
+        // A hostile slug can't smuggle a classification via its own text: the
+        // string must START with the resolver's shape.
+        assert_eq!(
+            super::classify_company_resolution_error(
+                "board fetch: error for company 'x' was not found"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn prefix_company_resolution_error_adds_code_and_keeps_raw_detail() {
+        assert_eq!(
+            super::prefix_company_resolution_error("company 'acme' was not found".to_string()),
+            "COMPANY_NOT_FOUND: company 'acme' was not found"
+        );
+        assert_eq!(
+            super::prefix_company_resolution_error(
+                "company 'acme' is not synced: manifest cloud_uid cmp_old not found in your cloud memberships"
+                    .to_string()
+            ),
+            "COMPANY_NOT_SYNCED: company 'acme' is not synced: manifest cloud_uid cmp_old not found in your cloud memberships"
+        );
+        assert_eq!(
+            super::prefix_company_resolution_error(
+                "company 'cloud' is not connected to cloud".to_string()
+            ),
+            "COMPANY_NOT_CONNECTED: company 'cloud' is not connected to cloud"
+        );
+        // Non-resolution errors are untouched (auth mapping stays AUTH_REQUIRED).
+        assert_eq!(
+            super::prefix_company_resolution_error("AUTH_REQUIRED: board (HTTP 401)".to_string()),
+            "AUTH_REQUIRED: board (HTTP 401)"
+        );
+        // Prefixed errors stay non-auth so get_company_summary degrades them
+        // to a zero count instead of routing to sign-in.
+        assert!(!super::is_auth_required_error(
+            "COMPANY_NOT_SYNCED: company 'acme' is not synced"
+        ));
+    }
+
+    #[test]
+    fn prefix_company_resolution_error_is_idempotent() {
+        // The prefix is now applied inside the shared `resolve_company_uid`
+        // wrapper that every desktop-alt company command uses (board, activity,
+        // secrets, CRM projection, creators, team telemetry). If a caller ever
+        // re-applies it on top, an already-prefixed error must pass through
+        // unchanged — never `COMPANY_NOT_FOUND: COMPANY_NOT_FOUND: …`.
+        let once =
+            super::prefix_company_resolution_error("company 'acme' was not found".to_string());
+        assert_eq!(super::classify_company_resolution_error(&once), None);
+        assert_eq!(super::prefix_company_resolution_error(once.clone()), once);
+
+        let synced = super::prefix_company_resolution_error(
+            "company 'acme' is not synced: manifest cloud_uid cmp_old not found in your cloud memberships"
+                .to_string(),
+        );
+        assert_eq!(super::prefix_company_resolution_error(synced.clone()), synced);
+
+        let connected = super::prefix_company_resolution_error(
+            "company 'cloud' is not connected to cloud".to_string(),
+        );
+        assert_eq!(
+            super::prefix_company_resolution_error(connected.clone()),
+            connected
         );
     }
 
