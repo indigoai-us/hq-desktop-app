@@ -67,3 +67,21 @@ Before each release (v1.0.0 and every minor/patch):
 ### Desktop-Alt E2E
 
 `npm run test:e2e:desktop-alt` defaults to a scripted source-contract harness, so it can run in CI without booting a signed app. For live Tauri-driver coverage, set `HQ_SYNC_DESKTOP_ALT_LIVE=1` with `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`. `HQ_SYNC_DESKTOP_ALT_WEBDRIVER_URL` defaults to `http://127.0.0.1:4444`. Once `HQ_SYNC_DESKTOP_ALT_LIVE` is set the run fails if the live harness cannot be resolved — it never degrades to the scripted harness.
+
+## v2 collaboration workflow (no releases yet)
+
+The v2 work integrates on `feature/hq-desktop-v2-chat`. Do **not** push any
+`v*` tags from this line — releases are tag-driven, and a stray tag is how the
+v2 beta escaped to stable. To try the current v2 build locally:
+
+```bash
+git switch feature/hq-desktop-v2-chat
+pnpm install
+# one-time: sidecar deps are workspace-excluded and must be installed standalone
+(cd sidecar/recall-sdk-bridge && pnpm install --ignore-workspace)
+# --no-watch: the tray-helper build script writes a temp file inside the
+# watched src-tauri/ dir, which otherwise retriggers the dev watcher forever
+pnpm tauri dev --no-watch
+```
+
+Quit the installed HQ menubar app first — both register the same tray icon.
