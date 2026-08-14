@@ -542,9 +542,7 @@ mod tests {
 
     #[test]
     fn startup_readiness_requires_the_installed_cli() {
-        assert!(
-            startup_readiness_invocation(paths::ResolvedProgram::not_resolved("hq")).is_err()
-        );
+        assert!(startup_readiness_invocation(paths::ResolvedProgram::not_resolved("hq")).is_err());
         assert!(matches!(
             startup_readiness_invocation(paths::ResolvedProgram {
                 path: "/test/bin/hq".to_string(),
