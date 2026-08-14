@@ -282,6 +282,11 @@ pub async fn install_hq_core_update(
         ),
     );
 
+    // Materialize the pinned hq-cloud npx cache under the shared lock before
+    // spawning, so this prod Update can't race prewarm/sync into a corrupt
+    // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
+    crate::commands::hq_core_staging::materialize_rescue_cache().await?;
+
     let mut cmd = crate::commands::hq_core_staging::rescue_command();
     cmd.args(crate::commands::hq_core_staging::build_rescue_args(
         &hq_folder,

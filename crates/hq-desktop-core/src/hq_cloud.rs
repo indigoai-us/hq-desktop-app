@@ -329,13 +329,16 @@ pub const HQ_CLOUD_VERSION: &str = "~6.15.0";
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
 /// into `.claude/settings.local.json` semantics (hq-cloud 6.15 line). This is
-/// the single cross-surface source of truth for rescue-engine parity: BOTH the
-/// desktop `HQ_CLOUD_VERSION` pin above and the hq-cli
-/// `@indigoai-us/hq-cloud` dependency range MUST resolve to a version that
-/// satisfies this floor, so `hq rescue` and the "Update / Restore" pill can
-/// never silently run different rescue semantics. hq-cli mirrors this constant
-/// in `src/commands/rescue.parity.test.ts`; keep the two in lockstep. See
-/// `version_pin_satisfies_rescue_contract_floor` below for the desktop guard.
+/// the single cross-surface source of truth for rescue-engine parity: the
+/// desktop `HQ_CLOUD_VERSION` pin above must have a lower bound >= this floor
+/// AND stay on its minor line, and the hq-cli `@indigoai-us/hq-cloud` dependency
+/// range must be a SUBSET of `~RESCUE_CONTRACT_FLOOR` (capped to the same minor
+/// line, so a fresh CLI install can't caret-escape onto a newer minor than this
+/// pin). Together those keep `hq rescue` and the "Update / Restore" pill on the
+/// same engine line. hq-cli mirrors this constant and enforces its side in
+/// `src/commands/rescue.parity.test.ts`; keep the two in lockstep. See
+/// `version_pin_lower_bound_is_at_least_rescue_contract_floor` below for the
+/// desktop guard.
 pub const RESCUE_CONTRACT_FLOOR: &str = "6.15.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
@@ -380,32 +383,51 @@ mod tests {
         assert!(HQ_CLOUD_VERSION.starts_with('~'));
     }
 
+    /// Lower bound of the tilde pin as a concrete version. `~X.Y.Z` parses to a
+    /// single `Tilde` comparator whose (major, minor, patch) IS the lower bound
+    /// (`>=X.Y.Z`); the upper bound is implicitly `<X.(Y+1).0`.
+    fn pin_lower_bound() -> semver::Version {
+        let req = semver::VersionReq::parse(HQ_CLOUD_VERSION)
+            .expect("HQ_CLOUD_VERSION must be a valid semver range");
+        let c = req
+            .comparators
+            .first()
+            .expect("tilde pin has a lower-bound comparator")
+            .clone();
+        semver::Version::new(c.major, c.minor.unwrap_or(0), c.patch.unwrap_or(0))
+    }
+
     /// Rescue-engine PARITY GUARD (desktop leg).
     ///
     /// The desktop "Update / Restore" pill spawns
     /// `npx --package=@indigoai-us/hq-cloud@{HQ_CLOUD_VERSION} hq-rescue`, so
     /// whatever `HQ_CLOUD_VERSION` resolves to IS the rescue engine the pill
-    /// runs. The CLI `hq rescue` resolves the hq-cloud package independently.
-    /// If the desktop pin falls behind the shared `RESCUE_CONTRACT_FLOOR`, the
-    /// two surfaces silently run different rescue semantics (e.g. the pill
-    /// misses the `.claude/settings.json` recompose contract) — the exact drift
-    /// this test exists to catch. It fails closed: a `~6.14.x` pin does NOT
-    /// satisfy a `6.15.0` floor, so the pre-fix pin would fail here.
+    /// runs. The CLI `hq rescue` resolves the hq-cloud package independently and
+    /// is capped to the same minor line (its `@indigoai-us/hq-cloud` range is a
+    /// subset of `~RESCUE_CONTRACT_FLOOR`, enforced in hq-cli's parity test), so
+    /// pinning both consumers to the same minor line is what actually prevents
+    /// the two surfaces from resolving different rescue semantics.
+    ///
+    /// This asserts the pin's LOWER BOUND is at least the floor — NOT merely
+    /// that the range contains the floor. A tilde range always contains its own
+    /// floor, so `req.matches(floor)` would still pass with a stale pin: if the
+    /// contract first ships in a patch (floor `6.15.5`) but the pin were left at
+    /// `~6.15.0`, the range still permits 6.15.0–6.15.4 and a cached resolution
+    /// could run an engine BELOW the contract. Comparing the lower bound catches
+    /// that. Fails closed: the pre-fix `~6.14.x` pin's lower bound is below a
+    /// `6.15.0` floor.
     #[test]
-    fn version_pin_satisfies_rescue_contract_floor() {
-        // The pin is an npx-style `~X.Y.Z` string; `semver::VersionReq` parses
-        // the tilde range directly.
-        let req = semver::VersionReq::parse(HQ_CLOUD_VERSION)
-            .expect("HQ_CLOUD_VERSION must be a valid semver range");
+    fn version_pin_lower_bound_is_at_least_rescue_contract_floor() {
         let floor = semver::Version::parse(RESCUE_CONTRACT_FLOOR)
             .expect("RESCUE_CONTRACT_FLOOR must be a valid semver version");
+        let lower = pin_lower_bound();
         assert!(
-            req.matches(&floor),
-            "desktop HQ_CLOUD_VERSION pin `{HQ_CLOUD_VERSION}` does not satisfy the \
-             rescue-contract floor `{RESCUE_CONTRACT_FLOOR}` — the Update / Restore \
-             pill would run an older rescue engine than `hq rescue`. Re-pin the \
-             desktop onto the floor's minor line (and keep the mirrored floor in \
-             hq-cli's rescue parity test in lockstep)."
+            lower >= floor,
+            "desktop HQ_CLOUD_VERSION pin `{HQ_CLOUD_VERSION}` has lower bound {lower}, \
+             below the rescue-contract floor {floor} — the Update / Restore pill could \
+             resolve an engine below the required rescue contract (older than `hq \
+             rescue`). Raise the pin's floor to at least {floor} (and keep the mirrored \
+             floor in hq-cli's rescue parity test in lockstep)."
         );
     }
 
@@ -417,15 +439,10 @@ mod tests {
     /// the documented contract and the floor constant is stale.
     #[test]
     fn version_pin_tracks_contract_floor_minor_line() {
-        let pin_floor = semver::VersionReq::parse(HQ_CLOUD_VERSION)
-            .expect("valid range")
-            .comparators
-            .first()
-            .map(|c| (c.major, c.minor.unwrap_or(0)))
-            .expect("tilde pin has a lower-bound comparator");
+        let lower = pin_lower_bound();
         let floor = semver::Version::parse(RESCUE_CONTRACT_FLOOR).expect("valid version");
         assert_eq!(
-            pin_floor,
+            (lower.major, lower.minor),
             (floor.major, floor.minor),
             "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` and RESCUE_CONTRACT_FLOOR \
              `{RESCUE_CONTRACT_FLOOR}` are on different minor lines — bump both \

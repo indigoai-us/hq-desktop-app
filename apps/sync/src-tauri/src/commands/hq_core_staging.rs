@@ -490,6 +490,34 @@ pub(crate) fn build_rescue_args(
     args
 }
 
+/// Serialize rescue against the startup prewarm, Sync Now, and the watch daemon
+/// by materializing the pinned hq-cloud npx cache under the SHARED advisory lock
+/// BEFORE spawning `hq-rescue`.
+///
+/// Both rescue paths (`hq_core_update::install_hq_core_update` and
+/// `run_replace_from_staging`) spawn `npx --package=@indigoai-us/hq-cloud@<pin>`
+/// directly. Without this preflight, a rescue clicked during the first-launch
+/// prewarm of a NEWLY PINNED cache entry — or alongside a running sync — lets
+/// two npm processes write the same `_npx` tree concurrently, recreating the
+/// cache-corruption / EACCES / exit-126 race that `prewarm.rs` exists to prevent
+/// (and that `commands::sync` and `commands::daemon` already guard with this
+/// exact helper). A bump to `HQ_CLOUD_VERSION` makes the window especially
+/// likely because it forces a fresh materialization on first launch. A failure
+/// here is a positively diagnosed local Node/npm/cache problem — return it so
+/// the caller surfaces it, rather than spawning a process that dies as exit
+/// 126/127.
+pub(crate) async fn materialize_rescue_cache() -> Result<(), String> {
+    match tauri::async_runtime::spawn_blocking(
+        hq_desktop_core::prewarm::materialize_hq_cloud_cache,
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(msg),
+        Err(err) => Err(format!("HQ Sync could not prepare its npm cache: {err}")),
+    }
+}
+
 /// Tauri command — run the rescue script against the resolved HQ folder.
 /// Eligibility is enforced by `resolve_staging_repo`: ineligible users with
 /// no `driftStagingRepo` override resolve to `None` and get rejected here.
@@ -558,6 +586,10 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
             log_path.display()
         ),
     );
+
+    // Materialize the pinned hq-cloud npx cache under the shared lock before
+    // spawning, so a rescue can't race prewarm/sync into a corrupt `_npx` tree.
+    materialize_rescue_cache().await?;
 
     // npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
     //     --hq-root <folder> --source <repo> --yes
