@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
@@ -13,6 +14,14 @@ use crate::util::{hq_resolver, paths};
 /// Canonical default-package set is a product decision; empty for now —
 /// populate with slugs to auto-install at onboarding.
 const DEFAULT_PACKAGES: &[&str] = &[];
+const STARTUP_READINESS_ARGS: &[&str] = &["doctor", "startup", "--publish", "--json"];
+const STARTUP_READINESS_SOURCE: &str = "hq-desktop";
+const COMPLETED_STARTUP_READINESS_EXITS: &[i32] = &[0, 10, 20, 30];
+
+/// A resumed onboarding flow may request the launch more than once. One
+/// process launches at most one observation; the CLI publisher lock remains
+/// the cross-process serialization boundary when the app itself is restarted.
+static STARTUP_READINESS_LAUNCHED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct GitUser {
@@ -104,6 +113,78 @@ async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(format_hq_failure(args, &output))
+    }
+}
+
+fn claim_startup_readiness_launch(gate: &AtomicBool) -> bool {
+    gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+fn startup_readiness_command(
+    invocation: &hq_resolver::HqInvocation,
+    hq_root: &Path,
+    path_env: &str,
+) -> tokio::process::Command {
+    let mut command = invocation.command();
+    command
+        .args(STARTUP_READINESS_ARGS)
+        .current_dir(hq_root)
+        .env("PATH", path_env)
+        .env("HQ_STARTUP_SOURCE", STARTUP_READINESS_SOURCE);
+    command
+}
+
+fn is_completed_startup_readiness_exit(code: Option<i32>) -> bool {
+    code.is_some_and(|code| COMPLETED_STARTUP_READINESS_EXITS.contains(&code))
+}
+
+async fn observe_startup_readiness() {
+    let hq_root = match resolve_hq_path() {
+        Ok(path) => PathBuf::from(path),
+        Err(error) => {
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!("launch failed: resolve HQ root: {error}"),
+            );
+            return;
+        }
+    };
+    let invocation = hq_resolver::resolve_hq();
+    let invocation_label = invocation.label();
+    let path_env = paths::child_path();
+    // Preserve the existing resolver's protection around concurrent npx
+    // self-heal installs. Publication concurrency itself is owned by hq-cli.
+    let _npx_guard = invocation.npx_serial_guard().await;
+    let status = startup_readiness_command(&invocation, &hq_root, &path_env)
+        .status()
+        .await;
+
+    match status {
+        Ok(status) if is_completed_startup_readiness_exit(status.code()) => {
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!(
+                    "completed observation via {invocation_label} with exit {}",
+                    status.code().unwrap_or_default()
+                ),
+            );
+        }
+        Ok(status) => {
+            let exit = status
+                .code()
+                .map_or_else(|| "no exit code".to_string(), |code| code.to_string());
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!("unexpected exit via {invocation_label}: {exit}"),
+            );
+        }
+        Err(error) => {
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!("spawn failed via {invocation_label}: {error}"),
+            );
+        }
     }
 }
 
@@ -219,6 +300,23 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
     } else {
         Ok(Some(GitUser { name, email }))
     }
+}
+
+/// Launch the CLI-owned startup-readiness observation without blocking or
+/// failing onboarding. Rust deliberately does not parse the JSON or write any
+/// readiness state; `hq doctor startup --publish` owns that contract.
+#[tauri::command]
+pub fn launch_startup_readiness() -> Result<(), String> {
+    if !claim_startup_readiness_launch(&STARTUP_READINESS_LAUNCHED) {
+        crate::util::logfile::log(
+            "startup-readiness",
+            "launch skipped: observation already requested in this process",
+        );
+        return Ok(());
+    }
+
+    tauri::async_runtime::spawn(observe_startup_readiness());
+    Ok(())
 }
 
 /// Build the local search index and refresh CLI-generated registries.
@@ -340,6 +438,7 @@ pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tempfile::tempdir;
 
     #[test]
@@ -349,5 +448,58 @@ mod tests {
         git_init_path(dir.path(), None, None).unwrap();
 
         assert!(dir.path().join(".git").is_dir());
+    }
+
+    #[test]
+    fn startup_readiness_launch_is_idempotent_in_process() {
+        let gate = AtomicBool::new(false);
+
+        assert!(claim_startup_readiness_launch(&gate));
+        assert!(!claim_startup_readiness_launch(&gate));
+        assert!(!claim_startup_readiness_launch(&gate));
+    }
+
+    #[test]
+    fn startup_readiness_command_uses_cli_owned_contract() {
+        let dir = tempdir().unwrap();
+        let invocation = hq_resolver::HqInvocation::Local("/test/bin/hq".to_string());
+        let command = startup_readiness_command(&invocation, dir.path(), "/test/child-path");
+        let command = command.as_std();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let env = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(args, STARTUP_READINESS_ARGS);
+        assert_eq!(command.get_current_dir(), Some(dir.path()));
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            Some("/test/child-path")
+        );
+        assert_eq!(
+            env.get("HQ_STARTUP_SOURCE").map(String::as_str),
+            Some("hq-desktop")
+        );
+    }
+
+    #[test]
+    fn startup_readiness_exit_allowlist_is_completed_observation() {
+        for code in COMPLETED_STARTUP_READINESS_EXITS {
+            assert!(is_completed_startup_readiness_exit(Some(*code)));
+        }
+        assert!(!is_completed_startup_readiness_exit(Some(1)));
+        assert!(!is_completed_startup_readiness_exit(Some(31)));
+        assert!(!is_completed_startup_readiness_exit(None));
     }
 }
