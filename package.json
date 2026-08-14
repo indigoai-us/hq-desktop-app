@@ -12,6 +12,7 @@
     "dev": "turbo run dev",
     "test": "turbo run test",
     "test:scripts": "vitest run scripts/*.test.ts",
+    "postinstall": "pnpm -C apps/sync/sidecar/recall-sdk-bridge install --ignore-workspace --config.minimumReleaseAge=1440",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "version:app": "tsx scripts/version-app.ts",

@@ -5,9 +5,11 @@ Menubar sync agent for HQ. Built with Tauri 2 + Svelte.
 ## Development
 
 ```bash
-npm install
-npm run tauri dev
+pnpm install   # from the repo root — also installs the recall-sdk-bridge sidecar deps (root postinstall)
+pnpm tauri dev
 ```
+
+The sidecar at `sidecar/recall-sdk-bridge` is intentionally outside the pnpm workspace, but its `node_modules` is bundled as a Tauri resource, so `tauri dev`/`tauri build` fail without it. The root `postinstall` handles this automatically; to install it manually run `npm run sidecar:install` from `apps/sync`.
 
 ## Indigo Desktop View
 
