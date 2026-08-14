@@ -174,6 +174,9 @@ fn startup_readiness_command(
         .current_dir(hq_root)
         .env("PATH", path_env)
         .env("HQ_STARTUP_SOURCE", STARTUP_READINESS_SOURCE)
+        // Dependency setup owns hq-cli installation. Keep the readiness bridge
+        // offline and prevent the CLI's normal startup gate from self-updating.
+        .env("HQ_NO_UPDATE_CHECK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -583,6 +586,7 @@ mod tests {
             env.get("HQ_STARTUP_SOURCE").map(String::as_str),
             Some("hq-desktop")
         );
+        assert_eq!(env.get("HQ_NO_UPDATE_CHECK").map(String::as_str), Some("1"));
     }
 
     #[test]
