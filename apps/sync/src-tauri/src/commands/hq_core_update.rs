@@ -282,19 +282,20 @@ pub async fn install_hq_core_update(
         ),
     );
 
+    // Materialize the pinned hq-cloud npx cache under the shared lock before
+    // spawning, so this prod Update can't race prewarm/sync into a corrupt
+    // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
+    crate::commands::hq_core_staging::materialize_rescue_cache().await?;
+
     let mut cmd = crate::commands::hq_core_staging::rescue_command();
-    cmd.arg("--hq-root")
-        .arg(hq_folder.as_os_str())
-        .arg("--source")
-        .arg(PROD_HQ_CORE_REPO)
-        .arg("--ref")
-        .arg(&git_ref)
-        .arg("--yes")
-        .stdout(std::process::Stdio::from(log_file_for_stdout))
-        .stderr(std::process::Stdio::from(log_file_for_stderr));
-    if let Some(sha) = floor_sha.as_deref() {
-        cmd.arg("--floor-sha").arg(sha);
-    }
+    cmd.args(crate::commands::hq_core_staging::build_rescue_args(
+        &hq_folder,
+        PROD_HQ_CORE_REPO,
+        Some(&git_ref),
+        floor_sha.as_deref(),
+    ))
+    .stdout(std::process::Stdio::from(log_file_for_stdout))
+    .stderr(std::process::Stdio::from(log_file_for_stderr));
 
     // GH token is optional for the public repo. Forward when present so
     // the history-index walk doesn't hit anonymous rate limits.
@@ -345,4 +346,86 @@ pub async fn install_hq_core_update(
         log_tail,
         log_path: log_path.display().to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::hq_core_staging::build_rescue_args;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn os(v: &[&str]) -> Vec<OsString> {
+        v.iter().map(OsString::from).collect()
+    }
+
+    /// PARITY GUARD (desktop prod-invocation leg).
+    ///
+    /// The prod "Update / Restore" pill must invoke the shared hq-cloud rescue
+    /// engine with the SAME argument contract `hq rescue` uses for a prod
+    /// update: `--hq-root`, `--source indigoai-us/hq-core`, `--ref v{tag}`,
+    /// `--yes`, and (when resolvable) `--floor-sha`. This pins the exact vector
+    /// `install_hq_core_update` builds; if anyone drops `--yes` (would hang on
+    /// the confirm prompt), retargets `--source`, or reorders/renames a flag,
+    /// this fails. Mirrors hq-cli's `buildRescueArgs` prod expectation in
+    /// `rescue.parity.test.ts`.
+    #[test]
+    fn prod_rescue_matches_shared_contract_with_floor() {
+        let sha = "a".repeat(40);
+        let args = build_rescue_args(
+            &PathBuf::from("/HQ"),
+            PROD_HQ_CORE_REPO,
+            Some("v9.9.9"),
+            Some(&sha),
+        );
+        assert_eq!(
+            args,
+            os(&[
+                "--hq-root",
+                "/HQ",
+                "--source",
+                "indigoai-us/hq-core",
+                "--ref",
+                "v9.9.9",
+                "--yes",
+                "--floor-sha",
+                &sha,
+            ])
+        );
+    }
+
+    /// The floor SHA is best-effort — when it can't be resolved the engine
+    /// falls back to `head_compare`, so the argv simply omits `--floor-sha`.
+    /// Everything else (including `--yes` and the prod source) is unchanged.
+    #[test]
+    fn prod_rescue_matches_shared_contract_without_floor() {
+        let args =
+            build_rescue_args(&PathBuf::from("/HQ"), PROD_HQ_CORE_REPO, Some("v9.9.9"), None);
+        assert_eq!(
+            args,
+            os(&[
+                "--hq-root",
+                "/HQ",
+                "--source",
+                "indigoai-us/hq-core",
+                "--ref",
+                "v9.9.9",
+                "--yes",
+            ])
+        );
+        // Never silently drop the non-interactive flag — its absence would hang
+        // the pill on the engine's confirmation prompt.
+        assert!(args.iter().any(|a| a == "--yes"));
+        // A dropped floor must NOT leak an empty `--floor-sha` with no value.
+        assert!(!args.iter().any(|a| a == "--floor-sha"));
+    }
+
+    /// The prod source is the public hq-core repo, and the release feed
+    /// (`RELEASES_URL`) must agree with it — both point at `indigoai-us/hq-core`
+    /// so the tag we resolve is the tag we rescue to.
+    #[test]
+    fn prod_source_agrees_with_release_feed() {
+        assert_eq!(PROD_HQ_CORE_REPO, "indigoai-us/hq-core");
+        assert!(RELEASES_URL.contains(PROD_HQ_CORE_REPO));
+    }
 }

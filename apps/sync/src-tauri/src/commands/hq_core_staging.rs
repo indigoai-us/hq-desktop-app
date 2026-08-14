@@ -447,6 +447,77 @@ pub(crate) fn rescue_command() -> tokio::process::Command {
     cmd
 }
 
+/// Canonical rescue argument vector — the SHARED invocation contract.
+///
+/// Both desktop rescue paths build their argv through here — prod
+/// "Update / Restore" (`hq_core_update::install_hq_core_update`) and staging
+/// replace-from-staging (`run_replace_from_staging` below) — so the "prod and
+/// staging build the invocation identically" claim in `rescue_command`'s doc is
+/// enforced by construction, not convention. It is ALSO the parity contract
+/// against the CLI: hq-cli's `buildRescueArgs` (in `@indigoai-us/hq-cloud`)
+/// produces the same `--hq-root / --source / --ref / --yes / --floor-sha` set
+/// for the prod path, and `rescue_matches_shared_contract` in `hq_core_update`
+/// pins it. The engine parses a switch loop (`rescue-core.ts`), so flag ORDER is
+/// immaterial — but a single builder means neither surface can silently drop or
+/// rename a flag.
+///
+/// `git_ref` is `None` for staging (the engine defaults to `main`); `floor_sha`
+/// is `None` when the installed-version tag SHA can't be resolved (the engine
+/// then falls back to `head_compare`). Returns `OsString`s so a non-UTF-8 HQ
+/// folder path survives verbatim.
+pub(crate) fn build_rescue_args(
+    hq_root: &std::path::Path,
+    source: &str,
+    git_ref: Option<&str>,
+    floor_sha: Option<&str>,
+) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    let mut args: Vec<OsString> = vec![
+        OsString::from("--hq-root"),
+        hq_root.as_os_str().to_os_string(),
+        OsString::from("--source"),
+        OsString::from(source),
+    ];
+    if let Some(git_ref) = git_ref {
+        args.push(OsString::from("--ref"));
+        args.push(OsString::from(git_ref));
+    }
+    args.push(OsString::from("--yes"));
+    if let Some(sha) = floor_sha {
+        args.push(OsString::from("--floor-sha"));
+        args.push(OsString::from(sha));
+    }
+    args
+}
+
+/// Serialize rescue against the startup prewarm, Sync Now, and the watch daemon
+/// by materializing the pinned hq-cloud npx cache under the SHARED advisory lock
+/// BEFORE spawning `hq-rescue`.
+///
+/// Both rescue paths (`hq_core_update::install_hq_core_update` and
+/// `run_replace_from_staging`) spawn `npx --package=@indigoai-us/hq-cloud@<pin>`
+/// directly. Without this preflight, a rescue clicked during the first-launch
+/// prewarm of a NEWLY PINNED cache entry — or alongside a running sync — lets
+/// two npm processes write the same `_npx` tree concurrently, recreating the
+/// cache-corruption / EACCES / exit-126 race that `prewarm.rs` exists to prevent
+/// (and that `commands::sync` and `commands::daemon` already guard with this
+/// exact helper). A bump to `HQ_CLOUD_VERSION` makes the window especially
+/// likely because it forces a fresh materialization on first launch. A failure
+/// here is a positively diagnosed local Node/npm/cache problem — return it so
+/// the caller surfaces it, rather than spawning a process that dies as exit
+/// 126/127.
+pub(crate) async fn materialize_rescue_cache() -> Result<(), String> {
+    match tauri::async_runtime::spawn_blocking(
+        hq_desktop_core::prewarm::materialize_hq_cloud_cache,
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(msg),
+        Err(err) => Err(format!("HQ Sync could not prepare its npm cache: {err}")),
+    }
+}
+
 /// Tauri command — run the rescue script against the resolved HQ folder.
 /// Eligibility is enforced by `resolve_staging_repo`: ineligible users with
 /// no `driftStagingRepo` override resolve to `None` and get rejected here.
@@ -516,15 +587,16 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
         ),
     );
 
+    // Materialize the pinned hq-cloud npx cache under the shared lock before
+    // spawning, so a rescue can't race prewarm/sync into a corrupt `_npx` tree.
+    materialize_rescue_cache().await?;
+
     // npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
     //     --hq-root <folder> --source <repo> --yes
+    // Staging leaves --ref to the engine default (main) and has no floor SHA.
     // Token is passed via env (never in argv — argv shows up in `ps`).
     let mut cmd = rescue_command();
-    cmd.arg("--hq-root")
-        .arg(hq_folder.as_os_str())
-        .arg("--source")
-        .arg(&repo)
-        .arg("--yes")
+    cmd.args(build_rescue_args(&hq_folder, &repo, None, None))
         .env("GH_TOKEN", &token)
         .stdout(std::process::Stdio::from(log_file_for_stdout))
         .stderr(std::process::Stdio::from(log_file_for_stderr));
