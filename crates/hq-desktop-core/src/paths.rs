@@ -357,6 +357,8 @@ fn user_cli_dirs(home: &Path) -> Vec<PathBuf> {
         home.join("Library").join("pnpm"),
         // pnpm's default global executable directory on Linux.
         home.join(".local").join("share").join("pnpm"),
+        // Bun's default global executable directory on every Unix platform.
+        home.join(".bun").join("bin"),
     ]
 }
 
@@ -1467,7 +1469,22 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn test_user_cli_dirs_include_npm_and_pnpm_defaults() {
+    fn test_resolve_bin_in_dirs_finds_bun_global_binary() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let expected = tmp.path().join(".bun/bin").join(name);
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_user_cli_dirs_include_npm_pnpm_and_bun_defaults() {
         let home = PathBuf::from("/Users/testuser");
         assert_eq!(
             user_cli_dirs(&home),
@@ -1475,6 +1492,7 @@ mod tests {
                 PathBuf::from("/Users/testuser/.npm-global/bin"),
                 PathBuf::from("/Users/testuser/Library/pnpm"),
                 PathBuf::from("/Users/testuser/.local/share/pnpm"),
+                PathBuf::from("/Users/testuser/.bun/bin"),
             ]
         );
     }

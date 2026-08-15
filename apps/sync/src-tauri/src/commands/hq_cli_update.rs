@@ -70,10 +70,12 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_update_enabled, classify_install_failure,
-    classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
+    bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_final_attempt,
+    cli_auto_update_enabled, cmp_semver,
     decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
     hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
     install_failure_detail, install_failure_detail_with_final_attempt, install_failure_report,
+    install_executor_for_hq_bin, installed_hq_cli_version_in_bun_global,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
@@ -1122,6 +1124,125 @@ async fn install_hq_cli_update_via_pnpm(
     result
 }
 
+/// Update a Bun-managed global CLI with the package manager that owns its shim.
+/// `BUN_INSTALL` and PATH are derived from the already-resolved `hq`, so a
+/// Dock-launched app updates the same global tree even without shell startup
+/// files. A successful process exit still has to pass the shared convergence
+/// gate before the app reports the update as installed.
+async fn install_hq_cli_update_via_bun(
+    app: &AppHandle,
+    hq: &str,
+    latest: &str,
+    already_blocked: bool,
+) -> Result<HqCliUpdateInfo, String> {
+    const MANUAL_CMD: &str = "bun add -g @indigoai-us/hq-cli@latest";
+    let bun_home = bun_home_from_hq_bin(Path::new(hq)).ok_or_else(|| {
+        format!(
+            "hq appears to be Bun-managed, but its BUN_INSTALL directory could not be derived. \
+             Update manually: {MANUAL_CMD}"
+        )
+    })?;
+    let bun = paths::resolve_bin("bun");
+    if bun == "bun" {
+        return Err(format!(
+            "hq was installed with Bun, but bun could not be found. Update manually: {MANUAL_CMD}"
+        ));
+    }
+
+    let shim_dir = Path::new(hq)
+        .parent()
+        .map(|path| path.to_string_lossy().to_string());
+    let path = pnpm_child_path(&paths::child_path(), shim_dir.as_deref());
+    let args = bun_install_argv(Some(latest));
+    log(
+        "hq-cli-update",
+        &format!("install: Bun-managed hq detected — spawning bun {}", args.join(" ")),
+    );
+    let output = {
+        let bun = bun.clone();
+        let bun_home = bun_home.clone();
+        let path = path.clone();
+        let args = args.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = paths::spawn_command(&bun, &[]);
+            cmd.args(&args)
+                .env("PATH", &path)
+                .env("BUN_INSTALL", &bun_home);
+            cmd.output()
+        })
+        .await
+        .map_err(|e| format!("join blocking task: {e}"))?
+        .map_err(|e| format!("spawn bun: {e}"))?
+    };
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        log(
+            "hq-cli-update",
+            &format!(
+                "Bun install failed (exit {:?}): {}",
+                output.status.code(),
+                redact_home(&detail)
+            ),
+        );
+        return Err(format!(
+            "Bun could not update the HQ CLI: {detail}\nYou can run it manually: {MANUAL_CMD}"
+        ));
+    }
+
+    let post_install_hq = paths::resolve_bin("hq");
+    let resolved = {
+        let hq = post_install_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let converged = install_converged(resolved.as_deref(), latest);
+    let delivered_version = if converged {
+        None
+    } else {
+        let bun_home = bun_home.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            installed_hq_cli_version_in_bun_global(&bun_home)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    let nonblocking_episode_keys = if converged {
+        Vec::new()
+    } else {
+        non_convergent_episode_markers()
+    };
+    let outcome = decide_post_install(&PostInstallContext {
+        executor: InstallExecutor::Bun,
+        before_bin: hq,
+        after_bin: &post_install_hq,
+        before_version: None,
+        after_version: resolved.as_deref(),
+        latest,
+        npm_prefix_passed: None,
+        delivered_version: delivered_version.as_deref(),
+        installer_bin: &bun,
+        already_blocked,
+        nonblocking_episode_keys: &nonblocking_episode_keys,
+        pnpm: None,
+    });
+    log("hq-cli-update", &outcome.log_line);
+    let result = apply_post_install_with_app(app, &outcome);
+    if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(error) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {error}"),
+            );
+        }
+    }
+    result
+}
+
 /// Apply a post-install decision with the production effects. Both executors go
 /// through this one function so the fail-closed marker ordering, the episode
 /// bounding, and the capture rules cannot drift between them.
@@ -1198,16 +1319,30 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
+    let executor = install_executor_for_hq_bin(Path::new(&hq)).ok_or_else(|| {
+        format!(
+            "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
+             Refusing to overwrite an unrelated command."
+        )
+    })?;
     // This must be sampled before the install, for either executor. An
     // unwritable marker reads as absent; the post-install gate then refuses to
     // capture unless this run successfully persists the first-episode marker.
     let non_convergent_version = non_convergent_cli_version();
-    if is_pnpm_global_shim(&hq) {
+    if executor != InstallExecutor::Npm {
         // Pin the target before spawning, same as the npm path below.
         let latest = fetch_latest().await?;
         let already_blocked =
             non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
-        return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;
+        return match executor {
+            InstallExecutor::Pnpm => {
+                install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await
+            }
+            InstallExecutor::Bun => {
+                install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked).await
+            }
+            InstallExecutor::Npm => unreachable!("npm handled below"),
+        };
     }
     // Derive the prefix from the RUNTIME of the resolved npm, not `hq` alone: if a
     // prior episode provisioned HQ's managed Node but left no managed `hq`, npm is

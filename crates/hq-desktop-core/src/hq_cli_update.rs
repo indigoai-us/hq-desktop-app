@@ -288,6 +288,16 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
             }
         }
     }
+    // Bun's global shim is also a plain script. Its package manifest lives in
+    // `<BUN_INSTALL>/install/global/node_modules`, outside the shim's ancestor
+    // chain, so read that exact global tree before considering npm layouts.
+    if is_bun_global_shim(&hq_bin_str) {
+        if let Some(home) = bun_home_from_hq_bin(hq_bin) {
+            if let Some(version) = installed_hq_cli_version_in_bun_global(&home) {
+                return (Some(version), VersionProbeOutcome::Succeeded);
+            }
+        }
+    }
     // Windows npm does not create a symlink into the package tree. It writes
     // `<prefix>\hq.cmd` beside `<prefix>\node_modules`, so canonicalizing the
     // shim can never reach package.json through its ancestors. Anchor the
@@ -737,6 +747,7 @@ pub enum ConvergenceVerdict {
 pub enum InstallExecutor {
     Npm,
     Pnpm,
+    Bun,
 }
 
 impl InstallExecutor {
@@ -744,6 +755,7 @@ impl InstallExecutor {
         match self {
             Self::Npm => "npm",
             Self::Pnpm => "pnpm",
+            Self::Bun => "bun",
         }
     }
 }
@@ -766,6 +778,7 @@ pub enum NonConvergenceKind {
     /// on the pnpm >=11 nested layout the native global bin dir legitimately
     /// differs from the forced one the install (correctly) wrote to.
     PnpmTargeted,
+    BunTargeted,
     ForeignManaged,
     /// npm was aimed at the resolved binary's own prefix, yet the target version
     /// was never delivered INTO that prefix — the manifest there does not report
@@ -782,6 +795,7 @@ impl NonConvergenceKind {
         match self {
             Self::NpmTargeted => "npm-targeted",
             Self::PnpmTargeted => "pnpm-targeted",
+            Self::BunTargeted => "bun-targeted",
             Self::ForeignManaged => "foreign-managed",
             Self::ResolutionShortfall => "resolution-shortfall",
         }
@@ -794,7 +808,10 @@ impl NonConvergenceKind {
     /// episode. A resolution shortfall was aimed correctly but delivered
     /// nothing, so it is neither — it stays observable but never blocks.
     pub fn is_installer_targeted(self) -> bool {
-        matches!(self, Self::NpmTargeted | Self::PnpmTargeted)
+        matches!(
+            self,
+            Self::NpmTargeted | Self::PnpmTargeted | Self::BunTargeted
+        )
     }
 
     /// May a non-convergence of this kind persist the durable marker that stops
@@ -855,6 +872,15 @@ pub fn non_convergence_kind(
                 // Aimed at the right home but the target was never delivered — a
                 // transient registry/resolution shortfall, exactly as the npm
                 // arm treats an undelivered matching prefix.
+                NonConvergenceKind::ResolutionShortfall
+            }
+        }
+        InstallExecutor::Bun => {
+            if !pnpm_targeted {
+                NonConvergenceKind::ForeignManaged
+            } else if target_delivered {
+                NonConvergenceKind::BunTargeted
+            } else {
                 NonConvergenceKind::ResolutionShortfall
             }
         }
@@ -1090,10 +1116,10 @@ pub struct NonConvergentReport {
     pub latest: String,
     pub local: Option<String>,
     pub hq_bin: String,
-    /// Only ever `Some` for the npm executor. The pnpm branch passes no prefix
-    /// and must not borrow npm's placeholder wording.
+    /// Only ever `Some` for the npm executor. pnpm and Bun pass no prefix and
+    /// must not borrow npm's placeholder wording.
     pub npm_prefix: Option<String>,
-    /// The installer binary that ran — `npm` or `pnpm`, per `executor`.
+    /// The installer binary that ran — `npm`, `pnpm`, or `bun`, per `executor`.
     pub installer_bin: String,
     pub hq_bin_changed: bool,
     /// The version the installer actually delivered INTO the passed prefix, if a
@@ -1275,7 +1301,7 @@ pub struct PostInstallContext<'a> {
     pub before_version: Option<&'a str>,
     pub after_version: Option<&'a str>,
     pub latest: &'a str,
-    /// npm executor only; the pnpm branch always passes `None`.
+    /// npm executor only; pnpm and Bun always pass `None`.
     pub npm_prefix_passed: Option<&'a str>,
     /// The version the installer delivered INTO `npm_prefix_passed`, read from
     /// the manifest there. `Some(v)` is the delivery evidence that turns an
@@ -1399,9 +1425,15 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
     // missing means the child may have written a different global dir, which is
     // the foreign-managed shape.
     let nonblocking_episode_keys = *nonblocking_episode_keys;
-    let pnpm_targeted = pnpm.as_ref().is_some_and(|diagnostics| {
-        diagnostics.home_source != PnpmHomeSource::Undetermined && diagnostics.path_has_shim_dir
-    });
+    let pnpm_targeted = match executor {
+        // Reaching the Bun branch requires a validated global Bun shim and the
+        // caller derives BUN_INSTALL from that same path before spawning.
+        InstallExecutor::Bun => true,
+        _ => pnpm.as_ref().is_some_and(|diagnostics| {
+            diagnostics.home_source != PnpmHomeSource::Undetermined
+                && diagnostics.path_has_shim_dir
+        }),
+    };
     // Delivery evidence: did the installer write the target version INTO the
     // store it was aimed at? Only that separates genuine shadowing (delivered,
     // but a copy earlier on PATH still wins) from a transient resolution
@@ -1641,6 +1673,12 @@ pub fn non_convergent_detail(
              `pnpm add -g @indigoai-us/hq-cli@latest` yourself and compare `pnpm bin -g` with \
              the path above, or remove that copy so a fresh install takes over."
         ),
+        InstallExecutor::Bun => format!(
+            "{NON_CONVERGENT_ERROR_PREFIX}Bun reported that hq {latest} installed, but the app \
+             still resolves hq {current} at {hq_bin}. Run \
+             `bun add -g @indigoai-us/hq-cli@latest` yourself, or remove that copy so a fresh \
+             install can take over."
+        ),
     }
 }
 
@@ -1778,6 +1816,11 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                     if let Some(diagnostics) = diagnostics {
                         scope.set_extra("pnpm_diagnostics", diagnostics.summary().into());
                     }
+                }
+                InstallExecutor::Bun => {
+                    // Bun has no npm prefix and no pnpm-specific diagnostics.
+                    // The executor tag plus the redacted resolved/installer
+                    // sources retain the provenance without emitting paths.
                 }
             }
         },
@@ -3544,6 +3587,27 @@ pub fn is_pnpm_global_shim(hq_bin: &str) -> bool {
     parent.join("global").is_dir()
 }
 
+/// Whether the resolved `hq` is Bun's global shim at
+/// `<BUN_INSTALL>/bin/hq`. The default home is `~/.bun`; custom homes are
+/// recognised only when Bun's `install/global` tree exists beside `bin`.
+/// That filesystem proof keeps an unrelated `/opt/homebrew/bin/hq` from being
+/// classified as Bun merely because every Unix package manager uses `bin/`.
+pub fn is_bun_global_shim(hq_bin: &str) -> bool {
+    bun_home_from_hq_bin(Path::new(hq_bin)).is_some()
+}
+
+/// Derive `BUN_INSTALL` from a resolved Bun global shim.
+pub fn bun_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
+    let parent = hq_bin.parent().filter(|path| !path.as_os_str().is_empty())?;
+    if parent.file_name().and_then(|name| name.to_str()) != Some("bin") {
+        return None;
+    }
+    let home = parent.parent().filter(|path| !path.as_os_str().is_empty())?;
+    let is_default = home.file_name().and_then(|name| name.to_str()) == Some(".bun");
+    let has_global_store = home.join("install").join("global").is_dir();
+    (is_default || has_global_store).then(|| home.to_path_buf())
+}
+
 /// argv for updating a pnpm-managed global install.
 ///
 /// `global_bin_dir` forces pnpm to write the new shim into the directory that
@@ -3568,6 +3632,16 @@ pub fn pnpm_install_argv(
     }
     argv.push(hq_cli_package_spec(target_version));
     argv
+}
+
+/// argv for updating a Bun-managed global install, pinned to the exact version
+/// the desktop app resolved from the registry.
+pub fn bun_install_argv(target_version: Option<&str>) -> Vec<String> {
+    vec![
+        "add".to_string(),
+        "-g".to_string(),
+        hq_cli_package_spec(target_version),
+    ]
 }
 
 /// pnpm's global home for a resolved pnpm shim.
@@ -3834,6 +3908,37 @@ pub fn installed_hq_cli_version_in_pnpm_store(pnpm_home: &str) -> Option<String>
     // Newest-wins across any lingering opaque-hash dirs so a stale leftover cannot
     // shadow the active install or misreport delivery — see `max_hq_cli_version`.
     max_hq_cli_version(pnpm_store_package_json_candidates(Path::new(pnpm_home)))
+}
+
+/// The hq-cli version Bun delivered into its global package tree.
+pub fn installed_hq_cli_version_in_bun_global(bun_home: &Path) -> Option<String> {
+    let package_json = bun_home
+        .join("install")
+        .join("global")
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cli")
+        .join("package.json");
+    read_hq_cli_package_version(&package_json).ok().flatten()
+}
+
+/// Identify the package manager that owns a resolved HQ CLI binary.
+///
+/// Package provenance is mandatory: a different executable named `hq` (most
+/// notably Homebrew's unrelated HTML-query formula) must never be overwritten
+/// by an npm global install. A valid hq-cli installed under Homebrew's npm
+/// prefix still passes because its canonical package manifest has the expected
+/// scoped package name.
+pub fn install_executor_for_hq_bin(hq_bin: &Path) -> Option<InstallExecutor> {
+    version_from_hq_binary(hq_bin)?;
+    let hq_bin = hq_bin.to_string_lossy();
+    if is_pnpm_global_shim(&hq_bin) {
+        Some(InstallExecutor::Pnpm)
+    } else if is_bun_global_shim(&hq_bin) {
+        Some(InstallExecutor::Bun)
+    } else {
+        Some(InstallExecutor::Npm)
+    }
 }
 
 /// Build the argv for the global install. Factored out so the unit test
@@ -4526,6 +4631,96 @@ mod tests {
                 HQ_CLI_PACKAGE.to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn bun_global_install_is_detected_and_pins_the_exact_version() {
+        assert!(is_bun_global_shim("/Users/test/.bun/bin/hq"));
+        assert!(!is_bun_global_shim("/opt/homebrew/bin/hq"));
+        assert!(!is_bun_global_shim("/Users/test/.npm-global/bin/hq"));
+        assert_eq!(
+            bun_install_argv(Some("5.101.2")),
+            vec!["add", "-g", "@indigoai-us/hq-cli@5.101.2"]
+        );
+    }
+
+    #[test]
+    fn bun_global_manifest_is_delivery_evidence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bun_home = tmp.path().join(".bun");
+        let package_dir = bun_home
+            .join("install/global/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(
+            package_dir.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.2"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            installed_hq_cli_version_in_bun_global(&bun_home).as_deref(),
+            Some("5.101.2")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_executor_accepts_bun_and_homebrew_npm_but_rejects_unrelated_hq() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bun_home = tmp.path().join(".bun");
+        let bun_bin = bun_home.join("bin");
+        let bun_package = bun_home
+            .join("install/global/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(&bun_bin).unwrap();
+        std::fs::create_dir_all(&bun_package).unwrap();
+        std::fs::write(bun_bin.join("hq"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(
+            bun_package.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.2"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            install_executor_for_hq_bin(&bun_bin.join("hq")),
+            Some(InstallExecutor::Bun)
+        );
+
+        let brew_npm_prefix = tmp.path().join("homebrew-npm");
+        let brew_npm_package =
+            brew_npm_prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        let brew_npm_bin = brew_npm_prefix.join("bin");
+        std::fs::create_dir_all(&brew_npm_package).unwrap();
+        std::fs::create_dir_all(&brew_npm_bin).unwrap();
+        std::fs::write(
+            brew_npm_package.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.2"}"#,
+        )
+        .unwrap();
+        std::fs::write(brew_npm_package.join("index.js"), b"#!/usr/bin/env node\n").unwrap();
+        symlink(
+            brew_npm_package.join("index.js"),
+            brew_npm_bin.join("hq"),
+        )
+        .unwrap();
+        assert_eq!(
+            install_executor_for_hq_bin(&brew_npm_bin.join("hq")),
+            Some(InstallExecutor::Npm)
+        );
+
+        let brew_prefix = tmp.path().join("homebrew");
+        let unrelated_package = brew_prefix.join("Cellar/hq/1.2.2");
+        let brew_bin = brew_prefix.join("bin");
+        std::fs::create_dir_all(&unrelated_package).unwrap();
+        std::fs::create_dir_all(&brew_bin).unwrap();
+        std::fs::write(unrelated_package.join("hq"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(
+            unrelated_package.join("package.json"),
+            br#"{"name":"hq","version":"1.2.2"}"#,
+        )
+        .unwrap();
+        symlink(unrelated_package.join("hq"), brew_bin.join("hq")).unwrap();
+        assert_eq!(install_executor_for_hq_bin(&brew_bin.join("hq")), None);
     }
 
     /// The core of the r2 fix: pnpm must be aimed at the directory that actually

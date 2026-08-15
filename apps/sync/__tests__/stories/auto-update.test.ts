@@ -201,9 +201,17 @@ describe('master automatic-updates switch', () => {
     // ...not the legacy unconditional record-then-report pair it used before.
     expect(pnpmBranch).not.toContain('record_non_convergent_version(latest)');
     expect(pnpmBranch).not.toContain('report_non_convergent_install(');
-    // Episode bounding is sampled before EITHER executor spawns.
-    expect(normalize(cliUpdate)).toContain(
-      'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest); return install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await;',
+    // Episode bounding is sampled once before either non-npm executor spawns,
+    // then handed unchanged to the selected package-manager branch.
+    const normalizedCliUpdate = normalize(cliUpdate);
+    expect(normalizedCliUpdate).toContain(
+      'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);',
+    );
+    expect(normalizedCliUpdate).toContain(
+      'InstallExecutor::Pnpm => { install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await }',
+    );
+    expect(normalizedCliUpdate).toContain(
+      'InstallExecutor::Bun => { install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked).await }',
     );
     // Convergence is judged by re-resolving the binary the app executes, the
     // same rule the npm branch follows — not by trusting pnpm's zero exit.
