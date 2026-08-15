@@ -89,6 +89,7 @@ rumqttc = { version = "0.25.1", default-features = false, features = ["websocket
 webpki-roots = "1"
 ulid = "1"
 bytes = "1"
+notify = "8"
 # Strict SemVer comparison for the release-channel resolver in
 # `util/release_channel.rs`. We need correct pre-release ordering
 # (`1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0`) when picking the newest
