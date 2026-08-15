@@ -40,7 +40,8 @@ use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
     normalized_abort_description, runner_phase_elapsed_bucket, runner_phase_from_event,
-    runner_stack_shape, session_end_grace_waited_bucket, should_capture_watcher_exit,
+    runner_stack_shape, runner_stack_shape_for_exit, session_end_grace_waited_bucket,
+    should_capture_watcher_exit,
     spawn_failure_capture_policy, spawn_failure_fingerprint_token, termination_fingerprint_token,
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
@@ -1282,6 +1283,14 @@ struct WatcherExitCaptureContext {
     runner_stack_depth: u8,
     runner_stack_redacted_frames: u8,
     runner_stack_input: String,
+    /// Retained V8 heap-OOM evidence (HQ-DESKTOP-55), read from the shared
+    /// `RunTotals` at the exit boundary. All four are `None` unless the runner
+    /// aborted on a heap OOM this pass; absence never renders as evidence. The
+    /// banner is a fixed constant, the MB/frame figures bare integers.
+    runner_oom_banner: Option<&'static str>,
+    runner_heap_used_mb: Option<u64>,
+    runner_heap_total_mb: Option<u64>,
+    runner_oom_frame_count: Option<u32>,
     windows_terminator: Option<WindowsTerminatorAttribution>,
     /// Durable cancellation-record readout for this exact generation, read at the
     /// terminal boundary alongside the ephemeral cancelled flag. These three make
@@ -1380,6 +1389,10 @@ impl Default for WatcherExitCaptureContext {
             runner_stack_depth: 0,
             runner_stack_redacted_frames: 0,
             runner_stack_input: "empty".to_string(),
+            runner_oom_banner: None,
+            runner_heap_used_mb: None,
+            runner_heap_total_mb: None,
+            runner_oom_frame_count: None,
             windows_terminator: None,
             cancellation_record_present: false,
             cancellation_record_cause: None,
@@ -1460,7 +1473,9 @@ fn watcher_exit_capture_context(
     let phase_context = phase_context
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let stack = runner_stack_shape(stderr_tail);
+    // Prefer the class-scoped heap-OOM shape when this pass retained one, else the
+    // generic tail shape byte-identically — the same seam the manual route uses.
+    let stack = runner_stack_shape_for_exit(&totals, stderr_tail);
     // Read the retained Job Object accounting for THIS exact watcher generation
     // BEFORE `run_process_impl` deregisters (and closes) the handle. Resolving by
     // generation means a replacement that already re-acquired DAEMON_HANDLE can
@@ -1518,6 +1533,12 @@ fn watcher_exit_capture_context(
         runner_stack_input: classify_runner_stack_input(stderr_tail)
             .as_str()
             .to_string(),
+        // Retained heap-OOM evidence from the SAME RunTotals source the manual
+        // route reads, so both routes attach identical heap attribution.
+        runner_oom_banner: totals.runner_heap_oom_banner(),
+        runner_heap_used_mb: totals.runner_heap_used_total_mb().map(|(used, _)| used),
+        runner_heap_total_mb: totals.runner_heap_used_total_mb().map(|(_, total)| total),
+        runner_oom_frame_count: totals.runner_heap_oom_frame_count(),
         windows_terminator,
         cancellation_record_present: cancellation_record.is_some(),
         cancellation_record_cause: cancellation_record.and_then(|record| record.cause),
@@ -1924,7 +1945,9 @@ trait WatcherProcessEffects {
     fn reset_exec_not_runnable_failure_streak(&mut self);
     fn within_respawn_backoff(&self) -> bool;
     fn set_lifecycle_state(&mut self, next: WatchDaemonState, category: DaemonFailureCategory);
-    fn watcher_exit_diagnostics(&self) -> (Option<Duration>, Option<u64>, Option<Duration>);
+    fn watcher_exit_diagnostics(
+        &self,
+    ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>);
     fn log(&mut self, target: &str, message: &str);
     fn add_breadcrumb(&mut self, category: &str, level: sentry::Level, message: String);
     fn capture(
@@ -1973,7 +1996,9 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
         set_lifecycle_state(next, category);
     }
 
-    fn watcher_exit_diagnostics(&self) -> (Option<Duration>, Option<u64>, Option<Duration>) {
+    fn watcher_exit_diagnostics(
+        &self,
+    ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>) {
         watcher_exit_diagnostics()
     }
 
@@ -2086,6 +2111,18 @@ fn rss_scope(watcher_command: &str) -> &'static str {
         "cmd_shim" => "shim",
         "launcher" => "launcher",
         _ => "runner",
+    }
+}
+
+/// The RSS scope actually emitted (HQ-DESKTOP-55): `tree` when the summed
+/// descendant sample succeeded, else today's command-derived scope for a
+/// single-PID sample or no sample. `runner` is never produced by inference — it
+/// stays reserved for the command shape whose registered child IS the runner, so
+/// a launcher/shim single-PID footprint can never be mislabeled the runner's.
+fn resolve_rss_scope(kind: Option<RssSampleKind>, watcher_command: &str) -> &'static str {
+    match kind {
+        Some(RssSampleKind::Tree) => "tree",
+        Some(RssSampleKind::Single) | None => rss_scope(watcher_command),
     }
 }
 
@@ -2254,8 +2291,11 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         return;
     }
 
-    let (uptime, rss_kb, rss_age) = effects.watcher_exit_diagnostics();
-    let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
+    let (uptime, rss_kb, rss_age, rss_kind) = effects.watcher_exit_diagnostics();
+    // The emitted scope: `tree` only when the descendant-sum sample succeeded, else
+    // today's command-derived scope. `runner` is never produced by inference.
+    let resolved_rss_scope = resolve_rss_scope(rss_kind, watcher_command);
+    let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age, resolved_rss_scope);
     let raw_fingerprint_token = termination_fingerprint_token(code, signal);
     let fingerprint_token = termination_fingerprint_token_for_host(code, signal, host);
     let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
@@ -2375,7 +2415,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         "watcher_child_kind",
         watcher_child_kind(watcher_command).to_string(),
     ));
-    tags.push(("rss_scope", rss_scope(watcher_command).to_string()));
+    tags.push(("rss_scope", resolved_rss_scope.to_string()));
+    // V8 heap-OOM banner (HQ-DESKTOP-55), only when this pass retained one. A
+    // fixed constant; absent otherwise so absence never renders as evidence.
+    if let Some(banner) = context.runner_oom_banner {
+        tags.push(("runner_oom_banner", banner.to_string()));
+    }
     // Windows fault provenance (HQ-DESKTOP-4X): the faulting image + module read
     // from the OS's own crash record, plus an honesty token for how confidently
     // the record is bound to this generation. Always present so `unavailable` (no
@@ -2616,6 +2661,29 @@ fn watcher_exit_context_extras(
         extras.push((
             "watcher_fault_offset",
             sentry::protocol::Value::String(offset.to_string()),
+        ));
+    }
+    // V8 heap-OOM heap figures + captured-frame count (HQ-DESKTOP-55), as bare
+    // integers, present only when this pass retained a heap OOM. used/total are
+    // both-or-neither; the frame count is present whenever a banner was seen (0
+    // when the banner arrived with no frames). Absent otherwise so absence never
+    // renders as evidence.
+    if let Some(used) = context.runner_heap_used_mb {
+        extras.push((
+            "runner_heap_used_mb",
+            sentry::protocol::Value::Number(used.into()),
+        ));
+    }
+    if let Some(total) = context.runner_heap_total_mb {
+        extras.push((
+            "runner_heap_total_mb",
+            sentry::protocol::Value::Number(total.into()),
+        ));
+    }
+    if let Some(frames) = context.runner_oom_frame_count {
+        extras.push((
+            "runner_oom_frame_count",
+            sentry::protocol::Value::Number(frames.into()),
         ));
     }
     extras
@@ -2953,6 +3021,21 @@ fn should_reset_after_recovery(spawn_elapsed: Option<Duration>, window: Duration
     spawn_elapsed.map(|e| e >= window).unwrap_or(false)
 }
 
+/// Which process footprint a watcher RSS sample actually describes.
+///
+/// `Tree` is the honest sum over the registered PID AND its descendants (the Node
+/// runner that npx spawns), so the number is the runner's real footprint. `Single`
+/// is the fallback single-registered-PID sample, which for the npx launcher/shim
+/// measures the launcher, not the runner — the exit renderer withholds it. `runner`
+/// is NEVER produced by inference: a pid/ppid/rss row carries no process identity,
+/// so `Single` keeps today's command-derived scope label rather than claiming the
+/// sample is the runner's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RssSampleKind {
+    Tree,
+    Single,
+}
+
 /// Shared crash-loop state across the spawn (`start_daemon`), the watcher Exit
 /// handler, and the supervisor.
 #[derive(Default)]
@@ -2978,6 +3061,11 @@ struct WatcherCrashState {
     /// captured. Cleared on each fresh spawn.
     last_rss_kb: Option<u64>,
     last_rss_at: Option<Instant>,
+    /// Which footprint the last sample measured (HQ-DESKTOP-55): the honest
+    /// descendant-`Tree` sum, or the `Single`-PID fallback. Drives the exit
+    /// renderer's scope so a launcher-only number is never printed as the runner's.
+    /// Moves in lockstep with `last_rss_kb`; cleared on each fresh spawn.
+    last_rss_kind: Option<RssSampleKind>,
 }
 
 static CRASH_STATE: OnceLock<Mutex<WatcherCrashState>> = OnceLock::new();
@@ -2997,6 +3085,7 @@ fn note_watcher_spawned() {
     // never reports a stale footprint from a process that already died.
     st.last_rss_kb = None;
     st.last_rss_at = None;
+    st.last_rss_kind = None;
     HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
 }
 
@@ -3073,20 +3162,28 @@ fn note_environment_preflight_failure() {
     );
 }
 
-/// Record the latest RSS (KB) sampled from the live watcher (supervisor tick).
-fn note_watcher_rss(kb: u64) {
+/// Record the latest RSS (KB) sampled from the live watcher (supervisor tick),
+/// together with which footprint it measured (descendant `Tree` or `Single`).
+fn note_watcher_rss(kb: u64, kind: RssSampleKind) {
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.last_rss_kb = Some(kb);
     st.last_rss_at = Some(Instant::now());
+    st.last_rss_kind = Some(kind);
 }
 
 /// Snapshot for enriching a crash capture: watcher uptime (since spawn), the
-/// last RSS sample, and how long before now that sample was taken.
-fn watcher_exit_diagnostics() -> (Option<Duration>, Option<u64>, Option<Duration>) {
+/// last RSS sample, how long before now that sample was taken, and which
+/// footprint it measured (so the exit renderer can scope the number honestly).
+fn watcher_exit_diagnostics() -> (
+    Option<Duration>,
+    Option<u64>,
+    Option<Duration>,
+    Option<RssSampleKind>,
+) {
     let st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     let uptime = st.spawn_at.map(|t| t.elapsed());
     let rss_age = st.last_rss_at.map(|t| t.elapsed());
-    (uptime, st.last_rss_kb, rss_age)
+    (uptime, st.last_rss_kb, rss_age, st.last_rss_kind)
 }
 
 /// Supervisor helper: is the watcher still inside its respawn-backoff window?
@@ -3107,6 +3204,89 @@ fn reset_crash_state_if_recovered() {
         st.exec_not_runnable_consecutive = 0;
         st.backoff_until = None;
     }
+}
+
+/// Best-effort scoped RSS sample of the registered watcher (HQ-DESKTOP-55).
+///
+/// On Unix it sums the registered PID AND its transitive descendants — the Node
+/// runner that the npx launcher spawns — via ONE `ps -eo pid=,ppid=,rss=`, so the
+/// reported footprint is the runner's, tagged `Tree`. On ANY failure (spawn,
+/// parse, or the root PID missing from the table) it falls back to today's
+/// single-PID sample tagged `Single`, so the failure mode is the status quo, never
+/// a mislabeled number. Windows keeps its single-PID sampler (the Job Object
+/// already carries whole-tree memory), reported `Single`. Best-effort throughout —
+/// it never changes whether a crash is captured. One `ps` spawn per supervisor
+/// tick, replacing (not adding to) the existing one.
+#[cfg(not(target_os = "windows"))]
+fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
+    match sample_pid_tree_rss_kb(pid) {
+        Some(sum) => Some((sum, RssSampleKind::Tree)),
+        None => sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single)),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
+    sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single))
+}
+
+/// Sum RSS (KB) over `root` and its transitive descendants in a captured
+/// `ps -eo pid=,ppid=,rss=` table. Cycle-safe via a visited set. Returns `None`
+/// only when `root` is absent from the table, so the caller falls back to a
+/// single-PID sample rather than reporting a wrong sum. Pure so it can be
+/// unit-tested against captured macOS and Linux `ps` output, including
+/// reparented (ppid 1) descendants.
+#[cfg(not(target_os = "windows"))]
+fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<u64> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut rss_by_pid: HashMap<u32, u64> = HashMap::new();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for line in ps_table.lines() {
+        let mut columns = line.split_whitespace();
+        let (Some(pid), Some(ppid), Some(kb)) =
+            (columns.next(), columns.next(), columns.next())
+        else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid), Ok(kb)) =
+            (pid.parse::<u32>(), ppid.parse::<u32>(), kb.parse::<u64>())
+        else {
+            continue;
+        };
+        rss_by_pid.insert(pid, kb);
+        children.entry(ppid).or_default().push(pid);
+    }
+    if !rss_by_pid.contains_key(&root) {
+        return None;
+    }
+    let mut total = 0_u64;
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut queue: VecDeque<u32> = VecDeque::from([root]);
+    while let Some(pid) = queue.pop_front() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        total = total.saturating_add(rss_by_pid.get(&pid).copied().unwrap_or(0));
+        if let Some(kids) = children.get(&pid) {
+            queue.extend(kids.iter().copied());
+        }
+    }
+    Some(total)
+}
+
+/// Best-effort whole-tree RSS (KB) for the registered watcher PID: one bounded
+/// `ps -eo pid=,ppid=,rss=` invocation summed by [`sum_pid_tree_rss_kb`]. `None`
+/// on spawn/exit/parse failure or a missing root, so the caller falls back to the
+/// single-PID sample.
+#[cfg(not(target_os = "windows"))]
+fn sample_pid_tree_rss_kb(root: u32) -> Option<u64> {
+    let mut cmd = std::process::Command::new("ps");
+    paths::no_window(&mut cmd);
+    let out = cmd.args(["-eo", "pid=,ppid=,rss="]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
 }
 
 /// Best-effort RSS (KB) of the registered watcher. On Unix this uses `ps`,
@@ -3180,22 +3360,26 @@ fn format_duration_secs(secs: u64) -> String {
 
 /// Build the ` [uptime=…; last_rss=…]` suffix appended to an unexpected-exit
 /// capture. Omits unknown pieces; returns `""` when nothing is known.
+///
+/// The `last_rss` piece is scope-aware (HQ-DESKTOP-55): a `runner`-scoped sample
+/// renders byte-identically to the historical suffix; a `tree`-scoped sample
+/// qualifies the honest whole-tree number; and any non-runner single-PID scope
+/// WITHHOLDS the number (it measures the launcher/shim, not the runner) and names
+/// the scope as `unattributed:<scope>` instead — so neither an impossible 32KB nor
+/// a plausible-looking launcher footprint can ever read as the runner's. The
+/// no-sample arms are unchanged and scope-independent.
 fn exit_diagnostic_suffix(
     uptime: Option<Duration>,
     rss_kb: Option<u64>,
     rss_age: Option<Duration>,
+    rss_scope: &str,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(u) = uptime {
         parts.push(format!("uptime={}", format_duration_secs(u.as_secs())));
     }
     match (rss_kb, rss_age) {
-        (Some(kb), Some(age)) => parts.push(format!(
-            "last_rss={} (sampled {} before exit)",
-            format_rss_kb(kb),
-            format_duration_secs(age.as_secs())
-        )),
-        (Some(kb), None) => parts.push(format!("last_rss={}", format_rss_kb(kb))),
+        (Some(kb), age) => parts.push(render_last_rss(kb, age, rss_scope)),
         _ if uptime.is_some_and(|elapsed| {
             elapsed < SUPERVISOR_SETTLE.saturating_add(SUPERVISOR_INTERVAL)
         }) =>
@@ -3208,6 +3392,32 @@ fn exit_diagnostic_suffix(
         String::new()
     } else {
         format!(" [{}]", parts.join("; "))
+    }
+}
+
+/// Render the scope-aware `last_rss=…` piece. `runner` keeps the historical
+/// plain-number strings exactly; `tree` folds a `tree` qualifier into the sampled
+/// clause; every other (non-runner single-PID) scope withholds the number as
+/// `unattributed:<scope>`. `age` present means "(sampled … before exit)".
+fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
+    let sampled = age.map(|age| format!(" (sampled {} before exit)", format_duration_secs(age.as_secs())));
+    match rss_scope {
+        "runner" => match &sampled {
+            Some(clause) => format!("last_rss={}{clause}", format_rss_kb(kb)),
+            None => format!("last_rss={}", format_rss_kb(kb)),
+        },
+        "tree" => match age {
+            Some(age) => format!(
+                "last_rss={} (tree, sampled {} before exit)",
+                format_rss_kb(kb),
+                format_duration_secs(age.as_secs())
+            ),
+            None => format!("last_rss={} (tree)", format_rss_kb(kb)),
+        },
+        other => match &sampled {
+            Some(clause) => format!("last_rss=unattributed:{other}{clause}"),
+            None => format!("last_rss=unattributed:{other}"),
+        },
     }
 }
 
@@ -3265,10 +3475,13 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 note_daemon_guard_alive();
                 // Sample the live watcher's RSS so if it is later killed by
                 // signal=9, the crash capture can report the footprint it had
-                // shortly before death (jetsam/OOM vs kill -9). Best-effort.
+                // shortly before death (jetsam/OOM vs kill -9). Scoped to the
+                // whole descendant tree so the runner's real footprint is seen
+                // through the npx launcher, with an honest single-PID fallback.
+                // Best-effort.
                 if let Some(pid) = sample_pid {
-                    if let Some(kb) = sample_pid_rss_kb(pid) {
-                        note_watcher_rss(kb);
+                    if let Some((kb, kind)) = sample_watcher_rss_scoped(pid) {
+                        note_watcher_rss(kb, kind);
                     }
                 }
             } else if should_respawn_daemon_gated(
@@ -3541,10 +3754,11 @@ mod tests {
         let rss_kb = sample_pid_rss_kb(std::process::id())
             .expect("GetProcessMemoryInfo should sample the live test process");
         assert!(rss_kb > 0, "a live process must have a nonzero working set");
-        note_watcher_rss(rss_kb);
+        note_watcher_rss(rss_kb, RssSampleKind::Single);
 
-        let (_uptime, sampled_rss_kb, sampled_age) = watcher_exit_diagnostics();
+        let (_uptime, sampled_rss_kb, sampled_age, sampled_kind) = watcher_exit_diagnostics();
         assert_eq!(sampled_rss_kb, Some(rss_kb));
+        assert_eq!(sampled_kind, Some(RssSampleKind::Single));
         assert!(
             sampled_age.is_some(),
             "sample age must reach exit diagnostics"
@@ -4103,8 +4317,10 @@ mod tests {
             self.lifecycle.push((next, category));
         }
 
-        fn watcher_exit_diagnostics(&self) -> (Option<Duration>, Option<u64>, Option<Duration>) {
-            (Some(Duration::from_secs(1)), None, None)
+        fn watcher_exit_diagnostics(
+            &self,
+        ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>) {
+            (Some(Duration::from_secs(1)), None, None, None)
         }
 
         fn log(&mut self, target: &str, message: &str) {
@@ -7346,22 +7562,244 @@ mod tests {
 
     #[test]
     fn exit_diagnostic_suffix_omits_unknown_pieces() {
+        // No-sample arms are scope-independent and byte-identical to before.
         assert_eq!(
-            exit_diagnostic_suffix(None, None, None),
+            exit_diagnostic_suffix(None, None, None, "runner"),
             " [last_rss=unsampled]"
         );
         assert_eq!(
-            exit_diagnostic_suffix(Some(Duration::from_secs(5)), None, None),
+            exit_diagnostic_suffix(Some(Duration::from_secs(5)), None, None, "launcher"),
             " [uptime=5s; last_rss=not-yet-sampled]"
         );
+        // A runner-scoped sample renders exactly as it always has.
         let full = exit_diagnostic_suffix(
             Some(Duration::from_secs(90)),
             Some(182 * 1024),
             Some(Duration::from_secs(12)),
+            "runner",
         );
         assert_eq!(
             full,
             " [uptime=1m30s; last_rss=182MB (sampled 12s before exit)]"
+        );
+    }
+
+    #[test]
+    fn exit_diagnostic_suffix_is_scope_aware_for_samples() {
+        // The honest whole-tree sum is qualified, not withheld.
+        assert_eq!(
+            exit_diagnostic_suffix(
+                Some(Duration::from_secs(120)),
+                Some(48 * 1024),
+                Some(Duration::from_secs(8)),
+                "tree",
+            ),
+            " [uptime=2m0s; last_rss=48MB (tree, sampled 8s before exit)]"
+        );
+        assert_eq!(
+            exit_diagnostic_suffix(Some(Duration::from_secs(120)), Some(48 * 1024), None, "tree"),
+            " [uptime=2m0s; last_rss=48MB (tree)]"
+        );
+        // A launcher/shim single-PID sample WITHHOLDS the number — neither the
+        // impossible 32KB nor a plausible launcher footprint can read as the
+        // runner's — and names the scope instead.
+        assert_eq!(
+            exit_diagnostic_suffix(
+                Some(Duration::from_secs(2123)),
+                Some(32),
+                Some(Duration::from_secs(8)),
+                "launcher",
+            ),
+            " [uptime=35m23s; last_rss=unattributed:launcher (sampled 8s before exit)]"
+        );
+        assert_eq!(
+            exit_diagnostic_suffix(Some(Duration::from_secs(60)), Some(71 * 1024), None, "shim"),
+            " [uptime=1m0s; last_rss=unattributed:shim]"
+        );
+    }
+
+    #[test]
+    fn resolve_rss_scope_prefers_tree_else_command_scope() {
+        // The honest whole-tree sum is `tree`.
+        assert_eq!(resolve_rss_scope(Some(RssSampleKind::Tree), "npx"), "tree");
+        // A single-PID sample (or no sample) keeps today's command-derived scope;
+        // `runner` is never produced by inference for a launcher/shim.
+        assert_eq!(
+            resolve_rss_scope(Some(RssSampleKind::Single), "/opt/homebrew/bin/npx"),
+            "launcher"
+        );
+        assert_eq!(
+            resolve_rss_scope(Some(RssSampleKind::Single), r"C:\p\npx.cmd"),
+            "shim"
+        );
+        assert_eq!(resolve_rss_scope(None, "/opt/homebrew/bin/npx"), "launcher");
+        // Only a command whose registered child IS the runner keeps `runner`.
+        assert_eq!(resolve_rss_scope(Some(RssSampleKind::Single), "node"), "runner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sum_pid_tree_rss_kb_sums_descendants_and_handles_edges() {
+        // pid ppid rss — root=100 with children 200/300 and grandchild 400.
+        let table = "100 1 10\n200 100 20\n300 100 30\n400 200 40\n999 1 99\n";
+        // root + 200 + 300 + 400 = 100; the unrelated 999 is excluded.
+        assert_eq!(sum_pid_tree_rss_kb(table, 100), Some(100));
+        // A leaf sums only itself.
+        assert_eq!(sum_pid_tree_rss_kb(table, 400), Some(40));
+        // A missing root -> None, which drives the single-PID fallback.
+        assert_eq!(sum_pid_tree_rss_kb(table, 12345), None);
+        // Malformed rows are skipped, never fatal; a reparented (ppid 1) row is
+        // just another descendant when reachable, or excluded when not.
+        assert_eq!(sum_pid_tree_rss_kb("garbage\n100 1 10\n", 100), Some(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sum_pid_tree_rss_kb_is_cycle_safe() {
+        // A pathological ppid cycle must terminate and count each PID once.
+        let table = "100 200 10\n200 100 20\n";
+        assert_eq!(sum_pid_tree_rss_kb(table, 100), Some(30));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sample_watcher_rss_scoped_reports_tree_for_the_live_process() {
+        // The live test process is always in the `ps` table, so the scoped sampler
+        // succeeds and reports the honest whole-tree scope.
+        let (kb, kind) = sample_watcher_rss_scoped(std::process::id())
+            .expect("the live test process must be sampleable");
+        assert!(kb > 0, "a live process has a nonzero footprint");
+        assert_eq!(kind, RssSampleKind::Tree);
+    }
+
+    /// The minimal heap-OOM stderr both wiring tests feed through the shared
+    /// `RunTotals` seam: a GC line, the banner, the marker, then three frames
+    /// (`node::OOMErrorHandler` → `ReportOOMFailure` → `Runtime_NewArray`).
+    const HEAP_OOM_MINIMAL_STDERR: &[&str] = &[
+        "[1:0x1]  47.7 (80.5) -> 47.7 (80.5) MB, tail",
+        "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        "----- Native stack trace -----",
+        " 1: 0xe46bbe node::OOMErrorHandler(char const*) [node]",
+        " 2: 0x1243740 v8::Utils::ReportOOMFailure(char const*) [node]",
+        " 3: 0x1889f5d v8::internal::Runtime_NewArray(int) [node]",
+    ];
+
+    #[test]
+    fn watcher_exit_capture_context_reads_heap_oom_evidence_from_totals() {
+        let _environment = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = begin_watcher_generation(WatcherLaunchOrigin::SupervisorRespawn);
+        let mut totals = RunTotals::default();
+        for line in HEAP_OOM_MINIMAL_STDERR {
+            totals.record_stderr_line(line);
+        }
+        let phase_context = Mutex::new(WatcherPhaseContext {
+            phase: "pull",
+            observed_at: Instant::now(),
+        });
+        // An EMPTY tail proves the class-scoped shape comes from the retained
+        // evidence, not from the generic tail path.
+        let context = watcher_exit_capture_context(
+            &Mutex::new(totals),
+            false,
+            &phase_context,
+            &generation,
+            0,
+            &[],
+            None,
+            None,
+            0,
+            None,
+            None,
+        );
+        assert_eq!(context.runner_oom_banner, Some("reached_heap_limit"));
+        assert_eq!(context.runner_heap_used_mb, Some(48));
+        assert_eq!(context.runner_heap_total_mb, Some(81));
+        assert_eq!(context.runner_oom_frame_count, Some(3));
+        assert_eq!(
+            context.runner_stack_shape,
+            "node_oom_handler>v8_report_oom>v8_runtime"
+        );
+        assert_ne!(context.runner_stack_signature, "unknown");
+        assert_eq!(context.runner_stack_depth, 3);
+    }
+
+    #[test]
+    fn heap_oom_watcher_capture_emits_banner_and_extras_without_moving_fingerprint() {
+        let with_heap = WatcherExitCaptureContext {
+            runner_oom_banner: Some("reached_heap_limit"),
+            runner_heap_used_mb: Some(48),
+            runner_heap_total_mb: Some(81),
+            runner_oom_frame_count: Some(3),
+            runner_stack_shape: "node_oom_handler>v8_report_oom>v8_runtime".to_string(),
+            runner_stack_signature: "0123456789abcdef".to_string(),
+            runner_stack_depth: 3,
+            ..WatcherExitCaptureContext::default()
+        };
+        let baseline = WatcherExitCaptureContext::default();
+
+        // A heap OOM aborts with SIGABRT (signal 6) — the exact HQ-DESKTOP-55 exit.
+        let mut heap_effects = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut heap_effects,
+            None,
+            Some(6),
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            current_termination_host(),
+            &with_heap,
+        );
+        let mut base_effects = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut base_effects,
+            None,
+            Some(6),
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            current_termination_host(),
+            &baseline,
+        );
+
+        let heap_capture = heap_effects.captures.first().expect("heap capture");
+        let base_capture = base_effects.captures.first().expect("baseline capture");
+
+        // Heap evidence attaches: banner tag, class-scoped v8_* shape, and the
+        // three integer extras.
+        assert_eq!(
+            recorded_tag(heap_capture, "runner_oom_banner"),
+            "reached_heap_limit"
+        );
+        assert_eq!(
+            recorded_tag(heap_capture, "runner_stack_shape"),
+            "node_oom_handler>v8_report_oom>v8_runtime"
+        );
+        assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
+        assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);
+        assert_eq!(recorded_number_extra(heap_capture, "runner_oom_frame_count"), 3);
+
+        // The baseline (no heap evidence) carries none of them — absence never
+        // renders as evidence.
+        assert!(base_capture.tags.iter().all(|(k, _)| k != "runner_oom_banner"));
+        assert!(base_capture
+            .extras
+            .iter()
+            .all(|(k, _)| k != "runner_heap_used_mb"));
+
+        // Grouping is message-independent: the fingerprint is byte-identical with
+        // and without heap evidence (the retitled RSS/heap lines cannot regroup).
+        assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
+        assert_eq!(heap_capture.fingerprint.len(), 4);
+        assert_eq!(heap_capture.fingerprint[0], "sync");
+        assert_eq!(
+            heap_capture.fingerprint[1],
+            "auto-sync-watcher-termination"
         );
     }
 
