@@ -196,6 +196,9 @@ const SENSITIVE_FIELD_NAMES: &[&str] = &[
     "token",
 ];
 
+/// Mirror of `hq_desktop_core::sync_outcome::RUNNER_STACK_TOKENS`. The two must
+/// stay set-identical or a new producer token would be silently `[Filtered]` at
+/// egress; `runner_stack_tokens_match_across_crates` enforces that.
 const RUNNER_STACK_TOKENS: &[&str] = &[
     "app",
     "libuv_handle",
@@ -211,6 +214,19 @@ const RUNNER_STACK_TOKENS: &[&str] = &[
     "node_stream",
     "rust_core_panicking",
     "rust_std_panicking",
+    // V8 heap-OOM native-frame vocabulary (HQ-DESKTOP-55).
+    "node_oom_handler",
+    "node_abort",
+    "v8_report_oom",
+    "v8_fatal_process_oom",
+    "v8_heap_allocator",
+    "v8_heap",
+    "v8_factory",
+    "v8_runtime",
+    "v8_builtin",
+    "v8_other",
+    "node_native",
+    "anon",
 ];
 
 fn is_sensitive_key(k: &str) -> bool {
@@ -368,7 +384,22 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
         "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
-        "rss_scope" => Some(matches!(value, "shim" | "launcher" | "runner")),
+        // `tree` (HQ-DESKTOP-55) is the honest whole-descendant-tree RSS scope; the
+        // other three remain the single-PID command-derived scopes.
+        "rss_scope" => Some(matches!(value, "shim" | "launcher" | "runner" | "tree")),
+        // V8 heap-OOM attribution (HQ-DESKTOP-55). The producer emits a fixed
+        // banner constant and bare-integer MB/frame figures; these independent
+        // egress checks degrade a producer bug that shipped raw stderr text to
+        // `[Filtered]` instead. The numeric extras reach this check as `""` for a
+        // non-string `Value` (type-safe by construction); a string value must
+        // parse as an unsigned integer.
+        "runner_oom_banner" => Some(matches!(
+            value,
+            "reached_heap_limit" | "ineffective_mark_compacts" | "other"
+        )),
+        "runner_heap_used_mb" | "runner_heap_total_mb" | "runner_oom_frame_count" => {
+            Some(value.is_empty() || value.parse::<u64>().is_ok())
+        }
         // Windows fault provenance (HQ-DESKTOP-4X). The producer already emits
         // fixed vocabulary and bare integers; these independent checks make a
         // future producer bug that shipped a path, product string, or raw record
@@ -1829,6 +1860,111 @@ mod tests {
                 "non-member {near_miss:?} must be rejected"
             );
         }
+    }
+
+    /// Cross-crate parity guard (HQ-DESKTOP-55): the egress validator's stack-shape
+    /// vocabulary must equal the core producer's `RUNNER_STACK_TOKENS` as a SET. No
+    /// such guard existed before; a one-sided token edit would silently `[Filtered]`
+    /// exactly the class-scoped heap-OOM signal this change adds, making the fix
+    /// appear inert in production. This turns that drift into a loud CI failure.
+    #[test]
+    fn runner_stack_tokens_match_across_crates() {
+        use std::collections::HashSet;
+        let validator: HashSet<&str> = RUNNER_STACK_TOKENS.iter().copied().collect();
+        let producer: HashSet<&str> = hq_desktop_core::sync_outcome::RUNNER_STACK_TOKENS
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            validator, producer,
+            "RUNNER_STACK_TOKENS drifted between hq-telemetry and hq-desktop-core"
+        );
+        // Every class-scoped heap-OOM token a producer can emit in a shape must
+        // pass the shape validator (single-token shapes exercise the arm directly).
+        for token in hq_desktop_core::sync_outcome::RUNNER_STACK_TOKENS {
+            assert!(
+                valid_runner_stack_shape(token),
+                "producer token {token} must validate at egress"
+            );
+        }
+    }
+
+    /// Heap-OOM egress arms (HQ-DESKTOP-55): the banner is a fixed constant, the
+    /// MB/frame figures are bare integers, and the honest `tree` RSS scope passes.
+    /// A raw stderr fragment, a path, or an over-long value in any of these fields
+    /// must degrade to `[Filtered]` at the boundary.
+    #[test]
+    fn heap_oom_diagnostic_fields_validate_or_filter() {
+        for banner in ["reached_heap_limit", "ineffective_mark_compacts", "other"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_oom_banner", banner),
+                Some(true)
+            );
+        }
+        for bad_banner in ["Reached heap limit Allocation failed", "oom", "", "heap_limit"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_oom_banner", bad_banner),
+                Some(false),
+                "non-member banner {bad_banner:?} must be rejected"
+            );
+        }
+        // Numeric extras: `""` (a non-string Value) and a decimal string pass; a
+        // symbol, a path, or a signed/oversized value is rejected.
+        for field in ["runner_heap_used_mb", "runner_heap_total_mb", "runner_oom_frame_count"] {
+            assert_eq!(valid_runner_diagnostic_field(field, ""), Some(true));
+            assert_eq!(valid_runner_diagnostic_field(field, "48"), Some(true));
+            for bad in ["v8::internal::Runtime_NewArray", "/Users/x", "-1", "12.5"] {
+                assert_eq!(
+                    valid_runner_diagnostic_field(field, bad),
+                    Some(false),
+                    "{field} must reject {bad:?}"
+                );
+            }
+        }
+        // The honest tree scope passes; the pre-existing scopes still pass; a new
+        // unknown scope string is rejected.
+        for scope in ["tree", "shim", "launcher", "runner"] {
+            assert_eq!(valid_runner_diagnostic_field("rss_scope", scope), Some(true));
+        }
+        assert_eq!(
+            valid_runner_diagnostic_field("rss_scope", "unattributed:launcher"),
+            Some(false)
+        );
+    }
+
+    /// A class-scoped heap-OOM shape carrying the appended V8 tokens survives the
+    /// scrubber in shape position and keeps a valid shape/signature pair, while a
+    /// raw V8 symbol string in the same field is filtered.
+    #[test]
+    fn heap_oom_shape_survives_scrubber_but_raw_symbol_is_filtered() {
+        let mut event = Event::default();
+        event.tags.insert(
+            "runner_stack_shape".to_string(),
+            "node_oom_handler>v8_report_oom>v8_fatal_process_oom>anon>v8_heap>\
+             v8_heap_allocator>v8_heap_allocator>v8_factory"
+                .to_string(),
+        );
+        event
+            .tags
+            .insert("runner_stack_signature".to_string(), "0123456789abcdef".to_string());
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.tags["runner_stack_shape"],
+            "node_oom_handler>v8_report_oom>v8_fatal_process_oom>anon>v8_heap>\
+             v8_heap_allocator>v8_heap_allocator>v8_factory"
+        );
+        assert_eq!(result.tags["runner_stack_signature"], "0123456789abcdef");
+
+        let mut hostile = Event::default();
+        hostile.tags.insert(
+            "runner_stack_shape".to_string(),
+            "v8::internal::Runtime_NewArray(int, unsigned long*)".to_string(),
+        );
+        hostile
+            .tags
+            .insert("runner_stack_signature".to_string(), "0123456789abcdef".to_string());
+        let filtered = before_send(hostile).expect("event remains sendable");
+        assert_eq!(filtered.tags["runner_stack_shape"], "[Filtered]");
     }
 
     #[test]

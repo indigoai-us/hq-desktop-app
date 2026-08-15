@@ -46,7 +46,7 @@ use hq_desktop_core::sync_outcome::{
     classify_error_event, classify_runner_error_class,
     classify_runner_exit_disposition_with_cancellation, classify_runner_fatal_class,
     classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
-    runner_phase_from_event, runner_stack_shape, should_synthesize_all_complete,
+    runner_phase_from_event, runner_stack_shape_for_exit, should_synthesize_all_complete,
     termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol,
     RunnerExitDisposition, SyncCancelCause, RUNNER_PHASE_PRE_PROTOCOL,
 };
@@ -301,7 +301,9 @@ fn runner_exit_telemetry_context(
     Vec<(&'static str, String)>,
     Vec<(&'static str, sentry::protocol::Value)>,
 ) {
-    let stack = runner_stack_shape(&context.stderr_tail);
+    // Prefer the class-scoped heap-OOM shape when this run retained one, else the
+    // generic tail shape byte-identically — the same seam the watcher route uses.
+    let stack = runner_stack_shape_for_exit(totals, &context.stderr_tail);
     let mut tags = vec![
         ("sync_route", "manual".to_string()),
         ("sync_scope", context.sync_scope.clone()),
@@ -309,6 +311,13 @@ fn runner_exit_telemetry_context(
         ("runner_stack_shape", stack.shape),
         ("runner_stack_signature", stack.signature),
     ];
+    // V8 heap-OOM banner (HQ-DESKTOP-55), only when this run retained one. A fixed
+    // constant; absent otherwise so absence never renders as evidence. Read from
+    // the SAME RunTotals source the watcher route reads, keeping the routes
+    // attribute-identical.
+    if let Some(banner) = totals.runner_heap_oom_banner() {
+        tags.push(("runner_oom_banner", banner.to_string()));
+    }
     if let Some(rollup) = totals.runner_error_rollup.tag_value() {
         tags.push(("runner_error_rollup", rollup));
     }
@@ -435,6 +444,27 @@ fn runner_exit_telemetry_context(
     // Company-scope vs per-file split, only when a runner error was recorded.
     if let Some(scope) = totals.runner_error_scope() {
         extras.push(("runner_error_scope", sentry::protocol::Value::String(scope)));
+    }
+    // V8 heap-OOM heap figures + captured-frame count (HQ-DESKTOP-55), as bare
+    // integers, present only when this run retained a heap OOM. used/total are
+    // both-or-neither; the frame count is present whenever a banner was seen (0
+    // when the banner arrived with no frames). Mirrors the watcher route from the
+    // shared RunTotals source, so both routes attach identical heap attribution.
+    if let Some((used, total)) = totals.runner_heap_used_total_mb() {
+        extras.push((
+            "runner_heap_used_mb",
+            sentry::protocol::Value::Number(used.into()),
+        ));
+        extras.push((
+            "runner_heap_total_mb",
+            sentry::protocol::Value::Number(total.into()),
+        ));
+    }
+    if let Some(frames) = totals.runner_heap_oom_frame_count() {
+        extras.push((
+            "runner_oom_frame_count",
+            sentry::protocol::Value::Number(frames.into()),
+        ));
     }
     (tags, extras)
 }
@@ -3812,6 +3842,56 @@ mod tests {
         );
         assert!(!serialized.contains(private_path));
         assert!(!serialized.contains("UV_HANDLE_CLOSING"));
+    }
+
+    #[test]
+    fn manual_runner_heap_oom_capture_attaches_evidence_and_survives_egress() {
+        // A V8 heap OOM fed through the SAME shared stderr seam the watcher route
+        // uses, driven end to end through the production capture path and the
+        // hq-telemetry egress scrubber (HQ-DESKTOP-55).
+        let totals = Mutex::new(RunTotals::default());
+        let heap_lines = [
+            "[1:0x1]  47.7 (80.5) -> 47.7 (80.5) MB, tail",
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+            "----- Native stack trace -----",
+            " 1: 0xe46bbe node::OOMErrorHandler(char const*) [node]",
+            " 2: 0x1243740 v8::Utils::ReportOOMFailure(char const*) [node]",
+            " 3: 0x1889f5d v8::internal::Runtime_NewArray(int) [node]",
+        ];
+
+        let captures = sentry::test::with_captured_events(|| {
+            for line in heap_lines {
+                assert!(update_runner_stderr_totals(&totals, line).is_none());
+            }
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            capture_runner_exit_error(
+                None,
+                Some(6),
+                &snapshot,
+                &SyncErrorEvent {
+                    company: None,
+                    path: "(runner)".to_string(),
+                    message: "hq-sync-runner exited abnormally".to_string(),
+                },
+                &ManualRunnerExitContext::default(),
+            );
+        });
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("manual heap-OOM event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+
+        assert_eq!(event.tags["sync_route"], "manual");
+        assert_eq!(event.tags["runner_oom_banner"], "reached_heap_limit");
+        assert_eq!(event.tags["runner_fatal_class"], "heap_oom");
+        assert!(event.tags["runner_stack_shape"].starts_with("node_oom_handler>"));
+        assert_ne!(event.tags["runner_stack_signature"], "unknown");
+        assert_eq!(event.extra["runner_heap_used_mb"].as_u64(), Some(48));
+        assert_eq!(event.extra["runner_heap_total_mb"].as_u64(), Some(81));
+        assert_eq!(event.extra["runner_oom_frame_count"].as_u64(), Some(3));
+        // No raw symbol or path can leak through egress.
+        assert!(!serialized.contains("OOMErrorHandler"));
+        assert!(!serialized.contains("Runtime_NewArray"));
     }
 
     #[test]

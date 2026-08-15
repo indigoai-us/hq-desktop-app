@@ -113,6 +113,40 @@ pub struct RunTotals {
     runner_error_discovery_scope: u32,
     /// Count of per-file errors (any other `path`) seen this pass.
     runner_error_file_scope: u32,
+    /// The most recent V8 GC-line heap figures this pass, as round-half-away MB
+    /// `(used, total)`, last-wins until frozen at the first heap-OOM banner.
+    /// Rounded at parse so `RunTotals` stays `Eq`; the rounded value is exactly
+    /// what the banner would commit, so nothing observable changes. `None` until
+    /// a GC line is parsed. See `record_heap_oom_stderr_line`.
+    heap_gc_candidate: Option<(u64, u64)>,
+    /// Retained V8 heap-OOM evidence for this pass (HQ-DESKTOP-55), created at
+    /// the fatal banner and populated with a bounded native-frame capture. A V8
+    /// heap OOM aborts the process, so this can never span the per-pass reset the
+    /// watcher route applies on `AllComplete`. Memory-local: only fixed tokens,
+    /// bounded integers, and a digest of the normalized symbols ever leave here.
+    heap_oom: Option<HeapOomEvidence>,
+}
+
+/// Bounded, memory-local heap-OOM evidence. No field ever leaves the process as
+/// text: the banner is a fixed constant, the MB figures are integers, and the
+/// captured `frames` are normalized C++ symbols read only to derive a fixed-token
+/// shape and a digest signature. See [`RunTotals::runner_heap_oom_stack`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HeapOomEvidence {
+    /// Which V8 fatal banner was seen: `reached_heap_limit`,
+    /// `ineffective_mark_compacts`, or `other`. Always a fixed constant.
+    banner: &'static str,
+    /// Committed heap `(used, total)` MB frozen from the last GC candidate at the
+    /// banner, or `None` when no GC line preceded it. Both-or-neither by
+    /// construction.
+    used_total_mb: Option<(u64, u64)>,
+    /// Normalized native-stack symbols (ordinal/address/bracketed-suffix stripped),
+    /// hard-capped at [`HEAP_OOM_FRAME_CAP`]. Memory-local — hashed into the
+    /// signature and mapped to fixed tokens, never emitted raw.
+    frames: Vec<String>,
+    /// Set once the native-stack section ends, so trailing runner output can never
+    /// append a spurious frame.
+    frames_done: bool,
 }
 
 impl RunTotals {
@@ -243,6 +277,103 @@ impl RunTotals {
                 }
             }
         }
+        // Retain V8 heap-OOM evidence at the failure site (HQ-DESKTOP-55). This is
+        // diagnostic-only: it never flips any alert/suppression flag and never
+        // affects capture. Fed the SAME line as the classification above, so both
+        // routes (which share this seam) inherit identical heap attribution.
+        self.record_heap_oom_stderr_line(line, signature.class);
+    }
+
+    /// Single-pass, line-oriented V8 heap-OOM retention. Three transitions, in
+    /// order: (a) update the last-wins GC heap candidate until frozen; (b) create
+    /// the evidence on the first heap-OOM banner, freezing the GC candidate into
+    /// it; (c) collect the bounded native-stack section that follows the banner.
+    /// A V8 heap OOM aborts the process, so this state can never span a reset.
+    fn record_heap_oom_stderr_line(&mut self, line: &str, class: RunnerFatalClass) {
+        // (a) GC candidate — last-wins, and permanently frozen once the banner is
+        // seen so a post-banner GC-shaped line can never move the committed value.
+        if self.heap_oom.is_none() {
+            if let Some((used, total)) = parse_gc_heap_candidate(line) {
+                self.heap_gc_candidate = Some((round_mb(used), round_mb(total)));
+            }
+        }
+        // (b) Banner — create the evidence on the first heap-OOM fatal line and
+        // freeze the current GC candidate as the committed used/total.
+        if class == RunnerFatalClass::HeapOom && self.heap_oom.is_none() {
+            let lowered = line.to_ascii_lowercase();
+            let banner = if lowered.contains("reached heap limit") {
+                "reached_heap_limit"
+            } else if lowered.contains("ineffective mark-compacts") {
+                "ineffective_mark_compacts"
+            } else {
+                "other"
+            };
+            self.heap_oom = Some(HeapOomEvidence {
+                banner,
+                used_total_mb: self.heap_gc_candidate,
+                frames: Vec::new(),
+                frames_done: false,
+            });
+            // The banner line itself is never a native frame.
+            return;
+        }
+        // (c) Frame capture — collect normalized native symbols after the banner.
+        if let Some(evidence) = self.heap_oom.as_mut() {
+            if evidence.frames_done {
+                return;
+            }
+            if let Some(symbol) = parse_native_frame_symbol(line) {
+                if evidence.frames.len() < HEAP_OOM_FRAME_CAP {
+                    evidence.frames.push(symbol);
+                }
+            } else if line.trim().is_empty() {
+                // Tolerate the blank lines V8 prints between the banner and frames.
+            } else if evidence.frames.is_empty() {
+                // Still seeking the first frame: tolerate the non-frame preamble
+                // (e.g. the `----- Native stack trace -----` marker) before it.
+            } else {
+                // A non-blank non-frame line after the stack ends capture for good
+                // (e.g. a `timeout: … dumped core` trailer or unrelated output).
+                evidence.frames_done = true;
+            }
+        }
+    }
+
+    /// The V8 fatal banner retained this pass (`reached_heap_limit`,
+    /// `ineffective_mark_compacts`, or `other`), or `None` when no heap-OOM banner
+    /// was seen. A fixed constant, safe as a Sentry tag.
+    pub fn runner_heap_oom_banner(&self) -> Option<&'static str> {
+        self.heap_oom.as_ref().map(|evidence| evidence.banner)
+    }
+
+    /// Committed heap `(used, total)` MB for the retained heap OOM, or `None` when
+    /// no GC line preceded the banner. Both-or-neither integers, never floats.
+    pub fn runner_heap_used_total_mb(&self) -> Option<(u64, u64)> {
+        self.heap_oom.as_ref().and_then(|evidence| evidence.used_total_mb)
+    }
+
+    /// Count of native-stack frames captured for the retained heap OOM (0 when the
+    /// banner arrived with no frames), or `None` when no heap OOM was seen. A bare
+    /// integer, capped at [`HEAP_OOM_FRAME_CAP`].
+    pub fn runner_heap_oom_frame_count(&self) -> Option<u32> {
+        self.heap_oom
+            .as_ref()
+            .map(|evidence| evidence.frames.len() as u32)
+    }
+
+    /// The class-scoped stack shape for the retained heap OOM, or `None` when no
+    /// heap OOM was seen or no frame was captured (so the caller falls back to the
+    /// generic tail shape byte-identically). The shape is the first
+    /// [`RUNNER_STACK_FRAME_CAP`] frames mapped to fixed tokens; the signature is a
+    /// digest of the FULL captured normalized-symbol list, so two stacks that
+    /// differ only in the allocating frame hash differently while addresses, pids,
+    /// and module suffixes — already stripped — keep it deterministic per build.
+    pub fn runner_heap_oom_stack(&self) -> Option<RunnerStackShape> {
+        let evidence = self.heap_oom.as_ref()?;
+        if evidence.frames.is_empty() {
+            return None;
+        }
+        Some(heap_oom_stack_shape(&evidence.frames))
     }
 
     /// The allow-listed libuv syscall identifier for the last recognised
@@ -322,6 +453,13 @@ pub fn runner_phase_elapsed_bucket(elapsed: Duration) -> &'static str {
 }
 
 /// Fixed stack-shape tokens that are safe to leave the process boundary.
+///
+/// The first block is the generic runtime-frame vocabulary matched by
+/// [`runner_stack_shape`]; the trailing `heap_oom_*`/`v8_*`/`node_*`/`anon`
+/// block is the class-scoped V8 heap-OOM vocabulary emitted by
+/// [`RunTotals::runner_heap_oom_stack`]. The set must stay identical to
+/// `hq_telemetry`'s copy (an egress-validator anti-drift parity test enforces
+/// this), or a new token would be silently `[Filtered]` at send.
 pub const RUNNER_STACK_TOKENS: &[&str] = &[
     "app",
     "libuv_handle",
@@ -337,6 +475,21 @@ pub const RUNNER_STACK_TOKENS: &[&str] = &[
     "node_stream",
     "rust_core_panicking",
     "rust_std_panicking",
+    // V8 heap-OOM native-frame vocabulary (HQ-DESKTOP-55). Every value is a
+    // fixed constant selected in code from the frame's normalized symbol; a
+    // symbol that matches none collapses to `anon`, never copied bytes.
+    "node_oom_handler",
+    "node_abort",
+    "v8_report_oom",
+    "v8_fatal_process_oom",
+    "v8_heap_allocator",
+    "v8_heap",
+    "v8_factory",
+    "v8_runtime",
+    "v8_builtin",
+    "v8_other",
+    "node_native",
+    "anon",
 ];
 
 const RUNTIME_FRAME_TABLE: &[(&str, &str)] = &[
@@ -482,6 +635,165 @@ pub fn runner_stack_shape(tail: &[String]) -> RunnerStackShape {
         redacted_frames,
         signature: digest[..16].to_string(),
     }
+}
+
+/// Hard cap on retained V8 heap-OOM native frames. Real captured sections are
+/// 14–16 frames; the cap bounds a hostile or runaway stream without truncating
+/// any genuine V8 OOM stack.
+const HEAP_OOM_FRAME_CAP: usize = 32;
+
+/// The fixed placeholder for a native frame with no symbol (an address-only
+/// frame). Content-safe: it is emitted verbatim as a shape token and never
+/// carries observed bytes. Also counted as a redacted frame.
+const HEAP_OOM_ANON_FRAME: &str = "anon";
+
+/// Round-half-away-from-zero MB. `f64::round` rounds halves away from zero
+/// (47.5→48, 80.5→81, 47.4→47); the value is already bounded `0 <= v < 2^20` by
+/// the GC parser, so the `as u64` cast never saturates or wraps.
+fn round_mb(value: f64) -> u64 {
+    value.round() as u64
+}
+
+/// Parse a V8 GC line's committed heap figures. V8 prints
+/// `… <used> (<total>) -> <used> (<total>) MB, …`; the committed values are the
+/// pair AFTER the last `-> `. Returns `(used, total)` in MB, or `None` unless the
+/// strict `<f64> ( <f64> ) MB` shape holds with both finite and in `[0, 2^20)`,
+/// so ordinary prose and a truncated line degrade to absent rather than wrong.
+fn parse_gc_heap_candidate(line: &str) -> Option<(f64, f64)> {
+    let (_, after) = line.rsplit_once("-> ")?;
+    let after = after.trim_start();
+    let used_end = after
+        .find(|character: char| !(character.is_ascii_digit() || character == '.'))
+        .unwrap_or(after.len());
+    let used: f64 = after[..used_end].parse().ok()?;
+    let rest = after[used_end..].trim_start();
+    let rest = rest.strip_prefix('(')?;
+    let close = rest.find(')')?;
+    let total: f64 = rest[..close].trim().parse().ok()?;
+    if !rest[close + 1..].trim_start().starts_with("MB") {
+        return None;
+    }
+    let in_bounds = |value: f64| value.is_finite() && (0.0..1_048_576.0).contains(&value);
+    (in_bounds(used) && in_bounds(total)).then_some((used, total))
+}
+
+/// Strip one trailing bracketed `[…]` suffix from a native frame symbol. V8/Node
+/// print the owning module there, which on macOS can be a filesystem path — it
+/// must never be hashed or emitted, so it is removed before the symbol is stored.
+fn strip_trailing_bracketed(symbol: &str) -> &str {
+    let trimmed = symbol.trim_end();
+    if trimmed.ends_with(']') {
+        if let Some(open) = trimmed.rfind('[') {
+            return trimmed[..open].trim_end();
+        }
+    }
+    trimmed
+}
+
+/// Extract the normalized symbol from a V8 native-stack frame line of the shape
+/// `<ordinal>: 0x<hex> <symbol> [<module>]`, dropping the ordinal, the address,
+/// and the bracketed module suffix. Returns `None` unless the line is a native
+/// frame (1–3 digit ordinal, `:`, whitespace, then a `0x<hex>` address), so GC
+/// lines, banners, and markers are rejected. An address-only frame (empty symbol)
+/// normalizes to the fixed [`HEAP_OOM_ANON_FRAME`] placeholder.
+fn parse_native_frame_symbol(line: &str) -> Option<String> {
+    let (ordinal, rest) = line.trim().split_once(':')?;
+    if ordinal.is_empty()
+        || ordinal.len() > 3
+        || !ordinal.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let (address, symbol_and_module) = match rest.split_once(char::is_whitespace) {
+        Some((address, tail)) => (address, tail),
+        None => (rest, ""),
+    };
+    let is_hex_address = address.len() > 2
+        && (address.starts_with("0x") || address.starts_with("0X"))
+        && address.as_bytes()[2..].iter().all(u8::is_ascii_hexdigit);
+    if !is_hex_address {
+        return None;
+    }
+    let symbol = strip_trailing_bracketed(symbol_and_module.trim()).trim();
+    Some(if symbol.is_empty() {
+        HEAP_OOM_ANON_FRAME.to_string()
+    } else {
+        symbol.to_string()
+    })
+}
+
+/// Map a normalized V8 native-frame symbol to a fixed shape token. First match
+/// wins by substring containment (like `classify_runner_fatal_class`), most
+/// specific first, and the return is always one of the appended
+/// [`RUNNER_STACK_TOKENS`] constants — a symbol matching none collapses to `anon`,
+/// so no observed byte can escape through this token.
+fn heap_oom_frame_token(symbol: &str) -> &'static str {
+    if symbol.contains("OOMErrorHandler") {
+        "node_oom_handler"
+    } else if symbol.contains("node::Abort") || symbol.contains("OnFatalError") {
+        "node_abort"
+    } else if symbol.contains("ReportOOMFailure") {
+        "v8_report_oom"
+    } else if symbol.contains("FatalProcessOutOfMemory") {
+        "v8_fatal_process_oom"
+    } else if symbol.contains("HeapAllocator") {
+        // Checked before the broader `v8::internal::Heap` marker, which it
+        // contains as a substring.
+        "v8_heap_allocator"
+    } else if symbol.contains("v8::internal::Heap") {
+        "v8_heap"
+    } else if symbol.contains("Factory") {
+        "v8_factory"
+    } else if symbol.contains("Runtime_") {
+        "v8_runtime"
+    } else if symbol.contains("Builtins_") {
+        "v8_builtin"
+    } else if symbol.contains("v8::") {
+        "v8_other"
+    } else if symbol.contains("node::") {
+        "node_native"
+    } else {
+        HEAP_OOM_ANON_FRAME
+    }
+}
+
+/// Build the class-scoped stack shape from a non-empty captured V8 heap-OOM frame
+/// list. The `shape` is the first [`RUNNER_STACK_FRAME_CAP`] frames' fixed tokens
+/// (≤ 8 — the hq-telemetry shape validator's hard cap), `depth` and
+/// `redacted_frames` keep the generic path's shape-scoped semantics (token count
+/// and `anon` count within those 8), and the `signature` digests the FULL
+/// normalized-symbol list so the allocating frame — which sits past frame 8 —
+/// still discriminates. The symbols are never emitted; only the digest is.
+fn heap_oom_stack_shape(frames: &[String]) -> RunnerStackShape {
+    let shape_tokens: Vec<&'static str> = frames
+        .iter()
+        .take(RUNNER_STACK_FRAME_CAP)
+        .map(|symbol| heap_oom_frame_token(symbol))
+        .collect();
+    let depth = shape_tokens.len() as u8;
+    let redacted_frames = shape_tokens
+        .iter()
+        .filter(|token| **token == HEAP_OOM_ANON_FRAME)
+        .count() as u8;
+    let shape = shape_tokens.join(">");
+    let digest = format!("{:x}", Sha256::digest(frames.join("\n").as_bytes()));
+    RunnerStackShape {
+        shape,
+        depth,
+        redacted_frames,
+        signature: digest[..16].to_string(),
+    }
+}
+
+/// Choose the exit-time stack shape both routes report: the class-scoped
+/// heap-OOM shape when a heap-OOM native stack was retained this pass, else the
+/// generic tail shape byte-identically. Reading from the shared `RunTotals` keeps
+/// the manual and watcher routes attribute-identical.
+pub fn runner_stack_shape_for_exit(totals: &RunTotals, tail: &[String]) -> RunnerStackShape {
+    totals
+        .runner_heap_oom_stack()
+        .unwrap_or_else(|| runner_stack_shape(tail))
 }
 
 /// Fixed, content-safe classes for runner error rollups. These values are safe
@@ -4699,6 +5011,323 @@ mod tests {
             assert_eq!(shape.shape, "all_redacted", "line={line}");
             assert_eq!(shape.signature, "unknown", "line={line}");
         }
+    }
+
+    // ── V8 heap-OOM retention + attribution (HQ-DESKTOP-55) ─────────────────
+    //
+    // Both fixtures are the EXACT stderr of a real reproduced V8 heap OOM on
+    // node v22 (exit 134/SIGABRT). They share an identical first-8 machinery
+    // prefix and diverge only from frame 9, differing in their allocating
+    // frame — the direct proof the review demanded that a fixed 8-frame window
+    // plus fixed-token hashing cannot discriminate them, but a signature over
+    // the full captured section can.
+
+    /// Fixture A — array-allocation OOM, 16 native frames, allocating frame
+    /// `v8::internal::Runtime_NewArray` at depth 15.
+    const HEAP_OOM_FIXTURE_A: &[&str] = &[
+        "",
+        "<--- Last few GCs --->",
+        "",
+        "[1174487:0x1e0a3000]       66 ms: Mark-Compact 47.7 (80.5) -> 47.7 (80.5) MB, pooled: 0 MB, 1.65 / 0.00 ms  (average mu = 0.862, current mu = 0.808) allocation failure; scavenge might not succeed",
+        "",
+        "",
+        "<--- JS stacktrace --->",
+        "",
+        "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        "----- Native stack trace -----",
+        "",
+        " 1: 0xe46bbe node::OOMErrorHandler(char const*, v8::OOMDetails const&) [node]",
+        " 2: 0x1243740 v8::Utils::ReportOOMFailure(v8::internal::Isolate*, char const*, v8::OOMDetails const&) [node]",
+        " 3: 0x1243a17 v8::internal::V8::FatalProcessOutOfMemory(v8::internal::Isolate*, char const*, v8::OOMDetails const&) [node]",
+        " 4: 0x1472925  [node]",
+        " 5: 0x148c1b9 v8::internal::Heap::CollectGarbage(v8::internal::AllocationSpace, v8::internal::GarbageCollectionReason, v8::GCCallbackFlags) [node]",
+        " 6: 0x14608b8 v8::internal::HeapAllocator::AllocateRawWithLightRetrySlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [node]",
+        " 7: 0x14617e5 v8::internal::HeapAllocator::AllocateRawWithRetryOrFailSlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [node]",
+        " 8: 0x1439b0e v8::internal::Factory::AllocateRaw(int, v8::internal::AllocationType, v8::internal::AllocationAlignment) [node]",
+        " 9: 0x1427e9a v8::internal::FactoryBase<v8::internal::Factory>::AllocateRawArray(int, v8::internal::AllocationType, v8::internal::AllocationAlignment) [node]",
+        "10: 0x1428608 v8::internal::FactoryBase<v8::internal::Factory>::NewFixedDoubleArray(int, v8::internal::AllocationType) [node]",
+        "11: 0x16075a6  [node]",
+        "12: 0x1621b62  [node]",
+        "13: 0x1642638  [node]",
+        "14: 0x1644ba5 v8::internal::ArrayConstructInitializeElements(v8::internal::Handle<v8::internal::JSArray>, v8::internal::Arguments<(v8::internal::ArgumentsType)1>*) [node]",
+        "15: 0x1889f5d v8::internal::Runtime_NewArray(int, unsigned long*, v8::internal::Isolate*) [node]",
+        "16: 0x1dfcaf6  [node]",
+        "timeout: the monitored command dumped core",
+    ];
+
+    /// Fixture B — string-flatten OOM, 14 native frames, allocating frame
+    /// `v8::internal::Runtime_StringSubstring` at depth 13. GC line is `47.4`.
+    const HEAP_OOM_FIXTURE_B: &[&str] = &[
+        "",
+        "<--- Last few GCs --->",
+        "",
+        "[2510830:0x1f857000]       73 ms: Mark-Compact 47.4 (80.5) -> 47.4 (80.5) MB, pooled: 0 MB, 8.34 / 0.00 ms  (average mu = 0.681, current mu = 0.276) allocation failure; scavenge might not succeed",
+        "",
+        "",
+        "<--- JS stacktrace --->",
+        "",
+        "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        "----- Native stack trace -----",
+        "",
+        " 1: 0xe46bbe node::OOMErrorHandler(char const*, v8::OOMDetails const&) [node]",
+        " 2: 0x1243740 v8::Utils::ReportOOMFailure(v8::internal::Isolate*, char const*, v8::OOMDetails const&) [node]",
+        " 3: 0x1243a17 v8::internal::V8::FatalProcessOutOfMemory(v8::internal::Isolate*, char const*, v8::OOMDetails const&) [node]",
+        " 4: 0x1472925  [node]",
+        " 5: 0x148c1b9 v8::internal::Heap::CollectGarbage(v8::internal::AllocationSpace, v8::internal::GarbageCollectionReason, v8::GCCallbackFlags) [node]",
+        " 6: 0x14608b8 v8::internal::HeapAllocator::AllocateRawWithLightRetrySlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [node]",
+        " 7: 0x14617e5 v8::internal::HeapAllocator::AllocateRawWithRetryOrFailSlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [node]",
+        " 8: 0x1439b0e v8::internal::Factory::AllocateRaw(int, v8::internal::AllocationType, v8::internal::AllocationAlignment) [node]",
+        " 9: 0x1428944 v8::internal::FactoryBase<v8::internal::Factory>::AllocateRawWithImmortalMap(int, v8::internal::AllocationType, v8::internal::Tagged<v8::internal::Map>, v8::internal::AllocationAlignment) [node]",
+        "10: 0x1429e0e v8::internal::FactoryBase<v8::internal::Factory>::NewRawOneByteString(int, v8::internal::AllocationType) [node]",
+        "11: 0x178001d v8::internal::String::SlowFlatten(v8::internal::Isolate*, v8::internal::Handle<v8::internal::ConsString>, v8::internal::AllocationType) [node]",
+        "12: 0x143d1eb v8::internal::Factory::NewProperSubString(v8::internal::Handle<v8::internal::String>, int, int) [node]",
+        "13: 0x18bd5ea v8::internal::Runtime_StringSubstring(int, unsigned long*, v8::internal::Isolate*) [node]",
+        "14: 0x1dfcaf6  [node]",
+        "timeout: the monitored command dumped core",
+    ];
+
+    fn feed_stderr(totals: &mut RunTotals, lines: &[&str]) {
+        for line in lines {
+            totals.record_stderr_line(line);
+        }
+    }
+
+    /// The expected first-8 shape both fixtures share (their machinery prefix).
+    const HEAP_OOM_SHARED_SHAPE: &str = "node_oom_handler>v8_report_oom>v8_fatal_process_oom>anon>\
+         v8_heap>v8_heap_allocator>v8_heap_allocator>v8_factory";
+
+    #[test]
+    fn heap_oom_fixture_a_yields_class_scoped_shape_and_evidence() {
+        // PRE-FIX pin (mandatory non-vacuity): the generic tail path over the
+        // shipped last-8 lines is exactly the observed HQ-DESKTOP-55 output —
+        // all_redacted / unknown / redacted == depth — so the improvement is real.
+        let last_eight: Vec<String> = HEAP_OOM_FIXTURE_A
+            .iter()
+            .rev()
+            .take(RUNNER_STACK_FRAME_CAP)
+            .rev()
+            .map(|line| line.to_string())
+            .collect();
+        let generic = runner_stack_shape(&last_eight);
+        assert_eq!(generic.shape, "all_redacted");
+        assert_eq!(generic.signature, "unknown");
+        assert_eq!(generic.redacted_frames, generic.depth);
+
+        let mut totals = RunTotals::default();
+        feed_stderr(&mut totals, HEAP_OOM_FIXTURE_A);
+
+        assert_eq!(totals.runner_heap_oom_banner(), Some("reached_heap_limit"));
+        assert_eq!(totals.runner_heap_used_total_mb(), Some((48, 81)));
+        assert_eq!(totals.runner_heap_oom_frame_count(), Some(16));
+
+        let stack = totals.runner_heap_oom_stack().expect("class-scoped shape");
+        assert_eq!(stack.shape, HEAP_OOM_SHARED_SHAPE);
+        assert_eq!(stack.depth, 8);
+        assert_eq!(stack.redacted_frames, 1);
+        assert_eq!(stack.signature.len(), 16);
+        assert_ne!(stack.signature, "unknown");
+        assert!(stack.signature.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(stack
+            .shape
+            .split('>')
+            .all(|token| RUNNER_STACK_TOKENS.contains(&token)));
+
+        // The selection helper prefers the class-scoped shape over the tail.
+        assert_eq!(runner_stack_shape_for_exit(&totals, &last_eight), stack);
+    }
+
+    #[test]
+    fn heap_oom_fixtures_discriminate_allocation_sites() {
+        let mut a = RunTotals::default();
+        feed_stderr(&mut a, HEAP_OOM_FIXTURE_A);
+        let mut b = RunTotals::default();
+        feed_stderr(&mut b, HEAP_OOM_FIXTURE_B);
+
+        let stack_a = a.runner_heap_oom_stack().expect("a shape");
+        let stack_b = b.runner_heap_oom_stack().expect("b shape");
+
+        // Identical first-8 machinery shape …
+        assert_eq!(stack_a.shape, HEAP_OOM_SHARED_SHAPE);
+        assert_eq!(stack_b.shape, HEAP_OOM_SHARED_SHAPE);
+        // … but DIFFERENT full-section signatures (the review's required test).
+        assert_ne!(stack_a.signature, stack_b.signature);
+        assert_eq!(a.runner_heap_oom_frame_count(), Some(16));
+        assert_eq!(b.runner_heap_oom_frame_count(), Some(14));
+        assert_eq!(b.runner_heap_used_total_mb(), Some((47, 81)));
+
+        // Determinism: re-feeding reproduces the identical signature (addresses,
+        // pids, and module suffixes provably excluded from the digest).
+        let mut a2 = RunTotals::default();
+        feed_stderr(&mut a2, HEAP_OOM_FIXTURE_A);
+        assert_eq!(a2.runner_heap_oom_stack().unwrap().signature, stack_a.signature);
+    }
+
+    #[test]
+    fn heap_oom_signature_changes_when_only_the_allocating_frame_differs() {
+        let mut original = RunTotals::default();
+        feed_stderr(&mut original, HEAP_OOM_FIXTURE_A);
+        let original_sig = original.runner_heap_oom_stack().unwrap().signature;
+
+        // Fixture A with ONLY the allocating frame's symbol swapped — the
+        // allocating site sits inside the digested full section, so the digest
+        // must change even though every other frame is byte-identical.
+        let mut swapped = RunTotals::default();
+        for line in HEAP_OOM_FIXTURE_A {
+            swapped.record_stderr_line(&line.replace("Runtime_NewArray", "Runtime_StringSubstring"));
+        }
+        assert_ne!(
+            swapped.runner_heap_oom_stack().unwrap().signature,
+            original_sig
+        );
+    }
+
+    #[test]
+    fn heap_oom_evidence_banners_rounding_and_both_or_neither() {
+        // Round-half-away-from-zero on the raw GC parser.
+        assert_eq!(
+            parse_gc_heap_candidate("x -> 47.7 (80.5) MB, tail").map(|(u, t)| (round_mb(u), round_mb(t))),
+            Some((48, 81))
+        );
+        assert_eq!(round_mb(47.4), 47);
+        assert_eq!(round_mb(47.5), 48);
+        assert_eq!(round_mb(80.5), 81);
+
+        // Malformed / out-of-bounds GC lines degrade to absent, never wrong.
+        assert_eq!(parse_gc_heap_candidate("prose with no arrow"), None);
+        assert_eq!(parse_gc_heap_candidate("x -> 10.0 (20.0) kB"), None);
+        assert_eq!(parse_gc_heap_candidate("x -> 2000000.0 (5.0) MB"), None);
+
+        // Ineffective-mark-compacts banner arm.
+        let mut ineffective = RunTotals::default();
+        ineffective.record_stderr_line(
+            "FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory",
+        );
+        assert_eq!(
+            ineffective.runner_heap_oom_banner(),
+            Some("ineffective_mark_compacts")
+        );
+
+        // Banner with no preceding GC line → banner + zero frames, no MB (both-
+        // or-neither), and the stack falls back (None) because there are no frames.
+        let mut banner_only = RunTotals::default();
+        banner_only.record_stderr_line(
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        );
+        assert_eq!(banner_only.runner_heap_oom_banner(), Some("reached_heap_limit"));
+        assert_eq!(banner_only.runner_heap_used_total_mb(), None);
+        assert_eq!(banner_only.runner_heap_oom_frame_count(), Some(0));
+        assert_eq!(banner_only.runner_heap_oom_stack(), None);
+    }
+
+    #[test]
+    fn heap_oom_gc_candidate_last_wins_then_freezes_at_banner() {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line("x 10.0 (20.0) -> 10.0 (20.0) MB, tail");
+        totals.record_stderr_line("x 30.4 (40.6) -> 30.4 (40.6) MB, tail"); // later wins
+        totals.record_stderr_line(
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        );
+        assert_eq!(totals.runner_heap_used_total_mb(), Some((30, 41)));
+        // A GC-shaped line AFTER the banner never moves the frozen value.
+        totals.record_stderr_line("x 99.9 (99.9) -> 99.9 (99.9) MB, tail");
+        assert_eq!(totals.runner_heap_used_total_mb(), Some((30, 41)));
+    }
+
+    #[test]
+    fn heap_oom_capture_boundaries_and_cap() {
+        // Full fixture: the marker + blank preamble is tolerated, all 16 frames
+        // captured, and the `timeout: … dumped core` trailer ends the capture.
+        let mut totals = RunTotals::default();
+        feed_stderr(&mut totals, HEAP_OOM_FIXTURE_A);
+        assert_eq!(totals.runner_heap_oom_frame_count(), Some(16));
+
+        // Cap: a banner followed by more than the cap of address-only frames caps.
+        let mut capped = RunTotals::default();
+        capped.record_stderr_line(
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        );
+        for index in 1..=40 {
+            capped.record_stderr_line(&format!("{index}: 0x{index:x} v8::internal::Thing [node]"));
+        }
+        assert_eq!(
+            capped.runner_heap_oom_frame_count(),
+            Some(HEAP_OOM_FRAME_CAP as u32)
+        );
+    }
+
+    #[test]
+    fn heap_oom_all_anon_stack_still_beats_all_redacted() {
+        // An unsymbolized build prints address-only frames: every frame normalizes
+        // to `anon`, but a banner, frame count, and an honest shape + signature
+        // still attach — strictly better than today's all_redacted/unknown.
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        );
+        for index in 1..=5 {
+            totals.record_stderr_line(&format!("{index}: 0x{index:x}  [node]"));
+        }
+        let stack = totals.runner_heap_oom_stack().expect("shape");
+        assert_eq!(stack.shape, "anon>anon>anon>anon>anon");
+        assert_eq!(stack.redacted_frames, 5);
+        assert_eq!(stack.depth, 5);
+        assert_ne!(stack.signature, "unknown");
+        assert_eq!(stack.signature.len(), 16);
+    }
+
+    #[test]
+    fn heap_oom_never_emits_paths_symbols_or_secrets() {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        );
+        // Hostile frames: a /Users path in the bracket suffix, a secret-looking
+        // symbol, and an over-long symbol. Only fixed tokens + a 16-hex digest
+        // may escape; the raw bytes never do.
+        totals.record_stderr_line(
+            " 1: 0xdead v8::internal::Runtime_Secret_sk_live_ABCDEF [/Users/alice/secret-plan.md]",
+        );
+        totals.record_stderr_line(&format!(" 2: 0xbeef node::{} [node]", "A".repeat(4096)));
+        let stack = totals.runner_heap_oom_stack().expect("shape");
+        assert_eq!(stack.shape, "v8_runtime>node_native");
+        for token in stack.shape.split('>') {
+            assert!(RUNNER_STACK_TOKENS.contains(&token), "leaked token {token}");
+        }
+        assert_eq!(stack.signature.len(), 16);
+        for needle in ["/Users", "sk_live", "secret-plan", "AAAA"] {
+            assert!(!stack.shape.contains(needle), "shape leaked {needle}");
+            assert!(!stack.signature.contains(needle), "signature leaked {needle}");
+        }
+    }
+
+    #[test]
+    fn heap_oom_reset_clears_all_state() {
+        let mut totals = RunTotals::default();
+        feed_stderr(&mut totals, HEAP_OOM_FIXTURE_A);
+        assert!(totals.runner_heap_oom_stack().is_some());
+        // The per-pass reset (AllComplete / fresh run) clears every heap field.
+        totals = RunTotals::default();
+        assert_eq!(totals.runner_heap_oom_banner(), None);
+        assert_eq!(totals.runner_heap_used_total_mb(), None);
+        assert_eq!(totals.runner_heap_oom_frame_count(), None);
+        assert_eq!(totals.runner_heap_oom_stack(), None);
+    }
+
+    #[test]
+    fn non_heap_oom_stderr_leaves_generic_path_untouched() {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(
+            r"Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src/win/async.c, line 76",
+        );
+        totals.record_stderr_line(r#"{"type":"error","code":"X","message":"nope"}"#);
+        assert_eq!(totals.runner_heap_oom_banner(), None);
+        assert_eq!(totals.runner_heap_oom_stack(), None);
+        // The selection helper returns the generic tail shape byte-identically.
+        let tail = vec!["at node:fs:1:1".to_string()];
+        assert_eq!(
+            runner_stack_shape_for_exit(&totals, &tail),
+            runner_stack_shape(&tail)
+        );
     }
 
     #[test]
