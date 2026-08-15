@@ -324,7 +324,9 @@
 /// `RESCUE_CONTRACT_FLOOR` below (mirrored in hq-cli's rescue parity test); when
 /// a future rescue-behavior change cuts a new hq-cloud minor, bump the floor and
 /// re-pin BOTH surfaces onto it — the parity tests fail closed until you do.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.0";
+/// 6.15.3 adds the packaged, self-authorizing `hq-cloud sync mutation`
+/// stdin boundary used by the desktop realtime first-push sidecar.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.3";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -351,6 +353,10 @@ pub const HQ_CLOUD_PACKAGE: &str = "@indigoai-us/hq-cloud";
 /// not match the package name.
 pub const RUNNER_BIN: &str = "hq-sync-runner";
 
+/// One-shot V2 mutation executable. Unlike [`RUNNER_BIN`], this command takes
+/// one local file change on stdin and obtains all authority itself.
+pub const MUTATION_BIN: &str = "hq-cloud";
+
 /// Desktop-visible capabilities of the bundled runner invocation.
 ///
 /// These describe only local command-line compatibility. They are never
@@ -365,7 +371,7 @@ pub struct HqCloudRunnerCapabilities {
 
 pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities = HqCloudRunnerCapabilities {
     event_push: true,
-    v2_mutation: false,
+    v2_mutation: true,
 };
 
 #[cfg(test)]
@@ -456,8 +462,13 @@ mod tests {
     }
 
     #[test]
-    fn runner_capabilities_describe_local_compatibility_not_v2_mutation_support() {
+    fn runner_capabilities_describe_local_compatibility_and_v2_mutation_support() {
         assert!(HQ_CLOUD_RUNNER_CAPABILITIES.event_push);
-        assert!(!HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
+        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
+    }
+
+    #[test]
+    fn mutation_bin_is_hq_cloud() {
+        assert_eq!(MUTATION_BIN, "hq-cloud");
     }
 }

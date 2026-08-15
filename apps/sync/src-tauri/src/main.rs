@@ -954,6 +954,9 @@ fn main() {
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
+            // U59: hq-cloud itself decides V2 rollout admission; this sidecar
+            // only forwards local file changes through its minimal stdin API.
+            commands::realtime_mutation::setup_realtime_mutation_watcher(app.handle());
             // Supervise the watch daemon: respawn it if it dies while auto-sync
             // is on, so a crash/kill doesn't leave sync silently quiet.
             commands::daemon::setup_daemon_supervisor(app.handle());

@@ -1072,18 +1072,18 @@ mod tests {
     }
 
     #[test]
-    fn test_watch_runner_capability_never_claims_v2_mutation_or_first_push() {
+    fn test_watch_runner_stays_on_sync_runner_after_u59_enables_mutation_sidecar() {
         use crate::hq_cloud::HQ_CLOUD_RUNNER_CAPABILITIES;
 
         let args = build_watch_runner_args("/any");
-        assert!(!HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
+        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
         assert!(args.args.contains(&"hq-sync-runner".to_string()));
         assert!(
             !args
                 .args
                 .windows(2)
                 .any(|args| args == ["sync", "mutation"]),
-            "U16 must not select the later hq-cloud sync mutation boundary: {:?}",
+            "the watch runner remains V1-compatible; U59's sidecar owns mutation: {:?}",
             args.args
         );
     }
