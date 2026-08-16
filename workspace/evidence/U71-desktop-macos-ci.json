@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "unit": "U71",
+  "recordedAt": "2026-08-16T00:00:00Z",
+  "repository": {
+    "name": "hq-desktop-app",
+    "baseCommit": "32dd62fe9f0549c5c61fda52ae72e1e2abe08ef0",
+    "branch": "codex/realtime-sync-u71",
+    "pullRequest": "https://github.com/indigoai-us/hq-desktop-app/pull/450"
+  },
+  "claim": {
+    "profile": "HD-MACOS-CI",
+    "status": "PASS_WHEN_REQUIRED_CHECK_GREEN",
+    "scope": "Real macOS desktop CI gate only",
+    "blockingProof": "macos-latest, Apple target preparation, Rust workspace/Tauri tests, cross-generation process regression, and locked checks all pass in the required Rust tests (macOS) PR check before deploy."
+  },
+  "ciProfile": {
+    "workflow": ".github/workflows/ci.yml",
+    "workflowSha256": "sha256:8d4e287fef3cb0190b425b5a41dc092c1cf05c37ff9e05860679790e170c59cf",
+    "requiredCheck": "Rust tests (macOS)",
+    "runner": "macos-latest",
+    "appleTargets": [
+      "aarch64-apple-darwin"
+    ],
+    "preparation": [
+      "pnpm install --no-frozen-lockfile",
+      "apps/sync: pnpm run sidecar:install",
+      "apps/sync: pnpm build"
+    ],
+    "blockingCommands": [
+      "cargo test --workspace --locked",
+      "apps/sync/src-tauri: cargo test --locked",
+      "apps/sync/src-tauri: cargo test --locked commands::process::cross_generation_escalation_tests -- --nocapture",
+      "cargo check --workspace --locked",
+      "apps/sync/src-tauri: cargo check --locked"
+    ]
+  },
+  "integrity": {
+    "protocolSha256": "sha256:d5aade0a1e341a50f8744f1b288b4cc83b54309fa3583c94875923b11ca99758",
+    "sourceManifestSha256": "sha256:08fdf8504fc5ac24031a2aea710720f76253e602b619743e6b05bfea669e168e",
+    "executionManifestSha256": "sha256:63f50c80a6b1ee181880c896fe703aa8c184cca6cccb3bd1995be5ee2e00c1e0"
+  },
+  "rollout": {
+    "behaviorChange": "none",
+    "state": "dormant behind the fail-closed realtime rollout flag"
+  }
+}
