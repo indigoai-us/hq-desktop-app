@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   NO_AI_TOOLS,
+  availableLaunches,
   markToolUnavailable,
   readyCommandFor,
   selectPrimaryLaunch,
@@ -22,6 +23,26 @@ function tools(overrides: Partial<AiTools> = {}): AiTools {
 }
 
 describe('onboarding summary launch state', () => {
+  it('lists every detected tool instead of collapsing to one', () => {
+    expect(
+      availableLaunches(
+        tools({ claude_cli: true, codex_desktop: true, grok_cli: true }),
+      ),
+    ).toEqual([
+      { kind: 'claude', label: 'Open in Claude Code' },
+      { kind: 'codex', label: 'Open in Codex' },
+      { kind: 'grok', label: 'Open in Grok' },
+    ]);
+  });
+
+  it('omits tools that are not installed', () => {
+    expect(availableLaunches(tools({ codex_cli: true }))).toEqual([
+      { kind: 'codex', label: 'Open in Codex' },
+    ]);
+    expect(availableLaunches(tools())).toEqual([]);
+    expect(availableLaunches(null)).toEqual([]);
+  });
+
   it('selects the newest available tool and uses deterministic priority for ties', () => {
     expect(selectPrimaryLaunch(tools({ claude_cli: true, codex_cli: true, grok_cli: true, grok_last_used_ms: 3 }))).toEqual({ kind: 'grok', label: 'Open in Grok' });
     expect(selectPrimaryLaunch(tools({ claude_cli: true, codex_cli: true, grok_cli: true }))).toEqual({ kind: 'claude', label: 'Open in Claude Code' });

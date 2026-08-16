@@ -269,10 +269,9 @@ describe('US-001 recording the answer', () => {
     });
 
     // Setup completes normally: the ready screen becomes the active panel and
-    // still offers its launch action (nothing withheld for declining). The
-    // ready panel carries a SINGLE primary launcher — there is no separate
-    // "Finish" button for anyone, so its absence here is not a capability
-    // withheld from someone who declined.
+    // still offers its launch action (nothing withheld for declining). There
+    // is no separate "Finish" button for anyone, so its absence here is not a
+    // capability withheld from someone who declined.
     const ready = host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]');
     expect(ready).not.toBeNull();
     expect(ready!.classList.contains('on')).toBe(true);

@@ -17,7 +17,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from './OnboardingWizard.svelte';
 
 const wizardSource = readFileSync('src/components/onboarding/OnboardingWizard.svelte', 'utf8');
@@ -50,7 +50,16 @@ function primaryButton(): HTMLButtonElement {
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+  await tick();
   flushSync();
+}
+
+async function flushUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await flush();
+    if (predicate()) return;
+  }
+  throw new Error('Timed out waiting for onboarding launchers to settle.');
 }
 
 function mountWizard(
@@ -123,7 +132,9 @@ describe('onboarding launch handoff', () => {
       4,
       { ...NO_AI_TOOLS, claude_desktop: true, any: true },
     );
-    await flush();
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
 
     primaryButton().click();
     await flush();
@@ -150,16 +161,58 @@ describe('onboarding launch handoff', () => {
     ).toHaveLength(1);
   });
 
-  it('renders exactly one ready-panel bottom-row button and removes Finish', () => {
-    const marker = wizardSource.indexOf('data-testid="onboarding-summary"');
-    const panel = wizardSource.slice(
-      wizardSource.lastIndexOf('<section', marker),
-      wizardSource.indexOf('</section>', marker),
+  it('renders a ready-panel button for every detected tool and keeps Finish off that row', async () => {
+    mountWizard(vi.fn(), 4, {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      codex_cli: true,
+      grok_cli: true,
+      any: true,
+    });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-grok"]')),
     );
-    const row = panel?.match(/<div class="btns">[\s\S]*?<\/div>/)?.[0];
-    expect(row?.match(/<button\b/g)).toHaveLength(1);
-    expect(row).toContain('class="btn btn-primary"');
-    expect(row).not.toMatch(/>\s*Finish\s*</);
+
+    const row = host.querySelector('[data-testid="onboarding-launchers"]');
+    expect(row).not.toBeNull();
+    const labels = Array.from(row!.querySelectorAll('button')).map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(labels).toEqual(['Open in Claude Code', 'Open in Codex', 'Open in Grok']);
+    expect(row!.textContent).not.toMatch(/\bFinish\b/);
+    expect(host.querySelector('[data-testid="onboarding-launch-claude"]')?.className).toContain(
+      'btn-primary',
+    );
+    expect(host.querySelector('[data-testid="onboarding-launch-codex"]')?.className).toContain(
+      'btn-secondary',
+    );
+  });
+
+  it('keeps Download Claude when no AI tool is installed', async () => {
+    mountWizard(vi.fn(), 4);
+    await flush();
+    expect(primaryButton().textContent).toBe('Download Claude');
+    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] button')).toHaveLength(1);
+  });
+
+  it('opens Codex from its own button when Claude is also installed', async () => {
+    const onfinish = mountWizard(vi.fn(), 4, {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      codex_desktop: true,
+      any: true,
+    });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-codex"]')),
+    );
+
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-launch-codex"]')?.click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('launch_codex_desktop');
+    expect(onfinish).toHaveBeenCalledOnce();
   });
 
   it('keeps final Done pending and guarded until the handoff finishes', async () => {

@@ -250,7 +250,7 @@
   const onboardingStep =
     Number.isInteger(requestedOnboardingStep) &&
     requestedOnboardingStep >= 0 &&
-    requestedOnboardingStep <= 3
+    requestedOnboardingStep <= 4
       ? requestedOnboardingStep
       : 0;
   // ?state=error renders the "Sync initialized" notice banner.

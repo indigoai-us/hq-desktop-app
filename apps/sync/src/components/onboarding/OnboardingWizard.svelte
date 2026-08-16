@@ -12,10 +12,12 @@
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
     NO_AI_TOOLS,
+    availableLaunches,
     markToolUnavailable,
     readyCommandFor,
     selectPrimaryLaunch,
     type AiTools,
+    type LaunchKind,
     type PrimaryLaunch,
   } from '../../lib/onboarding-summary';
   import {
@@ -235,6 +237,7 @@
   const setupBands = $derived(friendlySetupBands(overallPercent));
   const needsAttention = $derived(setupFailures.length > 0);
   const manualCommand = $derived(readyCommandFor(installPath, aiTools));
+  const launchOptions = $derived(availableLaunches(aiTools));
   const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
     showManualTools || Boolean(launchError || revealError || detectionFailed),
@@ -1091,7 +1094,10 @@
     let launched = false;
     try {
       const tools = await ensureAiTools();
-      if (tools.codex_cli && installPath) {
+      if (tools.codex_desktop) {
+        await invoke('launch_codex_desktop');
+        launched = true;
+      } else if (tools.codex_cli && installPath) {
         await invoke('launch_cli_in_terminal', {
           path: installPath,
           tool: 'codex',
@@ -1099,14 +1105,18 @@
         launched = true;
       } else {
         launchError =
-          'Codex CLI was not detected. Open this HQ folder manually from Codex.';
+          'Codex was not detected. Open this HQ folder manually from Codex.';
         showManualTools = true;
       }
     } catch (err) {
       const msg = errorMessage(err);
       launchError = `Could not open Codex: ${msg}`;
       showManualTools = true;
-      aiTools = markToolUnavailable(aiTools, 'codex_cli');
+      if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
+        aiTools = markToolUnavailable(aiTools, 'codex_desktop');
+      } else {
+        aiTools = markToolUnavailable(aiTools, 'codex_cli');
+      }
     } finally {
       launching = null;
     }
@@ -1239,16 +1249,12 @@
     }
   }
 
-  async function handlePrimaryLaunch() {
-    if (launching === 'watching' || primaryLaunch.kind === 'download') {
+  function handleLaunch(kind: LaunchKind | 'download') {
+    if (launching === 'watching' || kind === 'download') {
       return handleDownloadClaude();
     }
-    if (primaryLaunch.kind === 'claude') {
-      return handleLaunchClaudeCode();
-    }
-    if (primaryLaunch.kind === 'codex') {
-      return handleLaunchCodex();
-    }
+    if (kind === 'claude') return handleLaunchClaudeCode();
+    if (kind === 'codex') return handleLaunchCodex();
     return handleLaunchGrok();
   }
 
@@ -1924,22 +1930,42 @@
               </div>
             {/if}
           {/if}
-          <div class="btns">
-            <button
-              class="btn btn-primary"
-              type="button"
-              disabled={finishing || (launching !== null && launching !== 'watching')}
-              aria-busy={finishing || (launching !== null && launching !== 'watching')}
-              onclick={handlePrimaryLaunch}
-            >
-              {finishing
-                ? 'Finishing…'
-                : launching === 'watching'
-                ? 'Waiting for Claude…'
-                : launching === primaryLaunch.kind
-                  ? 'Opening…'
-                  : primaryLaunch.label}
-            </button>
+          <div class="btns" data-testid="onboarding-launchers">
+            {#if launchOptions.length === 0}
+              <button
+                class="btn btn-primary"
+                type="button"
+                data-testid="onboarding-launch-download"
+                disabled={finishing || (launching !== null && launching !== 'watching')}
+                aria-busy={finishing || (launching !== null && launching !== 'watching')}
+                onclick={() => void handleLaunch('download')}
+              >
+                {finishing
+                  ? 'Finishing…'
+                  : launching === 'watching'
+                  ? 'Waiting for Claude…'
+                  : launching === 'download'
+                    ? 'Opening…'
+                    : 'Download Claude'}
+              </button>
+            {:else}
+              {#each launchOptions as launch (launch.kind)}
+                <button
+                  class="btn {launch.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
+                  type="button"
+                  data-testid="onboarding-launch-{launch.kind}"
+                  disabled={finishing || (launching !== null && launching !== 'watching')}
+                  aria-busy={finishing || launching === launch.kind}
+                  onclick={() => void handleLaunch(launch.kind)}
+                >
+                  {finishing && launch.kind === primaryLaunch.kind
+                    ? 'Finishing…'
+                    : launching === launch.kind
+                      ? 'Opening…'
+                      : launch.label}
+                </button>
+              {/each}
+            {/if}
           </div>
         </section>
 
@@ -2209,7 +2235,7 @@
   .consent-option-title { color:var(--c-text); font-size:14px; font-weight:500; line-height:18px; }
   .consent-option-sub { color:var(--c-muted); font-size:12px; line-height:16px; }
 
-  .btns { display:flex; gap:8px; margin-top:auto; }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:auto; }
   .btns.split { justify-content:space-between; }
   .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
   .btn:active:not(:disabled) { transform:scale(.97); }

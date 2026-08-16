@@ -9,7 +9,21 @@ import { resolve } from 'node:path';
 const mock = (f: string) => resolve(__dirname, 'dev-harness/mocks', f);
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [
+    svelte(),
+    {
+      name: 'serve-design-harness',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          const url = req.url ?? '/';
+          if (url === '/' || url.startsWith('/?')) {
+            req.url = `/dev-harness/index.html${url.slice(1)}`;
+          }
+          next();
+        });
+      },
+    },
+  ],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -27,5 +41,6 @@ export default defineConfig({
   server: {
     port: 1422,
     strictPort: true,
+    open: '/dev-harness/index.html?view=onboarding&step=4',
   },
 });
