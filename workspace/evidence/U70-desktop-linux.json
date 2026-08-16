@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "unit": "U70",
+  "recordedAt": "2026-08-16T08:29:59Z",
+  "repository": {
+    "name": "hq-desktop-app",
+    "baseCommit": "2d1ba1437d9718e415a6ad5521fbf77903cc490e",
+    "branch": "codex/realtime-sync-u70",
+    "pullRequest": "https://github.com/indigoai-us/hq-desktop-app/pull/449"
+  },
+  "claim": {
+    "profile": "HD-LINUX-LOCAL",
+    "status": "PASS",
+    "scope": "Desktop Linux-local evidence only",
+    "explicitExclusions": [
+      "This record does not claim macOS CI coverage.",
+      "This record is not full desktop CI evidence.",
+      "U71 is the sole unit that may record macOS CI workflow evidence."
+    ]
+  },
+  "localFocusedGate": {
+    "status": "PASS",
+    "commands": [
+      {
+        "command": "pnpm install --no-frozen-lockfile",
+        "status": "PASS"
+      },
+      {
+        "command": "NODE_OPTIONS=--max-old-space-size=4096 pnpm --dir apps/sync typecheck",
+        "status": "PASS",
+        "result": "svelte-check found 0 errors and 8 pre-existing warnings"
+      },
+      {
+        "command": "pnpm --dir apps/sync lint",
+        "status": "PASS",
+        "result": "svelte-check found 0 errors and 8 pre-existing warnings"
+      }
+    ],
+    "focusedTests": {
+      "status": "NOT_APPLICABLE",
+      "reason": "U70 changes only this evidence record and the CI path trigger; it changes no product behavior."
+    }
+  },
+  "ciProfile": {
+    "name": "HD-LINUX-CI",
+    "workflow": ".github/workflows/ci.yml",
+    "workflowSha256": "sha256:8d4e287fef3cb0190b425b5a41dc092c1cf05c37ff9e05860679790e170c59cf",
+    "requiredForMerge": true,
+    "scope": "CI is recorded by the PR check run; this evidence makes no macOS claim."
+  },
+  "integrity": {
+    "protocolSha256": "sha256:d5aade0a1e341a50f8744f1b288b4cc83b54309fa3583c94875923b11ca99758",
+    "sourceManifestSha256": "sha256:08fdf8504fc5ac24031a2aea710720f76253e602b619743e6b05bfea669e168e",
+    "executionManifestSha256": "sha256:63f50c80a6b1ee181880c896fe703aa8c184cca6cccb3bd1995be5ee2e00c1e0"
+  },
+  "rollout": {
+    "behaviorChange": "none",
+    "state": "dormant behind the fail-closed realtime rollout flag"
+  }
+}
