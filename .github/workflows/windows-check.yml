@@ -26,6 +26,7 @@ on:
       - "scripts/windows-msi-version.test.ts"
       - ".github/workflows/release.yml"
       - ".github/workflows/windows-check.yml"
+      - "workspace/evidence/**"
 
 jobs:
   windows-check:
