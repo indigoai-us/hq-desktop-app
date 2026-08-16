@@ -23,8 +23,36 @@ export const NO_AI_TOOLS: AiTools = {
 };
 
 export type CliTool = 'claude' | 'codex' | 'grok';
-export type PrimaryLaunchKind = 'claude' | 'codex' | 'grok' | 'download';
+export type LaunchKind = 'claude' | 'codex' | 'grok';
+export type PrimaryLaunchKind = LaunchKind | 'download';
 export interface PrimaryLaunch { kind: PrimaryLaunchKind; label: string }
+export interface AvailableLaunch { kind: LaunchKind; label: string }
+
+const LAUNCH_CANDIDATES: Array<{
+  kind: LaunchKind;
+  label: string;
+  isAvailable: (tools: AiTools) => boolean;
+  lastUsed: (tools: AiTools) => number | null;
+}> = [
+  {
+    kind: 'claude',
+    label: 'Open in Claude Code',
+    isAvailable: (tools) => tools.claude_cli || tools.claude_desktop,
+    lastUsed: (tools) => tools.claude_last_used_ms,
+  },
+  {
+    kind: 'codex',
+    label: 'Open in Codex',
+    isAvailable: (tools) => tools.codex_cli || tools.codex_desktop,
+    lastUsed: (tools) => tools.codex_last_used_ms,
+  },
+  {
+    kind: 'grok',
+    label: 'Open in Grok',
+    isAvailable: (tools) => tools.grok_cli,
+    lastUsed: (tools) => tools.grok_last_used_ms,
+  },
+];
 
 export type SummaryLaunchState =
   | { kind: 'checking'; label: string }
@@ -72,20 +100,24 @@ export function readyCommandFor(path: string | null, tools: AiTools | null): str
   return `open ${target}`;
 }
 
-export function selectPrimaryLaunch(tools: AiTools | null): PrimaryLaunch {
-  // Keep the rendered label within the four supported outcomes while detection runs.
-  if (!tools) return { kind: 'download', label: 'Download Claude' };
-  const available = [
-    { kind: 'claude' as const, label: 'Open in Claude Code', available: tools.claude_cli || tools.claude_desktop, used: tools.claude_last_used_ms },
-    { kind: 'codex' as const, label: 'Open in Codex', available: tools.codex_cli || tools.codex_desktop, used: tools.codex_last_used_ms },
-    { kind: 'grok' as const, label: 'Open in Grok', available: tools.grok_cli, used: tools.grok_last_used_ms },
-  ].filter((tool) => tool.available);
-  if (!available.length) return { kind: 'download', label: 'Download Claude' };
-  const winner = available.reduce((winner, tool) =>
-    tool.used !== null && (winner.used === null || tool.used > winner.used)
-      ? tool
-      : winner,
+export function availableLaunches(tools: AiTools | null): AvailableLaunch[] {
+  if (!tools) return [];
+  return LAUNCH_CANDIDATES.filter((candidate) => candidate.isAvailable(tools)).map(
+    ({ kind, label }) => ({ kind, label }),
   );
+}
+
+export function selectPrimaryLaunch(tools: AiTools | null): PrimaryLaunch {
+  // Highlight the most recently used available tool. Download is only the
+  // fallback when nothing is installed — it is not a stand-in for hiding peers.
+  if (!tools) return { kind: 'download', label: 'Download Claude' };
+  const ranked = LAUNCH_CANDIDATES.filter((candidate) => candidate.isAvailable(tools));
+  if (!ranked.length) return { kind: 'download', label: 'Download Claude' };
+  const winner = ranked.reduce((current, tool) => {
+    const used = tool.lastUsed(tools);
+    const currentUsed = current.lastUsed(tools);
+    return used !== null && (currentUsed === null || used > currentUsed) ? tool : current;
+  });
   return { kind: winner.kind, label: winner.label };
 }
 
