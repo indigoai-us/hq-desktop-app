@@ -3,25 +3,11 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, tick } from 'svelte';
-  import { loadMeetingsCache } from '../lib/meetingsCache';
   import { MESSAGE_PERSON_EVENT } from '../lib/pendingConversation';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
-  import MissionControlPage from './pages/MissionControlPage.svelte';
-  import MeetingsPage from './pages/MeetingsPage.svelte';
-  import LibraryPage from './pages/LibraryPage.svelte';
-  import MessagesPage from './pages/MessagesPage.svelte';
-  import NotificationsPage from './pages/NotificationsPage.svelte';
-  import CompanyPage from './pages/CompanyPage.svelte';
-  import CompaniesPage from './pages/CompaniesPage.svelte';
-  import SettingsPage from './pages/SettingsPage.svelte';
-  import ModerationPanel from './panels/ModerationPanel.svelte';
-  import { startMeetingsStore } from './lib/meetings-store.svelte';
-  import { loadLocalProjects } from './lib/local-projects';
   import type { Project } from './lib/projects-model';
-  import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
-  import { openAgentWorkflow } from './lib/agent-workflow';
   import {
     COMPANY_SECTIONS,
     LIBRARY_SECTIONS,
@@ -44,19 +30,17 @@
     type LibraryTab,
     type SettingsTab,
   } from './route';
-  import { V4_CHROME_LAYOUT } from './v4/model';
+  import { V4_CHROME_LAYOUT, type V4Route } from './v4/model';
   import type { HomeConflict, HomeCoreState } from './v4/home-model';
   import V4Sidebar from './v4/V4Sidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
-  import FilePreviewPane from './components/FilePreviewPane.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
-  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { companyConsoleUrl } from './lib/hq-console';
   import V4TitleBar from './v4/V4TitleBar.svelte';
   import DesktopStatusBar from './DesktopStatusBar.svelte';
-  import CommandPalette, {
-    type CommandPaletteItem,
-  } from './components/CommandPalette.svelte';
+  import RoutePlaceholder from './components/RoutePlaceholder.svelte';
+  import type { CommandPaletteItem } from './components/CommandPalette.svelte';
+  import type { HomeQuickActionId } from './components/HomeQuickActions.svelte';
   import {
     eventStart,
     isToday,
@@ -81,6 +65,22 @@
 
   const WORKSPACE_CACHE_KEY = 'hq-sync.desktop.workspaces.v1';
   const ROUTE_CACHE_KEY = 'hq-sync.desktop.route.v1';
+
+  // Route-level chunks keep startup focused on Home + chrome. The browser's
+  // module cache deduplicates pointer prefetches and the later render load.
+  const lazyPages = {
+    missionControl: () => import('./pages/MissionControlPage.svelte'),
+    companies: () => import('./pages/CompaniesPage.svelte'),
+    meetings: () => import('./pages/MeetingsPage.svelte'),
+    library: () => import('./pages/LibraryPage.svelte'),
+    settings: () => import('./pages/SettingsPage.svelte'),
+    messages: () => import('./pages/MessagesPage.svelte'),
+    notifications: () => import('./pages/NotificationsPage.svelte'),
+    moderation: () => import('./panels/ModerationPanel.svelte'),
+    company: () => import('./pages/CompanyPage.svelte'),
+    filePreview: () => import('./components/FilePreviewPane.svelte'),
+    commandPalette: () => import('./components/CommandPalette.svelte'),
+  };
 
   // Reload survival for Files mode (US-009): persist the files route so a
   // desktop-alt window reload returns to the same company + selected file. Only
@@ -214,7 +214,10 @@
   // Point the company-store's background poll at whichever company is on screen,
   // so it re-fetches only the open company instead of all of them every 30s.
   $effect(() => {
-    setActiveCompany(activeCompany?.slug ?? null);
+    const slug = activeCompany?.slug ?? null;
+    void import('./lib/company-store.svelte').then(({ setActiveCompany }) => {
+      setActiveCompany(slug);
+    });
   });
   const libraryTab = $derived<LibraryTab>(
     route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
@@ -272,33 +275,70 @@
   });
   const commandItems = $derived<CommandPaletteItem[]>([
     {
+      id: 'command-start-work',
+      label: 'Start work',
+      detail: 'Resolve the right company, project, and repo',
+      keywords: ['/startwork', 'session', 'repo', 'project'],
+      symbol: '↗',
+      action: () => runDesktopWorkflow('start-work'),
+    },
+    {
+      id: 'command-search-hq',
+      label: 'Search HQ',
+      detail: 'Find knowledge, decisions, projects, and files',
+      keywords: ['/search', 'qmd', 'knowledge', 'decision'],
+      symbol: '⌕',
+      action: () => runDesktopWorkflow('search-hq'),
+    },
+    {
+      id: 'command-capture-idea',
+      label: 'Capture an idea',
+      detail: 'Save a lightweight project idea without breaking flow',
+      keywords: ['/idea', 'new', 'capture'],
+      symbol: '+',
+      action: () => runDesktopWorkflow('capture-idea'),
+    },
+    {
+      id: 'command-plan-project',
+      label: 'Plan a project',
+      detail: 'Turn an outcome into an execution-ready HQ project',
+      keywords: ['/plan', 'prd', 'project'],
+      symbol: '≡',
+      action: () => runDesktopWorkflow('plan-project'),
+    },
+    {
       id: 'command-sync-now',
       label: 'Sync now',
       detail: 'Start a full workspace sync',
+      symbol: '↻',
       action: handleSyncAll,
     },
     {
       id: 'command-open-settings',
       label: 'Open settings',
       detail: 'Open sync settings',
+      symbol: '⚙',
       action: handleOpenSettings,
     },
     {
       id: 'command-deploy',
       label: activeCompany ? `Deploy a result for ${activeCompany.displayName}` : 'Deploy a result',
       detail: 'Open the HQ deploy workflow in Claude Code',
+      symbol: '↑',
       action: () => runDesktopWorkflow('deploy'),
     },
     {
       id: 'command-share',
       label: 'Share a file',
       detail: 'Mint an encrypted single-use share link',
+      symbol: '↗',
       action: () => runDesktopWorkflow('share'),
     },
     {
       id: 'command-run-worker',
       label: activeCompany ? `Run a worker for ${activeCompany.displayName}` : 'Run a worker',
       detail: 'Hand work to a specialized agent',
+      symbol: '◇',
       action: () => runDesktopWorkflow('run-worker'),
     },
     {
@@ -395,6 +435,8 @@
         id: `command-go-company-${company.slug}`,
         label: `Go to ${company.displayName}`,
         detail: 'Show company overview',
+        section: 'companies' as const,
+        keywords: [company.slug],
         // Companies start at ⌘6 (after the five primary destinations).
         shortcut: companyHotkey(index),
         action: () => navigate({ kind: 'company', slug: company.slug }),
@@ -404,6 +446,8 @@
           id: `command-go-company-${company.slug}-${section.id}`,
           label: `Go to ${company.displayName} ${section.label}`,
           detail: `Show ${company.displayName} ${section.label.toLowerCase()}`,
+          section: 'companies' as const,
+          keywords: [company.slug],
           action: () => navigate({ kind: 'company', slug: company.slug, tab: section.id }),
         }),
       ),
@@ -439,7 +483,28 @@
     if (nextRoute.kind === 'files' && route.kind !== 'files') {
       routeBeforeFiles = route;
     }
+    prefetchDesktopRoute(nextRoute);
     route = nextRoute;
+  }
+
+  function prefetchDesktopRoute(nextRoute: DesktopRoute): void {
+    switch (nextRoute.kind) {
+      case 'mission-control': void lazyPages.missionControl(); break;
+      case 'companies': void lazyPages.companies(); break;
+      case 'meetings': void lazyPages.meetings(); break;
+      case 'library': void lazyPages.library(); break;
+      case 'settings': void lazyPages.settings(); break;
+      case 'messages': void lazyPages.messages(); break;
+      case 'notifications': void lazyPages.notifications(); break;
+      case 'moderation': void lazyPages.moderation(); break;
+      case 'company': void lazyPages.company(); break;
+      case 'files': if (nextRoute.path) void lazyPages.filePreview(); break;
+      default: break;
+    }
+  }
+
+  function prefetchV4Route(nextRoute: V4Route): void {
+    prefetchDesktopRoute(fromV4Route(nextRoute));
   }
 
   /** Leave Files mode, restoring the view the user came from (default Home). */
@@ -464,7 +529,8 @@
     }
   });
 
-  function hydrateMeetingStatus() {
+  async function hydrateMeetingStatus() {
+    const { loadMeetingsCache } = await import('../lib/meetingsCache');
     const snapshot = loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>();
     meetingEvents = snapshot?.events ?? [];
     meetingCompanyNamesByUid = new Map(snapshot?.companyNamesByUid ?? []);
@@ -554,14 +620,15 @@
       // Warm the company-tab preload cache for every known company once the real
       // slugs resolve. Idempotent + reconciles, so companies that appear on a
       // later refresh still get warmed; the 30s poll + focus listener wire once.
-      startCompanyStore(
-        nextCompanies
-          .filter(
-            (company) =>
-              company.state === 'synced' || company.state === 'cloud-only' || Boolean(company.cloudUid),
-          )
-          .map((company) => company.slug),
-      );
+      const warmCompanySlugs = nextCompanies
+        .filter(
+          (company) =>
+            company.state === 'synced' || company.state === 'cloud-only' || Boolean(company.cloudUid),
+        )
+        .map((company) => company.slug);
+      void import('./lib/company-store.svelte').then(({ startCompanyStore }) => {
+        startCompanyStore(warmCompanySlugs);
+      });
       if (nextCompanies.length > 0) queueDesktopRenderAudit();
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
@@ -595,6 +662,7 @@
 
   async function loadHomeProjects() {
     try {
+      const { loadLocalProjects } = await import('./lib/local-projects');
       homeProjects = await loadLocalProjects();
     } catch (err) {
       // A missing/locked HQ tree leaves the portfolio table empty rather than
@@ -745,7 +813,7 @@
     // than the in-app Settings route.
     const slug = activeCompany?.slug;
     if (slug) {
-      void openExternal(companyConsoleUrl(slug));
+      void import('@tauri-apps/plugin-shell').then(({ open }) => open(companyConsoleUrl(slug)));
       return;
     }
     handleOpenSettings();
@@ -762,7 +830,14 @@
   // Company-scoped verbs target the company currently on screen when there is
   // one (activeCompany), otherwise stay general so the agent can ask.
 
-  type DesktopWorkflow = 'deploy' | 'share' | 'run-worker';
+  type DesktopWorkflow =
+    | 'deploy'
+    | 'share'
+    | 'run-worker'
+    | 'start-work'
+    | 'search-hq'
+    | 'capture-idea'
+    | 'plan-project';
 
   let actionToast = $state<{ text: string; tone: 'ok' | 'warn' } | null>(null);
   let actionToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -786,6 +861,46 @@
     const slug = activeCompany?.slug ?? null;
     const forCompany = slug ? ` for ${slug}` : '';
     switch (kind) {
+      case 'start-work':
+        return {
+          label: 'start-work session',
+          prompt: [
+            '/startwork',
+            '',
+            `Help me start the highest-leverage work${forCompany}.`,
+            'Resolve the current HQ context, show the strongest next options, and help me begin the one I choose.',
+          ].join('\n'),
+        };
+      case 'search-hq':
+        return {
+          label: 'HQ search',
+          prompt: [
+            '/search',
+            '',
+            `Help me search HQ${forCompany}.`,
+            'Ask what I am looking for, then search the relevant knowledge, projects, decisions, and indexed repos.',
+          ].join('\n'),
+        };
+      case 'capture-idea':
+        return {
+          label: 'idea capture',
+          prompt: [
+            '/idea',
+            '',
+            `Help me capture a lightweight project idea${forCompany}.`,
+            'Ask for the idea in one sentence, preserve the intent, and save it to the right HQ board.',
+          ].join('\n'),
+        };
+      case 'plan-project':
+        return {
+          label: 'project planning',
+          prompt: [
+            '/plan',
+            '',
+            `Help me turn an outcome into an execution-ready project${forCompany}.`,
+            'Clarify the outcome and constraints, then create the HQ project plan and PRD.',
+          ].join('\n'),
+        };
       case 'deploy':
         return {
           label: 'deploy workflow',
@@ -821,12 +936,16 @@
 
   async function runDesktopWorkflow(kind: DesktopWorkflow) {
     const { prompt, label } = desktopWorkflowPrompt(kind);
+    const { openAgentWorkflow } = await import('./lib/agent-workflow');
     const result = await openAgentWorkflow(prompt, label);
     flashToast(result.message, result.ok ? 'ok' : 'warn');
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      (event.key.toLowerCase() === 'k' || (event.shiftKey && event.key.toLowerCase() === 'p'))
+    ) {
       event.preventDefault();
       commandPaletteOpen = true;
       return;
@@ -847,8 +966,14 @@
     const unlisteners: UnlistenFn[] = [];
     const meetingStatusInterval = window.setInterval(() => {
       meetingStatusNow = Date.now();
-      hydrateMeetingStatus();
+      void hydrateMeetingStatus();
     }, 30_000);
+    const meetingWarmTimer = window.setTimeout(() => {
+      void hydrateMeetingStatus();
+      void import('./lib/meetings-store.svelte').then(({ startMeetingsStore }) => {
+        startMeetingsStore();
+      });
+    }, 600);
 
     if (renderCompanies.length > 0) queueDesktopRenderAudit();
     void refreshRealState().finally(() => {
@@ -888,11 +1013,8 @@
         if (mounted) coreState = state;
       })
       .catch(() => undefined);
-    hydrateMeetingStatus();
-    // Warm the Meetings singleton at app launch so its data is ready before the
-    // user ever navigates to Meetings — the page then reads the warm store on
-    // remount (instant) instead of running a blocking fetch each nav. Idempotent.
-    startMeetingsStore();
+    // Meetings hydrate after the first paint (meetingWarmTimer above) so the
+    // shell becomes interactive before the optional calendar/recording chunk.
     // A notification click can request a specific screen (e.g. Meetings) before
     // this window existed. The opener queued it; consume it once on mount so we
     // land on the right screen instead of the default Sync route. The
@@ -916,8 +1038,8 @@
       })
       .catch(() => undefined);
     window.addEventListener('keydown', handleKeydown);
-    window.addEventListener('focus', hydrateMeetingStatus);
-    window.addEventListener('storage', hydrateMeetingStatus);
+    window.addEventListener('focus', () => void hydrateMeetingStatus());
+    window.addEventListener('storage', () => void hydrateMeetingStatus());
     // "Message the sharer" (and future message-person deep links): a page
     // stashed a pending conversation (lib/pendingConversation) — route to the
     // Messages destination; the MessagesShell there consumes the stash.
@@ -927,7 +1049,7 @@
       .onFocusChanged(({ payload: focused }) => {
         if (focused) {
           refreshRealState();
-          hydrateMeetingStatus();
+          void hydrateMeetingStatus();
         }
       })
       .then((unlisten) => {
@@ -1165,9 +1287,8 @@
       unlistenFocus?.();
       unlisteners.forEach((unlisten) => unlisten());
       window.clearInterval(meetingStatusInterval);
+      window.clearTimeout(meetingWarmTimer);
       window.removeEventListener('keydown', handleKeydown);
-      window.removeEventListener('focus', hydrateMeetingStatus);
-      window.removeEventListener('storage', hydrateMeetingStatus);
       window.removeEventListener(MESSAGE_PERSON_EVENT, handleMessagePerson);
     };
   });
@@ -1189,6 +1310,7 @@
     onsync={handleSyncAll}
     oncancel={handleCancelSync}
     onretry={handleSyncAll}
+    onopenpalette={() => (commandPaletteOpen = true)}
   />
 
   <div class="desktop-body">
@@ -1208,6 +1330,7 @@
         {route}
         companies={renderCompanies}
         onnavigate={(next) => navigate(fromV4Route(next))}
+        onprefetch={prefetchV4Route}
       />
     {/if}
 
@@ -1264,43 +1387,93 @@
                 onsignin={handleSignInAgain}
                 onretry={handleSyncAll}
                 onopenlog={handleOpenActivityLog}
+                onquickaction={(id: HomeQuickActionId) => runDesktopWorkflow(id)}
               />
             </div>
           {:else if route.kind === 'mission-control'}
             <div class="page">
-              <MissionControlPage />
+              {#await lazyPages.missionControl()}
+                <RoutePlaceholder label="Mission Control" />
+              {:then loaded}
+                {@const MissionControlPage = loaded.default}
+                <MissionControlPage />
+              {:catch error}
+                <RoutePlaceholder label="Mission Control" {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else if route.kind === 'companies'}
             <div class="page">
-              <CompaniesPage
-                {workspaces}
-                {ready}
-                {autoSyncOn}
-                {workspaceError}
-                {cloudReachable}
-                onopencompany={(slug) => navigate({ kind: 'company', slug })}
-                onrefresh={() => void loadWorkspaces()}
-              />
+              {#await lazyPages.companies()}
+                <RoutePlaceholder label="Companies" />
+              {:then loaded}
+                {@const CompaniesPage = loaded.default}
+                <CompaniesPage
+                  {workspaces}
+                  {ready}
+                  {autoSyncOn}
+                  {workspaceError}
+                  {cloudReachable}
+                  onopencompany={(slug) => navigate({ kind: 'company', slug })}
+                  onrefresh={() => void loadWorkspaces()}
+                />
+              {:catch error}
+                <RoutePlaceholder label="Companies" {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
-              <MeetingsPage />
+              {#await lazyPages.meetings()}
+                <RoutePlaceholder label="Meetings" />
+              {:then loaded}
+                {@const MeetingsPage = loaded.default}
+                <MeetingsPage />
+              {:catch error}
+                <RoutePlaceholder label="Meetings" {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else if route.kind === 'library'}
             <div class="page">
-              <LibraryPage tab={libraryTab} />
+              {#await lazyPages.library()}
+                <RoutePlaceholder label="Library" />
+              {:then loaded}
+                {@const LibraryPage = loaded.default}
+                <LibraryPage tab={libraryTab} />
+              {:catch error}
+                <RoutePlaceholder label="Library" {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else if route.kind === 'settings'}
             <div class="page">
-              <SettingsPage activeTab={route.tab ?? 'sync'} />
+              {#await lazyPages.settings()}
+                <RoutePlaceholder label="Settings" />
+              {:then loaded}
+                {@const SettingsPage = loaded.default}
+                <SettingsPage activeTab={route.tab ?? 'sync'} />
+              {:catch error}
+                <RoutePlaceholder label="Settings" {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else if route.kind === 'messages'}
             <div class="messages-host">
-              <MessagesPage />
+              {#await lazyPages.messages()}
+                <RoutePlaceholder label="Messages" />
+              {:then loaded}
+                {@const MessagesPage = loaded.default}
+                <MessagesPage />
+              {:catch error}
+                <RoutePlaceholder label="Messages" {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else if route.kind === 'notifications'}
             <div class="page">
-              <NotificationsPage />
+              {#await lazyPages.notifications()}
+                <RoutePlaceholder label="Notifications" />
+              {:then loaded}
+                {@const NotificationsPage = loaded.default}
+                <NotificationsPage />
+              {:catch error}
+                <RoutePlaceholder label="Notifications" {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
@@ -1309,7 +1482,14 @@
                  somehow reaches this route falls through to the placeholder. -->
             {#if isAdmin}
               <div class="page">
-                <ModerationPanel />
+                {#await lazyPages.moderation()}
+                  <RoutePlaceholder label="Moderation" />
+                {:then loaded}
+                  {@const ModerationPanel = loaded.default}
+                  <ModerationPanel />
+                {:catch error}
+                  <RoutePlaceholder label="Moderation" {error} onretry={() => window.location.reload()} />
+                {/await}
               </div>
             {:else}
               <section class="page" aria-labelledby="desktop-page-title">
@@ -1324,7 +1504,14 @@
           {:else if route.kind === 'files'}
             <div class="files-main">
               {#if filesSelectedPath}
-                <FilePreviewPane path={filesSelectedPath} hqFolderPath={hqFolderPath ?? ''} />
+                {#await lazyPages.filePreview()}
+                  <RoutePlaceholder label="File preview" />
+                {:then loaded}
+                  {@const FilePreviewPane = loaded.default}
+                  <FilePreviewPane path={filesSelectedPath} hqFolderPath={hqFolderPath ?? ''} />
+                {:catch error}
+                  <RoutePlaceholder label="File preview" {error} onretry={() => window.location.reload()} />
+                {/await}
               {:else}
                 <div class="files-empty">
                   <strong>Select a file to preview it</strong>
@@ -1334,13 +1521,20 @@
             </div>
           {:else if activeCompany}
             <div class="page">
-              <CompanyPage
-                company={activeCompany}
-                tab={companyTab}
-                onopenprojects={() =>
-                  navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
-                }
-              />
+              {#await lazyPages.company()}
+                <RoutePlaceholder label={activeCompany.displayName} />
+              {:then loaded}
+                {@const CompanyPage = loaded.default}
+                <CompanyPage
+                  company={activeCompany}
+                  tab={companyTab}
+                  onopenprojects={() =>
+                    navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
+                  }
+                />
+              {:catch error}
+                <RoutePlaceholder label={activeCompany.displayName} {error} onretry={() => window.location.reload()} />
+              {/await}
             </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
@@ -1373,7 +1567,14 @@
   />
 
   {#if commandPaletteOpen}
-    <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
+    {#await lazyPages.commandPalette()}
+      <div class="command-loading" role="status">Opening HQ commands…</div>
+    {:then loaded}
+      {@const CommandPalette = loaded.default}
+      <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
+    {:catch}
+      <div class="command-loading error" role="alert">Command menu unavailable · press Escape</div>
+    {/await}
   {/if}
 
   {#if actionToast}
@@ -1391,6 +1592,23 @@
   .desktop-shell {
     background: var(--v4-ground);
   }
+
+  .command-loading {
+    position: fixed;
+    top: 68px;
+    left: 50%;
+    z-index: 55;
+    transform: translateX(-50%);
+    padding: 9px 12px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-raised);
+    box-shadow: var(--v4-shadow-popover);
+    color: var(--v4-text-2);
+    font-size: var(--text-sm);
+  }
+
+  .command-loading.error { color: var(--v4-error); }
 
   /* The Messages route hosts the full-bleed MessagesShell rather than the
      padded, scrolling .page layout — it fills the content area and anchors the

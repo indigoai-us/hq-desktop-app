@@ -14,6 +14,7 @@
   import type { MeetingEvent } from '../lib/meetings-model';
   import ActivityDigest from '../v4/ActivityDigest.svelte';
   import NeedsYouCard from '../v4/NeedsYouCard.svelte';
+  import HomeQuickActions, { type HomeQuickActionId } from '../components/HomeQuickActions.svelte';
   import {
     formatClock,
     getConflictCardModel,
@@ -81,6 +82,7 @@
     onsignin?: () => void;
     onretry?: () => void;
     onopenlog?: () => void;
+    onquickaction?: (id: HomeQuickActionId) => void;
   }
 
   let {
@@ -117,9 +119,11 @@
     onsignin,
     onretry,
     onopenlog,
+    onquickaction,
   }: Props = $props();
 
   let techOpen = $state(false);
+  let portfolioExpanded = $state(false);
 
   const lastSyncLabel = $derived(formatRelativeTime(status?.lastSyncAt ?? null));
   const metaLine = $derived(
@@ -165,6 +169,8 @@
   // Merged-Home portfolio — all real, all from already-loaded data.
   const portfolioStats = $derived(getHomePortfolioStats({ workspaces, projects }));
   const companyRows = $derived(getHomeCompanyRows({ workspaces, projects }));
+  const visibleCompanyRows = $derived(portfolioExpanded ? companyRows : companyRows.slice(0, 8));
+  const hiddenCompanyRows = $derived(Math.max(0, companyRows.length - visibleCompanyRows.length));
   const todayAgenda = $derived(getHomeTodayAgenda({ events: meetingEvents, companyNamesByUid }));
 
   function handleConflictAction(path: string, actionId: string) {
@@ -189,6 +195,8 @@
     <h1 class="home-title">Home</h1>
     <p class="home-meta">{metaLine}</p>
   </header>
+
+  <HomeQuickActions onaction={onquickaction} />
 
   {#if errorModel}
     <div class="home-section" aria-label="Sync failed">
@@ -327,10 +335,11 @@
               <span class="home-th">Stories</span>
               <span class="home-th updated">Updated</span>
             </div>
-            {#each companyRows as row (row.slug)}
+            {#each visibleCompanyRows as row (row.slug)}
               <button
                 type="button"
                 class="home-table-row"
+                aria-label={`Open ${row.name}`}
                 onclick={() => onopencompany?.(row.slug)}
               >
                 <span class="home-td-name">
@@ -345,6 +354,15 @@
                 <span class="home-td updated">{row.lastChange}</span>
               </button>
             {/each}
+            {#if hiddenCompanyRows > 0}
+              <button type="button" class="home-table-more" onclick={() => (portfolioExpanded = true)}>
+                Show all {companyRows.length} companies <span aria-hidden="true">↓</span>
+              </button>
+            {:else if portfolioExpanded && companyRows.length > 8}
+              <button type="button" class="home-table-more" onclick={() => (portfolioExpanded = false)}>
+                Show fewer <span aria-hidden="true">↑</span>
+              </button>
+            {/if}
           </div>
         </section>
 
@@ -417,7 +435,7 @@
 
   .home-stat-value {
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: var(--text-lg);
     font-weight: 500;
     line-height: 1.2;
   }
@@ -494,6 +512,29 @@
   .home-table-row:hover {
     background: var(--v4-active-row);
   }
+
+  .home-table-row:focus-visible,
+  .home-table-more:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid var(--v4-text-1);
+    outline-offset: -2px;
+  }
+
+  .home-table-more {
+    min-height: 34px;
+    padding: 0 14px;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    background: var(--v4-inset);
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--text-sm);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .home-table-more:hover { color: var(--v4-text-1); }
 
   .home-td-name {
     display: flex;
@@ -639,14 +680,14 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: var(--text-lg);
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1.15;
   }
 
   .home-meta {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--text-sm);
     font-weight: 400;
     line-height: 1.4;
   }
@@ -662,7 +703,7 @@
     gap: 7px;
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--text-xs);
     font-weight: 400;
     letter-spacing: 0.06em;
     text-transform: uppercase;

@@ -9,6 +9,7 @@
     countUnread,
   } from '../../lib/notificationFeedData';
   import { getV4SidebarModel, type V4NavId, type V4Route } from './model';
+  import { getVisibleSidebarRows } from './sidebar-visibility';
   import './tokens.css';
 
   /**
@@ -30,6 +31,7 @@
     /** Signed-in account email for the Settings footer. */
     accountEmail?: string | null;
     onnavigate?: (route: V4Route) => void;
+    onprefetch?: (route: V4Route) => void;
   }
 
   let {
@@ -37,12 +39,16 @@
     companies,
     accountEmail,
     onnavigate,
+    onprefetch,
   }: Props = $props();
 
   let fetched = $state<Workspace[]>([]);
   const model = $derived(
     getV4SidebarModel(route, companies && companies.length > 0 ? companies : fetched),
   );
+  let companiesExpanded = $state(false);
+  const visibleCompanies = $derived(getVisibleSidebarRows(model.companies, companiesExpanded));
+  const hiddenCompanyCount = $derived(Math.max(0, model.companies.length - visibleCompanies.length));
 
   onMount(() => {
     if (companies && companies.length > 0) return;
@@ -101,6 +107,8 @@
         class:active={row.active}
         aria-current={row.active ? 'page' : undefined}
         onclick={() => go(row.id)}
+        onfocus={() => onprefetch?.({ kind: row.id })}
+        onpointerenter={() => onprefetch?.({ kind: row.id })}
       >
         <span class="v4-row-label">{row.label}</span>
         {#if row.id === 'notifications' && notifUnread > 0}
@@ -113,20 +121,41 @@
   </nav>
 
   <div class="v4-companies-area">
-    <div class="v4-section-label" id="v4-companies-label">Companies</div>
+    <div class="v4-section-heading">
+      <div class="v4-section-label" id="v4-companies-label">Companies</div>
+      <span>{model.companies.length}</span>
+    </div>
     <nav class="v4-nav v4-company-nav" aria-labelledby="v4-companies-label">
-      {#each model.companies as row (row.slug)}
+      {#each visibleCompanies as row (row.slug)}
         <button
           type="button"
           class="v4-row v4-company-row"
           class:active={row.active}
           aria-current={row.active ? 'page' : undefined}
           onclick={() => go('companies', row.slug)}
+          onfocus={() => onprefetch?.({ kind: 'company', slug: row.slug })}
+          onpointerenter={() => onprefetch?.({ kind: 'company', slug: row.slug })}
         >
           <span class={`v4-dot ${row.tone}`} aria-hidden="true"></span>
           <span class="v4-company-name">{row.label}</span>
         </button>
       {/each}
+      {#if hiddenCompanyCount > 0}
+        <button
+          type="button"
+          class="v4-row v4-more-row"
+          aria-label={`Show ${hiddenCompanyCount} more companies`}
+          onclick={() => (companiesExpanded = true)}
+        >
+          <span aria-hidden="true">•••</span>
+          <span>{hiddenCompanyCount} more</span>
+        </button>
+      {:else if companiesExpanded && model.companies.length > 7}
+        <button type="button" class="v4-row v4-more-row" onclick={() => (companiesExpanded = false)}>
+          <span aria-hidden="true">⌃</span>
+          <span>Show fewer</span>
+        </button>
+      {/if}
     </nav>
   </div>
 
@@ -138,6 +167,8 @@
     class:active={model.settingsActive}
     aria-current={model.settingsActive ? 'page' : undefined}
     onclick={() => go('settings')}
+    onfocus={() => onprefetch?.({ kind: 'settings' })}
+    onpointerenter={() => onprefetch?.({ kind: 'settings' })}
   >
     <span class="v4-footer-label">Settings</span>
     {#if accountEmail}
@@ -243,15 +274,36 @@
     line-height: 1;
   }
 
-  .v4-section-label {
-    flex: 0 0 auto;
+  .v4-section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     margin: 0 0 6px;
     padding: 0 8px;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
+    font-size: var(--text-xs);
+  }
+
+  .v4-section-label {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font-size: var(--text-xs);
     font-weight: 400;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+
+  .v4-more-row {
+    color: var(--v4-text-3);
+  }
+
+  .v4-more-row > span:first-child {
+    display: inline-flex;
+    justify-content: center;
+    width: 8px;
+    font-size: 8px;
+    letter-spacing: -1px;
   }
 
   .v4-companies-area {

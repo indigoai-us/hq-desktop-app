@@ -1,11 +1,15 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { rankCommands } from '../lib/command-search';
 
   export interface CommandPaletteItem {
     id: string;
     label: string;
     detail: string;
     shortcut?: string;
+    keywords?: string[];
+    symbol?: string;
+    section?: 'actions' | 'navigate' | 'companies';
     action: () => void | Promise<void>;
   }
 
@@ -15,8 +19,8 @@
   }
 
   interface CommandPaletteSection {
-    id: 'actions' | 'navigate';
-    label: 'ACTIONS' | 'NAVIGATE';
+    id: 'actions' | 'navigate' | 'companies';
+    label: 'ACTIONS' | 'NAVIGATE' | 'COMPANIES';
     items: CommandPaletteItem[];
   }
 
@@ -25,27 +29,11 @@
   let highlightedIndex = $state(0);
   let inputEl: HTMLInputElement | null = $state(null);
 
-  function fuzzyMatch(value: string, needle: string): boolean {
-    const haystack = value.toLowerCase();
-    const queryText = needle.trim().toLowerCase();
-    if (!queryText) return true;
-
-    let searchFrom = 0;
-    for (const char of queryText) {
-      const foundAt = haystack.indexOf(char, searchFrom);
-      if (foundAt === -1) return false;
-      searchFrom = foundAt + 1;
-    }
-    return true;
-  }
-
-  const filteredCommands = $derived(
-    commands.filter((command) =>
-      fuzzyMatch(`${command.label} ${command.detail} ${command.shortcut ?? ''}`, query),
-    ),
-  );
+  const filteredCommands = $derived(rankCommands(commands, query));
 
   function sectionId(command: CommandPaletteItem): CommandPaletteSection['id'] {
+    if (command.section) return command.section;
+    if (command.id.startsWith('command-go-company-')) return 'companies';
     return command.id.startsWith('command-go-') ? 'navigate' : 'actions';
   }
 
@@ -53,6 +41,7 @@
     const sections: CommandPaletteSection[] = [
       { id: 'actions', label: 'ACTIONS', items: [] },
       { id: 'navigate', label: 'NAVIGATE', items: [] },
+      { id: 'companies', label: 'COMPANIES', items: [] },
     ];
     for (const command of filteredCommands) {
       const target = sections.find((section) => section.id === sectionId(command));
@@ -70,6 +59,12 @@
   $effect(() => {
     query;
     highlightedIndex = 0;
+  });
+
+  $effect(() => {
+    const id = filteredCommands[highlightedIndex]?.id;
+    if (!id) return;
+    void tick().then(() => document.getElementById(id)?.scrollIntoView({ block: 'nearest' }));
   });
 
   $effect(() => {
@@ -92,6 +87,10 @@
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
       event.preventDefault();
+      if (query) {
+        query = '';
+        return;
+      }
       onclose();
       return;
     }
@@ -140,8 +139,9 @@
         aria-label="Filter commands"
         aria-controls="command-palette-list"
         aria-activedescendant={filteredCommands[highlightedIndex]?.id}
-        placeholder="Search commands"
+        placeholder="Search HQ, actions, and companies"
       />
+      <span class="command-count" aria-live="polite">{filteredCommands.length}</span>
     </div>
 
     <h2 id="command-palette-title">Command palette</h2>
@@ -167,6 +167,7 @@
                 }}
                 onclick={() => void execute(command)}
               >
+                <span class="command-symbol" aria-hidden="true">{command.symbol ?? '→'}</span>
                 <span class="command-copy">
                   <strong>{command.label}</strong>
                   <span>{command.detail}</span>
@@ -179,8 +180,16 @@
           </div>
         {/each}
       {:else}
-        <div class="command-empty" role="status">No commands found</div>
+        <div class="command-empty" role="status">
+          <strong>No HQ actions match “{query}”</strong>
+          <span>Try a company, workflow, or destination.</span>
+        </div>
       {/if}
+    </div>
+    <div class="command-footer" aria-hidden="true">
+      <span><kbd>↑↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>esc</kbd> clear or close</span>
     </div>
   </div>
 </div>
@@ -262,6 +271,13 @@
     color: var(--pop-muted);
   }
 
+  .command-count {
+    flex: 0 0 auto;
+    color: var(--pop-muted);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
   .command-list {
     max-height: min(360px, calc(100vh - 160px));
     overflow-y: auto;
@@ -294,7 +310,7 @@
   .command-list button {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    grid-template-columns: 26px minmax(0, 1fr) auto;
     gap: 12px;
     padding: 7px 8px;
     border: 0;
@@ -308,6 +324,19 @@
       color 120ms ease,
       outline-color 120ms ease,
       transform 120ms ease;
+  }
+
+  .command-symbol {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--pop-border);
+    border-radius: 7px;
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    font-size: var(--text-base);
   }
 
   .command-list button.highlighted,
@@ -364,11 +393,30 @@
   }
 
   .command-empty {
-    display: flex;
-    align-items: center;
-    padding: 0 10px;
+    display: grid;
+    align-content: center;
+    gap: 4px;
+    min-height: 112px;
+    padding: 18px;
     color: var(--pop-muted);
   }
+
+  .command-empty strong { color: var(--pop-text); font-size: var(--text-base); font-weight: 500; }
+  .command-empty span { font-size: var(--text-sm); }
+
+  .command-footer {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 32px;
+    padding: 0 12px;
+    border-top: 1px solid var(--pop-divider);
+    color: var(--pop-muted);
+    font-size: var(--text-xs);
+  }
+
+  .command-footer span { display: inline-flex; align-items: center; gap: 5px; }
+  .command-footer kbd { min-width: auto; padding: 0 4px; line-height: 16px; }
 
   @media (prefers-reduced-transparency: reduce) {
     .command-backdrop,

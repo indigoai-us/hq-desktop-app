@@ -24,6 +24,7 @@
     onsync?: () => void;
     oncancel?: () => void;
     onretry?: () => void;
+    onopenpalette?: () => void;
   }
 
   let {
@@ -37,6 +38,7 @@
     onsync,
     oncancel,
     onretry,
+    onopenpalette,
   }: Props = $props();
 
   const model = $derived(
@@ -70,9 +72,14 @@
       <span class="v4-meta">{model.meta}</span>
     {/if}
   </div>
-  <button type="button" class="v4-action" onclick={handleAction}>
-    {model.action.label}
-  </button>
+  <div class="v4-title-actions">
+    <button type="button" class="v4-search" onclick={() => onopenpalette?.()} aria-label="Search HQ and open commands">
+      <span>Search HQ</span><kbd>⌘K</kbd>
+    </button>
+    <button type="button" class="v4-action" onclick={handleAction}>
+      {model.action.label}
+    </button>
+  </div>
 </header>
 
 <style>
@@ -180,6 +187,45 @@
     line-height: 1;
     cursor: pointer;
     box-shadow: var(--v4-shadow-card);
+  }
+
+  .v4-title-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .v4-search {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    height: 28px;
+    padding: 0 7px 0 10px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .v4-search:hover { background: var(--v4-active-row); color: var(--v4-text-1); }
+  .v4-search kbd {
+    min-width: 24px;
+    padding: 1px 4px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: 5px;
+    background: var(--v4-raised);
+    color: var(--v4-text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-align: center;
+  }
+
+  @media (max-width: 860px) {
+    .v4-search > span { display: none; }
+    .v4-search { padding-left: 7px; }
   }
 
   .v4-action:hover {
