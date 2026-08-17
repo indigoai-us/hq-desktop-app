@@ -72,11 +72,8 @@ describe('US-004: Single-window activation and navigation', () => {
       expect(src).toMatch(/Self::LibraryInstalled\s*=>\s*"library:installed"/);
     });
 
-    it('frontend resolvePendingDesktopRoute accepts WindowRouter aliases (US-018 remaps)', () => {
-      // Backend DesktopDestination::Inbox still emits "inbox"; the frontend
-      // remaps the retired InboxPage deep link onto the Notifications feed.
-      expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'notifications' });
-      expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
+    it('frontend resolvePendingDesktopRoute accepts WindowRouter aliases', () => {
+      expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
       expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
       expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
       expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
@@ -87,8 +84,6 @@ describe('US-004: Single-window activation and navigation', () => {
       expect(resolvePendingDesktopRoute('activity')).toEqual({ kind: 'home' });
       expect(resolvePendingDesktopRoute('core-drift')).toEqual({ kind: 'home' });
       expect(resolvePendingDesktopRoute('drift')).toEqual({ kind: 'home' });
-      // US-018: Mission Control page retired → Home.
-      expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'home' });
     });
   });
 

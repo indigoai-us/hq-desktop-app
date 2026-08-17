@@ -22,12 +22,10 @@
     loadLocalProjectStories,
     loadCompanyGoals,
     projectIdentity,
-    type CompanyGoals,
     type Objective,
     type ProjectProvenanceIndex,
     withProjectStatus,
   } from '../lib/local-projects';
-  import { PERSONAL_WORKSPACE_SLUG } from '../lib/file-tree';
   import type { WorkProvenance } from '../lib/provenance';
   import {
     OVERVIEW_PROJECT_LIMIT,
@@ -43,7 +41,6 @@
     type StoryState,
   } from '../lib/projects-model';
   import { useCompanyBoard, type CompanyBoardCard } from '../lib/company-board.svelte';
-  import { presentBoardError } from '../lib/board-error';
   import { useCompanySummary } from '../lib/company-summary.svelte';
   import ProjectListView from '../components/ProjectListView.svelte';
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
@@ -263,13 +260,10 @@
       });
     }
     if (error || boardState.error) {
-      // Calm copy only — the raw diagnostic (resolution / auth / HTTP detail)
-      // stays in the console (company-board.svelte.ts logs the rejection).
-      const boardIssue = boardState.error ? presentBoardError(boardState.error) : null;
       cards.push({
         id: 'board-error',
         title: 'Company board could not refresh',
-        sub: boardIssue?.message ?? error ?? 'Try again after a sync',
+        sub: error || boardState.error || 'Try again after a sync',
         tone: 'error',
         actions: [{ id: 'inspect', label: 'Inspect', kind: 'secondary' }],
       });
@@ -360,16 +354,9 @@
 
     void (async () => {
       try {
-        // The personal workspace has no company-shaped goals surface —
-        // `get_local_company_goals` authorizes `companies/<slug>`, which never
-        // exists for the personal workspace, so the fetch is guaranteed to
-        // reject and painted the healthy Personal overview with the "Board
-        // unavailable" error. Resolve empty goals instead of asking.
         const [allProjects, goals] = await Promise.all([
           loadLocalProjects(),
-          activeSlug === PERSONAL_WORKSPACE_SLUG
-            ? Promise.resolve<CompanyGoals>({ objectives: [], initiatives: [] })
-            : loadCompanyGoals(activeSlug),
+          loadCompanyGoals(activeSlug),
         ]);
         if (cancelled) return;
         projects = allProjects;

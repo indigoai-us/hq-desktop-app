@@ -19,10 +19,10 @@ import { readRepoFile } from './harness';
  * DESKTOP-010 — Scoped company operations.
  *
  * Source contracts for: More opens one company-scoped operations workspace
- * with compact internal destinations Deployments / Secrets / Settings
- * (US-020 removed the Activity page); destinations stay under company
- * context (no permanent secondary sidebar); preserved
- * actions/errors/empty/deploy/settings; metadata-only secrets; naked hairline canvas; five type roles + 3px stacks; keyboard
+ * with compact internal destinations Activity / Deployments / Secrets /
+ * Settings; destinations stay under company context (no permanent secondary
+ * sidebar); preserved actions/errors/empty/deploy/activity/settings; metadata-
+ * only secrets; naked hairline canvas; five type roles + 3px stacks; keyboard
  * internal nav + focus-visible + responsive collapse; light/dark + reduced
  * motion/transparency; More stays active for all four destinations; tenant
  * slug + backend commands preserved.
@@ -30,6 +30,7 @@ import { readRepoFile } from './harness';
 
 describe('DESKTOP-010: scoped company operations', () => {
   const ops = readRepoFile('src/desktop-alt/panels/CompanyOperationsPanel.svelte');
+  const activity = readRepoFile('src/desktop-alt/panels/ActivityPanel.svelte');
   const deployments = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
   const secrets = readRepoFile('src/desktop-alt/panels/SecretsPanel.svelte');
   const secretRow = readRepoFile('src/desktop-alt/components/SecretEnvRow.svelte');
@@ -41,8 +42,9 @@ describe('DESKTOP-010: scoped company operations', () => {
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
   const consoleLib = readRepoFile('src/desktop-alt/lib/hq-console.ts');
 
-  it('groups Deployments, Secrets, and Settings under one operations workspace (US-020: no Activity)', () => {
+  it('groups Activity, Deployments, Secrets, and Settings under one operations workspace', () => {
     expect(COMPANY_OPERATIONS_SECTIONS.map((s) => s.id)).toEqual([
+      'activity',
       'deployments',
       'secrets',
       'settings',
@@ -53,19 +55,19 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(ops).toContain('data-testid="operations-nav-item"');
     expect(ops).toContain('data-testid="operations-content"');
     expect(ops).toContain('COMPANY_OPERATIONS_SECTIONS');
-    expect(ops).not.toContain('ActivityPanel');
+    expect(ops).toContain('<ActivityPanel {slug} {cloudBacked} {syncEnabled} />');
     expect(ops).toContain('<DeploymentsPanel {slug} {cloudBacked} {syncEnabled} />');
     expect(ops).toContain('<SecretsPanel {slug} {cloudBacked} {syncEnabled} />');
     expect(ops).toContain('data-testid="operations-settings"');
     expect(companyPage).toContain('CompanyOperationsPanel');
     expect(companyPage).toContain('isCompanyOperationsTab(tab)');
     expect(companyPage).toContain('destination={operationsDestination}');
-    expect(desktopApp).toContain("incoming.kind === 'company'");
-    expect(desktopApp).toContain("dest = { kind: 'messages' }");
+    expect(desktopApp).toContain('onopenoperations={(destination) =>');
+    expect(desktopApp).toContain("tab: destination");
   });
 
-  it('keeps More as the active primary child for all operations destinations', () => {
-    for (const tab of ['deployments', 'secrets', 'settings'] as const) {
+  it('keeps More as the active primary child for all four operations destinations', () => {
+    for (const tab of ['activity', 'deployments', 'secrets', 'settings'] as const) {
       expect(isCompanyOperationsTab(tab)).toBe(true);
       expect(companyPrimarySectionForTab(tab)).toBe('more');
       expect(v4CompanyPrimaryForTab(tab)).toBe('more');
@@ -75,13 +77,7 @@ describe('DESKTOP-010: scoped company operations', () => {
         tab,
       });
     }
-    expect(companyTabForPrimarySection('more')).toBe('deployments');
-    // US-020: legacy activity deep-links land on Overview, not an activity page.
-    expect(resolvePendingDesktopRoute('company:indigo:activity')).toEqual({
-      kind: 'company',
-      slug: 'indigo',
-      tab: 'overview',
-    });
+    expect(companyTabForPrimarySection('more')).toBe('activity');
     expect(COMPANY_SECTIONS.some((s) => s.id === 'settings')).toBe(true);
     expect(route).toContain("case 'settings':");
     expect(route).toContain("return 'more'");
@@ -89,22 +85,29 @@ describe('DESKTOP-010: scoped company operations', () => {
 
   it('does not restore a permanent company secondary sidebar', () => {
     expect(
-      getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo', tab: 'deployments' }, []),
+      getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo', tab: 'activity' }, []),
     ).toBeNull();
     expect(
       getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo', tab: 'settings' }, []),
     ).toBeNull();
-    // US-017: library overlay replaces the permanent secondary column.
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, [])).toBeNull();
-    // US-020: Settings is single-pane — no secondary sidebar anywhere.
-    expect(getDesktopSecondarySidebar({ kind: 'settings' }, [])).toBeNull();
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, [])?.surface).toBe('library');
+    expect(getDesktopSecondarySidebar({ kind: 'settings' }, [])?.surface).toBe('settings');
     // Operations nav is internal, not a permanent secondary column.
     expect(ops).toContain('operations-nav');
     expect(ops).not.toContain('V4SecondarySidebar');
     expect(companyPage).not.toContain('getDesktopSecondarySidebar');
   });
 
-  it('preserves deployments, secrets, and settings actions and states', () => {
+  it('preserves activity, deployments, secrets, and settings actions and states', () => {
+    // Activity: direction, date chips, open-in-claude, load/error/retry.
+    expect(activity).toContain("let activityDirection = $state<ActivityDirection>('all')");
+    expect(activity).toContain('dateChip(entry.when)');
+    expect(activity).toContain('companyStore.loadActivity<Partial<CompanyActivity>>(slug');
+    expect(activity).toContain('function retry()');
+    expect(activity).toContain('Activity unavailable');
+    expect(activity).toContain('No activity yet');
+    expect(activity).toContain('OpenFileInClaudeCode');
+
     // Deployments: open, deploy workflow, search, counts, error/empty.
     expect(deployments).toContain('companyStore.loadDeployments(slug');
     expect(deployments).toContain("openAgentWorkflow(prompt, 'deploy workflow')");
@@ -166,6 +169,7 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(ops).toContain('border-radius: var(--v4-radius-button)');
     expect(ops).not.toContain('var(--v4-radius-card');
     expect(ops).not.toContain('var(--v4-shadow-card)');
+    expect(activity).toContain('border-radius: 0');
     expect(deployments).toContain('border-radius: 0');
     expect(secrets).toContain('border-radius: 0');
     expect(desktopCss).toContain('.list-detail');
@@ -188,6 +192,8 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(ops).toContain('--type-metadata');
     expect(ops).toContain('var(--v4-row-stack-gap, 3px)');
     expect(ops).toContain('title-stack');
+    expect(activity).toContain('title-stack');
+    expect(activity).toContain('var(--v4-row-stack-gap, 3px)');
     expect(deployments).toContain('title-stack');
     expect(secrets).toContain('title-stack');
   });
@@ -223,14 +229,19 @@ describe('DESKTOP-010: scoped company operations', () => {
     expect(ops).toContain('@media (prefers-reduced-motion: reduce)');
     expect(ops).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(ops).toContain('transition: none');
+    expect(activity).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(activity).toContain('@media (prefers-reduced-transparency: reduce)');
     expect(deployments).toContain('@media (prefers-reduced-motion: reduce)');
     expect(secrets).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
   it('preserves tenant slug scoping and backend commands', () => {
     expect(ops).toContain('slug: string');
+    expect(activity).toContain('let { slug, cloudBacked = true, syncEnabled = true }: Props = $props()');
+    expect(activity).toContain('companyStore.loadActivity');
     expect(deployments).toContain('companyStore.loadDeployments');
     expect(secrets).toContain('companyStore.loadSecrets');
+    expect(activity).toContain('if (!slug || !resourcesEnabled)');
     expect(deployments).toContain('if (!slug || !resourcesEnabled)');
     expect(secrets).toContain('if (!slug || !resourcesEnabled)');
     expect(companyPage).toContain('slug={company.slug}');

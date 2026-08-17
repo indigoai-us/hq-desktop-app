@@ -223,8 +223,7 @@
     if (!company) return;
     try {
       await invoke('open_desktop_alt_window', {
-        // US-020: the Activity page is gone — land on the company Overview digest.
-        route: `company:${company}`,
+        route: `company:${company}:activity`,
       });
     } catch (e) {
       console.error('notification-feed: open activity failed', e);

@@ -85,16 +85,14 @@ describe('conversation message grouping', () => {
         element.querySelector('.dm-msg-author')?.textContent?.trim() ?? null,
       ),
     ).toEqual(['Maya', null, 'Avery', 'Avery', 'Avery', 'You', null]);
-    // S1 token parity: no visible footer status at rest — "Delivered" is
-    // screen-reader-only now, and header times stay hover-revealed.
     expect(
       rendered.map((element) => element.querySelectorAll('.dm-msg-time').length),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 1]);
     expect(
       rendered.map((element) => element.querySelectorAll('.dm-msg-header-time').length),
     ).toEqual([1, 0, 1, 1, 1, 1, 0]);
     expect(
-      [...(rendered[6]?.querySelectorAll('.sr-only') ?? [])].map(
+      [...(rendered[6]?.querySelectorAll('.dm-msg-time') ?? [])].map(
         (element) => element.textContent,
       ),
     ).toContain('Delivered');

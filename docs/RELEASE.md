@@ -61,6 +61,26 @@ For a **stable** release the workflow requires the tag commit to be contained in
 pushed tag after a failed release; fix the release path and cut a fresh SemVer
 tag.
 
+## Desktop shell guard
+
+The V2 chat shell was developed in this repo and now lives in
+`indigoai-us/hq-work-mono`. Between v0.10.106 and v0.10.116 it reached stable
+users nine times (106, 108, and every release from 110 to 116), every time
+because a tag was cut from a `main` tip that still carried it — the branch
+policy above cannot catch that, because such a tag is legitimately contained
+in `main`.
+
+The `validate` job therefore inspects the tag's own tree and fails the release
+if `apps/sync/src/desktop-alt/chat/` exists, or if the v1 sidebars
+(`v4/V4Sidebar.svelte`, `v4/V4SecondarySidebar.svelte`) are absent. If you are
+deliberately shipping a new desktop shell from this repo, update that step and
+`scripts/release-workflow.test.ts` in the same change — do not bypass it.
+
+Unlike the branch policy, this guard also applies to `workflow_dispatch`
+retries: a retry re-publishes that tag's artifacts to stable, so retrying any
+of v0.10.106–v0.10.116 would put the V2 shell back in front of users. Those
+retries fail by design.
+
 `pnpm version:app` and `pnpm version:check` remain available for local work —
 `pnpm version:app --set-version X.Y.Z` is exactly what CI runs.
 

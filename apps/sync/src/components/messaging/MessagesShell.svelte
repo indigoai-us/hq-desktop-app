@@ -93,18 +93,6 @@
     takePendingConversation,
     type ConversationTarget,
   } from '../../lib/pendingConversation';
-  import {
-    OPEN_CHANNEL_EVENT,
-    OPEN_DM_REQUESTS_EVENT,
-    takePendingChannel,
-    takePendingDmRequests,
-  } from '../../desktop-alt/chat/open-target';
-  import {
-    createOutboundMessage,
-    retrySend,
-    runSend,
-    type OutboundMessage,
-  } from './sendStateMachine';
 
   interface Props {
     /** Fill the desktop canvas instead of the dedicated native window. */
@@ -257,8 +245,6 @@
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let dmSendGeneration = 0;
-  /** In-flight / failed optimistic DM sends (same machine as channels). */
-  let dmOutboundById = $state<Map<string, OutboundMessage>>(new Map());
 
   // Share history (client-side merge): the peer's share events from the same
   // notification-history fetch the rail already makes. Rendered as:
@@ -307,27 +293,12 @@
 
   // The rendered DM timeline: server DMs (chronological) with the peer's
   // shares merged in as inline share cards. `messages` itself stays DM-only so
-  // the DM reaction registration below never claims share ids. Outbound rows
-  // carry `sendStatus` from the shared sendStateMachine (US-011 / US-004).
-  const displayMessages = $derived.by((): ConversationMessage[] => {
-    const withStatus = messages.map((msg) => {
-      const outbound = dmOutboundById.get(msg.eventId);
-      if (!outbound) return msg;
-      return { ...msg, sendStatus: outbound.status };
-    });
-    if (selected && selected.source !== 'agent') {
-      return mergeSharesIntoThread(withStatus, peerShares, shareToMessage);
-    }
-    return withStatus;
-  });
-
-  function patchDmOutboundRow(msg: OutboundMessage): void {
-    messages = messages.map((row) =>
-      row.eventId === msg.clientId
-        ? { ...row, sendStatus: msg.status, body: msg.body }
-        : row,
-    );
-  }
+  // the DM reaction registration below never claims share ids.
+  const displayMessages = $derived(
+    selected && selected.source !== 'agent'
+      ? mergeSharesIntoThread(messages, peerShares, shareToMessage)
+      : messages,
+  );
 
   // Route a reaction toggle to the right controller: share bubbles carry the
   // share's own `share:{eventId}` scope, everything else is the DM scope.
@@ -1317,14 +1288,12 @@
     dmSendGeneration += 1;
     loadingThread = false;
     sending = false;
-    dmOutboundById = new Map();
   }
 
   async function selectContact(c: Contact): Promise<void> {
     const generation = ++threadLoadGeneration;
     dmSendGeneration += 1;
     sending = false;
-    dmOutboundById = new Map();
     selected = c;
     // Opening a DM clears channel / request / share selection so the pane shows
     // this conversation.
@@ -1457,28 +1426,16 @@
     if (!text || sending || !selected) return;
     const peer = selected;
     const generation = ++dmSendGeneration;
+    sending = true;
     sendError = null;
-
-    if (peer.source === 'agent') {
-      sending = true;
-      try {
+    try {
+      if (peer.source === 'agent') {
         await sendAgentPrompt(text, peer, generation);
-      } catch (err) {
-        if (!dmSendIsCurrent(peer, generation)) return;
-        sendError =
-          typeof err === 'string' ? err : 'Failed to open Claude Code';
-        console.error('messages: send failed', err);
-      } finally {
-        if (dmSendIsCurrent(peer, generation)) sending = false;
-      }
-      return;
-    }
-
-    if (peer.personUid.startsWith('email:')) {
-      // Unresolved (email-only) peer — connection-request path may hold the
-      // message (202). Keep the pending chip rather than the send machine.
-      sending = true;
-      try {
+      } else if (peer.personUid.startsWith('email:')) {
+        // Unresolved (email-only) peer — e.g. "Message the sharer" on a legacy
+        // share row with no issuerPersonUid. Route through the compose-flow
+        // command, which addresses by email and may hold the message behind a
+        // connection request (202).
         const sentAt = new Date().toISOString();
         const outcome = await invoke<{ state: string }>('send_dm_to_email', {
           toEmail: peer.email,
@@ -1505,69 +1462,34 @@
               : null,
           },
         ];
-      } catch (err) {
+      } else {
+        const sentAt = new Date().toISOString();
+        await invoke('send_dm', { toPersonUid: peer.personUid, body: text });
         if (!dmSendIsCurrent(peer, generation)) return;
-        sendError = typeof err === 'string' ? err : 'Failed to send message';
-        console.error('messages: send failed', err);
-      } finally {
-        if (dmSendIsCurrent(peer, generation)) sending = false;
-      }
-      return;
-    }
-
-    // 1:1 DM — same optimistic send machine as channels (Sending → Delivered /
-    // Failed tap-to-retry). Do not fork a second state machine.
-    const outbound = createOutboundMessage(text);
-    const nextMap = new Map(dmOutboundById);
-    nextMap.set(outbound.clientId, outbound);
-    dmOutboundById = nextMap;
-    messages = [
-      ...messages,
-      {
-        eventId: outbound.clientId,
-        fromPersonUid: 'me',
-        fromEmail: '',
-        fromDisplayName: 'You',
-        body: outbound.body,
-        details: null,
-        prompt: null,
-        createdAt: outbound.createdAt,
-        direction: 'out',
-        sendStatus: 'sending',
-      },
-    ];
-    sending = true;
-
-    const result = await runSend(outbound, {
-      send: async (msgBody) => {
-        // Conversation switched mid-flight — abandon retries without another
-        // network hop; UI already cleared this peer's timeline.
-        if (!dmSendIsCurrent(peer, generation)) return;
-        await invoke('send_dm', { toPersonUid: peer.personUid, body: msgBody });
-      },
-      onChange: (msg) => {
-        // Drop late transitions after the user switched conversations so we
-        // never re-pollute Bob's outbound map with Alice's clientId.
-        if (!dmSendIsCurrent(peer, generation)) return;
-        const map = new Map(dmOutboundById);
-        map.set(msg.clientId, { ...msg });
-        dmOutboundById = map;
-        patchDmOutboundRow(msg);
-      },
-    });
-
-    if (dmSendIsCurrent(peer, generation)) {
-      sending = false;
-      sendError = null;
-      if (result.status === 'delivered') {
+        // Optimistic append — the durable copy lands in the mirror and shows on
+        // the next thread load.
+        messages = [
+          ...messages,
+          {
+            eventId: `local-${messages.length}-${text.length}`,
+            fromPersonUid: 'me',
+            fromEmail: '',
+            fromDisplayName: 'You',
+            body: text,
+            details: null,
+            prompt: null,
+            createdAt: sentAt,
+            direction: 'out',
+          },
+        ];
         contacts = sortContactsByRecentActivity(
           contacts.map((contact) =>
             contact.personUid === peer.personUid
               ? {
                   ...contact,
-                  lastMessageAt: outbound.createdAt,
-                  previewBody: outbound.body,
-                  previewAt: outbound.createdAt,
+                  lastMessageAt: sentAt,
+                  previewBody: text,
+                  previewAt: sentAt,
                   previewDirection: 'out',
                 }
               : contact,
@@ -1575,32 +1497,17 @@
         );
         noteContactMutation(peer.personUid);
       }
-    }
-  }
-
-  async function retryFailedDmSend(eventId: string): Promise<void> {
-    const outbound = dmOutboundById.get(eventId);
-    if (!outbound || outbound.status !== 'failed' || !selected) return;
-    const peer = selected;
-    if (peer.source === 'agent' || peer.personUid.startsWith('email:')) return;
-    const generation = ++dmSendGeneration;
-    sendError = null;
-    sending = true;
-    await retrySend(outbound, {
-      send: async (msgBody) => {
-        await invoke('send_dm', { toPersonUid: peer.personUid, body: msgBody });
-      },
-      onChange: (msg) => {
-        if (!dmSendIsCurrent(peer, generation)) return;
-        const map = new Map(dmOutboundById);
-        map.set(msg.clientId, { ...msg });
-        dmOutboundById = map;
-        patchDmOutboundRow(msg);
-      },
-    });
-    if (dmSendIsCurrent(peer, generation)) {
-      sending = false;
-      sendError = null;
+    } catch (err) {
+      if (!dmSendIsCurrent(peer, generation)) return;
+      sendError =
+        typeof err === 'string'
+          ? err
+          : peer.source === 'agent'
+            ? 'Failed to open Claude Code'
+            : 'Failed to send message';
+      console.error('messages: send failed', err);
+    } finally {
+      if (dmSendIsCurrent(peer, generation)) sending = false;
     }
   }
 
@@ -1712,51 +1619,6 @@
     );
     onMessagePerson();
 
-    // Chat sidebar (US-003) → open a channel in the embedded Messages shell.
-    const openPendingChannel = () => {
-      const channelId = takePendingChannel();
-      if (!channelId) return;
-      const match = channels.find((c) => c.channelId === channelId);
-      if (match) selectChannel(match);
-      else {
-        // Channel list may still be loading — retry after the next channels load.
-        void loadChannels().then(() => {
-          const late = channels.find((c) => c.channelId === channelId);
-          if (late) selectChannel(late);
-        });
-      }
-    };
-    const onOpenChannel = () => openPendingChannel();
-    window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
-    retainUnlistener(() =>
-      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel),
-    );
-    openPendingChannel();
-
-    // Chat sidebar "Connection requests" row → open shared DmRequestCard.
-    const openPendingDmRequests = () => {
-      const pending = takePendingDmRequests();
-      if (!pending) return;
-      const openFirstOrMatch = (list: DmRequest[]) => {
-        if (list.length === 0) return;
-        const match = pending.pairKey
-          ? list.find((r) => r.pairKey === pending.pairKey)
-          : null;
-        selectRequest(match ?? list[0]!);
-      };
-      if (requests.length > 0) {
-        openFirstOrMatch(requests);
-        return;
-      }
-      void loadRequests().then(() => openFirstOrMatch(requests));
-    };
-    const onOpenDmRequests = () => openPendingDmRequests();
-    window.addEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
-    retainUnlistener(() =>
-      window.removeEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests),
-    );
-    openPendingDmRequests();
-
     // A brand-new channel/invite appeared, or a channel's metadata changed.
     // Upsert it into the rail so it shows live without a manual refresh.
     registerListener<Channel>('channel:updated', (e) => {
@@ -1787,10 +1649,7 @@
 
 <div class="messages-window" class:embedded data-window="messages">
   <!-- DESKTOP-002: room rail (glass) + naked main canvas. The rail owns
-       orientation and compose; no People/Requests tabs or redundant page chrome.
-       When embedded in the chat shell, ChatSidebar is the only sidebar — hide
-       this second Slack-style column entirely (D-02). -->
-  {#if !embedded}
+       orientation and compose; no People/Requests tabs or redundant page chrome. -->
   <aside class="rail" aria-label="Conversations">
     <header class="rail-header" data-tauri-drag-region>
       <div class="rail-heading">
@@ -2084,7 +1943,6 @@
       {/if}
     </div>
   </aside>
-  {/if}
 
   <!-- Naked main canvas: spacing + hairlines only — no liquid-glass chrome. -->
   <section class="pane" data-testid="messages-main-pane">
@@ -2122,14 +1980,11 @@
         <p>Select a conversation to start messaging.</p>
       </div>
     {:else}
-      <header class="pane-header" data-testid="dm-header">
+      <header class="pane-header">
         <div class="pane-title-stack">
-          {#if selected.source === 'agent'}
-            <h2>{displayLabel(selected)}</h2>
-          {:else}
-            <!-- Reduced chrome (US-011): name + dim "direct message" subtitle. -->
-            <h2 data-testid="dm-header-title">{displayLabel(selected)}</h2>
-            <span class="pane-sub">direct message</span>
+          <h2>{displayLabel(selected)}</h2>
+          {#if selected.email}
+            <span class="pane-sub">{selected.email}</span>
           {/if}
         </div>
       </header>
@@ -2146,7 +2001,6 @@
             : `Message ${displayLabel(selected)}…`
         }
         onsend={sendReply}
-        onretrysend={selected.source === 'agent' ? undefined : retryFailedDmSend}
         onopenthread={handleOpenDmThread}
         activeRootEventId={openThread?.scope === 'dm' ? openThread.rootEventId : null}
         reactions={selected.source === 'agent'
@@ -2211,13 +2065,6 @@
     width: 100%;
     height: 100%;
     background: transparent;
-  }
-
-  /* Embedded: conversation pane fills the remaining shell width (ChatSidebar
-     is the only list). Standalone Messages window keeps the rail. */
-  .messages-window.embedded .pane {
-    flex: 1 1 auto;
-    min-width: 0;
   }
 
   /* ── Left rail ────────────────────────────────────────────────────────── */
@@ -2693,33 +2540,30 @@
   }
 
   .pane-title-stack {
-    display: flex;
-    flex-direction: row;
-    align-items: baseline;
-    gap: 8px;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
     flex: 1;
   }
 
   .pane-header h2 {
     margin: 0;
-    font-family: var(--font-ui, var(--font-display));
-    font-size: 15px;
+    font-family: var(--font-display);
+    font-size: var(--type-section, var(--text-section, 14px));
     font-weight: 600;
-    line-height: 1.45;
-    letter-spacing: 0;
-    color: var(--t1, var(--fg));
+    letter-spacing: -0.01em;
+    color: var(--fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .pane-sub {
-    font-family: var(--font-ui, inherit);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.45;
-    color: var(--t3, var(--muted));
+    font-family: var(--font-mono);
+    font-size: var(--type-metadata, var(--text-micro));
+    color: var(--muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

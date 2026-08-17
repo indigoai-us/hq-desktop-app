@@ -12,7 +12,6 @@ import {
   getDesktopLandingRoute,
   getDesktopRouteKey,
   getDesktopSecondarySidebar,
-  getDesktopSessionScopeSlug,
   isDesktopRouteActive,
   LIBRARY_SECTIONS,
   resolvePendingDesktopRoute,
@@ -46,18 +45,19 @@ function company(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('US-002 V4 desktop routes', () => {
-  it('always lands on Messages — never the legacy company/project-overview page (design-gap G1)', () => {
+  it('lands on the last-visited company, falling back to the first sidebar company row (US-007)', () => {
     const workspaces = [
       company({ slug: 'zed', displayName: 'Zed', state: 'synced' }),
       company({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
     ];
-    // Real data (companies + a persisted last-visited slug) must NOT route to
-    // a company page: the chat shell opens on the conversation surface.
-    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'messages' });
-    expect(getDesktopLandingRoute(workspaces, 'zed')).toEqual({ kind: 'messages' });
-    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({ kind: 'messages' });
-    // Even a workspace-less install lands on the Messages empty state.
-    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'messages' });
+    // Sidebar order is connected-first + alphabetical — Acme is the first row.
+    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'company', slug: 'acme' });
+    // A persisted last-visited slug wins while it still exists…
+    expect(getDesktopLandingRoute(workspaces, 'zed')).toEqual({ kind: 'company', slug: 'zed' });
+    // …and is ignored once the workspace disappears.
+    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({ kind: 'company', slug: 'acme' });
+    // No companies at all → Home, the exception surface (palette-only).
+    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'home' });
   });
 
   it('exposes local-first companies plus the personal page in desktop navigation', () => {
@@ -117,6 +117,7 @@ describe('US-002 V4 desktop routes', () => {
       'workers',
       'knowledge',
       'team',
+      'activity',
       'deployments',
       'secrets',
       'settings',
@@ -195,15 +196,15 @@ describe('US-002 V4 desktop routes', () => {
   });
 });
 
-describe('US-008 / US-018 hotkeys — ⌘1 Notifications, ⌘2–4 primary, ⌘5–9 companies', () => {
+describe('US-008 hotkeys — ⌘1..9 renumbered after Inbox merge, no dead slots', () => {
   const companies = getDesktopCompanies([
     company({ slug: 'first', displayName: 'First', state: 'synced' }),
     company({ slug: 'second', displayName: 'Second', state: 'synced' }),
   ]);
 
-  it('maps ⌘1–⌘4 to the four primary destinations (Notifications replaces retired Inbox)', () => {
+  it('maps ⌘1–⌘4 to the four primary destinations in sidebar order (Inbox merged; no Home / Mission Control / Companies slots)', () => {
     const meta = (key: string) => getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
-    expect(meta('1')).toEqual({ kind: 'notifications' });
+    expect(meta('1')).toEqual({ kind: 'inbox' });
     expect(meta('2')).toEqual({ kind: 'meetings' });
     expect(meta('3')).toEqual({ kind: 'marketplace' });
     expect(meta('4')).toEqual({ kind: 'library' });
@@ -252,20 +253,19 @@ describe('US-008 / US-018 hotkeys — ⌘1 Notifications, ⌘2–4 primary, ⌘5
   });
 });
 
-describe('US-002 / US-018 pending-route aliases (desktop_alt_consume_pending_route)', () => {
+describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () => {
   it("keeps the legacy 'sync' deep-link functional by landing it on Home", () => {
     expect(resolvePendingDesktopRoute('sync')).toEqual({ kind: 'home' });
   });
 
-  it('resolves live destinations and remaps retired legacy names (never null)', () => {
+  it('resolves the V4 destinations and rejects unknown intents', () => {
     expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
+    // Messages is the complete conversation surface; Notifications stays Inbox.
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
-    // US-018: InboxPage retired → Notifications feed.
-    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'notifications' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
-    // US-018: MissionControlPage retired → Home.
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
     expect(resolvePendingDesktopRoute('moderation')).toEqual({ kind: 'moderation' });
     expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
@@ -278,28 +278,6 @@ describe('US-002 / US-018 pending-route aliases (desktop_alt_consume_pending_rou
     expect(resolvePendingDesktopRoute('companies')).toBeNull();
     expect(resolvePendingDesktopRoute('bogus')).toBeNull();
     expect(resolvePendingDesktopRoute(null)).toBeNull();
-  });
-
-  it('US-018: every previously accepted legacy deep-link name still resolves to a live route', () => {
-    const legacyLive: Array<[string, DesktopRoute]> = [
-      ['inbox', { kind: 'notifications' }],
-      ['mission-control', { kind: 'home' }],
-      ['sync', { kind: 'home' }],
-      ['activity', { kind: 'home' }],
-      ['core-drift', { kind: 'home' }],
-      ['drift', { kind: 'home' }],
-      ['library:marketplace', { kind: 'marketplace' }],
-      ['company:indigo:accounts', { kind: 'company', slug: 'indigo', tab: 'overview' }],
-      ['company:indigo:tasks', { kind: 'company', slug: 'indigo', tab: 'projects' }],
-      ['company:indigo:library', { kind: 'company', slug: 'indigo', tab: 'skills' }],
-      ['company:indigo:more', { kind: 'company', slug: 'indigo', tab: 'deployments' }],
-      // US-020: the Activity page is gone — legacy links land on Overview.
-      ['company:indigo:activity', { kind: 'company', slug: 'indigo', tab: 'overview' }],
-    ];
-    for (const [name, expected] of legacyLive) {
-      expect(resolvePendingDesktopRoute(name), name).toEqual(expected);
-      expect(resolvePendingDesktopRoute(name), name).not.toBeNull();
-    }
   });
 
   it('resolves deep links into company sections, library tabs, and settings tabs', () => {
@@ -336,13 +314,13 @@ describe('US-002 / US-018 pending-route aliases (desktop_alt_consume_pending_rou
   });
 });
 
-describe('US-002 / US-018 V4Route payload narrowing', () => {
-  it('maps sidebar payloads onto the DesktopRoute union with legacy remaps', () => {
+describe('US-002 V4Sidebar payload narrowing', () => {
+  it('maps sidebar payloads onto the DesktopRoute union', () => {
     expect(fromV4Route({ kind: 'company', slug: 'indigo' })).toEqual({
       kind: 'company',
       slug: 'indigo',
     });
-    // DESKTOP-001: primary child clicks carry a tab; More aliases to deployments (US-020).
+    // DESKTOP-001: primary child clicks carry a tab; More aliases to activity.
     expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'projects' })).toEqual({
       kind: 'company',
       slug: 'indigo',
@@ -351,25 +329,18 @@ describe('US-002 / US-018 V4Route payload narrowing', () => {
     expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'more' })).toEqual({
       kind: 'company',
       slug: 'indigo',
-      tab: 'deployments',
-    });
-    // US-020: legacy activity tab remaps to Overview (digest lives there).
-    expect(fromV4Route({ kind: 'company', slug: 'indigo', tab: 'activity' })).toEqual({
-      kind: 'company',
-      slug: 'indigo',
-      tab: 'overview',
+      tab: 'activity',
     });
     expect(fromV4Route({ kind: 'settings' })).toEqual({ kind: 'settings' });
     expect(fromV4Route({ kind: 'library' })).toEqual({ kind: 'library' });
     // Marketplace is a top-level destination (US-007); the Companies kind is gone.
     expect(fromV4Route({ kind: 'marketplace' })).toEqual({ kind: 'marketplace' });
     expect(fromV4Route({ kind: 'companies' })).toEqual({ kind: 'home' });
-    // US-018: inbox → notifications; mission-control → home.
-    expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'notifications' });
-    expect(fromV4Route({ kind: 'mission-control' })).toEqual({ kind: 'home' });
+    // Messages remains distinct; notification payloads land on Inbox.
+    expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
-    // Unknown kinds land on Home, mirroring the shell fallback.
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    // Unknown kinds land on Home, mirroring the sidebar model's fallback.
     expect(fromV4Route({ kind: 'mystery' })).toEqual({ kind: 'home' });
   });
 });
@@ -402,63 +373,56 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
       'more',
     ]);
     expect(companyPrimarySectionForTab('overview')).toBe('overview');
+    expect(companyPrimarySectionForTab('activity')).toBe('more');
     expect(companyPrimarySectionForTab('deployments')).toBe('more');
     expect(companyPrimarySectionForTab('secrets')).toBe('more');
     expect(companyPrimarySectionForTab('skills')).toBe('skills');
     expect(companyPrimarySectionForTab('workers')).toBe('workers');
-    expect(companyTabForPrimarySection('more')).toBe('deployments');
+    expect(companyTabForPrimarySection('more')).toBe('activity');
     expect(companyTabForPrimarySection('skills')).toBe('skills');
     expect(companyTabForPrimarySection('workers')).toBe('workers');
     expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
   });
 
-  it('US-017: library has no permanent secondary sidebar (overlay owns left nav)', () => {
-    // Route tabs + LIBRARY_SECTIONS still drive palette / deep links; the
-    // secondary column is suppressed in favor of LibraryOverlay.
-    expect(LIBRARY_SECTIONS.map((s) => s.id)).toEqual([
-      'skills',
-      'workers',
-      'installed',
-      'profile',
-    ]);
-    expect(LIBRARY_SECTIONS.map((s) => s.label)).not.toContain('Marketplace');
-    expect(
-      getDesktopSecondarySidebar(
-        { kind: 'library', tab: 'installed' },
-        companies,
-        { hqFolderPath: ['', 'Users', 'corey', 'Documents', 'HQ'].join('/') },
-      ),
-    ).toBeNull();
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)).toBeNull();
-    expect(
-      getDesktopSecondarySidebar({ kind: 'library', tab: 'submit' }, companies),
-    ).toBeNull();
+  it('shows the four library sections — without Marketplace — with the routed tab active', () => {
+    const configuredPath = ['', 'Users', 'corey', 'Documents', 'HQ'].join('/');
+    const model = getDesktopSecondarySidebar(
+      { kind: 'library', tab: 'installed' },
+      companies,
+      { hqFolderPath: configuredPath },
+    );
+    expect(model?.surface).toBe('library');
+    expect(model?.meta).toBe('~/Documents/HQ');
+    expect(model?.items.map((item) => item.id)).toEqual(LIBRARY_SECTIONS.map((s) => s.id));
+    expect(model?.items.some((item) => item.label === 'Marketplace')).toBe(false);
+    expect(model?.activeId).toBe('installed');
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.activeId).toBe('skills');
+
+    const submitModel = getDesktopSecondarySidebar(
+      { kind: 'library', tab: 'submit' },
+      companies,
+    );
+    expect(submitModel?.activeId).toBe('submit');
+    expect(submitModel?.footer).toEqual({ label: 'Publish a pack', active: true });
   });
 
-  it('US-020: settings never renders a secondary sidebar (single pane)', () => {
-    expect(
-      getDesktopSecondarySidebar({ kind: 'settings' }, companies, { version: '1.2.3' }),
-    ).toBeNull();
-    expect(
-      getDesktopSecondarySidebar({ kind: 'settings', tab: 'general' }, companies),
-    ).toBeNull();
-    // The section index survives as the in-page single-pane list + ⌘K entries.
-    expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual([
-      'sync',
-      'notifications',
-      'widget',
-      'updates',
-      'general',
-      'appearance',
-      'meetings',
-    ]);
+  it('shows the generally available settings sections and a version meta', () => {
+    const model = getDesktopSecondarySidebar({ kind: 'settings' }, companies, {
+      version: '1.2.3',
+    });
+    expect(model?.surface).toBe('settings');
+    expect(model?.meta).toBe('HQ v1.2.3');
+    expect(model?.items.map((item) => item.id)).toEqual(SETTINGS_SECTIONS.map((s) => s.id));
+    expect(model?.items.find((item) => item.id === 'meetings')?.note).toBeNull();
+    expect(model?.activeId).toBe('sync');
   });
 
   it('has no secondary sidebar on full-width global surfaces', () => {
     for (const kind of [
       'home',
+      'mission-control',
       'marketplace',
-      'notifications',
+      'inbox',
       'messages',
       'meetings',
       'moderation',
@@ -514,96 +478,69 @@ describe('US-009 top-level Files mode', () => {
   });
 });
 
-describe('US-018 Mission Control retirement — deep link remaps to Home', () => {
-  it('resolves mission-control (and whitespace variants) to home, never a dead route', () => {
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'home' });
-    expect(resolvePendingDesktopRoute('  mission-control  ')).toEqual({ kind: 'home' });
-    expect(fromV4Route({ kind: 'mission-control' })).toEqual({ kind: 'home' });
+describe('US-006 Mission Control destination', () => {
+  it('is a primary destination route keyed on its own kind', () => {
+    const route: DesktopRoute = { kind: 'mission-control' };
+    expect(getDesktopRouteKey(route)).toBe('mission-control');
   });
 
-  it('has no ⌘ hotkey slot for mission-control or home', () => {
+  it('treats every Mission Control route as the same active sidebar destination', () => {
+    const route: DesktopRoute = { kind: 'mission-control' };
+    expect(isDesktopRouteActive(route, { kind: 'mission-control' })).toBe(true);
+    expect(isDesktopRouteActive(route, { kind: 'home' })).toBe(false);
+    expect(isDesktopRouteActive({ kind: 'home' }, route)).toBe(false);
+  });
+
+  it('resolves the backend navigation intent to the Mission Control route', () => {
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
+  });
+
+  it('narrows a V4 sidebar payload for Mission Control onto the DesktopRoute union', () => {
+    expect(fromV4Route({ kind: 'mission-control' })).toEqual({ kind: 'mission-control' });
+  });
+
+  it('has no ⌘ hotkey slot since US-007 — reachable via the palette intent only', () => {
     const companies = getDesktopCompanies([
       company({ slug: 'first', displayName: 'First', state: 'synced' }),
     ]);
     for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       const routed = getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
-      expect(routed?.kind).not.toBe('mission-control' as DesktopRoute['kind']);
+      expect(routed?.kind).not.toBe('mission-control');
       expect(routed?.kind).not.toBe('home');
     }
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
   });
 });
 
-describe('US-018 Inbox retirement — deep link remaps to Notifications', () => {
-  it('resolves inbox to notifications and keys notifications as its own kind', () => {
-    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'notifications' });
-    expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'notifications' });
-    expect(getDesktopRouteKey({ kind: 'notifications' })).toBe('notifications');
-    expect(
-      isDesktopRouteActive({ kind: 'notifications' }, { kind: 'messages' }),
-    ).toBe(false);
-  });
-});
+describe('US-012 Mission Control destination — routing coverage gate', () => {
+  const companies = [company({ slug: 'indigo', displayName: 'Indigo', state: 'synced' })];
 
-describe('desktop session read-scope binding (knowledge-path fixes)', () => {
-  const personal: Workspace = {
-    ...baseCompany,
-    slug: 'personal',
-    displayName: 'Personal',
-    kind: 'personal',
-    state: 'personal',
-    cloudUid: null,
-    membershipStatus: null,
-    role: null,
-  };
-
-  it('binds the viewed company on a company route', () => {
-    const workspaces = [company({ slug: 'acme' })];
-    expect(
-      getDesktopSessionScopeSlug({ kind: 'company', slug: 'acme', tab: 'knowledge' }, workspaces, null),
-    ).toBe('acme');
+  it('resolves the destination intent and trims surrounding whitespace', () => {
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
+    // The slash→colon normaliser must not split the hyphenated kind into a bogus
+    // 'mission'/'control' pair — the whole token has to survive as one kind.
+    expect(resolvePendingDesktopRoute('  mission-control  ')).toEqual({ kind: 'mission-control' });
   });
 
-  it('binds sync-paused and local-only companies too — sync state must not unbind the viewed company (fleet board/knowledge regression)', () => {
-    const paused = company({ slug: 'acme', syncEnabled: false });
-    const localOnly = company({
-      slug: 'localco',
-      state: 'local-only',
-      cloudUid: null,
-      membershipStatus: null,
-      syncEnabled: false,
-    });
-    expect(
-      getDesktopSessionScopeSlug({ kind: 'company', slug: 'acme', tab: 'knowledge' }, [paused], null),
-    ).toBe('acme');
-    expect(
-      getDesktopSessionScopeSlug({ kind: 'company', slug: 'localco' }, [localOnly], null),
-    ).toBe('localco');
+  it('renders no secondary sidebar — Mission Control is a full-width global surface', () => {
+    expect(getDesktopSecondarySidebar({ kind: 'mission-control' }, companies)).toBeNull();
   });
 
-  it('binds the personal workspace when its surface is viewed', () => {
-    expect(
-      getDesktopSessionScopeSlug(
-        { kind: 'company', slug: 'personal', tab: 'knowledge' },
-        [personal, company({ slug: 'acme' })],
-        null,
-      ),
-    ).toBe('personal');
-  });
-
-  it('files mode binds the membership-validated files filter, not the company route', () => {
-    const workspaces = [company({ slug: 'acme' })];
-    expect(getDesktopSessionScopeSlug({ kind: 'files' }, workspaces, null)).toBeNull();
-    expect(getDesktopSessionScopeSlug({ kind: 'files', slug: 'acme' }, workspaces, 'acme')).toBe(
-      'acme',
-    );
-  });
-
-  it('unbinds on non-company, non-files surfaces and unknown slugs', () => {
-    const workspaces = [company({ slug: 'acme' })];
-    expect(getDesktopSessionScopeSlug({ kind: 'home' }, workspaces, null)).toBeNull();
-    expect(getDesktopSessionScopeSlug({ kind: 'library' }, workspaces, null)).toBeNull();
-    expect(
-      getDesktopSessionScopeSlug({ kind: 'company', slug: 'ghost' }, workspaces, null),
-    ).toBeNull();
+  it('is a distinct primary destination, not aliased onto any other surface', () => {
+    const route: DesktopRoute = { kind: 'mission-control' };
+    for (const other of [
+      { kind: 'home' },
+      { kind: 'marketplace' },
+      { kind: 'inbox' },
+      { kind: 'messages' },
+      { kind: 'meetings' },
+      { kind: 'library' },
+      { kind: 'settings' },
+    ] as DesktopRoute[]) {
+      expect(isDesktopRouteActive(route, other)).toBe(false);
+      expect(getDesktopRouteKey(other)).not.toBe(getDesktopRouteKey(route));
+    }
+    // And it round-trips through the V4 sidebar payload narrowing unchanged.
+    expect(fromV4Route({ kind: 'mission-control' })).toEqual(route);
   });
 });

@@ -23,15 +23,7 @@ describe('DESKTOP-008: company knowledge workspace', () => {
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
 
   it('keeps Company Knowledge strictly scoped by the existing path guard', () => {
-    // The root derives from the shared knowledgeRootPath helper; the helper's
-    // tenant mapping stays pinned here — companies scope to their own
-    // knowledge subtree, ONLY the exact personal slug maps to the HQ-root
-    // personal/knowledge tree (knowledge-path fixes).
-    expect(panel).toContain('knowledgeRootPath(slug)');
-    expect(fileTreeLib).toContain("PERSONAL_WORKSPACE_SLUG = 'personal'");
-    expect(fileTreeLib).toContain("? 'personal/knowledge'");
-    expect(fileTreeLib).toContain(': `companies/${slug}/knowledge`');
-    expect(fileTreeLib).toContain('slug === PERSONAL_WORKSPACE_SLUG');
+    expect(panel).toContain('`companies/${slug}/knowledge`');
     expect(panel).toContain('function inKnowledgeScope(path: string)');
     expect(panel).toContain('path === rootPath || path.startsWith(`${rootPath}/`)');
     expect(panel).toContain('path outside company knowledge scope');
@@ -52,9 +44,7 @@ describe('DESKTOP-008: company knowledge workspace', () => {
     expect(panel).toContain('data-testid="knowledge-preview-pane"');
     expect(panel).toContain('data-testid="company-knowledge-empty"');
     expect(panel).toContain('data-testid="knowledge-scope-meta"');
-    // The scope meta renders the SAME derived root the guard enforces, so the
-    // label can never disagree with the actual tenant scope.
-    expect(panel).toMatch(/knowledge-scope-meta">\s*\{rootPath\}/);
+    expect(panel).toContain('companies/{slug}/knowledge');
     expect(panel).toContain('bind:value={searchQuery}');
     expect(panel).toContain('filterQuery={searchQuery}');
     expect(panel).toContain('<CompanyFileTree');
@@ -221,15 +211,7 @@ describe('DESKTOP-008: company knowledge workspace', () => {
     expect(tree).toContain('data-testid="file-tree-error"');
     expect(tree).toContain('data-testid="file-tree-empty"');
     expect(tree).toContain('Loading…');
-    // Root failures are classified (knowledge-path fixes): a nonexistent root
-    // renders the calm rootMissing empty state; scope/authorization/unknown
-    // failures render classified copy from the shared lib (generic "Files
-    // unavailable" retained for unknown). Applies to the ROOT load only.
-    expect(tree).toContain('data-testid="file-tree-root-missing"');
-    expect(tree).toContain('classifyRootLoadError(err)');
-    expect(tree).toContain('rootError = rootLoadErrorMessage(kind)');
-    expect(panel).toContain('rootMissingLabel="No knowledge here yet"');
-    expect(fileTreeLib).toContain("'Files unavailable'");
+    expect(tree).toContain('Files unavailable');
     expect(tree).toContain('selectedPath?');
     expect(tree).toContain('class:selected={node.path === selectedPath}');
     expect(tree).toContain("aria-current={node.path === selectedPath ? 'true' : undefined}");

@@ -1,11 +1,5 @@
 // @vitest-environment happy-dom
-//
-// App-update rows still live in NotificationFeed (widget / compact surfaces).
-// Desktop InboxPage is retired (US-018) — NotificationsView is the live
-// desktop feed and does not auto-mark on leave.
 
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
@@ -23,9 +17,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import NotificationFeed from '../../src/components/NotificationFeed.svelte';
-import NotificationsView from '../../src/desktop-alt/chat/NotificationsView.svelte';
-
-const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
+import InboxPage from '../../src/desktop-alt/pages/InboxPage.svelte';
 
 type UpdateInfo = {
   version: string;
@@ -104,10 +96,6 @@ beforeEach(() => {
       if (historyShouldFail) throw new Error('cloud history unavailable');
       return { dms: [], shares: [], files: [] };
     }
-    if (command === 'fetch_notifications') {
-      if (historyShouldFail) throw new Error('cloud history unavailable');
-      return { items: [], unreadCount: 0, nextCursor: null };
-    }
     if (command === 'get_activity_log') return [];
     if (command === 'get_pending_update') return pendingUpdate;
     if (command === 'open_desktop_alt_window') {
@@ -118,8 +106,6 @@ beforeEach(() => {
       if (installShouldFail) throw new Error('signature rejected');
       return undefined;
     }
-    if (command === 'read_all_notifications') return undefined;
-    if (command === 'ack_notification') return undefined;
     throw new Error(`Unexpected invoke: ${command}`);
   });
 });
@@ -256,51 +242,33 @@ describe('Inbox app-update notification', () => {
     expect(onloadstatechange).toHaveBeenLastCalledWith(false);
   });
 
-  it('InboxPage is gone; NotificationsView mounts the desktop feed without auto-marking on leave', async () => {
-    expect(existsSync(root('src/desktop-alt/pages/InboxPage.svelte'))).toBe(false);
-
+  it('does not mark omitted notifications read when a partial load is left before recovery', async () => {
     historyShouldFail = true;
-    component = mount(NotificationsView, { target: host });
+    component = mount(InboxPage, { target: host });
     flushSync();
-    await vi.waitFor(() => {
-      flushSync();
-      expect(host.querySelector('[data-testid="notifications-view"]')).toBeTruthy();
-    });
-    // Failed fetch surfaces as error/auth empty — never auto read_all.
-    expect(tauri.invoke).not.toHaveBeenCalledWith('read_all_notifications');
-    expect(localStorage.getItem('hq-sync:notifications-last-read')).toBeNull();
+    await waitForUpdateRow();
+    expect(host.querySelector('[role="alert"]')).toBeTruthy();
 
     await unmount(component);
     component = null;
-    expect(tauri.invoke).not.toHaveBeenCalledWith('read_all_notifications');
     expect(localStorage.getItem('hq-sync:notifications-last-read')).toBeNull();
 
     historyShouldFail = false;
-    component = mount(NotificationsView, { target: host });
+    component = mount(InboxPage, { target: host });
     flushSync();
+    await waitForUpdateRow();
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('[data-testid="notifications-view"]')).toBeTruthy();
-      expect(tauri.invoke).toHaveBeenCalledWith(
-        'fetch_notifications',
-        expect.objectContaining({ limit: 50 }),
-      );
+      expect(host.querySelector('[role="alert"]')).toBeNull();
     });
 
     await unmount(component);
     component = null;
-    // Successful load + leave still does not auto-mark (explicit Mark all read only).
-    expect(tauri.invoke).not.toHaveBeenCalledWith('read_all_notifications');
-    expect(localStorage.getItem('hq-sync:notifications-last-read')).toBeNull();
+    expect(Number(localStorage.getItem('hq-sync:notifications-last-read'))).toBeGreaterThan(0);
   });
 
-  it('does not mark a post-hydration update read when leaving NotificationFeed before its debounce refresh', async () => {
-    // App-update rows remain on NotificationFeed (widget). Leaving mid-refresh
-    // must not write the classic localStorage watermark.
-    component = mount(NotificationFeed, {
-      target: host,
-      props: { density: 'comfortable' },
-    });
+  it('does not mark a post-hydration update read when leaving before its debounce refresh', async () => {
+    component = mount(InboxPage, { target: host });
     flushSync();
     await waitForUpdateRow();
     await vi.waitFor(() => {

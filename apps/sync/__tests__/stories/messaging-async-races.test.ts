@@ -306,7 +306,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: false } });
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
     await vi.waitFor(() => expect(listeners.has('dm:new-events')).toBe(true));
 
     emit('dm:new-events', [dmEvent('new-unread', 'New message', '2026-07-28T14:00:00.000Z')]);
@@ -334,7 +334,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: false } });
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
 
     railButton('direct-message', 'Alice').click();
@@ -353,9 +353,7 @@ describe('MessagesShell async ownership', () => {
     await tick();
     flushSync();
 
-    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-      'Bob',
-    );
+    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
     expect(host.textContent).toContain('Bob loaded first');
     expect(host.textContent).not.toContain('Stale Alice success');
   });
@@ -373,7 +371,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: false } });
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
 
     railButton('direct-message', 'Alice').click();
@@ -413,7 +411,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: false } });
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
 
     railButton('direct-message', 'Alice').click();
@@ -430,9 +428,7 @@ describe('MessagesShell async ownership', () => {
     railButton('direct-message', 'Bob').click();
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-        'Bob',
-      );
+      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
     });
     expect(host.querySelector<HTMLButtonElement>('.btn-send')?.getAttribute('aria-busy')).toBe(
       'false',
@@ -447,9 +443,7 @@ describe('MessagesShell async ownership', () => {
       toPersonUid: 'person-a',
       body: 'for Alice only',
     });
-    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-      'Bob',
-    );
+    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
     expect(host.textContent).not.toContain('for Alice only');
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
@@ -465,7 +459,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: false } });
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
     await vi.waitFor(() => expect(railButton('direct-message', 'Alice')).toBeTruthy());
     railButton('direct-message', 'Alice').click();
     await vi.waitFor(() => {
@@ -478,9 +472,7 @@ describe('MessagesShell async ownership', () => {
     railButton('direct-message', 'Bob').click();
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-        'Bob',
-      );
+      expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
     });
 
     sendA.reject(new Error('Alice send failed'));
@@ -488,9 +480,7 @@ describe('MessagesShell async ownership', () => {
     await tick();
     flushSync();
 
-    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe(
-      'Bob',
-    );
+    expect(host.querySelector('.pane-title-stack h2')?.textContent).toBe('Bob');
     expect(host.querySelector<HTMLButtonElement>('.btn-send')?.getAttribute('aria-busy')).toBe(
       'false',
     );
@@ -521,7 +511,7 @@ describe('MessagesShell async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: false } });
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
     await vi.waitFor(() => expect(listeners.has('dm:new-events')).toBe(true));
 
     emit('dm:new-events', [
@@ -757,7 +747,7 @@ describe('Channel join async ownership', () => {
       return Promise.resolve(baseFixture(command));
     });
 
-    component = mount(MessagesShell, { target: host, props: { embedded: false } });
+    component = mount(MessagesShell, { target: host, props: { embedded: true } });
     await vi.waitFor(() => expect(railButton('channel', 'alpha')).toBeTruthy());
 
     railButton('channel', 'alpha').click();

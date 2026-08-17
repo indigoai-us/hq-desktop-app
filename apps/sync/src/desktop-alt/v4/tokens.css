@@ -80,9 +80,6 @@
 :root[data-force-theme='light'] {
   --v4-ground: rgb(242 242 242 / clamp(0.15, calc(1 - var(--hq-window-transparency-factor, 0.65) * 1.015), 1));
   --v4-raised: rgb(255 255 255 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.769), 1));
-  /* Fully opaque raised surface for menus/popovers that must never let text
-     bleed through from content behind them (D-03). */
-  --v4-surface-solid: #ffffff;
   --v4-inset: rgba(0, 0, 0, 0.045);
   --v4-chrome: rgb(232 232 232 / clamp(0.11, calc(1 - var(--hq-window-transparency-factor, 0.65) * 1.046), 1));
   --v4-sidebar: rgb(224 224 224 / clamp(0.12, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.985), 1));
@@ -114,14 +111,10 @@
   --v4-focus-offset: 2px;
 }
 
-/* System dark does not override an explicit light force-theme (D-09): the
-   `:root[data-force-theme='light']` blocks above carry higher specificity
-   than this plain `:root`, so forced light wins without a :not() guard. */
 @media (prefers-color-scheme: dark) {
   :root {
     --v4-ground: rgb(17 17 17 / clamp(0.22, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.8), 1));
     --v4-raised: rgb(48 48 48 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.646), 1));
-    --v4-surface-solid: #303030;
     --v4-inset: rgba(0, 0, 0, 0.32);
     --v4-chrome: rgb(30 30 30 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.831), 1));
     --v4-sidebar: rgb(24 24 24 / clamp(0.24, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.769), 1));
@@ -157,7 +150,6 @@
 :root[data-force-theme='dark'] {
   --v4-ground: rgb(17 17 17 / clamp(0.22, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.8), 1));
   --v4-raised: rgb(48 48 48 / clamp(0.35, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.646), 1));
-  --v4-surface-solid: #303030;
   --v4-inset: rgba(0, 0, 0, 0.32);
   --v4-chrome: rgb(30 30 30 / clamp(0.2, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.831), 1));
   --v4-sidebar: rgb(24 24 24 / clamp(0.24, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.769), 1));

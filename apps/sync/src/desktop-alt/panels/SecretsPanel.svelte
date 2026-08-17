@@ -2,7 +2,6 @@
   import { invoke } from '@tauri-apps/api/core';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { companyStore } from '../lib/company-store.svelte';
-  import { presentPanelError } from '../lib/panel-error';
   import SecretEnvRow, { type SecretEnv, type SecretItem } from '../components/SecretEnvRow.svelte';
 
   interface Props {
@@ -63,10 +62,9 @@
         }
       })
       .catch((err) => {
-        // Raw diagnostic goes to the console only — the panel line stays calm.
         console.error('get_company_secrets failed:', err);
         if (!cancelled) {
-          error = presentPanelError(err, { surface: 'secrets' }).message;
+          error = String(err);
           if (companyStore.secrets(slug) === null) secrets = [];
         }
       })

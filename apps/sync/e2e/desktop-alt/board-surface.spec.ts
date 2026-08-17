@@ -72,7 +72,7 @@ const FIXTURE_PROJECTS: Project[] = [
 ];
 
 describe('desktop-alt Board surface (US-007)', () => {
-  it('has no top-level Board route — ⌘1 is Notifications in the US-018 IA', () => {
+  it('has no top-level Board route — ⌘1 is Inbox in the US-008 IA', () => {
     const companies = [workspace({ slug: 'indigo', displayName: 'Indigo' })];
 
     // No hotkey resolves to a 'board' kind anywhere on ⌘1–⌘9.
@@ -84,12 +84,11 @@ describe('desktop-alt Board surface (US-007)', () => {
       expect(resolved?.kind).not.toBe('board');
     }
 
-    // ⌘1 → Notifications; ⌘2 → Meetings (US-008 order with US-018 remap:
-    // Notifications/Meetings/Marketplace/Library — Home is palette-only;
-    // Mission Control is retired).
+    // ⌘1 maps to Inbox; ⌘2 to Meetings (US-008 order: Inbox/Meetings/
+    // Marketplace/Library — Home and Mission Control are palette-only).
     expect(
       getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'notifications' } satisfies DesktopRoute);
+    ).toEqual({ kind: 'inbox' } satisfies DesktopRoute);
     expect(
       getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'meetings' } satisfies DesktopRoute);
@@ -147,34 +146,28 @@ describe('desktop-alt Board surface (US-007)', () => {
     expect(done).toMatchObject({ complete: 3, total: 3, percent: 100 });
   });
 
-  it('removes the top-level Board route from DesktopApp and the shell', () => {
+  it('removes the top-level Board route from DesktopApp and the sidebar', () => {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const route = readRepoFile('src/desktop-alt/route.ts');
+    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
 
-    // Route kind union no longer carries 'board' (US-018 IA: notifications /
-    // messages / meetings / marketplace / library / files plus settings, the
-    // palette-only home / moderation surfaces, and per-company routes).
-    for (const kind of [
-      'home',
-      'notifications',
-      'messages',
-      'meetings',
-      'marketplace',
-      'moderation',
-    ]) {
-      expect(route).toMatch(new RegExp(`\\|\\s*'${kind}'`));
-    }
-    // Retired kinds must stay out of the DesktopRoute union (case remaps may remain).
-    expect(route).not.toMatch(/\|\s*'inbox'/);
-    expect(route).not.toMatch(/\|\s*'mission-control'/);
+    // Route kind union no longer carries 'board' (the US-008 IA is Inbox /
+    // Meetings / Marketplace / Library plus settings, the palette-only
+    // home / mission-control / moderation surfaces, and per-company routes
+    // — see route.ts).
+    expect(route).toContain(
+      "{ kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }",
+    );
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");
 
-    // No Board destination in shell chrome.
+    // No Board sidebar row; the V4 sidebar renders the six nav destinations
+    // and the COMPANIES section from the model, never a Board entry.
     expect(route).not.toContain("label: 'Board'");
-    expect(desktopApp).toContain('<ChatSidebar');
-    expect(desktopApp).not.toContain('BoardPage');
+    expect(sidebar).toContain('model.nav');
+    expect(sidebar).toContain('model.companies');
+    expect(sidebar).not.toContain('Board');
   });
 
   it('wires the project list: search, pills, group-by, rows, progress, drill-in', () => {

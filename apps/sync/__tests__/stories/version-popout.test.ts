@@ -57,11 +57,9 @@ describe('US-017: version pop-out in desktop status bar', () => {
     expect(harness).toContain('check_for_updates: () =>');
     expect(harness).toContain('function hasSettingsUpdates(');
     expect(harness).toContain("scenario === 'update-available'");
-    // US-019: chat shell may swap the update body via currentHarnessAppUpdate().
     expect(harness).toContain(
-      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? currentHarnessAppUpdate() : null',
+      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null',
     );
-    expect(harness).toContain('function currentHarnessAppUpdate(');
     expect(harness).toContain('install_update: () => {');
   });
 

@@ -171,6 +171,34 @@ jobs:
             exit 1
           }
 
+      # The V2 chat shell was moved to the hq-work-mono repo. It reached stable
+      # users nine times (v0.10.106, 108, and every release from 110 to 116)
+      # purely because a tag was cut from a main tip that still carried it, so
+      # the guard belongs here — on the tag's own tree — not on the branch it
+      # came from.
+      #
+      # Deliberately NOT gated on `github.event_name == 'push'`, unlike the
+      # branch policy above. A workflow_dispatch retry re-publishes that tag's
+      # artifacts to stable, so a retry of any V2 tag would put the shell back
+      # in front of users — exactly the failure this guard exists to stop.
+      # Retrying a historical V2 release is therefore blocked by design.
+      - name: Enforce v1 desktop shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHELL_DIR="apps/sync/src/desktop-alt"
+          if [ -d "$SHELL_DIR/chat" ]; then
+            echo "::error::$SHELL_DIR/chat exists — this tag carries the V2 chat shell, which now lives in indigoai-us/hq-work-mono. Cut the tag from a commit whose desktop shell is v1, or remove the chat shell before tagging."
+            exit 1
+          fi
+          for marker in v4/V4Sidebar.svelte v4/V4SecondarySidebar.svelte; do
+            if [ ! -f "$SHELL_DIR/$marker" ]; then
+              echo "::error::$SHELL_DIR/$marker is missing — the v1 desktop shell is not intact in this tag's tree."
+              exit 1
+            fi
+          done
+          echo "v1 desktop shell intact; no V2 chat shell present."
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4

@@ -20,29 +20,32 @@ const normalize = (source: string) => source.replace(/\s+/g, ' ');
 describe('desktop sync failure recovery', () => {
   const titleBar = normalize(read('src/desktop-alt/v4/V4TitleBar.svelte'));
   const desktop = normalize(read('src/desktop-alt/DesktopApp.svelte'));
-  const corePopover = normalize(read('src/desktop-alt/v4/CorePopover.svelte'));
-  const home = normalize(read('src/desktop-alt/pages/HomePage.svelte'));
 
-  it('keeps the titlebar minimal; recovery surfaces live in Core + Home (D-04)', () => {
-    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
-    expect(titleBar).not.toContain('{model.sentence}');
-    expect(titleBar).not.toContain('label="Finish sync in Claude Code"');
-    expect(titleBar).not.toContain('class="v4-action"');
+  it('renders the actual failure model alongside the established recovery actions', () => {
+    expect(titleBar).toContain('{model.sentence}');
+    expect(titleBar).toContain('{model.meta}');
     expect(titleBar).not.toContain('Sync initialized');
-    // Home / Core still own conflict + cloud recovery.
-    expect(corePopover).toContain('data-testid="core-popover-rescue-card"');
-    expect(home).toContain('conflicts');
+    expect(titleBar).not.toContain('Click the button to finish sync in Claude Code.');
+    expect(titleBar).toContain('label="Finish sync in Claude Code"');
+    expect(titleBar).toContain('label="Copy prompt"');
   });
 
-  it('DesktopApp still wires failure context into the shell for Home/Core', () => {
+  it('hands the full failure context and HQ folder to the shared prompt controls', () => {
+    expect(titleBar).toContain(
+      "issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}",
+    );
+    expect(titleBar).toContain("syncState === 'error' && errorMessage");
+    expect(titleBar).toContain("folder={hqFolderPath ?? ''}");
     expect(desktop).toContain('errorMessage={syncErrorMessage}');
     expect(desktop).toContain('errorCompany={syncErrorCompany}');
     expect(desktop).toContain('{hqFolderPath}');
-    expect(desktop).toContain('onretry={syncState ===');
   });
 
   it('uses the shared Claude launcher, which retains clipboard fallback', () => {
     const launcher = normalize(read('src/components/OpenInClaudeCodeButton.svelte'));
+    expect(titleBar).toContain(
+      "import OpenInClaudeCodeButton from '../../components/OpenInClaudeCodeButton.svelte'",
+    );
     expect(launcher).toContain("await invoke('open_claude_code_link', { url })");
     expect(launcher).toContain('await navigator.clipboard.writeText(prompt)');
   });
@@ -58,11 +61,17 @@ describe('desktop sync failure recovery', () => {
 describe('rendered desktop sync failure recovery', () => {
   let host: HTMLDivElement;
   let component: ReturnType<typeof mount> | null = null;
+  const writeText = vi.fn();
 
   beforeEach(() => {
     host = document.createElement('div');
     document.body.append(host);
     invoke.mockReset();
+    writeText.mockReset();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
   });
 
   afterEach(async () => {
@@ -72,11 +81,10 @@ describe('rendered desktop sync failure recovery', () => {
     vi.useRealTimers();
   });
 
-  it('titlebar stays minimal under error state (recovery not in chrome)', () => {
+  function renderFailure() {
     component = mount(V4TitleBar, {
       target: host,
       props: {
-        version: '0.10.0',
         syncState: 'error',
         watchedCount: 16,
         errorSummary: 'Runner exited with code 2',
@@ -86,24 +94,81 @@ describe('rendered desktop sync failure recovery', () => {
       },
     });
     flushSync();
-    expect(host.querySelector('[data-testid="titlebar-core-pill"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="titlebar-wordmark"]')).not.toBeNull();
-    expect(host.textContent).not.toContain('Finish sync in Claude Code');
-    expect(host.textContent).not.toContain('Sync failed');
+  }
+
+  it('renders Retry alongside both agent-assisted recovery actions', () => {
+    renderFailure();
+    expect(host.textContent).toContain('Sync failed');
+    expect(host.textContent).toContain('Runner exited with code 2');
+    expect(host.textContent).toContain('Finish sync in Claude Code');
+    expect(host.textContent).toContain('Copy prompt');
+    expect(host.textContent).toContain('Retry');
   });
 
-  it('auth-error also stays minimal in the titlebar', () => {
+  it('retries sync from the failed-state title bar', () => {
+    const onretry = vi.fn();
     component = mount(V4TitleBar, {
       target: host,
       props: {
-        version: '0.10.0',
-        syncState: 'auth-error',
+        syncState: 'error',
         watchedCount: 16,
+        errorMessage: 'hq-sync-runner exited with code 2',
+        hqFolderPath: '/Users/test/HQ',
+        onretry,
       },
     });
     flushSync();
-    expect(host.querySelector('[data-testid="titlebar-core-pill"]')).not.toBeNull();
-    expect(host.textContent).not.toContain('Ready to reconnect');
+    const retry = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Retry',
+    );
+    retry?.click();
+    expect(onretry).toHaveBeenCalledOnce();
+  });
+
+  it('renders auth expiry as a calm sign-in action without red error styling', () => {
+    const onretry = vi.fn();
+    component = mount(V4TitleBar, {
+      target: host,
+      props: {
+        syncState: 'auth-error',
+        watchedCount: 16,
+        onretry,
+      },
+    });
+    flushSync();
+
+    expect(host.textContent).toContain('Ready to reconnect');
+    expect(host.textContent).toContain('Sign in');
     expect(host.querySelector('.v4-dot.error')).toBeNull();
+    const signIn = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Sign in',
+    );
+    signIn?.click();
+    expect(onretry).toHaveBeenCalledOnce();
+  });
+
+  it('copies the diagnostic prompt from the explicit Copy prompt action', async () => {
+    renderFailure();
+    const button = host.querySelector<HTMLButtonElement>('[aria-label="Copy prompt for an HQ agent"]');
+    button?.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    expect(writeText.mock.calls[0][0]).toContain('while syncing "indigo"');
+    expect(writeText.mock.calls[0][0]).toContain('hq-sync-runner exited with code 2');
+  });
+
+  it('falls back to the clipboard when Claude cannot open', async () => {
+    invoke.mockImplementation((command: string) =>
+      command === 'get_hq_version'
+        ? Promise.resolve('15.0.16')
+        : Promise.reject(new Error('Claude Code is not installed')),
+    );
+    renderFailure();
+    const button = host.querySelector<HTMLButtonElement>(
+      '[aria-label^="Finish sync in Claude Code"]',
+    );
+    button?.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    expect(host.textContent).toContain('Prompt copied');
+    expect(writeText.mock.calls[0][0]).toContain('hq-sync-runner exited with code 2');
   });
 });

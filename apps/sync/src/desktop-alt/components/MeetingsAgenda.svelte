@@ -15,11 +15,6 @@
     type MeetingEvent,
     type ScheduledBot,
   } from '../lib/meetings-model';
-  import {
-    MEETINGS_PAST_EMPTY,
-    MEETINGS_UPCOMING_EMPTY,
-    notetakerToggleState,
-  } from '../lib/meetings-view-model';
   import type { MeetingBotAction } from '../lib/meetings-store.svelte';
   import '../v4/tokens.css';
 
@@ -30,10 +25,6 @@
     upNext: MeetingEvent | null;
     /** Total upcoming meetings across all days — shown in the panel header. */
     totalCount: number;
-    /** Agenda segment label (Upcoming vs Past). */
-    agendaTitle?: string;
-    /** Empty-state copy when groups are empty. */
-    emptyMessage?: string;
     /** uid -> company display name, for each row's routing subtitle. */
     companyNames?: Map<string, string>;
     /** sourceEventId of the active/live meeting, if any — marks the "Live" row. */
@@ -58,8 +49,6 @@
     groups,
     upNext,
     totalCount,
-    agendaTitle = 'Upcoming',
-    emptyMessage = MEETINGS_UPCOMING_EMPTY,
     companyNames = new Map(),
     liveEventId = null,
     botsByEventId = new Map(),
@@ -115,7 +104,7 @@
 <!-- Naked agenda: hairline day groups, no rounded meeting-card shells. -->
 <section class="agenda-panel" aria-labelledby="agenda-title" data-testid="meetings-agenda">
   <div class="panel-header">
-    <h2 id="agenda-title">{agendaTitle}</h2>
+    <h2 id="agenda-title">Upcoming</h2>
     <span>{totalCount} meeting{totalCount === 1 ? '' : 's'}</span>
   </div>
 
@@ -138,7 +127,6 @@
           {@const joinNowPending = pendingAction === 'join-now'}
           {@const kind = rowButtonKind(bot)}
           {@const attachment = botAttachmentState(bot)}
-          {@const notetaker = notetakerToggleState(bot)}
           {@const url = eventMeetingUrl(event)}
           {@const recurring = isRecurringMeeting(event)}
           <div
@@ -207,7 +195,7 @@
               {#if url}
                 <button
                   type="button"
-                  class="row-icon-btn row-icon-join btn-join"
+                  class="row-icon-btn row-icon-join"
                   title={openingEventIds.has(event.id) ? 'Opening meeting…' : 'Open meeting in browser'}
                   aria-label="Open meeting in browser"
                   disabled={openingEventIds.has(event.id)}
@@ -217,7 +205,9 @@
                   {#if openingEventIds.has(event.id)}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
-                    Join
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
                   {/if}
                 </button>
               {/if}
@@ -226,13 +216,10 @@
               {:else if kind === 'invite'}
                 <button
                   type="button"
-                  class="row-icon-btn row-icon-invite notetaker-toggle"
-                  data-testid="meeting-notetaker-toggle"
-                  data-notetaker="off"
+                  class="row-icon-btn row-icon-invite"
                   disabled={pending}
                   title={invitePending ? 'Inviting…' : pending ? 'Wait for the current bot action' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
                   aria-busy={invitePending}
-                  aria-pressed={false}
                   aria-label={invitePending ? 'Inviting bot' : recurring ? 'Invite bot to series' : 'Invite bot'}
                   onclick={() => onInvite(event)}
                 >
@@ -247,13 +234,10 @@
               {:else if kind === 'invited'}
                 <button
                   type="button"
-                  class="row-icon-btn row-icon-invited notetaker-toggle notetaker-on"
-                  data-testid="meeting-notetaker-toggle"
-                  data-notetaker="on"
+                  class="row-icon-btn row-icon-invited"
                   disabled={pending}
                   title={uninvitePending ? 'Cancelling…' : pending ? 'Wait for the current bot action' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
                   aria-busy={uninvitePending}
-                  aria-pressed={true}
                   aria-label={uninvitePending ? 'Cancelling bot invitation' : recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
                   onclick={() => onUninvite(event)}
                 >
@@ -268,13 +252,10 @@
               {:else if kind === 'in-call'}
                 <button
                   type="button"
-                  class="row-icon-btn row-icon-incall notetaker-toggle notetaker-on"
-                  data-testid="meeting-notetaker-toggle"
-                  data-notetaker="on"
+                  class="row-icon-btn row-icon-incall"
                   disabled={pending}
                   title={uninvitePending ? 'Removing bot…' : pending ? 'Wait for the current bot action' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
                   aria-busy={uninvitePending}
-                  aria-pressed={true}
                   aria-label={uninvitePending ? 'Removing bot' : recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
                   onclick={() => onUninvite(event)}
                 >
@@ -287,26 +268,17 @@
               {:else if kind === 'joining'}
                 <button
                   type="button"
-                  class="row-icon-btn row-icon-joining notetaker-toggle notetaker-on"
-                  data-testid="meeting-notetaker-toggle"
-                  data-notetaker="on"
+                  class="row-icon-btn row-icon-joining"
                   disabled={pending}
                   title={uninvitePending ? 'Cancelling…' : pending ? 'Wait for the current bot action' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
                   aria-busy={uninvitePending}
-                  aria-pressed={true}
                   aria-label={uninvitePending ? 'Cancelling bot join' : recurring ? 'Cancel bot series join' : 'Cancel bot join'}
                   onclick={() => onUninvite(event)}
                 >
                   <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
                 </button>
               {:else if kind === 'processing'}
-                <span
-                  class="row-icon-btn row-icon-processing notetaker-toggle notetaker-on"
-                  data-testid="meeting-notetaker-toggle"
-                  data-notetaker="on"
-                  title="Processing transcript"
-                  aria-label={notetaker.ariaLabel}
-                >
+                <span class="row-icon-btn row-icon-processing" title="Processing transcript">
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
                     <circle cx="2.5" cy="6" r="1" />
                     <circle cx="6" cy="6" r="1" />
@@ -314,13 +286,7 @@
                   </svg>
                 </span>
               {:else}
-                <span
-                  class="row-icon-btn row-icon-done notetaker-toggle notetaker-on"
-                  data-testid="meeting-notetaker-toggle"
-                  data-notetaker="on"
-                  title="Done — transcript saved"
-                  aria-label={notetaker.ariaLabel}
-                >
+                <span class="row-icon-btn row-icon-done" title="Done — transcript saved">
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                     <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
                   </svg>
@@ -355,14 +321,7 @@
     </div>
   {:else}
     <div class="agenda-list">
-      <div
-        class="meeting-row empty-row"
-        data-testid={emptyMessage === MEETINGS_PAST_EMPTY
-          ? 'meetings-past-empty'
-          : 'meetings-upcoming-empty'}
-      >
-        {emptyMessage}
-      </div>
+      <div class="meeting-row empty-row">No meetings in your synced calendars yet.</div>
     </div>
   {/each}
 </section>
@@ -375,7 +334,11 @@
   }
 
   .panel-header {
-    display: none;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
   }
 
   .panel-header h2 {
@@ -405,15 +368,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    min-height: 30.5px;
-    margin: 0;
-    padding: 12px 8px 4px;
-    color: var(--t2, var(--v4-text-3));
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 10px;
+    min-height: 24px;
+    margin: 0 0 2px;
+    color: var(--v4-text-3);
+    font-size: var(--type-metadata, 10px);
     font-weight: 600;
-    letter-spacing: 1px;
-    line-height: 14.5px;
+    letter-spacing: 0.06em;
+    line-height: 14px;
     text-transform: uppercase;
   }
 
@@ -424,40 +385,35 @@
     font-weight: 500;
   }
 
+  /* Naked list — hairline rows only (no rounded meeting-card shell). */
   .agenda-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
     border-radius: 0;
     background: transparent;
     box-shadow: none;
   }
 
+  /* `.meeting-row`: 5-col grid — time / name+company / signals / status pill /
+     action cluster. The 5th column (`.mactions`) is the parity addition over
+     the informational design row: Open + bot state-machine + join-now. */
   .meeting-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) auto auto auto;
+    gap: 12px;
     align-items: center;
-    gap: 10px;
-    box-sizing: border-box;
-    min-height: 46px;
-    padding: 10px 14px;
-    border: 1px solid var(--line, var(--v4-hairline));
-    border-radius: 10px;
-    background: var(--raised, var(--v4-raised));
-    transition: background-color 0.12s, border-color 0.12s;
+    padding: 9px 0;
+    border-top: none;
+    border-bottom: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+    transition: background-color 140ms ease;
   }
 
   .meeting-row:last-child {
-    border-bottom: 1px solid var(--line, var(--v4-hairline));
+    border-bottom: none;
   }
 
   .meeting-row:not(.empty-row):hover {
-    background: var(--btn-bg, var(--v4-active-row));
-    border-color: var(--line2, var(--v4-control-border));
-  }
-
-  .meeting-row.live {
-    background: color-mix(in srgb, var(--ok, #34c759) 9%, transparent);
-    border-color: color-mix(in srgb, var(--ok, #34c759) 32%, transparent);
+    background: var(--v4-active-row);
   }
 
   .meeting-row.past {
@@ -470,30 +426,16 @@
   }
 
   .mtime {
-    flex: 0 0 52px;
-    color: var(--t3, var(--v4-text-3));
+    color: var(--v4-text-3);
     font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.3px;
+    font-size: var(--type-metadata, 10px);
     white-space: nowrap;
-  }
-
-  .meeting-row.live .mtime,
-  .meeting-row.live .meeting-title {
-    color: var(--ok-ink, #4ade80);
   }
 
   .mmeta {
     min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    flex: 1 1 auto;
-  }
-
-  .msig,
-  .mstate {
-    display: none;
+    display: grid;
+    gap: var(--v4-row-stack-gap, 3px);
   }
 
   .mname {
@@ -502,10 +444,9 @@
     gap: 6px;
     min-width: 0;
     overflow: hidden;
-    color: var(--t1, var(--v4-text-1));
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 18.85px;
+    color: var(--v4-text-1);
+    font-size: var(--type-body, 12px);
+    line-height: 16px;
     white-space: nowrap;
   }
 
@@ -549,13 +490,10 @@
   }
 
   .mcompany {
-    min-width: 0;
-    margin-right: auto;
     overflow: hidden;
-    color: var(--t3, var(--v4-text-3));
-    font-size: 11px;
-    font-weight: 400;
-    line-height: 15.95px;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -677,48 +615,22 @@
   }
   /* Open-in-browser — discreet so the eye lands on the state button first. */
   .row-icon-join {
-    width: auto;
-    min-width: 0;
-    height: auto;
-    padding: 3px 10px;
-    border-radius: 6px;
-    color: var(--t2, var(--v4-text-2));
+    color: var(--v4-text-2);
     background: transparent;
-    border: 1px solid var(--line2, var(--v4-hairline));
-    font-size: 11px;
-    font-weight: 500;
-    opacity: 0;
-  }
-  .meeting-row:hover .row-icon-join,
-  .meeting-row.live .row-icon-join {
-    opacity: 1;
-  }
-  .row-icon-bot-now,
-  .row-icon-spacer,
-  .dot-live,
-  .arrow-next {
-    display: none;
+    border-color: var(--v4-hairline);
   }
   /* Invite CTA — brighter so it reads as actionable. */
-  .row-icon-invite,
-  .row-icon-invited,
-  .row-icon-incall,
-  .row-icon-joining,
-  .row-icon-processing,
-  .row-icon-done {
-    background: transparent;
-    border-color: transparent;
-  }
   .row-icon-invite {
-    color: var(--t3, var(--v4-text-3));
+    color: var(--v4-text-1);
+    background: var(--v4-control-bg);
+    border-color: var(--v4-control-border);
   }
   .row-icon-invite:hover:not(:disabled) {
     background: var(--v4-active-row);
   }
-  /* US-017 notetaker on — green check is the only accent; hover still hints uninvite. */
-  .notetaker-on,
+  /* Invited — muted check; hover hints at the uninvite affordance. */
   .row-icon-invited {
-    color: var(--v4-ok);
+    color: var(--v4-text-2);
   }
   .row-icon-invited:hover:not(:disabled) {
     color: var(--v4-error);
