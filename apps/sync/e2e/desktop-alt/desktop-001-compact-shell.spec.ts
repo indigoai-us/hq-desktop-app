@@ -229,6 +229,28 @@ describe('DESKTOP-001: compact native shell', () => {
     expect(sidebar).toContain("child.id === 'more'");
   });
 
+  it('selected Personal renders the same full workspace navigation as a company', () => {
+    const personal = workspace({
+      slug: 'personal',
+      displayName: 'Corey Epstein',
+      kind: 'personal',
+      state: 'personal',
+    });
+    const model = getV4SidebarModel({ kind: 'company', slug: 'personal' }, [personal]);
+    expect(model.companies[0]?.children.map((child) => child.id)).toEqual(
+      COMPANY_PRIMARY_SECTIONS.map((section) => section.id),
+    );
+
+    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+    const personalBlock = sidebar.slice(
+      sidebar.indexOf('{#if personalRows.length > 0}'),
+      sidebar.indexOf('{#if companyRows.length > 0}'),
+    );
+    expect(personalBlock).toContain('v4-company-children');
+    expect(personalBlock).toContain('{#each row.children as child (child.id)}');
+    expect(personalBlock).toContain('onclick={() => goCompanySection(row.slug, child.id)}');
+  });
+
   it('light-mode material roles stay visibly translucent with weighted hierarchy', () => {
     const tokens = readRepoFile('src/desktop-alt/v4/tokens.css');
     const properties = ['v4-ground', 'v4-chrome', 'v4-sidebar', 'v4-raised'] as const;

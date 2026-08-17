@@ -243,6 +243,29 @@
               />
             </span>
           </div>
+          {#if row.expanded && row.children.length > 0}
+            <div
+              class="v4-company-children"
+              data-testid={`company-children-${row.slug}`}
+              aria-label={`${row.label} sections`}
+            >
+              {#each row.children as child (child.id)}
+                <button
+                  type="button"
+                  class="v4-row v4-company-child"
+                  class:active={child.active}
+                  aria-current={child.active ? 'page' : undefined}
+                  data-testid={`company-child-${row.slug}-${child.id}`}
+                  onclick={() => goCompanySection(row.slug, child.id)}
+                >
+                  <span class="v4-row-label">{child.label}</span>
+                  {#if child.id === 'more'}
+                    <span class="v4-child-meta" aria-hidden="true">•••</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
         {/each}
       </nav>
     {/if}
