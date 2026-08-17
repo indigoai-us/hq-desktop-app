@@ -1033,7 +1033,7 @@ const GIT_INDEX_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Push crosses the network, so it gets its own, longer ceiling. It does not
 /// hold the index lock, so a slow push is far less dangerous than a slow `add`.
-const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(300);
+const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 const GIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -7365,6 +7365,11 @@ mod tests {
             try_acquire_mirror_lock(&path).unwrap().is_some(),
             "the lock must be released when the guard drops"
         );
+    }
+
+    #[test]
+    fn pushes_are_allowed_to_run_for_one_hour() {
+        assert_eq!(GIT_PUSH_TIMEOUT, Duration::from_secs(60 * 60));
     }
 
     #[test]
