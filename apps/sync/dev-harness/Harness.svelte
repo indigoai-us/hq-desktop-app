@@ -6,6 +6,7 @@
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
+  import InboxPage from '../src/desktop-alt/pages/InboxPage.svelte';
   import ActivityLog from '../src/components/ActivityLog.svelte';
   import NewFilesDetail from '../src/components/NewFilesDetail.svelte';
   import DriftDetail from '../src/components/DriftDetail.svelte';
@@ -263,7 +264,10 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'home'
+      : view === 'company' ||
+          view === 'desktop' ||
+          view === 'home' ||
+          view === 'inbox'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -368,6 +372,12 @@
   <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
        live strip). Resize the preview viewport to ~1180x720. -->
   <DesktopApp />
+{:else if view === 'inbox'}
+  <!-- Unified notification chronology in isolation. Resize to the same canvas
+       as ?view=messages to compare type, density, and hierarchy directly. -->
+  <div class="desktop-stage inbox-stage">
+    <InboxPage />
+  </div>
 {:else if view === 'banner'}
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->
@@ -486,6 +496,13 @@
     box-sizing: border-box;
     min-height: 100vh;
     padding: 28px 32px;
+  }
+
+  .inbox-stage {
+    display: flex;
+    height: 100vh;
+    min-height: 0;
+    padding: 0;
   }
 
   /* Conversation preview: a fixed-width column with the messages-window

@@ -57,6 +57,7 @@ describe('US-006 / US-008: Inbox chronology and Messages route', () => {
 
 describe('US-006 / US-008: InboxPage surface', () => {
   const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
+  const feed = readRepoFile('src/components/NotificationFeed.svelte');
 
   it('renders shared NotificationFeed / NotificationRow one-line rows', () => {
     expect(inbox).toContain("import NotificationFeed from '../../components/NotificationFeed.svelte'");
@@ -88,6 +89,24 @@ describe('US-006 / US-008: InboxPage surface', () => {
     expect(inbox).toContain('showDayLabels={false}');
     expect(inbox).toContain(':global(.nr-ts)');
     expect(inbox).not.toContain(':global(.notif-day-label)');
+  });
+
+  it('matches the Messages type hierarchy instead of inflating feed text', () => {
+    expect(inbox).toContain('font-size: 16px');
+    expect(inbox).toContain(
+      'font-size: var(--type-metadata, var(--text-micro, 10px))',
+    );
+    expect(inbox).toContain("Match Messages' compact two-line hierarchy");
+    expect(inbox).not.toContain('font-size: var(--type-body, 15px)');
+    expect(inbox).not.toContain('font-size: var(--type-metadata, 13px)');
+    expect(inbox).not.toContain('inbox-kicker');
+  });
+
+  it('uses compact identity marks for comfortable Inbox rows', () => {
+    expect(feed).toContain("initials,");
+    expect(feed).toContain("identityLabel={density === 'comfortable'");
+    expect(feed).toContain('? initials(it.actor)');
+    expect(feed).toContain('? initials(row.company)');
   });
 });
 

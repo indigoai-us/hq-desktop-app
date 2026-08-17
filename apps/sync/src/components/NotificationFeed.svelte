@@ -13,6 +13,7 @@
     isUnread,
     countUnread,
     broadcastNotificationUnreadCount,
+    initials,
   } from '../lib/notificationFeedData';
   import NotificationRow from './NotificationRow.svelte';
 
@@ -408,6 +409,9 @@
                   ts={it.ts}
                   unread={isUnread(it, lastReadTs)}
                   comfortable={density === 'comfortable'}
+                  identityLabel={density === 'comfortable'
+                    ? initials(it.actor)
+                    : undefined}
                   onopen={() => openDm(it)}
                   onreply={(text) => replyDm(it, text)}
                   onreact={(emoji) => reactDm(it, emoji)}
@@ -421,6 +425,9 @@
                   ts={it.ts}
                   unread={isUnread(it, lastReadTs)}
                   comfortable={density === 'comfortable'}
+                  identityLabel={density === 'comfortable'
+                    ? initials(it.actor)
+                    : undefined}
                   onopen={() => openShare(it)}
                   ondismiss={() => dismiss(it.id)}
                 />
@@ -433,6 +440,9 @@
                   ts={it.ts}
                   unread={isUnread(it, lastReadTs)}
                   comfortable={density === 'comfortable'}
+                  identityLabel={density === 'comfortable' && it.file?.company
+                    ? initials(it.file.company)
+                    : undefined}
                   onopen={
                     it.file?.company
                       ? () => openCompanyActivity(it.file!.company)
@@ -450,6 +460,7 @@
                     ts={it.ts}
                     unread={isUnread(it, lastReadTs)}
                     comfortable={density === 'comfortable'}
+                    identityLabel={density === 'comfortable' ? 'HQ' : undefined}
                     onopen={() => openUpdateSettings()}
                     onaction={() => installUpdate()}
                     actionLabel={updateInstalling ? 'Updating…' : 'Update now'}
@@ -472,6 +483,9 @@
                 ts={row.latestTs}
                 unread={row.items.some((it) => isUnread(it, lastReadTs))}
                 comfortable={density === 'comfortable'}
+                identityLabel={density === 'comfortable'
+                  ? initials(row.company)
+                  : undefined}
                 onopen={
                   row.company ? () => openCompanyActivity(row.company) : undefined
                 }
@@ -487,6 +501,9 @@
                 ts={row.latestTs}
                 unread={row.items.some((it) => isUnread(it, lastReadTs))}
                 comfortable={density === 'comfortable'}
+                identityLabel={density === 'comfortable'
+                  ? initials(row.actor)
+                  : undefined}
                 hoverExpand={false}
                 onopen={latest?.dm ? () => openDm(latest) : undefined}
               />

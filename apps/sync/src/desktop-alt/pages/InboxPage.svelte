@@ -62,7 +62,6 @@
 <section class="inbox-page page" aria-labelledby="desktop-page-title" data-testid="desktop-alt-inbox">
   <header class="page-header inbox-header">
     <div class="inbox-titles">
-      <span class="inbox-kicker">Notification center</span>
       <h1 id="desktop-page-title">Inbox</h1>
       <p class="inbox-subtitle" data-testid="inbox-unread-count">
         {subtitle}
@@ -85,53 +84,53 @@
   .inbox-page {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 0;
     width: 100%;
+    height: 100%;
     min-height: 0;
     max-width: 1180px;
     font-family: var(--font-sans);
+    letter-spacing: -0.006em;
   }
 
   .inbox-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 16px;
     margin-bottom: 0;
+    min-height: 52px;
+    box-sizing: border-box;
+    padding: 8px 8px 9px;
+    border-bottom: 1px solid var(--v4-rowline, var(--border));
   }
 
   .inbox-titles {
     min-width: 0;
-    display: grid;
-    grid-template-rows: auto auto auto;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 3px;
-  }
-
-  .inbox-kicker {
-    color: var(--v4-text-3, var(--muted));
-    font-size: var(--text-micro, 10px);
-    font-weight: 650;
-    letter-spacing: 0.075em;
-    line-height: 1.2;
-    text-transform: uppercase;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
   }
 
   .inbox-titles h1 {
     margin: 0;
     color: var(--v4-text-1, var(--fg));
     font-family: var(--font-display, var(--font-sans));
-    font-size: clamp(24px, 3vw, 30px);
-    font-weight: 650;
-    line-height: 1.08;
-    letter-spacing: -0.025em;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.015em;
   }
 
   .inbox-subtitle {
     margin: 0;
-    font-size: var(--type-secondary, var(--text-base, 13px));
-    line-height: 1.4;
+    overflow: hidden;
+    font-size: var(--type-metadata, var(--text-micro, 10px));
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
     color: var(--v4-text-3, var(--muted));
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Feed sits flush on the page canvas — no card chrome around the list. */
@@ -158,52 +157,35 @@
     --text-sm: 13px;
   }
 
-  /* Slightly taller, more readable rows on the naked canvas — no rounded outer
-     containers (DESKTOP-002). Spacing + hairlines establish structure. */
+  /* Match Messages' compact two-line hierarchy: 12.5px actor, 10.5px source
+     and timestamp, 11.5px preview. Spacing + hairlines establish structure;
+     there is no nested card chrome. */
   .notif-host :global(.nr) {
-    min-height: 52px;
-    padding: 8px 10px;
+    min-height: 58px;
+    padding: 8px;
     border-radius: 0;
-    font-size: var(--type-body, 15px);
     box-shadow: inset 0 -1px 0 var(--v4-rowline, var(--border));
   }
 
   .notif-host :global(.nr-message.nr-expanded) {
-    padding: 14px 10px;
-  }
-
-  .notif-host :global(.nr-ts) {
-    font-size: var(--type-metadata, 13px);
+    padding: 10px 8px 11px;
   }
 
   .notif-host :global(.nr-icon) {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
   }
 
-  .notif-host :global(.nr-actor-pill) {
-    max-width: 20ch;
-    padding: 2px 8px;
+  .notif-host :global(.nr-ts) {
+    font-size: 10.5px;
   }
 
-  .notif-host :global(.nr-meta-type) {
-    max-width: 18ch;
-    font-size: var(--type-metadata, 13px);
-  }
-
-  /* Comfortable density paddings from NotificationFeed assume a card panel —
-     pin labels and rows flush to the canvas edges instead. */
-  .notif-host :global(.notif-comfortable .notif-day-label) {
-    padding-left: 8px;
-    padding-right: 8px;
-    font-size: var(--type-metadata, 13px);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-  }
-
+  /* Comfortable feed spacing assumes a card panel. Pin the flat chronology
+     rows directly to the canvas instead. */
   .notif-host :global(.notif-comfortable .notif-day-rows) {
     padding-left: 0;
     padding-right: 0;
+    gap: 0;
   }
 
   @media (max-width: 980px) {
@@ -211,8 +193,12 @@
       max-width: none;
     }
 
-    .notif-host :global(.nr-meta-type) {
-      max-width: 12ch;
+    .inbox-header {
+      padding-inline: 6px;
+    }
+
+    .notif-host :global(.nr) {
+      padding-inline: 6px;
     }
   }
 
