@@ -1104,6 +1104,10 @@ fn handle_sync_line<R: tauri::Runtime>(
             crate::commands::activity::record_progress(app, payload);
             app.emit(EVENT_SYNC_PROGRESS, payload.clone())
         }
+        // A parsed no-op by design: returning true from this handler refreshes
+        // the process watchdog, while keeping local journal maintenance out of
+        // file-transfer totals, Recent Changes, and frontend progress.
+        SyncEvent::MaintenanceProgress(_) => Ok(()),
         SyncEvent::Error(payload) => {
             // `classify_error_event` is the test-covered classification boundary;
             // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally

@@ -2881,7 +2881,8 @@ mod tests {
     // ── RunTotals ────────────────────────────────────────────────────────
 
     use crate::events::{
-        SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompleteEvent, SyncProgressEvent,
+        SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompleteEvent, SyncMaintenanceProgressEvent,
+        SyncProgressEvent,
     };
 
     fn complete(company: &str, conflicts: u32, aborted: bool) -> SyncEvent {
@@ -3464,6 +3465,19 @@ mod tests {
             author: None,
         }));
         assert_eq!(t.conflicts, 0);
+    }
+
+    #[test]
+    fn test_accumulate_ignores_maintenance_progress() {
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::MaintenanceProgress(
+            SyncMaintenanceProgressEvent {
+                company: "indigo".to_string(),
+                bytes_processed: 128 * 1024 * 1024,
+                total_bytes: 2_153_544_154,
+            },
+        ));
+        assert_eq!(t, RunTotals::default());
     }
 
     #[test]
