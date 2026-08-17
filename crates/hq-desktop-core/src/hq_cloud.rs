@@ -326,7 +326,11 @@
 /// re-pin BOTH surfaces onto it — the parity tests fail closed until you do.
 /// 6.15.3 adds the packaged, self-authorizing `hq-cloud sync mutation`
 /// stdin boundary used by the desktop realtime first-push sidecar.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.3";
+/// `~6.15.3` -> `~6.15.7`: floor the pin at automatic, bounded journal
+/// recovery. This changes the npx cache key so installs cannot keep serving
+/// 6.15.6 or older, whose whole-file WAL reader crashes once a journal crosses
+/// 2 GiB. (6.15.6 was already released for an unrelated download retry fix.)
+pub const HQ_CLOUD_VERSION: &str = "~6.15.7";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -387,6 +391,11 @@ mod tests {
     fn version_is_nonempty_tilde_pin() {
         assert!(!HQ_CLOUD_VERSION.is_empty());
         assert!(HQ_CLOUD_VERSION.starts_with('~'));
+    }
+
+    #[test]
+    fn version_floor_delivers_automatic_journal_repair() {
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.7");
     }
 
     /// Lower bound of the tilde pin as a concrete version. `~X.Y.Z` parses to a

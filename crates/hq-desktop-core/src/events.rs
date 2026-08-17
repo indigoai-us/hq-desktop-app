@@ -79,6 +79,19 @@ pub struct SyncProgressEvent {
     pub author: Option<String>,
 }
 
+/// `{type: "maintenance-progress", company, bytesProcessed, totalBytes}`
+///
+/// Local journal-recovery heartbeat from hq-cloud. It is deliberately not a
+/// [`SyncProgressEvent`]: consumers must keep the runner alive without adding
+/// a synthetic file transfer to Recent Changes or transfer totals.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncMaintenanceProgressEvent {
+    pub company: String,
+    pub bytes_processed: u64,
+    pub total_bytes: u64,
+}
+
 /// `{type: "error", company?, path, message}`
 /// Per-file or per-company error. `company` is absent only for discovery-
 /// phase failures (before the fanout plan resolved).
@@ -243,6 +256,7 @@ pub enum SyncEvent {
     /// arrives before any `Progress` events for that company.
     Plan(SyncPlanEvent),
     Progress(SyncProgressEvent),
+    MaintenanceProgress(SyncMaintenanceProgressEvent),
     Error(SyncErrorEvent),
     Complete(SyncCompleteEvent),
     /// hq-cloud ≥5.24.0. Emitted only under the `currency-gated` delete
@@ -734,6 +748,20 @@ mod tests {
                 direction: None,
                 deleted: None,
                 author: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_maintenance_progress_as_known_protocol_heartbeat() {
+        let json = r#"{"type":"maintenance-progress","company":"indigo","bytesProcessed":134217728,"totalBytes":2153544154}"#;
+        let parsed: SyncEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed,
+            SyncEvent::MaintenanceProgress(SyncMaintenanceProgressEvent {
+                company: "indigo".to_string(),
+                bytes_processed: 134_217_728,
+                total_bytes: 2_153_544_154,
             })
         );
     }
