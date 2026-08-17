@@ -30,8 +30,29 @@ repository's full git history was preserved under its destination subdirectory v
 
 ## Status
 
-Freshly scaffolded: histories imported, single-app skeleton in place. The app still
-builds from `apps/sync` as imported; the onboarding port, command merge, Windows fold-in,
-shared-crate extraction, and unified release pipeline are staged work. The authoritative
+The app ships from `apps/sync` with the **V2 desktop shell** as the current desktop
+window (shipped in `v0.10.105-beta.1`, beta channel — PR #422). The consolidation
 plan — install→sync state machine, command merge, phased migration with verifiable
 done-criteria, and open questions — lives in [`MIGRATION.md`](MIGRATION.md).
+
+## V2 shell release notes (v0.10.105-beta.1)
+
+The HQ Desktop V2 redesign (PR #422) rebuilt every desktop screen on a new shell:
+
+- **Workspace switcher: Cmd+0–9.** `⌘0` opens the Personal workspace and `⌘1`–`⌘9`
+  switch to companies in connected-first sidebar order. **`⌘1`–`⌘4` no longer open
+  Inbox / Meetings / Marketplace / Library** — those destinations remain reachable
+  from the sidebar and the command palette.
+- **Console-drop removals.** Deployments, Secrets, the Activity feed, and fleet
+  Mission Control are no longer desktop surfaces — they moved to the HQ web
+  console. Legacy deep links resolve to the nearest V2 screen or open the console
+  in the system browser. The `get_company_secrets` command was deleted.
+- **Conflict resolution: discard removed.** Conflict cards offer only
+  **Keep local** and **Keep cloud**.
+- **Popover rescue card** — conflicts (keep local/cloud), drift restore, and
+  updates surface in one rescue card in the menubar popover.
+- **Cloud Connected / Cloud Off** device-wide sync pause.
+- **Library + Marketplace fold-in** — Marketplace lives in the Library sub-nav.
+- **Settings → Appearance** — theme, opacity, interface size, Show in Dock.
+- Goal–project linking, team vault analytics, Home portfolio + Today rail, and
+  delivery states in Messages.

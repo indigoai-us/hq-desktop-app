@@ -1,6 +1,8 @@
 # DESIGN.md — HQ Sync
 
 > The visual system for HQ Sync. Tokens here are the source of truth; they are encoded as CSS custom properties in `src/styles/popover.css`, which the desktop window (`src/desktop-alt/styles/desktop-alt.css`) `@import`s so both surfaces share one token system (see "Unified desktop token set"). Components should consume tokens, not hardcode values. Light, dark, and reduced-transparency are first-class.
+>
+> **The V2 shell is the shipped desktop window** (v0.10.105-beta.1, PR #422): all screens were rebuilt on it, workspaces switch via `⌘0`–`⌘9`, Marketplace is folded into the Library, Settings gained an Appearance section (theme, opacity, interface size, Show in Dock), and the operational surfaces (Deployments, Secrets, Activity, fleet Mission Control) moved to the HQ web console. References below to "the desktop board/project/task surfaces" describe this V2 shell.
 
 ## Theme
 

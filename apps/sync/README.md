@@ -9,9 +9,9 @@ npm install
 npm run tauri dev
 ```
 
-## Indigo Desktop View
+## Desktop View (V2 shell)
 
-Indigo dogfood users see an **Open desktop view** icon in the popover header. It opens a separate decorated Tauri window with Sync, Meetings, and per-company Board / Activity / Deployments / Secrets panels. The surface is hidden from non-`@getindigo.ai` users in the UI and rejected again by the backend command gate.
+Signed-in users see an **Open desktop view** icon in the popover header. It opens the V2 desktop window: a workspace-centric shell (`⌘0` Personal, `⌘1`–`⌘9` companies) with Home portfolio + Today rail, Inbox, Messages (with delivery states), Meetings, Library (Marketplace folded into its sub-nav), Files, per-company Overview / Goals / Projects / Skills / Workers / Knowledge / Team sections, and Settings including Appearance (theme, opacity, interface size, Show in Dock). Deployments, Secrets, the Activity feed, and fleet Mission Control are console surfaces now — the desktop deep-links into the HQ web console instead. The backend command gate still rejects signed-out callers.
 
 Implementation notes: [`docs/desktop-alt.md`](docs/desktop-alt.md)
 
