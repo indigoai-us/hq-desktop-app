@@ -54,15 +54,16 @@ use crate::paths;
 
 const LOG_TAG: &str = "git-mirror";
 
-/// Guards against overlapping mirror runs. The auto-sync watcher fires
-/// AllComplete every 10 minutes; on a slow network a single push could run
-/// longer than that. `try_lock` lets the second pass skip rather than
-/// race a still-running `git push`, and the guard auto-releases on scope
-/// exit so a panic mid-run never strands the lock.
+/// Guards the index-touching local snapshot only. Pushes have their own lock so
+/// a slow network operation never suppresses later local commits.
 ///
 /// This only serializes threads inside one process. The cross-process half
 /// is [`try_acquire_mirror_lock`].
 static MIRROR_LOCK: Mutex<()> = Mutex::new(());
+
+/// Guards pushes independently from local snapshots. Only one push may run at
+/// a time, but `MIRROR_LOCK` remains available while it does.
+static PUSH_LOCK: Mutex<()> = Mutex::new(());
 
 /// Minimum spacing between mirror runs. The watch-driven daemon can emit
 /// AllComplete every few seconds under heavy local churn (an active HQ session
@@ -1625,9 +1626,9 @@ pub fn reap_stale_index_lock_on_launch() {
 // Cross-process mirror lock
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Advisory `flock` held for the whole git critical section. The file
-/// intentionally persists: the OS releases advisory locks on process exit, so
-/// unlike `.git/index.lock` this one cannot go stale after a crash.
+/// Advisory `flock` held for one git critical section. The file intentionally
+/// persists: the OS releases advisory locks on process exit, so unlike
+/// `.git/index.lock` this one cannot go stale after a crash.
 #[derive(Debug)]
 struct MirrorLock {
     file: File,
@@ -1641,6 +1642,10 @@ impl Drop for MirrorLock {
 
 fn mirror_lock_path(git_dir: &Path) -> PathBuf {
     git_dir.join("hq-sync-mirror.lock")
+}
+
+fn push_lock_path(git_dir: &Path) -> PathBuf {
+    git_dir.join("hq-sync-mirror-push.lock")
 }
 
 /// "Someone else holds this lock" is spelled differently per platform: unix
@@ -1756,17 +1761,36 @@ pub fn mirror_after_sync(hq_folder: &str) {
         }
     };
 
-    if let Err(e) = run_mirror(hq_folder, &git_dir) {
-        log(LOG_TAG, &format!("{hq_folder}: {e}"));
-        // Failure path: our git child may have died holding `index.lock`. We
-        // hold the mirror lock and every child we spawned has been reaped, so
-        // an empty, unheld lock at this instant is ours and orphaned — no age
-        // grace needed. The other conjuncts still apply.
-        reap_index_lock_if_stale(hq_folder, &git_dir, Duration::ZERO, SystemTime::now());
+    let outcome = match run_mirror(hq_folder, &git_dir) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            log(LOG_TAG, &format!("{hq_folder}: {e}"));
+            // Failure path: our git child may have died holding `index.lock`. We
+            // hold the mirror lock and every child we spawned has been reaped, so
+            // an empty, unheld lock at this instant is ours and orphaned — no age
+            // grace needed. The other conjuncts still apply.
+            reap_index_lock_if_stale(hq_folder, &git_dir, Duration::ZERO, SystemTime::now());
+            MirrorOutcome::NoPush
+        }
+    };
+
+    // The local snapshot is complete. Release both mirror locks before the
+    // network push, which may legitimately run for up to an hour.
+    drop(_mirror_lock);
+    drop(_guard);
+
+    if outcome == MirrorOutcome::Push {
+        push_after_mirror(hq_folder, &git_dir);
     }
 }
 
-fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MirrorOutcome {
+    NoPush,
+    Push,
+}
+
+fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> {
     // Pre-run self-heal: clear an orphaned lock from an earlier killed run so
     // this cycle isn't the third one in a row to fail for the same reason.
     reap_index_lock_if_stale(hq_folder, git_dir, STALE_LOCK_MIN_AGE, SystemTime::now());
@@ -1787,7 +1811,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
             // A clean pass ends any refusal episode: the condition was
             // transient, so the next one deserves its own confirmation.
             note_mirror_recovered(hq_folder, git_dir);
-            return Ok(());
+            return Ok(MirrorOutcome::NoPush);
         }
         Some(1) => {} // staged changes — proceed to commit
         Some(code) => {
@@ -1800,7 +1824,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
     }
 
     if guard_bulk_deletions(hq_folder, git_dir)? == BulkDeleteVerdict::Refuse {
-        return Ok(());
+        return Ok(MirrorOutcome::NoPush);
     }
 
     // ISO-8601 to the second; sortable in `git log` without quoting issues.
@@ -1829,12 +1853,41 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
         GIT_INDEX_TIMEOUT,
     )?;
     if upstream.status.success() {
-        push_with_backoff(hq_folder, git_dir, Utc::now());
+        Ok(MirrorOutcome::Push)
     } else {
         log(LOG_TAG, &format!("{hq_folder}: no upstream, skipping push"));
+        Ok(MirrorOutcome::NoPush)
     }
+}
 
-    Ok(())
+fn push_after_mirror(hq_folder: &str, git_dir: &Path) {
+    let _guard = match PUSH_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log(
+                LOG_TAG,
+                &format!("{hq_folder}: previous push still in flight, skipping push"),
+            );
+            return;
+        }
+    };
+
+    let _push_lock = match try_acquire_mirror_lock(&push_lock_path(git_dir)) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            log(
+                LOG_TAG,
+                &format!("{hq_folder}: another HQ process is pushing, skipping push"),
+            );
+            return;
+        }
+        Err(e) => {
+            log(LOG_TAG, &format!("{hq_folder}: {e}"));
+            return;
+        }
+    };
+
+    push_with_backoff(hq_folder, git_dir, Utc::now());
 }
 
 /// Push, unless a recent rejection says it is pointless.
@@ -5696,7 +5749,11 @@ mod tests {
     fn run_mirror_at(dir: &Path) -> Result<(), String> {
         let hq = dir.to_str().unwrap();
         let git_dir = resolve_git_dir(hq)?;
-        run_mirror(hq, &git_dir)
+        let outcome = run_mirror(hq, &git_dir)?;
+        if outcome == MirrorOutcome::Push {
+            push_after_mirror(hq, &git_dir);
+        }
+        Ok(())
     }
 
     fn git_dir_of(dir: &Path) -> PathBuf {
@@ -5840,6 +5897,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(local_head.trim(), remote_head.trim());
+    }
+
+    #[test]
+    fn push_in_flight_does_not_block_the_next_local_snapshot() {
+        let _serial = serial();
+        let work = TempDir::new().unwrap();
+        let remote = TempDir::new().unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(remote.path())
+            .output()
+            .expect("git available")
+            .status
+            .success());
+
+        init_repo(work.path());
+        let remote_url = remote.path().to_str().unwrap();
+        assert!(git(work.path(), &["remote", "add", "origin", remote_url])
+            .status
+            .success());
+        fs::write(work.path().join("README"), "seed").unwrap();
+        assert!(git(work.path(), &["add", "-A"]).status.success());
+        assert!(git(work.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        assert!(git(work.path(), &["push", "-q", "-u", "origin", "main"])
+            .status
+            .success());
+
+        *LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let push_guard = PUSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = rev_count(work.path());
+        fs::write(work.path().join("while-pushing"), "new snapshot").unwrap();
+
+        mirror_after_sync(work.path().to_str().unwrap());
+
+        assert_eq!(
+            rev_count(work.path()),
+            before + 1,
+            "an in-flight push must not suppress the next local snapshot"
+        );
+        let remote_head = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(remote.path())
+                .args(["rev-parse", "main"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let previous_local =
+            String::from_utf8(git(work.path(), &["rev-parse", "HEAD^"]).stdout).unwrap();
+        assert_eq!(
+            remote_head.trim(),
+            previous_local.trim(),
+            "the overlapping push should be skipped while preserving the local commit"
+        );
+
+        drop(push_guard);
+        *LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     // ── B1 regression: the 2026-07-30 mass-deletion shape ────────────────
