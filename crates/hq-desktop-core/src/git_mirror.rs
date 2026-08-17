@@ -5855,6 +5855,10 @@ mod tests {
 
     #[test]
     fn pushes_to_configured_upstream() {
+        // `push_after_mirror` deliberately uses a process-global, non-blocking
+        // lock. Keep this assertion from racing the test that holds that lock
+        // to model an in-flight push.
+        let _serial = serial();
         let work = TempDir::new().unwrap();
         let remote = TempDir::new().unwrap();
         // Bare repo acts as the remote so `git push` has somewhere to land.
