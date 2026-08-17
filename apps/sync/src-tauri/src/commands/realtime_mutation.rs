@@ -443,6 +443,6 @@ mod tests {
     #[test]
     fn command_is_pinned_to_mutation_boundary() {
         assert_eq!(&mutation_args()[3..], ["sync", "mutation", "--stdin-json"]);
-        assert!(mutation_args()[1].contains("@~6.15.3"));
+        assert!(mutation_args()[1].contains(&format!("@{HQ_CLOUD_VERSION}")));
     }
 }
