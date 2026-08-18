@@ -575,3 +575,63 @@ describe("release workflow channel contract", () => {
     expect(publish).not.toContain("hq-debug-");
   });
 });
+
+
+/**
+ * A `run:` step written as a YAML folded scalar (`>-`) joins its lines with
+ * spaces — UNLESS a line is blank or whitespace-only, which forces a literal
+ * newline. A whitespace-only line is invisible in a diff and in most editors,
+ * but it splits the command in two: PowerShell then parses the continuation
+ * (`--config ...`) as a fresh statement and dies with
+ * "Missing expression after unary operator '--'".
+ *
+ * That is exactly how removing the Recall sidecar's `--config` argument broke
+ * the Windows installer build: the text went, the indentation stayed, and the
+ * failure looked nothing like the edit that caused it.
+ *
+ * A whitespace-only line is never intentional in these files — inside a folded
+ * scalar it changes the command, and everywhere else it is trailing noise — so
+ * assert on the character class directly rather than reimplementing YAML
+ * folding.
+ */
+describe("workflow folded run steps cannot be split by invisible whitespace", () => {
+  const workflowFiles = [
+    ".github/workflows/release.yml",
+    ".github/workflows/windows-check.yml",
+    ".github/workflows/ci.yml",
+  ];
+
+  it("has no whitespace-only lines in any workflow", async () => {
+    for (const file of workflowFiles) {
+      const text = await readFile(resolve(rootDir, file), "utf8");
+      const offenders = text
+        .split("\n")
+        .map((line, index) => ({ line, lineNumber: index + 1 }))
+        .filter(({ line }) => line !== "" && line.trim() === "")
+        .map(({ lineNumber }) => lineNumber);
+      expect(
+        offenders,
+        `${file} has whitespace-only line(s) at ${offenders.join(", ")} — ` +
+          `inside a folded 'run: >-' block these become real line breaks and ` +
+          `split the command into two shell statements`,
+      ).toEqual([]);
+    }
+  });
+
+  it("keeps the Windows installer build a single shell statement", () => {
+    const step = windowsCheckWorkflow.slice(
+      windowsCheckWorkflow.indexOf("Build production MSI and NSIS installers"),
+    );
+    const folded = step.slice(step.indexOf("run: >-"), step.indexOf("- name: Install Sentry CLI"));
+    const argLines = folded
+      .split("\n")
+      .slice(1)
+      .filter((line) => line.trim().length > 0);
+    // Every continuation line must carry an argument; a gap here is the bug.
+    for (const line of argLines) {
+      expect(line.trim().length).toBeGreaterThan(0);
+    }
+    expect(argLines.some((line) => line.includes("--bundles msi nsis"))).toBe(true);
+    expect(folded).not.toContain("tauri.windows.release.conf.json");
+  });
+});
