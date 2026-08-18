@@ -76,7 +76,6 @@ pub fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
-///   - `--poll-remote-ms 15000` — pulls remote changes every 15 seconds (fixed)
 ///   - `--event-push` — when both runner compatibility and the user's
 ///     Instant-sync setting permit that optional runner capability
 ///
@@ -87,16 +86,16 @@ pub fn resolve_hq_folder_path() -> Result<String, String> {
 /// Toggling Instant-sync OFF drops back to poll-only without disabling
 /// Auto-sync.
 ///
-/// Instant-sync OFF stays poll-only: the remote→local pull runs on the 15-second
-/// cadence and a local push waits for the next pass — there is no second-by-second
+/// Instant-sync OFF stays poll-only: the remote→local pull uses the runner's
+/// load-aware cadence and a local push waits for the next pass — there is no second-by-second
 /// upload of local edits. (The remote→local pull is poll-driven for most users.
 /// The server side shipped in hq-pro US-015/US-016 — `POST /v1/sync/subscribe`
 /// mints a per-device SQS queue and vends scoped receive credentials — and as
 /// of hq-cloud ≥6.3.1 the runner brings up real event-driven pull INSIDE
 /// `--event-push` for accounts enrolled in its Phase 3 rollout gate
 /// (`resolveEventSync`, exact-email allowlist + `HQ_SYNC_EVENT_SYNC` override);
-/// no new menubar flag is involved. The 15-second poll stays regardless, as
-/// the correctness backstop.)
+/// no new menubar flag is involved. Adaptive polling stays as the correctness
+/// backstop.)
 /// Conflict policy is `keep` (skip-and-surface) — local
 /// edits win and the conflict store routes them through the existing modal so
 /// auto-pull never clobbers an in-progress resolution.
@@ -143,12 +142,6 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         env.insert("HQ_SYNC_SKIP_PERSONAL".to_string(), "1".to_string());
     }
 
-    // Remote-pull cadence, fixed at 15 seconds. event-push + event-sync handle
-    // real-time propagation; this poll is only the correctness backstop. It is
-    // intentionally NOT user-configurable.
-    const SYNC_POLL_REMOTE_MS: u64 = 15_000;
-    let poll_ms = SYNC_POLL_REMOTE_MS;
-
     let mut runner_args = vec![
         "--companies".to_string(),
         "--direction".to_string(),
@@ -158,8 +151,6 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         "--hq-root".to_string(),
         hq_folder_path.to_string(),
         "--watch".to_string(),
-        "--poll-remote-ms".to_string(),
-        poll_ms.to_string(),
     ];
 
     // `--event-push` is a runner capability, never V2 enrollment. The
@@ -911,8 +902,8 @@ mod tests {
     //
     // Auto-sync reuses the same hq-sync-runner binary as the manual Sync Now
     // button (see commands/sync.rs::build_sync_spawn_args), but adds:
-    //   --watch                  — keep the runner alive after the first pass
-    //   --poll-remote-ms 15000   — pull from S3 every 15 seconds (fixed)
+    //   --watch — keep the runner alive after the first pass; hq-cloud owns
+    //             the adaptive correctness-poll cadence
     //
     // Conflict policy stays `keep` (skip-and-surface) — local edits win and
     // the conflict store routes them through the existing modal. Direction
@@ -953,18 +944,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_watch_runner_args_includes_watch_and_poll_interval() {
+    fn test_build_watch_runner_args_uses_runner_adaptive_poll_interval() {
         let args = build_watch_runner_args("/any");
         assert!(args.args.contains(&"--watch".to_string()));
-        let poll_idx = args
-            .args
-            .iter()
-            .position(|a| a == "--poll-remote-ms")
-            .expect("--poll-remote-ms flag missing");
-        assert_eq!(
-            args.args.get(poll_idx + 1).map(|s| s.as_str()),
-            Some("15000"),
-            "expected the fixed 15-second (15000ms) poll interval"
+        assert!(
+            !args.args.iter().any(|arg| arg == "--poll-remote-ms"),
+            "omitting --poll-remote-ms lets hq-cloud apply load-aware backoff: {:?}",
+            args.args
         );
     }
 
