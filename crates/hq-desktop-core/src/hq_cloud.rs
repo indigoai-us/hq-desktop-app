@@ -337,7 +337,16 @@
 /// five-minute watchdog does not kill a healthy ten-minute backoff. Raising
 /// the floor changes the npx cache key so an existing 6.15.7–6.15.9 resolution
 /// cannot keep serving an incomplete scheduler.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.10";
+/// `~6.15.10` -> `~6.15.11`: floor the pin at durable push progress. Before
+/// 6.15.11 a push journaled only after uploads AND deletes had both finished,
+/// so a pass this watchdog terminated contributed nothing however many objects
+/// it had already uploaded — a vault too large to finish inside one watchdog
+/// window could never converge and simply burned CPU across restarts. 6.15.11
+/// checkpoints the journal mid-pass (uploads and remote-content
+/// reconciliations alike), so an interrupted pass resumes. The pin must move
+/// even though `~6.15.10` already admits 6.15.11: npx caches by the spec
+/// string, so an existing resolution would keep serving 6.15.10 forever.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.11";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -402,7 +411,15 @@ mod tests {
 
     #[test]
     fn version_floor_delivers_adaptive_reconcile_cooldown() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.10");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.11");
+    }
+
+    /// A pass the five-minute watchdog terminates must leave durable progress
+    /// behind, or a vault too large to finish in one window never converges.
+    /// That landed in hq-cloud 6.15.11, so the pin may not fall below it.
+    #[test]
+    fn version_floor_delivers_durable_push_progress() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 11));
     }
 
     /// Lower bound of the tilde pin as a concrete version. `~X.Y.Z` parses to a
