@@ -148,26 +148,29 @@ async fn fetch_latest() -> Result<String, String> {
 }
 
 /// Perform one check. Returns `Some(info)` when the machine needs `latest`
-/// installed — either an upgrade over a readable older version, or no readable
-/// version at all — and `None` when the user is already current.
+/// installed — an upgrade over a readable older version, or **no CLI installed
+/// at all** — and `None` when the user is already current.
 ///
-/// "No readable version" deliberately covers two cases that look identical from
-/// here and have the same remedy: the CLI was never installed, and the CLI is
-/// installed but broken (a global install interrupted part-way leaves a package
-/// the `hq` shim resolves into but node cannot load, so every probe fails).
-/// The desktop app is the only component that can fix either — a CLI whose own
-/// package will not load cannot run its own repair, and a user with no CLI has
-/// nothing to run — so this reports it and the background installer acts on it.
-/// `info.local` is `None` in both cases.
+/// The no-CLI case is the one this used to drop on the floor: a user who has
+/// never installed the CLI reported "no update available" forever, even though
+/// the app is the natural place to put it on the machine. `info.local` is
+/// `None` for it.
+///
+/// A binary that is present but whose version cannot be read is NOT included.
+/// It may be our own install left broken by an interrupted global install, or
+/// an unrelated program named `hq`, and nothing available here distinguishes
+/// them; `should_report_unreadable_version` below reports it for triage instead.
 pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, String> {
     let latest = fetch_latest().await?;
     let local_version = get_local_version_diagnostics();
     let local = local_version.local.clone();
-    // Includes the no-readable-version case, which is both "never installed"
-    // and "installed but broken" — see `cli_install_needed`. Previously this
-    // arm was false, so a machine with a missing or unloadable CLI reported no
-    // update and the background installer below never ran for it.
-    let update_available = cli_install_needed(local.as_deref(), &latest);
+    // Now also true when NO `hq` is installed at all. Previously the
+    // unreadable-version arm was unconditionally false, so a user with no CLI
+    // reported "no update available" and the background installer below never
+    // ran for them. `hq_installed` keeps a present-but-unreadable binary out of
+    // it — see `cli_install_needed`.
+    let update_available =
+        cli_install_needed(local.as_deref(), &latest, local_version.hq_installed);
     log(
         "hq-cli-update",
         &format!(
@@ -1331,20 +1334,24 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     let path = paths::child_path();
     let hq_resolved = paths::resolve_bin_with_kind("hq");
     let hq = hq_resolved.path.clone();
+    let mut first_install = false;
     let executor = match install_executor_for_hq_bin(Path::new(&hq)) {
         Some(executor) => executor,
-        // No readable @indigoai-us/hq-cli at the resolved path. That alone is
-        // not a reason to refuse: it is equally the signature of a machine with
-        // no CLI and of one whose install is broken, and both are fixed by
-        // installing. `install_executor_for_first_install` separates those from
-        // the case this refusal actually guards — an unrelated program named
-        // `hq` — and still returns None for it.
-        None => install_executor_for_first_install(&hq, hq_resolved.kind).ok_or_else(|| {
-            format!(
-                "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
-                 Refusing to overwrite an unrelated command."
-            )
-        })?,
+        // Nothing identifiable at the resolved path. When nothing resolved AT
+        // ALL there is no file to overwrite, so this is a first install rather
+        // than the unrelated-command case the refusal guards; anything else
+        // still refuses. See `install_executor_for_first_install`.
+        None => {
+            let executor =
+                install_executor_for_first_install(hq_resolved.kind).ok_or_else(|| {
+                    format!(
+                        "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
+                         Refusing to overwrite an unrelated command."
+                    )
+                })?;
+            first_install = true;
+            executor
+        }
     };
     // This must be sampled before the install, for either executor. An
     // unwritable marker reads as absent; the post-install gate then refuses to
@@ -1365,6 +1372,21 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             InstallExecutor::Npm => unreachable!("npm handled below"),
         };
     }
+    // A machine with no CLI very often has no Node either — the population this
+    // first-install path exists for is precisely the one least likely to have a
+    // toolchain. npm would then resolve to the bare name, the very first spawn
+    // would fail `spawn npm: …`, and that error propagates out of
+    // `run_npm_install_with_retries` before the managed-toolchain retry (which
+    // only arms on a failing install OUTPUT, never on a spawn error) is ever
+    // considered. Provision HQ's managed Node up front instead, so the first
+    // install has an npm to run at all.
+    let (npm, path) = if first_install && npm_unresolved(&npm) {
+        provision_managed_npm_for_first_install(&app)
+            .await
+            .unwrap_or((npm, path))
+    } else {
+        (npm, path)
+    };
     // Derive the prefix from the RUNTIME of the resolved npm, not `hq` alone: if a
     // prior episode provisioned HQ's managed Node but left no managed `hq`, npm is
     // now managed (Node 22) while `hq` still resolves the user's Node-20 shim, and a
@@ -1697,6 +1719,51 @@ fn persist_reported_episode(outcome: InstallFailureEpisode) {
 /// from the SHARED `paths::managed_npm_prefix_in`, the same definition the
 /// first-run dependency installer uses, so the two can never target different
 /// directories.
+/// Whether `resolve_bin("npm")` found nothing and handed back the bare name.
+///
+/// `resolve_bin` returns the name itself as its unresolved marker (so
+/// `Command::new` still errors readably), which means "npm" with no path
+/// separator is exactly the not-found signal.
+fn npm_unresolved(npm: &str) -> bool {
+    Path::new(npm).components().count() <= 1
+}
+
+/// Provision HQ's managed Node so a first install has an npm to run.
+///
+/// Only used when the machine has no CLI *and* no resolvable npm. Returns the
+/// managed `(npm, PATH)` pair on success, or `None` when provisioning is on
+/// cooldown or fails — in which case the caller proceeds with the unresolved
+/// npm and surfaces the ordinary spawn failure, exactly as before.
+async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(String, String)> {
+    log(
+        "hq-cli-update",
+        "first install with no npm on PATH — provisioning HQ's managed Node first",
+    );
+    match crate::commands::sync::repair_managed_node(app).await {
+        ToolchainRepair::Repaired => {}
+        ToolchainRepair::Skipped => {
+            log(
+                "hq-cli-update",
+                "managed Node provisioning skipped — a repair was attempted too recently",
+            );
+            return None;
+        }
+        ToolchainRepair::Failed(reason) => {
+            log(
+                "hq-cli-update",
+                &format!("managed Node provisioning failed: {reason}"),
+            );
+            return None;
+        }
+    }
+    let (managed_npm, managed_path, _prefix) = managed_toolchain_npm_and_path()?;
+    log(
+        "hq-cli-update",
+        "managed Node provisioned — running the first install under it",
+    );
+    Some((managed_npm, managed_path))
+}
+
 fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
     let root = paths::managed_toolchain_roots().into_iter().next()?;
     let node_exe = paths::managed_node_executable_in(&root);

@@ -482,50 +482,63 @@ describe('master automatic-updates switch', () => {
 
 describe('installs the CLI when the machine has none', () => {
   // Before this, `check_once` compared versions with `None => false`, so a
-  // machine with no readable `hq` reported "no update available" and the
-  // background installer below it never ran. Two distinct populations were
-  // stranded: users who never installed the CLI, and users whose install was
-  // broken (a global install interrupted part-way leaves a package the shim
-  // resolves into but node cannot load, so every version probe fails).
+  // machine with no `hq` at all reported "no update available" and the
+  // background installer below it never ran — even though the app is the
+  // natural place to put the CLI on a machine that lacks it.
 
-  it('treats "no readable local version" as needing an install', () => {
+  it('treats "no CLI installed at all" as needing an install', () => {
     expect(cliUpdateCore).toContain('pub fn cli_install_needed(');
     // The decision is the extracted function, not an inline comparison whose
     // None arm is invisible to tests.
-    expect(cliUpdate).toContain('let update_available = cli_install_needed(local.as_deref(), &latest);');
+    expect(normalize(cliUpdate)).toContain(
+      'let update_available = cli_install_needed(local.as_deref(), &latest, local_version.hq_installed);',
+    );
     expect(cliUpdate).not.toContain('None => false,');
+  });
+
+  it('leaves a present-but-unreadable binary alone', () => {
+    // Ambiguous: our own broken install, or an unrelated program named `hq`.
+    // A version string cannot tell them apart, and the installer refuses
+    // either way — so claiming "needed" would only retry fruitlessly forever.
+    expect(normalize(cliUpdateCore)).toContain('None => !hq_installed,');
   });
 
   it('routes a first install to npm rather than refusing outright', () => {
     expect(cliUpdateCore).toContain('pub fn install_executor_for_first_install(');
-    // The refusal path now consults the fallback before giving up, so an absent
-    // CLI reaches an installer instead of "Refusing to overwrite an unrelated
-    // command."
     expect(normalize(cliUpdate)).toContain(
-      'None => install_executor_for_first_install(&hq, hq_resolved.kind).ok_or_else(||',
+      'install_executor_for_first_install(hq_resolved.kind).ok_or_else(||',
     );
     expect(cliUpdate).toContain('paths::resolve_bin_with_kind("hq")');
   });
 
-  it('keeps refusing to overwrite an unrelated program named hq', () => {
-    // Widening the install must not widen this: the fallback returns None for
-    // anything that is not demonstrably ours, and that still errors.
-    expect(cliUpdate).toContain(
-      'Refusing to overwrite an unrelated command.',
-    );
+  it('refuses every resolved-but-unidentifiable binary, including pnpm and Bun paths', () => {
+    // A path inside a pnpm/Bun global root proves only that THAT MANAGER owns
+    // the binary — any unrelated package exposing an `hq` bin installs to
+    // exactly there. Path shape is not ownership, so it must not unlock an
+    // install over someone else's command.
+    expect(cliUpdate).toContain('Refusing to overwrite an unrelated command.');
     expect(normalize(cliUpdateCore)).toContain(
-      'if resolved == ResolvedProgramKind::NotResolved { return Some(InstallExecutor::Npm); }',
+      '(resolved == ResolvedProgramKind::NotResolved).then_some(InstallExecutor::Npm)',
     );
+    const fallbackStart = cliUpdateCore.indexOf('pub fn install_executor_for_first_install(');
+    const fallbackEnd = cliUpdateCore.indexOf('\n}', fallbackStart);
+    const body = cliUpdateCore.slice(fallbackStart, fallbackEnd);
+    expect(body).not.toContain('is_pnpm_global_shim');
+    expect(body).not.toContain('is_bun_global_shim');
   });
 
-  it('repairs a broken pnpm or Bun install with its owning manager', () => {
-    // npm would drop a copy those managers' shims never read, so a broken
-    // install under their global roots must be reinstalled by them.
-    const fallbackStart = cliUpdateCore.indexOf('pub fn install_executor_for_first_install(');
-    const fallback = cliUpdateCore.slice(fallbackStart, fallbackStart + 900);
-    expect(fallback).toContain('is_pnpm_global_shim(hq_bin)');
-    expect(fallback).toContain('InstallExecutor::Pnpm');
-    expect(fallback).toContain('is_bun_global_shim(hq_bin)');
-    expect(fallback).toContain('InstallExecutor::Bun');
+  it('provisions HQ managed Node when a first install has no npm to run', () => {
+    // The population with no CLI is the one least likely to have a toolchain.
+    // A missing npm fails at the very first spawn, and that error propagates
+    // out before the managed-toolchain retry (which only arms on a failing
+    // install OUTPUT, never a spawn error) is ever reached.
+    expect(cliUpdate).toContain('async fn provision_managed_npm_for_first_install(');
+    expect(cliUpdate).toContain('crate::commands::sync::repair_managed_node(app).await');
+    expect(normalize(cliUpdate)).toContain(
+      'if first_install && npm_unresolved(&npm) {',
+    );
+    // Provisioning failure must not become a new hard failure: fall back to the
+    // unresolved npm and surface the ordinary spawn error, as before.
+    expect(normalize(cliUpdate)).toContain('.unwrap_or((npm, path))');
   });
 });
