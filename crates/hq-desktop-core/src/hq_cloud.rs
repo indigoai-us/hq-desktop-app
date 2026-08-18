@@ -346,7 +346,20 @@
 /// reconciliations alike), so an interrupted pass resumes. The pin must move
 /// even though `~6.15.10` already admits 6.15.11: npx caches by the spec
 /// string, so an existing resolution would keep serving 6.15.10 forever.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.11";
+///
+/// `~6.15.11` -> `~6.15.13`: floor the pin at fail-closed scope pruning and
+/// bounded upload memory. 6.15.12 (hq-cloud #345) stops a transient `fs.statSync`
+/// failure on the personal-vault carve-out dirs (`workspace/.session-logs`,
+/// `workspace/agency`) from reclassifying ~400k journal rows as out-of-scope and
+/// purging them — which wiped the journal and silently stalled sync until a
+/// manual restart. Carve-out rows are now classified by static path prefix, with
+/// a bulk-purge circuit breaker as a backstop. 6.15.13 (#343) raises the default
+/// transfer concurrency to an adaptive 64 (stepping to 32 when the host is
+/// already busy) and bounds peak upload memory with an available-memory byte
+/// budget, so a large first sync is dramatically faster without risking OOM. The
+/// pin must move even though `~6.15.11` already admits 6.15.13: npx caches by the
+/// spec string, so an existing resolution would keep serving 6.15.11 forever.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.13";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -409,9 +422,11 @@ mod tests {
         assert!(HQ_CLOUD_VERSION.starts_with('~'));
     }
 
+    /// Exact-pin tripwire: forces a deliberate assertion + doc-block update on
+    /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
-    fn version_floor_delivers_adaptive_reconcile_cooldown() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.11");
+    fn version_pin_is_exactly_current() {
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.13");
     }
 
     /// A pass the five-minute watchdog terminates must leave durable progress
@@ -420,6 +435,15 @@ mod tests {
     #[test]
     fn version_floor_delivers_durable_push_progress() {
         assert!(pin_lower_bound() >= semver::Version::new(6, 15, 11));
+    }
+
+    /// A transient `fs.statSync` failure on the personal-vault carve-out dirs
+    /// must not purge their ~400k journal rows and stall sync (hq-cloud 6.15.12),
+    /// and the default 64-way transfer pool must bound peak upload memory with an
+    /// available-memory byte budget (6.15.13). The pin may not fall below 6.15.13.
+    #[test]
+    fn version_floor_delivers_failclosed_purge_and_bounded_memory() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 13));
     }
 
     /// Lower bound of the tilde pin as a concrete version. `~X.Y.Z` parses to a
