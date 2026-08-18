@@ -335,9 +335,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Recall sidecar dependencies
-        run: pnpm run sidecar:install
-
       # The tag checkout still carries whatever version was committed. Overwrite
       # the five version files with the bytes the validate job stamped from the
       # tag, so the bundle, the updater archive and the DMG all carry it.
@@ -526,10 +523,6 @@ jobs:
               print(f"Verified Sentry debug-file record for {debug_id}")
           PY
 
-      - name: Fix Recall framework symlinks
-        shell: bash
-        run: bash scripts/fix-recall-framework-symlinks.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
-
       - name: Sign app bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -697,9 +690,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Recall sidecar dependencies
-        run: pnpm run sidecar:install
-
       # The tag checkout still carries whatever version was committed. Overwrite
       # the five version files with the bytes the validate job stamped from the
       # tag, so both installers and the updater artifacts all carry it.
@@ -756,16 +746,6 @@ jobs:
       # `bundle.externalBin` now requires this file to exist for each target
       # triple, so build and assert it before the bundle step rather than
       # publishing an installer with the Recall bridge resources but no launcher.
-      - name: Build Recall SDK sidecar (${{ matrix.target }})
-        shell: pwsh
-        env:
-          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
-        run: |
-          pnpm -C sidecar/recall-sdk-bridge build
-          $launcher = "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe"
-          if (-not (Test-Path $launcher)) {
-            throw "Recall sidecar launcher was not produced for ${{ matrix.target }} at $launcher"
-          }
 
       - name: Generate Windows MSI version overlay
         shell: pwsh
