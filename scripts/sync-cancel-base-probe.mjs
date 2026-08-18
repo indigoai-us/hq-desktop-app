@@ -140,13 +140,18 @@ try {
   run("git", ["-C", repo, "worktree", "add", "--detach", worktreeRoot, mergeBase], {
     timeout: 120_000,
   });
-  if (!existsSync(sidecarNodeModules)) {
-    throw new Error("the checked-out sidecar dependencies are unavailable for the base-artifact proof");
-  }
   // The detached merge-base worktree deliberately has no untracked dependencies.
   // A junction lets its Tauri build use the workflow's already-installed sidecar
   // dependencies without copying them into, or changing, the base source tree.
-  symlinkSync(sidecarNodeModules, baseSidecarNodeModules, "junction");
+  //
+  // The Recall SDK sidecar is no longer bundled, so these dependencies are not
+  // installed any more and a base commit from after its removal does not want
+  // them. Link only while BOTH sides still have it — a merge base from before
+  // the removal, built in a checkout that still installs it. Once the removal
+  // is the merge base for every open PR this branch stops running entirely.
+  if (existsSync(sidecarNodeModules)) {
+    symlinkSync(sidecarNodeModules, baseSidecarNodeModules, "junction");
+  }
   const processSource = readFileSync(processPath, "utf8");
   const processMarker = "// Tauri commands";
   if (!processSource.includes(processMarker)) {

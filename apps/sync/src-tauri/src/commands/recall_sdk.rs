@@ -164,9 +164,11 @@ static CACHED_ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// Returns true iff this user/process should run meeting detection.
 ///
 /// Decision order:
-///   1. `HQ_SYNC_MEETING_DETECT_FORCE=1` → true (QA override).
-///   2. A signed-in user (non-empty email claim) → true (GA).
-///   3. Otherwise → false.
+///   1. The SDK sidecar is no longer bundled → false, unconditionally.
+///   2. `HQ_SYNC_MEETING_DETECT_FORCE=1` → true (QA override, requires a
+///      locally-provisioned sidecar).
+///   3. A signed-in user (non-empty email claim) → true.
+///   4. Otherwise → false.
 ///
 /// Quiet on missing/malformed tokens (returns false rather than erroring) so a
 /// signed-out user during launch doesn't crash setup.
@@ -179,7 +181,32 @@ pub async fn meeting_detect_eligible() -> bool {
     enabled
 }
 
+/// The Recall Desktop SDK sidecar is no longer shipped in the app bundle.
+///
+/// It was bundled by copying `sidecar/recall-sdk-bridge/node_modules` wholesale
+/// into `Contents/Resources`, resolved at build time by a non-frozen pnpm
+/// install against `^2.0.15`. That made the shipped payload a function of
+/// whatever upstream had published: `@recallai/desktop-sdk` 2.0.29 became
+/// eligible under the 24h `minimumReleaseAge` gate mid-release and took the
+/// payload from 149 MB to 377 MB, pushing the bundle from 233 MB to 461 MB
+/// against a 300 MB ceiling.
+///
+/// With the payload gone there is no `bridge.mjs` to spawn, so the gate is
+/// forced closed rather than left to fail at spawn time and surface a
+/// "Recording engine exited unexpectedly" error to every signed-in user. The
+/// call sites stay in place so re-enabling is a matter of restoring the
+/// sidecar and this constant, not re-implementing the feature.
+const SDK_SIDECAR_BUNDLED: bool = false;
+
 async fn compute_meeting_detect_eligible() -> bool {
+    if !SDK_SIDECAR_BUNDLED {
+        log(
+            LOG_TAG,
+            "meeting_detect_eligible: SDK sidecar is not bundled — feature off",
+        );
+        return false;
+    }
+
     // Env override wins first — needed for CI/QA on machines signed in as
     // someone outside the allowlist.
     if matches!(std::env::var(FORCE_ENV).ok().as_deref(), Some("1")) {
