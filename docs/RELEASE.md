@@ -76,11 +76,25 @@ release creation/reset, asset deletion/upload, and publication are all skipped.
 - `APPLE_CERTIFICATE`: base64-encoded Developer ID Application `.p12`.
 - `APPLE_CERTIFICATE_PASSWORD`: password for the `.p12`.
 - `APPLE_SIGNING_IDENTITY`: full identity string, for example `Developer ID Application: NAME (TEAMID)`.
-- `APPLE_ID`: the Apple ID (email) used for notarization.
-- `APPLE_PASSWORD`: an app-specific password for that Apple ID (notarytool).
 - `APPLE_TEAM_ID`: the Apple Developer Team ID.
+- `APPLE_API_KEY_ID`: App Store Connect API key ID (notarization).
+- `APPLE_API_ISSUER_ID`: App Store Connect API issuer ID (notarization).
+- `APPLE_API_PRIVATE_KEY`: contents of the App Store Connect API `.p8` private key.
 
-Notarization uses the Apple-ID method (`xcrun notarytool --apple-id/--password/--team-id`) — the same credential set as the legacy `hq-sync` / `hq-installer` repos. (The App Store Connect API-key method is **not** used; `scripts/notarize.sh` still implements it for local runs but the workflow inlines the Apple-ID call.)
+Signing and notarization run under the **Indigo AI, Inc.** organization team
+(`HWFZ2QDTMR`). The `.p12` bundles the leaf certificate, the Apple Developer ID
+G2 intermediate, and the private key.
+
+Notarization uses the **App Store Connect API-key method**
+(`xcrun notarytool --key/--key-id/--issuer`). The workflow writes the `.p8` to a
+`chmod 600` file under `$RUNNER_TEMP` and removes it on exit. The older Apple-ID
+method (`--apple-id/--password/--team-id`) is deliberately **not** used, because
+it requires an individual's Apple account and an app-specific password to sit in
+the release path. `APPLE_ID` and `APPLE_PASSWORD` are no longer read by this
+workflow.
+
+Background and the full account-migration record:
+`companies/indigo/knowledge/engineering/apple-account-migration.md` in HQ.
 
 ### Tauri updater channels
 
