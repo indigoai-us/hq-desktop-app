@@ -330,13 +330,14 @@
 /// recovery. This changes the npx cache key so installs cannot keep serving
 /// 6.15.6 or older, whose whole-file WAL reader crashes once a journal crosses
 /// 2 GiB. (6.15.6 was already released for an unrelated download retry fix.)
-/// `~6.15.7` -> `~6.15.9`: floor the pin at the long-pass liveness and
-/// adaptive reconcile cooldown fixes. Desktop now leaves the poll interval to
-/// hq-cloud instead of forcing a 15-second cadence; 6.15.9 also ensures a pass
-/// that overruns its deadline receives a complete cooldown before another
-/// correctness poll. Raising the floor changes the npx cache key so an
-/// existing 6.15.7/6.15.8 resolution cannot keep serving the old scheduler.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.9";
+/// `~6.15.7` -> `~6.15.10`: floor the pin at the complete adaptive-liveness
+/// contract. Desktop now leaves the poll interval to hq-cloud instead of
+/// forcing a 15-second cadence; 6.15.9 gives an overrun pass a full cooldown,
+/// and 6.15.10 emits recognized heartbeats during that idle wait so Desktop's
+/// five-minute watchdog does not kill a healthy ten-minute backoff. Raising
+/// the floor changes the npx cache key so an existing 6.15.7–6.15.9 resolution
+/// cannot keep serving an incomplete scheduler.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.10";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -401,7 +402,7 @@ mod tests {
 
     #[test]
     fn version_floor_delivers_adaptive_reconcile_cooldown() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.9");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.10");
     }
 
     /// Lower bound of the tilde pin as a concrete version. `~X.Y.Z` parses to a
