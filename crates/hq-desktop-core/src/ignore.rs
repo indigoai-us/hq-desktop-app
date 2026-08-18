@@ -118,6 +118,14 @@ pub struct IgnoreFilter {
 impl IgnoreFilter {
     pub fn for_hq_root(hq_root: &Path) -> Result<Self, String> {
         let mut builder = GitignoreBuilder::new(hq_root);
+        // hq-cloud's `ignore` matcher is case-INSENSITIVE by default, so its
+        // defaults exclude `.MCP.JSON` / `service.CREDENTIALS.JSON` just like
+        // the lowercase forms. Rust's GitignoreBuilder is case-sensitive unless
+        // told otherwise; match the TS engine so a mixed-case secret can't slip
+        // through the desktop first-push path while the periodic runner drops it.
+        builder
+            .case_insensitive(true)
+            .map_err(|e| format!("case_insensitive: {e}"))?;
         for pat in DEFAULT_IGNORES {
             builder
                 .add_line(None, pat)
@@ -446,5 +454,25 @@ mod tests {
         // Release-shipped pack template and ordinary docs still sync.
         assert!(filter.should_sync(&root.join("core/packages/hq-pack-gemini/.mcp.json")));
         assert!(filter.should_sync(&root.join("docs/env-setup.md")));
+    }
+
+    // hq-cloud's `ignore` matcher is case-insensitive; the Rust filter must be
+    // too, or a mixed-case secret slips through the desktop first-push path.
+    #[test]
+    fn secret_exclusion_is_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        for p in [
+            ".MCP.JSON",
+            "companies/acme/.Mcp.Json",
+            "Credentials.json",
+            "service.CREDENTIALS.JSON",
+            "personal/DB.Secret.YAML",
+            ".ENV",
+            ".Env.Local",
+        ] {
+            assert!(!filter.should_sync(&root.join(p)), "{p} must be excluded (case-insensitive)");
+        }
     }
 }
