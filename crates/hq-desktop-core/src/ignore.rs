@@ -88,9 +88,19 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "policies/_digest.md",
     // HQ repos directory (managed separately, not synced)
     "repos/",
-    // Secrets / env
+    // Secrets / env. These MUST be built-in (mirrors hq-cloud 6.15.14): sync no
+    // longer consults .gitignore, so a credential must never reach the vault
+    // regardless of config files. Unanchored so a company-nested one is caught.
     ".env",
     ".env.*",
+    ".mcp.json",
+    "*.credentials.json",
+    "credentials.json",
+    "*.secret.*",
+    ".netrc",
+    // Release-shipped MCP config templates in packaged HQ packs are not user
+    // secrets — re-include them (mirrors hq-cloud's carve-out).
+    "!core/packages/*/.mcp.json",
     // Re-include .gitkeep placeholders anywhere — even inside the
     // `/companies/*/{settings,data,workers}/**` exclusions above. Without
     // this, a freshly-provisioned company's empty scaffold dirs never reach
@@ -128,7 +138,13 @@ impl IgnoreFilter {
                 .add_line(None, "/core.yaml")
                 .map_err(|e| format!("default pattern `/core.yaml`: {e}"))?;
         }
-        for name in [".gitignore", ".hqignore", ".hqsyncignore"] {
+        // NOTE: the repo's .gitignore is deliberately NOT loaded (mirrors
+        // hq-cloud 6.15.14). .gitignore governs what the git-mirror COMMITS;
+        // what sync UPLOADS is owned by .hqignore/.hqinclude. Coupling them let
+        // a git-mirror exclusion (e.g. workspace/) silently stop syncing that
+        // subtree — the carve-out incident. Sync exclusions come only from
+        // DEFAULT_IGNORES + the two hq-specific config files.
+        for name in [".hqignore", ".hqsyncignore"] {
             let p = hq_root.join(name);
             if p.exists() {
                 if let Some(e) = builder.add(&p) {
@@ -385,5 +401,50 @@ mod tests {
         fs::write(root.join(".env"), "SECRET=1\n").unwrap();
         let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(filter.should_sync(&root.join(".env")));
+    }
+
+    // Mirrors hq-cloud 6.15.14: the repo's .gitignore is NOT a sync-exclusion
+    // source. A pattern present only there must not stop a path from syncing.
+    #[test]
+    fn gitignore_does_not_exclude_from_sync() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("workspace/.session-logs")).unwrap();
+        fs::write(root.join(".gitignore"), "workspace/\n*.bigfile\n").unwrap();
+        fs::write(root.join("workspace/.session-logs/s.jsonl"), "{}\n").unwrap();
+        fs::write(root.join("notes.bigfile"), "x\n").unwrap();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(filter.should_sync(&root.join("workspace/.session-logs/s.jsonl")));
+        assert!(filter.should_sync(&root.join("notes.bigfile")));
+        // The same pattern via .hqignore DOES exclude (the supported channel).
+        fs::write(root.join(".hqignore"), "*.bigfile\n").unwrap();
+        let filter2 = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter2.should_sync(&root.join("notes.bigfile")));
+    }
+
+    // Secrets must be excluded by the built-in defaults with no config file,
+    // now that .gitignore no longer protects them.
+    #[test]
+    fn secrets_excluded_by_defaults() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        for p in [
+            ".env",
+            ".env.local",
+            "companies/acme/.env",
+            "credentials.json",
+            "companies/acme/service.credentials.json",
+            "companies/acme/knowledge/credentials.json",
+            "personal/db.secret.yaml",
+            ".mcp.json",
+            "companies/acme/.mcp.json",
+            "personal/.netrc",
+        ] {
+            assert!(!filter.should_sync(&root.join(p)), "{p} must be excluded");
+        }
+        // Release-shipped pack template and ordinary docs still sync.
+        assert!(filter.should_sync(&root.join("core/packages/hq-pack-gemini/.mcp.json")));
+        assert!(filter.should_sync(&root.join("docs/env-setup.md")));
     }
 }
