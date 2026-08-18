@@ -23,7 +23,6 @@
     shouldSkipSignIn,
   } from './lib/auth';
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
-  import { loadCloudPaused } from './desktop-alt/lib/cloud-connection';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
   import { friendlyCompanyLabel } from './lib/company-label';
   import { ListenerRegistry, subscribeWindowFocus } from './lib/listener-registry';
@@ -179,22 +178,6 @@
     filesSkipped: number;
   } | null>(null);
   let syncErrorMessage = $state(''); // Last auth-error or error message
-  // V2 Cloud Off (US-001 / US-016): settings-backed pause flag. Hydrated on
-  // mount and on every popover open, and re-checked right before a manual
-  // sync — the Rust `start_sync` gate is the enforcement; this state only
-  // renders the paused notice and short-circuits the click with an honest
-  // message.
-  let cloudPaused = $state(false);
-  async function refreshCloudPaused(): Promise<boolean> {
-    try {
-      cloudPaused = await loadCloudPaused();
-    } catch {
-      // keep last-known value
-    }
-    return cloudPaused;
-  }
-  // Hydrate once at popover boot (fire-and-forget; focus handler keeps it fresh).
-  void refreshCloudPaused();
   // Company slug attached to the last `sync:error` event, threaded into the
   // sync-failed Copy-Prompt so it can render `~/.hq/sync-journal.{slug}.json`
   // as a concrete path. Empty for auth errors / discovery-phase failures /
@@ -905,12 +888,6 @@
 
   async function handleSyncNow() {
     if (syncState === 'syncing') return;
-    // Cloud Off (V2 US-001 / US-016): sync is paused on this device. Check the
-    // settings-backed flag (authoritative, shared with the Rust gates) before
-    // touching any sync state — the popover shows the paused notice instead
-    // of starting a run. `start_sync` would refuse anyway; this keeps the UI
-    // honest without a round-trip through an error state.
-    if (await refreshCloudPaused()) return;
     syncState = 'syncing';
     manualSyncActive = true;
     manualSyncTelemetryPending = true;
@@ -1306,9 +1283,6 @@
           // Re-read the auto-update pref so a Settings toggle takes effect on
           // the next popover open, not just on relaunch.
           void loadAutoUpdatePref();
-          // Re-read Cloud Off so a toggle flipped in the V2 window shows in
-          // the popover on the next open, without a relaunch.
-          void refreshCloudPaused();
           if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
         }
       })
@@ -2490,7 +2464,6 @@
       {brand}
       errorMessage={syncErrorMessage}
       errorCompany={syncErrorCompany}
-      {cloudPaused}
       {conflicts}
       {showConflictModal}
       conflictCount={syncConflictCount}

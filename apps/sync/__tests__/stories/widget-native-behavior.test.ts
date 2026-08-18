@@ -598,8 +598,7 @@ describe('Widget restored native standalone behavior', () => {
       }),
     );
     expect(tauri.invoke).toHaveBeenCalledWith('open_desktop_alt_window', {
-      // US-020: the Activity page is gone — new-file opens land on the company Overview.
-      route: 'company:indigo',
+      route: 'company:indigo:activity',
     });
 
     await openVisibleNotification(

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -151,6 +151,47 @@ describe("release workflow channel contract", () => {
     expect(validate).toMatch(
       /- name: Enforce release branch policy\n {8}if: \$\{\{ github\.event_name == 'push' \}\}/,
     );
+  });
+
+  it("refuses to release a tag whose tree carries the V2 chat shell", () => {
+    const validate = jobBody("validate");
+
+    // The guard runs on the tag's own checked-out tree, which is the only
+    // place that catches the actual failure mode: a stable tag cut from a main
+    // tip that still carried the shell. A branch-level check cannot see it.
+    expect(validate).toContain("- name: Enforce v1 desktop shell");
+    expect(validate).toContain('if [ -d "$SHELL_DIR/chat" ]; then');
+    expect(validate).toContain("this tag carries the V2 chat shell");
+
+    // Negative check alone is not enough — an empty desktop-alt tree would
+    // pass it. The v1 sidebars must positively be present.
+    expect(validate).toContain(
+      "for marker in v4/V4Sidebar.svelte v4/V4SecondarySidebar.svelte; do",
+    );
+    expect(validate).toContain("the v1 desktop shell is not intact");
+  });
+
+  it("applies the shell guard to workflow_dispatch retries too", () => {
+    const validate = jobBody("validate");
+
+    // The branch policy above deliberately skips dispatch retries. This guard
+    // must NOT: a retry re-publishes that tag's artifacts to stable, so
+    // retrying any of v0.10.106–v0.10.116 would put the V2 shell back in front
+    // of users. Asserting the absence of the gate keeps a well-meaning
+    // "make it consistent with the step above" edit from reopening that path.
+    expect(validate).not.toMatch(
+      /- name: Enforce v1 desktop shell\n {8}if: \$\{\{ github\.event_name == 'push' \}\}/,
+    );
+  });
+
+  it("keeps the working tree on the v1 desktop shell", async () => {
+    const shellDir = resolve(rootDir, "apps/sync/src/desktop-alt");
+
+    await expect(stat(resolve(shellDir, "chat"))).rejects.toThrow();
+
+    for (const marker of ["v4/V4Sidebar.svelte", "v4/V4SecondarySidebar.svelte"]) {
+      await expect(stat(resolve(shellDir, marker))).resolves.toBeDefined();
+    }
   });
 
   it("allows an equal stable rerun but rejects a rollback below public latest", () => {

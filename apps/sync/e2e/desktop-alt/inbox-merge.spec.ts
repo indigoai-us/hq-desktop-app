@@ -1,88 +1,93 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   fromV4Route,
   resolvePendingDesktopRoute,
 } from '../../src/desktop-alt/route';
+import { V4_NAV_ITEMS } from '../../src/desktop-alt/v4/model';
 import { readRepoFile } from './harness';
 
 /**
- * US-006 / US-008 / US-018 — Notifications chronology + first-class Messages.
+ * US-006 — US-008 Inbox chronology + first-class Messages (source contracts
+ * + route resolution).
  *
- * US-018 retired InboxPage. Notification chronology is NotificationsView on
- * the `notifications` route; Messages remains its own destination. Legacy
- * `inbox` deep links remap to notifications.
- *
- * Locks:
- *  - Notifications and Messages are distinct live routes.
- *  - `messages` → Messages; `notifications` / `inbox` → Notifications.
- *  - NotificationsView is the dedicated feed (All | Unread, Mark all read).
- *  - Message hover-expand + quick-reply + emoji react still live in NotificationRow
- *    for shared popover/widget paths.
+ * Locks the restored split:
+ *  - Inbox and Messages are distinct primary destinations.
+ *  - `messages` resolves to Messages; `notifications` resolves to Inbox.
+ *  - InboxPage hosts shared NotificationFeed / one-line NotificationRow with
+ *    a title + unread-only header (no tabs / sync / overflow / chrome).
+ *  - Message hover-expand + quick-reply + emoji react live in NotificationRow.
  */
 
-const root = process.cwd();
-
-describe('US-006 / US-008 / US-018: Notifications chronology and Messages route', () => {
+describe('US-006 / US-008: Inbox chronology and Messages route', () => {
   const route = readRepoFile('src/desktop-alt/route.ts');
-  const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
 
-  it('retires InboxPage and keeps Notifications + Messages as live destinations', () => {
-    expect(existsSync(join(root, 'src/desktop-alt/pages/InboxPage.svelte'))).toBe(false);
+  it('has one Inbox chronology row and one full Messages row', () => {
+    const inboxRows = V4_NAV_ITEMS.filter((item) => item.id === 'inbox');
+    const messagesRows = V4_NAV_ITEMS.filter((item) => item.id === 'messages');
+    expect(inboxRows).toHaveLength(1);
+    expect(inboxRows[0]).toEqual({ id: 'inbox', label: 'Inbox' });
+    expect(messagesRows).toEqual([{ id: 'messages', label: 'Messages' }]);
+    // Notifications are chronology content, not a third destination.
+    expect(V4_NAV_ITEMS.map((i) => i.id)).not.toContain('notifications');
 
-    // DesktopRoute union names the live kinds (not inbox).
-    expect(route).toMatch(/'\s*notifications\s*'/);
-    expect(route).toMatch(/'\s*messages\s*'/);
-    expect(route).toContain('Notifications (notification chronology)');
-    expect(route).not.toMatch(/kind:\s*'inbox'/);
-
-    // Shell mounts NotificationsView + MessagesShell.
-    expect(app).toContain('NotificationsView');
-    expect(app).toContain("route.kind === 'notifications'");
-    expect(app).toContain("route.kind === 'messages'");
-    expect(app).not.toContain('InboxPage');
+    // Both destinations are named in the DesktopRoute union.
+    expect(route).toContain("'inbox'");
+    expect(route).toContain("'messages'");
+    expect(route).toContain('Inbox is');
+    expect(route).toContain('notification chronology; Messages is the full conversation workspace');
   });
 
-  it('messages → Messages; notifications + legacy inbox → Notifications', () => {
+  it('messages → Messages while notifications → Inbox at both resolution sites', () => {
+    // resolvePendingDesktopRoute switch
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
-    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'notifications' });
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
 
+    // fromV4Route switch
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
-    expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'notifications' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'inbox' })).toEqual({ kind: 'inbox' });
 
+    // Both switch sites keep the legacy case arms.
     expect(route).toContain("case 'messages':");
     expect(route).toContain("case 'notifications':");
-    expect(route).toContain("case 'inbox':");
     expect(route).toContain("return { kind: 'messages' }");
-    expect(route).toContain("return { kind: 'notifications' }");
   });
 });
 
-describe('US-006 / US-008 / US-018: NotificationsView surface', () => {
-  const notifications = readRepoFile('src/desktop-alt/chat/NotificationsView.svelte');
+describe('US-006 / US-008: InboxPage surface', () => {
+  const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
 
-  it('renders the unified notifications feed with filter + mark-all-read', () => {
-    expect(notifications).toContain('data-testid="notifications-view"');
-    expect(notifications).toContain('data-testid="notifications-title"');
-    expect(notifications).toContain('data-testid="notifications-filter"');
-    expect(notifications).toContain('data-testid="notifications-filter-all"');
-    expect(notifications).toContain('data-testid="notifications-filter-unread"');
-    expect(notifications).toContain('data-testid="notifications-mark-all-read"');
-    expect(notifications).toContain("invoke<unknown>('fetch_notifications'");
-    expect(notifications).toContain("invoke('ack_notification'");
-    expect(notifications).toContain("invoke('read_all_notifications'");
+  it('renders shared NotificationFeed / NotificationRow one-line rows', () => {
+    expect(inbox).toContain("import NotificationFeed from '../../components/NotificationFeed.svelte'");
+    expect(inbox).toContain('showDayLabels={false}');
+    expect(inbox).toContain('onunreadchange={handleUnreadChange}');
+    expect(inbox).toContain('onitemschange={handleItemsChange}');
+    expect(inbox).toContain('density="comfortable"');
+    expect(inbox).toContain('shared one-line NotificationRow');
   });
 
-  it('is a main-pane feed without detached-window / tab chrome', () => {
-    expect(notifications).not.toContain("open_messages_window");
-    expect(notifications).not.toContain("open_inbox_window");
-    expect(notifications).not.toContain('data-testid="desktop-alt-toggle"');
-    expect(notifications).not.toContain('Sync Now');
-    expect(notifications).not.toContain('overflow-menu');
-    expect(notifications).not.toContain('role="tablist"');
+  it('unified unread header, no detached-window buttons (no tabs / sync chrome)', () => {
+    expect(inbox).toContain('data-testid="inbox-unread-count"');
+    expect(inbox).toContain('All caught up');
+    expect(inbox).toContain('<h1 id="desktop-page-title">Inbox</h1>');
+    expect(inbox).not.toContain('data-testid="inbox-open-messages"');
+    expect(inbox).not.toContain('data-testid="inbox-open-quick"');
+    expect(inbox).not.toContain("open_messages_window");
+    expect(inbox).not.toContain("open_inbox_window");
+    expect(inbox).toContain('No tabs, no sync button, no overflow menus (US-008).');
+    expect(inbox).not.toContain('data-testid="desktop-alt-toggle"');
+    expect(inbox).not.toContain('Sync Now');
+    expect(inbox).not.toContain('overflow-menu');
+    expect(inbox).not.toContain('hq-icon');
+    expect(inbox).not.toContain('tab-selector');
+    expect(inbox).not.toContain('role="tablist"');
+  });
+
+  it('uses row timestamps without a sticky day-label slab', () => {
+    expect(inbox).toContain('showDayLabels={false}');
+    expect(inbox).toContain(':global(.nr-ts)');
+    expect(inbox).not.toContain(':global(.notif-day-label)');
   });
 });
 
@@ -92,9 +97,9 @@ describe('US-006 / US-008: NotificationRow message hover-expand', () => {
 
   it('message rows hover-expand with quick-reply + emoji react', () => {
     // US-011 added an opt-out gate (`hoverExpand`; the quick-window side pane
-    // passes false). The default MUST stay true so popover/widget message rows
-    // still hover-expand exactly as locked here. US-012 added `replyHold`
-    // (reply focus or draft) as an additional expand keeper.
+    // passes false). The default MUST stay true so popover/widget/Inbox
+    // message rows still hover-expand exactly as locked here. US-012 added
+    // `replyHold` (reply focus or draft) as an additional expand keeper.
     expect(row).toContain(
       'const expanded = $derived(\n' +
         '    isMessage && hoverExpand && (hovered || focusWithin || replyHold),\n' +

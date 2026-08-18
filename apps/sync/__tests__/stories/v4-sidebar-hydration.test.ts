@@ -1,12 +1,5 @@
 // @vitest-environment happy-dom
-//
-// US-018: V4Sidebar retired. Hydration ownership that used to live on the
-// primary nav rail now lives on ChatSidebar (companies prop is authoritative)
-// and DesktopApp (workspace list load). Update-badge races live on
-// VersionPopout / Settings — not the chat sidebar.
 
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
@@ -20,41 +13,42 @@ const tauri = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: tauri.listen,
-  emit: vi.fn(),
-}));
+vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, unmount } from 'svelte';
-import ChatSidebar from '../../src/desktop-alt/chat/ChatSidebar.svelte';
-
-const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
+import V4Sidebar from '../../src/desktop-alt/v4/V4Sidebar.svelte';
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let listeners: Map<string, (event: { payload: unknown }) => void>;
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   host = document.createElement('div');
   document.body.appendChild(host);
-  const storageValues = new Map<string, string>();
-  vi.stubGlobal('localStorage', {
-    get length() {
-      return storageValues.size;
+  listeners = new Map();
+  tauri.listen.mockImplementation(
+    async (event: string, callback: (event: { payload: unknown }) => void) => {
+      listeners.set(event, callback);
+      return vi.fn();
     },
-    clear: () => storageValues.clear(),
-    getItem: (key: string) => storageValues.get(key) ?? null,
-    key: (index: number) => [...storageValues.keys()][index] ?? null,
-    removeItem: (key: string) => storageValues.delete(key),
-    setItem: (key: string, value: string) => storageValues.set(key, String(value)),
-  } satisfies Storage);
-  tauri.listen.mockImplementation(async () => vi.fn());
+  );
   tauri.invoke.mockImplementation(async (command: string) => {
-    if (command === 'list_contacts') return { contacts: [] };
-    if (command === 'list_channels') return { channels: [] };
-    if (command === 'list_dm_requests') return { requests: [] };
     if (command === 'list_syncable_workspaces') {
       return { workspaces: [], cloudReachable: false };
     }
+    if (command === 'fetch_notification_history') {
+      return { dms: [], shares: [], files: [] };
+    }
+    if (command === 'get_activity_log') return [];
+    if (command === 'get_pending_update') return { status: 'absent' };
     return [];
   });
 });
@@ -63,73 +57,144 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host.remove();
-  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
-describe('US-018: V4Sidebar retired; ChatSidebar owns conversation hydration', () => {
-  it('deleted the legacy V4Sidebar surface', () => {
-    expect(existsSync(root('src/desktop-alt/v4/V4Sidebar.svelte'))).toBe(false);
-    expect(existsSync(root('src/desktop-alt/pages/InboxPage.svelte'))).toBe(false);
-  });
-
-  it('treats an explicitly empty company list as authoritative instead of self-loading workspaces', async () => {
-    component = mount(ChatSidebar, {
+describe('V4Sidebar hydration ownership', () => {
+  it('treats an explicitly empty company list as authoritative instead of self-loading', async () => {
+    component = mount(V4Sidebar, {
       target: host,
       props: {
+        route: { kind: 'home' },
         companies: [],
+        cloudReachable: false,
       },
     });
     flushSync();
     await Promise.resolve();
-    await Promise.resolve();
 
-    // ChatSidebar refreshes conversations (contacts/channels) but never owns
-    // the workspace list — DesktopApp passes companies down.
     expect(tauri.invoke).not.toHaveBeenCalledWith('list_syncable_workspaces');
-    expect(tauri.invoke).not.toHaveBeenCalledWith(
-      'list_syncable_workspaces',
-      expect.anything(),
-    );
+    expect(host.querySelectorAll('.v4-company-row')).toHaveLength(0);
   });
 
-  it('does not reintroduce the retired Inbox unread badge event bridge on the chat sidebar', async () => {
-    component = mount(ChatSidebar, {
+  it('keeps a cleared Inbox badge cleared when an older refresh resolves last', async () => {
+    const older = deferred<unknown>();
+    const newer = deferred<unknown>();
+    let pendingCalls = 0;
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'fetch_notification_history') {
+        return Promise.resolve({ dms: [], shares: [], files: [] });
+      }
+      if (command === 'get_activity_log') return Promise.resolve([]);
+      if (command === 'get_pending_update') {
+        pendingCalls += 1;
+        return pendingCalls === 1 ? older.promise : newer.promise;
+      }
+      return Promise.resolve([]);
+    });
+
+    component = mount(V4Sidebar, {
       target: host,
       props: {
+        route: { kind: 'home' },
         companies: [],
+        cloudReachable: true,
+      },
+    });
+    flushSync();
+    await vi.waitFor(() =>
+      expect(listeners.get('update:cleared')).toBeTypeOf('function'),
+    );
+
+    listeners.get('update:cleared')!({ payload: undefined });
+    await vi.waitFor(() => expect(pendingCalls).toBe(2));
+    newer.resolve({ status: 'absent' });
+    await Promise.resolve();
+    older.resolve({
+      status: 'pending',
+      update: {
+        version: '0.10.99',
+        detectedAt: '2026-07-27T15:00:00Z',
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(host.querySelector('.v4-unread-badge')).toBeNull();
+  });
+
+  it('registers native listeners before mount hydration closes the event gap', async () => {
+    const listenerGate = deferred<void>();
+    let pendingCalls = 0;
+    let pendingState: unknown = { status: 'absent' };
+    tauri.listen.mockImplementation(() =>
+      listenerGate.promise.then(() => vi.fn()),
+    );
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'fetch_notification_history') {
+        return Promise.resolve({ dms: [], shares: [], files: [] });
+      }
+      if (command === 'get_activity_log') return Promise.resolve([]);
+      if (command === 'get_pending_update') {
+        pendingCalls += 1;
+        return Promise.resolve(pendingState);
+      }
+      return Promise.resolve([]);
+    });
+
+    component = mount(V4Sidebar, {
+      target: host,
+      props: {
+        route: { kind: 'home' },
+        companies: [],
+        cloudReachable: true,
       },
     });
     flushSync();
     await Promise.resolve();
+    expect(pendingCalls).toBe(0);
+
+    pendingState = {
+      status: 'pending',
+      update: {
+        version: '0.10.36-beta.1',
+        detectedAt: '2026-07-27T15:00:00Z',
+      },
+    };
+    listenerGate.resolve(undefined);
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('.v4-unread-badge')?.textContent).toBe('1');
+    });
+    expect(pendingCalls).toBe(1);
+  });
+
+  it('uses the loaded Inbox feed count so sidebar and header cannot disagree', async () => {
+    component = mount(V4Sidebar, {
+      target: host,
+      props: {
+        route: { kind: 'inbox' },
+        companies: [],
+        cloudReachable: true,
+      },
+    });
+    flushSync();
+    await vi.waitFor(() =>
+      expect(listeners.get('dm:unread-summary')).toBeTypeOf('function'),
+    );
 
     window.dispatchEvent(
       new CustomEvent('hq:notifications-unread-count', { detail: 6 }),
     );
     flushSync();
+    expect(host.querySelector('.v4-unread-badge')?.textContent).toBe('6');
 
-    // V4Sidebar used to mirror hq:notifications-unread-count onto a unified
-    // inbox badge. ChatSidebar only badges conversation rows from its own
-    // channel/DM models — the custom event must not invent a badge.
-    expect(host.querySelector('.v4-unread-badge')).toBeNull();
-    expect(host.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
-  });
-
-  it('refreshes conversation lists without calling get_pending_update', async () => {
-    component = mount(ChatSidebar, {
-      target: host,
-      props: {
-        companies: [],
-      },
-    });
+    window.dispatchEvent(
+      new CustomEvent('hq:notifications-unread-count', { detail: 0 }),
+    );
     flushSync();
-    await vi.waitFor(() => {
-      expect(tauri.invoke).toHaveBeenCalledWith('list_contacts');
-    });
-
-    const commands = tauri.invoke.mock.calls.map((call) => call[0]);
-    expect(commands).not.toContain('get_pending_update');
-    expect(commands).not.toContain('fetch_notification_history');
-    expect(commands).toContain('list_channels');
+    expect(host.querySelector('.v4-unread-badge')).toBeNull();
   });
 });

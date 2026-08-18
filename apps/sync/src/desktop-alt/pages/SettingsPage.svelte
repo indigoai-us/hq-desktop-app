@@ -5,7 +5,7 @@
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
-  import { formatHqFolderMeta, SETTINGS_SECTIONS, type SettingsTab } from '../route';
+  import { formatHqFolderMeta, type SettingsTab } from '../route';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import { postOptIn } from '../../lib/onboarding-telemetry';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
@@ -33,28 +33,12 @@
     requestDesktopZoom,
   } from '../../lib/desktopZoom';
   import { isMac } from '../lib/platform';
-  import { presentPanelError } from '../lib/panel-error';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
   import '../v4/tokens.css';
-  import '../chat/chat-tokens.css';
 
-  // US-020 single-pane Settings: no second nav column, one section at a time.
-  // `activeTab === null` renders the in-place section index; a SettingsTab
-  // renders only that section with a Back affordance. Navigation goes through
-  // `onnavigate` so the shell route (`settings` / `settings:<tab>`) stays the
-  // source of truth for deep links and ⌘K.
-  let {
-    activeTab = null,
-    onnavigate,
-  }: {
-    activeTab?: SettingsTab | null;
-    onnavigate?: (tab: SettingsTab | null) => void;
-  } = $props();
-
-  const _activeSection = $derived(
-    SETTINGS_SECTIONS.find((section) => section.id === activeTab) ?? null,
-  );
-  void _activeSection;
+  // The secondary sidebar drives which section is in view; this page renders all
+  // sections in one scroll and reacts to `activeTab` by scrolling it into view.
+  let { activeTab = 'sync' }: { activeTab?: SettingsTab } = $props();
 
   // Evaluated once: the host OS cannot change while the window is open.
   const isMacOS = isMac();
@@ -565,6 +549,22 @@
     };
   });
 
+  // Scroll the active section into view when the sidebar selection changes (and
+  // once sections first render after load). No-op for the default top section.
+  $effect(() => {
+    const id = activeTab;
+    if (loading) return;
+    const target = document.getElementById(id);
+    const scroller = target?.closest<HTMLElement>('.desktop-main-scroll');
+    if (!target || !scroller) return;
+    const top =
+      target.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop -
+      12;
+    scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  });
+
   function applyPersistedSettings(
     settings: SettingsWire,
     membershipsWire: CompanyMembership[] | null | undefined,
@@ -628,10 +628,7 @@
       availableChannels = (Array.isArray(channels) ? channels : []).filter(isChannel);
       settingsReady = true;
     } catch (err) {
-      // Raw diagnostic goes to the console only — the page line stays calm.
-      console.error('settings load failed:', err);
-      if (generation === settingsLoadGeneration)
-        error = presentPanelError(err, { surface: 'settings' }).message;
+      if (generation === settingsLoadGeneration) error = String(err);
     } finally {
       settingsLoadsInFlight -= 1;
       if (generation === settingsLoadGeneration) loading = false;
@@ -712,11 +709,7 @@
         await saveSettings({ hqPath });
       }
     } catch (err) {
-      console.error('pick_folder failed:', err);
-      error = presentPanelError(err, {
-        surface: 'settings',
-        fallback: 'Couldn’t open the folder picker — try again',
-      }).message;
+      error = String(err);
     } finally {
       hqFolderChanging = false;
     }
@@ -731,11 +724,7 @@
     try {
       await invoke('open_meeting_permissions_window');
     } catch (err) {
-      console.error('open_meeting_permissions_window failed:', err);
-      error = presentPanelError(err, {
-        surface: 'settings',
-        fallback: 'Couldn’t open the permissions window — try again',
-      }).message;
+      error = String(err);
     } finally {
       meetingPermissionsOpening = false;
     }
@@ -1614,27 +1603,13 @@
   });
 </script>
 
-<section
-  class="settings-page chat-shell"
-  aria-labelledby="settings-title"
-  aria-busy={loading}
-  data-testid="settings-single-pane"
->
+<section class="settings-page" aria-labelledby="settings-title" aria-busy={loading}>
   <main class="settings-main">
-    <header class="page-header settings-head">
-      <button
-        type="button"
-        class="settings-back"
-        data-testid="settings-back"
-        onclick={() => onnavigate?.(null)}
-      >
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M10 3.5 5.5 8 10 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        Back
-      </button>
-      <h1 id="settings-title">Settings</h1>
-      <span class="settings-sub">{saved ? 'Saved' : 'yours — desktop'}</span>
+    <header class="page-header">
+      <div>
+        <p>{saved ? 'Saved' : 'menubar.json'}</p>
+        <h1 id="settings-title">Settings</h1>
+      </div>
     </header>
 
     {#if error}
@@ -1651,27 +1626,8 @@
       </div>
     {/if}
 
-    <div class="settings-split">
-      <!-- In-page section index (US-020: not a shell secondary sidebar). -->
-      <nav class="settings-index" aria-label="Settings sections" data-testid="settings-index">
-        {#each SETTINGS_SECTIONS as section (section.id)}
-          <button
-            type="button"
-            class="settings-index-row"
-            class:on={activeTab === section.id || (activeTab == null && section.id === 'sync')}
-            data-testid="settings-index-row"
-            data-section={section.id}
-            onclick={() => onnavigate?.(section.id)}
-          >
-            <span class="settings-index-label">{section.label}</span>
-            <span class="settings-index-chevron" aria-hidden="true">&rsaquo;</span>
-          </button>
-        {/each}
-      </nav>
-      <div class="settings-pane">
-
     <fieldset class="settings-controls" disabled={!settingsReady}>
-    <section id="sync" class="settings-section" hidden={activeTab !== 'sync'}>
+    <section id="sync" class="settings-section">
       <h2>Sync</h2>
       <div class="settings-card">
         <div class="setting-row">
@@ -1749,7 +1705,7 @@
       </div>
     </section>
 
-    <section id="notifications" class="settings-section" hidden={activeTab !== 'notifications'}>
+    <section id="notifications" class="settings-section">
       <h2>Notifications</h2>
       <div class="settings-card">
         <label class="setting-row">
@@ -1831,14 +1787,14 @@
       </div>
     </section>
 
-    <section id="widget" class="settings-section" hidden={activeTab !== 'widget'}>
+    <section id="widget" class="settings-section">
       <h2>Widget</h2>
       <div class="settings-card">
         <WidgetSettings showLoadError={false} />
       </div>
     </section>
 
-    <section id="updates" class="settings-section" hidden={activeTab !== 'updates'}>
+    <section id="updates" class="settings-section">
       <h2>Updates</h2>
       <div class="settings-card">
         <!-- Master automatic-updates switch (default ON). One toggle governs
@@ -2137,7 +2093,7 @@
       {/if}
     </section>
 
-    <section id="general" class="settings-section" hidden={activeTab !== 'general'}>
+    <section id="general" class="settings-section">
       <h2>General</h2>
       <div class="settings-card">
         <label class="setting-row">
@@ -2273,7 +2229,7 @@
     </section>
     </fieldset>
 
-    <section id="appearance" class="settings-section" hidden={activeTab !== 'appearance'} data-testid="settings-appearance">
+    <section id="appearance" class="settings-section" data-testid="settings-appearance">
       <h2>Appearance</h2>
       <div class="settings-card">
         <div class="setting-row appearance-row">
@@ -2346,7 +2302,7 @@
     </section>
 
     <fieldset class="settings-controls" disabled={!settingsReady}>
-    <section id="meetings" class="settings-section" hidden={activeTab !== 'meetings'}>
+    <section id="meetings" class="settings-section">
       <h2>Meetings</h2>
       <div class="settings-card">
         <label class="setting-row" class:gated-row={!meetingsEnabled}>
@@ -2442,130 +2398,16 @@
       </div>
     </section>
     </fieldset>
-      </div>
-    </div>
   </main>
 </section>
 
 <style>
   .settings-page {
-    display: flex;
-    flex-direction: column;
+    display: block;
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
-  }
-
-  .settings-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: 0 0 52px;
-    height: 52px;
-    padding: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .settings-sub {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--t3);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .settings-split {
-    display: flex;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-
-  .settings-pane {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: auto;
-  }
-
-  /* ── US-020 single-pane section index — parity-token styling ─────────── */
-  .settings-index {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 0 0 210px;
-    width: 210px;
-    min-width: 0;
-    padding: 16px 20px;
-    border-right: 1px solid var(--line);
-    overflow: auto;
-  }
-
-  .settings-index-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 7px 10px;
-    border: 0;
-    border-radius: 8px;
-    background: var(--raised);
-    color: var(--t1);
-    font-family: inherit;
-    font-size: 13px;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .settings-index-row:hover {
-    background: var(--hover);
-  }
-  .settings-index .settings-index-row:not(.on) {
-    background: transparent;
-    color: var(--t2);
-  }
-  .settings-index-row.on {
-    background: var(--sel);
-    color: var(--t1);
-    font-weight: 500;
-  }
-
-  .settings-index-row + .settings-index-row {
-    margin-top: 0;
-  }
-
-  .settings-index-label {
-    font-weight: 500;
-  }
-
-  .settings-index-chevron {
-    color: var(--t3);
-    font-size: var(--text-base);
-    line-height: 1;
-    opacity: 0;
-    width: 0;
-    overflow: hidden;
-  }
-
-  .settings-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0;
-    padding: 5px 10px;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: none;
-    color: var(--t2);
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .settings-back:hover {
-    color: var(--t1);
   }
 
   .settings-controls {
@@ -2589,44 +2431,26 @@
   .settings-main {
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: var(--v4-space-5);
     min-width: 0;
-    flex: 1 1 auto;
-    min-height: 0;
     container-name: settings-main;
     container-type: inline-size;
+    /* The shell's .desktop-main-scroll is the single vertical scroller.
+       Keeping this wrapper non-scrolling lets scrollIntoView move the section
+       index to the requested anchor instead of stopping at a nested container. */
     overflow: visible;
   }
 
   h1 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    white-space: nowrap;
+    margin: 2px 0 0;
+    font-size: var(--text-lg);
+    font-weight: 500;
   }
 
   .settings-section {
     display: grid;
     gap: 8px;
     scroll-margin-top: 12px;
-  }
-
-  /* US-020 single pane: `display: grid` above would defeat the `hidden`
-     attribute (author styles beat the UA [hidden] rule), so re-assert it —
-     exactly one section may be visible at a time. */
-  .settings-section[hidden] {
-    display: none;
-  }
-
-  /* The page h1 already names the open section — the in-section h2 would
-     read twice in the single pane. Kept in the DOM for structure/AT. */
-  .settings-section > h2 {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   .settings-card {
@@ -2644,12 +2468,8 @@
     align-items: center;
     gap: 12px;
     min-height: 48px;
-    margin-bottom: 10px;
-    padding: 14px 16px;
-    border: 1px solid var(--line, var(--v4-rowline));
+    padding: 10px 12px;
     border-top: 1px solid var(--v4-rowline);
-    border-radius: 10px;
-    background: var(--raised, var(--v4-raised));
   }
 
   .setting-row:first-child {

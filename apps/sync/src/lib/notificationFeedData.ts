@@ -1,7 +1,7 @@
 /**
  * Shared notification-feed data layer — used by both the menubar popover feed
  * (`components/NotificationFeed.svelte`) and the desktop combined Inbox page
- * (`desktop-alt/chat/NotificationsView.svelte`, US-012 / US-018).
+ * (`desktop-alt/pages/InboxPage.svelte`, US-008).
  *
  * Owns:
  *   - loading + merging the server notification history with the current

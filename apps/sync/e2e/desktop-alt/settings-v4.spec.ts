@@ -97,10 +97,9 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
     expect(page).toContain('getVersion');
   });
 
-  it('renders single-pane sections (US-020) and gated annotations', () => {
-    // US-020: SettingsPage is ONE pane — an in-place section index navigates
-    // to exactly one visible section at a time; there is no second sidebar
-    // column and no all-sections scroll.
+  it('renders the section anchors, scroll behavior, and gated annotations', () => {
+    // SettingsPage renders every section inline (one scroll) and scrolls the
+    // active one into view; the secondary sidebar provides the section index.
     for (const [id, label] of [
       ['sync', 'Sync'],
       ['notifications', 'Notifications'],
@@ -111,16 +110,9 @@ describe('desktop-alt V4 settings and first-run (US-013 / US-005)', () => {
     ]) {
       expect(page).toContain(`id="${id}"`);
       expect(page).toContain(`<h2>${label}</h2>`);
-      // Exactly one section shows at a time — every section is gated on the
-      // active tab.
-      expect(page).toContain(`hidden={activeTab !== '${id}'}`);
     }
-    // The in-place index + Back affordance replace the scroll-into-view model.
-    expect(page).toContain('data-testid="settings-index"');
-    expect(page).toContain('data-testid="settings-index-row"');
-    expect(page).toContain('data-testid="settings-back"');
-    expect(page).not.toContain("closest<HTMLElement>('.desktop-main-scroll')");
-    expect(page).not.toContain('scrollTo({ top: Math.max(0, top)');
+    expect(page).toContain("closest<HTMLElement>('.desktop-main-scroll')");
+    expect(page).toContain("scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })");
     expect(page).toContain('class="setting-row gated-row"');
     expect(page).toContain('@getindigo.ai only');
     expect(page).toContain('<em>Gated</em>');

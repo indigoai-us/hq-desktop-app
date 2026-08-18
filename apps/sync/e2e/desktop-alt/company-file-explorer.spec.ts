@@ -107,16 +107,13 @@ describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009
     expect(desktopApp).toContain('Select a file to preview it');
   });
 
-  it('the files route + Files destination exist in the IA', () => {
-    // route.ts declares the files route kind (US-018: V4_NAV_ITEMS retired).
+  it('the files route + Files nav destination exist in the IA', () => {
+    // route.ts declares the files route kind.
     expect(route).toContain("kind: 'files'");
     expect(route).toMatch(/kind === 'files'/);
-    expect(route).toContain("| { kind: 'files'; slug?: string; path?: string }");
-    // DesktopApp mounts FilesModeSidebar for the files route.
-    expect(desktopApp).toContain("{#if route.kind === 'files'}");
-    expect(desktopApp).toContain('<FilesModeSidebar');
-    // Shared company sort still lives in model.ts for the Files mini list.
-    expect(model).toContain('export function sortV4CompaniesConnectedFirst');
+    // model.ts / V4_NAV_ITEMS includes Files as a primary destination.
+    expect(model).toContain("{ id: 'files', label: 'Files' }");
+    expect(model).toContain("| 'files'");
   });
 
   it('Files mode survives a desktop-alt window reload via persisted route state', () => {
@@ -206,17 +203,9 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
   // e2eTest 1 (listed): root top-level folders by default
   // -------------------------------------------------------------------------
   it('the tree is rooted at the HQ root by default and scopes on company select', () => {
-    // No company → empty root path; company → the shared workspace scope-root
-    // helper (companies/<slug>, or the HQ-root personal/ tree for the personal
-    // workspace — knowledge-path fixes).
-    expect(sidebar).toContain("activeSlug ? filesScopeRootPath(activeSlug) : ''");
+    // No company → empty root path; company → companies/<slug>.
+    expect(sidebar).toContain("activeSlug ? `companies/${activeSlug}` : ''");
     expect(sidebar).toContain('rootPath={treeRootPath}');
-    // The helper's derivation stays pinned: companies scope to their subtree,
-    // ONLY the exact personal slug maps to the HQ-root personal tree.
-    expect(lib).toContain("PERSONAL_WORKSPACE_SLUG = 'personal'");
-    expect(lib).toContain(
-      "slug === PERSONAL_WORKSPACE_SLUG ? 'personal' : `companies/${slug}`",
-    );
     // The tree loads the root level on mount, not a pre-walked company tree.
     expect(sidebar).not.toContain("get_company_file_tree");
   });
@@ -239,11 +228,10 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
     // affordance also sends null.
     expect(sidebar).toContain('row.slug === activeSlug ? null : row.slug');
     expect(sidebar).toContain('onselectcompany?.(null)');
-    // The active filter is visually indicated (scope chip showing the derived
-    // scope root — companies/<slug>, or personal/ for the personal workspace)
-    // and labelled root when no filter is set.
+    // The active filter is visually indicated (scope chip) and labelled root
+    // when no filter is set.
     expect(sidebar).toContain('fs-scope');
-    expect(sidebar).toContain('fs-scope-label">{treeRootPath}');
+    expect(sidebar).toContain('companies/{activeSlug}');
     expect(sidebar).toContain('HQ root');
   });
 

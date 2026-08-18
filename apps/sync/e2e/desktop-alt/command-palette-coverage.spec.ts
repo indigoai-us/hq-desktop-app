@@ -27,8 +27,7 @@ describe('desktop-alt command palette coverage', () => {
       "LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB)",
     );
     expect(desktopApp).toContain('command-go-library-${section.id}');
-    // US-017: library destinations go through openLibrary (Back-route tracking).
-    expect(desktopApp).toContain("openLibrary({ kind: 'library', tab: section.id })");
+    expect(desktopApp).toContain("navigate({ kind: 'library', tab: section.id })");
   });
 
   it('enumerates every Settings sub-section into the palette (minus the default landing tab)', () => {
@@ -39,16 +38,13 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).toContain("navigate({ kind: 'settings', tab: section.id })");
   });
 
-  it('keeps Marketplace, Home, and Notifications reachable from the palette (US-007 / US-018)', () => {
-    // Marketplace is a top-level destination; Home stays palette-only.
-    // US-018: Mission Control entry removed; Notifications replaces Inbox.
+  it('keeps Marketplace, Home, and Mission Control reachable from the palette (US-007)', () => {
+    // Marketplace is a top-level destination with the ⌘4 slot; Home and
+    // Mission Control lost their sidebar rows + hotkeys but stay routable.
     expect(desktopApp).toContain("id: 'command-go-marketplace'");
     expect(desktopApp).toContain("navigate({ kind: 'marketplace' })");
     expect(desktopApp).toContain("id: 'command-go-home'");
-    expect(desktopApp).toContain("id: 'command-go-notifications'");
-    expect(desktopApp).toContain("navigate({ kind: 'notifications' })");
-    expect(desktopApp).not.toContain("id: 'command-go-mission-control'");
-    expect(desktopApp).not.toContain("id: 'command-go-inbox'");
+    expect(desktopApp).toContain("id: 'command-go-mission-control'");
     expect(desktopApp).not.toContain("id: 'command-go-companies'");
   });
 
@@ -86,9 +82,6 @@ describe('desktop-alt command palette coverage', () => {
     expect(palette).toContain("command.id.startsWith('command-go-') ? 'navigate' : 'actions'");
     expect(palette).toContain("label: 'ACTIONS'");
     expect(palette).toContain("label: 'NAVIGATE'");
-    // US-013: conversation rows get their own section under commands.
-    expect(palette).toContain("command.id.startsWith('conversation-')");
-    expect(palette).toContain("label: 'CONVERSATIONS'");
   });
 
   it('the section tables it enumerates carry every routable tab', () => {

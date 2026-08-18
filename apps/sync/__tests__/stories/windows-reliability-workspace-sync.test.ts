@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../src/lib/workspaces';
@@ -97,26 +97,25 @@ describe('US-007: Per-workspace sync controls and Personal taxonomy', () => {
     expect(tauriMain).toContain('commands::workspaces::set_workspace_sync_enabled');
   });
 
-  it('retires V4Sidebar/SidebarSyncMode; keeps DesktopApp + Settings + SyncModeToggle wiring (US-018)', () => {
-    expect(existsSync(root('src/desktop-alt/v4/V4Sidebar.svelte'))).toBe(false);
-    expect(existsSync(root('src/desktop-alt/v4/SidebarSyncMode.svelte'))).toBe(false);
-
+  it('renders Personal under Workspaces and keeps the sidebar control split between enabled and scope', () => {
+    const sidebar = read('src/desktop-alt/v4/V4Sidebar.svelte');
+    const syncMode = read('src/desktop-alt/v4/SidebarSyncMode.svelte');
     const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
     const desktop = read('src/desktop-alt/DesktopApp.svelte');
     const companyPage = read('src/desktop-alt/pages/CompanyPage.svelte');
-    const syncModeToggle = read('src/components/SyncModeToggle.svelte');
-    const filesSidebar = read('src/desktop-alt/v4/FilesModeSidebar.svelte');
 
-    // Company-row model still labels Personal + owner for any remaining consumers
-    // (FilesModeSidebar mini list uses sortV4CompaniesConnectedFirst).
-    expect(filesSidebar).toContain('sortV4CompaniesConnectedFirst');
-    expect(filesSidebar).toContain('companyRows');
+    expect(sidebar).toContain('Workspaces');
+    expect(sidebar).toContain('Companies');
+    expect(sidebar).toContain('ownerLabel');
+    expect(sidebar).toContain('isPersonal={true}');
+    expect(sidebar).toContain('onworkspaceenabledchange');
 
-    // Shared/All footprint control lives on SyncModeToggle (WorkspaceList).
-    expect(syncModeToggle).toContain("invoke<MembershipSyncConfig>('get_sync_mode'");
-    expect(syncModeToggle).toContain("invoke<MembershipSyncConfig>('set_sync_mode'");
-    expect(syncModeToggle).toContain('Shared');
-    expect(syncModeToggle).toContain('All');
+    expect(syncMode).toContain('personalSyncEnabled');
+    expect(syncMode).toContain('set_workspace_sync_enabled');
+    expect(syncMode).toContain("invoke<MembershipSyncConfig>('get_sync_mode'");
+    expect(syncMode).toContain("invoke<MembershipSyncConfig>('set_sync_mode'");
+    expect(syncMode).toContain('Shared');
+    expect(syncMode).toContain('All');
 
     expect(settings).toContain('Sync personal vault');
     expect(settings).toContain('hq:workspace-sync-enabled-changed');
@@ -127,12 +126,6 @@ describe('US-007: Per-workspace sync controls and Personal taxonomy', () => {
     expect(desktop).toContain('activeCompanySyncEnabled ? activeCompany?.slug ?? null : null');
     expect(desktop).toContain("invoke('stop_daemon')");
     expect(desktop).toContain("invoke('start_daemon')");
-    // Chat-first shell, not V4Sidebar.
-    expect(desktop).toContain('<ChatSidebar');
-    expect(desktop).not.toMatch(/import\s+V4Sidebar\b/);
-    expect(desktop).not.toMatch(/<V4Sidebar\b/);
-    expect(desktop).not.toMatch(/import\s+SidebarSyncMode\b/);
-    expect(desktop).not.toMatch(/<SidebarSyncMode\b/);
 
     expect(companyPage).toContain('company.syncEnabled !== false');
     // Sync Off must not rewrite cloud connectivity (Codex: separate syncEnabled).

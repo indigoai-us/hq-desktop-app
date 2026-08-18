@@ -40,13 +40,17 @@ describe('desktop-alt title bar (V4 / DESKTOP-001)', () => {
     expect(titleBar).toContain('class="v4-drag-pad v4-drag-flex"');
   });
 
-  it('keeps interactive titlebar controls out of the drag region (minimal chrome)', () => {
-    expect(titleBar).toContain('data-testid="titlebar-core-pill"');
-    expect(titleBar).toContain('data-testid="titlebar-meetings"');
-    expect(titleBar).toContain('data-testid="titlebar-notifications"');
+  it('lets the non-interactive status cluster fall through (pointer-events: none)', () => {
+    expect(titleBar).toMatch(/\.v4-status\s*\{[\s\S]*?pointer-events: none;/);
+  });
+
+  it('keeps interactive titlebar controls out of the drag region', () => {
+    expect(titleBar).toMatch(/class="v4-action"/);
+    expect(titleBar).toContain('aria-label="Open command palette"');
+    expect(titleBar).toContain('aria-label="Account and settings"');
+    expect(titleBar).not.toMatch(/\.v4-action\s*\{[\s\S]*?pointer-events: none/);
     expect(titleBar).not.toMatch(/\.v4-icon-btn\s*\{[\s\S]*?pointer-events: none/);
-    expect(titleBar).not.toMatch(/class="v4-icon-btn"[^>]*data-tauri-drag-region/);
-    expect(titleBar).not.toMatch(/class="v4-core-pill"[^>]*data-tauri-drag-region/);
+    expect(titleBar).not.toMatch(/\.v4-account\s*\{[\s\S]*?pointer-events: none/);
   });
 
   it('does not render fake CSS traffic-light dots (the real macOS overlay owns that space)', () => {

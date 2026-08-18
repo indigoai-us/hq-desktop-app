@@ -192,20 +192,15 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     const page = normalize(meetingsPage);
     const agenda = normalize(meetingsAgenda);
     expect(meetingsStore).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
-    // US-017: upcoming is partitioned (end >= now) rather than a raw sort of all events.
-    expect(page).toContain('const upcomingEvents = $derived(partitioned.upcoming)');
-    expect(page).toContain('const dayGroups = $derived(groupMeetingsForAgenda(agendaEvents))');
+    expect(page).toContain('const upcomingEvents = $derived([...events].sort(sortByStart))');
+    expect(page).toContain('const dayGroups = $derived(groupByDay(upcomingEvents))');
     expect(page).toContain('const upNext = $derived(pickUpNext(upcomingEvents))');
     expect(page).toContain('const signalTotals = $derived(totalSignalCounts(upcomingEvents))');
     expect(page).toContain('extractedSignalLabels(event).length > 0');
     expect(page).toContain('.slice(0, 3)');
-    expect(page).toContain('<MeetingsAgenda');
-    expect(page).toContain('groups={dayGroups}');
-    expect(page).toContain('totalCount={agendaEvents.length}');
-    expect(page).toContain('{onInvite}');
-    expect(page).toContain('{onUninvite}');
-    expect(page).toContain('{onJoinNow}');
-    expect(page).toContain('onOpenExternal={openExternal}');
+    expect(page).toContain(
+      '<MeetingsAgenda groups={dayGroups} {upNext} totalCount={upcomingEvents.length} companyNames={companyNamesByUid} {liveEventId} {botsByEventId} {scheduledBots} {pendingActionsByEventId} {focusedMeetingId} {onInvite} {onUninvite} {onJoinNow} onOpenExternal={openExternal} />',
+    );
     expect(agenda).toContain('{#each groups as group (group.label)}');
     expect(agenda).toContain('{#each group.events as event (event.id)}');
     // The store owns the network fetch via a typed invoke; the agenda subcomponent

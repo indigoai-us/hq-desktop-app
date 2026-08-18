@@ -38,10 +38,8 @@ describe('channel conversation lifecycle and hierarchy', () => {
     expect(source).toMatch(
       /\.scope-chip \{[\s\S]*?padding: 0;[\s\S]*?border-radius: 0;[\s\S]*?background: transparent;/,
     );
-    // Daybook parity override (prd.json decisions): the member-count pill
-    // ports Lizzie Liu's .status-btn values (8px radius, --btn-bg fill).
     expect(source).toMatch(
-      /\.member-count-btn \{[\s\S]*?border: 1px solid transparent;[\s\S]*?border-radius: 8px;[\s\S]*?background: var\(--btn-bg, transparent\);/,
+      /\.member-count-btn \{[\s\S]*?border-bottom: 1px solid transparent;[\s\S]*?border-radius: 0;[\s\S]*?background: transparent;/,
     );
   });
 });

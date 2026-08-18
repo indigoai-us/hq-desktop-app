@@ -8,19 +8,17 @@ import {
 } from './v4/model';
 
 /**
- * Desktop information architecture (chat-first shell, US-003..018).
+ * V4 information architecture (docs/design/v4/SPEC.md section 4 + DESKTOP-001).
  *
- * Primary chrome is ChatSidebar (conversations + companies). Global page
- * destinations include Notifications (notification chronology), Messages,
- * Meetings, Marketplace, Library (overlay), Files, Settings, Home (palette /
- * exception surface), and Moderation (admin). Legacy workspace-shell deep
- * links remap in resolvePendingDesktopRoute. DESKTOP-001 expands the selected
- * company inline (Overview / Goals / Projects / Skills / Workers / Knowledge /
- * Team / More). Settings is a single pane — one section at a time, navigated
- * in place (US-020: no secondary column anywhere). Library is a full-screen
- * overlay. DESKTOP-010 groups Deployments / Secrets / company Settings under
- * More as one operations workspace (US-020 removed the Activity page; its
- * links remap to the company Overview digest).
+ * Global destinations — Inbox, Messages, Meetings, Marketplace, Library, Files
+ * — plus companies as first-class sidebar rows and a Settings footer. Inbox is
+ * notification chronology; Messages is the full conversation workspace. Home /
+ * Mission Control / Moderation are palette-only. DESKTOP-001 expands the
+ * selected company inline (Overview /
+ * Goals / Projects / Skills / Workers / Knowledge / Team / More) and removes
+ * the permanent company secondary sidebar; Library and Settings keep their
+ * contextual secondary columns. DESKTOP-010 groups Activity / Deployments /
+ * Secrets / company Settings under More as one operations workspace.
  */
 
 /**
@@ -38,7 +36,7 @@ export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
  * Company page sections — all route-supported company surfaces.
  * DESKTOP-001 primary sidebar shows a compact subset (see
  * COMPANY_PRIMARY_SECTIONS), including the existing Skills and Workers panels.
- * DESKTOP-010 operational tabs (deployments / secrets / settings)
+ * DESKTOP-010 operational tabs (activity / deployments / secrets / settings)
  * open under More. Defaults to 'overview' when a company route carries no tab.
  * Legacy deep-links remap in resolvePendingDesktopRoute / normalizeCompanyTab.
  */
@@ -50,15 +48,16 @@ export type CompanyTab =
   | 'workers'
   | 'knowledge'
   | 'team'
+  | 'activity'
   | 'deployments'
   | 'secrets'
   | 'settings';
 
-/** Internal destinations of the company-scoped operations workspace (DESKTOP-010; US-020 removed Activity). */
-export type CompanyOperationsTab = 'deployments' | 'secrets' | 'settings';
+/** Internal destinations of the company-scoped operations workspace (DESKTOP-010). */
+export type CompanyOperationsTab = 'activity' | 'deployments' | 'secrets' | 'settings';
 
 export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview';
-export const DEFAULT_COMPANY_OPERATIONS_TAB: CompanyOperationsTab = 'deployments';
+export const DEFAULT_COMPANY_OPERATIONS_TAB: CompanyOperationsTab = 'activity';
 
 /** Primary company children expanded under the selected company (DESKTOP-001). */
 export type CompanyPrimarySectionId =
@@ -79,10 +78,8 @@ const LEGACY_COMPANY_TAB_REDIRECT: Readonly<Record<string, CompanyTab>> = {
   accounts: 'overview',
   tasks: 'projects',
   library: 'skills',
-  // US-020: the Activity page is gone — its digest lives on Overview.
-  activity: 'overview',
   // "more" is a primary-nav alias for the first operational section.
-  more: DEFAULT_COMPANY_OPERATIONS_TAB,
+  more: 'activity',
 };
 
 /** Normalize a company tab string (including legacy ids) to a live CompanyTab. */
@@ -92,16 +89,16 @@ export function normalizeCompanyTab(value: string | undefined | null): CompanyTa
   return LEGACY_COMPANY_TAB_REDIRECT[value];
 }
 
-/** True when the company tab is one of the operations destinations. */
+/** True when the company tab is one of the four operations destinations. */
 export function isCompanyOperationsTab(
   tab: CompanyTab | undefined | null,
 ): tab is CompanyOperationsTab {
-  return tab === 'deployments' || tab === 'secrets' || tab === 'settings';
+  return tab === 'activity' || tab === 'deployments' || tab === 'secrets' || tab === 'settings';
 }
 
 /**
  * Map a routed company tab onto the primary sidebar child that should light.
- * All operations destinations highlight More.
+ * All four operations destinations highlight More.
  */
 export function companyPrimarySectionForTab(
   tab: CompanyTab | undefined | null,
@@ -116,6 +113,7 @@ export function companyPrimarySectionForTab(
     case 'knowledge':
     case 'team':
       return resolved;
+    case 'activity':
     case 'deployments':
     case 'secrets':
     case 'settings':
@@ -127,11 +125,11 @@ export function companyPrimarySectionForTab(
 
 /** Resolve a primary sidebar child click to the company tab it opens. */
 export function companyTabForPrimarySection(id: CompanyPrimarySectionId): CompanyTab {
-  // More opens the operations workspace on its default destination (Deployments).
+  // More opens the operations workspace on its default destination (Activity).
   return id === 'more' ? DEFAULT_COMPANY_OPERATIONS_TAB : id;
 }
 
-/** Settings sections — one visible at a time in the single-pane Settings page (US-020). */
+/** Settings sections — rows of the Settings secondary sidebar (US-013 fills the bodies). */
 export type SettingsTab =
   | 'sync'
   | 'notifications'
@@ -144,15 +142,7 @@ export type SettingsTab =
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | {
-      kind:
-        | 'home'
-        | 'notifications'
-        | 'messages'
-        | 'meetings'
-        | 'marketplace'
-        | 'moderation';
-    }
+  | { kind: 'home' | 'mission-control' | 'inbox' | 'messages' | 'meetings' | 'marketplace' | 'moderation' }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'files'; slug?: string; path?: string }
@@ -161,27 +151,27 @@ export type DesktopRoute =
 export type DesktopRouteKind = DesktopRoute['kind'];
 
 /**
- * Default landing (chat-first shell, design-gap G1): ALWAYS the Messages
- * conversation surface — the shell opens on the most recent conversation (or
- * the Messages empty state) regardless of workspace shape. The legacy
- * US-007 "last-visited company" landing routed real data onto the legacy
- * project-overview page; that surface must never be a landing destination.
- * The parameters remain for call-site compatibility and are ignored.
+ * Default landing (US-007): the last-visited company when it still exists,
+ * else the FIRST company row in sidebar order (connected-first sort), else
+ * Home — the exception surface for a workspace-less install.
  */
 export function getDesktopLandingRoute(
   workspaces: Workspace[],
   lastVisitedSlug?: string | null,
 ): DesktopRoute {
-  void workspaces;
-  void lastVisitedSlug;
-  return { kind: 'messages' };
+  const rows = sortV4CompaniesConnectedFirst(getDesktopCompanies(workspaces));
+  if (lastVisitedSlug && rows.some((row) => row.slug === lastVisitedSlug)) {
+    return { kind: 'company', slug: lastVisitedSlug };
+  }
+  if (rows[0]) return { kind: 'company', slug: rows[0].slug };
+  return { kind: 'home' };
 }
 
 /**
  * All route-supported company sections (deep links, command palette, CompanyPage).
  * company-detail-desktop-ia + DESKTOP-001: Skills/Workers stay visible as
- * company-scoped primary children. DESKTOP-010: deployments / secrets /
- * settings are the operations destinations under More (US-020 removed Activity).
+ * company-scoped primary children. DESKTOP-010: activity / deployments /
+ * secrets / settings are the operations destinations under More.
  */
 export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -191,6 +181,7 @@ export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> 
   { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'team', label: 'Team' },
+  { id: 'activity', label: 'Activity' },
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
   { id: 'settings', label: 'Settings' },
@@ -206,6 +197,7 @@ export const COMPANY_OPERATIONS_SECTIONS: ReadonlyArray<{
   label: string;
   meta: string;
 }> = [
+  { id: 'activity', label: 'Activity', meta: 'Events and edits' },
   { id: 'deployments', label: 'Deployments', meta: 'Artifacts and services' },
   { id: 'secrets', label: 'Secrets', meta: 'Metadata only' },
   { id: 'settings', label: 'Settings', meta: 'Console workflows' },
@@ -213,7 +205,7 @@ export const COMPANY_OPERATIONS_SECTIONS: ReadonlyArray<{
 
 /**
  * Compact primary company children shown under the selected company (DESKTOP-001).
- * More opens the operations workspace (default Deployments); all operations
+ * More opens the operations workspace (default Activity); all four operations
  * destinations remain deep-linkable and light More when active (DESKTOP-010).
  */
 export const COMPANY_PRIMARY_SECTIONS: ReadonlyArray<{
@@ -238,7 +230,7 @@ export const LIBRARY_SECTIONS: ReadonlyArray<{ id: LibraryTab; label: string }> 
   { id: 'profile', label: 'Profile' },
 ];
 
-/** Settings section index — the in-page single-pane list (US-020), also the ⌘K entries. */
+/** Settings secondary-sidebar rows in the desktop section index. */
 export const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsTab;
   label: string;
@@ -303,42 +295,14 @@ export function getDesktopActiveCompany(
   return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
-/**
- * The company slug the native `DesktopSessionScope` read gate should be bound
- * to for the current route (via `set_desktop_active_company`).
- *
- * The rule is: bind the workspace being VIEWED. Files mode binds its (already
- * membership-validated) company filter; a company/workspace route binds that
- * workspace's slug; every other surface unbinds.
- *
- * Deliberately independent of the workspace's sync-enabled state. The original
- * PR #309 derivation left the scope UNBOUND whenever sync was paused/disabled
- * on the viewed company — which does not tighten anything (Rust-side
- * membership authorization in `require_company_file_access` is independent and
- * still fail-closed), it just made EVERY same-company local read fail with
- * `company scope not bound`, breaking knowledge/files/board surfaces for
- * local-only and sync-paused companies. Binding the viewed company is the
- * strictly narrower state: reads outside that company remain cross-company
- * blocked by the gate.
- */
-export function getDesktopSessionScopeSlug(
-  route: DesktopRoute,
-  companies: Workspace[],
-  filesActiveSlug: string | null,
-): string | null {
-  if (route.kind === 'files') return filesActiveSlug;
-  return getDesktopActiveCompany(route, companies)?.slug ?? null;
-}
-
 /** First ⌘ hotkey assigned to a company row (after the four primary destinations). */
 const COMPANY_HOTKEY_BASE = 5;
 
 /**
- * ⌘1–⌘4 map to the four primary destinations (Notifications / Meetings /
- * Marketplace / Library); ⌘5–⌘9 map to the first five companies in sidebar
- * (connected-first) order (US-008 renumber, no dead slots; US-018 remaps the
- * former Inbox hotkey onto Notifications). Home has no hotkey (palette-only).
- * Mirrors `companyHotkey` below for the palette labels.
+ * ⌘1–⌘4 map to the four primary destinations (Inbox / Meetings / Marketplace /
+ * Library); ⌘5–⌘9 map to the first five companies in sidebar (connected-first)
+ * order (US-008 renumber, no dead slots). Home / Mission Control have no hotkey
+ * (palette-only, US-007). Mirrors `companyHotkey` below for the palette labels.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -346,7 +310,7 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'notifications' };
+  if (event.key === '1') return { kind: 'inbox' };
   if (event.key === '2') return { kind: 'meetings' };
   if (event.key === '3') return { kind: 'marketplace' };
   if (event.key === '4') return { kind: 'library' };
@@ -368,10 +332,8 @@ export function companyHotkey(index: number): string | undefined {
 
 /**
  * Resolve a backend navigation intent (desktop_alt_consume_pending_route /
- * the `desktop:navigate` event) to a route. Legacy aliases stay functional and
- * always land on a live route (US-018): never null for known legacy names.
- * Examples: 'sync' / 'activity' / 'core-drift' / 'drift' / 'mission-control'
- * → Home; 'inbox' → Notifications; 'library:marketplace' → Marketplace.
+ * the `desktop:navigate` event) to a route. Legacy aliases stay functional:
+ * 'sync' deep-links — the pre-V4 home surface — land on Home.
  */
 export function resolvePendingDesktopRoute(name: string | null | undefined): DesktopRoute | null {
   const trimmed = name?.trim();
@@ -419,15 +381,16 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'activity':
     case 'core-drift':
     case 'drift':
-    // US-018: mission-control deep link lands on Home.
-    case 'mission-control':
       return { kind: 'home' };
-    // US-018: inbox deep link lands on Notifications feed.
+    case 'mission-control':
+      return { kind: 'mission-control' };
     case 'inbox':
-    case 'notifications':
-      return { kind: 'notifications' };
+      return { kind: 'inbox' };
     case 'messages':
       return { kind: 'messages' };
+    // Notifications remain the chronological Inbox feed.
+    case 'notifications':
+      return { kind: 'inbox' };
     case 'meetings':
       return { kind: 'meetings' };
     case 'marketplace':
@@ -458,10 +421,9 @@ function isSettingsTab(value: string | undefined): value is SettingsTab {
 }
 
 /**
- * Narrow an open-ended V4Route payload back into the app's DesktopRoute union.
- * Unknown kinds land on Home — the exception surface. Company payloads may
- * carry a primary section / tab id (DESKTOP-001). US-018: legacy 'inbox' and
- * 'mission-control' kinds remap to live destinations.
+ * Narrow a V4Sidebar navigation payload (open-ended V4Route) back into the
+ * app's DesktopRoute union. Unknown kinds land on Home — the exception surface.
+ * Company payloads may carry a primary section / tab id (DESKTOP-001).
  */
 export function fromV4Route(route: V4Route): DesktopRoute {
   if (route.kind === 'company' && route.slug) {
@@ -472,11 +434,12 @@ export function fromV4Route(route: V4Route): DesktopRoute {
   }
   switch (route.kind) {
     case 'home':
-    case 'mission-control':
       return { kind: 'home' };
+    case 'mission-control':
+      return { kind: 'mission-control' };
     case 'inbox':
     case 'notifications':
-      return { kind: 'notifications' };
+      return { kind: 'inbox' };
     case 'messages':
       return { kind: 'messages' };
     case 'meetings':
@@ -515,20 +478,47 @@ export interface DesktopSecondarySidebarOptions {
 }
 
 /**
- * US-020: NO surface renders a secondary sidebar anymore. Settings became a
- * single pane (section list navigates in place — see SettingsPage), Library is
- * a takeover overlay (US-017), and company navigation expands inline in the
- * primary sidebar (DESKTOP-001). This helper is retained so shell call sites
- * and specs can keep asserting the invariant: it must always return null.
+ * SPEC section 4 + DESKTOP-001: the secondary sidebar exists ONLY on Library
+ * and Settings. Company navigation expands inline in the primary sidebar, so
+ * company routes never render a permanent secondary column. Home, Mission
+ * Control, Marketplace, Meetings, Inbox, Messages, Files, and Moderation have
+ * none.
  */
 export function getDesktopSecondarySidebar(
   route: DesktopRoute,
   companies: Workspace[],
   options: DesktopSecondarySidebarOptions = {},
 ): DesktopSecondarySidebar | null {
-  void route;
+  // DESKTOP-001: company children live under the selected company row — no
+  // permanent company secondary sidebar. Keep `companies` in the signature so
+  // call sites and library/settings meta helpers stay stable.
   void companies;
-  void options;
+
+  if (route.kind === 'library') {
+    return {
+      surface: 'library',
+      header: 'Library',
+      headerTone: null,
+      meta: formatHqFolderMeta(options.hqFolderPath),
+      items: LIBRARY_SECTIONS.map(({ id, label }) => ({ id, label })),
+      activeId: route.tab ?? DEFAULT_LIBRARY_TAB,
+      footer: { label: 'Publish a pack', active: route.tab === 'submit' },
+    };
+  }
+
+  if (route.kind === 'settings') {
+    return {
+      surface: 'settings',
+      header: 'Settings',
+      headerTone: null,
+      meta: options.version ? `HQ v${options.version}` : null,
+      items: SETTINGS_SECTIONS.map(({ id, label, note }) => ({ id, label, note: note ?? null })),
+      activeId: route.tab ?? DEFAULT_SETTINGS_TAB,
+      // The "Sign out" footer ships with the V4 Settings surface (US-013).
+      footer: null,
+    };
+  }
+
   return null;
 }
 

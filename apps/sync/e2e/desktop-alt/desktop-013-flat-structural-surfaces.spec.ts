@@ -11,12 +11,13 @@ describe('DESKTOP-013: flat structural surfaces', () => {
   const designSystem = readRepoFile('src/styles/design-system.css');
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
-  // US-018: ChatSidebar is primary chrome (V4Sidebar retired).
-  const sidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
+  const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+  const secondarySidebar = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const filesSidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
   const activityDigest = readRepoFile('src/desktop-alt/v4/ActivityDigest.svelte');
   const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
   const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
+  const missionControl = readRepoFile('src/desktop-alt/pages/MissionControlPage.svelte');
   const marketplace = readRepoFile('src/desktop-alt/panels/MarketplacePanel.svelte');
   const library = readRepoFile('src/desktop-alt/components/LibraryList.svelte');
   const profile = readRepoFile('src/desktop-alt/panels/ProfilePanel.svelte');
@@ -36,8 +37,7 @@ describe('DESKTOP-013: flat structural surfaces', () => {
   const meetingsWindow = readRepoFile('src/components/MeetingsWindow.svelte');
   const widget = readRepoFile('src/components/Widget.svelte');
   const popoverCss = readRepoFile('src/styles/popover.css');
-  // US-018: NotificationsView supersedes InboxPage.
-  const notifications = readRepoFile('src/desktop-alt/chat/NotificationsView.svelte');
+  const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
   const harness = readRepoFile('dev-harness/Harness.svelte');
   const team = readRepoFile('src/desktop-alt/panels/TeamPanel.svelte');
   const operations = readRepoFile(
@@ -62,7 +62,7 @@ describe('DESKTOP-013: flat structural surfaces', () => {
     expect(tokens).toContain('--v4-radius-popover: var(--radius-popover, 8px)');
   });
 
-  it('keeps settings and dashboard grouping surfaces square', () => {
+  it('keeps settings, dashboard, and mission-control grouping surfaces square', () => {
     for (const [name, source, selectors] of [
       ['settings', settings, ['.settings-card']],
       [
@@ -77,6 +77,7 @@ describe('DESKTOP-013: flat structural surfaces', () => {
           '.home-skeleton',
         ],
       ],
+      ['mission control', missionControl, ['.mc-tile', '.mc-col']],
     ] as const) {
       for (const selector of selectors) {
         const block = rule(source, selector);
@@ -132,8 +133,8 @@ describe('DESKTOP-013: flat structural surfaces', () => {
         ],
       ],
       ['title bar', titleBar, ['.v4-titlebar']],
-      // ChatSidebar root has no border-radius declaration (square by default).
-      ['primary sidebar', sidebar, ['.chat-sidebar']],
+      ['primary sidebar', sidebar, ['.v4-sidebar']],
+      ['secondary sidebar', secondarySidebar, ['.v4-secondary']],
       ['files sidebar', filesSidebar, ['.files-sidebar']],
     ] as const) {
       for (const selector of selectors) {
@@ -146,9 +147,8 @@ describe('DESKTOP-013: flat structural surfaces', () => {
 
   it('keeps navigation and list-selection rows square', () => {
     for (const [name, source, selectors] of [
-      // ChatSidebar .chat-row exempted: Daybook parity override (prd.json
-      // decisions) gives chat rows Lizzie Liu's 8px radius; covered by
-      // chat-sidebar.spec.ts + chat-token-parity.spec.ts instead.
+      ['primary sidebar', sidebar, ['.v4-row']],
+      ['secondary sidebar', secondarySidebar, ['.v4-row']],
       ['files sidebar', filesSidebar, ['.fs-company-row']],
       ['team', team, ['.team-member-row', '.team-member-row.is-selected']],
       ['operations', operations, ['.ops-nav-item', '.ops-nav-item.is-selected']],
@@ -186,7 +186,7 @@ describe('DESKTOP-013: flat structural surfaces', () => {
     for (const [name, source] of [
       ['desktop aliases', desktopCss],
       ['title bar', titleBar],
-      ['notifications', notifications],
+      ['inbox', inbox],
     ] as const) {
       expect(source, `${name} retains an inflated 8px button fallback`).not.toContain(
         'var(--v4-radius-button, 8px)',
@@ -221,6 +221,7 @@ describe('DESKTOP-013: flat structural surfaces', () => {
           '.overview-task-rail',
         ],
       ],
+      ['src/desktop-alt/panels/ActivityPanel.svelte', ['.activity-error']],
       ['src/desktop-alt/panels/DeploymentsPanel.svelte', ['.deployments-error']],
       [
         'src/desktop-alt/panels/InstalledPacksPanel.svelte',
@@ -269,10 +270,11 @@ describe('DESKTOP-013: flat structural surfaces', () => {
     }
   });
 
-  it('carries no oversized rounding anywhere in the visual harness styles', () => {
-    // The unused .window frame selector was removed in visual QA round 2;
-    // nothing left in the harness may reintroduce heavy card rounding.
-    expect(harness).not.toMatch(/border-radius:\s*(?:1[0-9]|[2-9][0-9])px/);
+  it('uses only modest popover rounding on the visual harness window frame', () => {
+    expect(rule(harness, '.window')).toContain(
+      'border-radius: var(--radius-popover, 8px)',
+    );
+    expect(rule(harness, '.window')).not.toMatch(/border-radius:\s*(?:1[0-9]|[2-9][0-9])px/);
   });
 
   it('keeps command, notification, filter, and scope rows free of card perimeters', () => {

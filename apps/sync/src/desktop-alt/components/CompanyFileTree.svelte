@@ -25,13 +25,11 @@
    * radius, faint hover) via V4 tokens. No purple (hard Indigo policy).
    */
   import {
-    classifyRootLoadError,
     dirEntryToLazyNode,
     fileTreeRowMeta,
     filterLazyNodes,
     flattenLazy,
     parentPathOf,
-    rootLoadErrorMessage,
     type DirEntry,
     type LazyNode,
   } from '../lib/file-tree';
@@ -52,13 +50,6 @@
     selectedPath?: string | null;
     /** Optional case-insensitive name filter over loaded nodes (DESKTOP-008). */
     filterQuery?: string;
-    /**
-     * Calm empty-state label rendered when the ROOT directory itself does not
-     * exist (missing dir or dangling symlink) — distinct from a real load
-     * failure, which keeps the error + retry row. Subdirectory load failures
-     * are never reclassified.
-     */
-    rootMissingLabel?: string;
   }
 
   let {
@@ -67,7 +58,6 @@
     onselect,
     selectedPath = null,
     filterQuery = '',
-    rootMissingLabel = 'Nothing here yet',
   }: Props = $props();
 
   // The lazily-built top-level node list (children of `rootPath`).
@@ -81,8 +71,6 @@
   let loadErrorPaths = $state(new Set<string>());
   let rootLoading = $state(false);
   let rootError = $state<string | null>(null);
-  // The root directory itself doesn't exist — a calm empty state, not an error.
-  let rootMissing = $state(false);
   let rootRetryNonce = $state(0);
   let treeGeneration = 0;
   // Keyboard focus path (roving tabindex) — independent of file selection.
@@ -100,7 +88,6 @@
     loadingPaths = new Set();
     loadErrorPaths = new Set();
     rootError = null;
-    rootMissing = false;
     rootLoading = true;
     focusedPath = null;
 
@@ -114,18 +101,7 @@
       .catch((err) => {
         console.error('list_hq_dir failed:', err);
         if (!cancelled && generation === treeGeneration) {
-          // A nonexistent ROOT (missing dir / dangling symlink) is an expected
-          // shape — e.g. a company with no knowledge/ directory yet — and
-          // renders as a calm empty state. Scope-gate and authorization
-          // rejections get calm, retryable copy of their own; only genuinely
-          // unknown failures keep the generic error. Root load ONLY —
-          // subdirectory failures are never reclassified.
-          const kind = classifyRootLoadError(err);
-          if (kind === 'not-found') {
-            rootMissing = true;
-          } else {
-            rootError = rootLoadErrorMessage(kind);
-          }
+          rootError = String(err);
           roots = [];
         }
       })
@@ -328,13 +304,9 @@
 >
   {#if rootLoading}
     <div class="ft-status" aria-label="Loading files" data-testid="file-tree-loading">Loading…</div>
-  {:else if rootMissing}
-    <div class="ft-status" role="status" data-testid="file-tree-root-missing">
-      {rootMissingLabel}
-    </div>
   {:else if rootError}
     <div class="ft-status ft-root-error" role="alert" data-testid="file-tree-error">
-      <span>{rootError}</span>
+      <span>Files unavailable</span>
       <button
         type="button"
         class="ft-retry"

@@ -1,15 +1,12 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   fromV4Route,
   getDesktopSecondarySidebar,
   resolvePendingDesktopRoute,
 } from '../../src/desktop-alt/route';
+import { getV4SidebarModel, V4_NAV_ITEMS } from '../../src/desktop-alt/v4/model';
 import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
-
-const root = process.cwd();
 
 const indigo: Workspace = {
   slug: 'indigo',
@@ -29,13 +26,19 @@ const indigo: Workspace = {
 };
 
 describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
-  it('maps Messages and Notifications route entry points directly', () => {
+  it('places Messages next to Inbox and maps both route entry points directly', () => {
+    expect(V4_NAV_ITEMS.slice(0, 2)).toEqual([
+      { id: 'inbox', label: 'Inbox' },
+      { id: 'messages', label: 'Messages' },
+    ]);
+    expect(getV4SidebarModel({ kind: 'messages' }, [indigo]).nav.find((row) => row.active)?.id)
+      .toBe('messages');
+
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(fromV4Route({ kind: 'messages' })).toEqual({ kind: 'messages' });
-    // Notifications is the chronology/feed destination (US-018: inbox remaps here).
-    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'notifications' });
-    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'notifications' });
-    expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'notifications' });
+    // Notifications remain the chronology/feed destination.
+    expect(resolvePendingDesktopRoute('notifications')).toEqual({ kind: 'inbox' });
+    expect(fromV4Route({ kind: 'notifications' })).toEqual({ kind: 'inbox' });
     expect(getDesktopSecondarySidebar({ kind: 'messages' }, [indigo])).toBeNull();
   });
 
@@ -76,18 +79,15 @@ describe('DESKTOP-016: Messages is a first-class desktop destination', () => {
     expect(pending).toContain('desktop Messages destination');
   });
 
-  it('exposes sidebar and command access without a retired Inbox page jump card', () => {
+  it('exposes sidebar and command access without duplicating an Inbox jump card', () => {
     const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-    const notifications = readRepoFile('src/desktop-alt/chat/NotificationsView.svelte');
+    const inbox = readRepoFile('src/desktop-alt/pages/InboxPage.svelte');
 
-    expect(existsSync(join(root, 'src/desktop-alt/pages/InboxPage.svelte'))).toBe(false);
     expect(app).toContain("id: 'command-go-messages'");
     expect(app).toContain("label: 'Go to Messages'");
     expect(app).toContain("action: () => navigate({ kind: 'messages' })");
-    expect(app).toContain('<NotificationsView');
-    expect(app).not.toContain('<InboxPage');
-    // Notifications feed is not a Messages launcher card.
-    expect(notifications).not.toContain('onopenmessages');
+    expect(app).toContain('<InboxPage />');
+    expect(inbox).not.toContain('onopenmessages');
   });
 
   it('keeps the dedicated native Messages window mounted as a supported fallback', () => {

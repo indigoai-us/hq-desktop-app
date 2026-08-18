@@ -1,6 +1,4 @@
 // Fixture props for rendering Popover in the browser preview harness.
-// Chat-shell production-contract fixtures live in `./chat-fixtures` (US-019).
-export * from './chat-fixtures';
 import type { Workspace } from '../src/lib/workspaces';
 
 const minsAgo = (mins: number) => new Date(Date.now() - mins * 60 * 1000).toISOString();
