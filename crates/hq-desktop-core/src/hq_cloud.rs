@@ -359,7 +359,18 @@
 /// budget, so a large first sync is dramatically faster without risking OOM. The
 /// pin must move even though `~6.15.11` already admits 6.15.13: npx caches by the
 /// spec string, so an existing resolution would keep serving 6.15.11 forever.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.13";
+///
+/// `~6.15.13` -> `~6.15.14`: floor the pin at ignore-source decoupling. 6.15.14
+/// (#347) stops sync from consulting the repo's `.gitignore` — sync exclusions
+/// now come only from the built-in defaults + `.hqignore`/`.hqinclude`, so
+/// excluding a subtree from the git-mirror (via `.gitignore`) no longer silently
+/// stops syncing it to the vault (the coupling behind the carve-out incident).
+/// Secret patterns (`.env*`, `credentials.json`, `*.credentials.json`,
+/// `*.secret.*`, `.netrc`, `.mcp.json`) are promoted into the built-in defaults
+/// so no user leaks a credential regardless of config files. The desktop
+/// git-mirror relies on this decoupling to exclude the vault from what it commits
+/// without affecting sync. npx caches by the spec string, so the pin must move.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.14";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -426,7 +437,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.13");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.14");
     }
 
     /// A pass the five-minute watchdog terminates must leave durable progress
@@ -444,6 +455,16 @@ mod tests {
     #[test]
     fn version_floor_delivers_failclosed_purge_and_bounded_memory() {
         assert!(pin_lower_bound() >= semver::Version::new(6, 15, 13));
+    }
+
+    /// Sync must NOT derive exclusions from the repo's `.gitignore` (6.15.14):
+    /// coupling git-mirror commit-exclusions to vault sync-exclusions is the
+    /// bug behind the carve-out incident, and secrets must be excluded by the
+    /// built-in defaults so decoupling can't leak a credential. The desktop
+    /// git-mirror depends on this, so the pin may not fall below 6.15.14.
+    #[test]
+    fn version_floor_decouples_sync_ignores_from_gitignore() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 14));
     }
 
     /// Lower bound of the tilde pin as a concrete version. `~X.Y.Z` parses to a
