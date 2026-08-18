@@ -479,3 +479,53 @@ describe('master automatic-updates switch', () => {
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
   });
 });
+
+describe('installs the CLI when the machine has none', () => {
+  // Before this, `check_once` compared versions with `None => false`, so a
+  // machine with no readable `hq` reported "no update available" and the
+  // background installer below it never ran. Two distinct populations were
+  // stranded: users who never installed the CLI, and users whose install was
+  // broken (a global install interrupted part-way leaves a package the shim
+  // resolves into but node cannot load, so every version probe fails).
+
+  it('treats "no readable local version" as needing an install', () => {
+    expect(cliUpdateCore).toContain('pub fn cli_install_needed(');
+    // The decision is the extracted function, not an inline comparison whose
+    // None arm is invisible to tests.
+    expect(cliUpdate).toContain('let update_available = cli_install_needed(local.as_deref(), &latest);');
+    expect(cliUpdate).not.toContain('None => false,');
+  });
+
+  it('routes a first install to npm rather than refusing outright', () => {
+    expect(cliUpdateCore).toContain('pub fn install_executor_for_first_install(');
+    // The refusal path now consults the fallback before giving up, so an absent
+    // CLI reaches an installer instead of "Refusing to overwrite an unrelated
+    // command."
+    expect(normalize(cliUpdate)).toContain(
+      'None => install_executor_for_first_install(&hq, hq_resolved.kind).ok_or_else(||',
+    );
+    expect(cliUpdate).toContain('paths::resolve_bin_with_kind("hq")');
+  });
+
+  it('keeps refusing to overwrite an unrelated program named hq', () => {
+    // Widening the install must not widen this: the fallback returns None for
+    // anything that is not demonstrably ours, and that still errors.
+    expect(cliUpdate).toContain(
+      'Refusing to overwrite an unrelated command.',
+    );
+    expect(normalize(cliUpdateCore)).toContain(
+      'if resolved == ResolvedProgramKind::NotResolved { return Some(InstallExecutor::Npm); }',
+    );
+  });
+
+  it('repairs a broken pnpm or Bun install with its owning manager', () => {
+    // npm would drop a copy those managers' shims never read, so a broken
+    // install under their global roots must be reinstalled by them.
+    const fallbackStart = cliUpdateCore.indexOf('pub fn install_executor_for_first_install(');
+    const fallback = cliUpdateCore.slice(fallbackStart, fallbackStart + 900);
+    expect(fallback).toContain('is_pnpm_global_shim(hq_bin)');
+    expect(fallback).toContain('InstallExecutor::Pnpm');
+    expect(fallback).toContain('is_bun_global_shim(hq_bin)');
+    expect(fallback).toContain('InstallExecutor::Bun');
+  });
+});

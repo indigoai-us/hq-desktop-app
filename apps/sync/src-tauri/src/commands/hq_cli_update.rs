@@ -71,11 +71,12 @@ use crate::util::paths;
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_update_enabled, classify_install_failure,
     bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_final_attempt,
-    cli_auto_update_enabled, cmp_semver,
+    cli_auto_update_enabled, cli_install_needed, cmp_semver,
     decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
     hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
     install_failure_detail, install_failure_detail_with_final_attempt, install_failure_report,
-    install_executor_for_hq_bin, installed_hq_cli_version_in_bun_global,
+    install_executor_for_first_install, install_executor_for_hq_bin,
+    installed_hq_cli_version_in_bun_global,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
@@ -146,17 +147,27 @@ async fn fetch_latest() -> Result<String, String> {
     Ok(parsed.version)
 }
 
-/// Perform one check. Returns `Some(info)` when an upgrade is available,
-/// `None` when the user is already on the latest (or `hq` isn't installed
-/// — we don't pester users who don't have the CLI).
+/// Perform one check. Returns `Some(info)` when the machine needs `latest`
+/// installed — either an upgrade over a readable older version, or no readable
+/// version at all — and `None` when the user is already current.
+///
+/// "No readable version" deliberately covers two cases that look identical from
+/// here and have the same remedy: the CLI was never installed, and the CLI is
+/// installed but broken (a global install interrupted part-way leaves a package
+/// the `hq` shim resolves into but node cannot load, so every probe fails).
+/// The desktop app is the only component that can fix either — a CLI whose own
+/// package will not load cannot run its own repair, and a user with no CLI has
+/// nothing to run — so this reports it and the background installer acts on it.
+/// `info.local` is `None` in both cases.
 pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, String> {
     let latest = fetch_latest().await?;
     let local_version = get_local_version_diagnostics();
     let local = local_version.local.clone();
-    let update_available = match local.as_deref() {
-        Some(l) => cmp_semver(l, &latest) == std::cmp::Ordering::Less,
-        None => false,
-    };
+    // Includes the no-readable-version case, which is both "never installed"
+    // and "installed but broken" — see `cli_install_needed`. Previously this
+    // arm was false, so a machine with a missing or unloadable CLI reported no
+    // update and the background installer below never ran for it.
+    let update_available = cli_install_needed(local.as_deref(), &latest);
     log(
         "hq-cli-update",
         &format!(
@@ -1318,13 +1329,23 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
 async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
-    let hq = paths::resolve_bin("hq");
-    let executor = install_executor_for_hq_bin(Path::new(&hq)).ok_or_else(|| {
-        format!(
-            "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
-             Refusing to overwrite an unrelated command."
-        )
-    })?;
+    let hq_resolved = paths::resolve_bin_with_kind("hq");
+    let hq = hq_resolved.path.clone();
+    let executor = match install_executor_for_hq_bin(Path::new(&hq)) {
+        Some(executor) => executor,
+        // No readable @indigoai-us/hq-cli at the resolved path. That alone is
+        // not a reason to refuse: it is equally the signature of a machine with
+        // no CLI and of one whose install is broken, and both are fixed by
+        // installing. `install_executor_for_first_install` separates those from
+        // the case this refusal actually guards — an unrelated program named
+        // `hq` — and still returns None for it.
+        None => install_executor_for_first_install(&hq, hq_resolved.kind).ok_or_else(|| {
+            format!(
+                "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
+                 Refusing to overwrite an unrelated command."
+            )
+        })?,
+    };
     // This must be sampled before the install, for either executor. An
     // unwritable marker reads as absent; the post-install gate then refuses to
     // capture unless this run successfully persists the first-episode marker.

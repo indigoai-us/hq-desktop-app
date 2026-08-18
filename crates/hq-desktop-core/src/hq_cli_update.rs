@@ -523,6 +523,30 @@ fn probe_local_version_after_binary(
     }
 }
 
+/// Does this machine need `latest` installed?
+///
+/// Three states, two of which need an install:
+///
+/// - a readable version older than `latest` — the ordinary update, and
+/// - **no readable version at all**, which covers both a machine that has never
+///   had the CLI and one whose install is present but broken (a global install
+///   killed part-way through leaves a package the `hq` shim resolves into but
+///   node cannot load, so every probe fails). Installing `latest` is the fix for
+///   both, and the desktop app is the only component that can apply it: a CLI
+///   whose own package will not load cannot run its own repair, and a user with
+///   no CLI has nothing to run.
+///
+/// This used to be an inline `match` in the app's `check_once` whose `None` arm
+/// returned false, so a missing or broken CLI produced "no update available"
+/// and the background installer never ran. Extracted here to be testable, since
+/// the arm that matters is the one that never fires in a healthy environment.
+pub fn cli_install_needed(local: Option<&str>, latest: &str) -> bool {
+    match local {
+        Some(installed) => cmp_semver(installed, latest) == std::cmp::Ordering::Less,
+        None => true,
+    }
+}
+
 /// An unreadable version is actionable only when the hq resolver found a
 /// binary. A missing hq remains a deliberate quiet no-op.
 pub fn should_report_unreadable_version(result: &LocalVersionProbeResult) -> bool {
@@ -3941,6 +3965,45 @@ pub fn install_executor_for_hq_bin(hq_bin: &Path) -> Option<InstallExecutor> {
     }
 }
 
+/// Which manager should install `latest` when [`install_executor_for_hq_bin`]
+/// could not identify an existing install — i.e. no readable `@indigoai-us/hq-cli`
+/// package was found at the resolved `hq`.
+///
+/// That guard exists to avoid overwriting an unrelated program that happens to
+/// be called `hq`, and it must keep doing so. But it currently also refuses the
+/// two cases where installing is exactly the right answer, because all three
+/// look the same from here — `version_from_hq_binary` reads the package layout
+/// off disk, so it returns `None` for a missing CLI, a broken one, AND a
+/// stranger's binary alike. This separates them by evidence rather than by
+/// guesswork:
+///
+/// - **Nothing resolved at all** (`ResolvedProgramKind::NotResolved`): there is
+///   no file to overwrite, so nothing can be clobbered. First install, via npm —
+///   the manager the app can provision a runtime for.
+/// - **A pnpm or Bun global shim path**: that location exists *because* one of
+///   those managers put our package there; no unrelated tool is installed into
+///   another manager's global root. An unreadable version at such a path means
+///   our own install is broken, so reinstall with its owning manager.
+/// - **Anything else**: still refused. An arbitrary `hq` somewhere on PATH is
+///   the case the guard was written for, and nothing here makes it ours.
+///
+/// Returning `None` means "refuse", preserving today's behaviour exactly.
+pub fn install_executor_for_first_install(
+    hq_bin: &str,
+    resolved: ResolvedProgramKind,
+) -> Option<InstallExecutor> {
+    if resolved == ResolvedProgramKind::NotResolved {
+        return Some(InstallExecutor::Npm);
+    }
+    if is_pnpm_global_shim(hq_bin) {
+        return Some(InstallExecutor::Pnpm);
+    }
+    if is_bun_global_shim(hq_bin) {
+        return Some(InstallExecutor::Bun);
+    }
+    None
+}
+
 /// Build the argv for the global install. Factored out so the unit test
 /// can lock the shape without spawning npm. When we know the prefix that
 /// contains the resolved `hq`, pass it explicitly so npm updates the binary
@@ -5341,6 +5404,87 @@ mod tests {
             );
         }
         assert_eq!(bin_resolution_source("hq"), "unknown");
+    }
+
+    /// The arm that matters is the one a healthy machine never takes.
+    #[test]
+    fn install_is_needed_when_no_local_version_can_be_read() {
+        // Never installed: the user has no CLI, so there is nothing to compare
+        // against and everything to gain.
+        assert!(cli_install_needed(None, "5.103.1"));
+    }
+
+    /// A CLI killed part-way through a global install leaves a package that
+    /// resolves but will not load, so every version probe fails and `local`
+    /// comes back None — indistinguishable, here, from "never installed". Both
+    /// are repaired by installing `latest`, and the desktop app is the only
+    /// component that can do it: the broken CLI cannot run its own repair.
+    #[test]
+    fn install_is_needed_when_the_installed_cli_is_unreadable() {
+        assert!(cli_install_needed(None, "5.103.1"));
+    }
+
+    #[test]
+    fn install_is_needed_only_when_the_local_version_is_older() {
+        assert!(cli_install_needed(Some("5.102.0"), "5.103.1"));
+        // Current, and ahead (a local dev build) — neither should trigger a
+        // reinstall on every check.
+        assert!(!cli_install_needed(Some("5.103.1"), "5.103.1"));
+        assert!(!cli_install_needed(Some("5.104.0"), "5.103.1"));
+    }
+
+    #[test]
+    fn install_need_compares_numerically_not_lexically() {
+        // Guards the same trap `cmp_semver` exists for: "5.9.0" > "5.10.0" as
+        // strings would silently stop upgrading past a two-digit minor.
+        assert!(cli_install_needed(Some("5.9.0"), "5.10.0"));
+        assert!(!cli_install_needed(Some("5.10.0"), "5.9.0"));
+    }
+
+    /// Nothing on PATH means nothing to overwrite, so the "refusing to
+    /// overwrite an unrelated command" guard has nothing to protect and the
+    /// user simply has no CLI. This is the plain first-install case.
+    #[test]
+    fn first_install_uses_npm_when_no_hq_resolves_at_all() {
+        assert_eq!(
+            install_executor_for_first_install("hq", ResolvedProgramKind::NotResolved),
+            Some(InstallExecutor::Npm)
+        );
+    }
+
+    /// A pnpm/Bun global root only contains what that manager installed there,
+    /// so an unreadable version at such a path is our own broken install — the
+    /// shape left behind when a global install is interrupted part-way. Repair
+    /// it with the manager that owns it, never with npm (whose copy that
+    /// manager's shim would never read).
+    #[test]
+    fn broken_install_is_repaired_by_its_owning_manager() {
+        assert_eq!(
+            install_executor_for_first_install(
+                "/Users/test/Library/pnpm/hq",
+                ResolvedProgramKind::Exe
+            ),
+            Some(InstallExecutor::Pnpm)
+        );
+        assert_eq!(
+            install_executor_for_first_install("/Users/test/.bun/bin/hq", ResolvedProgramKind::Exe),
+            Some(InstallExecutor::Bun)
+        );
+    }
+
+    /// The protection this whole path exists for: some other program named `hq`
+    /// on PATH must never be overwritten just because we could not read a
+    /// version out of it. Widening the install must not widen this.
+    #[test]
+    fn an_unrelated_hq_on_path_is_still_refused() {
+        assert_eq!(
+            install_executor_for_first_install("/opt/homebrew/bin/hq", ResolvedProgramKind::Exe),
+            None
+        );
+        assert_eq!(
+            install_executor_for_first_install("/usr/local/bin/hq", ResolvedProgramKind::Exe),
+            None
+        );
     }
 
     /// Without this gate the background loop reinstalls the same version 15s
