@@ -431,9 +431,11 @@ describe("release workflow channel contract", () => {
     );
     expect(windows).toContain("--bundles msi nsis updater");
     expect(windows).toContain("Required updater signature is missing");
-    expect(windows.indexOf("--config src-tauri/tauri.windows.release.conf.json")).toBeLessThan(
-      windows.indexOf("--config $env:TAURI_MSI_VERSION_CONFIG"),
-    );
+    // The Recall-only Windows release overlay is gone with the SDK sidecar: it
+    // existed solely to carry `bundle.externalBin` for the launcher PE and a
+    // beforeBuildCommand that rebuilt it.
+    expect(windows).not.toContain("tauri.windows.release.conf.json");
+    expect(windows).not.toContain("RECALL_SIDECAR_TARGET");
     expect(JSON.parse(windowsConfig).bundle.windows.allowDowngrades).toBe(false);
   });
 
@@ -499,10 +501,12 @@ describe("release workflow channel contract", () => {
     // left the embedded __DWARF on this universal build, so an xcrun strip is
     // required to keep the bundle deterministically under budget.
     expect(macos).toContain('xcrun strip -S -x "$APP_BINARY"');
-    // The 15 MB total-bundle budget was never satisfiable (the bundle carries
-    // the ~150 MB Recall SDK sidecar). The meaningful native-symbol/code-bloat
-    // signal is the stripped binary, budgeted tightly; a coarse total-bundle
-    // ceiling still catches runaway resource growth.
+    // The 15 MB total-bundle budget was never satisfiable while the bundle
+    // carried the Recall SDK sidecar. That payload is gone, but the meaningful
+    // native-symbol/code-bloat signal is still the stripped binary, budgeted
+    // tightly; the coarse total-bundle ceiling stays to catch runaway resource
+    // growth. (It earned its keep: it caught the upstream SDK going 149 MB ->
+    // 377 MB mid-release.)
     expect(macos).toContain("APP_BINARY_BUDGET_KB=$((120 * 1024))");
     expect(macos).toContain("macOS app binary exceeds 120 MB budget");
     expect(macos).toContain("BUNDLE_BUDGET_KB=$((300 * 1024))");
@@ -569,5 +573,65 @@ describe("release workflow channel contract", () => {
     expect(publish).toContain("Download Windows x64 release artifacts");
     expect(publish).toContain("Download Windows ARM64 release artifacts");
     expect(publish).not.toContain("hq-debug-");
+  });
+});
+
+
+/**
+ * A `run:` step written as a YAML folded scalar (`>-`) joins its lines with
+ * spaces — UNLESS a line is blank or whitespace-only, which forces a literal
+ * newline. A whitespace-only line is invisible in a diff and in most editors,
+ * but it splits the command in two: PowerShell then parses the continuation
+ * (`--config ...`) as a fresh statement and dies with
+ * "Missing expression after unary operator '--'".
+ *
+ * That is exactly how removing the Recall sidecar's `--config` argument broke
+ * the Windows installer build: the text went, the indentation stayed, and the
+ * failure looked nothing like the edit that caused it.
+ *
+ * A whitespace-only line is never intentional in these files — inside a folded
+ * scalar it changes the command, and everywhere else it is trailing noise — so
+ * assert on the character class directly rather than reimplementing YAML
+ * folding.
+ */
+describe("workflow folded run steps cannot be split by invisible whitespace", () => {
+  const workflowFiles = [
+    ".github/workflows/release.yml",
+    ".github/workflows/windows-check.yml",
+    ".github/workflows/ci.yml",
+  ];
+
+  it("has no whitespace-only lines in any workflow", async () => {
+    for (const file of workflowFiles) {
+      const text = await readFile(resolve(rootDir, file), "utf8");
+      const offenders = text
+        .split("\n")
+        .map((line, index) => ({ line, lineNumber: index + 1 }))
+        .filter(({ line }) => line !== "" && line.trim() === "")
+        .map(({ lineNumber }) => lineNumber);
+      expect(
+        offenders,
+        `${file} has whitespace-only line(s) at ${offenders.join(", ")} — ` +
+          `inside a folded 'run: >-' block these become real line breaks and ` +
+          `split the command into two shell statements`,
+      ).toEqual([]);
+    }
+  });
+
+  it("keeps the Windows installer build a single shell statement", () => {
+    const step = windowsCheckWorkflow.slice(
+      windowsCheckWorkflow.indexOf("Build production MSI and NSIS installers"),
+    );
+    const folded = step.slice(step.indexOf("run: >-"), step.indexOf("- name: Install Sentry CLI"));
+    const argLines = folded
+      .split("\n")
+      .slice(1)
+      .filter((line) => line.trim().length > 0);
+    // Every continuation line must carry an argument; a gap here is the bug.
+    for (const line of argLines) {
+      expect(line.trim().length).toBeGreaterThan(0);
+    }
+    expect(argLines.some((line) => line.includes("--bundles msi nsis"))).toBe(true);
+    expect(folded).not.toContain("tauri.windows.release.conf.json");
   });
 });

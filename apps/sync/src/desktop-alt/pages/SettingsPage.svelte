@@ -175,8 +175,13 @@
   // remain usable while a save is in flight, while repeated changes to the
   // same setting are held until its optimistic patch has settled.
   let pendingSettingsControls = $state<SettingsControlKey[]>([]);
-  // GA gate (any signed-in user) — from `meetings_feature_enabled`. Gates the
-  // Meeting-detection row, which graduated out of the Indigo dogfood.
+  // Gates the Meeting-detection row. This must track the SDK's OWN gate
+  // (`meeting_detect_feature_enabled`), NOT the GA `meetings_feature_enabled`
+  // that admits any signed-in user. The two used to agree, so either worked;
+  // they no longer do. The Recall Desktop SDK is not bundled any more, so
+  // detection can never start — keying this row off the GA gate would leave
+  // every signed-in user with an enabled toggle and a macOS permissions walk
+  // that cannot achieve anything.
   let meetingsEnabled = $state(false);
   // True @getindigo.ai gate — from `is_indigo_user`. Gates the builder-only
   // staging-channel row. Kept separate from `meetingsEnabled` above because
@@ -610,11 +615,12 @@
     settingsReady = false;
     error = null;
     try {
-      const [settings, meetingsFeatureEnabled, indigoBuilder, channels, memberships_] = await Promise.all([
+      const [settings, meetingDetectEnabledFlag, indigoBuilder, channels, memberships_] = await Promise.all([
         invoke<SettingsWire>('get_settings'),
-        invoke<boolean>('meetings_feature_enabled').catch(() => false),
-        // True @getindigo.ai gate for the staging-channel row (NOT the GA
-        // `meetings_feature_enabled` above, which admits any signed-in user).
+        invoke<boolean>('meeting_detect_feature_enabled').catch(() => false),
+        // True @getindigo.ai gate for the staging-channel row (NOT the
+        // SDK-detection gate above, and NOT the GA `meetings_feature_enabled`,
+        // which admits any signed-in user).
         invoke<boolean>('is_indigo_user').catch(() => false),
         invoke<string[]>('available_channels').catch(() => ['stable']),
         // Drives the default-recording-company dropdown. A vault hiccup must not
@@ -623,7 +629,7 @@
       ]);
       if (generation !== settingsLoadGeneration) return;
       applyPersistedSettings(settings, memberships_);
-      meetingsEnabled = meetingsFeatureEnabled;
+      meetingsEnabled = meetingDetectEnabledFlag;
       isIndigoBuilder = indigoBuilder;
       availableChannels = (Array.isArray(channels) ? channels : []).filter(isChannel);
       settingsReady = true;

@@ -335,9 +335,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Recall sidecar dependencies
-        run: pnpm run sidecar:install
-
       # The tag checkout still carries whatever version was committed. Overwrite
       # the five version files with the bytes the validate job stamped from the
       # tag, so the bundle, the updater archive and the DMG all carry it.
@@ -526,10 +523,6 @@ jobs:
               print(f"Verified Sentry debug-file record for {debug_id}")
           PY
 
-      - name: Fix Recall framework symlinks
-        shell: bash
-        run: bash scripts/fix-recall-framework-symlinks.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
-
       - name: Sign app bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -697,9 +690,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Recall sidecar dependencies
-        run: pnpm run sidecar:install
-
       # The tag checkout still carries whatever version was committed. Overwrite
       # the five version files with the bytes the validate job stamped from the
       # tag, so both installers and the updater artifacts all carry it.
@@ -722,50 +712,10 @@ jobs:
           fi
           echo "Building version $actual"
 
-      - name: Download native ARM64 Node runtime for Recall launcher
-        if: matrix.target == 'aarch64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          $version = node -p "process.version"
-          $archiveName = "node-$version-win-arm64.zip"
-          $baseUrl = "https://nodejs.org/dist/$version"
-          $archive = Join-Path $env:RUNNER_TEMP $archiveName
-          $checksums = Join-Path $env:RUNNER_TEMP "SHASUMS256.txt"
-          $extract = Join-Path $env:RUNNER_TEMP "node-$version-win-arm64"
-
-          Invoke-WebRequest "$baseUrl/$archiveName" -OutFile $archive
-          Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksums
-          $checksumLine = Get-Content $checksums | Where-Object { $_ -match "\s+$([regex]::Escape($archiveName))$" } | Select-Object -First 1
-          if (-not $checksumLine) {
-            throw "No Node checksum found for $archiveName"
-          }
-          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
-          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "Node ARM64 checksum mismatch: expected $expected, got $actual"
-          }
-
-          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP -Force
-          $nodeExe = Join-Path $extract "node.exe"
-          if (-not (Test-Path $nodeExe)) {
-            throw "ARM64 node.exe was not extracted at $nodeExe"
-          }
-          "RECALL_SIDECAR_NODE_EXECUTABLE=$nodeExe" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       # Windows recording depends on a real PE sidecar launcher. Tauri's
       # `bundle.externalBin` now requires this file to exist for each target
       # triple, so build and assert it before the bundle step rather than
       # publishing an installer with the Recall bridge resources but no launcher.
-      - name: Build Recall SDK sidecar (${{ matrix.target }})
-        shell: pwsh
-        env:
-          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
-        run: |
-          pnpm -C sidecar/recall-sdk-bridge build
-          $launcher = "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe"
-          if (-not (Test-Path $launcher)) {
-            throw "Recall sidecar launcher was not produced for ${{ matrix.target }} at $launcher"
-          }
 
       - name: Generate Windows MSI version overlay
         shell: pwsh
@@ -792,11 +742,7 @@ jobs:
         # launcher built by the step above). It is kept out of the auto-merged
         # tauri.windows.conf.json so `cargo check` (windows-check.yml) — where the
         # launcher is absent — still passes; Tauri merges the overlay here.
-        env:
-          # Tauri runs the overlay's beforeBuildCommand, which builds the launcher
-          # again. Keep that nested build on the matrix architecture as well.
-          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
 
       - name: Install Sentry CLI
         shell: pwsh
