@@ -1728,6 +1728,19 @@ fn npm_unresolved(npm: &str) -> bool {
     Path::new(npm).components().count() <= 1
 }
 
+/// The ONE call into the managed-Node provisioning seam for this module.
+///
+/// Both consumers — the first-install path below and `managed_toolchain_retry`
+/// — go through here, so the module keeps exactly one provisioning point rather
+/// than growing a second installer per caller. `repair_managed_node` carries the
+/// repair cooldown itself, which is also what bounds the two paths if they ever
+/// meet in one invocation: a first install that provisions and then still fails
+/// finds the retry's own request Skipped, so at most one provision actually
+/// happens per run.
+async fn request_managed_node_repair(app: &AppHandle) -> ToolchainRepair {
+    crate::commands::sync::repair_managed_node(app).await
+}
+
 /// Provision HQ's managed Node so a first install has an npm to run.
 ///
 /// Only used when the machine has no CLI *and* no resolvable npm. Returns the
@@ -1739,7 +1752,7 @@ async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(Str
         "hq-cli-update",
         "first install with no npm on PATH — provisioning HQ's managed Node first",
     );
-    match crate::commands::sync::repair_managed_node(app).await {
+    match request_managed_node_repair(app).await {
         ToolchainRepair::Repaired => {}
         ToolchainRepair::Skipped => {
             log(
@@ -1980,7 +1993,7 @@ async fn managed_toolchain_retry(
     // Provision through the shared seam. Only a fresh, successful provision earns
     // the retry; a cooldown-Skipped or a Failed repair falls straight through so
     // the caller still reports the original failure.
-    match crate::commands::sync::repair_managed_node(app).await {
+    match request_managed_node_repair(app).await {
         ToolchainRepair::Repaired => {}
         ToolchainRepair::Skipped => {
             log(
