@@ -27,11 +27,14 @@ const installerHooks = readFileSync(
 );
 
 describe('Windows production installer E2E', () => {
-  it('builds MSI and NSIS packages with the release and MSI version overlays', () => {
+  it('builds MSI and NSIS packages with the CI and MSI version overlays', () => {
     expect(workflow).toContain('windows-installer-e2e:');
     expect(workflow).toContain('installer E2E (x64 MSI + NSIS)');
     expect(workflow).toContain('--bundles msi nsis');
-    expect(workflow).toContain('--config src-tauri/tauri.windows.release.conf.json');
+    // tauri.windows.release.conf.json is gone with the Recall SDK sidecar: it
+    // carried only the launcher `bundle.externalBin` and a beforeBuildCommand
+    // that rebuilt it.
+    expect(workflow).not.toContain('tauri.windows.release.conf.json');
     expect(workflow).toContain('--config src-tauri/tauri.windows.ci.conf.json');
     expect(workflow).toContain('--config $env:TAURI_MSI_VERSION_CONFIG');
     expect(workflow).toContain('Verify prerelease MSI package');
