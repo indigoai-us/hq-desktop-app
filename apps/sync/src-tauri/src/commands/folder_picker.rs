@@ -71,19 +71,48 @@ fn close_existing_file_panels() {
     }
 }
 
+/// Bring this Accessory (menu-bar) app frontmost so an application-modal
+/// panel opens on top of, and receives events over, the popover / onboarding
+/// card. `NSApplicationActivationPolicyAccessory` apps are NOT activated just
+/// by showing a window, so without an explicit `activateIgnoringOtherApps:`
+/// the folder panel can open behind the card and look like a hang.
+///
+/// Must run on the main thread — AppKit is not thread-safe.
+#[cfg(target_os = "macos")]
+fn activate_app() {
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    unsafe {
+        let app_cls = class!(NSApplication);
+        let app: *mut AnyObject = msg_send![app_cls, sharedApplication];
+        if app.is_null() {
+            return;
+        }
+        let _: () = msg_send![app, activateIgnoringOtherApps: true];
+    }
+}
+
 /// Open a native macOS folder picker dialog.
 /// Returns the selected path, or None if the user cancelled.
 ///
-/// Behaviour:
-/// - Holds a `ModalGuard` for the lifetime of the dialog. Without it
-///   the NSOpenPanel would steal key-window status from the popover,
-///   which triggers the `Focused(false)` hide handler in `tray.rs` —
-///   and once the popover hides, macOS unparents and immediately
-///   dismisses the open panel.
-/// - Before invoking rfd, closes any existing NSOpenPanel/NSSavePanel
-///   so repeated Change clicks don't stack panels. The prior rfd
-///   future resolves with `None` (like the user hit Cancel) and the
-///   new picker opens cleanly.
+/// Behaviour (macOS):
+/// - Runs the picker as an **application-modal** `NSOpenPanel`
+///   (`rfd::FileDialog::pick_folder`, backed by `runModal`) on the main
+///   thread. An app-modal panel stays up until the user clicks Open or
+///   Cancel — it cannot be dismissed by clicking outside it. That closes
+///   the hang where the async *sheet* variant lost key-window status
+///   (an outside click or a focus shift), got ordered out WITHOUT ending
+///   its modal session, and left its completion handler — and therefore
+///   the awaiting Rust future — pending forever.
+/// - Calls `activate_app()` first so this Accessory app is frontmost and
+///   the panel is presented on top and is interactable.
+/// - Still holds a `ModalGuard` (suppresses the `Focused(false)` hide in
+///   `tray.rs`) and still force-cancels any stray panel from a prior
+///   interaction before opening — belt-and-suspenders now that the picker
+///   is app-modal.
+/// - The result flows back to this async command over a oneshot channel,
+///   so the caller's `.await` resolves exactly when the modal ends. A
+///   dropped sender surfaces as an error instead of a silent hang.
 #[tauri::command]
 pub async fn pick_folder(
     #[allow(unused_variables)] app: tauri::AppHandle,
@@ -92,19 +121,68 @@ pub async fn pick_folder(
 
     #[cfg(target_os = "macos")]
     {
-        // run_on_main_thread is fire-and-forget; we don't await it
-        // because its callback runs to completion before the NSApp's
-        // next event-loop iteration — which is when the new rfd
-        // panel would be shown anyway.
-        let _ = app.run_on_main_thread(close_existing_file_panels);
+        use crate::util::logfile::log;
+
+        log(
+            "folder_picker",
+            "pick_folder: opening app-modal folder picker",
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+
+        // Everything below runs on the main thread. rfd's sync `pick_folder`
+        // itself dispatches to main via `run_on_main`; since we are already
+        // there, it runs inline (no double-dispatch deadlock).
+        let run = app.run_on_main_thread(move || {
+            // Recover from any zombied panel a prior interaction left behind,
+            // then bring the app frontmost so the modal panel is on top.
+            close_existing_file_panels();
+            activate_app();
+
+            let picked = rfd::FileDialog::new()
+                .set_title("Choose HQ Folder")
+                .pick_folder()
+                .map(|path| path.to_string_lossy().to_string());
+
+            // The receiver is dropped only if the command future was
+            // cancelled; ignore the send error in that case.
+            let _ = tx.send(picked);
+        });
+
+        if let Err(err) = run {
+            log(
+                "folder_picker",
+                &format!("pick_folder: run_on_main_thread failed: {err}"),
+            );
+            return Err(format!("Could not open the folder picker: {err}"));
+        }
+
+        let result = rx.await.map_err(|_| {
+            log(
+                "folder_picker",
+                "pick_folder: main-thread picker dropped before returning",
+            );
+            "The folder picker closed unexpectedly.".to_string()
+        })?;
+
+        log(
+            "folder_picker",
+            &format!("pick_folder: closed, selection={}", result.is_some()),
+        );
+
+        return Ok(result);
     }
 
-    let result = rfd::AsyncFileDialog::new()
-        .set_title("Choose HQ Folder")
-        .pick_folder()
-        .await;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &app;
+        let result = rfd::AsyncFileDialog::new()
+            .set_title("Choose HQ Folder")
+            .pick_folder()
+            .await;
 
-    Ok(result.map(|handle| handle.path().to_string_lossy().to_string()))
+        Ok(result.map(|handle| handle.path().to_string_lossy().to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -115,5 +193,14 @@ mod tests {
         // We can't actually open a dialog in tests, but we can confirm
         // the builder chain compiles correctly.
         let _builder = rfd::AsyncFileDialog::new().set_title("Choose HQ Folder");
+    }
+
+    #[test]
+    fn test_sync_dialog_builder_compiles() {
+        // The macOS picker now runs the synchronous, app-modal
+        // `FileDialog::pick_folder` (via `runModal`) on the main thread so
+        // an outside click can't zombie the panel. Confirm that builder
+        // chain compiles too — the actual modal only runs on-device.
+        let _builder = rfd::FileDialog::new().set_title("Choose HQ Folder");
     }
 }
