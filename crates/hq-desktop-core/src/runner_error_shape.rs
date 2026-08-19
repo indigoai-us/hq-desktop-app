@@ -545,38 +545,71 @@ fn parse_http_key_status(message: &str) -> Option<RunnerErrorHttpStatus> {
     None
 }
 
-/// Grammar (b): the `<key>: <status> <detail>` tail of a presigned/HEAD/verify
-/// failure. Scans `": "` boundaries and takes the first one immediately followed
-/// by a valid three-digit status — the key/status separator. Taking the first
-/// valid match (rather than any single fixed occurrence) is robust to a `": "`
-/// inside the free-text detail, while the caller's shape gate is what prevents an
-/// arbitrary three-digit number in unrelated prose from being read as a status.
-fn parse_presigned_tail_status(message: &str) -> Option<RunnerErrorHttpStatus> {
+/// Grammar (b/c) tail parser: the `<key>: <status> <detail>` (presigned/HEAD/
+/// verify) or `… failed: <status> <body>` (STS-vend) form. Scans every `": "`
+/// boundary and returns a status only when every valid three-digit-status
+/// candidate agrees on a single value. This is provably safe against a
+/// `": <digits> "` embedded in a valid object key *or* in the free-text detail:
+/// a valid POSIX/S3 key such as `report: 123 notes.md` would otherwise let the
+/// first separator win and mislabel `123` as the status, so when two different
+/// statuses appear the boundary is ambiguous and this returns `None` (honest
+/// absence) rather than a confident wrong token. The caller's gate (a recognised
+/// shape or an STS-vend failure) keeps an arbitrary number in unrelated prose
+/// from ever opening this parser.
+fn parse_status_tail(message: &str) -> Option<RunnerErrorHttpStatus> {
     let bytes = message.as_bytes();
+    let mut agreed: Option<u16> = None;
     for (idx, _) in message.match_indices(": ") {
         if let Some(status) = three_digit_http_status_at(bytes, idx + ": ".len()) {
-            return http_status_token(status);
+            match agreed {
+                None => agreed = Some(status),
+                Some(existing) if existing == status => {}
+                // Two different statuses in the tail — the boundary is ambiguous
+                // (e.g. a `: <digits> ` inside the object key), so emit nothing.
+                Some(_) => return None,
+            }
         }
     }
-    None
+    agreed.and_then(http_status_token)
+}
+
+/// A company-scope STS-vend failure. hq-cloud's `entity-resolver.ts` surfaces an
+/// `EntityResolutionError` wrapping `STS /sts/vend failed: <status> <body>`, and
+/// the desktop's own tests model the `STS vend failed for <company>: <status>`
+/// form; both carry the HTTP status in the tail but neither an `http=` key nor a
+/// presigned shape. Requiring all three tokens keeps this gate narrow so an
+/// unrelated message can never open the tail parser.
+fn is_sts_vend_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("sts") && lower.contains("vend") && lower.contains("failed")
 }
 
 /// Map an untrusted runner error message to a fixed HTTP-status token, or `None`
-/// when no anchored grammar parses. Only two grammars are read, and nothing else:
-/// the `describeError` ` http=` key, and the `: <status>` tail of a message the
-/// shape classifier already resolved to a presigned/HEAD/tombstone-verify form.
-/// The shape anchor on grammar (b) is deliberate: it keeps an arbitrary
-/// three-digit number in free prose from ever being mislabelled as a status.
+/// when no anchored grammar parses. Three grammars are read, and nothing else:
+///
+/// * (a) the `describeError` ` http=<status>` key;
+/// * (b) the `<key>: <status>` tail of a message the shape classifier already
+///   resolved to a presigned/HEAD/tombstone-verify form; and
+/// * (c) the `… failed: <status>` tail of an STS-vend failure.
+///
+/// Grammars (b) and (c) are gated — a recognised shape or an STS-vend failure —
+/// and only emit a status when the `: <status>` boundary is unambiguous, so a
+/// three-digit number in free prose, an object key, or the detail can never be
+/// mislabelled as a status.
 pub fn classify_runner_error_http_status(message: &str) -> Option<RunnerErrorHttpStatus> {
     if let Some(token) = parse_http_key_status(message) {
         return Some(token);
     }
-    match classify_runner_error_shape(message) {
+    let has_status_tail_shape = matches!(
+        classify_runner_error_shape(message),
         RunnerErrorShape::PresignedGetFailed
-        | RunnerErrorShape::PresignedHeadFailed
-        | RunnerErrorShape::TombstoneHeadVerifyFailed => parse_presigned_tail_status(message),
-        _ => None,
+            | RunnerErrorShape::PresignedHeadFailed
+            | RunnerErrorShape::TombstoneHeadVerifyFailed
+    );
+    if has_status_tail_shape || is_sts_vend_failure(message) {
+        return parse_status_tail(message);
     }
+    None
 }
 
 /// Saturating per-pass counts of the closed HTTP-status vocabulary, indexed by
@@ -1283,6 +1316,10 @@ mod tests {
             "Error http=4030 malformed",
             // Out of the 100..=599 HTTP range.
             "Error http=099 nonsense",
+            // A valid object key that itself contains `: <digits> ` makes the
+            // key/status boundary ambiguous, so no status is emitted rather than a
+            // wrong one (the number inside the key is never read as the status).
+            "presigned GET failed for knowledge/report: 123 notes.md: 500 Server Error",
         ] {
             assert_eq!(
                 classify_runner_error_http_status(message),
@@ -1290,6 +1327,41 @@ mod tests {
                 "message should not yield a status: {message:?}"
             );
         }
+    }
+
+    #[test]
+    fn classify_runner_error_http_status_attributes_sts_vend_failures() {
+        // Company-scope STS-vend failures carry the status in a tail with no
+        // `http=` key and no presigned shape (hq-cloud entity-resolver.ts). The
+        // narrow STS-vend gate recovers it via the same unambiguous-boundary parser.
+        for (message, expected) in [
+            (
+                "EntityResolutionError STS vending failed for entity 'acme': STS /sts/vend failed: 500 Internal Server Error",
+                RunnerErrorHttpStatus::Http500,
+            ),
+            (
+                "STS vend failed for cmp_01ABC: 503 Slow Down",
+                RunnerErrorHttpStatus::Http503,
+            ),
+            ("STS /sts/vend failed: 403 Forbidden", RunnerErrorHttpStatus::Http403),
+        ] {
+            assert_eq!(
+                classify_runner_error_http_status(message),
+                Some(expected),
+                "STS-vend message did not classify as expected: {message:?}"
+            );
+        }
+        // A normal presigned failure still resolves via the single unambiguous
+        // boundary — the review fix does not regress the common case.
+        assert_eq!(
+            classify_runner_error_http_status("presigned GET failed for repos/x: 500 Server Error"),
+            Some(RunnerErrorHttpStatus::Http500)
+        );
+        // But `sts`/`vend`/`failed` must all be present; a lone token stays None.
+        assert_eq!(
+            classify_runner_error_http_status("token vend failed for cmp: 500 nope"),
+            None
+        );
     }
 
     #[test]
