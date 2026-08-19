@@ -2022,6 +2022,13 @@ fn ensure_gitignore_line(hq_folder: &str, line: &str) -> Result<bool, String> {
         f.write_all(&out)
             .map_err(|e| format!("write .gitignore temp: {e}"))?;
     }
+    // Preserve the destination's permissions so the atomic replace never widens a
+    // restrictive mode (e.g. 0600 or read-only) to the temp's default, which
+    // could expose secret-related ignore lines or drop an intentional lock.
+    // Symlinks were refused above, so this metadata is the real regular file.
+    if let Ok(meta) = fs::metadata(&path) {
+        let _ = fs::set_permissions(&tmp, meta.permissions());
+    }
     fs::rename(&tmp, &path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("publish .gitignore: {e}")
@@ -2042,9 +2049,9 @@ fn ensure_gitignore_line(hq_folder: &str, line: &str) -> Result<bool, String> {
 /// working tree and would silently undo the `git rm --cached`.
 ///
 /// The `.gitignore` edit is best-effort: correctness does not depend on it,
-/// because the caller re-stages with an explicit `:(exclude)` pathspec that keeps
-/// the subtree out regardless of any `.gitignore` (root, nested, symlinked, or
-/// negated). The edit still matters for a clean `git status` and for OTHER
+/// because the caller re-stages with `git add -A` then `git reset` on the excluded
+/// subtrees, which keeps them out regardless of any `.gitignore` (root, nested,
+/// symlinked, or negated). The edit still matters for a clean `git status` and for OTHER
 /// writers of this repo — the HQ autocommit hook runs a plain `git add -A` — so a
 /// failure is logged and the untracking proceeds rather than being skipped.
 fn exclude_path_from_mirror(
@@ -2224,6 +2231,28 @@ fn stage_all_except(hq_folder: &str, excluded: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// Unstage every gated subtree already recorded as excluded in the root
+/// `.gitignore`, so the ordinary snapshot never re-commits it — even on an
+/// under-cap pass that skips the gate loop, and even if a nested `.gitignore`
+/// negation or a plain autocommit `git add -A` re-staged it after a prior
+/// exclusion. Deriving the active set from the recorded lines makes the exclusion
+/// durable without a separate state file.
+fn unstage_recorded_exclusions(hq_folder: &str) -> Result<(), String> {
+    let gitignore = fs::read(Path::new(hq_folder).join(".gitignore")).unwrap_or_default();
+    let text = String::from_utf8_lossy(&gitignore);
+    let active: Vec<&str> = GATED_EXCLUSIONS
+        .iter()
+        .filter(|rung| text.lines().any(|l| l.trim() == rung.gitignore_line))
+        .map(|rung| rung.pathspec)
+        .collect();
+    if active.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<&str> = vec!["reset", "-q", "--"];
+    args.extend_from_slice(&active);
+    run_git(hq_folder, &args, GIT_INDEX_TIMEOUT)
+}
+
 /// Resolve whether to push after a mirror pass. `committed` is whether this pass
 /// produced any commit (ordinary snapshot or a size-gate exclusion). No commit
 /// → nothing to push; a commit with no upstream → local-only snapshot.
@@ -2262,13 +2291,18 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     // If the gated exclusions could not bring the snapshot under the cap, the
     // remaining bloat is outside workspace/ — content the ladder will not
     // auto-drop. Refuse the ordinary snapshot rather than commit and push
-    // oversized content into history: reset the index so nothing is left staged,
-    // but still push any exclusion commit already made this pass.
+    // oversized content into history: reset the index so nothing is left staged.
+    //
+    // Withhold the push entirely (do not even push an exclusion commit made this
+    // pass): the oversized content may already sit in an unpushed local ancestor,
+    // and pushing the exclusion commit would carry that ancestor to the remote —
+    // exactly the content the refusal is meant to keep off it. The exclusion
+    // commits stay local and push on a later pass once the repo is back under cap.
     if gate.over_cap {
         log(
             LOG_TAG,
             &format!(
-                "{hq_folder}: refusing the mirror snapshot — over the size cap and not reducible by the gated exclusions"
+                "{hq_folder}: refusing the mirror snapshot — over the size cap and not reducible by the gated exclusions; withholding the push"
             ),
         );
         if let Err(e) = run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
@@ -2277,8 +2311,14 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
                 &format!("{hq_folder}: index reset after cap refusal failed: {e}"),
             );
         }
-        return push_decision(hq_folder, gate.committed);
+        return Ok(MirrorOutcome::NoPush);
     }
+
+    // Durability: unstage any gated subtree already recorded as excluded, so the
+    // ordinary snapshot never re-commits it — even on this under-cap pass, and
+    // even if a nested `.gitignore` negation or a plain autocommit `git add -A`
+    // re-staged it after a prior exclusion.
+    unstage_recorded_exclusions(hq_folder)?;
 
     // `diff --cached --quiet` exits 0 when index == HEAD, 1 when staged
     // changes exist. Anything else is unexpected (signal, missing HEAD on
@@ -6906,6 +6946,46 @@ mod tests {
         // Refusal must not delete the user's file, and must leave the index clean.
         assert!(tmp.path().join("big-root.bin").exists());
         assert!(index_is_clean(tmp.path()));
+    }
+
+    #[test]
+    fn recorded_exclusion_is_not_recommitted_on_a_later_under_cap_pass() {
+        // A previously-recorded exclusion must stay out even on an under-cap pass
+        // that skips the gate loop, and even if the subtree was force-staged (as a
+        // nested `.gitignore` negation or an autocommit `git add -f` could do).
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("64"); // far under cap → gate loop is skipped
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join(".gitignore"), "/workspace/\n").unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        // Force-stage a workspace file despite the ignore rule.
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("scratch.txt"), "x").unwrap();
+        assert!(git(tmp.path(), &["add", "-f", "workspace/scratch.txt"])
+            .status
+            .success());
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        assert!(
+            ls_files(tmp.path(), "workspace").is_empty(),
+            "recorded exclusion must be durable — workspace/ must not be re-committed"
+        );
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "nothing to commit once the recorded exclusion is unstaged"
+        );
     }
 
     // ── B1 regression: the 2026-07-30 mass-deletion shape ────────────────
