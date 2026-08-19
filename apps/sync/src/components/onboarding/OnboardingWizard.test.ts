@@ -114,12 +114,47 @@ afterEach(async () => {
 });
 
 describe('onboarding launch handoff', () => {
+  it('turns a failed Claude launch into a folder escape path, never a red dump', async () => {
+    mountWizard(vi.fn(), 4, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return { ...NO_AI_TOOLS, claude_desktop: true, any: true };
+        case 'open_claude_code_link':
+          throw new Error(
+            'HQ folder is not ready for Claude Code Desktop setup repair (core/core.yaml (valid hq-core schema), companies/manifest.yaml) — re-tether in Settings or finish onboarding',
+          );
+        default:
+          return undefined;
+      }
+    });
+
+    primaryButton().click();
+    await flush();
+
+    const summary = host.querySelector('[data-testid="onboarding-summary"]');
+    expect(summary?.textContent).toContain('Open the folder and run /setup');
+    expect(summary?.textContent).toContain('Reveal folder');
+    expect(summary?.textContent).toContain('Copy /setup');
+    expect(summary?.textContent).not.toContain('core/core.yaml');
+    expect(summary?.textContent).not.toContain('Could not open Claude Code');
+    expect(summary?.querySelector('.inline-note.error')).toBeNull();
+  });
+
   it('finishes onboarding after each supported launcher opens', () => {
     // Every exit routes through one guarded recovery boundary. Launcher errors
     // and native handoff errors must never be conflated.
     expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(1);
     expect(wizardSource).toContain('async function finishWithRecovery()');
     expect(wizardSource).not.toContain('advanceTo(4)');
+    expect(wizardSource).not.toContain('Could not open Claude Code:');
+    expect(wizardSource).not.toMatch(/#d04444|#d14343/);
   });
 
   it('retries a failed native handoff without relaunching the AI tool', async () => {
@@ -148,7 +183,7 @@ describe('onboarding launch handoff', () => {
       '[data-testid="launcher-finish-error"]',
     );
     expect(recovery?.textContent).toContain(
-      'The tool opened, but HQ couldn’t finish setup.',
+      'The tool opened. Finish HQ setup here when you’re ready.',
     );
     expect(recovery?.textContent).not.toContain('Could not open Claude Code');
 
@@ -365,9 +400,10 @@ describe('onboarding launch handoff', () => {
     expect(
       tauri.invoke.mock.calls.filter(([command]) => command === 'detect_claude_ready'),
     ).toHaveLength(3);
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'Could not open Claude Code: Claude probe unavailable',
-    );
+    const escape = host.querySelector('[data-testid="onboarding-escape"]');
+    expect(escape?.textContent).toContain('Open the folder yourself');
+    expect(escape?.textContent).not.toContain('Claude probe unavailable');
+    expect(host.textContent).toContain('Copy /setup');
 
     await vi.advanceTimersByTimeAsync(6000);
     await flush();
