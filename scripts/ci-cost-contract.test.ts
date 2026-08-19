@@ -131,29 +131,49 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
 });
 
 describe("only macOS-specific work runs on a macOS runner", () => {
-  it("runs the shared root-workspace crates on ubuntu-latest", () => {
+  it("runs the two heavy shared crates on ubuntu-latest", () => {
     // hq-desktop-core declares its Unix deps under
     // cfg(any(target_os = "macos", target_os = "linux")) and hq-telemetry is
-    // pure Rust, so the root workspace does not need a 10x runner.
+    // pure Rust, so neither needs a 10x runner -- or anything but rustc.
     const linux = jobBody(ciWorkflow, "rust-linux");
 
     expect(linux).toContain("runs-on: ubuntu-latest");
-    expect(linux).toContain("cargo test --workspace --locked");
-    expect(linux).toContain("cargo check --workspace --locked");
+    expect(linux).toContain(
+      "cargo test -p hq-desktop-core -p hq-telemetry --locked",
+    );
   });
 
-  it("keeps the root-workspace crates off the macOS runner", () => {
+  it("keeps those crates' tests off the macOS runner", () => {
     const macos = jobBody(ciWorkflow, "rust-macos");
 
     expect(macos).toContain("runs-on: macos-latest");
     expect(macos).not.toContain("cargo test --workspace --locked");
-    expect(macos).not.toContain("cargo check --workspace --locked");
+    expect(macos).not.toContain("-p hq-desktop-core");
+  });
+
+  it("installs no system packages on the Linux job", () => {
+    // hq-platform's window-vibrancy dependency links GTK3 on Linux. Installing
+    // those headers pulled 100 packages, cost 2.5 of the job's 4.5 minutes, and
+    // failed 2 of 3 runs when azure.archive.ubuntu.com stopped answering (runs
+    // 32299864862 and 32302036015). Acquire timeouts do not help against an
+    // unreachable mirror -- apt just fails faster, in a loop. The job must stay
+    // free of any package manager so it cannot inherit that failure mode.
+    const linux = jobBody(ciWorkflow, "rust-linux");
+
+    expect(linux).not.toContain("apt-get");
+    expect(linux).not.toContain("libgtk");
+  });
+
+  it("keeps hq-platform and the full workspace check on macOS", () => {
+    // Both need window-vibrancy to link, which is exactly what rust-linux is
+    // avoiding. Putting them anywhere else reintroduces the GTK dependency.
+    const macos = jobBody(ciWorkflow, "rust-macos");
+
+    expect(macos).toContain("cargo test -p hq-platform --locked");
+    expect(macos).toContain("cargo check --workspace --locked");
   });
 
   it("keeps the Tauri app crate and the real-child regressions on macOS", () => {
-    // These are the jobs that genuinely need the shipping platform: the app
-    // crate is the macOS Tauri binary, and the escalation suite asserts real
-    // SIGKILL propagation across a process tree.
     const macos = jobBody(ciWorkflow, "rust-macos");
 
     expect(macos).toContain("working-directory: apps/sync/src-tauri");
@@ -164,8 +184,6 @@ describe("only macOS-specific work runs on a macOS runner", () => {
   });
 
   it("runs rustfmt on Linux rather than on the macOS runner", () => {
-    // cargo fmt needs no compilation, so it has no reason to occupy a 10x
-    // runner. clippy stays on macOS because it has to build the Tauri app.
     const linux = jobBody(ciWorkflow, "rust-linux");
     const macos = jobBody(ciWorkflow, "rust-macos");
 
@@ -177,25 +195,10 @@ describe("only macOS-specific work runs on a macOS runner", () => {
     // "Rust tests (macOS)" is listed in the required_status_checks of the
     // active `main` ruleset. A job rename makes that context never report, so
     // every PR sits unmergeable waiting on a check that no longer exists.
-    // Renaming is fine — but the ruleset has to change in the same breath.
     expect(ciWorkflow).toContain("name: Rust tests (macOS)");
   });
 
-  it("bounds the apt step so a stalled mirror cannot eat the job budget", () => {
-    // apt applies no acquire timeout by default. On run 32299864862 this step
-    // stalled 18 minutes on archive.ubuntu.com and the runner cancelled the
-    // whole job at its 20-minute deadline, having run nothing else.
-    const linux = jobBody(ciWorkflow, "rust-linux");
-
-    expect(linux).toMatch(/timeout-minutes: \d+\n\s+run: \|\n\s+set -euo pipefail/);
-    expect(linux).toContain("Acquire::http::Timeout=20");
-    expect(linux).toContain("Acquire::https::Timeout=20");
-    expect(linux).toContain("Acquire::Retries=3");
-  });
-
-  it("gates the new Linux job on the same draft-PR guard as its siblings", () => {
-    // Every CI job skips draft PRs; a new job that forgets the guard
-    // reintroduces the cost the draft skip was added to remove.
+  it("gates the Linux job on the same draft-PR guard as its siblings", () => {
     const linux = jobBody(ciWorkflow, "rust-linux");
 
     expect(linux).toContain(

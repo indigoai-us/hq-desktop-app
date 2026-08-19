@@ -11,9 +11,9 @@ name: CI
 #   - rust-macos: Rust unit tests for the app crate only (macOS = the shipping
 #     platform, and the only runner where the real-child SIGKILL regressions
 #     mean anything).
-#   - rust-linux: the root-workspace crates (hq-desktop-core, hq-platform,
-#     hq-telemetry). These are platform-neutral enough to run at 1x instead of
-#     the 10x macOS rate; see the job comment for the GTK caveat.
+#   - rust-linux: the two heavy shared crates (hq-desktop-core, hq-telemetry),
+#     which need nothing but rustc and so run at 1x instead of the 10x macOS
+#     rate. hq-platform stays on rust-macos -- see that job's comment.
 # Also blocking:
 #   - e2e-desktop-alt: the desktop-alt source-contract suite (mirrors hq-sync's
 #     desktop-alt-e2e.yml). Windows compile stays in windows-check.yml.
@@ -125,11 +125,11 @@ jobs:
         with:
           targets: aarch64-apple-darwin
           components: rustfmt, clippy
-      # Only the app workspace is built here now; the root workspace moved to
-      # the rust-linux job, so caching it on a 10x runner is wasted restore time.
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: apps/sync/src-tauri
+          workspaces: |
+            .
+            apps/sync/src-tauri
           cache-on-failure: true
       - name: App crate tests (hq-sync-menubar)
         timeout-minutes: 20
@@ -142,6 +142,13 @@ jobs:
         timeout-minutes: 10
         working-directory: apps/sync/src-tauri
         run: cargo test --locked commands::process::cross_generation_escalation_tests -- --nocapture
+      # hq-platform's tests and the full-workspace lockfile check live here
+      # rather than on rust-linux: both need window-vibrancy, whose Linux
+      # backend links GTK3. See the rust-linux job comment.
+      - name: Platform crate tests (hq-platform)
+        run: cargo test -p hq-platform --locked
+      - name: Root workspace lockfile check
+        run: cargo check --workspace --locked
       - name: App workspace lockfile check
         working-directory: apps/sync/src-tauri
         run: cargo check --locked
@@ -167,27 +174,6 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@v4
-      # apt has no default acquire timeout, so a slow mirror stalls instead of
-      # failing: on run 32299864862 this step sat 18 minutes on
-      # archive.ubuntu.com noble-security InRelease and consumed the job's
-      # entire 20-minute budget before the runner cancelled it. Explicit
-      # timeouts turn a stall into a failure the retry loop can absorb, and the
-      # step deadline caps the damage at 6 minutes instead of the whole job.
-      - name: Install GTK development headers (window-vibrancy Linux backend)
-        timeout-minutes: 6
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if sudo apt-get update \
-                 -o Acquire::Retries=3 \
-                 -o Acquire::http::Timeout=20 \
-                 -o Acquire::https::Timeout=20; then
-              break
-            fi
-            echo "apt-get update failed (attempt ${attempt}/3); retrying"
-            sleep 5
-          done
-          sudo apt-get install -y --no-install-recommends libgtk-3-dev
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -196,10 +182,14 @@ jobs:
         with:
           workspaces: .
           cache-on-failure: true
-      - name: Workspace crate tests (hq-desktop-core, hq-platform, hq-telemetry)
-        run: cargo test --workspace --locked
-      - name: Root workspace lockfile check
-        run: cargo check --workspace --locked
+      # hq-platform is deliberately absent: its window-vibrancy dependency links
+      # GTK3 on Linux, and installing those headers cost 2.5 of this job's 4.5
+      # minutes and failed 2 of 3 runs on Ubuntu mirror outages (runs
+      # 32299864862, 32302036015) -- a network dependency worth more than the
+      # crate it serves. hq-desktop-core and hq-telemetry are the heavy two and
+      # need nothing beyond rustc; hq-platform stays on rust-macos.
+      - name: Shared crate tests (hq-desktop-core, hq-telemetry)
+        run: cargo test -p hq-desktop-core -p hq-telemetry --locked
       # rustfmt only parses, so it needs neither the Tauri toolchain nor a macOS
       # runner. Kept non-blocking exactly as it was on rust-macos -- this change
       # moves the check, it does not promote it to a required gate.
