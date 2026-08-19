@@ -3167,7 +3167,23 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Own process group so the CPU throttle can address git and anything it
+    // spawns (hooks, credential helpers) without touching the rest of HQ.
+    put_git_in_own_process_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("spawn git: {e}"))?;
+
+    // The mirror's `git add -A` hashes every changed file on a tree that can
+    // hold hundreds of thousands of them, so it is the other half of what an
+    // operator feels as "HQ is eating my machine". It shares one budget with
+    // the sync runner rather than getting its own, so a mirror pass overlapping
+    // a sync tightens both instead of doubling the ceiling. The guard is dropped
+    // when this function returns — including the timeout-kill path — and its
+    // drop resumes the group, so a stopped git is never left behind.
+    //
+    // Throttling multiplies wall time, so `timeout` is now a ceiling on elapsed
+    // time for work that runs at a fraction of full speed. That is deliberate:
+    // GIT_INDEX_TIMEOUT is minutes and the throttled commands are seconds.
+    let _cpu_throttle = crate::cpu_throttle::CpuThrottle::attach(child.id() as i32);
 
     // Drain both pipes on their own threads. Polling `try_wait` while the
     // child blocks on a full pipe buffer would hang until the timeout even
@@ -3206,6 +3222,15 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
         stderr,
     })
 }
+
+#[cfg(unix)]
+fn put_git_in_own_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn put_git_in_own_process_group(_cmd: &mut Command) {}
 
 /// Read a child pipe to EOF on its own thread and deliver the bytes over a
 /// channel. The thread is deliberately never joined — see [`git_output`].
