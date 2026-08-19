@@ -3200,15 +3200,7 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
     let stdout_rx = drain_pipe(child.stdout.take());
     let stderr_rx = drain_pipe(child.stderr.take());
 
-    // The caller's ceiling is wall time, but a throttled group only runs for a
-    // fraction of it. Unscaled, a converged governor turns GIT_INDEX_TIMEOUT
-    // into a fraction of its intended CPU allowance and kills a healthy
-    // `git add -A` over a large tree on every single pass.
-    let status = wait_with_timeout(
-        &mut child,
-        crate::cpu_throttle::scaled_timeout(timeout),
-        &label,
-    )?;
+    let status = wait_with_timeout(&mut child, timeout, &label)?;
 
     // A stalled drain must never look like empty output: `count_staged_
     // deletions` reading an empty stdout as "zero deletions" would wave a mass
@@ -3261,17 +3253,22 @@ fn wait_with_timeout(
     timeout: Duration,
     label: &str,
 ) -> Result<std::process::ExitStatus, String> {
-    let started = Instant::now();
+    // The ceiling counts only time git was actually allowed to run. The CPU
+    // throttle duty-cycles this child's process group, so plain wall time would
+    // spend the whole allowance on stop windows and kill a healthy `git add -A`
+    // over a large tree on every mirror pass. A genuinely wedged git is never
+    // stopped, so it still trips the deadline on the original schedule.
+    let deadline = crate::cpu_throttle::RunnableDeadline::start(timeout);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {
-                if started.elapsed() >= timeout {
+                if deadline.expired() {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
-                        "git {label} timed out after {}s and was killed",
-                        timeout.as_secs()
+                        "git {label} timed out after {}s of runnable time and was killed",
+                        deadline.budget().as_secs()
                     ));
                 }
                 std::thread::sleep(GIT_POLL_INTERVAL);

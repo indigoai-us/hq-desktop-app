@@ -117,46 +117,61 @@ pub fn target_cores(max_machine_cpu_percent: f64, cores: f64) -> f64 {
     (max_machine_cpu_percent / 100.0 * cores).max(0.0)
 }
 
-/// Ceiling on how far a throttle may stretch a wall-clock deadline.
+/// A deadline that only counts time the throttled groups were allowed to run.
 ///
-/// The honest worst case is `machine_cores / target_cores` — 20x at the default
-/// ceiling on a 10-core box — but a watchdog stretched that far stops being a
-/// hang detector. 8x keeps a one-hour sync watchdog inside a working day while
-/// still covering the realistic slowdown: the sync runner demands ~1.4 cores
-/// against a 0.5-core budget, which is under 3x.
-const MAX_TIMEOUT_SCALE: f64 = 8.0;
-
-/// Stretch a wall-clock deadline to account for throttling.
+/// Every timeout in HQ's background work is a wall-clock budget that implicitly
+/// grants some amount of CPU. Throttling breaks that link: a converged governor
+/// can slow a one-core `git add -A` by 10x on a two-core machine, so a healthy
+/// command that needed 100 of its 120 seconds is killed long before it finishes.
 ///
-/// Every timeout in HQ's background work measures WALL time, but a throttled
-/// group only runs for a fraction of it. Left unscaled, the throttle would
-/// cancel exactly the long passes it exists to let finish: the sync watchdog
-/// would kill a pass that is making steady progress, and `git add -A` on a
-/// large tree would be killed mid-hash on every mirror pass.
-///
-/// Returns `base` unchanged whenever nothing is actually throttling — the
-/// ceiling is off, the platform has no process groups to stop, or the governor
-/// failed to start. Deciding from the configured percentage alone would hand an
-/// entirely unthrottled Windows build an eight-hour sync watchdog and let git
-/// hold `.git/index.lock` for sixteen minutes instead of two.
-pub fn scaled_timeout(base: Duration) -> Duration {
-    if governor().is_none() {
-        return base;
-    }
-    let Some(percent) = configured_max_machine_cpu_percent() else {
-        return base;
-    };
-    base.mul_f64(timeout_scale(percent, machine_cores()))
+/// A multiplier cannot fix this honestly. Pick it too low and healthy work still
+/// dies; pick the true worst case and a one-hour watchdog becomes twenty hours
+/// and stops detecting hangs. Counting only *runnable* time removes the guess
+/// entirely: the deadline means exactly what it meant before the throttle
+/// existed — this much time actually working — and a genuinely wedged process,
+/// which is never stopped, still trips it on the original schedule.
+pub struct RunnableDeadline {
+    started: Instant,
+    stopped_at_start: Duration,
+    budget: Duration,
 }
 
-/// The multiplier [`scaled_timeout`] applies. Split out so the clamping is
-/// testable without touching process env.
-pub fn timeout_scale(max_machine_cpu_percent: f64, cores: f64) -> f64 {
-    let target = target_cores(max_machine_cpu_percent, cores);
-    if target <= f64::EPSILON {
-        return MAX_TIMEOUT_SCALE;
+impl RunnableDeadline {
+    pub fn start(budget: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            stopped_at_start: total_stopped_time(),
+            budget,
+        }
     }
-    (cores / target).clamp(1.0, MAX_TIMEOUT_SCALE)
+
+    /// Wall time elapsed, less any of it spent under `SIGSTOP`.
+    pub fn runnable_elapsed(&self) -> Duration {
+        let wall = self.started.elapsed();
+        let stopped = total_stopped_time().saturating_sub(self.stopped_at_start);
+        wall.saturating_sub(stopped)
+    }
+
+    pub fn expired(&self) -> bool {
+        self.runnable_elapsed() >= self.budget
+    }
+
+    pub fn budget(&self) -> Duration {
+        self.budget
+    }
+}
+
+/// Cumulative time this process has held throttled groups under `SIGSTOP`.
+/// Zero when nothing is throttling, which makes every [`RunnableDeadline`]
+/// degrade to a plain wall-clock deadline.
+pub fn total_stopped_time() -> Duration {
+    let Some(gov) = governor() else {
+        return Duration::ZERO;
+    };
+    match gov.lock() {
+        Ok(g) => g.total_stopped_time(),
+        Err(poisoned) => poisoned.into_inner().total_stopped_time(),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +203,10 @@ impl DutyCycleController {
 
     pub fn run_fraction(&self) -> f64 {
         self.run_fraction
+    }
+
+    pub fn target_cores(&self) -> f64 {
+        self.target_cores
     }
 
     /// Feed the rate (in cores) the group sustained over the last window, and
@@ -278,10 +297,18 @@ pub struct Governor<S: CpuSampler, G: GroupSignaller> {
     /// the CPU it accumulated during the window, and a pid that vanished
     /// contributes nothing, because its final slice is unobservable.
     last_cpu_seconds: HashMap<i32, f64>,
+    /// Per-pid CPU consumed in the previous window. Credited on behalf of a pid
+    /// that vanishes, whose final counter is unobservable — see `sample`.
+    last_delta: HashMap<i32, f64>,
     /// Whether the registered groups are currently under `SIGSTOP`. Tracked so
     /// an unthrottled cycle issues no signals at all, instead of a `SIGCONT`
     /// every 200 ms to a group that was never stopped.
     stopped: bool,
+    /// When the current stop window began, and how much stopped time has
+    /// accumulated overall. [`RunnableDeadline`] subtracts this so a throttled
+    /// command is not killed for time it was never allowed to use.
+    stopped_since: Option<Instant>,
+    total_stopped: Duration,
 }
 
 /// What the governor wants applied for the next cycle.
@@ -301,7 +328,18 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             sampler,
             signaller,
             last_cpu_seconds: HashMap::new(),
+            last_delta: HashMap::new(),
             stopped: false,
+            stopped_since: None,
+            total_stopped: Duration::ZERO,
+        }
+    }
+
+    /// Cumulative stopped time, including any window still open.
+    pub fn total_stopped_time(&self) -> Duration {
+        match self.stopped_since {
+            Some(since) => self.total_stopped + since.elapsed(),
+            None => self.total_stopped,
         }
     }
 
@@ -344,6 +382,13 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
     pub fn sample(&mut self, elapsed: Duration) -> Tick {
         if self.groups.is_empty() {
             self.last_cpu_seconds.clear();
+            self.last_delta.clear();
+            // Reset the duty cycle with the workload that earned it. Otherwise a
+            // CPU-heavy sync leaves the fraction near its floor, and the next
+            // unrelated git command starts under that stale aggressive cycle,
+            // recovering only over several damped samples — seconds of delay
+            // for a command that never approached the budget.
+            self.controller = DutyCycleController::new(self.controller.target_cores());
             self.resume_all();
             return Tick::Idle;
         }
@@ -370,12 +415,29 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             // crucially its departure can no longer drag the total down and
             // hide a busy sibling's work.
             let mut consumed = 0.0;
+            let mut delta = HashMap::with_capacity(now_cpu.len());
             for (pid, now) in &now_cpu {
-                match self.last_cpu_seconds.get(pid) {
-                    Some(prev) => consumed += (now - prev).max(0.0),
-                    None => consumed += now.max(0.0),
+                let d = match self.last_cpu_seconds.get(pid) {
+                    Some(prev) => (now - prev).max(0.0),
+                    None => now.max(0.0),
+                };
+                delta.insert(*pid, d);
+                consumed += d;
+            }
+            // A pid in the previous sample but absent from this one exited
+            // inside the window, taking its final counter with it. Counting it
+            // as zero makes a burst of short-lived workers — git hooks, runner
+            // children — invisible, and a group of them can then sit well above
+            // the ceiling while a mostly-idle group leader is all the sampler
+            // sees. Credit each departed pid with what it burned in its last
+            // observed window: an estimate, but one that errs toward enforcing
+            // the ceiling rather than quietly exceeding it.
+            for pid in self.last_cpu_seconds.keys() {
+                if !now_cpu.contains_key(pid) {
+                    consumed += self.last_delta.get(pid).copied().unwrap_or(0.0);
                 }
             }
+            self.last_delta = delta;
             self.controller.observe(consumed / wall);
         }
         self.last_cpu_seconds = now_cpu;
@@ -387,6 +449,9 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
     pub fn stop_all(&mut self) {
         for pgid in &self.groups {
             self.signaller.stop(*pgid);
+        }
+        if !self.stopped {
+            self.stopped_since = Some(Instant::now());
         }
         self.stopped = true;
     }
@@ -408,6 +473,9 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
         for pgid in &self.groups {
             self.signaller.cont(*pgid);
         }
+        if let Some(since) = self.stopped_since.take() {
+            self.total_stopped += since.elapsed();
+        }
         self.stopped = false;
     }
 }
@@ -428,7 +496,7 @@ fn governor() -> Option<&'static SharedGovernor> {
         .get_or_init(|| {
             // Stopping a process group needs `killpg`. Where that does not
             // exist there is no throttle, and every consumer — `attach` and
-            // `scaled_timeout` alike — must agree on that from this one place.
+            // `total_stopped_time` alike — must agree from this one place.
             if !cfg!(unix) {
                 return None;
             }
@@ -754,32 +822,35 @@ mod tests {
     // --- timeout scaling ---------------------------------------------------
 
     #[test]
-    fn deadlines_stretch_with_the_ceiling_so_the_throttle_cannot_cancel_itself() {
-        // Unscaled, the sync watchdog and git's index timeout measure wall time
-        // a throttled group only partly gets to use, and would kill exactly the
-        // long passes the throttle exists to let finish.
-        assert!(timeout_scale(5.0, 10.0) > 1.0);
-        assert!(timeout_scale(5.0, 4.0) > 1.0);
-        assert!(scaled_timeout(Duration::from_secs(120)) >= Duration::from_secs(120));
+    fn a_deadline_does_not_count_time_spent_stopped() {
+        // The whole point: a throttled command must not be killed for time it
+        // was never allowed to use. With nothing throttling, total_stopped_time
+        // is zero and this degrades to a plain wall-clock deadline.
+        let d = RunnableDeadline::start(Duration::from_secs(3600));
+        assert!(!d.expired());
+        assert!(d.runnable_elapsed() < Duration::from_secs(1));
+        assert_eq!(d.budget(), Duration::from_secs(3600));
     }
 
     #[test]
-    fn the_stretch_is_bounded_so_a_watchdog_stays_a_watchdog() {
-        // The honest worst case is cores/target — 20x on a 10-core box — but a
-        // watchdog stretched that far stops detecting hangs.
-        assert_eq!(timeout_scale(5.0, 10.0), MAX_TIMEOUT_SCALE);
-        assert_eq!(timeout_scale(0.001, 64.0), MAX_TIMEOUT_SCALE);
-        assert_eq!(timeout_scale(0.0, 8.0), MAX_TIMEOUT_SCALE);
+    fn a_zero_budget_deadline_is_immediately_expired() {
+        assert!(RunnableDeadline::start(Duration::ZERO).expired());
     }
 
     #[test]
-    fn a_generous_ceiling_does_not_shrink_a_deadline() {
-        // 50% of the machine needs only 2x, and nothing may ever scale below
-        // 1x — shrinking a deadline would make the throttle cancel work the
-        // unthrottled build would have completed.
-        assert_eq!(timeout_scale(50.0, 10.0), 2.0);
-        assert!((timeout_scale(99.0, 10.0) - 1.0).abs() < 0.02);
-        assert!(timeout_scale(99.9, 2.0) >= 1.0);
+    fn stopped_time_accumulates_across_windows_and_closes_on_resume() {
+        let (mut g, _sig) = governor(0.5, vec![]);
+        g.register(100);
+        assert_eq!(g.total_stopped_time(), Duration::ZERO);
+        g.stop_all();
+        // An open window already counts, or a deadline checked mid-stop would
+        // charge the child for time it is not being given.
+        assert!(g.total_stopped_time() >= Duration::ZERO);
+        g.resume_all();
+        let after_first = g.total_stopped_time();
+        g.stop_all();
+        g.resume_all();
+        assert!(g.total_stopped_time() >= after_first);
     }
 
     // --- controller --------------------------------------------------------
@@ -1028,16 +1099,62 @@ mod tests {
     }
 
     #[test]
-    fn deadlines_are_not_stretched_when_nothing_is_throttling() {
-        // A platform that cannot stop a process group never throttles, so
-        // stretching its deadlines would give an unthrottled build an
-        // eight-hour sync watchdog and a sixteen-minute git index lock.
-        let base = Duration::from_secs(120);
+    fn a_platform_that_cannot_throttle_reports_no_stopped_time() {
+        // Where there is no governor nothing is ever stopped, so every
+        // RunnableDeadline is a plain wall-clock deadline and an unthrottled
+        // build keeps exactly the timeouts it had before this change.
         if crate::cpu_throttle::governor().is_none() {
-            assert_eq!(scaled_timeout(base), base);
-        } else {
-            assert!(scaled_timeout(base) >= base);
+            assert_eq!(total_stopped_time(), Duration::ZERO);
         }
+    }
+
+    #[test]
+    fn a_worker_that_exits_between_samples_still_counts() {
+        // pid 2 burns 4 cores in a window and exits. Counting it as zero makes
+        // bursts of short-lived workers invisible while a mostly-idle group
+        // leader is all the sampler sees, and the group sits above its ceiling.
+        let (mut g, _sig) = governor(
+            0.5,
+            vec![
+                HashMap::from([(1, 0.0), (2, 0.0)]),
+                HashMap::from([(1, 0.01), (2, 4.0)]),
+                HashMap::from([(1, 0.02)]),
+            ],
+        );
+        g.register(100);
+        g.sample(SAMPLE_INTERVAL);
+        g.sample(SAMPLE_INTERVAL);
+        let with_worker = g.run_fraction();
+        assert!(with_worker < 1.0);
+        // pid 2 is gone now; its last window's 4 cores are still credited, so
+        // the controller does not immediately relax as if the group went quiet.
+        g.sample(SAMPLE_INTERVAL);
+        assert!(
+            g.run_fraction() <= with_worker,
+            "an exiting worker's CPU vanished: {} > {with_worker}",
+            g.run_fraction()
+        );
+    }
+
+    #[test]
+    fn going_idle_resets_the_duty_cycle_for_the_next_workload() {
+        // Otherwise a CPU-heavy sync leaves the fraction near its floor and the
+        // next unrelated git command starts under that stale aggressive cycle.
+        let (mut g, _sig) = governor(0.5, vec![one(1, 0.0), one(1, 8.0)]);
+        g.register(100);
+        g.sample(SAMPLE_INTERVAL);
+        g.sample(SAMPLE_INTERVAL);
+        assert!(
+            g.run_fraction() < 1.0,
+            "expected the heavy pass to throttle"
+        );
+        g.unregister(100);
+        assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
+        assert_eq!(
+            g.run_fraction(),
+            1.0,
+            "a new workload inherited the previous one's stop cycle"
+        );
     }
 
     #[test]

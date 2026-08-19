@@ -80,13 +80,16 @@ const SYNC_HANDLE: &str = "hq-sync";
 
 /// Hard timeout for a sync run (1 hour of unthrottled wall time).
 ///
-/// Read through [`hq_desktop_core::cpu_throttle::scaled_timeout`] at use, never
-/// directly: the CPU ceiling stretches wall time, and an unscaled watchdog
-/// cancels precisely the long passes the throttle is meant to let finish.
+/// Spent through [`hq_desktop_core::cpu_throttle::RunnableDeadline`], never as
+/// plain wall time: the CPU ceiling duty-cycles the runner, and a wall-clock
+/// watchdog would cancel precisely the long passes it exists to let finish.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// SIGKILL delay after SIGTERM on cancel.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+
+/// How often the watchdog re-checks its runnable-time budget.
+const WATCHDOG_POLL: Duration = Duration::from_secs(5);
 
 pub use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 pub use hq_desktop_core::sync_outcome::RunTotals;
@@ -2364,7 +2367,14 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // public handle.
     let watchdog_generation = sync_generation;
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(hq_desktop_core::cpu_throttle::scaled_timeout(SYNC_TIMEOUT)).await;
+        // Count only time the runner was allowed to run: the CPU throttle
+        // duty-cycles its process group, and a plain wall-clock watchdog would
+        // cancel exactly the long passes the throttle exists to let finish. A
+        // wedged runner is never stopped, so it still trips this on schedule.
+        let deadline = hq_desktop_core::cpu_throttle::RunnableDeadline::start(SYNC_TIMEOUT);
+        while !deadline.expired() {
+            tokio::time::sleep(WATCHDOG_POLL).await;
+        }
         let attempt = cancel_process_for_generation(
             SYNC_HANDLE,
             watchdog_generation,
