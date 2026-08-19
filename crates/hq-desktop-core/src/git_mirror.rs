@@ -2002,25 +2002,37 @@ fn ensure_gitignore_line(hq_folder: &str, line: &str) -> Result<bool, String> {
     }
     out.extend_from_slice(line.as_bytes());
     out.push(b'\n');
-    fs::write(&path, out).map_err(|e| format!("append .gitignore: {e}"))?;
+    // Atomic publish: write a sibling temp then rename, so a crash or a full disk
+    // mid-write can never leave a truncated `.gitignore` that has lost the user's
+    // rules. The temp name ends in `.tmp` (matched by the scaffold's own ignore
+    // rules), so a crash-orphaned temp is never itself mirrored.
+    let tmp = path.with_file_name(".gitignore.hqmirror.tmp");
+    fs::write(&tmp, &out).map_err(|e| format!("write .gitignore temp: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("publish .gitignore: {e}")
+    })?;
     Ok(true)
 }
 
-/// Untrack one gated subtree and record the exclusion in `.gitignore`, then
-/// commit exactly those two changes. Returns whether a commit was made — a rung
-/// that is already excluded (nothing tracked under it, line already present)
-/// stages nothing and makes no empty commit.
+/// Untrack one gated subtree, record the exclusion in `.gitignore`, and commit
+/// that removal. Returns whether a commit was made — a rung with nothing tracked
+/// under it (already excluded on a prior pass) stages nothing and makes no empty
+/// commit.
 ///
-/// Order matters. The `.gitignore` update runs first: if it cannot be applied
-/// safely (a symlinked or unreadable `.gitignore`) the rung is skipped WITHOUT
-/// untracking, so we never `git rm --cached` files that the next `git add -A`
-/// would immediately re-stage (churn). Then the index is reset to HEAD so the
-/// commit carries ONLY what this function stages — the `.gitignore` line plus the
-/// staged untracking of this one subtree — never unrelated changes staged on
-/// entry, which would otherwise ride along in a commit that bypasses
+/// The index is reset to HEAD first so the commit carries ONLY the untracking of
+/// this one subtree (plus the `.gitignore` line) — never unrelated changes staged
+/// on entry, which would otherwise ride along in a commit that bypasses
 /// [`guard_bulk_deletions`]. The commit deliberately carries no pathspec: a
 /// path-limited `git commit -- <path>` re-reads the still-present files from the
 /// working tree and would silently undo the `git rm --cached`.
+///
+/// The `.gitignore` edit is best-effort: correctness does not depend on it,
+/// because the caller re-stages with an explicit `:(exclude)` pathspec that keeps
+/// the subtree out regardless of any `.gitignore` (root, nested, symlinked, or
+/// negated). The edit still matters for a clean `git status` and for OTHER
+/// writers of this repo — the HQ autocommit hook runs a plain `git add -A` — so a
+/// failure is logged and the untracking proceeds rather than being skipped.
 fn exclude_path_from_mirror(
     hq_folder: &str,
     git_dir: &Path,
@@ -2028,18 +2040,21 @@ fn exclude_path_from_mirror(
     size: u64,
     cap: u64,
 ) -> Result<bool, String> {
-    // Record the exclusion first. If it can't be applied safely, skip the rung
-    // rather than untrack files the .gitignore won't keep out on the next add.
-    if let Err(e) = ensure_gitignore_line(hq_folder, rung.gitignore_line) {
-        log(
-            LOG_TAG,
-            &format!(
-                "{hq_folder}: cannot exclude {} — {e}; leaving it tracked",
-                rung.pathspec
-            ),
-        );
-        return Ok(false);
-    }
+    // Best-effort .gitignore record (see doc). Log and proceed on failure — the
+    // `:(exclude)` re-stage keeps the subtree out regardless.
+    let recorded = match ensure_gitignore_line(hq_folder, rung.gitignore_line) {
+        Ok(wrote) => wrote,
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: could not record {} in .gitignore — {e}; relying on the pathspec exclusion",
+                    rung.gitignore_line
+                ),
+            );
+            false
+        }
+    };
 
     // Clean base: index → HEAD. Touches only the index, never the working tree.
     run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT)?;
@@ -2059,8 +2074,10 @@ fn exclude_path_from_mirror(
         ],
         GIT_INDEX_TIMEOUT,
     )?;
-    // Stage the `.gitignore` edit alongside the untracking.
-    run_git(hq_folder, &["add", "--", ".gitignore"], GIT_INDEX_TIMEOUT)?;
+    // Stage the `.gitignore` edit alongside the untracking, only when it changed.
+    if recorded {
+        run_git(hq_folder, &["add", "--", ".gitignore"], GIT_INDEX_TIMEOUT)?;
+    }
 
     // Index is a clean HEAD plus only what was staged above; if nothing is
     // staged, this rung is already excluded — skip, so no empty commit is made.
@@ -2120,6 +2137,7 @@ fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<bool, Stri
         return Ok(false);
     }
     let mut committed = false;
+    let mut excluded: Vec<&str> = Vec::new();
     for rung in GATED_EXCLUSIONS {
         if last_size <= cap {
             break;
@@ -2136,6 +2154,12 @@ fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<bool, Stri
         if exclude_path_from_mirror(hq_folder, git_dir, rung, last_size, cap)? {
             committed = true;
         }
+        excluded.push(rung.pathspec);
+        // The exclusion reset the index to make its commit. Re-stage the working
+        // tree MINUS every excluded subtree so the next measurement reflects
+        // reality — including a newly-added file OUTSIDE this rung, so the ladder
+        // keeps escalating instead of stopping short once the reset drops it.
+        stage_all_except(hq_folder, &excluded)?;
         last_size = staged_content_bytes(hq_folder)?;
     }
     if last_size > cap {
@@ -2151,10 +2175,23 @@ fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<bool, Stri
             ),
         );
     }
-    // A firing gate reset the index to commit its exclusions; re-stage the real
-    // working tree (minus the now-ignored subtrees) for the ordinary snapshot.
-    run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
     Ok(committed)
+}
+
+/// Stage the working tree for the ordinary snapshot while keeping the gate's
+/// excluded subtrees out. `git add -A` stages everything (respecting `.gitignore`,
+/// so the excluded subtrees are normally skipped); the following `git reset` then
+/// force-unstages those subtrees unconditionally, so the exclusion holds even if
+/// a nested or negating `.gitignore` re-included them — and without tripping the
+/// "paths are ignored by .gitignore" error that an explicit pathspec would.
+fn stage_all_except(hq_folder: &str, excluded: &[&str]) -> Result<(), String> {
+    run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
+    if !excluded.is_empty() {
+        let mut args: Vec<&str> = vec!["reset", "-q", "--"];
+        args.extend_from_slice(excluded);
+        run_git(hq_folder, &args, GIT_INDEX_TIMEOUT)?;
+    }
+    Ok(())
 }
 
 /// Resolve whether to push after a mirror pass. `committed` is whether this pass
@@ -6720,6 +6757,58 @@ mod tests {
         assert!(logs.join("big.jsonl").exists());
         let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
         assert!(gi.lines().any(|l| l.trim() == "/workspace/.session-logs/"));
+    }
+
+    #[test]
+    fn size_gate_escalates_when_a_new_oversized_file_sits_outside_session_logs() {
+        // The escalation must survive the index reset each exclusion performs: a
+        // brand-new (uncommitted) big.bin outside session-logs would be lost from
+        // the remeasurement if the gate did not re-stage after resetting, so the
+        // loop would stop after session-logs and the ordinary commit would ship
+        // big.bin. Re-staging with `:(exclude)` keeps it counted → escalate.
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        // Both brand-new and uncommitted; big.bin is OUTSIDE session-logs.
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(ws.join(".session-logs")).unwrap();
+        fs::write(
+            ws.join(".session-logs/s1.jsonl"),
+            vec![b'x'; 2 * 1024 * 1024],
+        )
+        .unwrap();
+        fs::write(ws.join("big.bin"), vec![b'y'; 2 * 1024 * 1024]).unwrap();
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // Neither oversized file may reach history; the gate escalated to
+        // workspace/ (two exclusion commits) rather than shipping big.bin.
+        let listed = String::from_utf8_lossy(
+            &git(
+                tmp.path(),
+                &["log", "--all", "--pretty=format:", "--name-only"],
+            )
+            .stdout,
+        )
+        .to_string();
+        assert!(
+            !listed.contains("big.bin") && !listed.contains("s1.jsonl"),
+            "no oversized file may be committed:\n{listed}"
+        );
+        assert_eq!(rev_count(tmp.path()), before + 2, "escalated to workspace/");
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(gi.lines().any(|l| l.trim() == "/workspace/"));
+        assert!(ws.join("big.bin").exists());
     }
 
     // ── B1 regression: the 2026-07-30 mass-deletion shape ────────────────
