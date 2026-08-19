@@ -38,7 +38,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{mpsc, LazyLock, Mutex};
@@ -2002,12 +2002,26 @@ fn ensure_gitignore_line(hq_folder: &str, line: &str) -> Result<bool, String> {
     }
     out.extend_from_slice(line.as_bytes());
     out.push(b'\n');
-    // Atomic publish: write a sibling temp then rename, so a crash or a full disk
-    // mid-write can never leave a truncated `.gitignore` that has lost the user's
-    // rules. The temp name ends in `.tmp` (matched by the scaffold's own ignore
-    // rules), so a crash-orphaned temp is never itself mirrored.
+    // Atomic publish: write a sibling temp then rename over the target, so a
+    // crash or a full disk mid-write can never leave a truncated `.gitignore`
+    // that has lost the user's rules (`fs::rename` replaces the destination on
+    // both Unix and Windows). The temp name ends in `.tmp` (matched by the
+    // scaffold's own ignore rules), so a crash-orphaned temp is never mirrored.
     let tmp = path.with_file_name(".gitignore.hqmirror.tmp");
-    fs::write(&tmp, &out).map_err(|e| format!("write .gitignore temp: {e}"))?;
+    // Clear any stale/planted temp first — `remove_file` unlinks a symlink
+    // itself rather than following it — then create with `create_new` (O_EXCL),
+    // which refuses to follow or reuse an existing path. Together these ensure
+    // the write lands on a fresh regular file, never through a symlink.
+    let _ = fs::remove_file(&tmp);
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| format!("create .gitignore temp: {e}"))?;
+        f.write_all(&out)
+            .map_err(|e| format!("write .gitignore temp: {e}"))?;
+    }
     fs::rename(&tmp, &path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("publish .gitignore: {e}")
@@ -2117,24 +2131,36 @@ fn exclude_path_from_mirror(
     Ok(true)
 }
 
+/// What the size gate did to a pass.
+struct GateOutcome {
+    /// Whether any exclusion commit was made — the caller pushes it even when the
+    /// ordinary snapshot finds nothing else to do.
+    committed: bool,
+    /// Whether the staged snapshot is STILL over the cap after the ladder was
+    /// exhausted — the bloat is outside the gated subtrees, so the caller must
+    /// refuse the ordinary snapshot rather than commit and push oversized content.
+    over_cap: bool,
+}
+
 /// Keep the mirror's staged snapshot under [`resolve_mirror_size_cap`] by
 /// dropping the [`GATED_EXCLUSIONS`] rungs, in order, until it fits or the ladder
 /// is exhausted. Runs after `run_mirror` has staged the working tree, so it
 /// measures the tree the next commit would record — catching a newly-added
-/// oversized file before it is committed. Returns whether any exclusion commit
-/// was made, so the caller can push it even when the ordinary snapshot finds
-/// nothing else to do.
+/// oversized file before it is committed.
 ///
 /// A firing gate resets the index to commit each exclusion, so on the way out it
 /// re-stages the working tree; the caller can therefore treat the index as the
 /// current snapshot whether or not the gate did anything.
-fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<bool, String> {
+fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<GateOutcome, String> {
     let cap = resolve_mirror_size_cap();
     let mut last_size = staged_content_bytes(hq_folder)?;
     // Common path: under the cap on the first (and only) measurement. The index
     // is left exactly as the caller staged it.
     if last_size <= cap {
-        return Ok(false);
+        return Ok(GateOutcome {
+            committed: false,
+            over_cap: false,
+        });
     }
     let mut committed = false;
     let mut excluded: Vec<&str> = Vec::new();
@@ -2162,20 +2188,24 @@ fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<bool, Stri
         stage_all_except(hq_folder, &excluded)?;
         last_size = staged_content_bytes(hq_folder)?;
     }
-    if last_size > cap {
-        // Both rungs are excluded and the bloat is elsewhere — a large tracked
-        // file the ladder deliberately will not touch. Surface it rather than
-        // silently leaving the mirror over budget.
+    let over_cap = last_size > cap;
+    if over_cap {
+        // Both rungs are excluded and the bloat is elsewhere — a large file the
+        // ladder deliberately will not touch. The caller refuses the ordinary
+        // snapshot; log the reason loudly and actionably here.
         log(
             LOG_TAG,
             &format!(
-                "{hq_folder}: staged content still {} over the {} mirror cap after the gated exclusions — remaining bloat is outside workspace/ and left untouched",
+                "{hq_folder}: staged content still {} over the {} mirror cap after the gated exclusions — the oversized content is outside workspace/, which the mirror will not auto-drop. Remove or relocate it, or the mirror cannot snapshot.",
                 human_bytes(last_size),
                 human_bytes(cap),
             ),
         );
     }
-    Ok(committed)
+    Ok(GateOutcome {
+        committed,
+        over_cap,
+    })
 }
 
 /// Stage the working tree for the ordinary snapshot while keeping the gate's
@@ -2227,7 +2257,28 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     // an exclusion needs pushing even when the ordinary snapshot finds nothing.
     run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
 
-    let gate_committed = enforce_mirror_size_cap(hq_folder, git_dir)?;
+    let gate = enforce_mirror_size_cap(hq_folder, git_dir)?;
+
+    // If the gated exclusions could not bring the snapshot under the cap, the
+    // remaining bloat is outside workspace/ — content the ladder will not
+    // auto-drop. Refuse the ordinary snapshot rather than commit and push
+    // oversized content into history: reset the index so nothing is left staged,
+    // but still push any exclusion commit already made this pass.
+    if gate.over_cap {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: refusing the mirror snapshot — over the size cap and not reducible by the gated exclusions"
+            ),
+        );
+        if let Err(e) = run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
+            log(
+                LOG_TAG,
+                &format!("{hq_folder}: index reset after cap refusal failed: {e}"),
+            );
+        }
+        return push_decision(hq_folder, gate.committed);
+    }
 
     // `diff --cached --quiet` exits 0 when index == HEAD, 1 when staged
     // changes exist. Anything else is unexpected (signal, missing HEAD on
@@ -2244,7 +2295,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
             // transient, so the next one deserves its own confirmation.
             note_mirror_recovered(hq_folder, git_dir);
             // A size-gate exclusion may still be waiting to push.
-            return push_decision(hq_folder, gate_committed);
+            return push_decision(hq_folder, gate.committed);
         }
         Some(1) => {} // staged changes — proceed to commit
         Some(code) => {
@@ -2259,7 +2310,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     if guard_bulk_deletions(hq_folder, git_dir)? == BulkDeleteVerdict::Refuse {
         // The ordinary snapshot was refused, but a size-gate exclusion may have
         // already landed this pass and is safe to push on its own.
-        return push_decision(hq_folder, gate_committed);
+        return push_decision(hq_folder, gate.committed);
     }
 
     // ISO-8601 to the second; sortable in `git log` without quoting issues.
@@ -6809,6 +6860,52 @@ mod tests {
         let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
         assert!(gi.lines().any(|l| l.trim() == "/workspace/"));
         assert!(ws.join("big.bin").exists());
+    }
+
+    #[test]
+    fn size_gate_refuses_snapshot_when_bloat_is_outside_workspace() {
+        // Oversized content the ladder cannot drop (a root-level file). After both
+        // exclusions the snapshot is still over the cap, so the mirror must REFUSE
+        // the ordinary commit rather than push oversized content into history.
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+
+        // Brand-new oversized file at the repo root — outside every gated subtree.
+        fs::write(tmp.path().join("big-root.bin"), vec![b'z'; 2 * 1024 * 1024]).unwrap();
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // The oversized root file must never be committed.
+        assert!(
+            !git(tmp.path(), &["cat-file", "-e", "HEAD:big-root.bin"])
+                .status
+                .success(),
+            "the oversized root file must be refused, not committed"
+        );
+        let listed = String::from_utf8_lossy(
+            &git(
+                tmp.path(),
+                &["log", "--all", "--pretty=format:", "--name-only"],
+            )
+            .stdout,
+        )
+        .to_string();
+        assert!(
+            !listed.contains("big-root.bin"),
+            "no commit may contain the oversized root file:\n{listed}"
+        );
+        // Refusal must not delete the user's file, and must leave the index clean.
+        assert!(tmp.path().join("big-root.bin").exists());
+        assert!(index_is_clean(tmp.path()));
     }
 
     // ── B1 regression: the 2026-07-30 mass-deletion shape ────────────────
