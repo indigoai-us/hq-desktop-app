@@ -424,7 +424,13 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('run_npm_install_with_retries(');
     expect(cliUpdate).toContain('"cleanup-forced-bin-collision"');
     expect(cliUpdate).toContain('let final_attempt_forced = ledger.last().is_some_and');
-    expect(cliUpdate).toContain('classify_install_failure_with_final_attempt(');
+    // Classification is now environment-aware (so an unsupported user Node is
+    // recognised), but still receives the final-attempt context that lets the
+    // classifier tell a post-force collision from an initial EEXIST.
+    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(normalize(cliUpdate)).toContain(
+      'install_run.final_attempt_forced, &install_env,',
+    );
     // Failures now report through the repeat-guarded episode entrypoint, which
     // still receives the final-attempt context — so the classifier can tell a
     // post-force collision from an initial EEXIST — alongside the toolchain
@@ -434,6 +440,38 @@ describe('master automatic-updates switch', () => {
     expect(normalize(cliUpdateCore)).toContain(
       'scope.set_tag( "npm_final_attempt_forced",',
     );
+  });
+
+  it('classifies an unsupported user Node and self-heals it before reporting (HQ-DESKTOP-56)', () => {
+    const core = normalize(cliUpdateCore);
+    // Core publishes the floor as the single source of truth and a new kind for
+    // the shape, decided from the probed environment — never from raw stderr.
+    expect(cliUpdateCore).toContain('pub const MIN_NODE_MAJOR: u32 = 20;');
+    expect(cliUpdateCore).toContain('UnsupportedNode');
+    expect(cliUpdateCore).toContain('pub fn classify_install_failure_with_environment(');
+    // The rewrite is a strict refinement of the `Unexpected` fallback, gated on a
+    // parsed major strictly below the floor.
+    expect(core).toContain('major < MIN_NODE_MAJOR');
+    // Its own bounded signature keeps it out of the none:unknown:none bucket...
+    expect(cliUpdateCore).toContain('format!("unsupported-node:{major}")');
+    // ...it reports at Warning (a local-runtime condition, not an updater defect)...
+    expect(core).toContain(
+      'InstallFailureKind::ExpectedBinCollision | InstallFailureKind::UnsupportedNode',
+    );
+    // ...names the required Node in the user copy instead of the raw parse error...
+    expect(cliUpdateCore).toContain('hq needs Node.js {MIN_NODE_MAJOR} or newer');
+    // ...and mints a repeat-guard key so a permanent per-machine runtime pages
+    // once per target version, not on every scheduled check.
+    expect(cliUpdateCore).toContain(
+      'pub fn install_failure_episode_key_with_environment(',
+    );
+    expect(core).toContain('unsupported-node|{major}');
+
+    // The app classifies WITH the probed environment, arms the SAME one-shot
+    // managed-Node retry for the new kind, and shows the environment-aware copy.
+    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(cliUpdate).toContain('kind == InstallFailureKind::UnsupportedNode');
+    expect(cliUpdate).toContain('install_failure_detail_with_environment(');
   });
 
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {

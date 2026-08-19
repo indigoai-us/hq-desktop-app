@@ -1341,8 +1341,11 @@ pub(crate) fn handle_runner_stderr_line<R: tauri::Runtime>(
 // capture policy).
 
 /// Node major-version floor the sync runner requires — its deps use APIs added
-/// in Node 20 and it crashes at startup on anything older.
-const MIN_NODE_MAJOR: u32 = 20;
+/// in Node 20 and it crashes at startup on anything older. Sourced from
+/// hq-desktop-core's published minimum (which the hq-CLI's own `engines.node`
+/// also tracks) so the Sync-lane preflight and the CLI-updater's unsupported-Node
+/// classifier can never drift apart.
+const MIN_NODE_MAJOR: u32 = hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR;
 
 /// Minimum gap between managed-Node repair attempts. A machine that cannot
 /// install (offline, locked down, out of disk) must not re-download the
@@ -4195,6 +4198,17 @@ mod tests {
             msg.contains("Node 18"),
             "message must name the current major: {msg}"
         );
+    }
+
+    /// HQ-DESKTOP-56 de-duplication: the Sync-lane floor is now SOURCED from
+    /// hq-desktop-core's published minimum rather than a second literal `20`, so
+    /// the CLI-updater's unsupported-Node classifier and this preflight can never
+    /// drift apart. The value is still 20, so the thresholds asserted above are
+    /// unchanged.
+    #[test]
+    fn node_floor_is_sourced_from_the_core_crate() {
+        assert_eq!(MIN_NODE_MAJOR, hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR);
+        assert_eq!(MIN_NODE_MAJOR, 20);
     }
 
     #[test]

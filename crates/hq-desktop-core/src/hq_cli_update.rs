@@ -2797,6 +2797,13 @@ pub enum InstallFailureKind {
     ExpectedDiskFull,
     UnexpectedLifecycle,
     Unexpected,
+    /// The user's PATH Node is older than [`MIN_NODE_MAJOR`], so the published
+    /// CLI (whose own `engines.node` rules it out) can never install and npm dies
+    /// before emitting its structured error block. A permanent per-machine
+    /// runtime condition, not an updater defect — a strict refinement of
+    /// `Unexpected`, applied only when the probed environment proves the runtime
+    /// is too old.
+    UnsupportedNode,
 }
 
 /// A bin collision is expected only when npm's documented `--force` remedy
@@ -2852,6 +2859,59 @@ pub fn classify_install_failure_with_final_attempt(
     }
 }
 
+/// The minimum Node major the published `@indigoai-us/hq-cli` supports: its
+/// `engines.node` is `>=20.0.0`, so no modern npm can install it under an older
+/// runtime. This is the single source of truth for that floor — the Sync-lane
+/// preflight (`commands/sync.rs`) consumes this same constant, so the updater's
+/// unsupported-Node classifier and the preflight can never drift apart.
+pub const MIN_NODE_MAJOR: u32 = 20;
+
+/// Parse the major integer from an already-[`sanitized_version_token`]ed node
+/// version. Returns `None` for `unknown` or anything without a leading numeric
+/// component. The input has already crossed the scrub boundary, so the returned
+/// integer is bounded and carries none of the caller's free text.
+fn node_major_from_sanitized(sanitized: &str) -> Option<u32> {
+    sanitized
+        .split('.')
+        .next()
+        .filter(|head| !head.is_empty())
+        .and_then(|head| head.parse::<u32>().ok())
+}
+
+/// The probed Node major for an install environment, or `None` when the probe
+/// returned nothing parseable (absent, malformed, or `unknown`). Sanitizes
+/// first, so this is the ONLY numeric read of a probed version and it inherits
+/// [`sanitized_version_token`]'s scrub guarantee.
+fn probed_node_major(env: &InstallEnvironment) -> Option<u32> {
+    node_major_from_sanitized(&sanitized_version_token(env.node_version.as_deref()))
+}
+
+/// Classify a failed npm install WITH the probed toolchain environment. A strict
+/// refinement of [`classify_install_failure_with_final_attempt`]: it delegates
+/// first and rewrites the result ONLY when the delegate returned exactly
+/// `Unexpected` AND the probed Node major parsed AND is strictly below
+/// [`MIN_NODE_MAJOR`] — a runtime the CLI's own `engines.node` makes install
+/// impossible on. Every expected/lifecycle kind is returned untouched, and a
+/// machine on a supported Node (or one whose probe was unparseable) is
+/// byte-identical to the env-blind classifier, so `InstallEnvironment::default()`
+/// reproduces today's behaviour for every existing caller.
+pub fn classify_install_failure_with_environment(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+) -> InstallFailureKind {
+    let base =
+        classify_install_failure_with_final_attempt(exit_code, detail, prefix, final_attempt_forced);
+    if base == InstallFailureKind::Unexpected
+        && probed_node_major(env).is_some_and(|major| major < MIN_NODE_MAJOR)
+    {
+        return InstallFailureKind::UnsupportedNode;
+    }
+    base
+}
+
 impl InstallFailureKind {
     /// A stable grouping key for diagnostics and Sentry. We intentionally keep
     /// expected local failures separate from actual updater defects; the
@@ -2867,6 +2927,7 @@ impl InstallFailureKind {
             Self::ExpectedDiskFull => "expected-disk-full",
             Self::UnexpectedLifecycle => "unexpected-lifecycle",
             Self::Unexpected => "unexpected",
+            Self::UnsupportedNode => "unsupported-node",
         }
     }
 }
@@ -2927,6 +2988,27 @@ fn install_failure_signature(
     )
 }
 
+/// The grouping discriminator including the probed environment. For the
+/// unsupported-node shape it is `unsupported-node:<major>`, where `<major>` is
+/// the parsed integer from [`probed_node_major`] and nothing else — so the group
+/// is distinct from the genuinely-unknown `none:unknown:none` bucket while
+/// staying free of any free text or filesystem path. Every other kind delegates
+/// to the env-blind [`install_failure_signature`], unchanged.
+fn install_failure_signature_with_environment(
+    kind: InstallFailureKind,
+    detail: &str,
+    prefix: Option<&str>,
+    env: &InstallEnvironment,
+) -> String {
+    if kind == InstallFailureKind::UnsupportedNode {
+        let major = probed_node_major(env)
+            .map(|major| major.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        return format!("unsupported-node:{major}");
+    }
+    install_failure_signature(kind, detail, prefix)
+}
+
 /// Free-up-space guidance shared by BOTH disk-full paths — the lifecycle
 /// `disk-space` cause arm (a build ran out of space) and the top-level
 /// `ExpectedDiskFull` early return (npm itself hit `ENOSPC`). Reusing one literal
@@ -2952,12 +3034,42 @@ pub fn install_failure_detail_with_final_attempt(
     prefix: Option<&str>,
     final_attempt_forced: bool,
 ) -> String {
-    let kind = classify_install_failure_with_final_attempt(
+    install_failure_detail_with_environment(
         exit_code,
         detail,
         prefix,
         final_attempt_forced,
+        &InstallEnvironment::default(),
+    )
+}
+
+/// Like [`install_failure_detail_with_final_attempt`], but classifies with the
+/// probed environment so an unsupported-Node failure shows the user the required
+/// Node version instead of the raw Node parse error the empty-stderr passthrough
+/// would otherwise surface. Default env reproduces the env-blind copy exactly.
+pub fn install_failure_detail_with_environment(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+) -> String {
+    let kind = classify_install_failure_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
     );
+    if kind == InstallFailureKind::UnsupportedNode {
+        // A local runtime the CLI's own engines field rules out. Name the
+        // required Node instead of echoing the raw Node parse error. Placed
+        // BEFORE the non-empty-stderr passthrough below so a Node-6 SyntaxError
+        // is never shown to the user verbatim.
+        return format!(
+            "hq needs Node.js {MIN_NODE_MAJOR} or newer, but this computer's Node is too old to install it. Install the supported Node.js (version 22), then run the copied command in a terminal."
+        );
+    }
     if kind == InstallFailureKind::ExpectedTransientRegistry {
         return "npm's registry was temporarily unavailable or was mid-publish. The updater will retry automatically on its next scheduled check; you can also retry the copied command shortly."
             .to_string();
@@ -3009,7 +3121,11 @@ pub fn install_failure_detail_with_final_attempt(
         // Unreachable in practice — `ExpectedDiskFull` returns early above,
         // before the empty-stderr fallback — but the match must stay exhaustive.
         InstallFailureKind::ExpectedDiskFull => DISK_FULL_DETAIL.to_string(),
-        InstallFailureKind::Unexpected | InstallFailureKind::UnexpectedLifecycle => format!(
+        // `UnsupportedNode` returns its actionable copy early above; this arm
+        // keeps the match exhaustive without ever being reached for it.
+        InstallFailureKind::Unexpected
+        | InstallFailureKind::UnexpectedLifecycle
+        | InstallFailureKind::UnsupportedNode => format!(
             "npm install exited with status {}",
             exit_code
                 .map(|code| code.to_string())
@@ -3046,17 +3162,43 @@ pub fn install_failure_report_with_final_attempt(
     prefix: Option<&str>,
     final_attempt_forced: bool,
 ) -> Option<String> {
-    let kind = classify_install_failure_with_final_attempt(
+    install_failure_report_with_environment(
         exit_code,
         detail,
         prefix,
         final_attempt_forced,
+        &InstallEnvironment::default(),
+    )
+}
+
+/// Like [`install_failure_report_with_final_attempt`], but classifies with the
+/// probed environment so an unsupported-Node failure stays observable under its
+/// own bounded signature. Every expected kind still returns `None`; the
+/// unsupported-node kind reports (downgraded to Warning by
+/// [`report_install_failure_with_environment`], since it is a local-runtime
+/// condition, not an updater defect). Default env reproduces the env-blind result
+/// exactly.
+pub fn install_failure_report_with_environment(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+) -> Option<String> {
+    let kind = classify_install_failure_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
     );
     match kind {
         InstallFailureKind::ExpectedBinCollision => {
             return Some("[hq-cli-update] hq shim collision survived npm --force".to_string())
         }
-        InstallFailureKind::Unexpected | InstallFailureKind::UnexpectedLifecycle => {}
+        InstallFailureKind::Unexpected
+        | InstallFailureKind::UnexpectedLifecycle
+        | InstallFailureKind::UnsupportedNode => {}
         InstallFailureKind::ExpectedPrefixPermission
         | InstallFailureKind::ExpectedWindowsAbort
         | InstallFailureKind::ExpectedWindowsLockedBinary
@@ -3066,7 +3208,7 @@ pub fn install_failure_report_with_final_attempt(
     // Title the capture with the same signature the fingerprint groups on, so a
     // Sentry issue's title cannot drift across the events inside it. The raw
     // exit status stays on the `exit_code` tag and in `npm_diagnostics`.
-    let signature = install_failure_signature(kind, detail, prefix);
+    let signature = install_failure_signature_with_environment(kind, detail, prefix, env);
     Some(format!("[hq-cli-update] install failed ({signature})"))
 }
 
@@ -3191,21 +3333,26 @@ pub fn report_install_failure_with_environment(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
 ) {
-    let kind = classify_install_failure_with_final_attempt(
+    let kind = classify_install_failure_with_environment(
         exit_code,
         detail,
         prefix,
         final_attempt_forced,
+        env,
     );
-    let Some(message) =
-        install_failure_report_with_final_attempt(exit_code, detail, prefix, final_attempt_forced)
-    else {
+    let Some(message) = install_failure_report_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+    ) else {
         return;
     };
     let exit_str = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
-    let signature = install_failure_signature(kind, detail, prefix);
+    let signature = install_failure_signature_with_environment(kind, detail, prefix, env);
     let eacces =
         has_eacces_evidence(detail) || kind == InstallFailureKind::ExpectedPrefixPermission;
     let npm_path_shape = npm_path_shape(detail, prefix);
@@ -3329,7 +3476,13 @@ pub fn report_install_failure_with_environment(
             scope.set_extra("npm_diagnostics", npm_diagnostics.into());
         },
         || {
-            let level = if kind == InstallFailureKind::ExpectedBinCollision {
+            // A local-runtime condition, not an updater defect: an unsupported
+            // Node is downgraded alongside the post-force bin collision, so it
+            // stays observable without paging at Error.
+            let level = if matches!(
+                kind,
+                InstallFailureKind::ExpectedBinCollision | InstallFailureKind::UnsupportedNode
+            ) {
                 sentry::Level::Warning
             } else {
                 sentry::Level::Error
@@ -3383,6 +3536,42 @@ pub fn install_failure_episode_key_with_provenance(
             key
         }
     })
+}
+
+/// The repeat-guard key including the probed environment. The unsupported-node
+/// shape is a permanent per-machine condition — a runtime the CLI's own
+/// `engines.node` rules out — so, like a third-party lifecycle failure, it must
+/// page once per CLI target version rather than on every scheduled check. Its key
+/// is `(latest × unsupported-node × node major [× managed])`; every component is a
+/// closed literal or a bounded integer, so it is safe to persist and log. Every
+/// other shape delegates to [`install_failure_episode_key_with_provenance`], so
+/// third-party-lifecycle minting and its closed-set safety are unchanged, and a
+/// default environment reproduces today's key exactly.
+pub fn install_failure_episode_key_with_environment(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    latest: &str,
+    env: &InstallEnvironment,
+) -> Option<String> {
+    let kind = classify_install_failure_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+    );
+    if kind == InstallFailureKind::UnsupportedNode {
+        let major = probed_node_major(env)?;
+        let key = format!("{latest}|unsupported-node|{major}");
+        return Some(if env.managed_toolchain_retry {
+            format!("{key}|managed")
+        } else {
+            key
+        });
+    }
+    install_failure_episode_key_with_provenance(latest, detail, env.managed_toolchain_retry)
 }
 
 /// Whether a lifecycle-failure episode identical to one already reported on this
@@ -3467,12 +3656,19 @@ pub fn report_install_failure_episode(
     reported_keys: &[String],
 ) -> InstallFailureEpisode {
     // Only failures that would actually be captured are subject to the guard.
-    if install_failure_report_with_final_attempt(exit_code, detail, prefix, final_attempt_forced)
+    if install_failure_report_with_environment(exit_code, detail, prefix, final_attempt_forced, env)
         .is_none()
     {
         return InstallFailureEpisode::NotReportable;
     }
-    match install_failure_episode_key_with_provenance(latest, detail, env.managed_toolchain_retry) {
+    match install_failure_episode_key_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        latest,
+        env,
+    ) {
         // A non-lifecycle reportable failure: report every time, as before.
         None => {
             report_install_failure_with_environment(
@@ -8679,6 +8875,255 @@ mod tests {
         assert_eq!(
             hq_cli_package_json_candidates(prefix, Path::new("/prefix/hq.cmd")),
             vec![windows.to_path_buf(), unix.to_path_buf()]
+        );
+    }
+
+    // --- HQ-DESKTOP-56: unsupported-Node classification ------------------------
+
+    /// A Node-6 machine's stderr: modern npm cannot even parse under Node 6, so it
+    /// dies with a bare Node `SyntaxError` and NONE of npm's structured
+    /// `npm error` markers — exactly the reported shape (npm_error_code=none,
+    /// npm_syscall=unknown, npm_path_shape=none, npm_lifecycle_failed=false), which
+    /// the env-blind classifier can only read as `Unexpected`.
+    fn node_six_stderr() -> &'static str {
+        "/usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/index.js:1\n\
+         export { Arborist }\n\
+         ^^^^^^\n\
+         SyntaxError: Unexpected token export\n\
+             at createScript (vm.js:56:10)\n\
+             at Object.runInThisContext (vm.js:97:10)\n\
+             at Module._compile (module.js:549:28)\n\
+             at Object.Module._extensions..js (module.js:586:10)\n\
+             at Module.load (module.js:494:32)\n\
+             at tryModuleLoad (module.js:453:12)\n\
+             at Function.Module._load (module.js:445:3)"
+    }
+
+    fn unsupported_node_env(version: Option<&str>, abi: Option<&str>) -> InstallEnvironment {
+        InstallEnvironment {
+            node_version: version.map(str::to_string),
+            node_abi: abi.map(str::to_string),
+            npm_version: None,
+            toolchain_source: NpmToolchainSource::UserPath,
+            managed_toolchain_retry: false,
+        }
+    }
+
+    #[test]
+    fn unsupported_node_reclassifies_only_a_below_floor_probe() {
+        let stderr = node_six_stderr();
+        // The exact reported shape: Node 6.17.1 (ABI 48), no npm markers, prefix
+        // known -> UnsupportedNode.
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                stderr,
+                Some("/usr/local"),
+                false,
+                &unsupported_node_env(Some("v6.17.1"), Some("48")),
+            ),
+            InstallFailureKind::UnsupportedNode
+        );
+        // A supported or unreadable Node keeps today's `Unexpected` for the
+        // identical stderr — the refinement requires a parsed major strictly below
+        // the floor and otherwise fails open to current behaviour. `v20`/`v22` are
+        // AT/above the floor; `None`/`unknown` never parse a major.
+        for node in [None, Some("unknown"), Some("v20.11.0"), Some("v22.17.0")] {
+            assert_eq!(
+                classify_install_failure_with_environment(
+                    Some(1),
+                    stderr,
+                    Some("/usr/local"),
+                    false,
+                    &unsupported_node_env(node, None),
+                ),
+                InstallFailureKind::Unexpected,
+                "node {node:?} must stay Unexpected"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_node_never_overrides_an_expected_or_lifecycle_kind() {
+        // Even on a Node-6 machine, every already-classified kind is preserved:
+        // the refinement touches ONLY the `Unexpected` fallback, so no existing
+        // suppression or grouping is disturbed.
+        let old_node = unsupported_node_env(Some("v6.17.1"), Some("48"));
+        let cases: &[(Option<i32>, &str, Option<&str>, bool, InstallFailureKind)] = &[
+            (
+                Some(1),
+                "npm error code ENOSPC\nnpm error syscall write\nnpm error ENOSPC: no space left on device, write",
+                None,
+                false,
+                InstallFailureKind::ExpectedDiskFull,
+            ),
+            (
+                Some(1),
+                "npm error code EACCES\nnpm error syscall mkdir\nnpm error path /usr/local/lib/node_modules/@indigoai-us\nnpm error errno -13",
+                None,
+                false,
+                InstallFailureKind::ExpectedPrefixPermission,
+            ),
+            (Some(WINDOWS_ABORT_EXIT), "", None, false, InstallFailureKind::ExpectedWindowsAbort),
+            (
+                Some(-4048),
+                "npm error code EPERM\nnpm error syscall unlink\nnpm error path /usr/local/bin/hq",
+                Some("/usr/local"),
+                false,
+                InstallFailureKind::ExpectedWindowsLockedBinary,
+            ),
+            (Some(1), "npm error code ETARGET", None, false, InstallFailureKind::ExpectedTransientRegistry),
+            (
+                Some(1),
+                "npm error code EEXIST\nnpm error path /usr/local/bin/hq",
+                Some("/usr/local"),
+                true,
+                InstallFailureKind::ExpectedBinCollision,
+            ),
+            (
+                Some(1),
+                "npm error code 1\nnpm error path /root/.npm-global/lib/node_modules/better-sqlite3\nnpm error command failed\nnpm error command sh -c prebuild-install || node-gyp rebuild",
+                Some("/root/.npm-global"),
+                false,
+                InstallFailureKind::UnexpectedLifecycle,
+            ),
+        ];
+        for (exit, detail, prefix, forced, expected) in cases {
+            assert_eq!(
+                classify_install_failure_with_environment(*exit, detail, *prefix, *forced, &old_node),
+                *expected,
+                "detail {detail:?} must keep its kind on a Node-6 machine"
+            );
+        }
+    }
+
+    #[test]
+    fn env_blind_wrappers_are_behaviour_preserving_for_a_node_6_stderr() {
+        let stderr = node_six_stderr();
+        // Every env-blind entrypoint returns TODAY's values for the Node-6 stderr —
+        // the reported `Unexpected` / `none:unknown:none` / raw-passthrough shape —
+        // proving default-env delegation changed nothing for existing callers.
+        assert_eq!(
+            classify_install_failure(Some(1), stderr, Some("/usr/local")),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            classify_install_failure_with_final_attempt(Some(1), stderr, Some("/usr/local"), false),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            install_failure_report_with_final_attempt(Some(1), stderr, Some("/usr/local"), false),
+            Some("[hq-cli-update] install failed (none:unknown:none)".to_string())
+        );
+        // The env-blind detail still shows the raw stderr passthrough...
+        assert_eq!(
+            install_failure_detail_with_final_attempt(Some(1), stderr, Some("/usr/local"), false),
+            stderr.trim()
+        );
+        // ...while the env-aware detail, given the Node-6 probe, names the required
+        // Node instead of echoing the raw parse error.
+        let actionable = install_failure_detail_with_environment(
+            Some(1),
+            stderr,
+            Some("/usr/local"),
+            false,
+            &unsupported_node_env(Some("v6.17.1"), Some("48")),
+        );
+        assert!(
+            actionable.contains("Node.js 20") && !actionable.contains("SyntaxError"),
+            "unsupported-node copy must name the floor and never echo raw stderr: {actionable}"
+        );
+    }
+
+    #[test]
+    fn unsupported_node_signature_is_bounded_and_free_text_cannot_enter() {
+        let stderr = node_six_stderr();
+        // The signature is `unsupported-node:<parsed major>` and nothing else.
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::UnsupportedNode,
+                stderr,
+                Some("/usr/local"),
+                &unsupported_node_env(Some("v6.17.1"), Some("48")),
+            ),
+            "unsupported-node:6"
+        );
+        // A probed version carrying free text collapses through
+        // `sanitized_version_token` to `unknown`, so no major parses and NO
+        // reclassification happens — caller free text can never reach the group.
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                stderr,
+                Some("/usr/local"),
+                false,
+                &unsupported_node_env(Some("6.x nightly; rm -rf /"), Some("48")),
+            ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn unsupported_node_episode_key_pages_once_per_target_version() {
+        let stderr = node_six_stderr();
+        let latest = "5.101.7";
+        let env6 = unsupported_node_env(Some("v6.17.1"), Some("48"));
+        let key = install_failure_episode_key_with_environment(
+            Some(1),
+            stderr,
+            Some("/usr/local"),
+            false,
+            latest,
+            &env6,
+        )
+        .expect("unsupported-node mints an episode key");
+        assert_eq!(key, "5.101.7|unsupported-node|6");
+        // A second identical failure for the same target version + major is a
+        // suppressed repeat, so a permanent per-machine condition stops re-paging.
+        assert!(install_failure_episode_blocked(&[key.clone()], &key));
+        // A new CLI target version, a different Node major, and managed provenance
+        // each mint a DISTINCT key, so a genuinely different episode still reports.
+        let new_latest = install_failure_episode_key_with_environment(
+            Some(1),
+            stderr,
+            Some("/usr/local"),
+            false,
+            "5.102.0",
+            &env6,
+        );
+        assert_eq!(new_latest.as_deref(), Some("5.102.0|unsupported-node|6"));
+        let node8 = install_failure_episode_key_with_environment(
+            Some(1),
+            stderr,
+            Some("/usr/local"),
+            false,
+            latest,
+            &unsupported_node_env(Some("v8.17.0"), Some("57")),
+        );
+        assert_eq!(node8.as_deref(), Some("5.101.7|unsupported-node|8"));
+        let mut managed_env = env6.clone();
+        managed_env.managed_toolchain_retry = true;
+        let managed = install_failure_episode_key_with_environment(
+            Some(1),
+            stderr,
+            Some("/usr/local"),
+            false,
+            latest,
+            &managed_env,
+        );
+        assert_eq!(managed.as_deref(), Some("5.101.7|unsupported-node|6|managed"));
+        // The env-blind shape (no probed Node) is a non-lifecycle failure, so it
+        // mints NO key and keeps paging exactly as before.
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                stderr,
+                Some("/usr/local"),
+                false,
+                latest,
+                &InstallEnvironment::default(),
+            ),
+            None
         );
     }
 }
