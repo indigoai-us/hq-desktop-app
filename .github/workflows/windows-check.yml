@@ -81,6 +81,11 @@ jobs:
             .
             apps/sync/src-tauri
           key: windows-check-debug
+          # This job is red ~15% of the time and the compile step that fills
+          # the cache runs BEFORE the tests that fail. rust-cache defaults to
+          # cache-on-failure:false, so those runs discard valid dependency
+          # artifacts and the next run starts cold again.
+          cache-on-failure: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
@@ -367,6 +372,11 @@ jobs:
             .
             apps/sync/src-tauri
           key: windows-installer-release
+          # This job is red ~15% of the time and the compile step that fills
+          # the cache runs BEFORE the tests that fail. rust-cache defaults to
+          # cache-on-failure:false, so those runs discard valid dependency
+          # artifacts and the next run starts cold again.
+          cache-on-failure: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile

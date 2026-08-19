@@ -130,6 +130,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/sync/src-tauri
+          cache-on-failure: true
       - name: App crate tests (hq-sync-menubar)
         timeout-minutes: 20
         working-directory: apps/sync/src-tauri
@@ -177,6 +178,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: .
+          cache-on-failure: true
       - name: Workspace crate tests (hq-desktop-core, hq-platform, hq-telemetry)
         run: cargo test --workspace --locked
       - name: Root workspace lockfile check

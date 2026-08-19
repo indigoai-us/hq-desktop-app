@@ -102,6 +102,19 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     });
   }
 
+  for (const job of windowsJobs) {
+    it(`${job} still saves its cache when the job fails`, () => {
+      // rust-cache defaults cache-on-failure:false. windows-check is red about
+      // 15% of the time (100 of 688 runs over 30 days) and its workflow header
+      // says it is expected to be red during the Phase 3 port -- but the
+      // compile that fills the cache runs BEFORE the tests that fail, so those
+      // artifacts are valid. Discarding them means the next run starts cold.
+      expect(jobBody(windowsCheckWorkflow, job)).toContain(
+        "cache-on-failure: true",
+      );
+    });
+  }
+
   it("gives the check and installer jobs disjoint cache keys", () => {
     // The check job builds the debug profile; the installer job builds
     // release. Sharing a key (or a restore-keys fallback across them) makes
