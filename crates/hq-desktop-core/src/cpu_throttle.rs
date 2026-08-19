@@ -134,8 +134,15 @@ const MAX_TIMEOUT_SCALE: f64 = 8.0;
 /// would kill a pass that is making steady progress, and `git add -A` on a
 /// large tree would be killed mid-hash on every mirror pass.
 ///
-/// Returns `base` unchanged when throttling is disabled.
+/// Returns `base` unchanged whenever nothing is actually throttling — the
+/// ceiling is off, the platform has no process groups to stop, or the governor
+/// failed to start. Deciding from the configured percentage alone would hand an
+/// entirely unthrottled Windows build an eight-hour sync watchdog and let git
+/// hold `.git/index.lock` for sixteen minutes instead of two.
 pub fn scaled_timeout(base: Duration) -> Duration {
+    if governor().is_none() {
+        return base;
+    }
     let Some(percent) = configured_max_machine_cpu_percent() else {
         return base;
     };
@@ -337,14 +344,21 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
     pub fn sample(&mut self, elapsed: Duration) -> Tick {
         if self.groups.is_empty() {
             self.last_cpu_seconds.clear();
+            self.resume_all();
             return Tick::Idle;
         }
         let now_cpu = self.sampler.groups_cpu_seconds(&self.groups);
         if now_cpu.is_empty() {
-            // Every registered group is gone. Keep them registered — their
-            // owning guards will unregister on drop — but stop steering on a
-            // measurement that no longer exists.
+            // An empty sample does NOT prove the groups died: `ps` may have
+            // failed to spawn, exited non-zero, or returned nothing parseable.
+            // Going idle without resuming would then leave a live sync or git
+            // group frozen under a SIGSTOP the duty cycle never lifts, and
+            // repeated sampler failures would keep it that way indefinitely.
+            // Resuming first is right either way — signalling a genuinely dead
+            // group is a harmless ESRCH, and an idle governor has no business
+            // holding anything stopped.
             self.last_cpu_seconds.clear();
+            self.resume_all();
             return Tick::Idle;
         }
         let wall = elapsed.as_secs_f64();
@@ -412,6 +426,12 @@ static GOVERNOR: OnceLock<Option<SharedGovernor>> = OnceLock::new();
 fn governor() -> Option<&'static SharedGovernor> {
     GOVERNOR
         .get_or_init(|| {
+            // Stopping a process group needs `killpg`. Where that does not
+            // exist there is no throttle, and every consumer — `attach` and
+            // `scaled_timeout` alike — must agree on that from this one place.
+            if !cfg!(unix) {
+                return None;
+            }
             let percent = configured_max_machine_cpu_percent()?;
             let target = target_cores(percent, machine_cores());
             let shared: SharedGovernor = Arc::new(Mutex::new(Governor::new(
@@ -505,9 +525,6 @@ impl CpuThrottle {
     /// is disabled, the platform is unsupported, or `pgid` is not one we may
     /// signal.
     pub fn attach(pgid: i32) -> Option<Self> {
-        if !cfg!(unix) {
-            return None;
-        }
         if !is_signalable_group(pgid, own_process_group()) {
             return None;
         }
@@ -994,6 +1011,33 @@ mod tests {
         g.register(100);
         assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
         assert_eq!(g.run_fraction(), 1.0);
+    }
+
+    #[test]
+    fn a_failed_sample_resumes_rather_than_leaving_a_group_frozen() {
+        // An empty sample does not prove the group died — `ps` may simply have
+        // failed. Landing there right after a stop window used to go idle with
+        // the group still under SIGSTOP, and repeated failures kept it frozen.
+        let (mut g, sig) = governor(0.5, vec![HashMap::new()]);
+        g.register(100);
+        g.stop_all();
+        assert!(g.is_stopped());
+        assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
+        assert_eq!(*sig.conts.lock().unwrap(), vec![100]);
+        assert!(!g.is_stopped());
+    }
+
+    #[test]
+    fn deadlines_are_not_stretched_when_nothing_is_throttling() {
+        // A platform that cannot stop a process group never throttles, so
+        // stretching its deadlines would give an unthrottled build an
+        // eight-hour sync watchdog and a sixteen-minute git index lock.
+        let base = Duration::from_secs(120);
+        if crate::cpu_throttle::governor().is_none() {
+            assert_eq!(scaled_timeout(base), base);
+        } else {
+            assert!(scaled_timeout(base) >= base);
+        }
     }
 
     #[test]
