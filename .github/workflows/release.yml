@@ -258,6 +258,9 @@ jobs:
           node .release-control/scripts/release-stable-order.mjs stable-order \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
+          node .release-control/scripts/release-stable-order.mjs lineage \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
 
   macos:
     name: Build macOS universal
@@ -376,6 +379,19 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[",]//g')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      # Stamp the tag's own commit into the build so a future lineage rollback is
+      # visible in Sentry within one event (build_commit tag). rerun-if-env-changed
+      # in build.rs makes this cache-correct across releases.
+      - name: Resolve build commit
+        shell: bash
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          echo "HQ_BUILD_COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          echo "Build commit for $TAG is $COMMIT"
 
       - name: Build unsigned universal app and updater archive
         env:
@@ -736,6 +752,19 @@ jobs:
 
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Windows MSI ProductVersion: $actual"
+
+      # Stamp the tag's own commit into the build so a future lineage rollback is
+      # visible in Sentry within one event (build_commit tag). rerun-if-env-changed
+      # in build.rs makes this cache-correct across releases.
+      - name: Resolve build commit
+        shell: bash
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          echo "HQ_BUILD_COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          echo "Build commit for $TAG is $COMMIT"
 
       - name: Tauri build (${{ matrix.target }})
         # The release-only overlay carries the Recall externalBin (a per-target PE
@@ -1257,6 +1286,9 @@ jobs:
         run: |
           set -euo pipefail
           node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+          node .release-control/scripts/release-stable-order.mjs lineage \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 

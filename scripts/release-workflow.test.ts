@@ -574,6 +574,57 @@ describe("release workflow channel contract", () => {
     expect(publish).toContain("Download Windows ARM64 release artifacts");
     expect(publish).not.toContain("hq-debug-");
   });
+
+  it("runs the commit-lineage gate at the validate stable-channel call site", () => {
+    // The pre-build "Reject stable release rollback" step runs BOTH the numeric
+    // stable-order check and the commit-lineage check, gated on stable. Deleting
+    // the lineage call from this step turns exactly this case red.
+    const rollbackStep = stepBody(
+      jobBody("validate"),
+      "Reject stable release rollback",
+    );
+    expect(rollbackStep).toContain(
+      "if: ${{ steps.classify.outputs.channel == 'stable' }}",
+    );
+    expect(rollbackStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs stable-order",
+    );
+    expect(rollbackStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs lineage",
+    );
+    expect(rollbackStep).toContain('--repository "$TARGET_REPOSITORY"');
+    expect(rollbackStep).toContain('--tag "$TARGET_TAG"');
+  });
+
+  it("runs the commit-lineage gate at the publish in-lock call site", () => {
+    // The in-publication-lock "Revalidate stable publication order" step also
+    // runs the lineage check, so a rollback cannot slip in between validation and
+    // the only public-state mutation. Deleting the lineage call here turns
+    // exactly this case red.
+    const revalidateStep = stepBody(
+      jobBody("publish"),
+      "Revalidate stable publication order",
+    );
+    expect(revalidateStep).toContain("needs.validate.outputs.channel == 'stable'");
+    expect(revalidateStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs stable-order",
+    );
+    expect(revalidateStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs lineage",
+    );
+  });
+
+  it("stamps the tag commit into telemetry from both platform build jobs", () => {
+    for (const job of ["macos", "windows"]) {
+      const resolveStep = stepBody(jobBody(job), "Resolve build commit");
+      expect(resolveStep, job).toContain("TAG: ${{ needs.validate.outputs.tag }}");
+      expect(resolveStep, job).toContain(
+        'git rev-parse "refs/tags/${TAG}^{commit}"',
+      );
+      expect(resolveStep, job).toContain("HQ_BUILD_COMMIT=$COMMIT");
+      expect(resolveStep, job).toContain('>> "$GITHUB_ENV"');
+    }
+  });
 });
 
 

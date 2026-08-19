@@ -732,6 +732,13 @@ pub struct SentryIdentity<'a> {
     pub repo: &'a str,
     pub app: &'a str,
     pub flavor: &'a str,
+    /// The build's own commit SHA. The binary passes `env!("HQ_BUILD_COMMIT")`,
+    /// which `build.rs` stamps from the release tag's commit. It rides as an
+    /// additive `build_commit` Sentry tag so that a higher version number
+    /// carrying strictly older code — the lineage rollback that reopened
+    /// HQ-DESKTOP-43 — is visible in a single event. Defaults to `"unknown"`
+    /// for local and non-release builds.
+    pub build_commit: &'a str,
 }
 
 impl Default for SentryIdentity<'_> {
@@ -741,8 +748,46 @@ impl Default for SentryIdentity<'_> {
             repo: "hq-sync",
             app: "hq-desktop-app",
             flavor: "sync",
+            build_commit: "unknown",
         }
     }
+}
+
+/// Build the Sentry client options for a release identity. Extracted so tests
+/// can assert the release/dist surface without a live transport: `release` stays
+/// `{prefix}@{version}` — the build commit is deliberately NOT folded in (it
+/// rides as a tag instead) — and `dist` is left at its default, so issue
+/// grouping, release adoption, and release-health data are unperturbed.
+fn client_options(
+    dsn: Option<sentry::types::Dsn>,
+    release_version: &str,
+    environment: Option<&str>,
+    identity: SentryIdentity<'_>,
+) -> sentry::ClientOptions {
+    sentry::ClientOptions {
+        dsn,
+        release: Some(format!("{}@{release_version}", identity.release_prefix).into()),
+        environment: Some(environment.unwrap_or("production").to_string().into()),
+        sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        before_send: Some(std::sync::Arc::new(before_send)),
+        // Release health: one session per app run (Application mode = whole process).
+        auto_session_tracking: true,
+        session_mode: sentry::SessionMode::Application,
+        ..Default::default()
+    }
+}
+
+/// Apply the identity attribution tags to a Sentry scope. `build_commit` is
+/// additive alongside the long-standing repo/app/flavor tags — code identity is
+/// a tag, never part of the release string.
+fn configure_identity_scope(scope: &mut sentry::Scope, identity: SentryIdentity<'_>) {
+    scope.set_tag("repo", identity.repo);
+    scope.set_tag("app", identity.app);
+    scope.set_tag("flavor", identity.flavor);
+    scope.set_tag("build_commit", identity.build_commit);
 }
 
 /// Initialize Sentry with app/flavor-specific release and attribution tags.
@@ -757,25 +802,8 @@ pub fn init_with_identity(
     } else {
         Some(dsn_str.parse().expect("SENTRY_DSN invalid at build time"))
     };
-    let guard = sentry::init(sentry::ClientOptions {
-        dsn,
-        release: Some(format!("{}@{release_version}", identity.release_prefix).into()),
-        environment: Some(environment.unwrap_or("production").to_string().into()),
-        sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1.0),
-        before_send: Some(std::sync::Arc::new(before_send)),
-        // Release health: one session per app run (Application mode = whole process).
-        auto_session_tracking: true,
-        session_mode: sentry::SessionMode::Application,
-        ..Default::default()
-    });
-    sentry::configure_scope(|scope| {
-        scope.set_tag("repo", identity.repo);
-        scope.set_tag("app", identity.app);
-        scope.set_tag("flavor", identity.flavor);
-    });
+    let guard = sentry::init(client_options(dsn, release_version, environment, identity));
+    sentry::configure_scope(|scope| configure_identity_scope(scope, identity));
     Some(guard)
 }
 
@@ -814,6 +842,74 @@ mod tests {
         assert_eq!(identity.repo, "hq-sync");
         assert_eq!(identity.app, "hq-desktop-app");
         assert_eq!(identity.flavor, "sync");
+    }
+
+    #[test]
+    fn build_commit_rides_the_scope_as_a_tag() {
+        use sentry::test::with_captured_events_options;
+        let identity = SentryIdentity {
+            build_commit: "deadbeefcafe",
+            ..SentryIdentity::default()
+        };
+        let events = with_captured_events_options(
+            || {
+                sentry::configure_scope(|scope| configure_identity_scope(scope, identity));
+                sentry::capture_message("probe", sentry::Level::Info);
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(before_send)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].tags.get("build_commit").map(String::as_str),
+            Some("deadbeefcafe"),
+        );
+        // The long-standing attribution tags remain untouched.
+        assert_eq!(
+            events[0].tags.get("app").map(String::as_str),
+            Some("hq-desktop-app"),
+        );
+        assert_eq!(events[0].tags.get("repo").map(String::as_str), Some("hq-sync"));
+    }
+
+    #[test]
+    fn absent_build_commit_falls_back_to_unknown() {
+        use sentry::test::with_captured_events_options;
+        assert_eq!(SentryIdentity::default().build_commit, "unknown");
+        let events = with_captured_events_options(
+            || {
+                sentry::configure_scope(|scope| {
+                    configure_identity_scope(scope, SentryIdentity::default())
+                });
+                sentry::capture_message("probe", sentry::Level::Info);
+            },
+            sentry::ClientOptions::default(),
+        );
+        assert_eq!(
+            events[0].tags.get("build_commit").map(String::as_str),
+            Some("unknown"),
+        );
+    }
+
+    #[test]
+    fn release_identity_excludes_the_build_commit_and_leaves_dist_default() {
+        let options = client_options(
+            None,
+            "0.10.123",
+            None,
+            SentryIdentity {
+                build_commit: "deadbeefcafe",
+                ..SentryIdentity::default()
+            },
+        );
+        // Release stays {prefix}@{version}; the build commit is NOT folded in
+        // (it rides as a tag), so issue grouping and release-health are
+        // unchanged. sentry 0.35 has no client-level `dist` field, so dist is
+        // trivially untouched.
+        assert_eq!(options.release.as_deref(), Some("hq-sync@0.10.123"));
+        assert!(!options.release.as_deref().unwrap().contains("deadbeefcafe"));
     }
 
     // 2. Header strip

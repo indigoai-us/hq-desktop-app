@@ -8,6 +8,17 @@ fn main() {
         std::env::var("HQ_SYNC_SENTRY_DSN").unwrap_or_default()
     );
 
+    // Stamp the build's own commit so a Sentry report can be attributed to the
+    // exact code that shipped. The release workflow exports HQ_BUILD_COMMIT from
+    // the release tag's commit; `rerun-if-env-changed` makes this cache-correct
+    // so a new release recompiles instead of reusing a stale baked value.
+    // Absent in local/dev builds, it falls back to "unknown".
+    println!("cargo:rerun-if-env-changed=HQ_BUILD_COMMIT");
+    println!(
+        "cargo:rustc-env=HQ_BUILD_COMMIT={}",
+        std::env::var("HQ_BUILD_COMMIT").unwrap_or_else(|_| "unknown".to_string())
+    );
+
     // Emit the shipped npm/tauri.conf.json version as `APP_VERSION` so the
     // client-attribution headers report the user-facing release version
     // rather than the Cargo crate version. The two version numbers drift
