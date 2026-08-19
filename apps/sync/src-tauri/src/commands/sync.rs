@@ -3641,7 +3641,10 @@ mod tests {
             "escaped the sync root",
             "presigned GET failed",
             "AccessDenied",
-            "signature",
+            // A distinctive multi-word fragment of the describeError free-prose
+            // tail. (The bare word "signature" would collide with the pre-existing
+            // `runner_stack_signature` tag key, not a real leak.)
+            "we calculated",
             "knowledge/secret",
         ] {
             assert!(
