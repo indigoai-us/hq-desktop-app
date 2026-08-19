@@ -33,10 +33,36 @@ pub fn cognito_token_url() -> String {
     )
 }
 
-pub fn cognito_identity_provider(provider: &str) -> Result<&'static str, String> {
+/// True for a per-organisation Microsoft work/school provider name.
+///
+/// hq-pro mints one Cognito provider per customer Entra organisation, named
+/// `MsOrg` + the first 26 hex chars of the tenant GUID (Cognito caps provider
+/// names at 32). Which one a person needs is resolved from their email domain
+/// at sign-in time, so — unlike Google and personal Microsoft — the name is
+/// not knowable here at build time and arrives from the frontend.
+///
+/// SECURITY: this is an ALLOWLIST, not formatting. The value is spliced into
+/// the Cognito authorize URL's `identity_provider` parameter, so validating
+/// the shape is what stops a caller from steering sign-in at a provider of its
+/// choosing — including the name of a real DIFFERENT provider such as
+/// `Google` or `MicrosoftPersonal`. Mirrors hq-pro's
+/// `MICROSOFT_ORG_PROVIDER_PATTERN` and the same check in hq-cli / hq-console;
+/// the four must not drift.
+fn is_microsoft_org_provider(provider: &str) -> bool {
+    let Some(hex) = provider.strip_prefix("MsOrg") else {
+        return false;
+    };
+    hex.len() == 26 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn cognito_identity_provider(provider: &str) -> Result<String, String> {
     match provider {
-        "Google" => Ok("Google"),
-        "Microsoft" => Ok("MicrosoftPersonal"),
+        "Google" => Ok("Google".to_string()),
+        "Microsoft" => Ok("MicrosoftPersonal".to_string()),
+        // Already resolved by the frontend against hq-pro's
+        // /v1/signin/microsoft-org/{resolve,enable}; re-validated here because
+        // this is the last point before the name reaches the authorize URL.
+        _ if is_microsoft_org_provider(provider) => Ok(provider.to_string()),
         _ => Err(format!("Unsupported sign-in provider: {provider}")),
     }
 }
@@ -247,7 +273,38 @@ mod tests {
             cognito_identity_provider("Microsoft").unwrap(),
             "MicrosoftPersonal"
         );
+        // Still rejected: the literal word is not a resolved provider name.
         assert!(cognito_identity_provider("MicrosoftWork").is_err());
+    }
+
+    #[test]
+    fn passes_through_a_resolved_per_organisation_provider() {
+        let name = "MsOrgf8cdef31a31e4b4a93e45f571e";
+        assert_eq!(name.len() - 5, 26);
+        assert_eq!(cognito_identity_provider(name).unwrap(), name);
+        assert!(build_authorize_url("s", "c", name).contains(&format!("identity_provider={name}")));
+    }
+
+    #[test]
+    fn rejects_anything_that_is_not_a_well_formed_org_provider() {
+        // The allowlist exists to stop a caller steering sign-in at a provider
+        // of its choosing — most importantly the name of a real DIFFERENT one.
+        for bad in [
+            "MicrosoftPersonalX",
+            "Workos",
+            "MsOrg",                                // no tenant
+            "MsOrgf8cdef31a31e4b4a93e45f571",       // 25 hex — too short
+            "MsOrgf8cdef31a31e4b4a93e45f571ea",     // 27 hex — too long
+            "MsOrgF8CDEF31A31E4B4A93E45F571E",      // uppercase is not our shape
+            "MsOrgf8cdef31a31e4b4a93e45f571!",      // non-hex
+            "MsOrg f8cdef31a31e4b4a93e45f571",      // whitespace
+            "",
+        ] {
+            assert!(
+                cognito_identity_provider(bad).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
     }
 
     #[test]
