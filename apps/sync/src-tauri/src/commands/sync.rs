@@ -332,6 +332,16 @@ fn runner_exit_telemetry_context(
     if let Some(path_roots) = totals.runner_error_path_roots.tag_value() {
         tags.push(("runner_error_path_roots", path_roots));
     }
+    // HTTP-status and cause-identity axes (HQ-DESKTOP-4T): the two facts a
+    // company-leg describeError or presigned-HTTP failure carries that every other
+    // axis discards. Each is pushed only when present, so an absent axis is simply
+    // absent rather than a hollow tag.
+    if let Some(http) = totals.runner_error_http.tag_value() {
+        tags.push(("runner_error_http", http));
+    }
+    if let Some(causes) = totals.runner_error_causes.tag_value() {
+        tags.push(("runner_error_causes", causes));
+    }
     // Runner provenance: npx resolves `~6.14.x` at spawn, so the desktop release
     // tag alone cannot say which runner emitted the errors. Mirrors the watcher
     // route's watcher_hq_cloud_version/package.
@@ -3501,12 +3511,16 @@ mod tests {
             );
         }
         for _ in 0..8 {
+            // Company-scope hq-cloud describeError renderings — the exact family the
+            // desktop currently collapses to OTHER/other/unknown. Each carries an
+            // `http=` status (grammar a) and a leading AWS error name (the cause),
+            // plus a secret-looking `host=` that must never be read or leaked.
             lines.push(
                 serde_json::json!({
                     "type": "error",
                     "company": "acme",
                     "path": "(company)",
-                    "message": "Entity cmp_SECRET NOT FOUND",
+                    "message": "AccessDenied http=403 host=hq-vault-cmp-SECRET.s3.us-east-1.amazonaws.com The request signature we calculated does not match",
                 })
                 .to_string(),
             );
@@ -3568,6 +3582,14 @@ mod tests {
             event.tags["runner_error_path_roots"],
             "knowledge:120,repos:40"
         );
+        // The two new axes (HQ-DESKTOP-4T): the 40 presigned failures carry a
+        // status via grammar (b) and the 8 company describeErrors via grammar (a);
+        // the company AWS name is the only recognised cause, the rest are `unknown`.
+        assert_eq!(event.tags["runner_error_http"], "http_500:40,http_403:8");
+        assert_eq!(
+            event.tags["runner_error_causes"],
+            "unknown:160,access_denied:8"
+        );
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -3607,15 +3629,19 @@ mod tests {
             );
         }
 
-        // (3) No seeded path, filename, message fragment, or company leaks.
+        // (3) No seeded path, filename, message fragment, host, or company leaks —
+        // including the company describeError's error name, `host=` value, and
+        // free-prose tail, none of which the new axes may copy.
         for forbidden in [
             "secret-a",
             "secret-b",
-            "cmp_SECRET",
+            "cmp-SECRET",
+            "hq-vault",
             "acme",
             "escaped the sync root",
             "presigned GET failed",
-            "Entity",
+            "AccessDenied",
+            "signature",
             "knowledge/secret",
         ] {
             assert!(
@@ -3964,6 +3990,46 @@ mod tests {
         assert!(!serialized.contains("Ada"));
         assert!(!serialized.contains("UV_HANDLE_CLOSING"));
         assert!(!serialized.contains("async.c"));
+    }
+
+    #[test]
+    fn runner_exit_seam_omits_http_tag_without_a_status_and_keeps_unknown_cause() {
+        // HQ-DESKTOP-4T: a flood with no HTTP status and no recognised cause. The
+        // HTTP tag must be ABSENT (absence never renders as evidence), while the
+        // cause tag is present as `unknown:N` — the honest status quo made legible.
+        let totals = Mutex::new(RunTotals::default());
+        let context = ManualRunnerExitContext::default();
+        let captures = sentry::test::with_captured_events(|| {
+            for i in 0..5 {
+                let line = serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": format!("knowledge/a{i}.md"),
+                    "message": "download skipped: local parent escaped the sync root",
+                })
+                .to_string();
+                assert!(update_runner_stderr_totals(&totals, &line).is_none());
+            }
+            let totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            capture_runner_exit_error(
+                Some(2),
+                None,
+                &totals,
+                &SyncErrorEvent {
+                    company: None,
+                    path: "(runner)".to_string(),
+                    message: "hq-sync-runner exited with code 2".to_string(),
+                },
+                &context,
+            );
+        });
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("event remains sendable");
+        assert!(
+            !event.tags.contains_key("runner_error_http"),
+            "http tag must be absent when no status parsed"
+        );
+        assert_eq!(event.tags["runner_error_causes"], "unknown:5");
     }
 
     #[test]

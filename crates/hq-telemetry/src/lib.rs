@@ -329,6 +329,99 @@ fn is_unmatched_stderr_shape_rollup(value: &str) -> bool {
         })
 }
 
+/// A `token:count(,token:count)*` rollup whose every token is drawn from a closed
+/// `vocabulary` and whose every count is a bare ASCII integer. Bounded so a
+/// malformed producer value can never carry a runner byte, path, or message
+/// fragment through egress. Generalises [`is_unmatched_stderr_shape_rollup`] for
+/// the runner-error attribution rollups (HQ-DESKTOP-4T).
+fn is_closed_vocabulary_rollup(value: &str, vocabulary: &[&str]) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.split(',').all(|entry| {
+            entry.split_once(':').is_some_and(|(token, count)| {
+                vocabulary.contains(&token)
+                    && !count.is_empty()
+                    && count.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+}
+
+/// Mirror of `hq_desktop_core::runner_error_shape::RUNNER_ERROR_HTTP_TOKENS`
+/// (HQ-DESKTOP-4T). Held here as an independent copy so a producer bug degrades to
+/// `[Filtered]`; `runner_error_attribution_tokens_match_across_crates` proves the
+/// two stay set-identical.
+const RUNNER_ERROR_HTTP_TOKENS: &[&str] = &[
+    "http_400", "http_401", "http_403", "http_404", "http_409", "http_412", "http_429", "http_4xx",
+    "http_500", "http_502", "http_503", "http_504", "http_5xx", "http_other",
+];
+
+/// Mirror of `hq_desktop_core::runner_error_shape::RUNNER_ERROR_CAUSE_TOKENS`.
+const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
+    "entity_not_found",
+    "entity_permission",
+    "entity_resolution",
+    "operation_locked",
+    "operation_lock_unwritable",
+    "scope_shrink_blocked",
+    "scope_shrink_large_prune",
+    "delta_gap",
+    "multipart_source_changed",
+    "multipart_abort",
+    "realtime_conflict",
+    "unreachable_push_paths",
+    "push_event_decode",
+    "local_snapshot_changed",
+    "rescue_path_changed",
+    "vault_identity",
+    "access_denied",
+    "no_such_key",
+    "no_such_bucket",
+    "slow_down",
+    "internal_error",
+    "request_timeout",
+    "expired_identity",
+    "invalid_identity",
+    "unknown_error",
+    "unknown",
+];
+
+/// Mirror of the `hq_desktop_core::runner_error_shape::RunnerErrorShape` `as_str`
+/// vocabulary. The `runner_error_shapes` tag previously had NO egress guard; this
+/// closes that hole so a future producer bug in that seam degrades to `[Filtered]`.
+const RUNNER_ERROR_SHAPE_TOKENS: &[&str] = &[
+    "containment_escape",
+    "dangling_symlink_parent",
+    "conflict_probe_failed",
+    "conflict_index_write_failed",
+    "tombstone_head_verify_failed",
+    "tombstone_unlink_failed",
+    "content_length_mismatch",
+    "presigned_get_failed",
+    "presigned_head_failed",
+    "presign_no_row",
+    "unknown",
+];
+
+/// Mirror of the `hq_desktop_core::runner_error_shape::RunnerPathRoot` `as_str`
+/// vocabulary. Same previously-unguarded seam as [`RUNNER_ERROR_SHAPE_TOKENS`].
+const RUNNER_ERROR_PATH_ROOT_TOKENS: &[&str] = &[
+    "knowledge",
+    "projects",
+    "repos",
+    "sources",
+    "signals",
+    "data",
+    "settings",
+    "workers",
+    "registry",
+    "clients",
+    "core",
+    "companies",
+    "personal",
+    "workspace",
+    "other",
+];
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -414,6 +507,18 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "watcher_fault_exception_code" => Some(is_bounded_decimal(value, 10)),
         "watcher_fault_offset" => Some(is_bounded_decimal(value, 20)),
         "runner_unmatched_stderr_shapes" => Some(is_unmatched_stderr_shape_rollup(value)),
+        // Runner-error attribution rollups (HQ-DESKTOP-4T). Each is a closed
+        // `token:count` vocabulary. The two new axes get a guard from birth; the two
+        // pre-existing axes (`runner_error_shapes`/`runner_error_path_roots`)
+        // shipped with none — closing that hole here means a future producer bug in
+        // any of the four degrades to `[Filtered]` instead of shipping a raw path
+        // or message fragment.
+        "runner_error_http" => Some(is_closed_vocabulary_rollup(value, RUNNER_ERROR_HTTP_TOKENS)),
+        "runner_error_causes" => Some(is_closed_vocabulary_rollup(value, RUNNER_ERROR_CAUSE_TOKENS)),
+        "runner_error_shapes" => Some(is_closed_vocabulary_rollup(value, RUNNER_ERROR_SHAPE_TOKENS)),
+        "runner_error_path_roots" => {
+            Some(is_closed_vocabulary_rollup(value, RUNNER_ERROR_PATH_ROOT_TOKENS))
+        }
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
         // these independent egress checks degrade a producer bug to `[Filtered]`
@@ -1730,6 +1835,105 @@ mod tests {
             assert_eq!(
                 result.tags[key], value,
                 "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    // ── Runner-error attribution rollups (HQ-DESKTOP-4T) ─────────────────────────
+
+    /// Cross-crate parity guard: each of the four egress-validator rollup
+    /// vocabularies must equal the core producer's exported token list as a SET, or
+    /// a one-sided edit would silently `[Filtered]` exactly the attribution these
+    /// axes add. Two of the four (`shapes`/`path_roots`) had NO egress guard before
+    /// this change, so this also backfills that missing protection.
+    #[test]
+    fn runner_error_attribution_tokens_match_across_crates() {
+        use hq_desktop_core::runner_error_shape as core;
+        use std::collections::HashSet;
+        let pairs: [(&[&str], &[&str], &str); 4] = [
+            (RUNNER_ERROR_HTTP_TOKENS, core::RUNNER_ERROR_HTTP_TOKENS, "http"),
+            (RUNNER_ERROR_CAUSE_TOKENS, core::RUNNER_ERROR_CAUSE_TOKENS, "cause"),
+            (RUNNER_ERROR_SHAPE_TOKENS, core::RUNNER_ERROR_SHAPE_TOKENS, "shape"),
+            (RUNNER_ERROR_PATH_ROOT_TOKENS, core::RUNNER_PATH_ROOT_TOKENS, "path_root"),
+        ];
+        for (validator, producer, name) in pairs {
+            let validator: HashSet<&str> = validator.iter().copied().collect();
+            let producer: HashSet<&str> = producer.iter().copied().collect();
+            assert_eq!(
+                validator, producer,
+                "{name} rollup tokens drifted between hq-telemetry and hq-desktop-core"
+            );
+        }
+    }
+
+    #[test]
+    fn runner_error_attribution_rollups_survive_egress_when_valid() {
+        // A representative well-formed top-3 rollup for each axis passes unchanged.
+        for (key, value) in [
+            ("runner_error_http", "http_500:40,http_403:8,http_404:2"),
+            ("runner_error_causes", "unknown:160,access_denied:8,no_such_key:3"),
+            (
+                "runner_error_shapes",
+                "containment_escape:120,presigned_get_failed:40,unknown:8",
+            ),
+            ("runner_error_path_roots", "knowledge:120,repos:40"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], value, "valid {key}={value} must survive egress");
+        }
+
+        // Every token any of the four producers can emit must validate: a
+        // single-token rollup exercises the vocabulary arm directly through the real
+        // `before_send`, so a producer shipping a real token can never be silently
+        // `[Filtered]`. Driven from the core producers' own exported vocabularies.
+        use hq_desktop_core::runner_error_shape as core;
+        let producers: [(&str, &[&str]); 4] = [
+            ("runner_error_http", core::RUNNER_ERROR_HTTP_TOKENS),
+            ("runner_error_causes", core::RUNNER_ERROR_CAUSE_TOKENS),
+            ("runner_error_shapes", core::RUNNER_ERROR_SHAPE_TOKENS),
+            ("runner_error_path_roots", core::RUNNER_PATH_ROOT_TOKENS),
+        ];
+        for (key, tokens) in producers {
+            for token in tokens {
+                let value = format!("{token}:1");
+                let mut event = Event::default();
+                event.tags.insert(key.to_string(), value.clone());
+                let result = before_send(event).expect("event remains sendable");
+                assert_eq!(
+                    result.tags[key], value,
+                    "producer token {token} for {key} must survive egress"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runner_error_attribution_rollups_fail_closed_when_malformed() {
+        for (key, value) in [
+            // Off-vocabulary tokens (incl. a denylisted spelling never in the vocab).
+            ("runner_error_http", "http_teapot:1"),
+            ("runner_error_causes", "vault_auth:1"),
+            ("runner_error_shapes", "secret_shape:1"),
+            ("runner_error_path_roots", "cognito-token-abc:1"),
+            // Non-numeric count.
+            ("runner_error_http", "http_500:many"),
+            // A raw path or message fragment a producer bug might splice in.
+            ("runner_error_causes", "/Users/Ada/secret.md:1"),
+            ("runner_error_path_roots", "knowledge/secret-file.md:1"),
+            // Over-length value (> 128 bytes) — only a producer bug renders past top-N.
+            (
+                "runner_error_shapes",
+                "presigned_get_failed:1,unknown:1,containment_escape:1,dangling_symlink_parent:1,conflict_probe_failed:1,conflict_index_write_failed:1",
+            ),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], "[Filtered]",
+                "malformed {key}={value} must be filtered at egress"
             );
         }
     }

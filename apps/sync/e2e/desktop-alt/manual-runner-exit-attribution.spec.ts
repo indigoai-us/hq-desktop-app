@@ -95,6 +95,13 @@ describe('manual runner-exit attribution — manual capture seam (commands::sync
     expect(telemetryContext).toContain('"runner_error_path_roots"');
   });
 
+  it('emits the HTTP-status and cause rollups from the same shared source (HQ-DESKTOP-4T)', () => {
+    expect(telemetryContext).toContain('totals.runner_error_http.tag_value()');
+    expect(telemetryContext).toContain('"runner_error_http"');
+    expect(telemetryContext).toContain('totals.runner_error_causes.tag_value()');
+    expect(telemetryContext).toContain('"runner_error_causes"');
+  });
+
   it('attaches runner provenance so the npx-resolved runner is identifiable', () => {
     expect(telemetryContext).toContain('"hq_cloud_version"');
     expect(telemetryContext).toContain('HQ_CLOUD_VERSION');
@@ -178,11 +185,13 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     );
     expect(captureContext).toContain('totals.runner_error_shapes.tag_value()');
     expect(captureContext).toContain('totals.runner_error_path_roots.tag_value()');
+    expect(captureContext).toContain('totals.runner_error_http.tag_value()');
+    expect(captureContext).toContain('totals.runner_error_causes.tag_value()');
     expect(captureContext).toContain('totals.runner_error_scope()');
     expect(captureContext).toContain('classify_runner_stack_input(stderr_tail)');
   });
 
-  it('emits the shape and path-root tags alongside the class/op rollups', () => {
+  it('emits the shape, path-root, HTTP, and cause tags alongside the class/op rollups', () => {
     const tagAssembly = sliceBetween(
       daemonSource,
       'if let Some(rollup) = &context.runner_error_rollup {',
@@ -191,6 +200,8 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     );
     expect(tagAssembly).toContain('"runner_error_shapes"');
     expect(tagAssembly).toContain('"runner_error_path_roots"');
+    expect(tagAssembly).toContain('"runner_error_http"');
+    expect(tagAssembly).toContain('"runner_error_causes"');
   });
 
   it('emits the stack-input and scope extras', () => {
@@ -202,5 +213,67 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     );
     expect(extras).toContain('"runner_stack_input"');
     expect(extras).toContain('"runner_error_scope"');
+  });
+});
+
+describe('manual runner-exit attribution — HTTP-status and cause axes (HQ-DESKTOP-4T)', () => {
+  it('defines the two new classifiers anchored on narrow grammars', () => {
+    expect(shapeSource).toContain('pub fn classify_runner_error_http_status(');
+    expect(shapeSource).toContain('pub fn classify_runner_error_cause(');
+    // Grammar (a) keys on the literal describeError ` http=`; grammar (b) is
+    // anchored on the presigned/HEAD-verify shape so a bare number in prose is
+    // never read as a status.
+    expect(shapeSource).toContain('" http="');
+    expect(shapeSource).toContain('RunnerErrorShape::PresignedGetFailed');
+    // The cause axis reads only name-bearing describeError positions.
+    expect(shapeSource).toContain('"code="');
+    expect(shapeSource).toContain('"cause="');
+  });
+
+  it('records both new axes into RunTotals for every error scope', () => {
+    const recordError = sliceBetween(
+      coreSource,
+      'pub fn record_error(',
+      'pub fn runner_error_company_count(',
+      'record_error',
+    );
+    expect(recordError).toContain('self.runner_error_http.record(&err.message)');
+    expect(recordError).toContain('self.runner_error_causes.record(&err.message)');
+  });
+
+  it('spells every new token free of the Sentry denylist', () => {
+    const httpTokens = sliceBetween(
+      shapeSource,
+      'pub const RUNNER_ERROR_HTTP_TOKENS',
+      '];',
+      'RUNNER_ERROR_HTTP_TOKENS',
+    );
+    const causeTokens = sliceBetween(
+      shapeSource,
+      'pub const RUNNER_ERROR_CAUSE_TOKENS',
+      '];',
+      'RUNNER_ERROR_CAUSE_TOKENS',
+    );
+    for (const denied of DENYLIST) {
+      expect(httpTokens).not.toContain(denied);
+      expect(causeTokens).not.toContain(denied);
+    }
+    // The identity-safe spellings the plan mandates, never a *_token/*_auth form.
+    expect(causeTokens).toContain('expired_identity');
+    expect(causeTokens).toContain('vault_identity');
+  });
+
+  it('registers an egress guard for all four attribution rollups', () => {
+    const validator = sliceBetween(
+      telemetrySource,
+      'fn valid_runner_diagnostic_field(',
+      'fn scrub_runner_diagnostic_fields(',
+      'valid_runner_diagnostic_field',
+    );
+    expect(validator).toContain('"runner_error_http" =>');
+    expect(validator).toContain('"runner_error_causes" =>');
+    // The two pre-existing axes had NO egress guard before this change.
+    expect(validator).toContain('"runner_error_shapes" =>');
+    expect(validator).toContain('"runner_error_path_roots" =>');
   });
 });

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
-    DISCOVERY_ERROR_PATH_SENTINEL,
+    RunnerErrorCauseRollup, RunnerErrorHttpRollup, RunnerErrorPathRootRollup, RunnerErrorShapeRollup,
+    COMPANY_ERROR_PATH_SENTINEL, DISCOVERY_ERROR_PATH_SENTINEL,
 };
 use sha2::{Digest, Sha256};
 
@@ -105,6 +105,15 @@ pub struct RunTotals {
     /// flood confined to one subtree is distinguishable from a whole-company one
     /// without ever emitting a user path.
     pub runner_error_path_roots: RunnerErrorPathRootRollup,
+    /// Content-safe HTTP-status counts for the runner errors seen this pass
+    /// (HQ-DESKTOP-4T). The single most discriminating fact a company-leg
+    /// describeError or a presigned-HTTP failure carries — and the one the
+    /// class/op/shape axes all discard. Every rendered token is chosen in code.
+    pub runner_error_http: RunnerErrorHttpRollup,
+    /// Content-safe cause-identity counts for the runner errors seen this pass
+    /// (HQ-DESKTOP-4T): the hq-cloud subclass or AWS S3/STS code the class axis
+    /// collapses to `OTHER`. Every rendered token is chosen in code.
+    pub runner_error_causes: RunnerErrorCauseRollup,
     /// Count of company-scope errors (`path == "(company)"`) seen this pass.
     runner_error_company_scope: u32,
     /// Count of pre-fanout discovery-phase errors (`path == "(discovery)"`) seen
@@ -191,6 +200,11 @@ impl RunTotals {
         // a path root. The company and discovery sentinels are not file paths, so
         // they are counted by scope and never given a path root.
         self.runner_error_shapes.record(&err.message);
+        // HTTP-status and cause-identity axes (HQ-DESKTOP-4T) for every error
+        // regardless of scope — the company-scope path is precisely the one that
+        // currently yields nothing, so it must be recorded here too.
+        self.runner_error_http.record(&err.message);
+        self.runner_error_causes.record(&err.message);
         if err.path == COMPANY_ERROR_PATH_SENTINEL {
             self.runner_error_company_scope = self.runner_error_company_scope.saturating_add(1);
         } else if err.path == DISCOVERY_ERROR_PATH_SENTINEL {
@@ -2606,6 +2620,118 @@ mod tests {
         assert_eq!(
             totals.runner_error_shapes.tag_value().as_deref(),
             Some("containment_escape:1,unknown:1")
+        );
+    }
+
+    #[test]
+    fn record_error_adds_http_and_cause_across_scopes_without_touching_prior_axes() {
+        let mut totals = RunTotals::default();
+        // 3 per-file containment escapes (statusless, unknown cause) …
+        for i in 0..3 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: format!("knowledge/secret-a{i}.md"),
+                message: "download skipped: local parent escaped the sync root".to_string(),
+            });
+        }
+        // … 2 per-file presigned failures carrying a status via grammar (b) …
+        for i in 0..2 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: format!("repos/secret-b{i}"),
+                message: format!("presigned GET failed for repos/secret-b{i}: 404"),
+            });
+        }
+        // … one company-scope describeError carrying a status via grammar (a) and a
+        // named cause, with a secret-looking host that must never be read …
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "AccessDenied http=403 host=hq-vault-cmp-SECRET.s3.amazonaws.com denied"
+                .to_string(),
+        });
+        // … and one pre-fanout discovery failure, also a named cause + status.
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(discovery)".to_string(),
+            message: "InternalError http=500 we encountered an internal error".to_string(),
+        });
+
+        // New axes: recorded for per-file, company, AND discovery scope alike.
+        assert_eq!(
+            totals.runner_error_http.tag_value().as_deref(),
+            Some("http_404:2,http_403:1,http_500:1")
+        );
+        assert_eq!(
+            totals.runner_error_causes.tag_value().as_deref(),
+            Some("unknown:5,access_denied:1,internal_error:1")
+        );
+
+        // Pre-existing axes are byte-identical to their pre-change values for the
+        // same inputs — the change is purely additive.
+        assert_eq!(totals.runner_error_rollup.tag_value().as_deref(), Some("OTHER:7"));
+        assert_eq!(totals.runner_error_ops.tag_value().as_deref(), Some("other:7"));
+        assert_eq!(
+            totals.runner_error_shapes.tag_value().as_deref(),
+            Some("containment_escape:3,presigned_get_failed:2,unknown:2")
+        );
+        assert_eq!(
+            totals.runner_error_path_roots.tag_value().as_deref(),
+            Some("knowledge:3,repos:2")
+        );
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:1,file:5,discovery:1")
+        );
+        assert_eq!(totals.runner_error_rollup.fingerprint_token(), "other");
+
+        // No seeded path, host, or company byte reaches either new tag.
+        for rendered in [
+            totals.runner_error_http.tag_value().unwrap(),
+            totals.runner_error_causes.tag_value().unwrap(),
+        ] {
+            for forbidden in ["secret-a", "secret-b", "SECRET", "hq-vault", "acme"] {
+                assert!(
+                    !rendered.contains(forbidden),
+                    "new axis leaked seeded content {forbidden:?}: {rendered}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn http_and_cause_rollups_are_permutation_independent() {
+        // Same guarantee the class/op rollups make: the rendered attribution is a
+        // function of the error multiset, not the arrival order.
+        let events = [
+            ("(company)", "AccessDenied http=403 forbidden"),
+            ("knowledge/a.md", "download skipped: local parent escaped the sync root"),
+            ("repos/b", "presigned GET failed for repos/b: 500"),
+            ("(discovery)", "InternalError http=500 boom"),
+        ];
+        let mut forward = RunTotals::default();
+        for (path, message) in events {
+            forward.record_error(&SyncErrorEvent {
+                company: None,
+                path: path.to_string(),
+                message: message.to_string(),
+            });
+        }
+        let mut reverse = RunTotals::default();
+        for (path, message) in events.iter().rev() {
+            reverse.record_error(&SyncErrorEvent {
+                company: None,
+                path: path.to_string(),
+                message: message.to_string(),
+            });
+        }
+        assert_eq!(
+            forward.runner_error_http.tag_value(),
+            reverse.runner_error_http.tag_value()
+        );
+        assert_eq!(
+            forward.runner_error_causes.tag_value(),
+            reverse.runner_error_causes.tag_value()
         );
     }
 
