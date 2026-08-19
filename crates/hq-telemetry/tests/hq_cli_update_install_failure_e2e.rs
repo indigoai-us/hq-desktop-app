@@ -204,6 +204,28 @@ const DISK_FULL_STDERR: &str = "npm error code ENOSPC\n\
     npm error errno -28\n\
     npm error ENOSPC: no space left on device, write";
 
+/// Reproduce HQ-DESKTOP-56: on a machine whose PATH Node is 6.17.1, a modern npm
+/// CLI cannot even parse-load (class-field / arrow syntax Node 6 lacks), so npm
+/// dies with a bare Node `SyntaxError` and NO structured `npm error` block — no
+/// code, no syscall, no path, no lifecycle marker. That markerless shape is why
+/// the reported event fell through to `Unexpected` and the empty
+/// `none:unknown:none` signature. ~560 bytes, matching the reported
+/// `npm_stderr_len`.
+const NODE6_MARKERLESS_STDERR: &str = "\
+/usr/local/lib/node_modules/npm/lib/npm.js:24\n\
+  #load (cb) {\n\
+  ^\n\
+\n\
+SyntaxError: Unexpected token {\n\
+    at createScript (vm.js:56:10)\n\
+    at Object.runInThisContext (vm.js:97:10)\n\
+    at Module._compile (module.js:549:28)\n\
+    at Object.Module._extensions..js (module.js:586:10)\n\
+    at Module.load (module.js:494:32)\n\
+    at tryModuleLoad (module.js:453:12)\n\
+    at Function.Module._load (module.js:445:3)\n\
+    at Object.<anonymous> (/usr/local/lib/node_modules/npm/bin/npm-cli.js:19:1)";
+
 fn single_event(events: Vec<sentry::protocol::Event<'static>>) -> sentry::protocol::Event<'static> {
     assert_eq!(events.len(), 1, "expected exactly one capture: {events:?}");
     events.into_iter().next().expect("captured event")
@@ -1185,6 +1207,139 @@ fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
             "No prebuilt",
         ],
     );
+}
+
+/// HQ-DESKTOP-56, reconstructed end to end through the shipped `before_send`
+/// scrubber. Before the fix, a Node-6 markerless failure fell through every
+/// classifier arm to `Unexpected` and paged at Error with the empty
+/// `none:unknown:none` signature — byte-identical to the reported issue's title
+/// and grouping. With the fix it is its own scrub-safe Warning keyed on the
+/// probed Node major, the retained provenance tags make it self-diagnosing, and
+/// the raw Node stderr still never reaches Sentry.
+#[test]
+fn an_unsupported_node_runtime_reports_a_bounded_warning_not_the_empty_unknown_group() {
+    let env = InstallEnvironment {
+        node_version: Some("v6.17.1".to_string()),
+        node_abi: Some("48".to_string()),
+        npm_version: None,
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            NODE6_MARKERLESS_STDERR,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+        )
+    }));
+
+    // A local-environment condition, not an updater defect -> Warning, not Error.
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (unsupported-node:6)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unsupported-node",
+            "unsupported-node:6"
+        ]
+    );
+    for (key, value) in [
+        ("install_failure_kind", "unsupported-node"),
+        ("node_version", "6.17.1"),
+        ("node_abi", "48"),
+        ("npm_version", "unknown"),
+        ("npm_toolchain_source", "user-path"),
+        ("npm_managed_toolchain_retry", "false"),
+        // The markerless shape the reported event's tags describe: npm emitted no
+        // structured error block at all.
+        ("npm_error_code", "none"),
+        ("npm_syscall", "unknown"),
+        ("npm_path_shape", "none"),
+        ("npm_lifecycle_failed", "false"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    // The stderr length stays searchable while the raw text never leaves the box.
+    assert_eq!(
+        tag(&event, "npm_stderr_len"),
+        Some(NODE6_MARKERLESS_STDERR.len().to_string().as_str())
+    );
+    assert_path_safe(
+        &event,
+        &[
+            "/Users/",
+            "alice",
+            ".npm-global",
+            "SyntaxError",
+            "npm-cli.js",
+            "module.js",
+            "/usr/local",
+        ],
+    );
+}
+
+/// The permanent-condition half of HQ-DESKTOP-56: the reported machine produced
+/// 8 events in ~45h because a non-lifecycle failure earned no episode key and
+/// re-paged on every scheduled check. With the fix, an unsupported-Node failure
+/// is keyed on `(latest | unsupported-node | major)`, so it pages once per CLI
+/// target version and an identical repeat is suppressed — while a newly published
+/// CLI version pages again. Driven through the real
+/// `report_install_failure_episode` seam so the guard is proven end to end.
+#[test]
+fn an_unsupported_node_episode_pages_once_per_cli_target_version() {
+    let env = InstallEnvironment {
+        node_version: Some("v6.17.1".to_string()),
+        node_abi: Some("48".to_string()),
+        npm_version: None,
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let run = |reported: &[String], latest: &str| -> (usize, Vec<String>) {
+        let mut updated = reported.to_vec();
+        let events = captured_events(|| {
+            match report_install_failure_episode(
+                Some(1),
+                NODE6_MARKERLESS_STDERR,
+                Some(SELECTED_PREFIX),
+                false,
+                &env,
+                latest,
+                reported,
+            ) {
+                InstallFailureEpisode::Reported {
+                    persist_keys: Some(set),
+                } => updated = set,
+                InstallFailureEpisode::Reported { persist_keys: None } => {
+                    panic!("an unsupported-node failure must carry an episode key")
+                }
+                InstallFailureEpisode::SuppressedRepeat => {}
+                InstallFailureEpisode::NotReportable => {
+                    panic!("an unsupported-node failure must be reportable")
+                }
+            }
+        });
+        (events.len(), updated)
+    };
+
+    // First occurrence at 5.101.7 pages once; the key is persisted.
+    let (n, persisted) = run(&[], "5.101.7");
+    assert_eq!(n, 1, "first unsupported-node failure must page");
+    assert!(persisted.contains(&"5.101.7|unsupported-node|6".to_string()));
+    // An identical repeat on the same target version is suppressed — no more
+    // paging on every scheduled check.
+    let (n, persisted) = run(&persisted, "5.101.7");
+    assert_eq!(n, 0, "an identical unsupported-node repeat must be suppressed");
+    // A newly published CLI version resets the set and pages again.
+    let (n, persisted) = run(&persisted, "5.102.0");
+    assert_eq!(n, 1, "a new CLI target version must page again");
+    assert_eq!(persisted, vec!["5.102.0|unsupported-node|6".to_string()]);
 }
 
 /// The builder attribution is a closed enumeration derived from each builder's

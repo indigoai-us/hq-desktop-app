@@ -78,7 +78,12 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // consults the diagnosed cause and the probed Node ABI, so the trigger
     // condition cannot drift silently into a wasted provision.
     expect(cli).toContain('fn install_failure_earns_managed_retry(');
-    expect(cli).toContain('kind == InstallFailureKind::UnexpectedLifecycle');
+    // The lifecycle shape stays gated on its diagnosed cause (a full disk or dead
+    // network earns no provision); the gate now selects the repairable shape by
+    // kind so a second shape (unsupported Node) can share the exact same seam.
+    expect(cli).toContain(
+      'InstallFailureKind::UnexpectedLifecycle => !matches!(cause, "disk-space" | "network")',
+    );
     expect(cli).toContain('source == NpmToolchainSource::UserPath');
     expect(cli).toContain('!matches!(cause, "disk-space" | "network")');
     expect(cli).toContain('failing_node_abi != Some(MANAGED_NODE_ABI)');
@@ -188,5 +193,84 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // fetch_latest() again mid-episode.
     expect(retryHelper).toContain('Some(latest)');
     expect(retryHelper).not.toContain('fetch_latest');
+  });
+
+  /**
+   * HQ-DESKTOP-56 — the SAME self-heal, armed for a second shape: a PATH Node
+   * older than the CLI's `engines.node` floor (the reported machine was on Node
+   * 6.17.1 / ABI 48). npm cannot even run there, so it dies before emitting any
+   * structured error and the failure used to fall through to `Unexpected` and
+   * page at Error with the empty `none:unknown:none` signature on every check.
+   * The fix reclassifies exactly that shape, arms the SAME one-shot managed-Node
+   * retry, and — when the retry cannot complete — shows a minimum-Node message
+   * that names the required version instead of a raw Node parse error.
+   */
+  describe('also self-provisions HQ-managed Node for an unsupported user-path Node (HQ-DESKTOP-56)', () => {
+    const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+
+    it('publishes one Node floor and reclassifies only below it, only from Unexpected', () => {
+      // A single source of truth for the floor, shared with the Sync-lane preflight.
+      expect(core).toContain('pub const MIN_NODE_MAJOR: u32 = 20;');
+      expect(syncRs).toContain(
+        'const MIN_NODE_MAJOR: u32 = hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR;',
+      );
+      // A strict refinement of the Unexpected fallback: delegate first, rewrite
+      // ONLY when the delegate returned Unexpected AND the probed major < floor.
+      expect(core).toContain('pub fn classify_install_failure_with_environment(');
+      expect(core).toContain('if base == InstallFailureKind::Unexpected {');
+      expect(core).toContain('if major < MIN_NODE_MAJOR {');
+      expect(core).toContain('return InstallFailureKind::UnsupportedNode;');
+      // The major reaches the fingerprint ONLY as a parsed integer through the
+      // shared scrub boundary — never as a substring of the probe string.
+      expect(core).toContain('fn node_major_from_probe(raw: Option<&str>) -> Option<u32> {');
+      expect(core).toContain('let token = sanitized_version_token(raw);');
+    });
+
+    it('gives the shape its own scrub-safe Warning group, keyed on the probed major', () => {
+      expect(core).toContain('Self::UnsupportedNode => "unsupported-node",');
+      expect(core).toContain('format!("unsupported-node:{major}")');
+      // Downgraded from Error to Warning alongside the bin-collision case — a
+      // local-environment condition, not an updater defect.
+      expect(core).toContain(
+        'InstallFailureKind::ExpectedBinCollision | InstallFailureKind::UnsupportedNode',
+      );
+      // The permanent condition pages once per CLI target version, not every check.
+      expect(core).toContain('format!("{latest}|unsupported-node|{major}")');
+    });
+
+    it('arms the SAME one-shot managed retry, not a second installer', () => {
+      // The gate selects the unsupported-node shape by kind and reuses the exact
+      // UserPath + differing-ABI conditions the lifecycle shape uses.
+      expect(cli).toContain('InstallFailureKind::UnsupportedNode => true');
+      expect(cli).toContain('source == NpmToolchainSource::UserPath');
+      expect(cli).toContain('failing_node_abi != Some(MANAGED_NODE_ABI)');
+      // The failure path classifies WITH the probed environment so the gate can
+      // see `UnsupportedNode` at all.
+      expect(cli).toContain('classify_install_failure_with_environment(');
+      // Still exactly one provision in the whole module — no second installer,
+      // no new provisioning path for the new shape.
+      expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
+    });
+
+    it('shows a minimum-Node message that names the version and never echoes stderr', () => {
+      // The user-facing detail is built WITH the environment, so an unsupported
+      // Node gets actionable copy instead of the raw Node parse error.
+      expect(cli).toContain('install_failure_detail_with_environment(');
+      // The copy builder takes ONLY the parsed major — it structurally cannot
+      // include the raw npm/Node stderr — and names the floor + the fix.
+      expect(core).toContain('fn unsupported_node_detail(probed_major: Option<u32>) -> String {');
+      expect(core).toContain('https://nodejs.org');
+      expect(core).toContain('run the copied command in a terminal');
+      // The env-aware detail early-returns the copy BEFORE it could ever reach the
+      // env-blind raw-stderr passthrough.
+      const detailFn = core.slice(
+        core.indexOf('pub fn install_failure_detail_with_environment('),
+        core.indexOf('pub fn install_failure_report_with_environment('),
+      );
+      expect(detailFn).toContain('if kind == InstallFailureKind::UnsupportedNode {');
+      expect(detailFn.indexOf('unsupported_node_detail(')).toBeLessThan(
+        detailFn.indexOf('install_failure_detail_with_final_attempt('),
+      );
+    });
   });
 });

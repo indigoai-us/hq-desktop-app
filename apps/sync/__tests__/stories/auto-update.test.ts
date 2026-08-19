@@ -419,6 +419,31 @@ describe('master automatic-updates switch', () => {
     );
   });
 
+  it('an unsupported PATH Node is diagnosed and self-healed, not paged as an unknown defect (HQ-DESKTOP-56)', () => {
+    // The live failure path classifies WITH the probed environment, so a PATH
+    // Node below the CLI's `engines.node` floor becomes `UnsupportedNode` — a
+    // strict refinement of the old `Unexpected` fallback — instead of the empty
+    // `none:unknown:none` group that paged on every scheduled check.
+    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(cliUpdateCore).toContain('pub const MIN_NODE_MAJOR: u32 = 20;');
+    expect(cliUpdateCore).toContain('return InstallFailureKind::UnsupportedNode;');
+    // It arms the SAME one-shot managed-Node retry the lifecycle shape uses...
+    expect(cliUpdate).toContain('InstallFailureKind::UnsupportedNode => true');
+    expect(cliUpdate).toContain('install_failure_earns_managed_retry(');
+    // ...and the user-facing detail is built WITH the environment, so a retry that
+    // could not complete shows an actionable minimum-Node message instead of the
+    // raw Node parse error the env-blind passthrough would surface.
+    expect(cliUpdate).toContain('install_failure_detail_with_environment(');
+    expect(cliUpdateCore).toContain(
+      'fn unsupported_node_detail(probed_major: Option<u32>) -> String {',
+    );
+    // The permanent per-machine condition now pages once per CLI target version,
+    // not every check — the shape earns its own bounded episode key — and its
+    // Sentry group is a scrub-safe Warning keyed on the parsed major only.
+    expect(cliUpdateCore).toContain('format!("{latest}|unsupported-node|{major}")');
+    expect(cliUpdateCore).toContain('format!("unsupported-node:{major}")');
+  });
+
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {
     // HQ-DESKTOP-4Y: an EEXIST on the package's second declared shim
     // (`hq-auth-refresh`) classified as `EEXIST:unknown:other` and never armed

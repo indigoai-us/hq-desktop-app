@@ -1326,8 +1326,11 @@ pub(crate) fn handle_runner_stderr_line<R: tauri::Runtime>(
 // capture policy).
 
 /// Node major-version floor the sync runner requires — its deps use APIs added
-/// in Node 20 and it crashes at startup on anything older.
-const MIN_NODE_MAJOR: u32 = 20;
+/// in Node 20 and it crashes at startup on anything older. Sourced from the core
+/// crate's single source of truth so the Sync-lane preflight and the CLI-updater's
+/// unsupported-Node classifier can never drift apart (both track
+/// `@indigoai-us/hq-cli`'s `engines.node`).
+const MIN_NODE_MAJOR: u32 = hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR;
 
 /// Minimum gap between managed-Node repair attempts. A machine that cannot
 /// install (offline, locked down, out of disk) must not re-download the
@@ -4141,6 +4144,12 @@ mod tests {
 
     #[test]
     fn node_floor_is_20_and_message_names_both_majors() {
+        // The Sync floor is sourced from the core crate's single source of truth,
+        // so the Sync-lane preflight and the CLI-updater's unsupported-node
+        // classifier can never drift apart. Proves the de-duplication did not
+        // shift the Sync threshold.
+        assert_eq!(MIN_NODE_MAJOR, hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR);
+        assert_eq!(MIN_NODE_MAJOR, 20);
         assert!(is_node_too_old(18));
         assert!(is_node_too_old(MIN_NODE_MAJOR - 1));
         assert!(!is_node_too_old(MIN_NODE_MAJOR));
