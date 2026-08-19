@@ -167,10 +167,27 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@v4
+      # apt has no default acquire timeout, so a slow mirror stalls instead of
+      # failing: on run 32299864862 this step sat 18 minutes on
+      # archive.ubuntu.com noble-security InRelease and consumed the job's
+      # entire 20-minute budget before the runner cancelled it. Explicit
+      # timeouts turn a stall into a failure the retry loop can absorb, and the
+      # step deadline caps the damage at 6 minutes instead of the whole job.
       - name: Install GTK development headers (window-vibrancy Linux backend)
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if sudo apt-get update \
+                 -o Acquire::Retries=3 \
+                 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20; then
+              break
+            fi
+            echo "apt-get update failed (attempt ${attempt}/3); retrying"
+            sleep 5
+          done
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

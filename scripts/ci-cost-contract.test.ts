@@ -181,6 +181,18 @@ describe("only macOS-specific work runs on a macOS runner", () => {
     expect(ciWorkflow).toContain("name: Rust tests (macOS)");
   });
 
+  it("bounds the apt step so a stalled mirror cannot eat the job budget", () => {
+    // apt applies no acquire timeout by default. On run 32299864862 this step
+    // stalled 18 minutes on archive.ubuntu.com and the runner cancelled the
+    // whole job at its 20-minute deadline, having run nothing else.
+    const linux = jobBody(ciWorkflow, "rust-linux");
+
+    expect(linux).toMatch(/timeout-minutes: \d+\n\s+run: \|\n\s+set -euo pipefail/);
+    expect(linux).toContain("Acquire::http::Timeout=20");
+    expect(linux).toContain("Acquire::https::Timeout=20");
+    expect(linux).toContain("Acquire::Retries=3");
+  });
+
   it("gates the new Linux job on the same draft-PR guard as its siblings", () => {
     // Every CI job skips draft PRs; a new job that forgets the guard
     // reintroduces the cost the draft skip was added to remove.
