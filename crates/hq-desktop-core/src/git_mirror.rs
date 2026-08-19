@@ -1884,18 +1884,24 @@ fn human_bytes(bytes: u64) -> String {
 ///
 /// `git write-tree` serializes the current index into a (dangling, gc-able) tree
 /// object without touching HEAD or committing; `git ls-tree -l` then reports each
-/// blob's size inline. An empty or unwritable index (unborn repo, or an unmerged
-/// index) yields 0, which keeps the gate inert rather than erroring the mirror
-/// over a size heuristic. Non-blob entries (submodule / knowledge gitlinks, mode
-/// 160000) carry a `-` size column and are skipped.
+/// blob's size inline. A failed measurement fails CLOSED — it errors rather than
+/// reporting 0 bytes, because a 0 would send `enforce_mirror_size_cap` down the
+/// under-cap path and let an unmeasured, possibly-oversized index commit and push
+/// (the same fail-closed rule the bulk-delete guard already follows). A genuinely
+/// empty index still measures 0 via the success path (`write-tree` returns the
+/// empty-tree id and `ls-tree` yields no rows). Non-blob entries (submodule /
+/// knowledge gitlinks, mode 160000) carry a `-` size column and are skipped.
 fn staged_content_bytes(hq_folder: &str) -> Result<u64, String> {
     let tree = git_output(hq_folder, &["write-tree"], GIT_INDEX_TIMEOUT)?;
     if !tree.status.success() {
-        return Ok(0);
+        return Err(format!(
+            "git write-tree failed while measuring the staged snapshot: {}",
+            String::from_utf8_lossy(&tree.stderr).trim()
+        ));
     }
     let tree_sha = String::from_utf8_lossy(&tree.stdout).trim().to_string();
     if tree_sha.is_empty() {
-        return Ok(0);
+        return Err("git write-tree produced no tree id".to_string());
     }
     let out = git_output(
         hq_folder,
@@ -1903,7 +1909,10 @@ fn staged_content_bytes(hq_folder: &str) -> Result<u64, String> {
         GIT_INDEX_TIMEOUT,
     )?;
     if !out.status.success() {
-        return Ok(0);
+        return Err(format!(
+            "git ls-tree failed while measuring the staged snapshot: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     let mut total: u64 = 0;
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
@@ -2188,6 +2197,10 @@ fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<GateOutcom
             committed = true;
         }
         excluded.push(rung.pathspec);
+        // Persist that the gate activated this rung, so later under-cap passes
+        // keep it excluded (durability) without mistaking a user's identical
+        // `.gitignore` line for a gate exclusion.
+        record_activated_exclusion(git_dir, rung.pathspec);
         // The exclusion reset the index to make its commit. Re-stage the working
         // tree MINUS every excluded subtree so the next measurement reflects
         // reality — including a newly-added file OUTSIDE this rung, so the ladder
@@ -2231,26 +2244,75 @@ fn stage_all_except(hq_folder: &str, excluded: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// Unstage every gated subtree already recorded as excluded in the root
-/// `.gitignore`, so the ordinary snapshot never re-commits it — even on an
-/// under-cap pass that skips the gate loop, and even if a nested `.gitignore`
-/// negation or a plain autocommit `git add -A` re-staged it after a prior
-/// exclusion. Deriving the active set from the recorded lines makes the exclusion
-/// durable without a separate state file.
-fn unstage_recorded_exclusions(hq_folder: &str) -> Result<(), String> {
-    let gitignore = fs::read(Path::new(hq_folder).join(".gitignore")).unwrap_or_default();
-    let text = String::from_utf8_lossy(&gitignore);
-    let active: Vec<&str> = GATED_EXCLUSIONS
-        .iter()
-        .filter(|rung| text.lines().any(|l| l.trim() == rung.gitignore_line))
-        .map(|rung| rung.pathspec)
-        .collect();
+/// The set of subtrees the size gate itself has activated as exclusions, kept in
+/// the git dir (never committed, never mirrored). This is deliberately NOT
+/// derived from `.gitignore`: a user may author an identical `/workspace/` rule
+/// while legitimately tracking files there, and treating that as a gate exclusion
+/// would `git reset` their staged changes away every pass. Only rungs the gate
+/// activated (recorded here) are re-enforced.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PersistedExclusions {
+    pathspecs: Vec<String>,
+}
+
+fn mirror_exclusions_path(git_dir: &Path) -> PathBuf {
+    git_dir.join("hq-mirror-exclusions.json")
+}
+
+fn read_activated_exclusions(git_dir: &Path) -> Vec<String> {
+    fs::read_to_string(mirror_exclusions_path(git_dir))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<PersistedExclusions>(&raw).ok())
+        .map(|p| p.pathspecs)
+        .unwrap_or_default()
+}
+
+/// Record that the gate activated `pathspec` as an exclusion, so later passes
+/// re-enforce it even when the repo is back under the cap.
+fn record_activated_exclusion(git_dir: &Path, pathspec: &str) {
+    let mut current = read_activated_exclusions(git_dir);
+    if current.iter().any(|p| p == pathspec) {
+        return;
+    }
+    current.push(pathspec.to_string());
+    if let Ok(encoded) = serde_json::to_string(&PersistedExclusions { pathspecs: current }) {
+        let _ = fs::write(mirror_exclusions_path(git_dir), encoded);
+    }
+}
+
+/// Unstage every subtree the gate has activated as an exclusion, so the ordinary
+/// snapshot never re-commits it — even on an under-cap pass that skips the gate
+/// loop, and even if a nested `.gitignore` negation or a plain autocommit
+/// `git add -A` re-staged it after a prior exclusion.
+fn unstage_recorded_exclusions(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
+    let active = read_activated_exclusions(git_dir);
     if active.is_empty() {
         return Ok(());
     }
     let mut args: Vec<&str> = vec!["reset", "-q", "--"];
-    args.extend_from_slice(&active);
+    for pathspec in &active {
+        args.push(pathspec.as_str());
+    }
     run_git(hq_folder, &args, GIT_INDEX_TIMEOUT)
+}
+
+/// Packed size of the objects reachable from HEAD but not from the upstream —
+/// i.e. what a push would send. `None` when it can't be measured (no upstream, or
+/// an older git without `rev-list --disk-usage`).
+fn unpushed_pack_bytes(hq_folder: &str) -> Option<u64> {
+    let out = git_output(
+        hq_folder,
+        &["rev-list", "--disk-usage", "--objects", "@{u}..HEAD"],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
 }
 
 /// Resolve whether to push after a mirror pass. `committed` is whether this pass
@@ -2265,12 +2327,34 @@ fn push_decision(hq_folder: &str, committed: bool) -> Result<MirrorOutcome, Stri
         &["rev-parse", "--abbrev-ref", "@{u}"],
         GIT_INDEX_TIMEOUT,
     )?;
-    if upstream.status.success() {
-        Ok(MirrorOutcome::Push)
-    } else {
+    if !upstream.status.success() {
         log(LOG_TAG, &format!("{hq_folder}: no upstream, skipping push"));
-        Ok(MirrorOutcome::NoPush)
+        return Ok(MirrorOutcome::NoPush);
     }
+
+    // Backstop against pushing oversized history the gate cannot shed. Untracking
+    // going forward does not remove an oversized blob from an unpushed ANCESTOR,
+    // so once a below-cap snapshot resumes pushing, that ancestor would travel to
+    // the remote. If the unpushed objects already exceed the cap in packed form,
+    // withhold the push: that history predates the gate and needs a one-time
+    // history rewrite to shed. Fail-open when it can't be measured (older git) —
+    // the remote's own size limit remains the hard backstop.
+    if let Some(bytes) = unpushed_pack_bytes(hq_folder) {
+        let cap = resolve_mirror_size_cap();
+        if bytes > cap {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: withholding push — unpushed history is {} (over the {} cap). It predates the size gate and needs a history rewrite to shed; the remote would reject it.",
+                    human_bytes(bytes),
+                    human_bytes(cap),
+                ),
+            );
+            return Ok(MirrorOutcome::NoPush);
+        }
+    }
+
+    Ok(MirrorOutcome::Push)
 }
 
 fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> {
@@ -2314,11 +2398,11 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
         return Ok(MirrorOutcome::NoPush);
     }
 
-    // Durability: unstage any gated subtree already recorded as excluded, so the
-    // ordinary snapshot never re-commits it — even on this under-cap pass, and
+    // Durability: unstage any subtree the gate has activated as an exclusion, so
+    // the ordinary snapshot never re-commits it — even on this under-cap pass, and
     // even if a nested `.gitignore` negation or a plain autocommit `git add -A`
     // re-staged it after a prior exclusion.
-    unstage_recorded_exclusions(hq_folder)?;
+    unstage_recorded_exclusions(hq_folder, git_dir)?;
 
     // `diff --cached --quiet` exits 0 when index == HEAD, 1 when staged
     // changes exist. Anything else is unexpected (signal, missing HEAD on
@@ -6950,33 +7034,40 @@ mod tests {
 
     #[test]
     fn recorded_exclusion_is_not_recommitted_on_a_later_under_cap_pass() {
-        // A previously-recorded exclusion must stay out even on an under-cap pass
-        // that skips the gate loop, and even if the subtree was force-staged (as a
-        // nested `.gitignore` negation or an autocommit `git add -f` could do).
+        // Once the gate has ACTIVATED an exclusion, it stays out on later
+        // under-cap passes — even if the subtree is force-staged (as a nested
+        // `.gitignore` negation or an autocommit `git add -f` could do).
         let _serial = serial();
         std::env::remove_var(BULK_OVERRIDE_ENV);
-        let _cap = set_cap_mb("64"); // far under cap → gate loop is skipped
+        let _cap = set_cap_mb("1");
 
         let tmp = TempDir::new().unwrap();
         init_repo(tmp.path());
-        fs::write(tmp.path().join(".gitignore"), "/workspace/\n").unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("big.bin"), vec![b'y'; 2 * 1024 * 1024]).unwrap();
         fs::write(tmp.path().join("README"), "seed").unwrap();
         assert!(git(tmp.path(), &["add", "-A"]).status.success());
         assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
             .status
             .success());
-        let before = rev_count(tmp.path());
 
-        // Force-stage a workspace file despite the ignore rule.
-        let ws = tmp.path().join("workspace");
-        fs::create_dir_all(&ws).unwrap();
+        // Pass 1: over cap → the gate excludes and RECORDS workspace/.
+        run_mirror_at(tmp.path()).expect("mirror ok");
+        assert!(
+            ls_files(tmp.path(), "workspace").is_empty(),
+            "workspace/ excluded on pass 1"
+        );
+
+        // A workspace file is force-staged despite the exclusion; repo now under cap.
         fs::write(ws.join("scratch.txt"), "x").unwrap();
         assert!(git(tmp.path(), &["add", "-f", "workspace/scratch.txt"])
             .status
             .success());
+        let before = rev_count(tmp.path());
 
+        // Pass 2: under cap, but the gate-recorded exclusion keeps workspace/ out.
         run_mirror_at(tmp.path()).expect("mirror ok");
-
         assert!(
             ls_files(tmp.path(), "workspace").is_empty(),
             "recorded exclusion must be durable — workspace/ must not be re-committed"
@@ -6984,7 +7075,52 @@ mod tests {
         assert_eq!(
             rev_count(tmp.path()),
             before,
-            "nothing to commit once the recorded exclusion is unstaged"
+            "nothing new to commit once the recorded exclusion is unstaged"
+        );
+    }
+
+    #[test]
+    fn user_authored_gitignore_rule_is_not_treated_as_a_gate_exclusion() {
+        // A user may author `/workspace/` themselves while force-tracking files
+        // there. The gate never activated it, so the mirror must NOT reset their
+        // staged changes — exclusion state is gate-owned, not derived from
+        // `.gitignore`.
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("64"); // under cap → the gate never fires
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join(".gitignore"), "/workspace/\n").unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("keep.txt"), "v1").unwrap();
+        assert!(git(tmp.path(), &["add", "-f", "workspace/keep.txt"])
+            .status
+            .success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        // The user edits their force-tracked workspace file.
+        fs::write(ws.join("keep.txt"), "v2").unwrap();
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // The gate never activated, so the user's change is committed normally —
+        // not silently reset away.
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the user's tracked workspace change must be committed"
+        );
+        let head_blob =
+            String::from_utf8_lossy(&git(tmp.path(), &["show", "HEAD:workspace/keep.txt"]).stdout)
+                .to_string();
+        assert_eq!(
+            head_blob, "v2",
+            "committed content must be the user's update"
         );
     }
 
