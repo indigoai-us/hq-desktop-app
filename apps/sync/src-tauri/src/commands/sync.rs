@@ -1325,9 +1325,12 @@ pub(crate) fn handle_runner_stderr_line<R: tauri::Runtime>(
 // problem, and it is the one preflight failure that alarms (see the daemon's
 // capture policy).
 
-/// Node major-version floor the sync runner requires — its deps use APIs added
-/// in Node 20 and it crashes at startup on anything older.
-const MIN_NODE_MAJOR: u32 = 20;
+// Node major-version floor the sync runner requires — its deps use APIs added in
+// Node 20 and it crashes at startup on anything older. Sourced from the CLI
+// updater's classifier (`hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR`, the
+// single source of truth) so the Sync-lane preflight and the unsupported-Node
+// install classification can never drift apart.
+use hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR;
 
 /// Minimum gap between managed-Node repair attempts. A machine that cannot
 /// install (offline, locked down, out of disk) must not re-download the
@@ -4141,6 +4144,11 @@ mod tests {
 
     #[test]
     fn node_floor_is_20_and_message_names_both_majors() {
+        // The floor is now sourced from the CLI updater's classifier
+        // (`hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR`) rather than a local
+        // copy, so this locks that the de-duplication did not shift the Sync-lane
+        // threshold: Node 18 is still TooOld, Node 20/22 still Usable.
+        assert_eq!(MIN_NODE_MAJOR, 20);
         assert!(is_node_too_old(18));
         assert!(is_node_too_old(MIN_NODE_MAJOR - 1));
         assert!(!is_node_too_old(MIN_NODE_MAJOR));

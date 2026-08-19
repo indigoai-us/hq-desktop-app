@@ -70,11 +70,12 @@ use crate::util::paths;
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_update_enabled, classify_install_failure,
-    bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_final_attempt,
-    cli_auto_update_enabled, cmp_semver,
+    bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_environment,
+    classify_install_failure_with_final_attempt, cli_auto_update_enabled, cmp_semver,
     decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
     hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
-    install_failure_detail, install_failure_detail_with_final_attempt, install_failure_report,
+    install_failure_detail, install_failure_detail_with_environment,
+    install_failure_detail_with_final_attempt, install_failure_report,
     install_executor_for_hq_bin, installed_hq_cli_version_in_bun_global,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
@@ -1391,18 +1392,13 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
-        let failure_kind = classify_install_failure_with_final_attempt(
-            install_run.output.status.code(),
-            &raw_detail,
-            prefix.as_deref(),
-            install_run.final_attempt_forced,
-        );
 
         // Probe the user's failing toolchain ONCE, up front. The Node ABI is
         // retry-gate evidence — a run already on HQ's managed ABI, or a
         // disk-space/network cause, earns no provision — and the SAME probe is the
         // provenance the original-path report attaches below. `false`: this
-        // describes the user's own toolchain, never HQ's managed retry.
+        // describes the user's own toolchain, never HQ's managed retry. It also
+        // feeds the environment-aware classification just below.
         let install_env =
             probe_install_environment(&npm, &path, /* managed_toolchain_retry */ false).await;
         let failing_node_abi = install_env
@@ -1411,19 +1407,36 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .and_then(|abi| abi.trim().parse::<u32>().ok());
         let lifecycle_cause = npm_lifecycle_cause(&raw_detail);
 
-        // HQ-DESKTOP-4V / HQ-DESKTOP-4W self-heal. A THIRD-PARTY native-build
-        // lifecycle failure (better-sqlite3 / node-llama-cpp) under the user's OWN
-        // Node is the one shape HQ can repair itself: the reported Node 20 arm64
+        // Classify WITH the probed environment. An unsupported user Node makes npm
+        // itself unrunnable, so npm emits no `npm error` block and the env-blind
+        // classifier falls through to `Unexpected` (the empty `none:unknown:none`
+        // group). The environment-aware layer refines exactly that case to
+        // `UnsupportedNode`, which arms the SAME one-shot managed-Node self-heal
+        // below and, when the heal cannot run, pages once per CLI target version
+        // instead of on every scheduled check.
+        let failure_kind = classify_install_failure_with_environment(
+            install_run.output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+            &install_env,
+        );
+
+        // HQ-DESKTOP-4V / HQ-DESKTOP-4W (and HQ-DESKTOP-56) self-heal. Two shapes
+        // HQ can repair itself by installing its managed Node and retrying: a
+        // THIRD-PARTY native-build lifecycle failure (better-sqlite3 /
+        // node-llama-cpp) under the user's OWN Node — the reported Node 20 arm64
         // Macs have no prebuilt binary for their ABI and no Xcode CLT to build from
-        // source, while HQ already ships a checksum-verified managed Node 22 whose
-        // ABI does have prebuilds. Only that shape — user-path, a cause a different
-        // runtime can actually fix (never disk-space/network), and a failing ABI
-        // that differs from HQ's managed one — arms the bounded, one-shot
-        // managed-toolchain retry; every other kind/cause keeps today's behaviour.
-        // Gating on UserPath + a differing ABI also means a run already on the
-        // managed toolchain never retries into itself. HQ blames the user's
-        // toolchain (the copy below) only AFTER its own repair was attempted and
-        // could not converge.
+        // source — and an UnsupportedNode failure where the user's PATH Node is too
+        // old to run npm at all. In both cases HQ already ships a checksum-verified
+        // managed Node 22 whose ABI has prebuilds and whose major satisfies the
+        // CLI's engines. Only user-path, an ABI that differs from HQ's managed one,
+        // and (for the lifecycle shape) a cause a different runtime can actually fix
+        // (never disk-space/network) arm the bounded, one-shot managed-toolchain
+        // retry; every other kind/cause keeps today's behaviour. Gating on UserPath
+        // + a differing ABI also means a run already on the managed toolchain never
+        // retries into itself. HQ blames the user's toolchain (the copy below) only
+        // AFTER its own repair was attempted and could not converge.
         if install_failure_earns_managed_retry(
             failure_kind,
             install_env.toolchain_source,
@@ -1464,11 +1477,12 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // kinds still no-op in the reporter. `install_env` was probed above with
         // managed_toolchain_retry=false: this event describes the user's own
         // toolchain, never HQ's managed retry.
-        let detail = install_failure_detail_with_final_attempt(
+        let detail = install_failure_detail_with_environment(
             install_run.output.status.code(),
             &raw_detail,
             prefix.as_deref(),
             install_run.final_attempt_forced,
+            &install_env,
         );
         log(
             "hq-cli-update",
@@ -1507,34 +1521,44 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     .await
 }
 
-/// Whether a failed install is the exact shape HQ can self-heal by installing its
-/// managed Node and retrying: a third-party native-build lifecycle failure under
-/// the user's OWN Node THAT A DIFFERENT RUNTIME CAN ACTUALLY REPAIR. Pure so the
-/// gate is unit-testable without an `AppHandle` or a real install.
+/// Whether a failed install is a shape HQ can self-heal by installing its managed
+/// Node and retrying. Two shapes qualify, both under the user's OWN Node and both
+/// repairable by a runtime whose ABI has prebuilds and whose major satisfies the
+/// CLI's `engines.node`. Pure so the gate is unit-testable without an `AppHandle`
+/// or a real install.
 ///
-/// Four conditions, all required:
-///   * `kind` is a third-party lifecycle failure (`UnexpectedLifecycle`);
-///   * `source` is the user's own toolchain (`UserPath`) — a run already on the
-///     managed toolchain cannot be improved by installing it again;
-///   * `cause` is NOT one a new runtime cannot fix. A full disk (`disk-space`) or
+/// The eligible failure shapes:
+///   * a third-party native-build lifecycle failure (`UnexpectedLifecycle`) whose
+///     `cause` is NOT one a new runtime cannot fix. A full disk (`disk-space`) or
 ///     a dead network (`network`) would only waste a ~50MB Node download — and a
 ///     disk-space failure can be made worse by one — so those are refused. Every
 ///     other cause (including the reported `unknown` and `toolchain-missing`) is
 ///     eligible, because a missing prebuild for the user's ABI is exactly what a
 ///     runtime whose ABI *does* have prebuilds repairs.
+///   * an unsupported user Node (`UnsupportedNode`): the PATH Node is older than
+///     the CLI's `engines.node` (`>=20`), so `npm i -g` can never succeed and npm
+///     never ran far enough to have a diagnosed cause. Provisioning HQ's managed
+///     Node 22 makes the very same pinned install succeed, so the cause gate does
+///     not apply to it.
+///
+/// Both shapes additionally require:
+///   * `source` is the user's own toolchain (`UserPath`) — a run already on the
+///     managed toolchain cannot be improved by installing it again;
 ///   * the failing runtime's ABI differs from HQ's managed-Node ABI. A run already
 ///     on ABI 127 gains nothing from provisioning Node 22. An UNKNOWN ABI (the
 ///     probe could not read it) is treated as "not the managed ABI", so the
-///     reported Node-20 (ABI 115) cluster still arms.
+///     reported clusters (Node 20 ABI 115, Node 6 ABI 48) still arm.
 fn install_failure_earns_managed_retry(
     kind: InstallFailureKind,
     source: NpmToolchainSource,
     cause: &str,
     failing_node_abi: Option<u32>,
 ) -> bool {
-    kind == InstallFailureKind::UnexpectedLifecycle
+    let repairable_lifecycle = kind == InstallFailureKind::UnexpectedLifecycle
+        && !matches!(cause, "disk-space" | "network");
+    let unsupported_node = kind == InstallFailureKind::UnsupportedNode;
+    (repairable_lifecycle || unsupported_node)
         && source == NpmToolchainSource::UserPath
-        && !matches!(cause, "disk-space" | "network")
         && failing_node_abi != Some(MANAGED_NODE_ABI)
 }
 
@@ -2244,6 +2268,58 @@ mod tests {
                 "kind {kind:?} must not arm the managed-toolchain retry"
             );
         }
+    }
+
+    #[test]
+    fn managed_toolchain_retry_also_arms_for_an_unsupported_user_node() {
+        // HQ-DESKTOP-56: the user's PATH Node is too old to run npm at all, so the
+        // classifier reports `UnsupportedNode`. Under the user's OWN toolchain with
+        // an ABI that differs from HQ's managed Node, provisioning managed Node 22
+        // is the exact repair, so this shape ALSO arms the one-shot retry. The
+        // reported machine ran Node 6 (ABI 48); an unknown ABI must arm too.
+        for abi in [Some(48), None] {
+            assert!(
+                install_failure_earns_managed_retry(
+                    InstallFailureKind::UnsupportedNode,
+                    NpmToolchainSource::UserPath,
+                    "unknown",
+                    abi,
+                ),
+                "unsupported user Node (abi {abi:?}) must arm the managed retry"
+            );
+        }
+
+        // The unsupported-node arm is independent of the diagnosed cause (unlike
+        // the lifecycle arm) — npm never ran far enough to have one — so even a
+        // would-be-excluded cause still arms.
+        for cause in ["disk-space", "network", "toolchain-missing"] {
+            assert!(
+                install_failure_earns_managed_retry(
+                    InstallFailureKind::UnsupportedNode,
+                    NpmToolchainSource::UserPath,
+                    cause,
+                    Some(48),
+                ),
+                "cause {cause:?} must not gate out the unsupported-node retry"
+            );
+        }
+
+        // A run already ON the managed toolchain, or already on the managed ABI,
+        // gains nothing from provisioning Node 22 again — it must NOT retry.
+        for source in [NpmToolchainSource::Managed, NpmToolchainSource::Unknown] {
+            assert!(!install_failure_earns_managed_retry(
+                InstallFailureKind::UnsupportedNode,
+                source,
+                "unknown",
+                Some(48),
+            ));
+        }
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::UnsupportedNode,
+            NpmToolchainSource::UserPath,
+            "unknown",
+            Some(MANAGED_NODE_ABI),
+        ));
     }
 
     #[test]

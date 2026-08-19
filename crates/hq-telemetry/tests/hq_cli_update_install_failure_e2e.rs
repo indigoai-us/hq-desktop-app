@@ -1373,3 +1373,149 @@ fn a_legacy_npm_err_lifecycle_failure_carrying_enospc_still_captures() {
     );
     assert_path_safe(&event, &["/Users/", "alice", ".npm-global"]);
 }
+
+/// Reproduce HQ-DESKTOP-56 (`[hq-cli-update] install failed (none:unknown:none)`):
+/// a macOS machine whose PATH Node is 6.17.1 (ABI 48). A modern npm cannot run
+/// under Node 6, so it dies with a bare Node parse error BEFORE emitting any
+/// `npm error`/`npm ERR!` block — the env-blind classifier falls through to
+/// `Unexpected` with the empty `none:unknown:none` signature, at Error, on every
+/// scheduled check. The environment-aware capture must instead group it as
+/// `unsupported-node:<major>` at Warning while keeping the toolchain provenance
+/// that makes it self-diagnosing, and never leak the raw Node stderr.
+const UNSUPPORTED_NODE_STDERR: &str = "/usr/local/lib/node_modules/npm/lib/cli/entry.js:41\n  \
+     const { errorMessage } = require('./utils/error-message.js')\n        ^\n\n\
+     SyntaxError: Unexpected token {\n    \
+     at exports.runInThisContext (vm.js:53:16)\n    \
+     at Module._compile (module.js:373:25)\n    \
+     at Object.Module._extensions..js (module.js:416:10)\n    \
+     at Module.load (module.js:343:32)\n    \
+     at Function.Module._load (module.js:300:12)\n    \
+     at Module.require (module.js:353:17)\n    \
+     at require (internal/module.js:12:17)\n    \
+     at Function.Module.runMain (module.js:441:10)\n    \
+     at startup (node.js:139:18)\n    at node.js:990:3\n";
+
+#[test]
+fn an_unsupported_user_node_reclassifies_to_warning_with_its_own_signature() {
+    let env = InstallEnvironment {
+        node_version: Some("v6.17.1".to_string()),
+        node_abi: Some("48".to_string()),
+        npm_version: None,
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            UNSUPPORTED_NODE_STDERR,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+        )
+    }));
+
+    // Grouped and titled on its OWN bounded signature — not the empty
+    // `none:unknown:none` bucket the reported issue collapsed into — and DOWNGRADED
+    // to Warning: this is a local-environment condition, not an updater defect.
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (unsupported-node:6)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unsupported-node",
+            "unsupported-node:6"
+        ]
+    );
+    for (key, value) in [
+        ("install_failure_kind", "unsupported-node"),
+        ("exit_code", "1"),
+        // The decisive discriminator survived to the envelope: node probed, npm
+        // did not. Same closed tuple the reported event carried.
+        ("npm_error_code", "none"),
+        ("npm_syscall", "unknown"),
+        ("node_version", "6.17.1"),
+        ("node_abi", "48"),
+        ("npm_version", "unknown"),
+        ("npm_toolchain_source", "user-path"),
+        ("npm_managed_toolchain_retry", "false"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    assert_eq!(
+        tag(&event, "npm_stderr_len"),
+        Some(UNSUPPORTED_NODE_STDERR.len().to_string().as_str())
+    );
+    // The raw Node parse error, the npm internals path, and the selected prefix
+    // never reach Sentry — only closed tags and the path-free diagnostics suffix.
+    assert!(
+        !event.extra.contains_key("npm_stderr"),
+        "raw npm/Node stderr must never reach Sentry"
+    );
+    assert_path_safe(
+        &event,
+        &[
+            "/Users/",
+            "alice",
+            "/usr/local",
+            "SyntaxError",
+            "runInThisContext",
+            "vm.js",
+        ],
+    );
+}
+
+/// Negative control tied to the same fix: the managed-toolchain retry runs under
+/// HQ's own Node 22 (ABI 127), which is ABOVE the floor, so the very same
+/// markerless stderr must NOT be reclassified as `unsupported-node` there — it
+/// stays `Unexpected` (`none:unknown:none`) at Error and still carries managed
+/// provenance. This proves the environment-aware layer only fires strictly below
+/// `MIN_NODE_MAJOR` and can never mislabel a managed retry into itself.
+#[test]
+fn a_managed_node_retry_is_never_misread_as_unsupported_node() {
+    let env = InstallEnvironment {
+        node_version: Some("v22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::Managed,
+        managed_toolchain_retry: true,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            UNSUPPORTED_NODE_STDERR,
+            Some(SELECTED_PREFIX),
+            false,
+            &env,
+        )
+    }));
+
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (none:unknown:none)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected",
+            "none:unknown:none"
+        ]
+    );
+    for (key, value) in [
+        ("install_failure_kind", "unexpected"),
+        ("node_version", "22.17.0"),
+        ("node_abi", "127"),
+        ("npm_toolchain_source", "managed"),
+        ("npm_managed_toolchain_retry", "true"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    assert_path_safe(&event, &["/Users/", "alice", "/usr/local", "SyntaxError"]);
+}

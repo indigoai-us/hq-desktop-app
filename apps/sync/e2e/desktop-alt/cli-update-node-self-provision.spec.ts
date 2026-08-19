@@ -190,3 +190,85 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(retryHelper).not.toContain('fetch_latest');
   });
 });
+
+/**
+ * HQ-DESKTOP-56 — the hq-CLI auto-updater on a machine whose PATH Node is 6.17.1.
+ *
+ * A modern npm CLI cannot run under Node 6, so `npm i -g @indigoai-us/hq-cli`
+ * dies with a bare Node parse error BEFORE emitting any `npm error` block. The
+ * env-blind classifier could only see `Unexpected`, so the failure paged at
+ * Error under the empty `none:unknown:none` signature on every scheduled check.
+ * The fix classifies WITH the probed environment, refining exactly that fallback
+ * to `UnsupportedNode`: its own bounded Warning-level signature, a repeat-guard
+ * that pages once per CLI target version, actionable Node-version copy, and the
+ * SAME one-shot managed-Node self-heal the lifecycle shape already uses.
+ *
+ * Additive, source-contract cases in the same scripted "Desktop-alt E2E" job.
+ */
+describe('hq-CLI updater treats an unsupported user Node as its own healable shape (HQ-DESKTOP-56)', () => {
+  const cli = readRepoFile('src-tauri/src/commands/hq_cli_update.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+  const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
+
+  const occurrences = (haystack: string, needle: string) =>
+    haystack.split(needle).length - 1;
+
+  it('classifies the failing install WITH the probed environment, refining Unexpected below the floor', () => {
+    // install() probes the toolchain once and classifies with it, so a Node too
+    // old to run npm (no npm error block → Unexpected) is refined to
+    // UnsupportedNode instead of the empty none:unknown:none group.
+    expect(cli).toContain('classify_install_failure_with_environment(');
+    expect(core).toContain('pub fn classify_install_failure_with_environment(');
+    // The refinement is gated strictly below the shared floor, defined once.
+    expect(core).toContain('pub const MIN_NODE_MAJOR: u32 = 20;');
+    expect(core).toContain('major < MIN_NODE_MAJOR');
+    expect(core).toContain('InstallFailureKind::UnsupportedNode');
+  });
+
+  it('arms the SAME one-shot managed-Node retry for an unsupported user Node — no second installer', () => {
+    // The pure gate now also arms on UnsupportedNode, keeping the shared UserPath
+    // + differing-ABI conditions...
+    expect(cli).toContain(
+      'let unsupported_node = kind == InstallFailureKind::UnsupportedNode;',
+    );
+    expect(cli).toContain('source == NpmToolchainSource::UserPath');
+    expect(cli).toContain('failing_node_abi != Some(MANAGED_NODE_ABI)');
+    // ...and still routes through the ONE existing installer seam, never a new one.
+    expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
+    expect(cli).not.toContain('install_deps::install_node');
+  });
+
+  it('groups the unsupported-node failure on its own bounded, path-free signature at Warning', () => {
+    // Own fingerprint component and a signature that is the parsed major only, so
+    // it stops colliding with the genuine none:unknown:none bucket and never
+    // carries free text or a path.
+    expect(core).toContain('Self::UnsupportedNode => "unsupported-node"');
+    expect(core).toContain('format!("unsupported-node:{major}")');
+    // Downgraded to Warning alongside the bin-collision exception — a local
+    // environment condition, not an updater defect.
+    expect(core).toContain(
+      'InstallFailureKind::ExpectedBinCollision | InstallFailureKind::UnsupportedNode',
+    );
+    // Pages once per CLI target version via the repeat-guard, not every check.
+    expect(core).toContain('format!("{latest}|unsupported-node|{major}")');
+  });
+
+  it('shows the user a Node-version remedy and never the raw npm/Node stderr', () => {
+    // install() builds its user-facing detail with the environment-aware builder...
+    expect(cli).toContain('install_failure_detail_with_environment(');
+    // ...whose unsupported-node copy names the required Node version and keeps the
+    // copyable-command escape hatch, returned BEFORE the raw-stderr passthrough.
+    expect(core).toContain('const UNSUPPORTED_NODE_DETAIL');
+    expect(core).toContain('Node.js 20 or newer');
+    expect(core).toContain('version 22');
+    expect(core).toContain('the copied command in a terminal');
+    expect(core).toContain('return UNSUPPORTED_NODE_DETAIL.to_string();');
+  });
+
+  it('sources the Sync-lane Node floor from the same classifier constant', () => {
+    // The Sync preflight consumes the core constant instead of a private copy, so
+    // the two lanes can never disagree on the minimum Node.
+    expect(syncRs).toContain('use hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR;');
+    expect(syncRs).not.toContain('const MIN_NODE_MAJOR');
+  });
+});

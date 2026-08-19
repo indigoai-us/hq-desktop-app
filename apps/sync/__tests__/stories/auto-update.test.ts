@@ -478,4 +478,30 @@ describe('master automatic-updates switch', () => {
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
   });
+
+  it('classifies an unsupported user Node as its own healable, once-per-version branch (HQ-DESKTOP-56)', () => {
+    // A PATH Node too old to run npm dies with a bare Node parse error and no npm
+    // error block, so the env-blind classifier could only ever see Unexpected and
+    // paged at Error under the empty none:unknown:none signature every check. The
+    // updater now classifies WITH the probed environment, refining exactly that
+    // fallback to UnsupportedNode below the shared floor.
+    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(cliUpdateCore).toContain(
+      'pub fn classify_install_failure_with_environment(',
+    );
+    expect(cliUpdateCore).toContain('pub const MIN_NODE_MAJOR: u32 = 20;');
+    expect(cliUpdateCore).toContain('major < MIN_NODE_MAJOR');
+    // Own Warning-level fingerprint and a repeat-guard keyed once per CLI target
+    // version, so a permanent per-machine condition stops re-paging.
+    expect(cliUpdateCore).toContain('Self::UnsupportedNode => "unsupported-node"');
+    expect(cliUpdateCore).toContain('format!("unsupported-node:{major}")');
+    expect(cliUpdateCore).toContain('format!("{latest}|unsupported-node|{major}")');
+    // The gate arms the SAME one-shot managed-Node self-heal for this shape.
+    expect(cliUpdate).toContain(
+      'let unsupported_node = kind == InstallFailureKind::UnsupportedNode;',
+    );
+    // The user sees a Node-version remedy, never the raw npm/Node stderr.
+    expect(cliUpdate).toContain('install_failure_detail_with_environment(');
+    expect(cliUpdateCore).toContain('Node.js 20 or newer');
+  });
 });
