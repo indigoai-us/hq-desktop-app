@@ -2137,7 +2137,7 @@ fn exclude_path_from_mirror(
     );
     run_git(
         hq_folder,
-        &["commit", "--no-gpg-sign", "-m", &msg],
+        &["commit", "--no-gpg-sign", "--no-verify", "-m", &msg],
         GIT_INDEX_TIMEOUT,
     )?;
     log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
@@ -2268,15 +2268,38 @@ fn read_activated_exclusions(git_dir: &Path) -> Vec<String> {
 }
 
 /// Record that the gate activated `pathspec` as an exclusion, so later passes
-/// re-enforce it even when the repo is back under the cap.
+/// re-enforce it even when the repo is back under the cap. Persisted atomically
+/// (temp + rename), because a torn write — likely under the very disk pressure
+/// that triggers the gate — would otherwise read back as an empty set and drop
+/// the durability guarantee. A failure is logged, never silently swallowed.
 fn record_activated_exclusion(git_dir: &Path, pathspec: &str) {
     let mut current = read_activated_exclusions(git_dir);
     if current.iter().any(|p| p == pathspec) {
         return;
     }
     current.push(pathspec.to_string());
-    if let Ok(encoded) = serde_json::to_string(&PersistedExclusions { pathspecs: current }) {
-        let _ = fs::write(mirror_exclusions_path(git_dir), encoded);
+    let encoded = match serde_json::to_string(&PersistedExclusions { pathspecs: current }) {
+        Ok(encoded) => encoded,
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!("failed to encode mirror exclusion state for {pathspec}: {e}"),
+            );
+            return;
+        }
+    };
+    let path = mirror_exclusions_path(git_dir);
+    let tmp = path.with_extension("json.tmp");
+    let _ = fs::remove_file(&tmp);
+    let result = fs::write(&tmp, &encoded).and_then(|_| fs::rename(&tmp, &path));
+    if let Err(e) = result {
+        let _ = fs::remove_file(&tmp);
+        log(
+            LOG_TAG,
+            &format!(
+                "failed to persist mirror exclusion {pathspec}: {e} — durability falls back to .gitignore this pass"
+            ),
+        );
     }
 }
 
@@ -2331,30 +2354,25 @@ fn push_decision(hq_folder: &str, committed: bool) -> Result<MirrorOutcome, Stri
         log(LOG_TAG, &format!("{hq_folder}: no upstream, skipping push"));
         return Ok(MirrorOutcome::NoPush);
     }
-
-    // Backstop against pushing oversized history the gate cannot shed. Untracking
-    // going forward does not remove an oversized blob from an unpushed ANCESTOR,
-    // so once a below-cap snapshot resumes pushing, that ancestor would travel to
-    // the remote. If the unpushed objects already exceed the cap in packed form,
-    // withhold the push: that history predates the gate and needs a one-time
-    // history rewrite to shed. Fail-open when it can't be measured (older git) —
-    // the remote's own size limit remains the hard backstop.
-    if let Some(bytes) = unpushed_pack_bytes(hq_folder) {
-        let cap = resolve_mirror_size_cap();
-        if bytes > cap {
-            log(
-                LOG_TAG,
-                &format!(
-                    "{hq_folder}: withholding push — unpushed history is {} (over the {} cap). It predates the size gate and needs a history rewrite to shed; the remote would reject it.",
-                    human_bytes(bytes),
-                    human_bytes(cap),
-                ),
-            );
-            return Ok(MirrorOutcome::NoPush);
-        }
-    }
-
+    // The oversized-history backstop is enforced in `push_with_backoff`, right
+    // before `git push` — that is after the mirror lock is released, so it re-reads
+    // the true HEAD and can't be fooled by another writer advancing the branch
+    // between this decision and the push.
     Ok(MirrorOutcome::Push)
+}
+
+/// Whether the objects a push would send exceed the cap in packed form. Untracking
+/// going forward never removes an oversized blob from an unpushed ANCESTOR, so a
+/// resumed push could still carry it to the remote; this refuses that push. It is
+/// checked in `push_with_backoff` immediately before `git push` (not in
+/// `push_decision`), so a branch advanced by another writer after the size gate
+/// ran is still caught. Fail-open when it can't be measured (older git without
+/// `rev-list --disk-usage`) — the remote's own size limit remains the hard backstop.
+fn unpushed_history_over_cap(hq_folder: &str) -> bool {
+    match unpushed_pack_bytes(hq_folder) {
+        Some(bytes) => bytes > resolve_mirror_size_cap(),
+        None => false,
+    }
 }
 
 fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> {
@@ -2448,7 +2466,7 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     // commits a day. An automated snapshot gains nothing from a signature.
     run_git(
         hq_folder,
-        &["commit", "--no-gpg-sign", "-m", &msg],
+        &["commit", "--no-gpg-sign", "--no-verify", "-m", &msg],
         GIT_INDEX_TIMEOUT,
     )?;
     log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
@@ -2508,6 +2526,21 @@ fn push_with_backoff(hq_folder: &str, git_dir: &Path, now: DateTime<Utc>) {
                 &format!("{hq_folder}: push skipped — {} (backing off)", block.reason),
             );
         }
+        return;
+    }
+
+    // Size backstop at the last possible moment, re-reading the true HEAD: the
+    // mirror lock was released after the snapshot was validated, so another writer
+    // (the autocommit hook, a second mirror) could have advanced the branch to a
+    // never-measured — possibly oversized — commit. Refuse rather than push it.
+    if unpushed_history_over_cap(hq_folder) {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: withholding push — unpushed history exceeds the {} mirror cap in packed form. It predates or bypassed the size gate and needs a one-time history rewrite to shed.",
+                human_bytes(resolve_mirror_size_cap()),
+            ),
+        );
         return;
     }
 
@@ -7121,6 +7154,38 @@ mod tests {
         assert_eq!(
             head_blob, "v2",
             "committed content must be the user's update"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mirror_commits_bypass_pre_commit_hooks() {
+        // A user pre-commit hook must not run for the automated mirror commit —
+        // it could stage generated/ignored files after the size measurement, and
+        // a failing hook would silently stop the mirror. `--no-verify` bypasses it.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+
+        // A pre-commit hook that always fails — a hook-respecting commit aborts.
+        let hook = tmp.path().join(".git/hooks/pre-commit");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let before = rev_count(tmp.path());
+        fs::write(tmp.path().join("new.txt"), "x").unwrap();
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "--no-verify must bypass the failing pre-commit hook"
         );
     }
 
