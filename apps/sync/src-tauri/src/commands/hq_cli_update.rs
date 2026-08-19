@@ -97,7 +97,7 @@ pub use hq_desktop_core::hq_cli_update::{
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY,
-    HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX,
+    HQ_CLI_BIN_NAMES, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX,
     NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
 };
 
@@ -363,6 +363,381 @@ fn clean_partial_hq_cli_install(prefix: &str) {
                         staging.display()
                     ),
                 ),
+            }
+        }
+    }
+}
+
+/// The app-owned managed prefix is the one update target we can transact
+/// without changing the semantics of a user's npm or pnpm installation. npm
+/// installs into a private staging prefix first; only a complete, version-
+/// checked package is promoted into the live managed prefix.
+fn is_managed_cli_prefix(prefix: &str) -> bool {
+    let prefix = Path::new(prefix);
+    paths::managed_toolchain_roots()
+        .iter()
+        .any(|root| prefix.starts_with(root))
+}
+
+fn hq_cli_package_dir_for(prefix: &Path, windows_layout: bool) -> PathBuf {
+    partial_install_scope_dir_for(&prefix.to_string_lossy(), windows_layout).join("hq-cli")
+}
+
+fn hq_cli_backup_dir_for(prefix: &Path, windows_layout: bool) -> PathBuf {
+    partial_install_scope_dir_for(&prefix.to_string_lossy(), windows_layout)
+        .join(".hq-cli-desktop-backup")
+}
+
+fn hq_cli_shim_paths_for(prefix: &Path, windows_layout: bool) -> Vec<PathBuf> {
+    if windows_layout {
+        HQ_CLI_BIN_NAMES
+            .into_iter()
+            .flat_map(|name| {
+                [
+                    prefix.join(name),
+                    prefix.join(format!("{name}.cmd")),
+                    prefix.join(format!("{name}.ps1")),
+                ]
+            })
+            .collect()
+    } else {
+        HQ_CLI_BIN_NAMES
+            .into_iter()
+            .map(|name| prefix.join("bin").join(name))
+            .collect()
+    }
+}
+
+fn path_entry_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn complete_hq_cli_package_version(package: &Path) -> Option<String> {
+    package
+        .join("dist")
+        .join("index.js")
+        .is_file()
+        .then(|| version_if_hq_cli(&package.join("package.json")))
+        .flatten()
+}
+
+fn package_promotion_failure_detail(
+    target_package: &Path,
+    promotion_error: &std::io::Error,
+    rollback_result: Option<std::io::Result<()>>,
+) -> String {
+    let detail = format!(
+        "promote staged managed CLI package {}: {promotion_error}",
+        target_package.display()
+    );
+    match rollback_result {
+        Some(Err(rollback_error)) => format!(
+            "{detail}; rollback failed: restore previous package {}: {rollback_error}",
+            target_package.display()
+        ),
+        Some(Ok(())) | None => detail,
+    }
+}
+
+/// A staged update for the app-owned managed CLI prefix.
+///
+/// The expensive and failure-prone npm work happens below
+/// `<prefix>/.hq-cli-update-staging`, leaving the live package and shims alone.
+/// Promotion is a pair of same-filesystem directory renames with a rollback
+/// backup. If the app is interrupted before promotion, only staging debris is
+/// left; if it is interrupted between the two promotion renames, the next run
+/// restores the backup before starting another install.
+#[derive(Debug)]
+struct ManagedCliInstallStage {
+    target_prefix: PathBuf,
+    staging_prefix: PathBuf,
+    windows_layout: bool,
+    baseline_package_present: bool,
+    baseline_version: Option<String>,
+}
+
+impl ManagedCliInstallStage {
+    fn prepare(prefix: &str) -> Result<Self, String> {
+        Self::prepare_for(prefix, cfg!(target_os = "windows"))
+    }
+
+    fn prepare_for(prefix: &str, windows_layout: bool) -> Result<Self, String> {
+        let target_prefix = PathBuf::from(prefix);
+        let staging_prefix = target_prefix.join(".hq-cli-update-staging");
+        let target_package = hq_cli_package_dir_for(&target_prefix, windows_layout);
+        let backup_package = hq_cli_backup_dir_for(&target_prefix, windows_layout);
+
+        // Recover the only interruption window in promotion: the old package
+        // was renamed to backup but the staged package did not reach the stable
+        // target name. If the target exists, promotion completed and only backup
+        // cleanup was interrupted, so the stale backup is safe to discard.
+        if backup_package.exists() {
+            let target_complete = complete_hq_cli_package_version(&target_package).is_some();
+            let primary_shim = if windows_layout {
+                target_prefix.join("hq.cmd")
+            } else {
+                target_prefix.join("bin").join("hq")
+            };
+            if target_complete && path_entry_exists(&primary_shim) {
+                std::fs::remove_dir_all(&backup_package).map_err(|e| {
+                    format!(
+                        "remove stale managed CLI rollback backup {}: {e}",
+                        backup_package.display()
+                    )
+                })?;
+            } else {
+                if target_package.exists() {
+                    std::fs::remove_dir_all(&target_package).map_err(|e| {
+                        format!(
+                            "remove incomplete managed CLI promotion {}: {e}",
+                            target_package.display()
+                        )
+                    })?;
+                }
+                if let Some(parent) = target_package.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!(
+                            "prepare managed CLI package directory {}: {e}",
+                            parent.display()
+                        )
+                    })?;
+                }
+                std::fs::rename(&backup_package, &target_package).map_err(|e| {
+                    format!(
+                        "restore interrupted managed CLI promotion {}: {e}",
+                        target_package.display()
+                    )
+                })?;
+                log(
+                    "hq-cli-update",
+                    "restored the previous managed CLI after an interrupted promotion",
+                );
+            }
+        }
+
+        if staging_prefix.exists() {
+            std::fs::remove_dir_all(&staging_prefix).map_err(|e| {
+                format!(
+                    "remove stale managed CLI staging prefix {}: {e}",
+                    staging_prefix.display()
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&staging_prefix).map_err(|e| {
+            format!(
+                "prepare managed CLI staging prefix {}: {e}",
+                staging_prefix.display()
+            )
+        })?;
+
+        let baseline_package_present = path_entry_exists(&target_package);
+        let baseline_version = complete_hq_cli_package_version(&target_package);
+
+        Ok(Self {
+            target_prefix,
+            staging_prefix,
+            windows_layout,
+            baseline_package_present,
+            baseline_version,
+        })
+    }
+
+    fn install_prefix(&self) -> &str {
+        self.staging_prefix
+            .to_str()
+            .expect("managed CLI prefix must be valid UTF-8")
+    }
+
+    fn rollback_promotion(
+        &self,
+        target_package: &Path,
+        backup_package: &Path,
+        installed_shims: &[PathBuf],
+    ) -> Result<(), String> {
+        let mut errors = Vec::new();
+        for shim in installed_shims.iter().rev() {
+            if let Err(error) = std::fs::remove_file(shim) {
+                errors.push(format!("remove promoted shim {}: {error}", shim.display()));
+            }
+        }
+        if target_package.exists() {
+            if let Err(error) = std::fs::remove_dir_all(target_package) {
+                errors.push(format!(
+                    "remove promoted package {}: {error}",
+                    target_package.display()
+                ));
+            }
+        }
+        if backup_package.exists() && !target_package.exists() {
+            if let Err(error) = std::fs::rename(backup_package, target_package) {
+                errors.push(format!(
+                    "restore previous package {}: {error}",
+                    target_package.display()
+                ));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    fn promotion_error_with_rollback(
+        &self,
+        error: String,
+        target_package: &Path,
+        backup_package: &Path,
+        installed_shims: &[PathBuf],
+    ) -> String {
+        match self.rollback_promotion(target_package, backup_package, installed_shims) {
+            Ok(()) => error,
+            Err(rollback_error) => format!("{error}; rollback failed: {rollback_error}"),
+        }
+    }
+
+    fn promote(&self, expected_version: &str) -> Result<(), String> {
+        let staged_package = hq_cli_package_dir_for(&self.staging_prefix, self.windows_layout);
+        let staged_version = complete_hq_cli_package_version(&staged_package).ok_or_else(|| {
+            "managed CLI staging install is incomplete (missing package metadata or entrypoint)"
+                .to_string()
+        })?;
+        if staged_version != expected_version {
+            return Err(format!(
+                "managed CLI staging install resolved v{staged_version}, expected v{expected_version}"
+            ));
+        }
+
+        let target_package = hq_cli_package_dir_for(&self.target_prefix, self.windows_layout);
+        let backup_package = hq_cli_backup_dir_for(&self.target_prefix, self.windows_layout);
+        let current_package_present = path_entry_exists(&target_package);
+        let current_version = complete_hq_cli_package_version(&target_package);
+        if current_package_present != self.baseline_package_present
+            || current_version.as_deref() != self.baseline_version.as_deref()
+        {
+            return Err(
+                "managed CLI changed while the staged update was installing; refusing to overwrite it"
+                    .to_string(),
+            );
+        }
+        let target_scope = target_package
+            .parent()
+            .ok_or_else(|| "managed CLI target package has no parent directory".to_string())?;
+        std::fs::create_dir_all(target_scope).map_err(|e| {
+            format!(
+                "prepare managed CLI target scope {}: {e}",
+                target_scope.display()
+            )
+        })?;
+        if backup_package.exists() {
+            std::fs::remove_dir_all(&backup_package).map_err(|e| {
+                format!(
+                    "remove stale managed CLI rollback backup {}: {e}",
+                    backup_package.display()
+                )
+            })?;
+        }
+
+        let had_previous_package = target_package.exists();
+        if had_previous_package {
+            std::fs::rename(&target_package, &backup_package).map_err(|e| {
+                format!(
+                    "back up current managed CLI package {}: {e}",
+                    target_package.display()
+                )
+            })?;
+        }
+        if let Err(error) = std::fs::rename(&staged_package, &target_package) {
+            let rollback_result =
+                had_previous_package.then(|| std::fs::rename(&backup_package, &target_package));
+            return Err(package_promotion_failure_detail(
+                &target_package,
+                &error,
+                rollback_result,
+            ));
+        }
+
+        // Existing npm shims resolve through the stable package path and do not
+        // need replacement. Fill only missing shims (the issue-56 half-installed
+        // state); this avoids touching a working command during ordinary updates.
+        let staged_shims = hq_cli_shim_paths_for(&self.staging_prefix, self.windows_layout);
+        let target_shims = hq_cli_shim_paths_for(&self.target_prefix, self.windows_layout);
+        let mut installed_shims = Vec::new();
+        for (staged, target) in staged_shims.iter().zip(target_shims.iter()) {
+            if path_entry_exists(target) || !path_entry_exists(staged) {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                if let Err(error) = std::fs::create_dir_all(parent) {
+                    return Err(self.promotion_error_with_rollback(
+                        format!(
+                            "prepare managed CLI shim directory {}: {error}",
+                            parent.display()
+                        ),
+                        &target_package,
+                        &backup_package,
+                        &installed_shims,
+                    ));
+                }
+            }
+            if let Err(error) = std::fs::rename(staged, target) {
+                return Err(self.promotion_error_with_rollback(
+                    format!("promote managed CLI shim {}: {error}", target.display()),
+                    &target_package,
+                    &backup_package,
+                    &installed_shims,
+                ));
+            }
+            installed_shims.push(target.clone());
+        }
+
+        let primary_shim = if self.windows_layout {
+            self.target_prefix.join("hq.cmd")
+        } else {
+            self.target_prefix.join("bin").join("hq")
+        };
+        if complete_hq_cli_package_version(&target_package).as_deref() != Some(expected_version)
+            || !path_entry_exists(&primary_shim)
+        {
+            return Err(self.promotion_error_with_rollback(
+                "managed CLI promotion did not leave a complete package and primary shim"
+                    .to_string(),
+                &target_package,
+                &backup_package,
+                &installed_shims,
+            ));
+        }
+
+        if backup_package.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&backup_package) {
+                log(
+                    "hq-cli-update",
+                    &format!(
+                        "managed CLI promoted but rollback backup cleanup failed {}: {error}",
+                        backup_package.display()
+                    ),
+                );
+            }
+        }
+        log(
+            "hq-cli-update",
+            &format!("promoted staged managed CLI v{expected_version}"),
+        );
+        Ok(())
+    }
+}
+
+impl Drop for ManagedCliInstallStage {
+    fn drop(&mut self) {
+        if self.staging_prefix.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&self.staging_prefix) {
+                log(
+                    "hq-cli-update",
+                    &format!(
+                        "failed to remove managed CLI staging prefix {}: {error}",
+                        self.staging_prefix.display()
+                    ),
+                );
             }
         }
     }
@@ -1405,7 +1780,20 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     let latest = fetch_latest().await?;
     let already_blocked =
         non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
-    let base_args = install_argv(prefix.as_deref(), Some(latest.as_str()));
+    // Managed-prefix updates are staged outside the live package tree. npm can
+    // fail or the app can be interrupted during dependency installation without
+    // taking the last-known-good `hq` command with it (feedback issue 56).
+    // User-owned npm prefixes and pnpm installs keep their existing semantics.
+    let managed_stage = prefix
+        .as_deref()
+        .filter(|prefix| is_managed_cli_prefix(prefix))
+        .map(ManagedCliInstallStage::prepare)
+        .transpose()?;
+    let install_prefix = managed_stage
+        .as_ref()
+        .map(ManagedCliInstallStage::install_prefix)
+        .or(prefix.as_deref());
+    let base_args = install_argv(install_prefix, Some(latest.as_str()));
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
         report_npm_cache_setup_failure(category);
         error
@@ -1415,7 +1803,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         &format!(
             "install: {} (prefix={})",
             base_args.join(" "),
-            prefix.as_deref().unwrap_or("npm default prefix")
+            install_prefix.unwrap_or("npm default prefix")
         ),
     );
 
@@ -1430,14 +1818,14 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     };
 
     let install_run =
-        run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
+        run_npm_install_with_retries(&npm, &path, &npm_cache, install_prefix, base_args).await?;
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
         let failure_kind = classify_install_failure_with_final_attempt(
             install_run.output.status.code(),
             &raw_detail,
-            prefix.as_deref(),
+            install_prefix,
             install_run.final_attempt_forced,
         );
 
@@ -1510,7 +1898,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         let detail = install_failure_detail_with_final_attempt(
             install_run.output.status.code(),
             &raw_detail,
-            prefix.as_deref(),
+            install_prefix,
             install_run.final_attempt_forced,
         );
         log(
@@ -1525,13 +1913,17 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         persist_reported_episode(report_install_failure_episode(
             install_run.output.status.code(),
             &raw_detail,
-            prefix.as_deref(),
+            install_prefix,
             install_run.final_attempt_forced,
             &install_env,
             &latest,
             &reported_episode_keys,
         ));
         return Err(detail);
+    }
+
+    if let Some(stage) = managed_stage.as_ref() {
+        stage.promote(&latest)?;
     }
 
     // npm exit 0 only proves npm wrote a package somewhere; the shared finalize
@@ -2020,16 +2412,27 @@ async fn managed_toolchain_retry(
         "managed Node provisioned — retrying the pinned install once under HQ's managed toolchain, into HQ's managed npm prefix",
     );
 
-    // Rebuild the argv against HQ's MANAGED prefix (never the user's), reusing the
-    // SAME pinned `latest`. The managed prefix is also handed to the retry ladder so
-    // the EEXIST/ENOTEMPTY cleanup scope is confined to the managed tree and can
-    // never delete inside the user's own prefix.
-    let retry_args = install_argv(Some(managed_prefix.as_str()), Some(latest));
+    // Rebuild the argv against an app-owned STAGING prefix under HQ's managed
+    // prefix, reusing the SAME pinned `latest`. A failing native build or an app
+    // interruption therefore cannot mutate the current managed CLI. The staged
+    // package is promoted only after npm succeeds and its version is validated.
+    let managed_stage = match ManagedCliInstallStage::prepare(&managed_prefix) {
+        Ok(stage) => stage,
+        Err(error) => {
+            log(
+                "hq-cli-update",
+                &format!("managed-toolchain retry could not prepare staging: {error}"),
+            );
+            return Some(Err(error));
+        }
+    };
+    let install_prefix = managed_stage.install_prefix();
+    let retry_args = install_argv(Some(install_prefix), Some(latest));
     let retry_run = match run_npm_install_with_retries(
         &managed_npm,
         &managed_path,
         npm_cache,
-        Some(managed_prefix.as_str()),
+        Some(install_prefix),
         retry_args,
     )
     .await
@@ -2045,6 +2448,13 @@ async fn managed_toolchain_retry(
     };
 
     if retry_run.output.status.success() {
+        if let Err(error) = managed_stage.promote(latest) {
+            log(
+                "hq-cli-update",
+                &format!("managed-toolchain retry staging promotion failed: {error}"),
+            );
+            return Some(Err(error));
+        }
         // Judge convergence with ABI/runtime evidence, not version alone: the
         // installed binary must resolve INSIDE the managed prefix AND actually start
         // under the app's child PATH. Anything short routes through the shared
@@ -2092,7 +2502,7 @@ async fn managed_toolchain_retry(
     persist_reported_episode(report_install_failure_episode(
         retry_run.output.status.code(),
         &raw_detail,
-        Some(managed_prefix.as_str()),
+        Some(install_prefix),
         retry_run.final_attempt_forced,
         &install_env,
         latest,
@@ -3079,6 +3489,209 @@ exit 0
         let base = std::env::temp_dir().join(format!("hq-cli-clean-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         clean_partial_hq_cli_install(base.to_str().unwrap());
+    }
+
+    fn seed_cli_package(prefix: &Path, version: &str, windows_layout: bool) -> PathBuf {
+        let package = hq_cli_package_dir_for(prefix, windows_layout);
+        std::fs::create_dir_all(package.join("dist")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            format!(r#"{{"name":"@indigoai-us/hq-cli","version":"{version}"}}"#),
+        )
+        .unwrap();
+        std::fs::write(package.join("dist/index.js"), format!("// {version}")).unwrap();
+        package
+    }
+
+    #[test]
+    fn failed_managed_staging_attempt_preserves_the_working_cli() {
+        // feedback_5630c8f2 / Shepherd #56: npm may fail or the app may be
+        // interrupted during the long install. Dropping the staging transaction
+        // must remove only staging debris and leave the live package + shim intact.
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-global");
+        let package = seed_cli_package(&prefix, "5.93.0", false);
+        let shim = prefix.join("bin/hq");
+        std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        std::fs::write(&shim, "old-working-shim").unwrap();
+
+        {
+            let stage = ManagedCliInstallStage::prepare_for(
+                prefix.to_str().unwrap(),
+                /* windows_layout */ false,
+            )
+            .unwrap();
+            seed_cli_package(Path::new(stage.install_prefix()), "5.98.0", false);
+            std::fs::write(
+                Path::new(stage.install_prefix()).join("npm-failed-mid-install"),
+                "partial",
+            )
+            .unwrap();
+            // No promote: this is the npm failure/interruption path.
+        }
+
+        assert_eq!(
+            complete_hq_cli_package_version(&package).as_deref(),
+            Some("5.93.0")
+        );
+        assert_eq!(std::fs::read_to_string(&shim).unwrap(), "old-working-shim");
+        assert!(!prefix.join(".hq-cli-update-staging").exists());
+    }
+
+    #[test]
+    fn valid_managed_stage_promotes_and_repairs_a_missing_primary_shim() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-global");
+        let old_package = seed_cli_package(&prefix, "5.93.0", false);
+        assert_eq!(
+            complete_hq_cli_package_version(&old_package).as_deref(),
+            Some("5.93.0")
+        );
+
+        let stage = ManagedCliInstallStage::prepare_for(
+            prefix.to_str().unwrap(),
+            /* windows_layout */ false,
+        )
+        .unwrap();
+        seed_cli_package(Path::new(stage.install_prefix()), "5.98.0", false);
+        let staged_shim = Path::new(stage.install_prefix()).join("bin/hq");
+        std::fs::create_dir_all(staged_shim.parent().unwrap()).unwrap();
+        std::fs::write(&staged_shim, "new-shim").unwrap();
+
+        stage.promote("5.98.0").unwrap();
+
+        let live_package = hq_cli_package_dir_for(&prefix, false);
+        assert_eq!(
+            complete_hq_cli_package_version(&live_package).as_deref(),
+            Some("5.98.0")
+        );
+        assert_eq!(
+            std::fs::read_to_string(prefix.join("bin/hq")).unwrap(),
+            "new-shim"
+        );
+        assert!(!hq_cli_backup_dir_for(&prefix, false).exists());
+    }
+
+    #[test]
+    fn valid_windows_stage_promotes_the_flat_cmd_shim() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        seed_cli_package(&prefix, "5.93.0", true);
+
+        let stage = ManagedCliInstallStage::prepare_for(
+            prefix.to_str().unwrap(),
+            /* windows_layout */ true,
+        )
+        .unwrap();
+        seed_cli_package(Path::new(stage.install_prefix()), "5.98.0", true);
+        let staged_cmd = Path::new(stage.install_prefix()).join("hq.cmd");
+        std::fs::write(
+            &staged_cmd,
+            "@node node_modules/@indigoai-us/hq-cli/dist/index.js",
+        )
+        .unwrap();
+
+        stage.promote("5.98.0").unwrap();
+
+        assert_eq!(
+            complete_hq_cli_package_version(&hq_cli_package_dir_for(&prefix, true)).as_deref(),
+            Some("5.98.0")
+        );
+        assert_eq!(
+            std::fs::read_to_string(prefix.join("hq.cmd")).unwrap(),
+            "@node node_modules/@indigoai-us/hq-cli/dist/index.js"
+        );
+    }
+
+    #[test]
+    fn promotion_failure_rolls_back_the_previous_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-global");
+        seed_cli_package(&prefix, "5.93.0", false);
+
+        let stage = ManagedCliInstallStage::prepare_for(
+            prefix.to_str().unwrap(),
+            /* windows_layout */ false,
+        )
+        .unwrap();
+        seed_cli_package(Path::new(stage.install_prefix()), "5.98.0", false);
+        // Deliberately omit the staged hq shim. Promotion must reject the
+        // incomplete candidate after swapping the package and restore v5.93.0.
+        let error = stage.promote("5.98.0").unwrap_err();
+        assert!(error.contains("complete package and primary shim"));
+        assert_eq!(
+            complete_hq_cli_package_version(&hq_cli_package_dir_for(&prefix, false)).as_deref(),
+            Some("5.93.0")
+        );
+        assert!(!hq_cli_backup_dir_for(&prefix, false).exists());
+    }
+
+    #[test]
+    fn package_promotion_failure_reports_a_failed_rollback() {
+        let target = Path::new("/managed/node_modules/@indigoai-us/hq-cli");
+        let promotion_error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "promotion denied");
+        let rollback_error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "restore denied");
+
+        let detail =
+            package_promotion_failure_detail(target, &promotion_error, Some(Err(rollback_error)));
+
+        assert_eq!(
+            detail,
+            "promote staged managed CLI package /managed/node_modules/@indigoai-us/hq-cli: \
+             promotion denied; rollback failed: restore previous package \
+             /managed/node_modules/@indigoai-us/hq-cli: restore denied"
+        );
+    }
+
+    #[test]
+    fn next_run_restores_a_backup_left_mid_promotion() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-global");
+        let package = seed_cli_package(&prefix, "5.93.0", false);
+        let backup = hq_cli_backup_dir_for(&prefix, false);
+        std::fs::rename(&package, &backup).unwrap();
+
+        let stage = ManagedCliInstallStage::prepare_for(
+            prefix.to_str().unwrap(),
+            /* windows_layout */ false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            complete_hq_cli_package_version(&hq_cli_package_dir_for(&prefix, false)).as_deref(),
+            Some("5.93.0")
+        );
+        assert!(!backup.exists());
+        drop(stage);
+    }
+
+    #[test]
+    fn promotion_refuses_to_overwrite_a_concurrent_cli_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-global");
+        seed_cli_package(&prefix, "5.93.0", false);
+
+        let stage = ManagedCliInstallStage::prepare_for(
+            prefix.to_str().unwrap(),
+            /* windows_layout */ false,
+        )
+        .unwrap();
+        seed_cli_package(Path::new(stage.install_prefix()), "5.98.0", false);
+        let staged_shim = Path::new(stage.install_prefix()).join("bin/hq");
+        std::fs::create_dir_all(staged_shim.parent().unwrap()).unwrap();
+        std::fs::write(&staged_shim, "new-shim").unwrap();
+
+        // Another installer updates the live package while npm is working in
+        // staging. The stale staged transaction must not overwrite that result.
+        seed_cli_package(&prefix, "5.94.0", false);
+        let error = stage.promote("5.98.0").unwrap_err();
+        assert!(error.contains("changed while the staged update was installing"));
+        assert_eq!(
+            complete_hq_cli_package_version(&hq_cli_package_dir_for(&prefix, false)).as_deref(),
+            Some("5.94.0")
+        );
     }
 
     #[test]

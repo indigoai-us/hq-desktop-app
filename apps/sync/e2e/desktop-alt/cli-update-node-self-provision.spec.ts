@@ -103,14 +103,16 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(occurrences(retryHelper, 'return None;')).toBeGreaterThanOrEqual(3);
   });
 
-  it('installs into HQ`s managed prefix, never the user prefix, with ABI-aware convergence', () => {
-    // The retry rebuilds its argv against the MANAGED prefix and the pinned
-    // version, and hands the SAME managed prefix to the retry ladder (so the
-    // EEXIST/ENOTEMPTY cleanup scope is confined to the managed tree).
+  it('stages inside HQ`s managed prefix, never the user prefix, with ABI-aware convergence', () => {
+    // The retry rebuilds its argv against an app-owned STAGING prefix beneath
+    // the managed prefix and hands that same staging prefix to the retry ladder,
+    // so npm cannot mutate the live managed CLI before validation succeeds.
+    expect(retryHelper).toContain('ManagedCliInstallStage::prepare(&managed_prefix)');
     expect(retryHelper).toContain(
-      'install_argv(Some(managed_prefix.as_str()), Some(latest))',
+      'install_argv(Some(install_prefix), Some(latest))',
     );
-    expect(retryHelper).toContain('Some(managed_prefix.as_str())');
+    expect(retryHelper).toContain('Some(install_prefix)');
+    expect(retryHelper).toContain('managed_stage.promote(latest)');
     // The old user-prefix reuse is gone: the retry no longer replays base_args.
     expect(retryHelper).not.toContain('base_args.to_vec()');
     // Convergence is ABI/runtime-aware, not version-only: the resolved binary must
@@ -124,6 +126,15 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // healed success.
     expect(cli).toContain('installed_hq_cli_version_in_prefix(&prefix, &hq)');
     expect(cli).toContain('apply_post_install_with_app(app, &outcome)');
+  });
+
+  it('reports a failed package restore instead of swallowing the rollback error', () => {
+    expect(cli).toContain('fn package_promotion_failure_detail(');
+    expect(cli).toContain('Some(Err(rollback_error)) => format!(');
+    expect(cli).toContain('rollback failed: restore previous package');
+    expect(cli).not.toContain(
+      'let _ = std::fs::rename(&backup_package, &target_package)',
+    );
   });
 
   it('defers the persistent PATH change until the retry has converged', () => {

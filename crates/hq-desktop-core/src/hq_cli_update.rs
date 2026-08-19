@@ -2011,7 +2011,7 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
 /// updater recognizes a collision on it and arms the same remedy — the desktop
 /// repo cannot see that package.json at build time, so this constant is the
 /// single source of truth for the shim names.
-const HQ_CLI_BIN_NAMES: [&str; 2] = ["hq", "hq-auth-refresh"];
+pub const HQ_CLI_BIN_NAMES: [&str; 2] = ["hq", "hq-auth-refresh"];
 
 /// Whether an npm install failure is the EXPECTED "global npm prefix needs
 /// sudo" condition. This is deliberately stricter than an `EACCES` string
