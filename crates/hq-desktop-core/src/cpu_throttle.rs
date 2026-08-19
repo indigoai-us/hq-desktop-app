@@ -86,9 +86,13 @@ pub fn parse_max_machine_cpu_percent(raw: &str) -> Option<f64> {
         _ => {}
     }
     match trimmed.parse::<f64>() {
+        // `NaN` and `inf` parse successfully but are malformed limits, not the
+        // documented off switches. They belong with typos: fall back to the
+        // default rather than silently running uncapped.
+        Ok(v) if !v.is_finite() => Some(DEFAULT_MAX_MACHINE_CPU_PERCENT),
         // A finite, positive percentage caps at 100 (the whole machine) — a
         // larger number is not an error, it just means "do not throttle".
-        Ok(v) if v.is_finite() && v > 0.0 => {
+        Ok(v) if v > 0.0 => {
             if v >= 100.0 {
                 None
             } else {
@@ -130,30 +134,92 @@ pub fn target_cores(max_machine_cpu_percent: f64, cores: f64) -> f64 {
 /// entirely: the deadline means exactly what it meant before the throttle
 /// existed — this much time actually working — and a genuinely wedged process,
 /// which is never stopped, still trips it on the original schedule.
+/// How far a runnable-time deadline may stretch in wall-clock terms before its
+/// absolute backstop fires.
+///
+/// Runnable-time accounting alone cannot catch a wedge that spins on CPU: the
+/// governor cannot tell that hang from healthy work, keeps duty-cycling it, and
+/// every stop window is credited back. Without a ceiling a single-threaded
+/// wedge on a two-core machine stretches a two-minute git timeout past twenty
+/// wall-clock minutes. The backstop is deliberately generous — it exists to
+/// bound the pathological case, not to bind on healthy throttled work.
+const WALL_CLOCK_BACKSTOP: f64 = 8.0;
+
+/// A point in time you can later ask "how much *runnable* time has passed?".
+///
+/// The stopped-time counter is cumulative for the whole process, so measuring a
+/// window needs its value at both ends — asking only at the end would credit a
+/// caller for stop windows that predate it. Callers that track their own start
+/// instant (the daemon heartbeat measures from the last protocol record, not
+/// from a deadline it created) take a mark instead of an `Instant`.
+#[derive(Debug, Clone, Copy)]
+pub struct RunnableMark {
+    at: Instant,
+    stopped_at: Duration,
+}
+
+impl RunnableMark {
+    pub fn now() -> Self {
+        Self {
+            at: Instant::now(),
+            stopped_at: total_stopped_time(),
+        }
+    }
+
+    /// Plain wall time since the mark.
+    pub fn wall_elapsed(&self) -> Duration {
+        self.at.elapsed()
+    }
+
+    /// Wall time since the mark, less any of it spent under `SIGSTOP`.
+    pub fn runnable_elapsed(&self) -> Duration {
+        let wall = self.wall_elapsed();
+        let stopped = total_stopped_time().saturating_sub(self.stopped_at);
+        wall.saturating_sub(stopped)
+    }
+}
+
+impl Default for RunnableMark {
+    fn default() -> Self {
+        Self::now()
+    }
+}
+
 pub struct RunnableDeadline {
-    started: Instant,
-    stopped_at_start: Duration,
+    mark: RunnableMark,
     budget: Duration,
 }
 
 impl RunnableDeadline {
     pub fn start(budget: Duration) -> Self {
         Self {
-            started: Instant::now(),
-            stopped_at_start: total_stopped_time(),
+            mark: RunnableMark::now(),
             budget,
         }
     }
 
     /// Wall time elapsed, less any of it spent under `SIGSTOP`.
     pub fn runnable_elapsed(&self) -> Duration {
-        let wall = self.started.elapsed();
-        let stopped = total_stopped_time().saturating_sub(self.stopped_at_start);
-        wall.saturating_sub(stopped)
+        self.mark.runnable_elapsed()
     }
 
+    /// True once the work has used its runnable-time budget, OR once wall time
+    /// has run far past it — the second arm catches a wedge that spins on CPU,
+    /// which the governor keeps stopping and which would otherwise be credited
+    /// stop windows forever.
     pub fn expired(&self) -> bool {
-        self.runnable_elapsed() >= self.budget
+        self.runnable_elapsed() >= self.budget || self.mark.wall_elapsed() >= self.wall_backstop()
+    }
+
+    /// Absolute wall-clock ceiling, regardless of how much of it was stopped.
+    pub fn wall_backstop(&self) -> Duration {
+        self.budget.mul_f64(WALL_CLOCK_BACKSTOP)
+    }
+
+    /// Which arm ended it — for log lines that would otherwise misreport a
+    /// wall-clock kill as a runnable-time one.
+    pub fn hit_wall_backstop(&self) -> bool {
+        self.mark.wall_elapsed() >= self.wall_backstop() && self.runnable_elapsed() < self.budget
     }
 
     pub fn budget(&self) -> Duration {
@@ -379,7 +445,25 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
 
     /// Re-measure the whole registered set and re-tune the shared duty cycle.
     /// `elapsed` is the wall time since the previous sample.
+    /// Snapshot the registered set so the caller can sample it without holding
+    /// the governor lock across an external process.
+    pub fn snapshot_groups(&self) -> Vec<i32> {
+        self.groups.clone()
+    }
+
+    /// Convenience wrapper that samples inline. The production loop uses
+    /// [`Self::snapshot_groups`] + [`Self::ingest`] instead, so a slow `ps`
+    /// cannot hold the lock; tests use this.
     pub fn sample(&mut self, elapsed: Duration) -> Tick {
+        if self.groups.is_empty() {
+            return self.ingest(HashMap::new(), elapsed);
+        }
+        let now_cpu = self.sampler.groups_cpu_seconds(&self.groups);
+        self.ingest(now_cpu, elapsed)
+    }
+
+    /// Fold an already-taken sample into the controller.
+    pub fn ingest(&mut self, now_cpu: HashMap<i32, f64>, elapsed: Duration) -> Tick {
         if self.groups.is_empty() {
             self.last_cpu_seconds.clear();
             self.last_delta.clear();
@@ -392,7 +476,6 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             self.resume_all();
             return Tick::Idle;
         }
-        let now_cpu = self.sampler.groups_cpu_seconds(&self.groups);
         if now_cpu.is_empty() {
             // An empty sample does NOT prove the groups died: `ps` may have
             // failed to spawn, exited non-zero, or returned nothing parseable.
@@ -536,13 +619,36 @@ fn governor_loop(shared: SharedGovernor) {
     let mut last_sample = Instant::now();
     let mut elapsed = SAMPLE_INTERVAL;
     loop {
-        let tick = match shared.lock() {
-            Ok(mut g) => g.sample(elapsed),
-            Err(_) => {
+        // Resume BEFORE measuring. The previous cycle ends in its stop phase,
+        // and `ps` is an unbounded external process: sampling while stopped
+        // extends the advertised ~196 ms stop window by however long `ps`
+        // takes, and a wedged `ps` would hold every child under SIGSTOP for as
+        // long as it hangs.
+        let groups = {
+            let Ok(mut g) = shared.lock() else {
                 abandon_governor(&shared);
                 return;
-            }
+            };
+            g.resume_all();
+            g.snapshot_groups()
         };
+
+        // Sample with the lock RELEASED, so a slow `ps` cannot block a
+        // `RunnableDeadline` check, a guard drop, or a new registration.
+        let now_cpu = if groups.is_empty() {
+            HashMap::new()
+        } else {
+            PsSampler.groups_cpu_seconds(&groups)
+        };
+
+        let tick = {
+            let Ok(mut g) = shared.lock() else {
+                abandon_governor(&shared);
+                return;
+            };
+            g.ingest(now_cpu, elapsed)
+        };
+
         match tick {
             Tick::Idle => std::thread::sleep(SAMPLE_INTERVAL),
             Tick::Cycle { .. } => {
@@ -556,8 +662,8 @@ fn governor_loop(shared: SharedGovernor) {
                     if g.groups.is_empty() {
                         break;
                     }
-                    // `resume_all` is a no-op unless the groups are actually
-                    // stopped, so an unthrottled cycle issues no signals.
+                    // A no-op unless the groups are actually stopped, so an
+                    // unthrottled cycle issues no signals at all.
                     g.resume_all();
                     drop(g);
                     std::thread::sleep(run);
@@ -819,6 +925,15 @@ mod tests {
         assert_eq!(parse_max_machine_cpu_percent("5%"), Some(5.0));
     }
 
+    #[test]
+    fn non_finite_limits_are_malformed_not_an_off_switch() {
+        // `NaN` and `inf` parse successfully, so they used to fall through to
+        // the zero/negative arm and silently disable the ceiling entirely.
+        for raw in ["NaN", "nan", "inf", "-inf", "infinity"] {
+            assert_eq!(parse_max_machine_cpu_percent(raw), Some(5.0), "raw={raw}");
+        }
+    }
+
     // --- timeout scaling ---------------------------------------------------
 
     #[test]
@@ -835,6 +950,26 @@ mod tests {
     #[test]
     fn a_zero_budget_deadline_is_immediately_expired() {
         assert!(RunnableDeadline::start(Duration::ZERO).expired());
+    }
+
+    #[test]
+    fn a_wall_clock_backstop_still_catches_a_cpu_bound_wedge() {
+        // Runnable-time accounting alone cannot see this: the governor keeps
+        // stopping a spinning wedge exactly as it stops healthy work, and every
+        // stop window is credited back, so the deadline would never arrive.
+        let d = RunnableDeadline::start(Duration::from_secs(120));
+        assert_eq!(d.wall_backstop(), Duration::from_secs(120 * 8));
+        assert!(d.wall_backstop() > d.budget());
+    }
+
+    #[test]
+    fn a_mark_measures_a_window_not_the_whole_process() {
+        // The stopped-time counter is cumulative, so a mark has to snapshot it
+        // at both ends; reading only the total would charge a fresh mark for
+        // every stop window that came before it.
+        let m = RunnableMark::now();
+        assert!(m.wall_elapsed() < Duration::from_secs(1));
+        assert!(m.runnable_elapsed() <= m.wall_elapsed());
     }
 
     #[test]
@@ -1082,6 +1217,25 @@ mod tests {
         g.register(100);
         assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
         assert_eq!(g.run_fraction(), 1.0);
+    }
+
+    #[test]
+    fn ingest_folds_a_sample_taken_outside_the_lock() {
+        // The production loop snapshots the group set, releases the governor
+        // lock, runs `ps`, then folds the result back — so a slow or wedged
+        // `ps` cannot hold every child under SIGSTOP or block a deadline check.
+        let (mut g, _sig) = governor(0.5, vec![]);
+        g.register(100);
+        assert_eq!(g.snapshot_groups(), vec![100]);
+        g.ingest(one(1, 0.0), SAMPLE_INTERVAL);
+        let tick = g.ingest(one(1, 4.0), SAMPLE_INTERVAL);
+        assert!(matches!(tick, Tick::Cycle { .. }));
+        assert!(g.run_fraction() < 1.0);
+        assert_eq!(
+            g.sampler.calls.load(Ordering::Relaxed),
+            0,
+            "ingest must not sample"
+        );
     }
 
     #[test]
