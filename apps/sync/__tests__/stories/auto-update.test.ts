@@ -478,6 +478,42 @@ describe('master automatic-updates switch', () => {
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
   });
+
+  it('an HQ-owned managed-toolchain shadow is classified, repaired, and re-verified (HQ-DESKTOP-46)', () => {
+    // The Windows slice: npm delivered `latest` into the managed npm prefix, but
+    // the app executed a second HQ-managed copy under the same toolchain root.
+    // That is a repairable shadow, not a foreign layout HQ cannot drive.
+
+    // 1. The pure classifier gains a same-root shadow kind, fed HQ's managed roots
+    //    (no filesystem read inside the decision).
+    expect(cliUpdateCore).toContain('ManagedShadowed');
+    expect(cliUpdateCore).toContain('Self::ManagedShadowed => "managed-shadowed",');
+    expect(cliUpdateCore).toContain('fn both_within_same_managed_root(');
+    expect(cliUpdate).toContain('.with_managed_roots(&managed_roots)');
+
+    // 2. On a managed shadow the updater runs a bounded, provenance-gated removal,
+    //    then re-resolves the binary the app EXECUTES and re-decides — never
+    //    trusting delivery evidence alone.
+    expect(cliUpdate).toContain(
+      'if outcome.non_convergence_kind == Some(NonConvergenceKind::ManagedShadowed) {',
+    );
+    expect(cliUpdate).toContain('return finalize_managed_shadow(');
+    expect(cliUpdate).toContain('async fn finalize_managed_shadow(');
+    expect(cliUpdate).toContain('let converged_after = install_converged(resolved.as_deref(), latest);');
+    expect(cliUpdate).toContain('.with_shadow_repair(repair)');
+
+    // 3. Removal is provenance-gated and enumerated: only the HQ CLI shims and the
+    //    single scoped package, only inside a managed root — never node/npm/etc.
+    expect(cliUpdateCore).toContain('pub fn remove_managed_shadow(');
+    expect(cliUpdateCore).toContain('pub const HQ_CLI_BIN_NAMES');
+    expect(cliUpdateCore).toContain('@indigoai-us');
+
+    // 4. A repairable first episode records NO durable marker (it self-heals on the
+    //    next check); only a repair that failed falls back to the durable block. So
+    //    a converged repair clears the block and auto-install stays allowed.
+    expect(cliUpdateCore).toContain('ManagedShadowRepair::Pending');
+    expect(cliUpdateCore).toContain('scope.set_tag("managed_shadow_repair"');
+  });
 });
 
 describe('installs the CLI when the machine has none', () => {

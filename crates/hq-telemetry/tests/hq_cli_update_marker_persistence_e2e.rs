@@ -3,8 +3,9 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, ManagedShadowRepair,
+    NonConvergenceKind, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects,
     NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::test::with_captured_events_options;
@@ -139,6 +140,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 exit_status: "0".to_string(),
                 output_len: 64,
             }),
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepair::Pending,
         },
         5,
     );
@@ -179,6 +182,8 @@ fn pnpm_marker_ctx(
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepair::Pending,
     }
 }
 
@@ -243,4 +248,57 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
         );
         assert_eq!(captures, 1);
     }
+}
+
+/// HQ-DESKTOP-46: the durable marker for an HQ-owned managed shadow is gated on
+/// the repair outcome. A repairable FIRST (Pending) episode persists NO marker,
+/// so `should_auto_install` stays true and the next check self-heals; a repair
+/// that was attempted and failed persists exactly one marker (bounded like a
+/// foreign layout). On base this shape always persisted the marker.
+#[test]
+fn the_managed_shadow_marker_is_gated_on_the_repair_outcome() {
+    let root = std::path::PathBuf::from(
+        "/home/reviewer/Library/Application Support/Indigo HQ/toolchain",
+    );
+    let prefix = root.join("npm-global").to_string_lossy().into_owned();
+    let shadow = root.join("node/bin/hq").to_string_lossy().into_owned();
+    let roots = [root];
+    let make = |repair: Option<ManagedShadowRepair>| {
+        let mut ctx = PostInstallContext::npm(
+            &shadow,
+            &shadow,
+            Some("5.101.0"),
+            Some("5.101.0"),
+            "5.101.7",
+            Some(&prefix),
+            "/managed/npm",
+            false,
+            Some("5.101.7"),
+        )
+        .with_managed_roots(&roots);
+        if let Some(repair) = repair {
+            ctx = ctx.with_shadow_repair(repair);
+        }
+        ctx
+    };
+
+    // Pending trigger pass: classified ManagedShadowed but records NO durable marker.
+    let pending = decide_post_install(&make(None));
+    assert_eq!(
+        pending.non_convergence_kind,
+        Some(NonConvergenceKind::ManagedShadowed)
+    );
+    assert_eq!(
+        pending.record_non_convergent, None,
+        "a repairable first episode must persist no durable marker"
+    );
+
+    // Repair-failed terminal pass: persists exactly one marker and captures once.
+    let (records, captures) =
+        drive_success_path(&make(Some(ManagedShadowRepair::RepairFailed)));
+    assert_eq!(
+        records, 1,
+        "a repair that failed persists exactly one durable marker"
+    );
+    assert_eq!(captures, 1);
 }
