@@ -166,9 +166,10 @@ describe('async desktop surfaces expose immediate, scoped feedback', () => {
     expect(onboarding).toContain("aria-busy={copyingAction === 'path'}");
     expect(onboarding).toContain("aria-busy={copyingAction === 'command'}");
     expect(onboarding).toContain("aria-busy={copyingAction === 'import'}");
+    expect(onboarding).toContain("aria-busy={copyingAction === 'setup'}");
     expect(onboarding).toContain('data-testid="onboarding-copy-error"');
     expect(onboarding).toContain('onclick={() => void retryCopyAction()}');
-    expect(onboarding).toContain("{copyingAction ? 'Retrying…' : 'Retry'}");
+    expect(onboarding).toContain("{copyingAction ? 'Retrying…' : 'Try again'}");
     expect(onboarding).toContain('aria-busy={privacyOpening}');
     expect(onboarding).toContain('onclick={() => void handleOpenPrivacy()}');
     expect(onboarding).toContain('class="consent-link-error" role="alert"');

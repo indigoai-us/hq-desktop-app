@@ -145,15 +145,58 @@ pub fn bind_hq_root_for_claude_launch(folder: Option<&Path>) -> Result<PathBuf, 
     ))
 }
 
+fn expand_user_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// `/setup` is the onboarding repair path. The ready screen launches Claude
+/// with that prompt when a setup stage failed — often the template download,
+/// which is exactly when `core/core.yaml` and `companies/manifest.yaml` are
+/// missing. Requiring those markers here blocks the CTA that is supposed to
+/// create them. Open the intended folder if it exists; only fail when we
+/// have no directory to hand Claude.
+fn existing_setup_repair_folder(folder: &Path) -> Option<PathBuf> {
+    let expanded = expand_user_path(folder);
+    if let Ok(canonical) = std::fs::canonicalize(&expanded) {
+        if canonical.is_dir() {
+            return Some(canonical);
+        }
+    }
+    if expanded.is_dir() {
+        return Some(expanded);
+    }
+    None
+}
+
 fn bind_hq_root_for_setup_repair(folder: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(folder) = folder.filter(|p| !p.as_os_str().is_empty()) {
-        if let Ok(root) = resolve_hq_root_for_setup_repair(folder) {
+        let expanded = expand_user_path(folder);
+        if let Ok(root) = resolve_hq_root_for_setup_repair(&expanded) {
             return Ok(root);
         }
+        if let Some(existing) = existing_setup_repair_folder(&expanded) {
+            return Ok(existing);
+        }
+        return Err(format!(
+            "HQ folder does not exist at {} — pick it in Settings or finish the installer download step",
+            expanded.display()
+        ));
     }
     let configured = resolve_hq_folder();
     if has_setup_repair_markers(&configured) {
         return Ok(configured);
+    }
+    if let Some(existing) = existing_setup_repair_folder(&configured) {
+        return Ok(existing);
     }
     let missing = missing_setup_repair_markers(&configured);
     Err(format!(
@@ -320,5 +363,50 @@ mod tests {
             root.to_string_lossy().replace(' ', "%20")
         );
         assert!(preflight_claude_code_url(&url).is_ok());
+    }
+
+    #[test]
+    fn preflight_allows_setup_repair_without_hq_markers() {
+        // Ready-screen "Open in Claude Code" after a failed content stage:
+        // the install dir exists but core.yaml + manifest have not landed yet.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("hq");
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(&root).unwrap();
+        let url = format!(
+            "claude://code/new?q=%2Fsetup&folder={}",
+            root.to_string_lossy().replace(' ', "%20")
+        );
+        let rebound =
+            preflight_claude_code_url(&url).expect("setup repair must open an empty HQ dir");
+        let parsed = Url::parse(&rebound).unwrap();
+        let folder = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "folder")
+            .map(|(_, value)| value.into_owned())
+            .unwrap();
+        assert_eq!(folder, root.to_string_lossy());
+        assert!(parsed
+            .query_pairs()
+            .any(|(key, value)| key == "q" && value.contains("/setup")));
+    }
+
+    #[test]
+    fn preflight_setup_repair_names_missing_install_folder() {
+        let missing =
+            std::env::temp_dir().join(format!("hq-setup-repair-missing-{}", std::process::id()));
+        let url = format!(
+            "claude://code/new?q=%2Fsetup&folder={}",
+            missing.to_string_lossy().replace(' ', "%20")
+        );
+        let err = preflight_claude_code_url(&url).expect_err("missing folder must fail");
+        assert!(
+            err.contains("does not exist"),
+            "expected a path-not-found error, got: {err}"
+        );
+        assert!(
+            !err.contains("core/core.yaml"),
+            "must not blame missing HQ markers on a folder that is not there: {err}"
+        );
     }
 }
