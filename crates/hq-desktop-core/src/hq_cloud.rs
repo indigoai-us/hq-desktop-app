@@ -370,7 +370,14 @@
 /// so no user leaks a credential regardless of config files. The desktop
 /// git-mirror relies on this decoupling to exclude the vault from what it commits
 /// without affecting sync. npx caches by the spec string, so the pin must move.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.14";
+/// 6.15.18 is the floor the CPU throttle depends on: before it, `S3SdkObjectIO`
+/// froze its STS credentials at construction, so a pass outliving the
+/// 15-minute session died with `ExpiredToken`. Throttling multiplies wall time
+/// and makes that far more likely, and npx caches by the complete spec string —
+/// an install still pinned at `~6.15.14` keeps serving its cached pre-6.15.18
+/// resolution — so the floor MUST move in the same change that enables the
+/// throttle, not merely alongside it.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.18";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -437,7 +444,18 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.14");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.18");
+    }
+
+    /// The CPU throttle multiplies wall time, and before hq-cloud 6.15.18
+    /// `S3SdkObjectIO` froze its STS credentials at construction — so a
+    /// throttled pass outliving the 15-minute session died with `ExpiredToken`.
+    /// npx caches by the complete spec string, so an install left on an older
+    /// pin keeps serving its cached pre-6.15.18 resolution: the floor has to
+    /// move with the throttle, not merely near it.
+    #[test]
+    fn version_floor_delivers_mid_pass_credential_refresh() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 18));
     }
 
     /// A pass the five-minute watchdog terminates must leave durable progress

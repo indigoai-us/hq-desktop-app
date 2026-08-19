@@ -3200,7 +3200,15 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
     let stdout_rx = drain_pipe(child.stdout.take());
     let stderr_rx = drain_pipe(child.stderr.take());
 
-    let status = wait_with_timeout(&mut child, timeout, &label)?;
+    // The caller's ceiling is wall time, but a throttled group only runs for a
+    // fraction of it. Unscaled, a converged governor turns GIT_INDEX_TIMEOUT
+    // into a fraction of its intended CPU allowance and kills a healthy
+    // `git add -A` over a large tree on every single pass.
+    let status = wait_with_timeout(
+        &mut child,
+        crate::cpu_throttle::scaled_timeout(timeout),
+        &label,
+    )?;
 
     // A stalled drain must never look like empty output: `count_staged_
     // deletions` reading an empty stdout as "zero deletions" would wave a mass

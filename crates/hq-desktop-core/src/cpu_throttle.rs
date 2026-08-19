@@ -35,6 +35,7 @@
 //! unit-testable, and both the sampler and the signaller are traits so the
 //! supervisor loop can be driven against fakes.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -116,6 +117,41 @@ pub fn target_cores(max_machine_cpu_percent: f64, cores: f64) -> f64 {
     (max_machine_cpu_percent / 100.0 * cores).max(0.0)
 }
 
+/// Ceiling on how far a throttle may stretch a wall-clock deadline.
+///
+/// The honest worst case is `machine_cores / target_cores` — 20x at the default
+/// ceiling on a 10-core box — but a watchdog stretched that far stops being a
+/// hang detector. 8x keeps a one-hour sync watchdog inside a working day while
+/// still covering the realistic slowdown: the sync runner demands ~1.4 cores
+/// against a 0.5-core budget, which is under 3x.
+const MAX_TIMEOUT_SCALE: f64 = 8.0;
+
+/// Stretch a wall-clock deadline to account for throttling.
+///
+/// Every timeout in HQ's background work measures WALL time, but a throttled
+/// group only runs for a fraction of it. Left unscaled, the throttle would
+/// cancel exactly the long passes it exists to let finish: the sync watchdog
+/// would kill a pass that is making steady progress, and `git add -A` on a
+/// large tree would be killed mid-hash on every mirror pass.
+///
+/// Returns `base` unchanged when throttling is disabled.
+pub fn scaled_timeout(base: Duration) -> Duration {
+    let Some(percent) = configured_max_machine_cpu_percent() else {
+        return base;
+    };
+    base.mul_f64(timeout_scale(percent, machine_cores()))
+}
+
+/// The multiplier [`scaled_timeout`] applies. Split out so the clamping is
+/// testable without touching process env.
+pub fn timeout_scale(max_machine_cpu_percent: f64, cores: f64) -> f64 {
+    let target = target_cores(max_machine_cpu_percent, cores);
+    if target <= f64::EPSILON {
+        return MAX_TIMEOUT_SCALE;
+    }
+    (cores / target).clamp(1.0, MAX_TIMEOUT_SCALE)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure controller
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,11 +220,20 @@ impl DutyCycleController {
 // Seams
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Cumulative CPU time consumed by a set of process groups.
+/// Cumulative CPU time consumed by a set of process groups, **per process**.
+///
+/// Per-process rather than a single total on purpose. `ps` only reports live
+/// processes, so a summed total silently loses the accumulated CPU of any
+/// descendant that exits between samples. That does not merely produce a
+/// negative delta the caller can discard: when surviving siblings burn more
+/// than the departed process took away, the delta stays positive but is
+/// understated, and the governor lets the group run above its ceiling. Keeping
+/// the counters separate lets the rate be computed only from processes
+/// observed in both samples.
 pub trait CpuSampler: Send + Sync + 'static {
-    /// Total CPU seconds consumed by every live process in any of `pgids`, or
-    /// `None` when none of them has a live member left.
-    fn groups_cpu_seconds(&self, pgids: &[i32]) -> Option<f64>;
+    /// CPU seconds consumed so far, keyed by pid, for every live process in
+    /// any of `pgids`. Empty when none of them has a live member left.
+    fn groups_cpu_seconds(&self, pgids: &[i32]) -> HashMap<i32, f64>;
 }
 
 /// Stop/continue a process group.
@@ -221,7 +266,15 @@ pub struct Governor<S: CpuSampler, G: GroupSignaller> {
     controller: DutyCycleController,
     sampler: S,
     signaller: G,
-    last_cpu_seconds: Option<f64>,
+    /// Per-pid CPU counters from the previous sample. Only pids present in both
+    /// samples contribute a delta; a pid seen for the first time contributes
+    /// the CPU it accumulated during the window, and a pid that vanished
+    /// contributes nothing, because its final slice is unobservable.
+    last_cpu_seconds: HashMap<i32, f64>,
+    /// Whether the registered groups are currently under `SIGSTOP`. Tracked so
+    /// an unthrottled cycle issues no signals at all, instead of a `SIGCONT`
+    /// every 200 ms to a group that was never stopped.
+    stopped: bool,
 }
 
 /// What the governor wants applied for the next cycle.
@@ -240,7 +293,8 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             controller: DutyCycleController::new(target_cores),
             sampler,
             signaller,
-            last_cpu_seconds: None,
+            last_cpu_seconds: HashMap::new(),
+            stopped: false,
         }
     }
 
@@ -252,20 +306,27 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
         &self.groups
     }
 
+    /// Are the registered groups currently stopped?
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
     pub fn register(&mut self, pgid: i32) {
         if !self.groups.contains(&pgid) {
             self.groups.push(pgid);
-            // Membership changed, so the cumulative sum just jumped by the new
-            // member's accumulated CPU. That jump is not consumption in this
-            // window; drop the baseline and re-establish it next sample.
-            self.last_cpu_seconds = None;
+            // A newcomer's pids are absent from the baseline, so they naturally
+            // contribute nothing this window — no need to drop the whole map.
+            // But a group joining mid-stop must not stay stopped on the
+            // strength of a decision made before it existed.
+            if self.stopped {
+                self.signaller.stop(pgid);
+            }
         }
     }
 
     pub fn unregister(&mut self, pgid: i32) {
         if let Some(i) = self.groups.iter().position(|p| *p == pgid) {
             self.groups.remove(i);
-            self.last_cpu_seconds = None;
             // A group that leaves the governor must never leave stopped.
             self.signaller.cont(pgid);
         }
@@ -275,42 +336,65 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
     /// `elapsed` is the wall time since the previous sample.
     pub fn sample(&mut self, elapsed: Duration) -> Tick {
         if self.groups.is_empty() {
-            self.last_cpu_seconds = None;
+            self.last_cpu_seconds.clear();
             return Tick::Idle;
         }
-        let Some(now_cpu) = self.sampler.groups_cpu_seconds(&self.groups) else {
+        let now_cpu = self.sampler.groups_cpu_seconds(&self.groups);
+        if now_cpu.is_empty() {
             // Every registered group is gone. Keep them registered — their
             // owning guards will unregister on drop — but stop steering on a
             // measurement that no longer exists.
-            self.last_cpu_seconds = None;
+            self.last_cpu_seconds.clear();
             return Tick::Idle;
-        };
-        let prev = self.last_cpu_seconds.replace(now_cpu);
-        let wall = elapsed.as_secs_f64();
-        if let (Some(prev), true) = (prev, wall > f64::EPSILON) {
-            let delta = now_cpu - prev;
-            // A negative delta means a process exited and took its accumulated
-            // time out of the sum — not a measurement of this window.
-            if delta >= 0.0 {
-                self.controller.observe(delta / wall);
-            }
         }
+        let wall = elapsed.as_secs_f64();
+        if !self.last_cpu_seconds.is_empty() && wall > f64::EPSILON {
+            // Only pids observed in BOTH samples yield a trustworthy delta. A
+            // pid seen for the first time accumulated its whole counter inside
+            // this window, so it counts in full. A pid that vanished is simply
+            // absent from `now_cpu` — its final slice is unobservable, and
+            // crucially its departure can no longer drag the total down and
+            // hide a busy sibling's work.
+            let mut consumed = 0.0;
+            for (pid, now) in &now_cpu {
+                match self.last_cpu_seconds.get(pid) {
+                    Some(prev) => consumed += (now - prev).max(0.0),
+                    None => consumed += now.max(0.0),
+                }
+            }
+            self.controller.observe(consumed / wall);
+        }
+        self.last_cpu_seconds = now_cpu;
         let (run, stop) = self.controller.cycle_split(CYCLE);
         Tick::Cycle { run, stop }
     }
 
-    /// Stop every registered group.
-    pub fn stop_all(&self) {
+    /// Stop every registered group. Idempotent.
+    pub fn stop_all(&mut self) {
         for pgid in &self.groups {
             self.signaller.stop(*pgid);
         }
+        self.stopped = true;
     }
 
-    /// Resume every registered group.
-    pub fn resume_all(&self) {
+    /// Resume every registered group, but only when they are actually stopped —
+    /// an unthrottled cycle must issue no signals at all, or a below-budget
+    /// watch daemon collects five unsolicited SIGCONTs a second forever.
+    pub fn resume_all(&mut self) {
+        if !self.stopped {
+            return;
+        }
+        self.force_resume_all();
+    }
+
+    /// Resume unconditionally. For shutdown and poisoned-lock paths, where the
+    /// tracked state may not reflect reality and a missed SIGCONT wedges a
+    /// child permanently.
+    pub fn force_resume_all(&mut self) {
         for pgid in &self.groups {
             self.signaller.cont(*pgid);
         }
+        self.stopped = false;
     }
 }
 
@@ -345,15 +429,29 @@ fn governor() -> Option<&'static SharedGovernor> {
         .as_ref()
 }
 
+/// Abandon the governor, leaving nothing stopped.
+///
+/// EVERY exit from [`governor_loop`] goes through here. A bare `return` from a
+/// poisoned-lock branch was a real defect: if another thread panicked while
+/// holding the mutex during a stop window, the children were still under
+/// SIGSTOP, so their owning threads blocked forever waiting for output and
+/// their `CpuThrottle` guards never dropped to resume them. Nothing else would
+/// ever have sent the SIGCONT.
+fn abandon_governor(shared: &SharedGovernor) {
+    match shared.lock() {
+        Ok(mut g) => g.force_resume_all(),
+        Err(poisoned) => poisoned.into_inner().force_resume_all(),
+    }
+}
+
 fn governor_loop(shared: SharedGovernor) {
     let mut last_sample = Instant::now();
     let mut elapsed = SAMPLE_INTERVAL;
     loop {
         let tick = match shared.lock() {
             Ok(mut g) => g.sample(elapsed),
-            // A poisoned governor must not leave anything stopped.
-            Err(poisoned) => {
-                poisoned.into_inner().resume_all();
+            Err(_) => {
+                abandon_governor(&shared);
                 return;
             }
         };
@@ -362,24 +460,29 @@ fn governor_loop(shared: SharedGovernor) {
             Tick::Cycle { .. } => {
                 let deadline = Instant::now() + SAMPLE_INTERVAL;
                 while Instant::now() < deadline {
-                    let Ok(g) = shared.lock() else { return };
+                    let Ok(mut g) = shared.lock() else {
+                        abandon_governor(&shared);
+                        return;
+                    };
                     let (run, stop) = g.controller.cycle_split(CYCLE);
                     if g.groups.is_empty() {
                         break;
                     }
+                    // `resume_all` is a no-op unless the groups are actually
+                    // stopped, so an unthrottled cycle issues no signals.
+                    g.resume_all();
+                    drop(g);
+                    std::thread::sleep(run);
                     if stop.is_zero() {
-                        g.resume_all();
-                        drop(g);
-                        std::thread::sleep(run);
-                    } else {
-                        g.resume_all();
-                        drop(g);
-                        std::thread::sleep(run);
-                        let Ok(g) = shared.lock() else { return };
-                        g.stop_all();
-                        drop(g);
-                        std::thread::sleep(stop);
+                        continue;
                     }
+                    let Ok(mut g) = shared.lock() else {
+                        abandon_governor(&shared);
+                        return;
+                    };
+                    g.stop_all();
+                    drop(g);
+                    std::thread::sleep(stop);
                 }
             }
         }
@@ -447,38 +550,44 @@ fn own_process_group() -> i32 {
 pub struct PsSampler;
 
 impl CpuSampler for PsSampler {
-    fn groups_cpu_seconds(&self, pgids: &[i32]) -> Option<f64> {
-        let out = std::process::Command::new("ps")
-            .args(["-A", "-o", "pgid=,time="])
+    fn groups_cpu_seconds(&self, pgids: &[i32]) -> HashMap<i32, f64> {
+        let Ok(out) = std::process::Command::new("ps")
+            .args(["-A", "-o", "pgid=,pid=,time="])
             .output()
-            .ok()?;
+        else {
+            return HashMap::new();
+        };
         if !out.status.success() {
-            return None;
+            return HashMap::new();
         }
-        sum_groups_cpu_seconds(&String::from_utf8_lossy(&out.stdout), pgids)
+        group_member_cpu_seconds(&String::from_utf8_lossy(&out.stdout), pgids)
     }
 }
 
-/// Sum the CPU time of every row whose pgid is in `pgids`. `None` when no row
+/// CPU time per pid for every row whose pgid is in `pgids`. Empty when no row
 /// is, which is how a fully dead set is reported.
-pub fn sum_groups_cpu_seconds(ps_stdout: &str, pgids: &[i32]) -> Option<f64> {
-    let mut total = 0.0;
-    let mut seen = false;
+///
+/// Per-pid rather than a running total so a member that exits between samples
+/// cannot subtract its accumulated CPU from the aggregate and mask a busy
+/// sibling — see [`CpuSampler`].
+pub fn group_member_cpu_seconds(ps_stdout: &str, pgids: &[i32]) -> HashMap<i32, f64> {
+    let mut out = HashMap::new();
     for line in ps_stdout.lines() {
         let mut parts = line.split_whitespace();
-        let (Some(pg), Some(time)) = (parts.next(), parts.next()) else {
+        let (Some(pg), Some(pid), Some(time)) = (parts.next(), parts.next(), parts.next()) else {
             continue;
         };
-        let Ok(pg) = pg.parse::<i32>() else { continue };
+        let (Ok(pg), Ok(pid)) = (pg.parse::<i32>(), pid.parse::<i32>()) else {
+            continue;
+        };
         if !pgids.contains(&pg) {
             continue;
         }
         if let Some(secs) = parse_ps_time(time) {
-            total += secs;
-            seen = true;
+            out.insert(pid, secs);
         }
     }
-    seen.then_some(total)
+    out
 }
 
 /// Parse `ps -o time=`: `MM:SS.ss`, `HH:MM:SS`, or `DD-HH:MM:SS`.
@@ -541,15 +650,16 @@ mod tests {
         }
     }
 
-    /// Returns scripted totals, and records the pgid set it was asked about.
+    /// Replays scripted per-pid samples and records the pgid set it was asked
+    /// about. An empty map means "the whole registered set is gone".
     struct ScriptedSampler {
-        script: Mutex<Vec<Option<f64>>>,
+        script: Mutex<Vec<HashMap<i32, f64>>>,
         asked: Mutex<Vec<Vec<i32>>>,
         calls: AtomicUsize,
     }
 
     impl ScriptedSampler {
-        fn new(script: Vec<Option<f64>>) -> Self {
+        fn new(script: Vec<HashMap<i32, f64>>) -> Self {
             Self {
                 script: Mutex::new(script),
                 asked: Mutex::new(Vec::new()),
@@ -559,21 +669,26 @@ mod tests {
     }
 
     impl CpuSampler for ScriptedSampler {
-        fn groups_cpu_seconds(&self, pgids: &[i32]) -> Option<f64> {
+        fn groups_cpu_seconds(&self, pgids: &[i32]) -> HashMap<i32, f64> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.asked.lock().unwrap().push(pgids.to_vec());
             let mut s = self.script.lock().unwrap();
             if s.is_empty() {
-                None
+                HashMap::new()
             } else {
                 s.remove(0)
             }
         }
     }
 
+    /// One sample containing a single process that has consumed `secs`.
+    fn one(pid: i32, secs: f64) -> HashMap<i32, f64> {
+        HashMap::from([(pid, secs)])
+    }
+
     fn governor(
         target: f64,
-        script: Vec<Option<f64>>,
+        script: Vec<HashMap<i32, f64>>,
     ) -> (
         Governor<ScriptedSampler, RecordingSignaller>,
         RecordingSignaller,
@@ -595,7 +710,6 @@ mod tests {
 
     #[test]
     fn ceiling_is_a_share_of_the_whole_machine_not_one_core() {
-        // 5% of a 10-core box is half a core, not 5% of one core.
         assert!((target_cores(5.0, 10.0) - 0.5).abs() < 1e-9);
         assert!((target_cores(5.0, 4.0) - 0.2).abs() < 1e-9);
         assert!((target_cores(5.0, 24.0) - 1.2).abs() < 1e-9);
@@ -620,6 +734,37 @@ mod tests {
         assert_eq!(parse_max_machine_cpu_percent("5%"), Some(5.0));
     }
 
+    // --- timeout scaling ---------------------------------------------------
+
+    #[test]
+    fn deadlines_stretch_with_the_ceiling_so_the_throttle_cannot_cancel_itself() {
+        // Unscaled, the sync watchdog and git's index timeout measure wall time
+        // a throttled group only partly gets to use, and would kill exactly the
+        // long passes the throttle exists to let finish.
+        assert!(timeout_scale(5.0, 10.0) > 1.0);
+        assert!(timeout_scale(5.0, 4.0) > 1.0);
+        assert!(scaled_timeout(Duration::from_secs(120)) >= Duration::from_secs(120));
+    }
+
+    #[test]
+    fn the_stretch_is_bounded_so_a_watchdog_stays_a_watchdog() {
+        // The honest worst case is cores/target — 20x on a 10-core box — but a
+        // watchdog stretched that far stops detecting hangs.
+        assert_eq!(timeout_scale(5.0, 10.0), MAX_TIMEOUT_SCALE);
+        assert_eq!(timeout_scale(0.001, 64.0), MAX_TIMEOUT_SCALE);
+        assert_eq!(timeout_scale(0.0, 8.0), MAX_TIMEOUT_SCALE);
+    }
+
+    #[test]
+    fn a_generous_ceiling_does_not_shrink_a_deadline() {
+        // 50% of the machine needs only 2x, and nothing may ever scale below
+        // 1x — shrinking a deadline would make the throttle cancel work the
+        // unthrottled build would have completed.
+        assert_eq!(timeout_scale(50.0, 10.0), 2.0);
+        assert!((timeout_scale(99.0, 10.0) - 1.0).abs() < 0.02);
+        assert!(timeout_scale(99.9, 2.0) >= 1.0);
+    }
+
     // --- controller --------------------------------------------------------
 
     #[test]
@@ -640,7 +785,7 @@ mod tests {
         let mut measured = demand;
         for _ in 0..40 {
             let f = c.observe(measured);
-            measured = demand * f; // what it manages while running `f` of the time
+            measured = demand * f;
         }
         assert!(
             (measured - target).abs() < 0.02,
@@ -713,10 +858,15 @@ mod tests {
 
     #[test]
     fn the_budget_is_shared_across_every_group_not_per_group() {
-        // Two groups, 0.5-core budget between them. Together they burn 2.0
-        // cores in one wall second, so the governor must throttle — a per-group
-        // budget would see 1.0 each and (wrongly) allow it.
-        let (mut g, _sig) = governor(0.5, vec![Some(0.0), Some(2.0)]);
+        // Two groups, 0.5-core budget between them, 2.0 cores burned together.
+        // A per-group budget would see 1.0 each and wrongly allow it.
+        let (mut g, _sig) = governor(
+            0.5,
+            vec![
+                HashMap::from([(1, 0.0), (2, 0.0)]),
+                HashMap::from([(1, 1.0), (2, 1.0)]),
+            ],
+        );
         g.register(100);
         g.register(200);
         g.sample(SAMPLE_INTERVAL);
@@ -730,7 +880,7 @@ mod tests {
 
     #[test]
     fn every_registered_group_is_sampled_and_signalled_together() {
-        let (mut g, sig) = governor(0.5, vec![Some(0.0), Some(4.0)]);
+        let (mut g, sig) = governor(0.5, vec![one(1, 0.0), one(1, 4.0)]);
         g.register(100);
         g.register(200);
         g.sample(SAMPLE_INTERVAL);
@@ -748,37 +898,76 @@ mod tests {
 
     #[test]
     fn a_group_joining_mid_run_tightens_the_share_rather_than_adding_to_it() {
-        // The mirror starting during a sync must not double the ceiling.
-        let (mut g, _sig) = governor(0.5, vec![Some(0.0), Some(1.0), Some(3.0)]);
+        // Demand stays at 1 core throughout, so any change in the fraction is
+        // the membership change talking, not a lull.
+        let (mut g, _sig) = governor(0.5, vec![one(1, 0.0), one(1, 1.0), one(1, 2.0)]);
         g.register(100);
         g.sample(SAMPLE_INTERVAL);
         g.sample(SAMPLE_INTERVAL);
         let solo = g.run_fraction();
+        assert!(solo < 1.0, "the solo group should already be throttled");
         g.register(200);
-        // Membership changed: the first post-change sample only re-baselines.
-        g.sample(SAMPLE_INTERVAL);
-        assert_eq!(
-            g.run_fraction(),
-            solo,
-            "the membership jump steered the controller"
-        );
         assert_eq!(g.groups(), &[100, 200]);
+        // The newcomer joining must tighten the share, never loosen it: the
+        // budget is for the set, not per group.
+        g.sample(SAMPLE_INTERVAL);
+        assert!(
+            g.run_fraction() <= solo,
+            "a joining group loosened the shared ceiling: {} > {solo}",
+            g.run_fraction()
+        );
     }
 
     #[test]
-    fn membership_change_does_not_read_as_a_cpu_spike() {
-        // 10s accumulated, then a second group with 900s joins: the sum leaps
-        // to 910 for reasons that have nothing to do with this window.
-        let (mut g, _sig) = governor(0.5, vec![Some(10.0), Some(910.0), Some(910.1)]);
+    fn a_group_joining_during_a_stop_window_is_stopped_too() {
+        // Otherwise a newcomer runs unthrottled until the next stop, quietly
+        // exceeding the shared ceiling.
+        let (mut g, sig) = governor(0.5, vec![]);
+        g.register(100);
+        g.stop_all();
+        g.register(200);
+        assert_eq!(*sig.stops.lock().unwrap(), vec![100, 200]);
+    }
+
+    #[test]
+    fn a_newly_seen_process_counts_its_whole_counter_once() {
+        // A worker that appears mid-window accumulated all of its CPU inside
+        // that window, so ignoring it would under-measure the group.
+        let (mut g, _sig) = governor(
+            0.5,
+            vec![one(1, 10.0), HashMap::from([(1, 10.0), (2, 4.0)])],
+        );
         g.register(100);
         g.sample(SAMPLE_INTERVAL);
-        g.register(200);
+        g.sample(SAMPLE_INTERVAL);
+        assert!(
+            g.run_fraction() < 1.0,
+            "a brand-new busy worker was not counted"
+        );
+    }
+
+    #[test]
+    fn an_exiting_member_cannot_mask_a_busy_sibling() {
+        // The regression: pid 1 leaves having burned 5s while pid 2 adds 6s.
+        // A summed total moves 10 -> 11 and reports 1 core; per-pid accounting
+        // sees pid 2's real 6 cores and throttles.
+        let (mut g, _sig) = governor(
+            0.5,
+            vec![
+                HashMap::from([(1, 5.0), (2, 5.0)]),
+                HashMap::from([(2, 11.0)]),
+            ],
+        );
+        g.register(100);
         g.sample(SAMPLE_INTERVAL);
         g.sample(SAMPLE_INTERVAL);
-        assert_eq!(
-            g.run_fraction(),
-            1.0,
-            "a membership jump was read as demand"
+        // Per-pid accounting sees pid 2's real 6 cores against a 0.5 budget.
+        // A summed total would have seen 10 -> 11, called it 1 core, and left
+        // the fraction at 0.75 after the same single damped step.
+        assert!(
+            g.run_fraction() < 0.6,
+            "exiting member masked a busy sibling: fraction {}",
+            g.run_fraction()
         );
     }
 
@@ -794,14 +983,14 @@ mod tests {
 
     #[test]
     fn an_empty_governor_is_idle_and_never_samples() {
-        let (mut g, _sig) = governor(0.5, vec![Some(1.0)]);
+        let (mut g, _sig) = governor(0.5, vec![one(1, 1.0)]);
         assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
         assert_eq!(g.sampler.calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn a_fully_dead_set_goes_idle_without_steering() {
-        let (mut g, _sig) = governor(0.5, vec![None]);
+        let (mut g, _sig) = governor(0.5, vec![HashMap::new()]);
         g.register(100);
         assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
         assert_eq!(g.run_fraction(), 1.0);
@@ -809,9 +998,9 @@ mod tests {
 
     #[test]
     fn cpu_rate_is_derived_from_the_delta_not_the_total() {
-        // 10s accumulated, then 10.5s one second later is 0.5 cores — exactly
-        // the budget, so no throttling.
-        let (mut g, _sig) = governor(0.5, vec![Some(10.0), Some(10.5)]);
+        // 10s accumulated then 10.5s a second later is 0.5 cores — exactly the
+        // budget, so no throttling.
+        let (mut g, _sig) = governor(0.5, vec![one(1, 10.0), one(1, 10.5)]);
         g.register(100);
         g.sample(SAMPLE_INTERVAL);
         g.sample(SAMPLE_INTERVAL);
@@ -819,18 +1008,53 @@ mod tests {
     }
 
     #[test]
-    fn a_member_exiting_does_not_read_as_negative_cpu() {
-        let (mut g, _sig) = governor(0.5, vec![Some(100.0), Some(4.0), Some(4.2)]);
+    fn a_counter_that_goes_backwards_is_clamped_not_negated() {
+        let (mut g, _sig) = governor(0.5, vec![one(1, 100.0), one(1, 4.0), one(1, 4.2)]);
         g.register(100);
         g.sample(SAMPLE_INTERVAL);
         g.sample(SAMPLE_INTERVAL);
-        assert_eq!(
-            g.run_fraction(),
-            1.0,
-            "a negative delta moved the controller"
-        );
+        assert_eq!(g.run_fraction(), 1.0);
         g.sample(SAMPLE_INTERVAL);
         assert_eq!(g.run_fraction(), 1.0);
+    }
+
+    // --- signalling discipline ---------------------------------------------
+
+    #[test]
+    fn an_unthrottled_group_is_never_signalled() {
+        // resume_all on a group that was never stopped used to fire a SIGCONT
+        // every 200ms — five a second, forever, at a persistent watch daemon.
+        let (mut g, sig) = governor(0.5, vec![]);
+        g.register(100);
+        for _ in 0..20 {
+            g.resume_all();
+        }
+        assert!(
+            sig.conts.lock().unwrap().is_empty(),
+            "signalled a group that was never stopped"
+        );
+    }
+
+    #[test]
+    fn a_stopped_group_is_resumed_exactly_once_per_stop() {
+        let (mut g, sig) = governor(0.5, vec![]);
+        g.register(100);
+        g.stop_all();
+        g.resume_all();
+        g.resume_all();
+        g.resume_all();
+        assert_eq!(*sig.conts.lock().unwrap(), vec![100]);
+        assert!(!g.is_stopped());
+    }
+
+    #[test]
+    fn force_resume_signals_even_when_state_says_running() {
+        // The shutdown and poisoned-lock paths cannot trust the tracked state:
+        // a missed SIGCONT there wedges a child permanently.
+        let (mut g, sig) = governor(0.5, vec![]);
+        g.register(100);
+        g.force_resume_all();
+        assert_eq!(*sig.conts.lock().unwrap(), vec![100]);
     }
 
     // --- ps parsing --------------------------------------------------------
@@ -845,21 +1069,29 @@ mod tests {
     }
 
     #[test]
-    fn sums_across_the_whole_registered_set() {
-        let ps = "  501  0:10.00\n  502  1:00.00\n  501  0:05.00\n";
-        assert_eq!(sum_groups_cpu_seconds(ps, &[501]), Some(15.0));
-        assert_eq!(sum_groups_cpu_seconds(ps, &[501, 502]), Some(75.0));
+    fn keeps_group_members_apart_so_an_exit_is_visible() {
+        let ps = "  501  600  0:10.00\n  502  700  1:00.00\n  501  601  0:05.00\n";
+        let got = group_member_cpu_seconds(ps, &[501]);
+        assert_eq!(got, HashMap::from([(600, 10.0), (601, 5.0)]));
+        assert_eq!(
+            group_member_cpu_seconds(ps, &[501, 502]).len(),
+            3,
+            "every registered group's members must be reported"
+        );
     }
 
     #[test]
     fn a_set_with_no_rows_is_reported_gone() {
-        let ps = "  501  0:10.00\n";
-        assert_eq!(sum_groups_cpu_seconds(ps, &[999]), None);
+        let ps = "  501  600  0:10.00\n";
+        assert!(group_member_cpu_seconds(ps, &[999]).is_empty());
     }
 
     #[test]
     fn malformed_ps_rows_are_skipped_not_fatal() {
-        let ps = "garbage\n  501  0:10.00\n\n  501  bad\n";
-        assert_eq!(sum_groups_cpu_seconds(ps, &[501]), Some(10.0));
+        let ps = "garbage\n  501  600  0:10.00\n\n  501  601  bad\n";
+        assert_eq!(
+            group_member_cpu_seconds(ps, &[501]),
+            HashMap::from([(600, 10.0)])
+        );
     }
 }

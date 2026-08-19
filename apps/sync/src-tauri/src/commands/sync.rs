@@ -78,7 +78,11 @@ use crate::util::paths;
 /// Singleton handle — only one sync at a time.
 const SYNC_HANDLE: &str = "hq-sync";
 
-/// Hard timeout for a sync run (1 hour).
+/// Hard timeout for a sync run (1 hour of unthrottled wall time).
+///
+/// Read through [`hq_desktop_core::cpu_throttle::scaled_timeout`] at use, never
+/// directly: the CPU ceiling stretches wall time, and an unscaled watchdog
+/// cancels precisely the long passes the throttle is meant to let finish.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// SIGKILL delay after SIGTERM on cancel.
@@ -2360,7 +2364,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // public handle.
     let watchdog_generation = sync_generation;
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(SYNC_TIMEOUT).await;
+        tokio::time::sleep(hq_desktop_core::cpu_throttle::scaled_timeout(SYNC_TIMEOUT)).await;
         let attempt = cancel_process_for_generation(
             SYNC_HANDLE,
             watchdog_generation,
