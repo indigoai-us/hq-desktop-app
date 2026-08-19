@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
-    DISCOVERY_ERROR_PATH_SENTINEL,
+    RunnerErrorCauseRollup, RunnerErrorHttpRollup, RunnerErrorPathRootRollup,
+    RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL, DISCOVERY_ERROR_PATH_SENTINEL,
 };
 use sha2::{Digest, Sha256};
 
@@ -105,6 +105,17 @@ pub struct RunTotals {
     /// flood confined to one subtree is distinguishable from a whole-company one
     /// without ever emitting a user path.
     pub runner_error_path_roots: RunnerErrorPathRootRollup,
+    /// Content-safe HTTP-status counts for the runner errors seen in this pass.
+    /// The single most discriminating fact about the faults that terminate these
+    /// runs — `http=<status>` on company-scope describeError renderings and the
+    /// `: <status>` tail on per-file presigned failures — which the class/op/shape
+    /// axes all discard. Every rendered token is chosen in code; a message with no
+    /// parseable status contributes nothing, so absence never renders as evidence.
+    pub runner_error_http: RunnerErrorHttpRollup,
+    /// Content-safe error-cause counts (hq-cloud/AWS error identities) for the
+    /// runner errors seen in this pass, naming the deterministic faults the class
+    /// axis collapses to OTHER. Every rendered token is chosen in code.
+    pub runner_error_causes: RunnerErrorCauseRollup,
     /// Count of company-scope errors (`path == "(company)"`) seen this pass.
     runner_error_company_scope: u32,
     /// Count of pre-fanout discovery-phase errors (`path == "(discovery)"`) seen
@@ -187,10 +198,15 @@ impl RunTotals {
         self.runner_error_rollup.record(&err.message);
         self.runner_error_ops.record(&err.message);
         // Additive attribution axes (never affect alerting/suppression): a
-        // message shape for every error, and — for genuine per-file errors only —
-        // a path root. The company and discovery sentinels are not file paths, so
-        // they are counted by scope and never given a path root.
+        // message shape, an HTTP status, and an error cause for every error, and —
+        // for genuine per-file errors only — a path root. The company and discovery
+        // sentinels are not file paths, so they are counted by scope and never
+        // given a path root. HTTP status and cause are recorded for EVERY scope,
+        // since the company scope is precisely the one that currently yields
+        // nothing.
         self.runner_error_shapes.record(&err.message);
+        self.runner_error_http.record(&err.message);
+        self.runner_error_causes.record(&err.message);
         if err.path == COMPANY_ERROR_PATH_SENTINEL {
             self.runner_error_company_scope = self.runner_error_company_scope.saturating_add(1);
         } else if err.path == DISCOVERY_ERROR_PATH_SENTINEL {
@@ -2607,6 +2623,76 @@ mod tests {
             totals.runner_error_shapes.tag_value().as_deref(),
             Some("containment_escape:1,unknown:1")
         );
+    }
+
+    #[test]
+    fn record_error_populates_http_and_cause_across_scopes_without_touching_prior_axes() {
+        let mut totals = RunTotals::default();
+        // Company scope: a describeError rendering carrying `http=` and a real
+        // name — precisely the path that currently yields no usable attribution.
+        for _ in 0..8 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: "(company)".to_string(),
+                message: "AccessDenied http=403 host=hq-vault-cmp-x.s3.amazonaws.com denied"
+                    .to_string(),
+            });
+        }
+        // Discovery scope: a pre-fanout error whose describeError names the cause.
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(discovery)".to_string(),
+            message: "NoSuchBucket http=404 the vault bucket is missing".to_string(),
+        });
+        // Per-file scope: presigned failures whose status lives only in the `: `
+        // tail — the describeError `http=` grammar is absent here.
+        for i in 0..40 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: format!("repos/secret-{i}"),
+                message: format!("presigned GET failed for repos/secret-{i}: 500 Server Error"),
+            });
+        }
+
+        // The two NEW axes fire for every scope, including the company scope that
+        // previously collapsed to nothing.
+        assert_eq!(
+            totals.runner_error_http.tag_value().as_deref(),
+            Some("http_500:40,http_403:8,http_404:1")
+        );
+        assert_eq!(
+            totals.runner_error_causes.tag_value().as_deref(),
+            Some("unknown:40,access_denied:8,no_such_bucket:1")
+        );
+
+        // Every pre-existing axis is byte-identical to its pre-change value for the
+        // same inputs — the change is purely additive.
+        assert_eq!(totals.runner_error_rollup.tag_value().as_deref(), Some("OTHER:49"));
+        assert_eq!(totals.runner_error_ops.tag_value().as_deref(), Some("other:49"));
+        assert_eq!(
+            totals.runner_error_shapes.tag_value().as_deref(),
+            Some("presigned_get_failed:40,unknown:9")
+        );
+        assert_eq!(
+            totals.runner_error_path_roots.tag_value().as_deref(),
+            Some("repos:40")
+        );
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:8,file:40,discovery:1")
+        );
+        assert_eq!(totals.runner_error_rollup.fingerprint_token(), "other");
+        assert!(totals.saw_error, "recording any error must set saw_error");
+
+        // No seeded secret, host, or company name escapes the rendered tags.
+        for rendered in [
+            totals.runner_error_http.tag_value().unwrap(),
+            totals.runner_error_causes.tag_value().unwrap(),
+        ] {
+            assert!(!rendered.contains("secret"));
+            assert!(!rendered.contains("amazonaws"));
+            assert!(!rendered.contains("acme"));
+        }
     }
 
     // ── describe_exit ────────────────────────────────────────────────────────────
