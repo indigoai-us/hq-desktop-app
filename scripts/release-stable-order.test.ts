@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   compareStableTags,
   confirmReleaseChannel,
+  formatRollbackSummary,
   verifyStableReleaseLineage,
   verifyStableReleaseOrder,
 } from "./release-stable-order.mjs";
@@ -498,5 +499,75 @@ describe("stable release commit lineage", () => {
         fetchImpl: impl as typeof fetch,
       }),
     ).rejects.toThrow(/unrecognized compare status/);
+  });
+
+  it("compares the pinned built commit, not the re-resolved tag, when a head sha is given", async () => {
+    // A tag force-moved to an ahead commit during the long native builds would
+    // let a re-resolved tag pass; pinning the exact built commit makes the gate
+    // evaluate the artifacts that actually exist, so the stale build is rejected.
+    const builtSha = "0123456789abcdef0123456789abcdef01234567";
+    const { impl, calls } = lineageFetch({
+      latest: "v0.10.106",
+      compares: {
+        [`v0.10.106...${builtSha}`]: {
+          status: "behind",
+          ahead_by: 0,
+          behind_by: 33,
+        },
+      },
+    });
+    await expect(
+      verifyStableReleaseLineage({
+        repository,
+        targetTag: "v0.10.107",
+        headSha: builtSha,
+        token,
+        fetchImpl: impl as typeof fetch,
+      }),
+    ).rejects.toThrow(/v0\.10\.107 is behind public latest v0\.10\.106 by 33 commit/);
+    expect(calls.some((url) => url.includes(`/compare/v0.10.106...${builtSha}`))).toBe(
+      true,
+    );
+    expect(calls.some((url) => url.includes("/compare/v0.10.106...v0.10.107"))).toBe(
+      false,
+    );
+  });
+
+  it("counts withdrawn commits from behind_by and discloses compare truncation", () => {
+    const summary = formatRollbackSummary({
+      targetTag: "v0.10.107",
+      latestTag: "v0.10.106",
+      behindBy: 33,
+      withdrawnCommits: [
+        {
+          sha: "b8e74e289d845c45c612cb99d4758202d22b6599",
+          title: "fix: durable wedge clock",
+        },
+        { sha: "c1488b0314100fca5161e8a03ed6097b256f1a2b", title: "chore: bump" },
+      ],
+    });
+    // The headline count is the authoritative behind_by (33), never the
+    // enumerated length (2) which GitHub caps at 250.
+    expect(summary).toContain("Withdrawing 33 merged commit(s)");
+    expect(summary).toContain("(33 commit(s) behind)");
+    expect(summary).toContain("…and 31 more not listed");
+    expect(summary).toContain("`b8e74e289d84` fix: durable wedge clock");
+  });
+
+  it("omits the truncation note when every withdrawn commit is enumerated", () => {
+    const summary = formatRollbackSummary({
+      targetTag: "v0.10.107",
+      latestTag: "v0.10.106",
+      behindBy: 2,
+      withdrawnCommits: [
+        {
+          sha: "b8e74e289d845c45c612cb99d4758202d22b6599",
+          title: "fix: durable wedge clock",
+        },
+        { sha: "c1488b0314100fca5161e8a03ed6097b256f1a2b", title: "chore: bump" },
+      ],
+    });
+    expect(summary).toContain("Withdrawing 2 merged commit(s)");
+    expect(summary).not.toContain("more not listed");
   });
 });

@@ -134,6 +134,22 @@ a corrected annotated message to recover.
 job-summary enumeration is the record of exactly what is being given up; read it
 before you push.
 
+### Code identity in telemetry
+
+The release pins itself to the commit `validate` resolves from the tag: every
+build job asserts it built that exact commit and stamps it into the binary as
+`HQ_BUILD_COMMIT`, and the publication-lock lineage recheck compares that same
+commit rather than re-resolving the tag. A tag force-moved during the long
+native builds therefore fails the build instead of publishing stale artifacts
+past the gate.
+
+Each Sentry event carries the build's commit as an additive `build_commit` tag
+(`"unknown"` for local and non-release builds). The Sentry `release` stays
+`{prefix}@{version}` and `dist` is untouched, so issue grouping and
+release-health data are unchanged — but a higher version number carrying older
+code is now visible in a single event instead of invisible, which is what made
+the v0.10.107 / v0.10.109 rollback undetectable at the time.
+
 ## Required GitHub Secrets
 
 ### macOS Signing and Notarization

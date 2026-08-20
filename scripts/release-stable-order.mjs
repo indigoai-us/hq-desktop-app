@@ -198,10 +198,18 @@ async function readAnnotatedTagMessage({ repository, tag, token, fetchImpl }) {
 export async function verifyStableReleaseLineage({
   repository,
   targetTag,
+  headSha,
   token,
   fetchImpl = fetch,
 }) {
   stableParts(targetTag);
+  // `targetTag` is always the human-facing tag: it is validated here and named
+  // in every message and in the return. `head` is what the compare actually
+  // resolves. The publication-lock gate passes the exact commit the artifacts
+  // were built from (headSha) so a tag force-moved after validation cannot make
+  // a stale build look like an advance; the pre-build gate omits it and reads
+  // the tag ref as pushed.
+  const head = headSha ?? targetTag;
 
   const response = await fetchLatestRelease({ repository, token, fetchImpl });
   if (response.status === 404) {
@@ -224,7 +232,7 @@ export async function verifyStableReleaseLineage({
   const comparison = await compareStableCommits({
     repository,
     base: latestTag,
-    head: targetTag,
+    head,
     token,
     fetchImpl,
   });
@@ -264,10 +272,12 @@ export async function verifyStableReleaseLineage({
   }
 
   // The withdrawn fixes are the commits in the current latest but not in the
-  // rollback target — the reverse compare enumerates them for the operator.
+  // rollback target — the reverse compare enumerates them for the operator. The
+  // base is `head` (the built commit, or the tag when unpinned), not the tag
+  // name, so the enumeration matches what was actually gated above.
   const withdrawn = await compareStableCommits({
     repository,
-    base: targetTag,
+    base: head,
     head: latestTag,
     token,
     fetchImpl,
@@ -282,29 +292,45 @@ export async function verifyStableReleaseLineage({
   };
 }
 
+// The authoritative count of withdrawn commits is `behindBy` (from the forward
+// compare), never `withdrawnCommits.length`: GitHub's compare endpoint caps a
+// single response at 250 commits, so a very large rollback would enumerate only
+// the first 250. The headline count therefore always comes from `behindBy`, and
+// the block discloses any commits it could not list rather than silently
+// understating the rollback.
+export function formatRollbackSummary(result) {
+  const total = result.behindBy;
+  const enumerated = result.withdrawnCommits.length;
+  const commitLines = enumerated
+    ? result.withdrawnCommits.map(
+        (commit) => `- \`${commit.sha.slice(0, 12)}\` ${commit.title}`,
+      )
+    : ["- (none enumerated)"];
+  if (enumerated < total) {
+    commitLines.push(
+      `- …and ${total - enumerated} more not listed ` +
+        "(GitHub compare returns at most 250 commits per response)",
+    );
+  }
+  return `${[
+    `## Declared stable rollback: ${result.targetTag}`,
+    "",
+    `Public latest \`${result.latestTag}\` is being rolled back to ` +
+      `\`${result.targetTag}\` (${total} commit(s) behind).`,
+    "",
+    `Withdrawing ${total} merged commit(s) from the stable channel:`,
+    "",
+    ...commitLines,
+    "",
+  ].join("\n")}\n`;
+}
+
 function writeRollbackSummary(result) {
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (!summaryPath) {
     return;
   }
-  const commitLines = result.withdrawnCommits.length
-    ? result.withdrawnCommits.map(
-        (commit) => `- \`${commit.sha.slice(0, 12)}\` ${commit.title}`,
-      )
-    : ["- (none enumerated)"];
-  const block = [
-    `## Declared stable rollback: ${result.targetTag}`,
-    "",
-    `Public latest \`${result.latestTag}\` is being rolled back to ` +
-      `\`${result.targetTag}\` (${result.behindBy} commit(s) behind).`,
-    "",
-    `Withdrawing ${result.withdrawnCommits.length} merged commit(s) from the ` +
-      "stable channel:",
-    "",
-    ...commitLines,
-    "",
-  ].join("\n");
-  appendFileSync(summaryPath, `${block}\n`);
+  appendFileSync(summaryPath, formatRollbackSummary(result));
 }
 
 export async function confirmReleaseChannel({
@@ -424,14 +450,17 @@ async function runCli() {
   }
 
   if (command === "lineage") {
-    const result = await verifyStableReleaseLineage(common);
+    const result = await verifyStableReleaseLineage({
+      ...common,
+      headSha: values["head-sha"],
+    });
     if (result.status === "first-stable") {
       console.log(
         `No existing stable release; ${result.targetTag} has no prior lineage to preserve.`,
       );
     } else if (result.status === "declared-rollback") {
       console.log(
-        `::warning::Declared stable rollback: ${result.targetTag} rolls back public latest ${result.latestTag} (${result.behindBy} commit(s) behind); withdrawing ${result.withdrawnCommits.length} merged commit(s).`,
+        `::warning::Declared stable rollback: ${result.targetTag} rolls back public latest ${result.latestTag} (${result.behindBy} commit(s) behind); withdrawing ${result.behindBy} merged commit(s).`,
       );
       writeRollbackSummary(result);
     } else {

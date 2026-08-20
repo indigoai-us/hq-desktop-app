@@ -614,16 +614,46 @@ describe("release workflow channel contract", () => {
     );
   });
 
-  it("stamps the tag commit into telemetry from both platform build jobs", () => {
+  it("pins both platform build jobs to the validated commit and stamps it into telemetry", () => {
     for (const job of ["macos", "windows"]) {
       const resolveStep = stepBody(jobBody(job), "Resolve build commit");
       expect(resolveStep, job).toContain("TAG: ${{ needs.validate.outputs.tag }}");
       expect(resolveStep, job).toContain(
+        "EXPECTED_COMMIT: ${{ needs.validate.outputs.commit_sha }}",
+      );
+      expect(resolveStep, job).toContain(
         'git rev-parse "refs/tags/${TAG}^{commit}"',
       );
-      expect(resolveStep, job).toContain("HQ_BUILD_COMMIT=$COMMIT");
+      // Fail closed if the tag was force-moved between validation and this build.
+      expect(resolveStep, job).toContain(
+        'if [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then',
+      );
+      expect(resolveStep, job).toContain("HQ_BUILD_COMMIT=$EXPECTED_COMMIT");
       expect(resolveStep, job).toContain('>> "$GITHUB_ENV"');
     }
+  });
+
+  it("pins the release to one validated commit across validate, build, and publish", () => {
+    // validate resolves the tag to its commit exactly once and exports it.
+    expect(workflow).toContain(
+      "commit_sha: ${{ steps.release-commit.outputs.commit_sha }}",
+    );
+    const resolveStep = stepBody(jobBody("validate"), "Resolve release commit");
+    expect(resolveStep).toContain('git rev-parse "refs/tags/${TAG}^{commit}"');
+    expect(resolveStep).toContain("commit_sha=$COMMIT");
+    expect(resolveStep).toContain('>> "$GITHUB_OUTPUT"');
+
+    // The publication-lock lineage recheck compares that exact commit via
+    // --head-sha, so a tag force-moved after validation cannot pass the gate
+    // against artifacts built from a different commit.
+    const revalidateStep = stepBody(
+      jobBody("publish"),
+      "Revalidate stable publication order",
+    );
+    expect(revalidateStep).toContain(
+      "TARGET_COMMIT: ${{ needs.validate.outputs.commit_sha }}",
+    );
+    expect(revalidateStep).toContain('--head-sha "$TARGET_COMMIT"');
   });
 });
 
