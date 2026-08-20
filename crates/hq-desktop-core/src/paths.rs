@@ -280,8 +280,12 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// stale when it merely lives on a prefix only the settings PATH knows about.
 pub(crate) fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
     let claude = hq_root.join(".claude");
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // Claude Code merges settings PER KEY, and `env.PATH` is a scalar: a value in
+    // settings.local.json OVERRIDES the one in settings.json rather than
+    // concatenating. So the FIRST file that defines a non-empty `env.PATH` wins
+    // outright — settings.json is consulted only when the local file has none.
+    // Concatenating would let a stale base PATH resolve an `hq` the session
+    // (which uses only the local PATH) would never run.
     for file in ["settings.local.json", "settings.json"] {
         let raw = match std::fs::read_to_string(claude.join(file)) {
             Ok(s) => s,
@@ -299,6 +303,8 @@ pub(crate) fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
         if path_val.is_empty() {
             continue;
         }
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         for seg in path_val.split(PATH_SEP) {
             if seg.is_empty() {
                 continue;
@@ -310,8 +316,22 @@ pub(crate) fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
                 dirs.push(dir);
             }
         }
+        return dirs;
     }
-    dirs
+    Vec::new()
+}
+
+/// True iff `path` is a regular file with an executable bit set. Merely existing
+/// is not enough on Unix: a shell skips a non-executable (or a directory) named
+/// `hq` and keeps searching, so returning it here would surface a permission
+/// error at spawn time instead of the binary the session actually runs.
+#[cfg(not(target_os = "windows"))]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(path) {
+        Ok(meta) => meta.is_file() && (meta.permissions().mode() & 0o111 != 0),
+        Err(_) => false,
+    }
 }
 
 /// Zero-arg HQ folder resolution for PATH lookups: menubar.json `hqPath`, then
@@ -394,7 +414,10 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         if name == "hq" {
             for dir in settings_path_dirs() {
                 let candidate = dir.join(name);
-                if candidate.exists() {
+                // Require an executable regular file: a shell skips a
+                // non-executable or a directory named `hq` and keeps searching,
+                // so we must too or we'd hand back an unspawnable path.
+                if is_executable_file(&candidate) {
                     return ResolvedProgram {
                         path: candidate.to_string_lossy().to_string(),
                         kind: ResolvedProgramKind::Exe,
@@ -1172,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_path_dirs_local_wins_and_merges_base() {
+    fn settings_local_path_overrides_base_not_concatenated() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let local = tmp.path().join("local");
@@ -1189,27 +1212,45 @@ mod tests {
             "settings.json",
             &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
         );
-        // local first (higher authority), then base appended.
-        assert_eq!(settings_path_dirs_in(root), vec![local, base]);
+        // env.PATH is a scalar: local OVERRIDES base — base is NOT appended.
+        assert_eq!(settings_path_dirs_in(root), vec![local]);
     }
 
     #[test]
-    fn settings_path_dirs_dedups_across_files() {
+    fn settings_base_used_only_when_local_has_no_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        let shared = tmp.path().join("shared");
-        std::fs::create_dir_all(&shared).unwrap();
-        write_settings(
-            root,
-            "settings.local.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", shared.display()),
-        );
+        let base = tmp.path().join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        // Local exists but defines no env.PATH -> fall through to base.
+        write_settings(root, "settings.local.json", "{\"env\":{}}");
         write_settings(
             root,
             "settings.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", shared.display()),
+            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
         );
-        assert_eq!(settings_path_dirs_in(root), vec![shared]);
+        assert_eq!(settings_path_dirs_in(root), vec![base]);
+    }
+
+    #[test]
+    fn is_executable_file_requires_exec_bit_and_regular_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // A directory named `hq` must not count.
+        let dir_named_hq = tmp.path().join("hq_dir");
+        std::fs::create_dir_all(&dir_named_hq).unwrap();
+        assert!(!is_executable_file(&dir_named_hq));
+        // A non-executable regular file must not count.
+        let plain = tmp.path().join("plain");
+        std::fs::write(&plain, b"#!/bin/sh\n").unwrap();
+        assert!(!is_executable_file(&plain));
+        // An executable regular file counts.
+        use std::os::unix::fs::PermissionsExt;
+        let exe = tmp.path().join("exe");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_executable_file(&exe));
+        // A missing path is not executable.
+        assert!(!is_executable_file(&tmp.path().join("nope")));
     }
 
     #[test]
