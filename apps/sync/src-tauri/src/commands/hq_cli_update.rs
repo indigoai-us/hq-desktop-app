@@ -84,7 +84,7 @@ pub use hq_desktop_core::hq_cli_update::{
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
     non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
     npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env,
-    remove_managed_shadow, ShadowRemoval,
+    remove_managed_shadow, resolved_bin_is_repairable_managed_shadow, ShadowRemoval,
     pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
     read_installed_version, redact_home, redact_home_in, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
@@ -1818,6 +1818,61 @@ async fn finalize_managed_shadow(
     apply_post_install_with_app(app, &outcome)
 }
 
+/// Repair an HQ-owned managed shadow on a machine ALREADY blocked for `latest`.
+///
+/// The background loop's marker gate ([`should_auto_install`]) skips the install
+/// for a machine whose durable non-convergent marker equals `latest` — but the
+/// HQ-DESKTOP-46 population is blocked precisely BECAUSE of a repairable HQ-owned
+/// shadow (an earlier install delivered `latest` into HQ's managed prefix, then
+/// the block was written, and no install has re-run the convergence gate since).
+/// So the exact affected machines would stay frozen until a newer CLI publishes
+/// or the user clicks Update by hand.
+///
+/// This re-runs ONLY the shared post-install gate ([`finalize_convergence`]) — it
+/// runs no npm install (the managed prefix already holds `latest`). On a managed
+/// shadow the gate removes the stale copy, re-resolves, and re-decides: a
+/// converged repair clears the marker and emits `hq-cli-update:cleared`, while a
+/// still-blocked result captures NOTHING (the `already_blocked` path suppresses the
+/// bounded capture), so this can never re-page. It is only ever reached after the
+/// cheap, subprocess-free [`resolved_bin_is_repairable_managed_shadow`] probe has
+/// confirmed the shadow is present, so a genuinely foreign blocked layout never
+/// runs the heavier gate.
+async fn repair_managed_shadow_while_blocked(app: &AppHandle, latest: &str) {
+    let npm = paths::resolve_bin("npm");
+    let hq = paths::resolve_bin("hq");
+    let prefix = hq_cli_install_prefix(&npm, &hq);
+    let before_version = {
+        let hq = hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    match finalize_convergence(
+        app,
+        &hq,
+        &npm,
+        before_version.as_deref(),
+        latest,
+        prefix.as_deref(),
+        /* already_blocked */ true,
+    )
+    .await
+    {
+        Ok(_) => log(
+            "hq-cli-update",
+            "blocked managed-shadow repair: converged and cleared the marker",
+        ),
+        // Still blocked. The machine was already captured on the original
+        // foreign-managed episode, so the `already_blocked` path emitted no new
+        // event; the banner simply stays for the next check or a manual Update.
+        Err(detail) => log(
+            "hq-cli-update",
+            &format!("blocked managed-shadow repair did not converge; banner remains: {detail}"),
+        ),
+    }
+}
+
 /// Apply the caller-side persistence half of a repeat-guarded install-failure
 /// report. Extracted so the first attempt and the managed retry share one
 /// fail-closed marker-write path.
@@ -2342,6 +2397,32 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                                     &format!("auto-update failed, banner remains: {e}"),
                                 ),
                             }
+                        } else if {
+                            // Subprocess-free probe: is this machine blocked
+                            // BECAUSE of a repairable HQ-owned shadow the install
+                            // path never reached (the HQ-DESKTOP-46 population)?
+                            let hq = paths::resolve_bin("hq");
+                            let latest = info.latest.clone();
+                            let roots = paths::managed_toolchain_roots();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                resolved_bin_is_repairable_managed_shadow(&hq, &latest, &roots)
+                            })
+                            .await
+                            .unwrap_or(false)
+                        } {
+                            // The marker gate exists to stop the reinstall loop, but
+                            // an already-blocked managed shadow would otherwise never
+                            // self-heal. Repair it install-free; a converged repair
+                            // clears the marker, a still-stale one re-pages nothing.
+                            log(
+                                "hq-cli-update",
+                                &format!(
+                                    "auto-update blocked for {} but a repairable managed shadow \
+                                     is present — running the install-free repair",
+                                    info.latest
+                                ),
+                            );
+                            repair_managed_shadow_while_blocked(&handle, &info.latest).await;
                         } else {
                             // This exact version already installed cleanly
                             // without moving the detected CLI, so repeating it

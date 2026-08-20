@@ -1036,12 +1036,24 @@ pub fn remove_managed_shadow(
         Some(version) if cmp_semver(&version, latest) != std::cmp::Ordering::Less => {}
         _ => return ShadowRemoval::Refused(ManagedShadowRepair::NotAttempted),
     }
-    // (c) Provenance: the shadow shim must itself be @indigoai-us/hq-cli.
-    if install_executor_for_hq_bin(Path::new(shadow_hq_bin)).is_none() {
+    // (c) Provenance, in two independent halves: the package the resolved shim
+    // resolves to must be @indigoai-us/hq-cli (manifest name), AND the shim FILE
+    // itself must actually launch that package (its symlink target or body
+    // references it). The manifest half alone passes when a foreign tool has
+    // replaced `hq.cmd` while a stale hq-cli package still lingers beside it —
+    // deleting that foreign command is exactly what the second half prevents.
+    if install_executor_for_hq_bin(Path::new(shadow_hq_bin)).is_none()
+        || !shim_launches_hq_cli(Path::new(shadow_hq_bin))
+    {
         return ShadowRemoval::Refused(ManagedShadowRepair::ProvenanceRefused);
     }
-    // (d) Remove ONLY the enumerated shims and the single scoped package dir.
-    let mut first_error: Option<String> = None;
+    // (d) Remove ONLY the enumerated shims that provably launch @indigoai-us/hq-cli
+    // (a foreign command that merely shares the name is left untouched), then —
+    // and ONLY if every such shim was removed cleanly — the single scoped package
+    // directory. A shim that survives a removal error (a Windows sharing violation
+    // while `hq` is running) must never be left resolving to a package we already
+    // deleted, so a shim-removal failure suppresses the package removal entirely.
+    let mut shim_error: Option<String> = None;
     for name in HQ_CLI_BIN_NAMES {
         for candidate in [
             shadow_dir.join(name),
@@ -1049,34 +1061,97 @@ pub fn remove_managed_shadow(
             shadow_dir.join(format!("{name}.ps1")),
             shadow_dir.join(format!("{name}.bat")),
         ] {
+            // Tie each file to our package before unlinking it: a shim whose body
+            // or symlink target does not reference @indigoai-us/hq-cli is not ours,
+            // even if a stale hq-cli package sits beside it. An absent candidate
+            // reads as "not ours" and is simply skipped.
+            if !shim_launches_hq_cli(&candidate) {
+                continue;
+            }
             if let Err(error) = remove_file_if_present(&candidate) {
-                first_error.get_or_insert_with(|| format!("shim removal failed: {error}"));
+                shim_error.get_or_insert_with(|| format!("shim removal failed: {error}"));
             }
         }
     }
-    for package_dir in [
-        shadow_dir
-            .join("node_modules")
-            .join("@indigoai-us")
-            .join("hq-cli"),
-        shadow_dir
-            .join("lib")
-            .join("node_modules")
-            .join("@indigoai-us")
-            .join("hq-cli"),
-    ] {
-        // Re-confirm provenance on the exact directory before removing it.
-        if version_if_hq_cli(&package_dir.join("package.json")).is_none() {
-            continue;
-        }
-        if let Err(error) = remove_dir_all_if_present(&package_dir) {
-            first_error.get_or_insert_with(|| format!("package removal failed: {error}"));
+    // Reclaim the shared package ONLY when no hq-cli shim survived — otherwise a
+    // surviving shim would resolve to a now-missing package (a broken CLI, e.g. a
+    // `hq-auth-refresh.cmd` left after `hq.cmd` refused to delete).
+    if shim_error.is_none() {
+        for package_dir in [
+            shadow_dir
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli"),
+            shadow_dir
+                .join("lib")
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli"),
+        ] {
+            // Re-confirm provenance on the exact directory before removing it.
+            if version_if_hq_cli(&package_dir.join("package.json")).is_none() {
+                continue;
+            }
+            if let Err(error) = remove_dir_all_if_present(&package_dir) {
+                shim_error.get_or_insert_with(|| format!("package removal failed: {error}"));
+            }
         }
     }
-    match first_error {
+    match shim_error {
         Some(error) => ShadowRemoval::Failed(error),
         None => ShadowRemoval::Removed,
     }
+}
+
+/// Filesystem-only probe: is the binary the app currently resolves an HQ-owned
+/// managed shadow of a managed prefix that already holds `>= latest`? True for
+/// exactly the HQ-DESKTOP-46 shape — a stale `<root>\node\hq.cmd` resolved while
+/// `<root>\npm-prefix` holds `latest` — and false for a genuinely foreign layout
+/// or an already-current binary.
+///
+/// It gates the install-free repair the background loop runs for a machine ALREADY
+/// blocked for `latest`: the durable marker skips the install before the shared
+/// convergence gate can classify the shadow, so that population never self-heals.
+/// Running this cheap, subprocess-free check first means the heavier convergence
+/// re-decide only fires when a repairable shadow is actually present — never on a
+/// foreign layout, and never adding an `hq --version` probe to the periodic check
+/// path. `version_from_hq_binary` is used (not `resolved_hq_version`) precisely
+/// because it never shells out.
+pub fn resolved_bin_is_repairable_managed_shadow(
+    resolved_hq_bin: &str,
+    latest: &str,
+    managed_roots: &[PathBuf],
+) -> bool {
+    // The resolved shim must itself launch our package, and its own version must
+    // be STALE — a current binary is already converged, nothing to repair.
+    if !shim_launches_hq_cli(Path::new(resolved_hq_bin)) {
+        return false;
+    }
+    match version_from_hq_binary(Path::new(resolved_hq_bin)) {
+        Some(version) if cmp_semver(&version, latest) != std::cmp::Ordering::Less => return false,
+        None => return false,
+        _ => {}
+    }
+    let Some(shadow_dir) = npm_prefix_from_hq_bin(resolved_hq_bin).map(PathBuf::from) else {
+        return false;
+    };
+    // A managed root must contain the shadow AND hold a DISTINCT managed npm
+    // prefix that already carries `>= latest` — the same-root shadow signature the
+    // classifier requires (a cross-root `IndigoHQ` vs legacy `Indigo HQ` layout is
+    // deliberately NOT treated as a shadow).
+    managed_roots.iter().any(|root| {
+        if !path_within(&shadow_dir, root) {
+            return false;
+        }
+        let prefix = paths::managed_npm_prefix_in(root);
+        if path_components_equal(&shadow_dir, &prefix) {
+            return false;
+        }
+        matches!(
+            installed_hq_cli_version_in_prefix(&prefix.to_string_lossy(), resolved_hq_bin),
+            Some(version) if cmp_semver(&version, latest) != std::cmp::Ordering::Less
+        )
+    })
 }
 
 /// `std::fs::remove_file` that treats an already-absent path as success. Any
@@ -1096,6 +1171,41 @@ fn remove_dir_all_if_present(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// Whether the shim at `path` actually launches the `@indigoai-us/hq-cli`
+/// package — the per-file provenance that ties a shim to our package BEFORE it is
+/// unlinked. Two shim forms exist: an npm symlink (`<prefix>/bin/hq` → the
+/// package's bin script) and a generated text launcher (Windows `hq.cmd` /
+/// `hq.ps1` and the Git-bash `hq` shell shim), each of which embeds the package's
+/// `node_modules/@indigoai-us/hq-cli` path. A foreign command that merely shares
+/// the name `hq` matches neither, so it is never removed even when a stale hq-cli
+/// package directory lingers beside it. Verifying only the adjacent package
+/// manifest (as [`install_executor_for_hq_bin`] does) is not enough: another tool
+/// can replace `hq.cmd` while the old package tree remains. Filesystem-only; an
+/// absent or unreadable path reads as "not ours" (`false`).
+fn shim_launches_hq_cli(path: &Path) -> bool {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            // Resolve the link and confirm it lands inside an hq-cli package tree.
+            return std::fs::canonicalize(path).is_ok_and(|real| {
+                real.ancestors()
+                    .any(|ancestor| version_if_hq_cli(&ancestor.join("package.json")).is_some())
+            });
+        }
+    }
+    match std::fs::read_to_string(path) {
+        Ok(body) => shim_body_references_hq_cli(&body),
+        Err(_) => false,
+    }
+}
+
+/// Whether a generated text shim's body references the `@indigoai-us/hq-cli`
+/// package. npm's `cmd-shim` writes the relative path to the package's bin script
+/// (`…\node_modules\@indigoai-us\hq-cli\…`) into every launcher form; normalize
+/// separators so a Windows shim captured with backslashes still matches.
+fn shim_body_references_hq_cli(body: &str) -> bool {
+    body.replace('\\', "/").contains("@indigoai-us/hq-cli")
 }
 
 /// Classify a failed convergence without guessing a prefix. A flat pnpm/asdf
@@ -2075,11 +2185,14 @@ pub fn managed_shadow_detail(
     let current = local.unwrap_or("an unreadable version");
     let tail = match repair {
         // Removed the shadow but the app still resolves the stale copy — usually a
-        // Windows sharing violation while `hq` was running.
+        // Windows sharing violation while `hq` was running. The retry is real: the
+        // background loop re-runs this install-free repair on its next check even
+        // while the version is marker-blocked, and the manual Update button bypasses
+        // the marker outright — so this promises only what actually happens.
         ManagedShadowRepair::RepairFailed => {
-            "HQ tried to remove the stale copy but could not — it is most likely still \
-             running. Quit HQ everywhere (and any open `hq` process), and HQ will finish \
-             the cleanup on its next check."
+            "HQ tried to remove the stale copy but could not — it is most likely still in \
+             use by a running `hq` command. Quit any running `hq`, and HQ will finish the \
+             cleanup automatically on its next check; you can also click Update to retry now."
         }
         // The shadow's manifest was not @indigoai-us/hq-cli, so HQ refused to touch it.
         ManagedShadowRepair::ProvenanceRefused => {
@@ -2087,9 +2200,10 @@ pub fn managed_shadow_detail(
              Remove it manually so the updated copy takes over."
         }
         // A precondition (managed prefix not yet holding latest, or the shadow not
-        // safely located) meant HQ did not attempt removal.
+        // safely located) meant HQ did not attempt removal this time.
         ManagedShadowRepair::NotAttempted => {
-            "HQ did not remove it this time; it will retry the cleanup on the next check."
+            "HQ did not remove it this time. HQ retries the cleanup automatically on its next \
+             check; you can also click Update to retry now."
         }
         // Pending/Converged are not surfaced as a non-convergent error, but keep the
         // tail total.
@@ -5300,8 +5414,18 @@ mod tests {
         shadow_version: &str,
     ) -> (PathBuf, PathBuf, PathBuf) {
         let root = tmp.join("toolchain");
-        let prefix = root.join("npm-prefix");
+        // The managed npm prefix at the platform-correct location (npm-prefix on
+        // Windows, npm-global on unix), so ONE fixture drives both the
+        // explicit-prefix removal tests and the internal `managed_npm_prefix_in`
+        // repair probe.
+        let prefix = paths::managed_npm_prefix_in(&root);
         let shadow = root.join("node");
+        // A realistic generated launcher body: npm's cmd-shim embeds the relative
+        // path to the package's bin script, so a real hq shim references
+        // @indigoai-us/hq-cli. Backslash-separated to exercise the normalizer in
+        // `shim_launches_hq_cli`.
+        let shim_body: &[u8] =
+            b"@ECHO off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\bin\\hq.js\" %*\r\n";
         // Managed prefix (Windows-flat layout) holding the delivered version.
         let prefix_pkg = prefix.join("node_modules").join("@indigoai-us").join("hq-cli");
         std::fs::create_dir_all(&prefix_pkg).unwrap();
@@ -5310,7 +5434,7 @@ mod tests {
             format!(r#"{{"name":"@indigoai-us/hq-cli","version":"{prefix_version}"}}"#),
         )
         .unwrap();
-        std::fs::write(prefix.join("hq.cmd"), b"shim").unwrap();
+        std::fs::write(prefix.join("hq.cmd"), shim_body).unwrap();
         // Stale shadow copy: HQ CLI shims + scoped package, plus unrelated files.
         let shadow_pkg = shadow.join("node_modules").join("@indigoai-us").join("hq-cli");
         std::fs::create_dir_all(&shadow_pkg).unwrap();
@@ -5320,7 +5444,7 @@ mod tests {
         )
         .unwrap();
         for shim in ["hq", "hq.cmd", "hq.ps1", "hq-auth-refresh.cmd"] {
-            std::fs::write(shadow.join(shim), b"shim").unwrap();
+            std::fs::write(shadow.join(shim), shim_body).unwrap();
         }
         // Unrelated managed binaries and an unrelated global package: all survive.
         std::fs::write(shadow.join("node.exe"), b"node").unwrap();
@@ -5452,6 +5576,133 @@ mod tests {
             self_target,
             ShadowRemoval::Refused(ManagedShadowRepair::NotAttempted)
         );
+    }
+
+    /// The adjacent-manifest provenance check alone passes when a foreign tool has
+    /// replaced `hq.cmd` while a stale hq-cli package still lingers beside it. The
+    /// per-shim launch check refuses that shape, so the foreign command named `hq`
+    /// is never deleted even though its neighbouring package IS hq-cli.
+    #[test]
+    fn repair_refuses_when_the_resolved_shim_does_not_launch_hq_cli() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("toolchain");
+        let prefix = paths::managed_npm_prefix_in(&root);
+        let shadow = root.join("node");
+        // Managed prefix holds latest.
+        let prefix_pkg = prefix.join("node_modules").join("@indigoai-us").join("hq-cli");
+        std::fs::create_dir_all(&prefix_pkg).unwrap();
+        std::fs::write(
+            prefix_pkg.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
+        )
+        .unwrap();
+        // A GENUINE hq-cli package lingers in the shadow (so the manifest half of
+        // the provenance gate would pass)...
+        let shadow_pkg = shadow.join("node_modules").join("@indigoai-us").join("hq-cli");
+        std::fs::create_dir_all(&shadow_pkg).unwrap();
+        std::fs::write(
+            shadow_pkg.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.0"}"#,
+        )
+        .unwrap();
+        // ...but `hq.cmd` has been replaced by a launcher for a DIFFERENT package.
+        std::fs::write(
+            shadow.join("hq.cmd"),
+            b"@ECHO off\r\n\"%~dp0\\node_modules\\@other\\tool\\bin\\tool.js\" %*\r\n",
+        )
+        .unwrap();
+        let outcome = remove_managed_shadow(
+            shadow.join("hq.cmd").to_str().unwrap(),
+            Some(prefix.to_str().unwrap()),
+            "5.101.7",
+            std::slice::from_ref(&root),
+        );
+        assert_eq!(
+            outcome,
+            ShadowRemoval::Refused(ManagedShadowRepair::ProvenanceRefused)
+        );
+        assert!(
+            shadow.join("hq.cmd").exists(),
+            "a foreign command named hq is never removed"
+        );
+    }
+
+    /// A shim that survives a removal error (a Windows sharing violation while
+    /// `hq` is running) must never be left resolving to a package we already
+    /// deleted. On unix a read-only shadow directory stands in for the locked
+    /// shim: the shims cannot be unlinked, so the shared package MUST survive.
+    #[cfg(unix)]
+    #[test]
+    fn a_shim_removal_failure_preserves_the_shared_package() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (root, prefix, shadow_bin) =
+            fabricate_shadow_toolchain(tmp.path(), "5.101.7", "5.101.0");
+        let shadow_dir = root.join("node");
+        let original = std::fs::metadata(&shadow_dir).unwrap().permissions();
+        // Read+execute only: entries stay readable/traversable (provenance still
+        // resolves) but cannot be unlinked.
+        std::fs::set_permissions(&shadow_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // If the platform still lets us mutate a read-only dir (running as root),
+        // this stand-in cannot simulate the failure — restore and skip.
+        if std::fs::write(shadow_dir.join(".probe"), b"x").is_ok() {
+            let _ = std::fs::remove_file(shadow_dir.join(".probe"));
+            std::fs::set_permissions(&shadow_dir, original).unwrap();
+            return;
+        }
+        let outcome = remove_managed_shadow(
+            shadow_bin.to_str().unwrap(),
+            Some(prefix.to_str().unwrap()),
+            "5.101.7",
+            std::slice::from_ref(&root),
+        );
+        // Restore write so the assertions and TempDir cleanup can proceed.
+        std::fs::set_permissions(&shadow_dir, original).unwrap();
+        assert!(
+            matches!(outcome, ShadowRemoval::Failed(_)),
+            "a shim removal error is a failed repair, got {outcome:?}"
+        );
+        assert!(
+            shadow_dir
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli")
+                .join("package.json")
+                .exists(),
+            "the scoped package must NOT be removed while a shim survives"
+        );
+    }
+
+    /// A machine already blocked for `latest` by an earlier foreign-managed
+    /// episode never reaches the install-path repair, so the blocked-branch probe
+    /// must recognise the exact HQ-DESKTOP-46 shape — and ONLY that shape — before
+    /// running the install-free repair.
+    #[test]
+    fn repairable_managed_shadow_probe_matches_only_the_observed_shape() {
+        // Positive: a stale `<root>/node/hq.cmd` while the managed prefix holds latest.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (root, _prefix, shadow_bin) =
+            fabricate_shadow_toolchain(tmp.path(), "5.101.7", "5.101.0");
+        assert!(resolved_bin_is_repairable_managed_shadow(
+            shadow_bin.to_str().unwrap(),
+            "5.101.7",
+            std::slice::from_ref(&root),
+        ));
+        // Already current: the resolved copy is not stale — nothing to repair.
+        let tmp_cur = tempfile::TempDir::new().unwrap();
+        let (root_cur, _p, cur_bin) =
+            fabricate_shadow_toolchain(tmp_cur.path(), "5.101.7", "5.101.7");
+        assert!(!resolved_bin_is_repairable_managed_shadow(
+            cur_bin.to_str().unwrap(),
+            "5.101.7",
+            std::slice::from_ref(&root_cur),
+        ));
+        // No managed roots: the same-root distinction is off, so no shadow is claimed.
+        assert!(!resolved_bin_is_repairable_managed_shadow(
+            shadow_bin.to_str().unwrap(),
+            "5.101.7",
+            &[],
+        ));
     }
 
     /// The npm remedy ("update it with the tool that installed it") is a dead
