@@ -7,33 +7,14 @@
   // `onsend` callback. Visuals (message row + composer CSS) live here so they travel
   // with the component.
   import { tick } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
   import ReactionBar from './ReactionBar.svelte';
-  import EmojiPicker from './EmojiPicker.svelte';
   import IdentityMark from './IdentityMark.svelte';
-  import SystemEventLine from './SystemEventLine.svelte';
-  import RunCompleteCard from './RunCompleteCard.svelte';
-  import FileAttachmentCard from './FileAttachmentCard.svelte';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
   import type { ShareEvent } from '../../lib/notificationGroups';
-  import type { ChannelMessageAttachment } from '../../lib/channels';
-  import {
-    parseAttachment,
-    parseSystemEvent,
-    shouldHideSystemMessage,
-    type FileAttachmentModel,
-  } from './channelMessageModels';
-  import { sendStatusLabel, type SendStatus } from './sendStateMachine';
-  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
-  import { buildClaudePromptWithSkillCatalog } from '../../lib/skill-catalog-prompt';
-
-  // Quick-reaction tray on human message hover (US-004). Emoji are reaction
-  // content only — not UI chrome.
-  const QUICK_REACT_EMOJI = ['👍', '🎉', '👀'] as const;
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -54,10 +35,6 @@
     // text (e.g. "Pending — waiting for Ada to accept").
     pending?: boolean;
     pendingLabel?: string | null;
-    // Optimistic channel-send status (US-004). When set, the footer shows
-    // "Sending…" / "Delivered" / "Failed — tap to retry" instead of a static
-    // Delivered chip. Failed taps call `onretrysend`.
-    sendStatus?: SendStatus | null;
     // Threads (US-022). A root message carries its own eventId as `rootEventId`
     // and a `replyCount`; when `replyCount > 0` a tap-visible "{n} replies · last
     // {time}" affordance renders under the bubble and opens the thread via
@@ -71,10 +48,6 @@
     // the templated share prompt so the standard Copy-prompt action works; the
     // host passes `onopenshareinclaude` for the Open-in-Claude action.
     share?: ShareEvent | null;
-    // Channel chat-tab wire fields (US-004). Absent-safe — DMs omit them.
-    messageKind?: string | null;
-    systemEvent?: Record<string, unknown> | null;
-    attachment?: ChannelMessageAttachment | null;
   }
 
   interface Props {
@@ -117,17 +90,6 @@
     // place. Used for read-only history or preview panes that have no writable
     // recipient yet.
     readonly?: boolean;
-    // Pagination (US-004): called when the user scrolls to the top of the
-    // timeline so the host can load older messages via fetch_channel cursor.
-    onloadolder?: () => void | Promise<void>;
-    /** True while an older page is in flight — shows a quiet top spinner. */
-    loadingOlder?: boolean;
-    /** True when another older page may exist (nextCursor present). */
-    hasOlder?: boolean;
-    // Optimistic send retry (US-004): tap "Failed — tap to retry" on a row.
-    onretrysend?: (eventId: string) => void | Promise<void>;
-    // File attachment deep-link stub (Files tab lands in US-008).
-    onopenfile?: (model: FileAttachmentModel) => void;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -148,18 +110,10 @@
     ontogglereaction,
     onopenshareinclaude,
     readonly = false,
-    onloadolder,
-    loadingOlder = false,
-    hasOlder = false,
-    onretrysend,
-    onopenfile,
   }: Props = $props();
 
   const messageAuthor = (msg: ConversationMessage) =>
     msg.direction === 'out' ? 'You' : (msg.fromDisplayName?.trim() || 'Unknown sender');
-
-  // Drop unknown/unparseable system rows so date dividers and grouping stay honest.
-  const timelineMessages = $derived(messages.filter((m) => !shouldHideSystemMessage(m)));
 
   let replyText = $state('');
   // Tracks the last successful copy so the "Copied!" feedback stays scoped to
@@ -191,18 +145,8 @@
   let positionedInitialThread = false;
   let previousMessageCount = 0;
   let scrollUpdateGeneration = 0;
-  let loadOlderArmed = true;
   const NEAR_BOTTOM_PX = 72;
-  const NEAR_TOP_PX = 48;
   const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
-
-  // Composer affordances (US-004): emoji insert + slash agent handoff menu.
-  let composerEmojiOpen = $state(false);
-  let agentMenuOpen = $state(false);
-  let agentDispatching = $state(false);
-  let replyInputEl = $state<HTMLTextAreaElement | null>(null);
-
-  const showAgentMenu = $derived(agentMenuOpen && replyText === '/');
 
   function isNearBottom(element: HTMLDivElement): boolean {
     return element.scrollHeight - element.scrollTop - element.clientHeight <= NEAR_BOTTOM_PX;
@@ -212,33 +156,6 @@
     if (!scrollEl) return;
     nearBottom = isNearBottom(scrollEl);
     if (nearBottom) newMessagesAvailable = false;
-
-    // Infinite scroll upward: load older when near the top (US-004).
-    if (
-      onloadolder &&
-      hasOlder &&
-      !loadingOlder &&
-      loadOlderArmed &&
-      scrollEl.scrollTop <= NEAR_TOP_PX
-    ) {
-      loadOlderArmed = false;
-      const prevHeight = scrollEl.scrollHeight;
-      const prevTop = scrollEl.scrollTop;
-      void (async () => {
-        try {
-          await onloadolder();
-        } finally {
-          await tick();
-          if (scrollEl) {
-            // Preserve the reader's viewport after prepending older rows.
-            const delta = scrollEl.scrollHeight - prevHeight;
-            scrollEl.scrollTop = prevTop + delta;
-          }
-          // Re-arm once the user scrolls away from the top edge.
-          loadOlderArmed = true;
-        }
-      })();
-    }
   }
 
   function jumpToLatest(): void {
@@ -261,10 +178,8 @@
   // Preserve the reader's place when older content is in view. Initial hydration
   // and already-bottomed conversations follow new content; otherwise a quiet
   // jump affordance appears instead of stealing the scroll position.
-  // Skip auto-follow when loading older pages (scroll position is restored by
-  // handleThreadScroll after onloadolder).
   $effect(() => {
-    const count = timelineMessages.length;
+    const count = messages.length;
     const previousCount = previousMessageCount;
     const addedMessages = count > previousCount;
     const shouldFollow = !positionedInitialThread || nearBottom;
@@ -281,7 +196,6 @@
     void (async () => {
       await tick();
       if (generation !== scrollUpdateGeneration || !scrollEl) return;
-      if (loadingOlder) return;
       if (shouldFollow) {
         scrollEl.scrollTop = scrollEl.scrollHeight;
         nearBottom = true;
@@ -296,105 +210,19 @@
   async function send(): Promise<void> {
     const text = replyText.trim();
     if (!text || sending) return;
-    // Slash-only agent stub: don't send "/" as a channel message.
-    if (text === '/') return;
-    // Clear immediately so optimistic channel sends don't leave a duplicate
-    // draft in the box. Classic hosts that set `sendError` on failure get the
-    // text restored below so nothing is silently dropped.
-    replyText = '';
-    agentMenuOpen = false;
-    composerEmojiOpen = false;
     await onsend(text);
-    if (sendError) {
-      replyText = text;
-    }
+    // Clear the composer only on a clean send. The parent sets `sendError`
+    // inside `onsend` (synchronously, in its catch) when the send fails, so a
+    // null `sendError` here means success — matching DmDetail's prior behavior
+    // of clearing `replyText` only in the try path.
+    if (!sendError) replyText = '';
   }
 
   function onReplyKeydown(e: KeyboardEvent): void {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       void send();
-      return;
     }
-    if (e.key === 'Escape' && (agentMenuOpen || composerEmojiOpen)) {
-      e.preventDefault();
-      agentMenuOpen = false;
-      composerEmojiOpen = false;
-    }
-  }
-
-  function onReplyInput(): void {
-    // "/" as the first (and only) character surfaces the agent handoff menu.
-    agentMenuOpen = replyText === '/';
-    if (replyText !== '/' && agentMenuOpen) agentMenuOpen = false;
-  }
-
-  function insertComposerEmoji(emoji: string): void {
-    composerEmojiOpen = false;
-    const el = replyInputEl;
-    if (!el) {
-      replyText = `${replyText}${emoji}`;
-      return;
-    }
-    const start = el.selectionStart ?? replyText.length;
-    const end = el.selectionEnd ?? replyText.length;
-    replyText = `${replyText.slice(0, start)}${emoji}${replyText.slice(end)}`;
-    void tick().then(() => {
-      const pos = start + emoji.length;
-      el.focus();
-      el.setSelectionRange(pos, pos);
-    });
-  }
-
-  function onAttachClick(): void {
-    // Attach is a stub until the Files tab / picker lands (US-008). Dispatch
-    // an unhandled event so hosts can listen without this throwing.
-    try {
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('hq:channel-attach', { bubbles: true }));
-      }
-    } catch (err) {
-      console.error('conversation: attach stub failed', err);
-    }
-  }
-
-  async function runAgentHandoff(): Promise<void> {
-    if (agentDispatching) return;
-    agentDispatching = true;
-    agentMenuOpen = false;
-    try {
-      const cfg = await invoke<{
-        hqFolderPath?: string | null;
-        companySlug?: string | null;
-      }>('get_config');
-      const folder = cfg?.hqFolderPath ?? '';
-      const companySlug = cfg?.companySlug ?? null;
-      const basePrompt = [
-        'Continue from the HQ desktop Messages channel composer.',
-        '',
-        'The user invoked the / agent handoff from a channel chat tab.',
-      ].join('\n');
-      const prompt = await buildClaudePromptWithSkillCatalog(basePrompt, companySlug);
-      const url = buildClaudeCodeUrl({ folder, prompt });
-      await invoke('open_claude_code_link', { url });
-      // Clear the slash trigger after a successful handoff.
-      if (replyText === '/') replyText = '';
-    } catch (err) {
-      console.error('conversation: agent handoff failed', err);
-    } finally {
-      agentDispatching = false;
-    }
-  }
-
-  function messageAttachment(msg: ConversationMessage): FileAttachmentModel | null {
-    return parseAttachment(msg.attachment ?? null);
-  }
-
-  function isSpecialTimelineRow(msg: ConversationMessage): boolean {
-    if (shouldHideSystemMessage(msg)) return true;
-    const system = parseSystemEvent(msg.systemEvent ?? null);
-    if (system) return true;
-    return false;
   }
 
   function formatTime(iso: string): string {
@@ -415,19 +243,12 @@
   }
 
   function formatDateSeparator(iso: string): string {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return '';
-    const today = new Date();
-    const start = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-    const diffDays = Math.round((start(today) - start(date)) / 86_400_000);
-    if (diffDays === 0) return 'TODAY';
-    if (diffDays === 1) return 'YESTERDAY';
     try {
       return new Intl.DateTimeFormat(undefined, {
-        weekday: 'short',
         month: 'short',
         day: 'numeric',
-      }).format(date).toUpperCase();
+        year: 'numeric',
+      }).format(new Date(iso));
     } catch {
       return '';
     }
@@ -435,10 +256,7 @@
 
   function startsNewDay(index: number): boolean {
     if (index === 0) return true;
-    return (
-      dayKey(timelineMessages[index - 1]?.createdAt ?? '') !==
-      dayKey(timelineMessages[index]?.createdAt ?? '')
-    );
+    return dayKey(messages[index - 1]?.createdAt ?? '') !== dayKey(messages[index]?.createdAt ?? '');
   }
 
   function senderKey(message: ConversationMessage): string {
@@ -450,8 +268,6 @@
     current: ConversationMessage | undefined,
   ): boolean {
     if (!previous || !current) return false;
-    // System / run-complete rows never group with human bubbles.
-    if (isSpecialTimelineRow(previous) || isSpecialTimelineRow(current)) return false;
     if (previous.direction !== current.direction) return false;
     if (senderKey(previous) !== senderKey(current)) return false;
     if (dayKey(previous.createdAt) !== dayKey(current.createdAt)) return false;
@@ -464,32 +280,12 @@
     return elapsed >= 0 && elapsed <= MESSAGE_GROUP_WINDOW_MS;
   }
 
-  function isHumanBubble(message: ConversationMessage | undefined): boolean {
-    if (!message) return false;
-    if (isSpecialTimelineRow(message)) return false;
-    return Boolean(message.body?.trim() || messageAttachment(message) || message.share);
-  }
-
-  function previousHumanBubble(index: number): ConversationMessage | undefined {
-    for (let i = index - 1; i >= 0; i -= 1) {
-      if (isHumanBubble(timelineMessages[i])) return timelineMessages[i];
-    }
-    return undefined;
-  }
-
-  function nextHumanBubble(index: number): ConversationMessage | undefined {
-    for (let i = index + 1; i < timelineMessages.length; i += 1) {
-      if (isHumanBubble(timelineMessages[i])) return timelineMessages[i];
-    }
-    return undefined;
-  }
-
   function startsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(previousHumanBubble(index), timelineMessages[index]);
+    return !messagesShareGroup(messages[index - 1], messages[index]);
   }
 
   function endsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(timelineMessages[index], nextHumanBubble(index));
+    return !messagesShareGroup(messages[index], messages[index + 1]);
   }
 
   // Short relative-time stamp for the "last {time}" reply affordance (US-022).
@@ -574,25 +370,9 @@
   function actionPending(id: string, kind: MessageActionKind): boolean {
     return kind === 'open-share' ? openingShareIds.has(id) : isCopying(id, kind);
   }
-
-  function footerStatus(msg: ConversationMessage): string | null {
-    if (msg.pending) return sanitizeVisibleIdentifiers(msg.pendingLabel || 'Pending');
-    if (msg.sendStatus) return sendStatusLabel(msg.sendStatus);
-    if (msg.direction === 'out') return 'Delivered';
-    return null;
-  }
-
-  function isFailedSend(msg: ConversationMessage): boolean {
-    return msg.sendStatus === 'failed';
-  }
-
-  function retryFailedSend(msg: ConversationMessage): void {
-    if (!isFailedSend(msg) || !onretrysend) return;
-    void onretrysend(msg.eventId);
-  }
 </script>
 
-<div class="dm-thread-wrap chat-shell">
+<div class="dm-thread-wrap">
   <div
     class="dm-thread"
     bind:this={scrollEl}
@@ -625,39 +405,14 @@
       </div>
     {/if}
 
-    {#if loadingOlder}
-      <p class="dm-thread-status dm-thread-older" aria-live="polite">
-        <span class="inline-spinner" aria-hidden="true"></span>
-        Loading earlier messages…
-      </p>
-    {/if}
-
-    {#each timelineMessages as msg, index (msg.eventId)}
-    {@const systemModel = parseSystemEvent(msg.systemEvent ?? null)}
-    {@const attachmentModel = messageAttachment(msg)}
+    {#each messages as msg, index (msg.eventId)}
     {@const groupStart = startsMessageGroup(index)}
     {@const groupEnd = endsMessageGroup(index)}
     {#if startsNewDay(index)}
-      <div class="date-separator" data-testid="date-separator" aria-label={formatDateSeparator(msg.createdAt)}>
+      <div class="date-separator" aria-label={formatDateSeparator(msg.createdAt)}>
         <span>{formatDateSeparator(msg.createdAt)}</span>
       </div>
     {/if}
-    {#if systemModel?.kind === 'line'}
-      <SystemEventLine model={systemModel} who={messageAuthor(msg)} />
-    {:else if systemModel?.kind === 'run_complete'}
-      <div class="dm-msg dm-msg-in dm-msg-group-start" data-testid="run-complete-row">
-        <span class="dm-msg-avatar">
-          <IdentityMark kind="agent" label={messageAuthor(msg)} size="regular" />
-        </span>
-        <div class="dm-msg-column">
-          <div class="dm-msg-meta">
-            <span class="dm-msg-author">{messageAuthor(msg)}</span>
-            <span class="dm-msg-header-time">{formatTime(msg.createdAt)}</span>
-          </div>
-          <RunCompleteCard model={systemModel} />
-        </div>
-      </div>
-    {:else if msg.body?.trim() || attachmentModel || msg.share}
       <div
         class="dm-msg dm-msg-{msg.direction}"
         class:dm-msg-group-start={groupStart}
@@ -665,11 +420,7 @@
       >
       {#if groupStart}
         <span class="dm-msg-avatar">
-          {#if (msg.fromPersonUid ?? '').startsWith('agt_') || /agent/i.test(messageAuthor(msg))}
-            <IdentityMark kind="agent" label={messageAuthor(msg)} size="regular" />
-          {:else}
-            <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
-          {/if}
+          <IdentityMark kind="person" label={messageAuthor(msg)} size="regular" />
         </span>
       {:else}
         <span class="dm-msg-avatar-spacer" aria-hidden="true"></span>
@@ -683,31 +434,6 @@
       {:else}
         <span class="sr-only">From {messageAuthor(msg)} at {formatTime(msg.createdAt)}</span>
       {/if}
-      <!-- Hover tray: right-aligned timestamp + quick reactions (US-004). -->
-      <div class="dm-hover-tray">
-        <span class="dm-hover-time">{formatTime(msg.createdAt)}</span>
-        {#if ontogglereaction && !msg.pending && msg.sendStatus !== 'sending' && msg.sendStatus !== 'pending'}
-          <div class="dm-quick-react" role="group" aria-label="Quick reactions">
-            {#each QUICK_REACT_EMOJI as emoji (emoji)}
-              <button
-                type="button"
-                class="dm-quick-react-btn"
-                onclick={() => ontogglereaction(msg.eventId, emoji)}
-                aria-label={`React with ${emoji}`}
-              >
-                {emoji}
-              </button>
-            {/each}
-            <div class="dm-quick-react-add">
-              <ReactionBar
-                messageId={msg.eventId}
-                reactions={[]}
-                ontoggle={ontogglereaction}
-              />
-            </div>
-          </div>
-        {/if}
-      </div>
       <div
         class="dm-bubble"
         class:dm-bubble-share={!!msg.share}
@@ -779,17 +505,12 @@
             {/if}
           </div>
         {:else}
-          {#if attachmentModel}
-            <FileAttachmentCard model={attachmentModel} onopen={onopenfile} />
-          {/if}
-          {#if msg.body?.trim()}
-            <div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>
-          {/if}
+          <div class="dm-bubble-body selectable-text">{@html renderMessageBodyMarkdown(msg.body)}</div>
         {/if}
-        {#if msg.details && msg.body?.trim()}
+        {#if msg.details}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
         {/if}
-        {#if (msg.prompt || msg.share) && msg.body?.trim()}
+        {#if msg.prompt || msg.share}
           <div class="dm-bubble-cta-row">
             {#if msg.prompt}
               <button
@@ -860,42 +581,19 @@
           {/if}
         </button>
       {/if}
-      {#if ontogglereaction && !msg.pending && msg.sendStatus !== 'sending' && msg.sendStatus !== 'pending'}
-        <!-- Existing reaction pills always visible; add-trigger also in hover tray. -->
-        {#if (reactions[msg.eventId]?.length ?? 0) > 0}
-          <ReactionBar
-            messageId={msg.eventId}
-            reactions={reactions[msg.eventId]}
-            ontoggle={ontogglereaction}
-          />
-        {/if}
+      {#if ontogglereaction && !msg.pending}
+        <ReactionBar
+          messageId={msg.eventId}
+          reactions={reactions[msg.eventId]}
+          ontoggle={ontogglereaction}
+        />
       {/if}
       {#if msg.pending}
         <span class="dm-msg-pending">
           {sanitizeVisibleIdentifiers(msg.pendingLabel || 'Pending')}
         </span>
-      {:else if msg.sendStatus}
-        {#if isFailedSend(msg)}
-          <button
-            type="button"
-            class="dm-msg-time dm-msg-send-failed"
-            data-testid="send-failed"
-            onclick={() => retryFailedSend(msg)}
-          >
-            {footerStatus(msg)}
-          </button>
-        {:else}
-          <span
-            class="dm-msg-time"
-            class:dm-msg-sending={msg.sendStatus === 'sending' || msg.sendStatus === 'pending'}
-            data-testid="send-status"
-            data-status={msg.sendStatus}
-          >
-            {footerStatus(msg)}
-          </span>
-        {/if}
       {:else if msg.direction === 'out' && groupEnd}
-        <span class="sr-only">Delivered</span>
+        <span class="dm-msg-time">Delivered</span>
       {:else if !groupEnd}
         <span class="sr-only">
           Sent at {formatTime(msg.createdAt)}{msg.direction === 'out' ? ' · Delivered' : ''}
@@ -903,13 +601,7 @@
       {/if}
       </div>
       </div>
-    {/if}
     {/each}
-    {#if !loading && !error && timelineMessages.length === 0}
-      <div class="dm-thread-empty" data-testid="conversation-empty" role="status">
-        No messages yet
-      </div>
-    {/if}
   </div>
 
   {#if newMessagesAvailable}
@@ -931,105 +623,31 @@
   </div>
 {:else}
   <div class="dm-reply">
-    <div class="dm-reply-composer">
-      {#if showAgentMenu}
-        <div class="agent-menu" role="listbox" aria-label="Agent commands" data-testid="agent-slash-menu">
-          <button
-            type="button"
-            class="agent-menu-row"
-            role="option"
-            aria-selected="true"
-            disabled={agentDispatching}
-            onclick={() => void runAgentHandoff()}
-          >
-            <span class="agent-menu-label">{agentDispatching ? 'Opening agent…' : 'Run an agent'}</span>
-            <span class="agent-menu-hint">Claude Code handoff</span>
-          </button>
-        </div>
-      {/if}
-      <textarea
-        class="dm-reply-input"
-        bind:this={replyInputEl}
-        bind:value={replyText}
-        onkeydown={onReplyKeydown}
-        oninput={onReplyInput}
-        {placeholder}
-        rows="3"
-        disabled={sending}
-        aria-label="Reply message"
-      ></textarea>
-    </div>
+    <textarea
+      class="dm-reply-input"
+      bind:value={replyText}
+      onkeydown={onReplyKeydown}
+      {placeholder}
+      rows="3"
+      disabled={sending}
+      aria-label="Reply message"
+    ></textarea>
     <div class="dm-reply-footer">
-      <div class="dm-reply-tools">
-        <button
-          type="button"
-          class="dm-tool-btn"
-          onclick={onAttachClick}
-          aria-label="Attach a file"
-          title="Attach a file"
-          data-testid="composer-attach"
-        >
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
-        <div class="dm-tool-emoji-wrap">
-          <button
-            type="button"
-            class="dm-tool-btn"
-            onclick={() => (composerEmojiOpen = !composerEmojiOpen)}
-            aria-label="Insert emoji"
-            title="Insert emoji"
-            aria-expanded={composerEmojiOpen}
-            aria-haspopup="menu"
-            data-testid="composer-emoji"
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <circle cx="8" cy="8" r="6.25" stroke="currentColor" stroke-width="1.3" />
-              <circle cx="5.75" cy="6.75" r="0.85" fill="currentColor" />
-              <circle cx="10.25" cy="6.75" r="0.85" fill="currentColor" />
-              <path d="M5.5 9.75c.7 1 1.55 1.5 2.5 1.5s1.8-.5 2.5-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-            </svg>
-          </button>
-          {#if composerEmojiOpen}
-            <EmojiPicker onpick={insertComposerEmoji} onclose={() => (composerEmojiOpen = false)} />
-          {/if}
-        </div>
-        {#if replyText.startsWith('/') || showAgentMenu}
-          <button
-            type="button"
-            class="dm-tool-btn"
-            aria-label="Run an agent"
-            title="Type / to run an agent"
-            onclick={() => {
-              if (!replyText.startsWith('/')) replyText = `/${replyText}`;
-              replyInputEl?.focus();
-            }}
-          >
-            <span aria-hidden="true" style="font: 600 13px/1 var(--font-mono, ui-monospace);">/</span>
-          </button>
-        {/if}
-      </div>
-      <!-- S4: no persistent "⌘↵ to send" hint — not in the design mock. -->
       {#if sendError}
         <span class="dm-reply-error" role="alert">{sendError}</span>
+      {:else}
+        <span class="dm-reply-hint">⌘↵ to send</span>
       {/if}
       <button
         class="btn btn-send"
         onclick={send}
-        disabled={sending || replyText.trim().length === 0 || replyText.trim() === '/'}
+        disabled={sending || replyText.trim().length === 0}
         aria-busy={sending}
-        aria-label={sending ? 'Sending' : 'Send'}
-        title={sending ? 'Sending…' : 'Send'}
-        data-testid="composer-send"
       >
         {#if sending}
           <span class="inline-spinner" aria-hidden="true"></span>
-        {:else}
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z" />
-          </svg>
         {/if}
+        {sending ? 'Sending…' : 'Send'}
       </button>
     </div>
   </div>
@@ -1049,33 +667,21 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 32px 24px 12px;
+    padding: 1rem 1.25rem;
     display: flex;
     flex-direction: column;
     gap: 0;
     scrollbar-width: thin;
-    scrollbar-color: var(--line, var(--pop-muted)) transparent;
+    scrollbar-color: var(--pop-muted) transparent;
   }
 
   .dm-thread::-webkit-scrollbar {
-    width: 4px;
+    width: 6px;
   }
 
   .dm-thread::-webkit-scrollbar-thumb {
-    background: var(--line, var(--pop-hover));
-    border-radius: 999px;
-  }
-
-  .dm-thread::-webkit-scrollbar-thumb:hover {
-    background: var(--line2, var(--pop-hover));
-  }
-
-  .dm-thread-empty {
-    margin: auto;
-    padding: 48px 16px;
-    color: var(--t3, var(--pop-muted));
-    font-size: 13px;
-    text-align: center;
+    background: var(--pop-hover);
+    border-radius: 3px;
   }
 
   .dm-thread-status {
@@ -1174,9 +780,9 @@
   }
 
   .dm-msg-author {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 600;
-    color: var(--t1, var(--pop-text));
+    color: var(--pop-muted);
     margin: 0 0.25rem 0.125rem;
   }
 
@@ -1273,16 +879,16 @@
   }
 
   .dm-bubble-body {
-    --message-markdown-text: var(--t2, var(--fg, var(--pop-text, #e8e8e8)));
-    --message-markdown-muted: var(--t3, var(--muted, var(--pop-muted, #a0a0a0)));
-    --message-markdown-border: var(--line, var(--border, var(--pop-divider, rgba(255, 255, 255, 0.14))));
-    --message-markdown-surface: var(--raised, var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06))));
+    --message-markdown-text: var(--fg, var(--pop-text, #e8e8e8));
+    --message-markdown-muted: var(--muted, var(--pop-muted, #a0a0a0));
+    --message-markdown-border: var(--border, var(--pop-divider, rgba(255, 255, 255, 0.14)));
+    --message-markdown-surface: var(--surface-raise, var(--c-field-bg, rgba(255, 255, 255, 0.06)));
     min-width: 0;
     max-width: 100%;
     margin: 0;
-    font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif));
-    font-size: 13px;
-    line-height: 19px;
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    font-size: var(--text-base);
+    line-height: 1.55;
     color: var(--message-markdown-text);
     white-space: normal;
     overflow-wrap: anywhere;
@@ -1525,17 +1131,21 @@
   }
 
   .dm-bubble-details {
-    display: none;
-    border: 0;
-    border-top: 1px solid var(--line, var(--pop-border));
-    border-radius: 0;
+    font-size: var(--text-base);
+    line-height: 1.5;
+    color: var(--pop-text);
     background: transparent;
+    border: 0;
+    border-top: 1px solid var(--c-field-border);
+    padding: 0.5rem 0 0;
+    border-radius: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   .dm-msg-time {
-    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: 10px;
-    color: var(--t3, var(--pop-muted));
+    font-size: var(--text-base);
+    color: var(--pop-muted);
     margin: 0.125rem 0.25rem 0;
   }
 
@@ -1552,14 +1162,10 @@
   .date-separator {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin: 8px 24px;
-    color: var(--t3, var(--pop-muted));
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    color: var(--pop-muted);
+    font-size: var(--text-base);
   }
 
   .date-separator::before,
@@ -1567,7 +1173,7 @@
     content: '';
     height: 1px;
     flex: 1;
-    background: var(--line, var(--pop-divider));
+    background: var(--pop-divider);
   }
 
   .sr-only {
@@ -1645,29 +1251,18 @@
   }
 
   .btn-copy {
-    padding: 3px 10px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 500;
-    background: var(--btn-bg, var(--pop-hover));
-    color: var(--t1, var(--pop-text));
+    background: var(--pop-hover);
+    color: var(--pop-text);
   }
 
   .btn-copy:hover {
-    border-color: var(--line2, var(--c-field-border));
-    background: var(--btn-bg, var(--c-field-bg));
+    background: var(--c-field-bg);
   }
 
   .dm-bubble-cta-row {
-    display: none;
+    display: flex;
     flex-wrap: wrap;
     gap: 0.375rem;
-  }
-
-  .dm-msg:hover .dm-bubble-cta-row,
-  .dm-msg:focus-within .dm-bubble-cta-row {
-    display: flex;
   }
 
   .dm-action-error {
@@ -1812,193 +1407,35 @@
     border-radius: 0;
   }
 
-  /* ── Hover tray (timestamp + quick reactions) ─────────────────────────── */
-
-  .dm-hover-tray {
-    position: absolute;
-    top: 0;
-    right: 0;
-    z-index: 3;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    padding: 0.125rem 0.25rem;
-    border: 1px solid var(--border, var(--pop-border));
-    border-radius: 8px;
-    background: var(--pop-bg, var(--surface-panel));
-    box-shadow: 0 4px 14px color-mix(in srgb, #000 12%, transparent);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.12s ease;
-  }
-
-  .dm-msg:hover .dm-hover-tray,
-  .dm-msg:focus-within .dm-hover-tray {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  .dm-hover-time {
-    font-size: var(--text-xs, 0.75rem);
-    font-variant-numeric: tabular-nums;
-    color: var(--muted, var(--pop-muted));
-    white-space: nowrap;
-    padding: 0 0.25rem;
-  }
-
-  .dm-quick-react {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.125rem;
-  }
-
-  .dm-quick-react-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.625rem;
-    height: 1.625rem;
-    padding: 0;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    font-size: 0.9375rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .dm-quick-react-btn:hover,
-  .dm-quick-react-btn:focus-visible {
-    background: var(--row-hover, var(--pop-hover));
-    outline: none;
-  }
-
-  .dm-quick-react-add {
-    display: inline-flex;
-  }
-
-  .dm-quick-react-add :global(.reaction-bar) {
-    margin: 0;
-  }
-
-  .dm-msg-send-failed {
-    border: 0;
-    background: transparent;
-    color: var(--red, var(--popover-danger));
-    font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
-    cursor: pointer;
-    padding: 0;
-    margin: 0.125rem 0.25rem 0;
-  }
-
-  .dm-msg-send-failed:hover,
-  .dm-msg-send-failed:focus-visible {
-    text-decoration: underline;
-    outline: none;
-  }
-
-  .dm-msg-sending {
-    color: var(--muted, var(--pop-muted));
-  }
-
   /* ── Reply composer ───────────────────────────────────────────────────── */
 
   .dm-reply {
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-    margin: 12px 24px 20px;
-    padding: 12px 8px 8px 14px;
-    background: var(--raised, var(--pop-hover));
-    border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 10px;
-    transition: border-color 0.12s;
-  }
-
-  .dm-reply:focus-within {
-    border-color: var(--border-active, var(--c-field-border));
-  }
-
-  .dm-reply-composer {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .agent-menu {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: calc(100% + 0.25rem);
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--border, var(--pop-border));
-    border-radius: 8px;
-    background: var(--pop-bg, var(--surface-panel));
-    box-shadow: 0 8px 24px color-mix(in srgb, #000 14%, transparent);
-    overflow: hidden;
-  }
-
-  .agent-menu-row {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.125rem;
-    width: 100%;
-    padding: 0.625rem 0.75rem;
-    border: 0;
-    background: transparent;
-    color: var(--fg, var(--pop-text));
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .agent-menu-row:hover,
-  .agent-menu-row:focus-visible {
-    background: var(--row-hover, var(--pop-hover));
-    outline: none;
-  }
-
-  .agent-menu-row:disabled {
-    opacity: 0.6;
-    cursor: progress;
-  }
-
-  .agent-menu-label {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-
-  .agent-menu-hint {
-    font-size: var(--text-sm, 0.8125rem);
-    color: var(--muted, var(--pop-muted));
+    gap: 0.5rem;
+    padding: 0.875rem 1.25rem 1rem;
+    border-top: 1px solid var(--pop-divider);
   }
 
   .dm-reply-input {
     width: 100%;
     box-sizing: border-box;
     resize: none;
-    padding: 0;
-    border-radius: 0;
-    border: none;
-    background: none;
-    color: var(--t1, var(--pop-text));
-    font: 400 13px var(--font-ui, inherit);
-    line-height: 1.45;
-  }
-
-  .dm-reply-input::placeholder {
-    color: var(--t3, var(--pop-muted));
+    padding: 0.5rem 0.625rem;
+    border-radius: 8px;
+    border: 1px solid var(--pop-border);
+    background: var(--pop-hover);
+    color: var(--pop-text);
+    font-family: inherit;
+    font-size: var(--text-base);
+    line-height: 1.4;
   }
 
   .dm-reply-input:focus {
     outline: none;
+    border-color: var(--c-field-border);
+    background: var(--c-field-bg);
   }
 
   .dm-reply-input:disabled {
@@ -2011,43 +1448,9 @@
     gap: 0.75rem;
   }
 
-  .dm-reply-tools {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    margin-left: -6px;
-  }
-
-  .dm-tool-btn {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    padding: 0;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t3, var(--pop-muted));
-    cursor: pointer;
-    transition: color 0.12s, background 0.12s;
-  }
-
-  .dm-tool-btn:hover,
-  .dm-tool-btn:focus-visible {
-    background: var(--hover, var(--pop-hover));
-    color: var(--t1, var(--pop-text));
-    outline: none;
-  }
-
-  .dm-tool-emoji-wrap {
-    position: relative;
-    display: inline-flex;
-  }
-
   .dm-reply-hint {
-    font-size: var(--type-metadata, 11px);
+    font-size: var(--text-base);
     color: var(--pop-muted);
-    opacity: 0.65;
   }
 
   .dm-reply-error {
@@ -2057,35 +1460,18 @@
   }
 
   .btn-send {
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 26px;
-    padding: 0;
     margin-left: auto;
-    border-radius: 6px;
-    background: #c9d6e4;
-    color: #101014;
-    transition: opacity 0.15s, transform 0.1s;
+    background: var(--c-btn-bg);
+    color: var(--c-btn-fg);
   }
 
   .btn-send:hover:not(:disabled) {
-    opacity: 0.88;
-  }
-
-  .btn-send:active:not(:disabled) {
-    transform: scale(0.95);
+    filter: brightness(0.94);
   }
 
   .btn-send:disabled {
     opacity: 0.45;
     cursor: default;
-  }
-
-  :global(html[data-force-theme='light']) .btn-send,
-  :global(:root[data-force-theme='light']) .btn-send {
-    background: #3e5a75;
-    color: #ffffff;
   }
 
   /* ── Compact communications window ──────────────────────────────────────
@@ -2474,10 +1860,10 @@
   :global([data-window='messages']) .dm-msg,
   :global(html[data-window='dm-detail']) .dm-msg {
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-columns: 28px minmax(0, 720px);
     align-self: stretch;
     align-items: start;
-    gap: 12px;
+    gap: 0.625rem;
     width: 100%;
     max-width: none;
     margin-top: 0.1875rem;
@@ -2504,13 +1890,11 @@
   .dm-msg-avatar,
   .dm-msg-avatar-spacer {
     display: block;
-    width: 32px;
-    flex: 0 0 32px;
+    width: 28px;
     min-height: 1px;
   }
 
   .dm-msg-column {
-    position: relative;
     min-width: 0;
     max-width: 720px;
     display: flex;
@@ -2548,23 +1932,13 @@
     white-space: nowrap;
   }
 
-  /* S1: timestamps hidden at rest, hover-revealed — mono 10px per the
-     canonical token contract (.when: opacity 0 at rest, F1 10px). */
   .dm-msg-header-time {
     flex: 0 0 auto;
     color: var(--muted-3, var(--pop-muted));
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 10px;
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.45;
-    opacity: 0;
-    transition: opacity 0.12s ease;
-  }
-
-  .dm-msg:hover .dm-msg-header-time,
-  .dm-msg:focus-within .dm-msg-header-time {
-    opacity: 1;
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+    font-size: var(--text-xs, 0.75rem);
+    font-weight: 450;
+    line-height: 1.3;
   }
 
   .dm-bubble,

@@ -4,10 +4,8 @@
 // Pure-model tests drive the route/sidebar derivations; source contracts lock
 // the DesktopApp wiring (landing init, persistence key, mount branches).
 // Leave __tests__/stories/US-007.test.ts alone — legacy suite from an older project.
-// US-018: V4_NAV_ITEMS / getV4SidebarModel / MissionControlPage retired —
-// company rows use sortV4CompaniesConnectedFirst; mission-control remaps home.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../src/lib/workspaces';
@@ -21,7 +19,7 @@ import {
   LIBRARY_SECTIONS,
   resolvePendingDesktopRoute,
 } from '../../src/desktop-alt/route';
-import { sortV4CompaniesConnectedFirst } from '../../src/desktop-alt/v4/model';
+import { getV4SidebarModel, V4_NAV_ITEMS } from '../../src/desktop-alt/v4/model';
 
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 const desktopApp = readFileSync(root('src/desktop-alt/DesktopApp.svelte'), 'utf8');
@@ -57,33 +55,28 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-007: sidebar has no Home / Mission Control / Companies rows and lands on a company', () => {
-  it('retires legacy V4 primary nav; ChatSidebar + command palette own destinations (US-018)', () => {
-    // US-018 removed V4_NAV_ITEMS / V4Sidebar. Primaries live in the palette +
-    // hotkeys; conversations live in ChatSidebar.
-    expect(existsSync(root('src/desktop-alt/v4/V4Sidebar.svelte'))).toBe(false);
-    expect(existsSync(root('src/desktop-alt/pages/MissionControlPage.svelte'))).toBe(false);
-    expect(desktopApp).toContain('<ChatSidebar');
-    expect(desktopApp).toContain("id: 'command-go-notifications'");
-    expect(desktopApp).toContain("id: 'command-go-messages'");
-    expect(desktopApp).toContain("id: 'command-go-meetings'");
-    expect(desktopApp).toContain("id: 'command-go-marketplace'");
-    expect(desktopApp).toContain("id: 'command-go-library'");
-    expect(desktopApp).toContain("id: 'command-go-files'");
-    for (const gone of [
-      "id: 'command-go-mission-control'",
-      "id: 'command-go-companies'",
-      "id: 'command-go-inbox'",
-    ]) {
-      expect(desktopApp).not.toContain(gone);
+  it('renders Inbox / Messages / Meetings / Marketplace / Library / Files nav rows', () => {
+    // The restored Messages workspace is first-class; the US-007 invariants
+    // (no Home/Mission Control/Companies rows, no dead hotkey slots) still hold.
+    expect(V4_NAV_ITEMS.map((item) => item.label)).toEqual([
+      'Inbox',
+      'Messages',
+      'Meetings',
+      'Marketplace',
+      'Library',
+      'Files',
+    ]);
+    for (const gone of ['Home', 'Mission Control', 'Companies', 'Notifications']) {
+      expect(V4_NAV_ITEMS.some((item) => item.label === gone)).toBe(false);
     }
   });
 
-  it('lands a fresh desktop on Messages — never a company page (design-gap G1)', () => {
-    // The chat-first shell always opens on the conversation surface; the
-    // legacy company/project-overview landing routed real data there.
-    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'messages' });
-    // Even a workspace-less install lands on the Messages empty state.
-    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'messages' });
+  it('lands a fresh desktop on the first sidebar company row (connected-first order)', () => {
+    // No persisted slug → the first rendered company row: Acme (alpha within
+    // the connected group) leads Indigo; the local-only row trails both.
+    expect(getDesktopLandingRoute(workspaces, null)).toEqual({ kind: 'company', slug: 'acme' });
+    // A workspace-less install falls back to Home, the palette-only exception surface.
+    expect(getDesktopLandingRoute([], null)).toEqual({ kind: 'home' });
     // DesktopApp seeds its route state from the landing helper + the slug
     // persisted by the previous session (frozen at startup).
     expect(desktopApp).toContain('const initialLastCompanySlug = readLastCompanySlug()');
@@ -92,23 +85,21 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
     );
   });
 
-  it('Home stays palette-only; Mission Control deep-links remap to Home (US-018)', () => {
+  it('Home and Mission Control stay reachable via the command palette only — no hotkey slots', () => {
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
-    // US-018: MissionControlPage retired — deep link lands on Home, never a dead route.
-    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'home' });
-    expect(fromV4Route({ kind: 'mission-control' })).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
     const companies = getDesktopCompanies(workspaces);
     for (const key of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       const routed = getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
       expect(routed?.kind).not.toBe('home');
-      expect(routed?.kind).not.toBe('mission-control' as never);
+      expect(routed?.kind).not.toBe('mission-control');
     }
     expect(desktopApp).toContain("id: 'command-go-home'");
-    expect(desktopApp).not.toContain("id: 'command-go-mission-control'");
-    // Home palette entry carries no ⌘ shortcut.
+    expect(desktopApp).toContain("id: 'command-go-mission-control'");
+    // Their palette entries carry no ⌘ shortcut anymore.
     const homeEntry = desktopApp.slice(
       desktopApp.indexOf("id: 'command-go-home'"),
-      desktopApp.indexOf("id: 'command-go-notifications'"),
+      desktopApp.indexOf("id: 'command-go-mission-control'"),
     );
     expect(homeEntry).not.toContain('shortcut');
   });
@@ -123,10 +114,17 @@ describe('US-007: sidebar has no Home / Mission Control / Companies rows and lan
   });
 });
 
-describe('US-007: last-visited company landing (superseded by G1)', () => {
-  it('ignores a persisted last-visited slug — landing is always Messages', () => {
-    expect(getDesktopLandingRoute(workspaces, 'indigo')).toEqual({ kind: 'messages' });
-    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({ kind: 'messages' });
+describe('US-007: last-visited company landing (persisted)', () => {
+  it('lands on company B when B was the last visited and still exists', () => {
+    expect(getDesktopLandingRoute(workspaces, 'indigo')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+    });
+    // A stale slug (workspace removed) falls back to the first company row.
+    expect(getDesktopLandingRoute(workspaces, 'ghost')).toEqual({
+      kind: 'company',
+      slug: 'acme',
+    });
   });
 
   it('DesktopApp persists the visited company and re-resolves landing after the real workspace load', () => {
@@ -145,8 +143,8 @@ describe('US-007: last-visited company landing (superseded by G1)', () => {
 });
 
 describe('US-007: Marketplace is a top-level destination', () => {
-  it('has a palette/hotkey path, the ⌘3 hotkey, and its own route key', () => {
-    expect(desktopApp).toContain("id: 'command-go-marketplace'");
+  it('has a sidebar row, the ⌘3 hotkey, and its own route key', () => {
+    expect(V4_NAV_ITEMS.some((item) => item.id === 'marketplace')).toBe(true);
     expect(
       getDesktopHotkeyRoute(
         { key: '3', metaKey: true, ctrlKey: false },
@@ -155,9 +153,9 @@ describe('US-007: Marketplace is a top-level destination', () => {
     ).toEqual({ kind: 'marketplace' });
     expect(fromV4Route({ kind: 'marketplace' })).toEqual({ kind: 'marketplace' });
     expect(getDesktopRouteKey({ kind: 'marketplace' })).toBe('marketplace');
-    // Marketplace is a global surface — no company row is active.
-    const model = sortV4CompaniesConnectedFirst(workspaces);
-    expect(model.every((row) => !row.active)).toBe(true);
+    // Exactly one active row when the Marketplace route is on screen.
+    const model = getV4SidebarModel({ kind: 'marketplace' }, workspaces);
+    expect(model.nav.filter((row) => row.active).map((row) => row.id)).toEqual(['marketplace']);
   });
 
   it('mounts the marketplace surface as a full page (no secondary sidebar)', () => {
@@ -174,24 +172,22 @@ describe('US-007: Marketplace is a top-level destination', () => {
       'installed',
       'profile',
     ]);
-    // US-017: library secondary column removed (overlay owns nav); sections stay.
-    expect(LIBRARY_SECTIONS.some((s) => s.label === 'Marketplace')).toBe(false);
-    expect(getDesktopSecondarySidebar({ kind: 'library' }, workspaces)).toBeNull();
+    const library = getDesktopSecondarySidebar({ kind: 'library' }, workspaces);
+    expect(library?.items.some((item) => item.label === 'Marketplace')).toBe(false);
     expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({ kind: 'marketplace' });
     expect(resolvePendingDesktopRoute('marketplace')).toEqual({ kind: 'marketplace' });
   });
 });
 
 describe('US-007: hotkeys and palette rebalance with no dead slots', () => {
-  it('⌘1..⌘4 cover the four primaries (Notifications replaces Inbox) and ⌘5..⌘8 cover companies in sidebar order', () => {
+  it('⌘1..⌘4 cover the four primaries (Inbox merged) and ⌘5..⌘8 cover companies in sidebar order', () => {
     const companies = getDesktopCompanies([
       ...workspaces,
       workspace({ slug: 'zed', displayName: 'Zed', state: 'synced' }),
     ]);
     const meta = (key: string) =>
       getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
-    // US-018: former Inbox hotkey remaps onto Notifications.
-    expect(meta('1')).toEqual({ kind: 'notifications' });
+    expect(meta('1')).toEqual({ kind: 'inbox' });
     expect(meta('2')).toEqual({ kind: 'meetings' });
     expect(meta('3')).toEqual({ kind: 'marketplace' });
     expect(meta('4')).toEqual({ kind: 'library' });

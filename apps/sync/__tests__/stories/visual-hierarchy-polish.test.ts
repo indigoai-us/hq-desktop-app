@@ -356,12 +356,13 @@ describe('visual hierarchy polish: bounded Inbox chronology', () => {
 describe('visual hierarchy polish: scoped surface contracts', () => {
   const row = read('src/components/NotificationRow.svelte');
   const feed = read('src/components/NotificationFeed.svelte');
-  const notificationsView = read('src/desktop-alt/chat/NotificationsView.svelte');
+  const inbox = read('src/desktop-alt/pages/InboxPage.svelte');
   const quickPane = read('src/components/QuickWindowSidePane.svelte');
   const widget = read('src/components/Widget.svelte');
   const marketplace = read('src/desktop-alt/panels/MarketplacePanel.svelte');
   const companyPage = read('src/desktop-alt/pages/CompanyPage.svelte');
   const companyBoard = read('src/desktop-alt/panels/CompanyBoardPanel.svelte');
+  const activity = read('src/desktop-alt/panels/ActivityPanel.svelte');
   const secrets = read('src/desktop-alt/panels/SecretsPanel.svelte');
   const moderation = read('src/desktop-alt/panels/ModerationPanel.svelte');
   const companyLibrary = read('src/desktop-alt/panels/CompanyLibraryPanel.svelte');
@@ -375,10 +376,7 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
     expect(feed).toContain('sourceLabel="Shared file"');
     expect(feed).toContain('sourceLabel="Workspace activity"');
     expect(feed).toContain('sourceLabel="App update"');
-    // US-018: InboxPage retired — desktop chronology is NotificationsView.
-    expect(notificationsView).toContain('data-testid="notifications-view"');
-    expect(notificationsView).toContain('data-testid="notifications-row"');
-    expect(desktop).toContain('<NotificationsView');
+    expect(inbox).toContain('density="comfortable"');
     expect(quickPane).toContain('id="quick-conversations-label">Direct messages');
     expect(quickPane).toContain('<div class="qw-side-label">Channels</div>');
     expect(quickPane).not.toContain('text={row.latest');
@@ -400,14 +398,12 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
   });
 
   it('uses open neutral list structure without colored rails or nested notification cards', () => {
-    for (const source of [row, feed, notificationsView, quickPane]) {
+    for (const source of [row, feed, inbox, quickPane]) {
       expect(source).not.toMatch(/border-(?:left|inline-start)\s*:\s*[^;]*--(?:v4-)?(?:warn|error|unread)/);
     }
-    expect(notificationsView).toContain('background: transparent');
-    // Daybook parity override (prd.json decisions): notification rows carry
-    // Lizzie Liu's 10px card radius instead of the square baseline.
-    expect(notificationsView).toContain('border-radius: 10px');
-    expect(notificationsView).not.toContain('var(--v4-warn)');
+    expect(inbox).toContain('background: transparent');
+    expect(inbox).toContain('border-radius: 0');
+    expect(inbox).not.toContain('var(--v4-warn)');
   });
 
   it('restores full-color marketplace covers while retaining neutral glass chrome', () => {
@@ -450,7 +446,10 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
     expect(companyBoard).toContain('Counts below are local cached data until reconnect succeeds');
   });
 
-  it('de-duplicates legacy secret payloads (US-020 removed the Activity panel)', () => {
+  it('keeps partial activity honest and de-duplicates legacy secret payloads', () => {
+    expect(activity).toContain('const recentSummaryLabel');
+    expect(activity).toContain("'files'} in summary");
+    expect(activity).toContain('Recent file details are unavailable');
     expect(secrets).toContain('function normalizeSecretEnvs');
     expect(secrets).toContain('current.items.set');
     expect(harness).toContain("file: 'companies/indigo/projects/desktop-experience/README.md'");

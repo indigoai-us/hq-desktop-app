@@ -64,17 +64,13 @@ describe('async desktop surfaces expose immediate, scoped feedback', () => {
     expect(company).toContain('<CompanyProjectsPage slug={company.slug} />');
   });
 
-  it('covers Core popover + Home cards and the raw activity log handoff (titlebar is minimal)', () => {
+  it('covers titlebar recovery, Home cards, and the raw activity log handoff', () => {
     const titlebar = source('../../src/desktop-alt/v4/V4TitleBar.svelte');
-    const core = source('../../src/desktop-alt/v4/CorePopover.svelte');
     const needsYou = source('../../src/desktop-alt/v4/NeedsYouCard.svelte');
     const activity = source('../../src/desktop-alt/v4/ActivityDigest.svelte');
 
-    // D-04: recovery pending state lives in Core / Home, not titlebar chrome.
-    expect(titlebar).toContain('data-testid="titlebar-core-pill"');
-    expect(titlebar).not.toContain('let actionPending = $state(false)');
-    expect(core).toContain('let updateInstalling = $state(false)');
-    expect(core).toContain('aria-busy={updateInstalling}');
+    expect(titlebar).toContain('let actionPending = $state(false)');
+    expect(titlebar).toContain('aria-busy={actionPending}');
     expect(needsYou).toContain('let pendingActionId = $state<string | null>(null)');
     expect(needsYou).toContain('aria-busy={pendingActionId === action.id}');
     expect(needsYou).toContain('let actionFailure = $state');
@@ -170,9 +166,10 @@ describe('async desktop surfaces expose immediate, scoped feedback', () => {
     expect(onboarding).toContain("aria-busy={copyingAction === 'path'}");
     expect(onboarding).toContain("aria-busy={copyingAction === 'command'}");
     expect(onboarding).toContain("aria-busy={copyingAction === 'import'}");
+    expect(onboarding).toContain("aria-busy={copyingAction === 'setup'}");
     expect(onboarding).toContain('data-testid="onboarding-copy-error"');
     expect(onboarding).toContain('onclick={() => void retryCopyAction()}');
-    expect(onboarding).toContain("{copyingAction ? 'Retrying…' : 'Retry'}");
+    expect(onboarding).toContain("{copyingAction ? 'Retrying…' : 'Try again'}");
     expect(onboarding).toContain('aria-busy={privacyOpening}');
     expect(onboarding).toContain('onclick={() => void handleOpenPrivacy()}');
     expect(onboarding).toContain('class="consent-link-error" role="alert"');

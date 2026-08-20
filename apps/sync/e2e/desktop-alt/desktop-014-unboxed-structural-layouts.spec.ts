@@ -47,6 +47,7 @@ function expectEveryOpenStructure(
 
 describe('DESKTOP-014: unboxed structural layouts', () => {
   const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
+  const missionControl = readRepoFile('src/desktop-alt/pages/MissionControlPage.svelte');
   const agencyTeams = readRepoFile(
     'src/desktop-alt/panels/AgencyTeamsPanel.svelte',
   );
@@ -66,6 +67,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     'src/desktop-alt/panels/CompanyOperationsPanel.svelte',
   );
   const team = readRepoFile('src/desktop-alt/panels/TeamPanel.svelte');
+  const activity = readRepoFile('src/desktop-alt/panels/ActivityPanel.svelte');
   const statTile = readRepoFile('src/desktop-alt/components/StatTile.svelte');
   const deployments = readRepoFile(
     'src/desktop-alt/panels/DeploymentsPanel.svelte',
@@ -108,8 +110,9 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
   const libraryDetail = readRepoFile(
     'src/desktop-alt/components/LibraryDetailPanel.svelte',
   );
-  // US-018: SidebarSyncMode retired — Shared/All lives in SyncModeToggle.
-  const syncModeToggle = readRepoFile('src/components/SyncModeToggle.svelte');
+  const sidebarSyncMode = readRepoFile(
+    'src/desktop-alt/v4/SidebarSyncMode.svelte',
+  );
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
   const popoverCss = readRepoFile('src/styles/popover.css');
   const accountView = readRepoFile('src/lib/crm/AccountView.svelte');
@@ -126,8 +129,13 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     expect(notice).toContain('background: transparent');
   });
 
-  it('opens agency / live-session sections and separates them with single rules', () => {
-    // US-018: MissionControlPage retired; agency panels + LiveSessions remain open.
+  it('opens mission-control sections and separates them with single rules', () => {
+    expectOpenStructure(missionControl, '.mc-col', 'mission-control sections');
+    expect(rule(missionControl, '.mc-col.mc-agency-q')).toContain('padding-right:');
+    expect(rule(missionControl, '.mc-col.mc-agency-t')).toContain('border-left:');
+    expect(rule(missionControl, '.mc-col-history')).toContain('border-left:');
+    expect(rule(missionControl, '.mc-col.mc-agency-chat')).toContain('border-top:');
+
     expectOpenStructure(agencyChat, '.thread', 'agency conversation thread');
     expect(rule(agencyChat, '.thread')).toContain('border-top:');
 
@@ -136,9 +144,6 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     expect(rule(agencyTeams, '.teams')).toContain('gap: 0');
     expect(rule(agencyTeams, '.team + .team')).toContain('border-top:');
     expectOpenStructure(agencyTeams, '.count', 'agency team count');
-
-    expectOpenStructure(liveSessions, '.ls-group-ctl', 'live session grouping control');
-    expectOpenStructure(liveSessions, '.ls-group-head', 'live session group header');
   });
 
   it('keeps list-detail workspaces open while retaining their internal splits', () => {
@@ -172,6 +177,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
 
   it('uses open operational sections with only header and row dividers', () => {
     for (const [source, selector, label] of [
+      [activity, '.activity-card', 'activity section'],
       [deployments, '.deployments-card', 'deployments section'],
       [secrets, '.secrets-card', 'secrets section'],
       [companyOperations, '.ops-settings-list', 'operations settings list'],
@@ -187,8 +193,8 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     for (const [source, selector, label] of [
       [companyBoard, '.pulse-row', 'company pulse summary'],
       [overviewDigest, '.digest-monitor', 'activity digest monitor'],
-      [titleBar, '.v4-title-actions', 'title-bar actions'],
-      [syncModeToggle, '.sync-mode-shell', 'sync mode selector'],
+      [titleBar, '.v4-status', 'title-bar status'],
+      [sidebarSyncMode, '.sidebar-sync-mode', 'sidebar sync selector'],
       [storyPanel, '.status-control', 'task status selector'],
     ] as const) {
       expectOpenStructure(source, selector, label);
@@ -196,11 +202,11 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
 
     for (const [source, selector, activeSelector, baseSelector, label] of [
       [
-        syncModeToggle,
-        '.sync-mode-opt',
-        '.sync-mode-opt.active',
-        '.sync-mode-opt',
-        'sync mode option',
+        sidebarSyncMode,
+        '.sidebar-sync-mode-opt',
+        '.sidebar-sync-mode-opt.active',
+        '.sidebar-sync-mode-opt',
+        'sidebar sync option',
       ],
       [
         storyPanel,
@@ -221,7 +227,19 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
   });
 
   it('renders summary and KPI groups as open data strips with responsive dividers', () => {
-    expectOpenStructure(statTile, '.stat-tile', 'summary metric');
+    expectOpenStructure(missionControl, '.mc-tile', 'mission-control summary metric');
+    expect(rule(missionControl, '.mc-summary')).toContain('gap: 0');
+    expect(rule(missionControl, '.mc-tile + .mc-tile')).toContain('border-left:');
+    expect(rule(missionControl, '.mc-tile:nth-child(n + 3)')).toContain('border-top:');
+
+    expectOpenStructure(statTile, '.stat-tile', 'activity summary metric');
+    expect(rule(activity, '.stats-grid')).toContain('gap: 0');
+    expect(
+      rule(activity, '.stats-grid :global(.stat-tile + .stat-tile)'),
+    ).toContain('border-left:');
+    expect(
+      rule(activity, '.stats-grid :global(.stat-tile:nth-child(n + 3))'),
+    ).toContain('border-top:');
 
     expectOpenStructure(projectDetail, '.kpi-tile', 'project summary metric');
     expect(rule(projectDetail, '.kpi-strip')).toContain('gap: 0');
@@ -388,6 +406,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
       [agencyChat, '.tabs', 'agency conversation tabs'],
       [projectList, '.status-pills', 'project status filters'],
       [projectList, '.group-toggle', 'project grouping selector'],
+      [activity, '.direction-toggle', 'activity direction filter'],
       [popoverCss, '.seg-track', 'legacy popover selector'],
     ] as const) {
       expectOpenStructure(source, selector, label);
@@ -405,6 +424,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
       [agencyChat, '.tab', '.tab.active', 'agency conversation tab'],
       [projectList, '.status-pill', '.status-pill.is-active', 'project status option'],
       [projectList, '.group-segment', '.group-segment.is-active', 'project grouping option'],
+      [activity, '.direction-toggle button', '.direction-toggle button.is-active', 'activity direction option'],
       [popoverCss, '.seg', '.seg.active', 'legacy popover option'],
     ] as const) {
       const control = rule(source, selector);

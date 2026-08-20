@@ -124,6 +124,18 @@ describe('DESKTOP-018: no colored edge rails', () => {
   it('uses transparent neutral bottom rules for persistent row selection', () => {
     for (const [path, baseSelector, selectedSelector, label] of [
       [
+        'desktop-alt/v4/V4Sidebar.svelte',
+        '.v4-row',
+        '.v4-row.active',
+        'primary navigation',
+      ],
+      [
+        'desktop-alt/v4/V4SecondarySidebar.svelte',
+        '.v4-row',
+        '.v4-row.active',
+        'secondary navigation',
+      ],
+      [
         'desktop-alt/v4/FilesModeSidebar.svelte',
         '.fs-company-row',
         '.fs-company-row.active',
@@ -180,16 +192,6 @@ describe('DESKTOP-018: no colored edge rails', () => {
       );
     }
 
-    // ChatSidebar: Daybook parity override (prd.json decisions) — active
-    // rows use Lizzie Liu's neutral --sel fill with no edge rails.
-    const chatSidebar = readFileSync(
-      join(SOURCE_ROOT, 'desktop-alt/chat/ChatSidebar.svelte'),
-      'utf8',
-    );
-    expect(rule(chatSidebar, '.chat-row.active')).toContain('background: var(--sel)');
-    expect(rule(chatSidebar, '.chat-row.active')).toContain('box-shadow: none');
-    expect(rule(chatSidebar, '.chat-row.active')).not.toContain('border-left:');
-
     const messages = readFileSync(
       join(SOURCE_ROOT, 'components/messaging/MessagesShell.svelte'),
       'utf8',
@@ -201,7 +203,15 @@ describe('DESKTOP-018: no colored edge rails', () => {
     );
     expect(rule(messages, '.compact-list .contact-row.active')).toContain('box-shadow: none');
 
-    // US-020: V4SecondarySidebar retired with the secondary column.
+    const secondarySidebar = readFileSync(
+      join(SOURCE_ROOT, 'desktop-alt/v4/V4SecondarySidebar.svelte'),
+      'utf8',
+    );
+    const secondaryFooter = rule(secondarySidebar, '.v4-footer.active');
+    expect(secondaryFooter).toContain('background: transparent');
+    expect(secondaryFooter).toContain(
+      'box-shadow: inset 0 -1px 0 var(--v4-hairline)',
+    );
   });
 
   it('keeps settings notices and moderation lock states free of partial edge rails', () => {

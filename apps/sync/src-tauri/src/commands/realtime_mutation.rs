@@ -31,6 +31,11 @@ use crate::util::paths;
 
 const NOT_ENROLLED_EXIT: i32 = 3;
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How often the mutation re-checks its runnable-time budget while waiting.
+/// Short enough that a finished child is reaped promptly, long enough that the
+/// polling itself costs nothing.
+const MUTATION_POLL: Duration = Duration::from_secs(2);
 const MUTATION_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -147,6 +152,14 @@ async fn invoke_mutation(input: MutationInput) -> MutationOutcome {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    // Its own process group, so the CPU governor is allowed to throttle it.
+    // Without this the child inherits the app's group, and the governor
+    // refuses to signal that one on purpose — `killpg` there would freeze the
+    // UI along with the work. Every realtime mutation therefore used to run
+    // outside the machine-wide ceiling, which on a busy tree is a steady
+    // fraction of a core the operator was promised would be capped.
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -157,6 +170,12 @@ async fn invoke_mutation(input: MutationInput) -> MutationOutcome {
             return MutationOutcome::Retry;
         }
     };
+    // A group leader's pid IS its pgid, so this covers the child and anything
+    // it spawns. The guard lives to the end of this function — which outlives
+    // the child — and its drop always resumes the group.
+    let _cpu_throttle = child
+        .id()
+        .and_then(|pid| hq_desktop_core::cpu_throttle::CpuThrottle::attach(pid as i32));
     let Some(mut stdin) = child.stdin.take() else {
         log("realtime-mutation", "realtime mutation stdin pipe missing");
         return MutationOutcome::Retry;
@@ -169,19 +188,30 @@ async fn invoke_mutation(input: MutationInput) -> MutationOutcome {
         return MutationOutcome::Retry;
     }
     drop(stdin);
-    let status = match timeout(MUTATION_TIMEOUT, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => {
-            log(
-                "realtime-mutation",
-                &format!("wait for realtime mutation: {error}"),
-            );
-            return MutationOutcome::Retry;
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            log("realtime-mutation", "hq-cloud realtime mutation timed out");
-            return MutationOutcome::Retry;
+    // Spend the timeout in RUNNABLE time, not wall time. Now that this child is
+    // governed, a plain `timeout()` counts every SIGSTOP window against it: on a
+    // small machine, or while other groups share the ceiling, a perfectly
+    // healthy mutation gets killed before it has had its 120 seconds of actual
+    // work — and the resulting `Retry` re-runs it into the same wall forever,
+    // so that edit never syncs. A genuinely wedged child is never stopped, so it
+    // still trips this on the original schedule.
+    let deadline = hq_desktop_core::cpu_throttle::RunnableDeadline::start(MUTATION_TIMEOUT);
+    let status = loop {
+        match timeout(MUTATION_POLL, child.wait()).await {
+            Ok(Ok(status)) => break status,
+            Ok(Err(error)) => {
+                log(
+                    "realtime-mutation",
+                    &format!("wait for realtime mutation: {error}"),
+                );
+                return MutationOutcome::Retry;
+            }
+            Err(_) if !deadline.expired() => continue,
+            Err(_) => {
+                let _ = child.kill().await;
+                log("realtime-mutation", "hq-cloud realtime mutation timed out");
+                return MutationOutcome::Retry;
+            }
         }
     };
     if status.code() == Some(NOT_ENROLLED_EXIT) {

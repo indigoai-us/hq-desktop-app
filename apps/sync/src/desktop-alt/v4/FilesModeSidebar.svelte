@@ -27,7 +27,6 @@
   import type { Workspace } from '../../lib/workspaces';
   import {
     fileAccessibleCompanies,
-    filesScopeRootPath,
     filterFileEntriesForMembership,
     isFilesRouteAllowed,
     type DirEntry,
@@ -79,11 +78,9 @@
     activeSlug ? (companyRows.find((row) => row.slug === activeSlug)?.label ?? activeSlug) : null,
   );
 
-  // The tree's root path: HQ root by default, scoped to the workspace subtree
-  // when the filter is active (`companies/<slug>`, or the HQ-root `personal/`
-  // tree for the personal workspace). This is the ONLY thing the filter
-  // changes.
-  const treeRootPath = $derived(activeSlug ? filesScopeRootPath(activeSlug) : '');
+  // The tree's root path: HQ root by default, scoped to the company subtree
+  // when the filter is active. This is the ONLY thing the filter changes.
+  const treeRootPath = $derived(activeSlug ? `companies/${activeSlug}` : '');
 
   // Lazy children loader — the per-directory `list_hq_dir` command. Returns one
   // directory's immediate children (noise-filtered, path-guarded in Rust).
@@ -140,7 +137,7 @@
   <div class="fs-scope">
     {#if activeSlug}
       <span class="fs-scope-chip">
-        <span class="fs-scope-label">{treeRootPath}</span>
+        <span class="fs-scope-label">companies/{activeSlug}</span>
         <button
           type="button"
           class="fs-scope-clear"
@@ -289,7 +286,7 @@
     box-sizing: border-box;
     width: 100%;
     height: var(--v4-row-h);
-    /* Lock the row to exactly --v4-row-h (same pattern as legacy sidebar) so a tall
+    /* Lock the row to exactly --v4-row-h (same pattern as V4Sidebar) so a tall
        glyph or sub-pixel font metrics can never grow/shrink it; flex-shrink:0
        stops the scroll container compressing rows when the list overflows. */
     min-height: var(--v4-row-h);

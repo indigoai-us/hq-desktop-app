@@ -222,7 +222,7 @@ describe('rendered hydration Retry state', () => {
     vi.clearAllMocks();
   });
 
-  it('titlebar stays minimal during hydration refresh (no Retry chrome in bar)', () => {
+  it('disables Retry while the newest hydration request is active', () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const onretryhydration = vi.fn();
@@ -242,25 +242,25 @@ describe('rendered hydration Retry state', () => {
     });
     flushSync();
 
-    // D-04: hydration retry is not titlebar chrome; Core pill remains available.
-    expect(host.querySelector('[data-testid="titlebar-core-pill"]')).toBeTruthy();
-    expect(
-      Array.from(host.querySelectorAll('button')).some(
-        (b) => b.textContent?.trim() === 'Retrying…',
-      ),
-    ).toBe(false);
+    const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Retrying…',
+    );
+    expect(retry).toBeTruthy();
+    expect(retry?.disabled).toBe(true);
+    expect(retry?.getAttribute('aria-busy')).toBe('true');
+    retry?.click();
     expect(onretryhydration).not.toHaveBeenCalled();
   });
 
-  it('opens Core popover from the titlebar Core pill', async () => {
+  it('uses human Core states and retries a failed version read from the title bar', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
+    let coreReads = 0;
     invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_hq_version') return '15.0.66-beta.1';
-      if (command === 'check_core_state') return null;
-      if (command === 'get_pending_update') return null;
-      if (command === 'list_packages') return { packs: { installed: [] } };
-      return null;
+      if (command !== 'get_hq_version') return null;
+      coreReads += 1;
+      if (coreReads === 1) throw new Error('core metadata unavailable');
+      return '15.0.66-beta.1';
     });
     component = mount(V4TitleBar, {
       target: host,
@@ -272,16 +272,37 @@ describe('rendered hydration Retry state', () => {
     });
     flushSync();
 
-    host.querySelector<HTMLButtonElement>('[data-testid="titlebar-core-pill"]')?.click();
+    expect(
+      host.querySelector('[data-testid="core-version-label"]')?.textContent,
+    ).toContain('Core checking');
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('[data-testid="core-popover"]')).not.toBeNull();
+      expect(
+        host.querySelector('[data-testid="core-version-label"]')?.textContent,
+      ).toContain('Core unavailable');
+      expect(host.querySelector('[data-testid="core-version-retry"]')?.textContent).toContain(
+        'Retry',
+      );
+      expect(host.textContent).not.toContain('Core —');
     });
+
+    host.querySelector<HTMLButtonElement>('[data-testid="version-label"]')?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="core-version-label"]')?.textContent,
+      ).toContain('Core v15.0.66-beta.1');
+      expect(host.querySelector('[data-testid="core-version-retry"]')).toBeNull();
+    });
+    expect(coreReads).toBeGreaterThanOrEqual(2);
   });
 
-  it('labels Core pill without a version dash placeholder', () => {
+  it('labels a successful empty Core read as not detected, never as a dash', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
+    invoke.mockImplementation(async (command: string) =>
+      command === 'get_hq_version' ? null : null,
+    );
     component = mount(V4TitleBar, {
       target: host,
       props: {
@@ -290,10 +311,14 @@ describe('rendered hydration Retry state', () => {
         watchedCount: 4,
       },
     });
-    flushSync();
-    expect(host.querySelector('[data-testid="titlebar-core-pill"]')?.textContent).toContain(
-      'Core',
-    );
-    expect(host.textContent).not.toContain('Core —');
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host.querySelector('[data-testid="core-version-label"]')?.textContent,
+      ).toContain('Core not detected');
+      expect(host.textContent).not.toContain('Core —');
+      expect(host.querySelector('[data-testid="core-version-retry"]')).toBeNull();
+    });
   });
 });

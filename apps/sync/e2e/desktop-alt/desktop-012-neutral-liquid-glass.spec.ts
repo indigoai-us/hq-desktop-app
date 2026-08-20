@@ -116,8 +116,8 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
   const designSystem = readRepoFile('src/styles/design-system.css');
   const popover = readRepoFile('src/styles/popover.css');
   const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
-  // US-018: ChatSidebar is the primary sidebar chrome (V4Sidebar retired).
-  const sidebar = readRepoFile('src/desktop-alt/chat/ChatSidebar.svelte');
+  const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+  const secondarySidebar = readRepoFile('src/desktop-alt/v4/V4SecondarySidebar.svelte');
   const filesSidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
   const commandPalette = readRepoFile('src/desktop-alt/components/CommandPalette.svelte');
   const versionPopout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
@@ -286,10 +286,9 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
     expect(tokens).toContain('--v4-glass-border: var(--v4-hairline)');
 
     for (const [name, source] of [
-      // Title bar exempted: Daybook parity override (prd.json decisions) —
-      // the chat-shell titlebar is transparent chrome over the window
-      // material (no per-element glass filter), per design/desktop-os-redesign.
+      ['title bar', titleBar],
       ['primary sidebar', sidebar],
+      ['secondary sidebar', secondarySidebar],
       ['files sidebar', filesSidebar],
       ['command palette', commandPalette],
       ['version updater', versionPopout],
@@ -513,10 +512,12 @@ describe('DESKTOP-012: neutral liquid-glass materials', () => {
   });
 
   it('keeps the visual verification harness neutral so previews do not fake a blue cast', () => {
-    // Neutral greys only. (The unused .stage/.stage.light gradient selectors
-    // were removed in visual QA round 2 — the remaining backdrops must stay
-    // neutral.)
+    expect(harness).toContain('#3a3a3a');
+    expect(harness).toContain('#1a1a1a');
     expect(harness).toContain('#0c0c0c');
+    expect(harness).toContain('#ededed');
+    expect(harness).toContain('#d4d4d4');
+    expect(harness).toContain('#bcbcbc');
     expect(harness).toContain('#161616');
     expect(harness).toContain('#565656');
     expect(harness).toContain('#292929');

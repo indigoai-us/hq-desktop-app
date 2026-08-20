@@ -28,30 +28,16 @@
     eventStart,
     eventMeetingUrl,
     extractedSignalLabels,
+    groupByDay,
     isPlausibleMeetingUrl,
     pickLiveMeeting,
     pickUpNext,
+    sortByStart,
     timeLabel,
     totalSignalCounts,
     type MeetingEvent,
   } from '../lib/meetings-model';
-  import {
-    MEETINGS_PAGE_DEK,
-    MEETINGS_PAST_EMPTY,
-    MEETINGS_UPCOMING_EMPTY,
-    formatMeetingsFooterLabel,
-    groupMeetingsForAgenda,
-    partitionUpcomingPast,
-    type MeetingsAgendaTab,
-  } from '../lib/meetings-view-model';
-  import { HQ_CONSOLE_INTEGRATIONS_URL } from '../lib/hq-console';
   import '../v4/tokens.css';
-  import '../chat/chat-tokens.css';
-
-  interface MeetingsPageProps {
-    onback?: () => void;
-  }
-  let { onback }: MeetingsPageProps = $props();
 
   // Store-backed data. The singleton (started at app launch in
   // DesktopApp.onMount) loads once + polls every 30s, so this page is a thin
@@ -103,39 +89,14 @@
   // The calendar event id behind the live detection, so the agenda can mark
   // exactly that row "Live" (recall bots carry the originating event id).
   const liveEventId = $derived(liveMeeting?.sourceEventId ?? null);
-  // US-017: Upcoming | Past partition over the already-fetched snapshot.
-  // Upcoming = end >= now (existing pickUpNext behavior); Past = end < now,
-  // newest first. No new backend command.
-  let agendaTab = $state<MeetingsAgendaTab>('upcoming');
-  let lastSyncedAt = $state<Date | null>(null);
-  let wasLoading = $state(false);
-
-  const partitioned = $derived(partitionUpcomingPast(events));
-  const upcomingEvents = $derived(partitioned.upcoming);
-  const pastEvents = $derived(partitioned.past);
-  const agendaEvents = $derived(
-    agendaTab === 'past' ? pastEvents : upcomingEvents,
-  );
-  const dayGroups = $derived(groupMeetingsForAgenda(agendaEvents));
+  // Multi-day agenda: `meetings_list_upcoming` already returns events across
+  // the server's sync window, so we show them all grouped by day rather than
+  // narrowing to today (the old `isToday` filter hid every non-today meeting,
+  // which read as an empty "no meetings" view).
+  const upcomingEvents = $derived([...events].sort(sortByStart));
+  const dayGroups = $derived(groupByDay(upcomingEvents));
   const upNext = $derived(pickUpNext(upcomingEvents));
   const signalTotals = $derived(totalSignalCounts(upcomingEvents));
-  const agendaEmptyMessage = $derived(
-    agendaTab === 'past' ? MEETINGS_PAST_EMPTY : MEETINGS_UPCOMING_EMPTY,
-  );
-  const agendaTitle = $derived(agendaTab === 'past' ? 'Past' : 'Upcoming');
-
-  // Stamp last-synced when a store refresh completes (loading true → false).
-  $effect(() => {
-    if (loading) {
-      wasLoading = true;
-      return;
-    }
-    if (wasLoading || lastSyncedAt === null) {
-      lastSyncedAt = new Date();
-      wasLoading = false;
-    }
-  });
-
   const connectedRows = $derived(
     buildConnectedCalendarRows(
       accounts,
@@ -144,12 +105,6 @@
       events,
       memberships,
     ),
-  );
-  const footerLabel = $derived(
-    formatMeetingsFooterLabel({
-      calendarCount: connectedRows.length,
-      lastSyncedAt,
-    }),
   );
   const recentlySynced = $derived(
     events
@@ -330,7 +285,7 @@
     if (integrationsOpening) return;
     integrationsOpening = true;
     try {
-      await openExternal(HQ_CONSOLE_INTEGRATIONS_URL);
+      await openExternal('https://hq.computer/integrations');
     } catch (err) {
       flashToast('warn', `Couldn't open HQ Console: ${String(err)}`);
     } finally {
@@ -411,16 +366,10 @@
     </svg>
   {/snippet}
 
-  <header class="page-header meetings-toolbar chat-shell">
+  <header class="page-header meetings-toolbar">
     <div class="ph-titles">
-      {#if onback}
-        <button type="button" class="meetings-back" data-testid="meetings-back" onclick={onback}>
-          ← Back
-        </button>
-      {/if}
       <h1>Meetings</h1>
-      <div class="subtitle" data-testid="meetings-dek">{MEETINGS_PAGE_DEK}</div>
-      <div class="subtitle toolbar-meta">{toolbarMeta}</div>
+      <div class="subtitle">{toolbarMeta}</div>
       {#if fetchError}
         <div class="page-error" role="status" data-testid="meetings-refresh-error">
           <span class="error-pill" title={fetchError}>Refresh issue</span>
@@ -445,26 +394,16 @@
       <button
         type="button"
         class="btn subtle"
-        data-testid="meetings-connect-calendar"
-        onclick={openIntegrations}
-        disabled={integrationsOpening}
-        aria-busy={integrationsOpening}
-      >
-        <span class="icon">{@render iconCalendar()}</span>
-        {integrationsOpening ? 'Opening…' : 'Connect calendar'}
-      </button>
-      <button
-        type="button"
-        class="btn subtle meetings-open-cal"
         onclick={openCalendar}
         disabled={calendarOpening}
         aria-busy={calendarOpening}
       >
+        <span class="icon">{@render iconCalendar()}</span>
         {calendarOpening ? 'Opening…' : 'Open calendar'}
       </button>
       <button
         type="button"
-        class="btn subtle"
+        class="btn"
         data-testid="meetings-refresh"
         onclick={() => void meetingsStore.refresh()}
         disabled={loading}
@@ -483,13 +422,7 @@
 
   <div class="content">
     <div class="url-invite-bar">
-      <div class="url-field">
-        <span class="url-lead" aria-hidden="true">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-            <path d="M6.4 9.6a3.2 3.2 0 0 1 0-4.53l1.7-1.7a3.2 3.2 0 1 1 4.53 4.53l-.85.85M9.6 6.4a3.2 3.2 0 0 1 0 4.53l-1.7 1.7a3.2 3.2 0 1 1-4.53-4.53l.85-.85" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-          </svg>
-        </span>
-        <input
+      <input
         type="url"
         inputmode="url"
         autocomplete="off"
@@ -506,28 +439,24 @@
           }
         }}
       />
-      </div>
       {#if urlInput.trim().length > 0}
         <!-- Destination picker. Only renders once the user starts typing —
              keeps the idle bar clean. `null` = Personal (the default). -->
-        <span class="url-invite-company-wrap">
-          <select
-            class="url-invite-company"
-            aria-label="Save bot to"
-            bind:value={urlInputCompanyId}
-            disabled={urlInviting}
-          >
-            <option value={null}>Personal</option>
-            {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
-              <option value={uid}>{name}</option>
-            {/each}
-          </select>
-          <span class="url-invite-company-chevron" aria-hidden="true">›</span>
-        </span>
+        <select
+          class="url-invite-company"
+          aria-label="Save bot to"
+          bind:value={urlInputCompanyId}
+          disabled={urlInviting}
+        >
+          <option value={null}>Personal</option>
+          {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
+            <option value={uid}>{name}</option>
+          {/each}
+        </select>
       {/if}
       <button
         type="button"
-        class="btn subtle url-invite-btn"
+        class="btn url-invite-btn"
         data-testid="meetings-url-invite"
         disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim())}
         aria-busy={urlInviting}
@@ -535,34 +464,6 @@
         onclick={onUrlInvite}
       >
         {urlInviting ? 'Inviting…' : 'Invite'}
-      </button>
-    </div>
-
-    <div
-      class="agenda-toggle"
-      role="group"
-      aria-label="Agenda range"
-      data-testid="meetings-agenda-toggle"
-    >
-      <button
-        type="button"
-        class="agenda-toggle-btn"
-        class:active={agendaTab === 'upcoming'}
-        aria-pressed={agendaTab === 'upcoming'}
-        data-testid="meetings-tab-upcoming"
-        onclick={() => (agendaTab = 'upcoming')}
-      >
-        Upcoming
-      </button>
-      <button
-        type="button"
-        class="agenda-toggle-btn"
-        class:active={agendaTab === 'past'}
-        aria-pressed={agendaTab === 'past'}
-        data-testid="meetings-tab-past"
-        onclick={() => (agendaTab = 'past')}
-      >
-        Past
       </button>
     </div>
 
@@ -636,9 +537,7 @@
     <MeetingsAgenda
       groups={dayGroups}
       {upNext}
-      totalCount={agendaEvents.length}
-      agendaTitle={agendaTitle}
-      emptyMessage={agendaEmptyMessage}
+      totalCount={upcomingEvents.length}
       companyNames={companyNamesByUid}
       {liveEventId}
       {botsByEventId}
@@ -713,20 +612,6 @@
         </div>
       </section>
     </div>
-
-    <footer class="meetings-footer" data-testid="meetings-footer">
-      <span class="footer-meta">{footerLabel}</span>
-      <button
-        type="button"
-        class="footer-manage"
-        data-testid="meetings-manage"
-        onclick={openIntegrations}
-        disabled={integrationsOpening}
-        aria-busy={integrationsOpening}
-      >
-        Manage
-      </button>
-    </footer>
   </div>
 </div>
 
@@ -757,47 +642,27 @@
     gap: 12px;
     margin-bottom: 0;
   }
-  .meetings-open-cal {
-    display: none;
-  }
-
-  .meetings-back {
-    appearance: none;
-    -webkit-appearance: none;
-    height: 29.4px;
-    padding: 5px 10px;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    border-radius: 8px;
-    background: transparent;
-    color: var(--t2, var(--v4-text-2));
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-
   .ph-titles {
     min-width: 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 10px;
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--v4-row-stack-gap, 3px);
   }
   .ph-titles h1 {
     margin: 0;
-    color: var(--t1, var(--v4-text-1));
-    font-family: var(--font-ui, var(--font-display, var(--font-sans)));
-    font-size: 15px;
+    color: var(--v4-text-1);
+    font-family: var(--font-display, var(--font-sans));
+    font-size: var(--type-detail, 18px);
     font-weight: 600;
-    line-height: 1.45;
-    letter-spacing: 0;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
   }
   .subtitle {
     margin: 0;
-    color: var(--t3, var(--v4-text-3));
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.45;
+    color: var(--v4-text-3);
+    font-size: var(--type-secondary, 11px);
+    line-height: 1.4;
   }
   .page-error {
     display: flex;
@@ -923,77 +788,34 @@
   .content {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-top: 8px;
+    gap: var(--v4-space-4, 16px);
+    margin-top: var(--v4-space-4, 16px);
     background: transparent;
-  }
-
-  /* Daybook meetings: no dashboard chrome — live is a row, agenda is the page. */
-  .next-strip,
-  .health-strip,
-  .secondary-grid {
-    display: none;
   }
 
   .url-invite-bar {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--line, var(--v4-rowline));
+    padding: 0 0 10px;
+    border-bottom: 1px solid var(--v4-rowline);
     background: transparent;
-  }
-  .url-field {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    align-items: center;
-    gap: 8px;
-    padding: 7px 10px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: var(--btn-bg, var(--v4-inset));
-  }
-  .url-field:hover { border-color: var(--line2, var(--v4-control-border)); }
-  .url-field:focus-within { border-color: var(--border-active, var(--v4-text-3)); }
-  .url-lead {
-    display: inline-flex;
-    color: var(--t3, var(--v4-text-3));
   }
   .url-input {
     flex: 1 1 auto; min-width: 0;
-    padding: 0; border: 0;
-    background: transparent;
-    color: var(--t1, var(--v4-text-1)); font: inherit; font-size: 12px; line-height: 18px;
+    padding: 6px 10px; border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-field); background: var(--v4-inset);
+    color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 18px;
   }
-  .url-input::placeholder { color: var(--t3, var(--v4-text-3)); }
-  .url-input:focus { outline: none; }
+  .url-input::placeholder { color: var(--v4-text-3); }
+  .url-input:focus { outline: none; border-color: var(--v4-text-3); }
   .url-input:disabled { opacity: 0.55; cursor: default; }
-  /* Styled (non-native-looking) destination dropdown (D-18). */
-  .url-invite-company-wrap {
-    position: relative;
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-  }
   .url-invite-company {
-    appearance: none;
-    -webkit-appearance: none;
     flex: 0 0 auto; max-width: 160px;
-    padding: 6px 24px 6px 8px; border: 1px solid var(--v4-control-border);
+    padding: 6px 8px; border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-field); background: var(--v4-inset);
     color: var(--v4-text-1); font: inherit; font-size: var(--text-base); line-height: 18px;
     cursor: pointer;
-  }
-  .url-invite-company:focus { outline: none; border-color: var(--v4-text-3); }
-  .url-invite-company-chevron {
-    position: absolute;
-    right: 8px;
-    color: var(--v4-text-3);
-    font-size: 13px;
-    line-height: 1;
-    transform: rotate(90deg);
-    pointer-events: none;
   }
   .url-invite-company:disabled { opacity: 0.55; cursor: default; }
   .url-invite-btn { flex: 0 0 auto; }
@@ -1230,86 +1052,6 @@
     white-space: nowrap;
   }
 
-
-  .toolbar-meta {
-    margin-top: 1px;
-  }
-
-  .agenda-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: none;
-    border-radius: 8px;
-    background: var(--raised, var(--v4-inset));
-  }
-  .agenda-toggle-btn {
-    padding: 4px 10px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t2, var(--v4-text-3));
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 17.4px;
-    cursor: pointer;
-  }
-  .agenda-toggle-btn.active {
-    background: var(--sel, var(--v4-secondary-bg));
-    color: var(--t1, var(--v4-text-1));
-  }
-  .agenda-toggle-btn:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 1px;
-  }
-
-  .meetings-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-top: 4px;
-    padding: 10px 0 0;
-    border-top: 1px solid var(--v4-rowline);
-  }
-  .footer-meta {
-    min-width: 0;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 500;
-    letter-spacing: 0.06em;
-    line-height: 14px;
-    text-transform: uppercase;
-  }
-  .footer-manage {
-    flex: 0 0 auto;
-    margin-left: auto;
-    padding: 3px 10px;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t2, var(--v4-text-2));
-    font: inherit;
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0;
-    line-height: 14px;
-    text-transform: none;
-    text-decoration: none;
-    cursor: pointer;
-  }
-  .footer-manage:hover:not(:disabled) {
-    background: var(--hover, var(--v4-active-row));
-    color: var(--t1, var(--v4-text-1));
-  }
-  .footer-manage:disabled { opacity: 0.55; cursor: default; }
-  .footer-manage:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
-  }
-
   @media (max-width: 820px) {
     .health-strip { grid-template-columns: minmax(0, 1fr); }
     .secondary-grid { grid-template-columns: minmax(0, 1fr); }
@@ -1344,16 +1086,5 @@
     .next-strip {
       background: transparent;
     }
-  }
-
-  /* Daybook meetings: hide leftover dashboard chrome. !important wins over
-     later display:grid rules on the same selectors. */
-  .next-strip,
-  .health-strip,
-  .secondary-grid,
-  .meetings-open-cal,
-  .toolbar-meta,
-  :global([data-testid="meetings-live-now"]) {
-    display: none !important;
   }
 </style>

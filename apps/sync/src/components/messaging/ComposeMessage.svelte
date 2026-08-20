@@ -149,9 +149,10 @@
     ></textarea>
 
     <div class="compose-footer">
-      <!-- S4: no persistent "⌘↵ to send" hint — not in the design mock. -->
       {#if sendError}
         <span class="compose-error" role="alert">{sendError}</span>
+      {:else}
+        <span class="compose-hint">⌘↵ to send</span>
       {/if}
       <button class="btn btn-send" type="button" onclick={send} disabled={!canSend}>
         {sendLabel}
@@ -265,23 +266,20 @@
     width: 100%;
     box-sizing: border-box;
     resize: none;
-    padding: 12px 14px;
-    border-radius: 10px;
-    border: 1px solid var(--line2, var(--border));
-    background: var(--raised, var(--surface-raise));
-    color: var(--t1, var(--fg));
-    font: 400 13px var(--font-ui, var(--font-sans));
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-raise);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
     line-height: 1.45;
-    transition: border-color 0.12s;
-  }
-
-  .compose-body::placeholder {
-    color: var(--t3, var(--muted));
   }
 
   .compose-body:focus {
     outline: none;
-    border-color: var(--border-active, var(--accent));
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
   }
 
   .compose-body:disabled {
@@ -292,6 +290,14 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
+  }
+
+  .compose-hint {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
   }
 
   .compose-error {
@@ -320,18 +326,12 @@
 
   .btn-send {
     margin-left: auto;
-    border-radius: 6px;
-    background: var(--ice-ink, var(--accent));
-    color: var(--badge-fg, var(--accent-fg));
-    transition: opacity 0.15s, transform 0.1s;
+    background: var(--accent);
+    color: var(--accent-fg);
   }
 
   .btn-send:hover:not(:disabled) {
-    opacity: 0.88;
-  }
-
-  .btn-send:active:not(:disabled) {
-    transform: scale(0.95);
+    filter: brightness(1.1);
   }
 
   .btn-send:disabled {

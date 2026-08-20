@@ -44,9 +44,6 @@ export default defineConfig({
     include: [
       "src/**/*.test.ts",
       "__tests__/stories/**/*.test.ts",
-      // Recall SDK bridge sidecar (Node ESM). node_modules stays excluded by
-      // vitest's default exclude, so this only matches our own bridge tests.
-      "sidecar/recall-sdk-bridge/**/*.test.mjs",
     ],
   },
 });

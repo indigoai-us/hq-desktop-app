@@ -337,7 +337,47 @@
 /// five-minute watchdog does not kill a healthy ten-minute backoff. Raising
 /// the floor changes the npx cache key so an existing 6.15.7–6.15.9 resolution
 /// cannot keep serving an incomplete scheduler.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.10";
+/// `~6.15.10` -> `~6.15.11`: floor the pin at durable push progress. Before
+/// 6.15.11 a push journaled only after uploads AND deletes had both finished,
+/// so a pass this watchdog terminated contributed nothing however many objects
+/// it had already uploaded — a vault too large to finish inside one watchdog
+/// window could never converge and simply burned CPU across restarts. 6.15.11
+/// checkpoints the journal mid-pass (uploads and remote-content
+/// reconciliations alike), so an interrupted pass resumes. The pin must move
+/// even though `~6.15.10` already admits 6.15.11: npx caches by the spec
+/// string, so an existing resolution would keep serving 6.15.10 forever.
+///
+/// `~6.15.11` -> `~6.15.13`: floor the pin at fail-closed scope pruning and
+/// bounded upload memory. 6.15.12 (hq-cloud #345) stops a transient `fs.statSync`
+/// failure on the personal-vault carve-out dirs (`workspace/.session-logs`,
+/// `workspace/agency`) from reclassifying ~400k journal rows as out-of-scope and
+/// purging them — which wiped the journal and silently stalled sync until a
+/// manual restart. Carve-out rows are now classified by static path prefix, with
+/// a bulk-purge circuit breaker as a backstop. 6.15.13 (#343) raises the default
+/// transfer concurrency to an adaptive 64 (stepping to 32 when the host is
+/// already busy) and bounds peak upload memory with an available-memory byte
+/// budget, so a large first sync is dramatically faster without risking OOM. The
+/// pin must move even though `~6.15.11` already admits 6.15.13: npx caches by the
+/// spec string, so an existing resolution would keep serving 6.15.11 forever.
+///
+/// `~6.15.13` -> `~6.15.14`: floor the pin at ignore-source decoupling. 6.15.14
+/// (#347) stops sync from consulting the repo's `.gitignore` — sync exclusions
+/// now come only from the built-in defaults + `.hqignore`/`.hqinclude`, so
+/// excluding a subtree from the git-mirror (via `.gitignore`) no longer silently
+/// stops syncing it to the vault (the coupling behind the carve-out incident).
+/// Secret patterns (`.env*`, `credentials.json`, `*.credentials.json`,
+/// `*.secret.*`, `.netrc`, `.mcp.json`) are promoted into the built-in defaults
+/// so no user leaks a credential regardless of config files. The desktop
+/// git-mirror relies on this decoupling to exclude the vault from what it commits
+/// without affecting sync. npx caches by the spec string, so the pin must move.
+/// 6.15.18 is the floor the CPU throttle depends on: before it, `S3SdkObjectIO`
+/// froze its STS credentials at construction, so a pass outliving the
+/// 15-minute session died with `ExpiredToken`. Throttling multiplies wall time
+/// and makes that far more likely, and npx caches by the complete spec string —
+/// an install still pinned at `~6.15.14` keeps serving its cached pre-6.15.18
+/// resolution — so the floor MUST move in the same change that enables the
+/// throttle, not merely alongside it.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.18";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -400,9 +440,49 @@ mod tests {
         assert!(HQ_CLOUD_VERSION.starts_with('~'));
     }
 
+    /// Exact-pin tripwire: forces a deliberate assertion + doc-block update on
+    /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
-    fn version_floor_delivers_adaptive_reconcile_cooldown() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.10");
+    fn version_pin_is_exactly_current() {
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.18");
+    }
+
+    /// The CPU throttle multiplies wall time, and before hq-cloud 6.15.18
+    /// `S3SdkObjectIO` froze its STS credentials at construction — so a
+    /// throttled pass outliving the 15-minute session died with `ExpiredToken`.
+    /// npx caches by the complete spec string, so an install left on an older
+    /// pin keeps serving its cached pre-6.15.18 resolution: the floor has to
+    /// move with the throttle, not merely near it.
+    #[test]
+    fn version_floor_delivers_mid_pass_credential_refresh() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 18));
+    }
+
+    /// A pass the five-minute watchdog terminates must leave durable progress
+    /// behind, or a vault too large to finish in one window never converges.
+    /// That landed in hq-cloud 6.15.11, so the pin may not fall below it.
+    #[test]
+    fn version_floor_delivers_durable_push_progress() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 11));
+    }
+
+    /// A transient `fs.statSync` failure on the personal-vault carve-out dirs
+    /// must not purge their ~400k journal rows and stall sync (hq-cloud 6.15.12),
+    /// and the default 64-way transfer pool must bound peak upload memory with an
+    /// available-memory byte budget (6.15.13). The pin may not fall below 6.15.13.
+    #[test]
+    fn version_floor_delivers_failclosed_purge_and_bounded_memory() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 13));
+    }
+
+    /// Sync must NOT derive exclusions from the repo's `.gitignore` (6.15.14):
+    /// coupling git-mirror commit-exclusions to vault sync-exclusions is the
+    /// bug behind the carve-out incident, and secrets must be excluded by the
+    /// built-in defaults so decoupling can't leak a credential. The desktop
+    /// git-mirror depends on this, so the pin may not fall below 6.15.14.
+    #[test]
+    fn version_floor_decouples_sync_ignores_from_gitignore() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 14));
     }
 
     /// Lower bound of the tilde pin as a concrete version. `~X.Y.Z` parses to a

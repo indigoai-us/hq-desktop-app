@@ -67,23 +67,26 @@ use crate::commands::sync::ToolchainRepair;
 use crate::util::logfile::log;
 use crate::util::paths;
 
+use hq_desktop_core::cli_update_lock::{
+    acquire_cli_update_lock, CliUpdateLockAttempt, CliUpdateLockGuard,
+};
+
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, auto_update_enabled, classify_install_failure,
-    bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_final_attempt,
-    cli_auto_update_enabled, cmp_semver,
-    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
-    hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
+    apply_post_install_effects, auto_update_enabled, bun_home_from_hq_bin, bun_install_argv,
+    classify_install_failure, classify_install_failure_with_final_attempt, cli_auto_update_enabled,
+    cli_install_needed, cmp_semver, decide_post_install, dismissed_cli_version, get_local_version,
+    get_local_version_diagnostics, hq_cli_version_under_pnpm_root, hq_version_string, install_argv,
+    install_converged, install_executor_for_first_install, install_executor_for_hq_bin,
     install_failure_detail, install_failure_detail_with_final_attempt, install_failure_report,
-    install_executor_for_hq_bin, installed_hq_cli_version_in_bun_global,
-    installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
-    is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
-    non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
-    non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
-    non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
-    npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env,
-    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
+    installed_hq_cli_version_in_bun_global, installed_hq_cli_version_in_pnpm_store,
+    installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_npm_bin_collision,
+    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    legacy_marker_needs_recovery, non_convergent_cli_contract, non_convergent_cli_version,
+    non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
+    non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
+    npm_lifecycle_cause, npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path,
+    pnpm_global_env, pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
     read_installed_version, redact_home, redact_home_in, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
@@ -95,9 +98,8 @@ pub use hq_desktop_core::hq_cli_update::{
     LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport, NpmLatest,
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY,
-    HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX,
-    NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
+    DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
+    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -146,17 +148,30 @@ async fn fetch_latest() -> Result<String, String> {
     Ok(parsed.version)
 }
 
-/// Perform one check. Returns `Some(info)` when an upgrade is available,
-/// `None` when the user is already on the latest (or `hq` isn't installed
-/// — we don't pester users who don't have the CLI).
+/// Perform one check. Returns `Some(info)` when the machine needs `latest`
+/// installed — an upgrade over a readable older version, or **no CLI installed
+/// at all** — and `None` when the user is already current.
+///
+/// The no-CLI case is the one this used to drop on the floor: a user who has
+/// never installed the CLI reported "no update available" forever, even though
+/// the app is the natural place to put it on the machine. `info.local` is
+/// `None` for it.
+///
+/// A binary that is present but whose version cannot be read is NOT included.
+/// It may be our own install left broken by an interrupted global install, or
+/// an unrelated program named `hq`, and nothing available here distinguishes
+/// them; `should_report_unreadable_version` below reports it for triage instead.
 pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, String> {
     let latest = fetch_latest().await?;
     let local_version = get_local_version_diagnostics();
     let local = local_version.local.clone();
-    let update_available = match local.as_deref() {
-        Some(l) => cmp_semver(l, &latest) == std::cmp::Ordering::Less,
-        None => false,
-    };
+    // Now also true when NO `hq` is installed at all. Previously the
+    // unreadable-version arm was unconditionally false, so a user with no CLI
+    // reported "no update available" and the background installer below never
+    // ran for them. `hq_installed` keeps a present-but-unreadable binary out of
+    // it — see `cli_install_needed`.
+    let update_available =
+        cli_install_needed(local.as_deref(), &latest, local_version.hq_installed);
     log(
         "hq-cli-update",
         &format!(
@@ -790,7 +805,10 @@ fn non_convergent_episode_markers() -> Vec<String> {
 fn record_non_convergent_episode_markers(keys: &[String]) -> Result<(), String> {
     let array = Value::Array(keys.iter().map(|key| Value::String(key.clone())).collect());
     paths::menubar_json_path().and_then(|path| {
-        hq_desktop_core::first_run::merge_menubar_flags(&path, &[(NON_CONVERGENT_EPISODE_KEYS, array)])
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(NON_CONVERGENT_EPISODE_KEYS, array)],
+        )
     })
 }
 
@@ -839,7 +857,12 @@ async fn pnpm_effective_global_bin_dir(
 /// Run one bounded pnpm probe and return its trimmed stdout, or `None` on spawn
 /// error, non-zero exit, or timeout. Every probe uses `kill_on_drop` + a
 /// `PNPM_PROBE_TIMEOUT`, so a hung pnpm cannot block the install.
-async fn pnpm_probe_line(pnpm_bin: &str, path: &str, pnpm_home: &str, args: &[&str]) -> Option<String> {
+async fn pnpm_probe_line(
+    pnpm_bin: &str,
+    path: &str,
+    pnpm_home: &str,
+    args: &[&str],
+) -> Option<String> {
     let mut cmd = paths::tokio_spawn_command(pnpm_bin, args);
     cmd.env("PATH", path)
         .env("PNPM_HOME", pnpm_home)
@@ -872,9 +895,14 @@ async fn pnpm_global_delivered_version(
     path: &str,
     pnpm_home: &str,
 ) -> (Option<String>, PnpmStoreFamily, bool) {
-    let ls_version = pnpm_probe_line(pnpm_bin, path, pnpm_home, &["ls", "-g", "--depth", "0", "--json"])
-        .await
-        .and_then(|json| pnpm_global_ls_hq_cli_version(&json));
+    let ls_version = pnpm_probe_line(
+        pnpm_bin,
+        path,
+        pnpm_home,
+        &["ls", "-g", "--depth", "0", "--json"],
+    )
+    .await
+    .and_then(|json| pnpm_global_ls_hq_cli_version(&json));
 
     // `pnpm root -g` gives the store root: used to locate the package when
     // `ls -g` did not answer, and to name the store family for telemetry.
@@ -1156,7 +1184,10 @@ async fn install_hq_cli_update_via_bun(
     let args = bun_install_argv(Some(latest));
     log(
         "hq-cli-update",
-        &format!("install: Bun-managed hq detected — spawning bun {}", args.join(" ")),
+        &format!(
+            "install: Bun-managed hq detected — spawning bun {}",
+            args.join(" ")
+        ),
     );
     let output = {
         let bun = bun.clone();
@@ -1302,6 +1333,37 @@ fn apply_post_install(
     Ok(info)
 }
 
+/// Take the cross-process cli-update lock before mutating the global
+/// `@indigoai-us/hq-cli` install. Layering, deliberately kept distinct:
+///
+///   * `AsyncSingleFlight` dedupes concurrent callers INSIDE this app;
+///   * this file lock (`hq_desktop_core::cli_update_lock` — path, JSON field
+///     names, and staleness are a cross-repo CONTRACT with hq-cli's
+///     TypeScript version gate) serializes writers ACROSS processes, closing
+///     the mid-rename npm collision window;
+///   * the non-convergence marker in `menubar.json` keeps governing the RETRY
+///     policy after an install that didn't take.
+///
+/// A fresh, live holder means skip this cycle entirely — the mandatory
+/// one-line log identifies the holder, and the returned `Err` reads the same
+/// way in the background loop's "auto-update failed" line and in the UI. The
+/// scheduled checker retries naturally.
+pub(crate) fn acquire_cli_install_lock(
+    app: &AppHandle,
+    tool: &str,
+) -> Result<CliUpdateLockGuard, String> {
+    match acquire_cli_update_lock(tool, &app.package_info().version.to_string())? {
+        CliUpdateLockAttempt::Acquired(guard) => Ok(guard),
+        CliUpdateLockAttempt::Held { holder } => {
+            let msg = format!(
+                "another hq-cli install is already running ({holder}); skipping this cycle"
+            );
+            log("hq-cli-update", &msg);
+            Err(msg)
+        }
+    }
+}
+
 static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateInfo>> = OnceLock::new();
 
 fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateInfo> {
@@ -1316,15 +1378,33 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
 }
 
 async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+    // Held for the WHOLE install — every executor path below (npm, pnpm, bun,
+    // and the managed-toolchain retry) mutates the same global CLI layout, so
+    // the guard must outlive them all. Drop (including panic unwind) releases.
+    let _install_lock = acquire_cli_install_lock(&app, "hq-desktop-app-cli-update")?;
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
-    let hq = paths::resolve_bin("hq");
-    let executor = install_executor_for_hq_bin(Path::new(&hq)).ok_or_else(|| {
-        format!(
-            "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
-             Refusing to overwrite an unrelated command."
-        )
-    })?;
+    let hq_resolved = paths::resolve_bin_with_kind("hq");
+    let hq = hq_resolved.path.clone();
+    let mut first_install = false;
+    let executor = match install_executor_for_hq_bin(Path::new(&hq)) {
+        Some(executor) => executor,
+        // Nothing identifiable at the resolved path. When nothing resolved AT
+        // ALL there is no file to overwrite, so this is a first install rather
+        // than the unrelated-command case the refusal guards; anything else
+        // still refuses. See `install_executor_for_first_install`.
+        None => {
+            let executor =
+                install_executor_for_first_install(hq_resolved.kind).ok_or_else(|| {
+                    format!(
+                        "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
+                         Refusing to overwrite an unrelated command."
+                    )
+                })?;
+            first_install = true;
+            executor
+        }
+    };
     // This must be sampled before the install, for either executor. An
     // unwritable marker reads as absent; the post-install gate then refuses to
     // capture unless this run successfully persists the first-episode marker.
@@ -1344,6 +1424,21 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             InstallExecutor::Npm => unreachable!("npm handled below"),
         };
     }
+    // A machine with no CLI very often has no Node either — the population this
+    // first-install path exists for is precisely the one least likely to have a
+    // toolchain. npm would then resolve to the bare name, the very first spawn
+    // would fail `spawn npm: …`, and that error propagates out of
+    // `run_npm_install_with_retries` before the managed-toolchain retry (which
+    // only arms on a failing install OUTPUT, never on a spawn error) is ever
+    // considered. Provision HQ's managed Node up front instead, so the first
+    // install has an npm to run at all.
+    let (npm, path) = if first_install && npm_unresolved(&npm) {
+        provision_managed_npm_for_first_install(&app)
+            .await
+            .unwrap_or((npm, path))
+    } else {
+        (npm, path)
+    };
     // Derive the prefix from the RUNTIME of the resolved npm, not `hq` alone: if a
     // prior episode provisioned HQ's managed Node but left no managed `hq`, npm is
     // now managed (Node 22) while `hq` still resolves the user's Node-20 shim, and a
@@ -1676,6 +1771,64 @@ fn persist_reported_episode(outcome: InstallFailureEpisode) {
 /// from the SHARED `paths::managed_npm_prefix_in`, the same definition the
 /// first-run dependency installer uses, so the two can never target different
 /// directories.
+/// Whether `resolve_bin("npm")` found nothing and handed back the bare name.
+///
+/// `resolve_bin` returns the name itself as its unresolved marker (so
+/// `Command::new` still errors readably), which means "npm" with no path
+/// separator is exactly the not-found signal.
+fn npm_unresolved(npm: &str) -> bool {
+    Path::new(npm).components().count() <= 1
+}
+
+/// The ONE call into the managed-Node provisioning seam for this module.
+///
+/// Both consumers — the first-install path below and `managed_toolchain_retry`
+/// — go through here, so the module keeps exactly one provisioning point rather
+/// than growing a second installer per caller. `repair_managed_node` carries the
+/// repair cooldown itself, which is also what bounds the two paths if they ever
+/// meet in one invocation: a first install that provisions and then still fails
+/// finds the retry's own request Skipped, so at most one provision actually
+/// happens per run.
+async fn request_managed_node_repair(app: &AppHandle) -> ToolchainRepair {
+    crate::commands::sync::repair_managed_node(app).await
+}
+
+/// Provision HQ's managed Node so a first install has an npm to run.
+///
+/// Only used when the machine has no CLI *and* no resolvable npm. Returns the
+/// managed `(npm, PATH)` pair on success, or `None` when provisioning is on
+/// cooldown or fails — in which case the caller proceeds with the unresolved
+/// npm and surfaces the ordinary spawn failure, exactly as before.
+async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(String, String)> {
+    log(
+        "hq-cli-update",
+        "first install with no npm on PATH — provisioning HQ's managed Node first",
+    );
+    match request_managed_node_repair(app).await {
+        ToolchainRepair::Repaired => {}
+        ToolchainRepair::Skipped => {
+            log(
+                "hq-cli-update",
+                "managed Node provisioning skipped — a repair was attempted too recently",
+            );
+            return None;
+        }
+        ToolchainRepair::Failed(reason) => {
+            log(
+                "hq-cli-update",
+                &format!("managed Node provisioning failed: {reason}"),
+            );
+            return None;
+        }
+    }
+    let (managed_npm, managed_path, _prefix) = managed_toolchain_npm_and_path()?;
+    log(
+        "hq-cli-update",
+        "managed Node provisioned — running the first install under it",
+    );
+    Some((managed_npm, managed_path))
+}
+
 fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
     let root = paths::managed_toolchain_roots().into_iter().next()?;
     let node_exe = paths::managed_node_executable_in(&root);
@@ -1892,7 +2045,7 @@ async fn managed_toolchain_retry(
     // Provision through the shared seam. Only a fresh, successful provision earns
     // the retry; a cooldown-Skipped or a Failed repair falls straight through so
     // the caller still reports the original failure.
-    match crate::commands::sync::repair_managed_node(app).await {
+    match request_managed_node_repair(app).await {
         ToolchainRepair::Repaired => {}
         ToolchainRepair::Skipped => {
             log(

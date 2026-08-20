@@ -10,8 +10,8 @@ import { readRepoFile } from './harness';
  * cache→live swap, on every window focus, and on every sync:all-complete — plus
  * `{#key renderWorkspaceCount}` remounts of the title bar, sidebar, and status
  * bar. The reload mid-paint is what blanked/froze the desktop. The chrome is
- * already reactive (ChatSidebar / FilesModeSidebar consume the `companies`
- * prop; V4TitleBar / DesktopStatusBar are pure $props consumers), so reassigning
+ * already reactive (V4Sidebar derives its model from the `companies` prop;
+ * V4TitleBar / DesktopStatusBar are pure $props consumers), so reassigning
  * renderCompanies refreshes everything without a reload or a remount.
  */
 describe('desktop render stability', () => {
@@ -53,11 +53,7 @@ describe('desktop render stability', () => {
     expect(harness).toContain("emit('sync:conflict'");
     expect(harness).toContain("emit('sync:error'");
     expect(mocks).toContain('function currentHarnessCoreState()');
-    // US-019: drift is selected via wantsCoreDrift / scenario catalog
-    // (drift | no-drift | chat shell default), not a single !== 'drift' guard.
-    expect(mocks).toContain('function wantsCoreDrift(');
-    expect(mocks).toContain("scenario === 'drift'");
-    expect(mocks).toContain("scenario === 'no-drift'");
+    expect(mocks).toContain("harnessScenario() !== 'drift'");
     expect(mocks).toContain('check_core_state: () => currentHarnessCoreState()');
   });
 

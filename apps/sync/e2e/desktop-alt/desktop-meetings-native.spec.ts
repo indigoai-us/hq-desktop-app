@@ -16,13 +16,15 @@ describe('Meetings native: compact IA and preserved actions', () => {
   const store = readRepoFile('src/desktop-alt/lib/meetings-store.svelte.ts');
 
   it('uses a compact toolbar without an oversized title block or three summary cards', () => {
-    expect(page).toContain('class="page-header meetings-toolbar chat-shell"');
+    expect(page).toContain('class="page-header meetings-toolbar"');
     expect(page).toContain('<h1>Meetings</h1>');
-    expect(page).toContain('MEETINGS_PAGE_DEK');
     expect(page).toContain('{toolbarMeta}');
-    // Token contract §7: meetings reuses the chan-head pattern — 15px w600
-    // title on an inline baseline row (no display-scale grid title block).
-    expect(page).toMatch(/\.ph-titles h1\s*\{[\s\S]*?font-size:\s*15px/);
+    expect(page).toMatch(
+      /\.ph-titles\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
+    );
+    expect(page).toMatch(
+      /\.ph-titles h1\s*\{[\s\S]*?font-size:\s*var\(--type-detail/,
+    );
     // No permanent 3-card dashboard (Live/Up next/Signal pool as equal cards).
     expect(page).not.toContain('class="three-col"');
     expect(page).not.toContain('>Signal pool<');
@@ -32,20 +34,15 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(page).toMatch(
       /\.detail-primary-actions\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/,
     );
-    // US-017: Connect calendar + Open calendar + Refresh.
-    expect(page).toContain('Connect calendar');
     expect(page).toContain('Open calendar');
     expect(page).toContain("meetingsStore.refresh()");
-    expect(page).toContain('data-testid="meetings-agenda-toggle"');
-    expect(page).toContain('data-testid="meetings-footer"');
   });
 
   it('orders Live now, Up next, meeting-bot health, then day-grouped agenda', () => {
-    // Prefer the markup usage (not the import line) for MeetingsAgenda order.
-    const liveIdx = page.indexOf('<LiveNowCard\n');
+    const liveIdx = page.indexOf('<LiveNowCard');
     const upNextIdx = page.indexOf('data-testid="meetings-up-next"');
     const botIdx = page.indexOf('data-testid="meetings-bot-health"');
-    const agendaIdx = page.lastIndexOf('<MeetingsAgenda');
+    const agendaIdx = page.indexOf('<MeetingsAgenda');
 
     expect(liveIdx).toBeGreaterThan(-1);
     expect(upNextIdx).toBeGreaterThan(liveIdx);
@@ -66,7 +63,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(agenda).toMatch(/\.agenda-list\s*\{[\s\S]*?border-radius:\s*0;/);
     expect(agenda).toMatch(/\.agenda-panel\s*\{[\s\S]*?background:\s*transparent;/);
     expect(agenda).toMatch(
-      /\.meeting-row\s*\{[\s\S]*?border-radius:\s*10px/,
+      /\.meeting-row\s*\{[\s\S]*?border-bottom:\s*1px solid var\(--v4-rowline\)/,
     );
     expect(agenda).not.toContain('box-shadow: var(--v4-shadow-card)');
     // Secondary sections are hairline, not raised cards.
@@ -102,13 +99,14 @@ describe('Meetings native: compact IA and preserved actions', () => {
     });
     expect(V4_ROW_STACK_GAP_PX).toBe(3);
 
+    expect(page).toContain('--type-detail');
     expect(page).toContain('--type-secondary');
     expect(page).toContain('--type-body');
     expect(page).toContain('--type-metadata');
     expect(page).toContain('var(--v4-row-stack-gap, 3px)');
 
     expect(agenda).toMatch(
-      /\.mmeta\s*\{[\s\S]*?display:\s*flex/,
+      /\.mmeta\s*\{[\s\S]*?gap:\s*var\(--v4-row-stack-gap,\s*3px\)/,
     );
     expect(agenda).toContain('--type-section');
     expect(agenda).toContain('--type-body');
@@ -136,7 +134,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(live).toContain("onclick={() => onstart(meeting.windowId)}");
     expect(live).toContain("onclick={() => onstop(meeting.windowId)}");
 
-    // Row open / invite / uninvite / join-now + US-017 notetaker toggle.
+    // Row open / invite / uninvite / join-now.
     expect(agenda).toContain('aria-label="Open meeting in browser"');
     expect(agenda).toContain(
       "aria-label={invitePending ? 'Inviting bot' : recurring ? 'Invite bot to series' : 'Invite bot'}",
@@ -147,7 +145,6 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(agenda).toContain(
       "aria-label={joinNowPending ? 'Telling bot to join now' : 'Tell bot to join now'}",
     );
-    expect(agenda).toContain('data-testid="meeting-notetaker-toggle"');
     expect(agenda).toContain('aria-busy={invitePending}');
     expect(agenda.match(/aria-busy=\{uninvitePending\}/g)).toHaveLength(3);
     expect(agenda).toContain('aria-busy={joinNowPending}');
@@ -168,8 +165,7 @@ describe('Meetings native: compact IA and preserved actions', () => {
     expect(page).toContain('{row.calendar} -> {row.routingTarget}');
     expect(page).toContain('No calendars connected yet');
     expect(page).toContain('Open HQ Console Integrations');
-    expect(agenda).toContain('MEETINGS_UPCOMING_EMPTY');
-    expect(agenda).toContain('MEETINGS_PAST_EMPTY');
+    expect(agenda).toContain('No meetings in your synced calendars yet.');
     expect(page).toContain('data-testid="meetings-feature-hidden"');
   });
 

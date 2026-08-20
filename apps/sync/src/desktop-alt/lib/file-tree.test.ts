@@ -1,20 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
-  classifyRootLoadError,
   companySlugForHqPath,
   dirEntryToLazyNode,
   fileAccessibleCompanies,
   fileTreeRowMeta,
-  filesScopeRootPath,
   filterLazyNodes,
   filterFileEntriesForMembership,
   flattenLazy,
   flattenTree,
   isFilesRouteAllowed,
-  isRootNotFoundError,
-  knowledgeRootPath,
-  rootLoadErrorMessage,
   parentPathOf,
   sortNodes,
   type DirEntry,
@@ -540,123 +535,5 @@ describe('file-tree row metadata', () => {
   it('keeps type metadata for top-level rows in the unscoped HQ tree', () => {
     expect(fileTreeRowMeta({ path: 'companies', isDir: true }, '')).toBe('Folder');
     expect(fileTreeRowMeta({ path: 'README.md', isDir: false }, '')).toBe('File');
-  });
-});
-
-describe('workspace root paths (knowledge-path fixes)', () => {
-  it('company slugs root knowledge under the company knowledge subtree', () => {
-    expect(knowledgeRootPath('acme')).toBe('companies/acme/knowledge');
-    expect(knowledgeRootPath('acme-labs')).toBe('companies/acme-labs/knowledge');
-  });
-
-  it('the personal workspace roots knowledge at the HQ-root personal/knowledge', () => {
-    expect(knowledgeRootPath('personal')).toBe('personal/knowledge');
-  });
-
-  it('company slugs scope Files mode to the company subtree', () => {
-    expect(filesScopeRootPath('acme')).toBe('companies/acme');
-  });
-
-  it('the personal workspace scopes Files mode to the HQ-root personal tree', () => {
-    expect(filesScopeRootPath('personal')).toBe('personal');
-  });
-
-  it('a slug merely starting with personal is NOT the personal workspace', () => {
-    expect(knowledgeRootPath('personalized')).toBe('companies/personalized/knowledge');
-    expect(filesScopeRootPath('personalized')).toBe('companies/personalized');
-  });
-});
-
-describe('isRootNotFoundError (missing-root empty state)', () => {
-  it('classifies the list_dir_entries missing-directory shape', () => {
-    expect(
-      isRootNotFoundError('directory not found: "companies/acme/knowledge"'),
-    ).toBe(true);
-  });
-
-  it('classifies the canonicalization ENOENT shape (unix)', () => {
-    expect(
-      isRootNotFoundError(
-        'could not resolve "companies/acme/knowledge": No such file or directory (os error 2)',
-      ),
-    ).toBe(true);
-  });
-
-  it('classifies the canonicalization not-found shapes (windows)', () => {
-    expect(
-      isRootNotFoundError(
-        'could not resolve "companies/acme/knowledge": The system cannot find the file specified. (os error 2)',
-      ),
-    ).toBe(true);
-    expect(
-      isRootNotFoundError(
-        'could not resolve "companies/acme/knowledge": The system cannot find the path specified. (os error 3)',
-      ),
-    ).toBe(true);
-  });
-
-  it('accepts Error objects as well as strings', () => {
-    expect(
-      isRootNotFoundError(new Error('directory not found: "personal/knowledge"')),
-    ).toBe(true);
-    expect(isRootNotFoundError(new Error('company files are not authorized'))).toBe(false);
-  });
-
-  it('does NOT classify genuine failures as missing', () => {
-    expect(
-      isRootNotFoundError(
-        'could not resolve "companies/acme/knowledge": Permission denied (os error 13)',
-      ),
-    ).toBe(false);
-    expect(isRootNotFoundError('file explorer requires a signed-in user')).toBe(false);
-    expect(isRootNotFoundError('path escapes the HQ folder: "../x"')).toBe(false);
-    expect(isRootNotFoundError('could not read directory "x": Permission denied')).toBe(false);
-    expect(isRootNotFoundError(null)).toBe(false);
-    expect(isRootNotFoundError(undefined)).toBe(false);
-    expect(isRootNotFoundError('')).toBe(false);
-  });
-});
-
-describe('classifyRootLoadError (scope + authorization calm states)', () => {
-  it('maps missing directories to not-found', () => {
-    expect(classifyRootLoadError('directory not found: "companies/acme/knowledge"')).toBe(
-      'not-found',
-    );
-  });
-
-  it('maps scope-gate rejections to scope (exact scope_gate.rs shapes)', () => {
-    expect(
-      classifyRootLoadError(
-        'company scope not bound: reading companies/acme/ requires an active company context',
-      ),
-    ).toBe('scope');
-    expect(
-      classifyRootLoadError(
-        'cross-company read blocked: active company is "acme", path targets "zed"',
-      ),
-    ).toBe('scope');
-  });
-
-  it('maps membership rejections to unauthorized', () => {
-    expect(classifyRootLoadError('company files are not authorized: "acme"')).toBe('unauthorized');
-    expect(classifyRootLoadError(new Error('company projects are not authorized: "acme"'))).toBe(
-      'unauthorized',
-    );
-  });
-
-  it('keeps everything else on the generic unknown path', () => {
-    expect(classifyRootLoadError('file explorer requires a signed-in user')).toBe('unknown');
-    expect(classifyRootLoadError('path escapes the HQ folder: "../x"')).toBe('unknown');
-    expect(classifyRootLoadError(null)).toBe('unknown');
-  });
-
-  it('renders distinct calm copy per kind, generic only for unknown', () => {
-    const scope = rootLoadErrorMessage('scope');
-    const unauthorized = rootLoadErrorMessage('unauthorized');
-    expect(scope).not.toBe('Files unavailable');
-    expect(unauthorized).not.toBe('Files unavailable');
-    expect(unauthorized).toMatch(/sync/i);
-    expect(scope).not.toBe(unauthorized);
-    expect(rootLoadErrorMessage('unknown')).toBe('Files unavailable');
   });
 });

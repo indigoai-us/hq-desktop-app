@@ -19,6 +19,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'workers',
       'knowledge',
       'team',
+      'activity',
       'deployments',
       'secrets',
       'settings',
@@ -69,31 +70,20 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
   it('DesktopApp routes Knowledge as a company tab (inline panel; DESKTOP-001 primary children)', () => {
     const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     // Knowledge is a primary company child + deep-link tab; secondary company
-    // column is gone (DESKTOP-001), and US-020 removed the secondary sidebar
-    // everywhere — company tab navigation rides the palette + page callbacks.
+    // column is gone (DESKTOP-001). Secondary select still handles library/settings.
     expect(app).not.toContain("id === 'knowledge'");
-    expect(app).toContain("navigate({ kind: 'company', slug: activeCompany.slug, tab: section.id })");
+    expect(app).toContain("navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab })");
     const page = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
     expect(page).toContain('<CompanyKnowledgePanel slug={company.slug} />');
     expect(page).not.toContain('company-knowledge-placeholder');
-    // US-018: V4Sidebar retired; company primary children live in the model +
-    // DesktopApp company tab navigation (not a dedicated sidebar expander).
-    const model = readRepoFile('src/desktop-alt/v4/model.ts');
-    expect(model).toContain('V4_COMPANY_PRIMARY_ITEMS');
-    expect(model).toContain('sortV4CompaniesConnectedFirst');
-    expect(app).toContain("tab: section.id");
+    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+    expect(sidebar).toContain('goCompanySection');
+    expect(sidebar).toContain('v4-company-children');
   });
 
   it('CompanyKnowledgePanel is tenant-scoped to the company knowledge subtree (source contract)', () => {
     const panel = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
-    const fileTreeLib = readRepoFile('src/desktop-alt/lib/file-tree.ts');
-    // Root derives from the shared knowledgeRootPath helper, whose tenant
-    // mapping is pinned: companies scope to their own knowledge subtree; only
-    // the exact personal slug maps to the HQ-root personal/knowledge tree.
-    expect(panel).toContain('knowledgeRootPath(slug)');
-    expect(fileTreeLib).toContain(': `companies/${slug}/knowledge`');
-    expect(fileTreeLib).toContain("? 'personal/knowledge'");
-    expect(fileTreeLib).toContain('slug === PERSONAL_WORKSPACE_SLUG');
+    expect(panel).toContain('`companies/${slug}/knowledge`');
     expect(panel).toContain('CompanyFileTree');
     expect(panel).toContain('FilePreviewPane');
     expect(panel).toContain('inKnowledgeScope');

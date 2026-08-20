@@ -26,12 +26,13 @@
     type CachedBrand,
   } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
-  import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';
+  import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
-  import LibraryOverlay from './chat/LibraryOverlay.svelte';
+  import LibraryPage from './pages/LibraryPage.svelte';
   import MarketplacePage from './pages/MarketplacePage.svelte';
+  import InboxPage from './pages/InboxPage.svelte';
   import MessagesShell from '../components/messaging/MessagesShell.svelte';
-
+  import CompanyPage from './pages/CompanyPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
@@ -65,7 +66,7 @@
     getDesktopHotkeyRoute,
     getDesktopLandingRoute,
     getDesktopRouteKey,
-    getDesktopSessionScopeSlug,
+    getDesktopSecondarySidebar,
     resolvePendingDesktopRoute,
     type CompanyTab,
     type DesktopRoute,
@@ -78,32 +79,15 @@
     type V4HydrationIssue,
     V4_CHROME_LAYOUT,
   } from './v4/model';
-  import {
-    loadCloudPaused,
-    readCloudPaused,
-    setCloudPaused,
-  } from './lib/cloud-connection';
   import type {
     HomeConflict,
     HomeCoreState,
     HomeDeleteRefusal,
   } from './v4/home-model';
-  // US-003 / US-018: ChatSidebar is the primary conversation surface.
-  import ChatSidebar from './chat/ChatSidebar.svelte';
-  import NotificationsView from './chat/NotificationsView.svelte';
-  import { parseNotificationsResponse } from './chat/notifications-model';
-  import {
-    companyLabelFor,
-    conversationKindLabel,
-    loadConversationCache,
-    normalizeConversations,
-    type ConversationRow,
-    type DmContactInput,
-  } from './chat/sidebar-model';
-  import { requestChannelOpen } from './chat/open-target';
-  import type { Channel } from '../lib/channels';
+  import V4Sidebar from './v4/V4Sidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
   import FilePreviewPane from './components/FilePreviewPane.svelte';
+  import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
   import V4TitleBar from './v4/V4TitleBar.svelte';
   import CommandPalette, {
     type CommandPaletteItem,
@@ -263,9 +247,6 @@
   let driftRestoring = $state(false);
   // Local hq-core version ("15.0.15") for Home's meta line; null = unreadable.
   let hqVersion = $state<string | null>(null);
-  // V2 Cloud Off (US-001 / US-016): mirror-first for instant render; settings
-  // (menubar.json — the store the Rust sync gates read) is authoritative.
-  let cloudPaused = $state(readCloudPaused());
   // Resolved HQ folder from get_config, used for path labels and handoffs.
   let hqFolderPath = $state<string | null>(null);
   // `realtimeSync` preference (auto-sync cadence in Home's meta line).
@@ -286,18 +267,6 @@
   let refreshingRealState = $state(false);
   const refreshCoordinator = new LatestRequestCoordinator();
   let commandPaletteOpen = $state(false);
-  /** Conversations for ⌘K CONVERSATIONS section (cache-first, refreshed on open). */
-  let paletteConversations = $state<ConversationRow[]>(
-    (() => {
-      const cache =
-        typeof window !== 'undefined' ? loadConversationCache(window.localStorage) : null;
-      if (!cache) return [];
-      return normalizeConversations(
-        cache.channels as Channel[],
-        cache.contacts as DmContactInput[],
-      );
-    })(),
-  );
   let navigationPending = $state(false);
   let navigationSequence = 0;
   let desktopDestroyed = false;
@@ -339,7 +308,7 @@
     route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
   );
   const polledCompanyResource = $derived<CompanyResource | null>(
-    companyTab === 'deployments' || companyTab === 'secrets'
+    companyTab === 'activity' || companyTab === 'deployments' || companyTab === 'secrets'
       ? companyTab
       : companyTab === 'overview'
         ? 'summary'
@@ -371,13 +340,12 @@
   const filesSelectedPath = $derived<string | null>(
     filesRouteAllowed && route.kind === 'files' ? route.path ?? null : null,
   );
-  // Bind the native read-scope gate to the workspace being VIEWED — including
-  // local-only / sync-paused companies, whose local board/knowledge/files
-  // reads all failed with `company scope not bound` under the previous
-  // sync-enabled-gated derivation. Membership authorization stays enforced
-  // independently in Rust (require_company_file_access, fail-closed).
   const sessionBoundCompanySlug = $derived<string | null>(
-    getDesktopSessionScopeSlug(route, shellCompanies, filesActiveSlug),
+    route.kind === 'files'
+      ? filesActiveSlug
+      : activeCompanySyncEnabled
+        ? activeCompany?.slug ?? null
+        : null,
   );
   $effect(() => {
     void invoke('set_desktop_active_company', {
@@ -400,6 +368,14 @@
     }
     route = { kind: 'files' };
   });
+  // Secondary (contextual) sidebar — Library / Settings only (DESKTOP-001
+  // removed the permanent company secondary column). Null hides the column.
+  const secondarySidebar = $derived(
+    getDesktopSecondarySidebar(route, shellCompanies, {
+      version: __APP_VERSION__,
+      hqFolderPath,
+    }),
+  );
   const effectiveTotalFiles = $derived(
     computeEffectiveTotalFiles({
       planReceived: syncPlanReceived,
@@ -445,11 +421,17 @@
       action: () => navigate({ kind: 'home' }),
     },
     {
-      id: 'command-go-notifications',
-      label: 'Go to Notifications',
+      id: 'command-go-mission-control',
+      label: 'Go to Mission Control',
+      detail: 'Live + historical view of running agent sessions',
+      action: () => navigate({ kind: 'mission-control' }),
+    },
+    {
+      id: 'command-go-inbox',
+      label: 'Go to Inbox',
       detail: 'Notifications, mentions, shares, and activity',
       shortcut: '⌘1',
-      action: () => navigate({ kind: 'notifications' }),
+      action: () => navigate({ kind: 'inbox' }),
     },
     {
       id: 'command-go-messages',
@@ -476,14 +458,14 @@
       label: 'Go to Library',
       detail: 'Skills, workers, and installed packs',
       shortcut: '⌘4',
-      action: () => openLibrary({ kind: 'library' }),
+      action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
       (section) => ({
         id: `command-go-library-${section.id}`,
         label: `Go to Library ${section.label}`,
         detail: `Show ${section.label.toLowerCase()} in the library`,
-        action: () => openLibrary({ kind: 'library', tab: section.id }),
+        action: () => navigate({ kind: 'library', tab: section.id }),
       }),
     ),
     {
@@ -523,7 +505,7 @@
     ...orderedCompanies.map((row, index) => ({
       id: `command-go-company-${row.slug}`,
       label: `Go to ${row.label}`,
-      detail: 'Filter conversations to this company',
+      detail: 'Show company overview',
       shortcut: companyHotkey(index),
       action: () => navigate({ kind: 'company', slug: row.slug }),
     })),
@@ -540,27 +522,6 @@
           }),
         )
       : []),
-    // Cross-company conversations (US-013) — type-tagged + company label; the
-    // palette ranks these by match then recency under a CONVERSATIONS section.
-    ...paletteConversations.map((row) => {
-      const kind = conversationKindLabel(row.kind);
-      const company = companyLabelFor(
-        row.companyUid,
-        (renderCompanies ?? [])
-          .filter((w) => w.kind !== 'personal' && w.cloudUid)
-          .map((w) => ({
-            companyUid: w.cloudUid as string,
-            label: w.displayName?.trim() || w.slug,
-          })),
-      );
-      return {
-        id: `conversation-${row.id}`,
-        label: row.title,
-        detail: company ? `${kind} · ${company}` : kind,
-        lastActivityAt: row.lastActivityAt,
-        action: () => openPaletteConversation(row),
-      };
-    }),
   ]);
 
   // Plain-language error summary for the V4 title bar's error state.
@@ -588,53 +549,6 @@
   // return the user to where they were (default Home). Updated on every
   // navigation AWAY from a non-files route (US-010).
   let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
-
-  // US-012: previous route for Notifications Back, plus bell unread badge.
-  let routeBeforeNotifications = $state<DesktopRoute>({ kind: 'home' });
-  let notificationsUnreadCount = $state(0);
-
-  // US-017: previous route for Library overlay Back (fallback notifications/home).
-  let routeBeforeLibrary = $state<DesktopRoute>({ kind: 'notifications' });
-  /** Daybook company scope (cloud uid). Set when a company route remaps to messages. */
-  let sidebarScopeUid = $state<string | null>(null);
-
-  function openNotifications(): void {
-    if (route.kind !== 'notifications') {
-      routeBeforeNotifications = route;
-    }
-    navigate({ kind: 'notifications' });
-  }
-
-  function exitNotifications(): void {
-    navigate(routeBeforeNotifications ?? { kind: 'home' });
-  }
-
-  function openLibrary(next: DesktopRoute = { kind: 'library' }): void {
-    navigate(next);
-  }
-
-  function exitLibrary(): void {
-    const fallback =
-      routeBeforeLibrary.kind === 'library'
-        ? ({ kind: 'notifications' } satisfies DesktopRoute)
-        : routeBeforeLibrary;
-    navigate(fallback);
-  }
-
-  async function refreshNotificationsBadge(): Promise<void> {
-    try {
-      const raw = await invoke<unknown>('fetch_notifications', {
-        limit: 1,
-        cursor: null,
-        unreadOnly: false,
-      });
-      const parsed = parseNotificationsResponse(raw);
-      notificationsUnreadCount = parsed.unreadCount;
-    } catch (err) {
-      // Absent endpoint / auth miss: hide the badge rather than surface noise.
-      console.error('desktop: fetch_notifications badge failed', err);
-    }
-  }
 
   function mapMessagesTarget(payload: {
     personUid?: string;
@@ -688,25 +602,10 @@
   }
 
   function navigate(nextRoute: DesktopRoute) {
-    const incoming = nextRoute;
-    let dest: DesktopRoute = incoming;
-    // US-017: remember where we came from so Library overlay Back works for
-    // hotkeys, palette, and sidebar destinations alike.
-    if (incoming.kind === 'library' && route.kind !== 'library') {
-      routeBeforeLibrary = route;
-    }
-    // Daybook: a company is a sidebar scope, not a dashboard page.
-    if (incoming.kind === 'company') {
-      const uid = (renderCompanies ?? workspaces)
-        .find((w) => w.slug === incoming.slug)
-        ?.cloudUid?.trim();
-      if (uid) sidebarScopeUid = uid;
-      dest = { kind: 'messages' };
-    }
     userNavigated = true;
     const sequence = ++navigationSequence;
     navigationPending = true;
-    void commitNavigation(dest, sequence);
+    void commitNavigation(nextRoute, sequence);
   }
 
   onDestroy(() => {
@@ -875,7 +774,7 @@
           companies: nextWorkspaces,
         }).trim() || null;
       writeCachedWorkspaces(nextWorkspaces);
-      // The chrome (ChatSidebar / V4TitleBar) consumes renderCompanies +
+      // The chrome (V4Sidebar / V4TitleBar) consumes renderCompanies +
       // renderWorkspaceCount reactively ($derived / $props), so the reassignments
       // above refresh it on their own. We deliberately do NOT reload the document
       // or remount the chrome on a workspace-list change: a full reload mid-paint
@@ -1027,32 +926,8 @@
     renderCompanies = patch(renderCompanies);
   }
 
-  function handleCloudToggle(paused: boolean) {
-    cloudPaused = paused;
-    // Write-through to menubar.json so the Rust gates (start_sync + the watch
-    // daemon) see the switch, then reconcile the running watcher: pausing
-    // stops it; unpausing lets auto-sync resume immediately instead of
-    // waiting for the supervisor's next tick. Both are best-effort — the
-    // Rust-side gates are the enforcement, not these calls.
-    void setCloudPaused(paused)
-      .then(async () => {
-        if (paused) {
-          await invoke('stop_daemon').catch(() => undefined);
-        } else {
-          await invoke('start_daemon').catch(() => undefined);
-        }
-      })
-      .catch(() => undefined);
-  }
-
   async function handleSyncAll() {
     if (syncState === 'syncing') return;
-    // Cloud Off (V2 US-001 / US-016): sync is paused on this device. The
-    // titlebar switch is the way back on; a manual Sync press is a no-op.
-    if (cloudPaused) {
-      flashToast('Cloud is off — turn it on to sync', 'error');
-      return;
-    }
     resetRunState();
     manualSyncTelemetryPending = true;
     try {
@@ -1219,6 +1094,27 @@
     }
   }
 
+  // Secondary-sidebar row selection — the id is the section/tab for the
+  // current contextual surface (company / library / settings).
+  function handleSecondarySelect(id: string) {
+    if (route.kind === 'company') {
+      navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab });
+    } else if (route.kind === 'library') {
+      navigate({ kind: 'library', tab: id as LibraryTab });
+    } else if (route.kind === 'settings') {
+      // The Settings page renders all sections in one scroll; the secondary
+      // rows are a section index. Setting the tab drives both the active-row
+      // highlight and SettingsPage's scroll-into-view (US-013).
+      navigate({ kind: 'settings', tab: id as SettingsTab });
+    }
+  }
+
+  function handleSecondaryFooter() {
+    if (secondarySidebar?.surface === 'library') {
+      navigate({ kind: 'library', tab: 'submit' });
+    }
+  }
+
   function handleOpenSettings(tab?: SettingsTab) {
     navigate({ kind: 'settings', tab });
   }
@@ -1227,49 +1123,8 @@
     sidebarCollapsed = !sidebarCollapsed;
   }
 
-  async function refreshPaletteConversations(): Promise<void> {
-    try {
-      const [contactsResp, channelsResp] = await Promise.all([
-        invoke<{ contacts?: DmContactInput[] }>('list_contacts').catch(() => null),
-        invoke<{ channels?: Channel[] } | null>('list_channels').catch(() => null),
-      ]);
-      const contacts = Array.isArray(contactsResp?.contacts) ? contactsResp.contacts : [];
-      const channels = Array.isArray(channelsResp?.channels) ? channelsResp.channels : [];
-      if (contacts.length > 0 || channels.length > 0) {
-        paletteConversations = normalizeConversations(channels, contacts);
-      } else {
-        const cache =
-          typeof window !== 'undefined' ? loadConversationCache(window.localStorage) : null;
-        if (cache) {
-          paletteConversations = normalizeConversations(
-            cache.channels as Channel[],
-            cache.contacts as DmContactInput[],
-          );
-        }
-      }
-    } catch (err) {
-      console.error('command-palette: conversation refresh failed', err);
-    }
-  }
-
   function handleOpenCommandPalette() {
     commandPaletteOpen = true;
-    void refreshPaletteConversations();
-  }
-
-  function openPaletteConversation(row: ConversationRow) {
-    navigate({ kind: 'messages' });
-    if (row.kind === 'dm' && row.personUid) {
-      requestConversation({
-        personUid: row.personUid,
-        email: row.email ?? '',
-        displayName: row.title,
-      });
-      return;
-    }
-    if (row.channelId) {
-      requestChannelOpen(row.channelId);
-    }
   }
 
   function handleAccountMenu() {
@@ -1375,14 +1230,8 @@
       hydrateMeetingStatus();
     }, 30_000);
 
-    void loadCloudPaused().then((paused) => {
-      if (mounted) cloudPaused = paused;
-    });
-
     if (renderCompanies.length > 0) queueDesktopRenderAudit();
     void refreshRealState();
-    // US-012: seed the titlebar bell badge from the NOTIF store unreadCount.
-    void refreshNotificationsBadge();
     // Resolve the admin gate for the Moderation nav entry (default-deny: only an
     // explicit `true` unlocks it; any error leaves it hidden). This MUST use the
     // admin gate (`desktop_alt_is_admin` → @getindigo.ai), NOT `desktop_alt_enabled`
@@ -1841,18 +1690,6 @@
     oncommand={handleOpenCommandPalette}
     onaccount={handleAccountMenu}
     onOpenSettings={handleOpenSettings}
-    onopenMeetings={() => navigate({ kind: 'meetings' })}
-    onopenNotifications={openNotifications}
-    unreadCount={notificationsUnreadCount}
-    {cloudPaused}
-    conflicts={homeConflicts}
-    driftCount={coreState?.driftReport?.count ?? 0}
-    oncloudtoggle={handleCloudToggle}
-    onresolveconflict={handleResolveConflict}
-    onopenconflict={handleCompareConflict}
-    onopendrift={handleViewDrift}
-    onopenLibrary={() => openLibrary({ kind: 'library' })}
-    onopenMarketplace={() => navigate({ kind: 'marketplace' })}
   />
 
   <div class="desktop-body">
@@ -1867,40 +1704,41 @@
           onselectfile={navigateFilesPath}
           onexit={exitFilesMode}
         />
-      {:else if route.kind !== 'library' && route.kind !== 'settings'}
-        <!-- US-003 / US-018: chat-first primary sidebar. Library is full-bleed. -->
-        <ChatSidebar
+      {:else}
+        <V4Sidebar
+          {route}
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
-          accountInitials={accountIdentity.initials}
-          scopeUid={sidebarScopeUid}
-          oncommand={handleOpenCommandPalette}
-          onnavigateMessages={() => navigate({ kind: 'messages' })}
-          onopenSettings={() => handleOpenSettings()}
+          {brand}
+          {cloudReachable}
+          onworkspaceenabledchange={(slug, enabled) => applyWorkspaceSyncEnabled(slug, enabled)}
+          onnavigate={(next) => navigate(fromV4Route(next))}
         />
       {/if}
+    {/if}
+
+    {#if secondarySidebar}
+      <V4SecondarySidebar
+        header={secondarySidebar.header}
+        headerTone={secondarySidebar.headerTone}
+        meta={secondarySidebar.meta}
+        items={secondarySidebar.items}
+        activeId={secondarySidebar.activeId}
+        footer={secondarySidebar.footer}
+        onselect={handleSecondarySelect}
+        onfooterselect={handleSecondaryFooter}
+      />
     {/if}
 
     <div class="desktop-content" aria-busy={navigationPending}>
       <div class="route-progress" class:active={navigationPending} aria-hidden="true">
         <span></span>
       </div>
-      <!-- Library is full-bleed (Daybook): titlebar stays, conversation sidebar hides. -->
-      {#if route.kind === 'library'}
-        <div class="library-overlay-host" data-testid="library-overlay-host">
-          <LibraryOverlay
-            tab={libraryTab}
-            onback={exitLibrary}
-            onnavigatetab={(t) => navigate({ kind: 'library', tab: t })}
-          />
-        </div>
-      {/if}
       <main class="desktop-main" aria-label="Desktop content">
         <div class="desktop-main-scroll">
         {#key routeKey}
           {#if route.kind === 'home'}
             <div class="page">
-              <SetupIncompleteCard />
               <HomePage
                 {syncState}
                 {ready}
@@ -1942,29 +1780,29 @@
                 onopenlog={handleOpenActivityLog}
               />
             </div>
+          {:else if route.kind === 'mission-control'}
+            <div class="page">
+              <MissionControlPage />
+            </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
-              <MeetingsPage onback={() => navigate({ kind: 'messages' })} />
+              <MeetingsPage />
             </div>
           {:else if route.kind === 'library'}
-            <!-- US-017: library is a full-screen overlay host (see below). -->
+            <div class="page">
+              <LibraryPage tab={libraryTab} />
+            </div>
           {:else if route.kind === 'marketplace'}
             <div class="page">
               <MarketplacePage />
             </div>
           {:else if route.kind === 'settings'}
-            <div class="page settings-fullbleed">
-              <SettingsPage
-                activeTab={route.kind === 'settings' ? route.tab ?? 'sync' : 'sync'}
-                onnavigate={(tab) => navigate(tab ? { kind: 'settings', tab } : { kind: 'messages' })}
-              />
-            </div>
-          {:else if route.kind === 'notifications'}
             <div class="page">
-              <NotificationsView
-                onback={exitNotifications}
-                onunreadchange={(n) => (notificationsUnreadCount = n)}
-              />
+              <SettingsPage activeTab={route.tab ?? 'sync'} />
+            </div>
+          {:else if route.kind === 'inbox'}
+            <div class="page">
+              <InboxPage />
             </div>
           {:else if route.kind === 'messages'}
             <MessagesShell embedded={true} />
@@ -2007,9 +1845,25 @@
                 </div>
               {/if}
             </div>
-          {:else if route.kind === 'company'}
-            <!-- Daybook: company is a scope, not a page. navigate() remaps here. -->
-            <MessagesShell embedded={true} />
+          {:else if activeCompany}
+            <div class="page">
+              <CompanyPage
+                company={activeCompany}
+                tab={companyTab}
+                {cloudReachable}
+                onopenprojects={() =>
+                  navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
+                }
+                onopengoals={() =>
+                  navigate({ kind: 'company', slug: activeCompany.slug, tab: 'goals' })
+                }
+                onopeninbox={() => navigate({ kind: 'inbox' })}
+                onopenoperations={(destination) =>
+                  navigate({ kind: 'company', slug: activeCompany.slug, tab: destination })
+                }
+                onworkspaceschanged={() => void refreshRealState()}
+              />
+            </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
               <div class="page-header">
@@ -2046,20 +1900,8 @@
   /* Keep the shell itself clear: the main canvas and each glass chrome region
      paint exactly one material layer. */
   .desktop-shell {
-    position: relative;
     background: transparent;
   }
-
-  /* D-10: Library is an overlay over the main content only — titlebar + sidebar
-     stay visible behind/above. Host is positioned inside .desktop-content. */
-  .library-overlay-host {
-    position: absolute;
-    inset: 0;
-    z-index: 40;
-    min-height: 0;
-  }
-
-
 
   .desktop-content {
     position: relative;

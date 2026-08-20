@@ -8,6 +8,12 @@
   import folderIcon from '../../assets/onboarding/folder-icon.png';
   import '../../styles/design-system.css';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import {
+    COMPLETE_SETUP,
+    SETUP_NEEDS_PASS,
+    escapeForLaunch,
+    type OnboardingEscape,
+  } from '../../lib/onboarding-escape';
   import { friendlyPath, homeDirFromDefaultHqPath } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
@@ -193,14 +199,14 @@
   let claudeWatchStartedAt = 0;
   let claudeWatchConsecutiveFailures = 0;
   let claudeWatchExpired = $state(false);
-  let launchError = $state<string | null>(null);
-  let revealError = $state<string | null>(null);
+  let launchEscape = $state<OnboardingEscape | null>(null);
   let showManualTools = $state(false);
   let revealingFolder = $state(false);
   let commandCopied = $state(false);
   let pathCopied = $state(false);
   let importPromptCopied = $state(false);
-  type CopyAction = 'path' | 'command' | 'import';
+  let setupPromptCopied = $state(false);
+  type CopyAction = 'path' | 'command' | 'import' | 'setup';
   let copyingAction = $state<CopyAction | null>(null);
   let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
@@ -236,11 +242,14 @@
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
   const needsAttention = $derived(setupFailures.length > 0);
+  const readyCaution = $derived(
+    launchEscape ?? (needsAttention ? SETUP_NEEDS_PASS : COMPLETE_SETUP),
+  );
   const manualCommand = $derived(readyCommandFor(installPath, aiTools));
   const launchOptions = $derived(availableLaunches(aiTools));
   const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
-    showManualTools || Boolean(launchError || revealError || detectionFailed),
+    showManualTools || Boolean(launchEscape || detectionFailed || needsAttention),
   );
 
   $effect(() => {
@@ -1008,6 +1017,10 @@
     await runCopyAction('import', '/import-claude', (value) => (importPromptCopied = value));
   }
 
+  async function handleCopySetupPrompt() {
+    await runCopyAction('setup', '/setup', (value) => (setupPromptCopied = value));
+  }
+
   async function retryCopyAction() {
     if (copyFailure === 'path') {
       await handleCopyPath();
@@ -1015,6 +1028,8 @@
       await handleCopyCommand();
     } else if (copyFailure === 'import') {
       await handleCopyImportPrompt();
+    } else if (copyFailure === 'setup') {
+      await handleCopySetupPrompt();
     }
   }
 
@@ -1039,13 +1054,12 @@
   }
 
   async function handleRevealFolder() {
-    launchError = null;
-    revealError = null;
+    launchEscape = null;
     revealingFolder = true;
     try {
       await invoke('reveal_folder', { path: installPath ?? '~/hq' });
     } catch (err) {
-      revealError = `Could not reveal HQ folder: ${errorMessage(err)}`;
+      launchEscape = escapeForLaunch('folder', errorMessage(err));
       showManualTools = true;
     } finally {
       revealingFolder = false;
@@ -1053,8 +1067,7 @@
   }
 
   async function handleLaunchClaudeCode() {
-    launchError = null;
-    revealError = null;
+    launchEscape = null;
     launching = 'claude';
     let launched = false;
     try {
@@ -1070,13 +1083,12 @@
         await invoke('launch_claude_code', { path: installPath });
         launched = true;
       } else {
-        launchError =
-          'Claude Code was not detected. Use the folder and /setup prompt shown here.';
+        launchEscape = escapeForLaunch('claude', 'Claude Code was not detected');
         showManualTools = true;
       }
     } catch (err) {
       const msg = errorMessage(err);
-      launchError = `Could not open Claude Code: ${msg}`;
+      launchEscape = escapeForLaunch('claude', msg);
       showManualTools = true;
       if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
         aiTools = markToolUnavailable(aiTools, 'claude_desktop');
@@ -1088,8 +1100,7 @@
   }
 
   async function handleLaunchCodex() {
-    launchError = null;
-    revealError = null;
+    launchEscape = null;
     launching = 'codex';
     let launched = false;
     try {
@@ -1104,13 +1115,12 @@
         });
         launched = true;
       } else {
-        launchError =
-          'Codex was not detected. Open this HQ folder manually from Codex.';
+        launchEscape = escapeForLaunch('codex', 'Codex was not detected');
         showManualTools = true;
       }
     } catch (err) {
       const msg = errorMessage(err);
-      launchError = `Could not open Codex: ${msg}`;
+      launchEscape = escapeForLaunch('codex', msg);
       showManualTools = true;
       if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
         aiTools = markToolUnavailable(aiTools, 'codex_desktop');
@@ -1124,8 +1134,7 @@
   }
 
   async function handleLaunchGrok() {
-    launchError = null;
-    revealError = null;
+    launchEscape = null;
     launching = 'grok';
     let launched = false;
     try {
@@ -1137,12 +1146,11 @@
         });
         launched = true;
       } else {
-        launchError =
-          'Grok CLI was not detected. Open this HQ folder manually from Grok.';
+        launchEscape = escapeForLaunch('grok', 'Grok CLI was not detected');
         showManualTools = true;
       }
     } catch (err) {
-      launchError = `Could not open Grok: ${errorMessage(err)}`;
+      launchEscape = escapeForLaunch('grok', errorMessage(err));
       showManualTools = true;
       aiTools = markToolUnavailable(aiTools, 'grok_cli');
     } finally {
@@ -1163,7 +1171,7 @@
 
   function stopClaudeWatchWithError(err: unknown) {
     stopClaudeWatch();
-    launchError = `Could not open Claude Code: ${errorMessage(err)}`;
+    launchEscape = escapeForLaunch('claude', errorMessage(err));
     showManualTools = true;
   }
 
@@ -1228,8 +1236,7 @@
   }
 
   async function handleDownloadClaude() {
-    launchError = null;
-    revealError = null;
+    launchEscape = null;
     const watching = claudeWatchInterval !== null;
     if (!watching) {
       launching = 'download';
@@ -1240,7 +1247,7 @@
         startClaudeWatch();
       }
     } catch (err) {
-      launchError = `Could not open Claude download page: ${errorMessage(err)}`;
+      launchEscape = escapeForLaunch('download', errorMessage(err));
       showManualTools = true;
     } finally {
       if (launching === 'download') {
@@ -1842,26 +1849,26 @@
         >
           <h2 class="h" id="onboarding-title-ready">HQ is ready</h2>
           <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
-          <div class="setup-caution" role="note" aria-label="Complete setup in your AI tool">
+          <div
+            class="setup-caution"
+            role="note"
+            data-testid="onboarding-escape"
+            aria-label={readyCaution.title}
+          >
             <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
               <path d="M10 2.4 18 17H2L10 2.4Z"></path>
               <path d="M10 7v4.5"></path>
               <circle cx="10" cy="14.2" r=".7"></circle>
             </svg>
             <div class="setup-caution-copy">
-              <strong>Complete setup in your AI tool</strong>
-              <span>Open the HQ folder and run <code>/setup</code>.</span>
+              <strong>{readyCaution.title}</strong>
+              <span>{readyCaution.body}</span>
             </div>
           </div>
-          {#if needsAttention}
-            <p class="inline-note warning" role="status">
-              Setup finished, but {setupFailures.length} {setupFailures.length === 1 ? 'step needs' : 'steps need'} another pass inside HQ.
+          {#if detectionFailed && !launchEscape}
+            <p class="inline-note" role="status">
+              Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
             </p>
-          {/if}
-          {#if launchError || revealError}
-            <p class="inline-note error" role="alert">{launchError ?? revealError}</p>
-          {:else if detectionFailed}
-            <p class="inline-note" role="status">Tool detection failed. You can still continue and open {installDisplayPath} manually.</p>
           {/if}
           {#if claudeWatchExpired}
             <p class="inline-note" role="status">
@@ -1869,15 +1876,15 @@
             </p>
           {/if}
           {#if finishError}
-            <div class="finish-action-error" role="alert" data-testid="launcher-finish-error">
-              <span>The tool opened, but HQ couldn’t finish setup.</span>
+            <div class="finish-action" role="status" data-testid="launcher-finish-error">
+              <span>The tool opened. Finish HQ setup here when you’re ready.</span>
               <button
                 type="button"
                 onclick={handleFinish}
                 disabled={finishing}
                 aria-busy={finishing}
               >
-                {finishing ? 'Retrying…' : 'Retry'}
+                {finishing ? 'Retrying…' : 'Finish setup'}
               </button>
             </div>
           {/if}
@@ -1909,6 +1916,14 @@
               </button>
               <button
                 type="button"
+                onclick={handleCopySetupPrompt}
+                disabled={copyingAction !== null}
+                aria-busy={copyingAction === 'setup'}
+              >
+                {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
+              </button>
+              <button
+                type="button"
                 onclick={handleCopyImportPrompt}
                 disabled={copyingAction !== null}
                 aria-busy={copyingAction === 'import'}
@@ -1917,15 +1932,15 @@
               </button>
             </div>
             {#if copyFailure}
-              <div class="copy-action-error" role="alert" data-testid="onboarding-copy-error">
-                <span>Couldn’t copy to the clipboard.</span>
+              <div class="copy-action" role="status" data-testid="onboarding-copy-error">
+                <span>Clipboard is blocked. Select the path above, or try again.</span>
                 <button
                   type="button"
                   onclick={() => void retryCopyAction()}
                   disabled={copyingAction !== null}
                   aria-busy={copyingAction !== null}
                 >
-                  {copyingAction ? 'Retrying…' : 'Retry'}
+                  {copyingAction ? 'Retrying…' : 'Try again'}
                 </button>
               </div>
             {/if}
@@ -2027,8 +2042,8 @@
           <h2 class="h" id="onboarding-title-build">Open a fresh session and build</h2>
           <p class="body">Start with “/brainstorm” to get going. Working on a specific company? Send “/startwork acme” and describe what you want. Then it’s the same rhythm every time: start work, handoff, repeat.</p>
           {#if finishError}
-            <p class="inline-note error" role="alert" data-testid="onboarding-finish-error">
-              Couldn’t finish setup. Your progress is safe.
+            <p class="inline-note" role="status" data-testid="onboarding-finish-error">
+              Setup is saved on disk. Tap Retry to close this window.
             </p>
           {/if}
           <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(8)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
@@ -2220,10 +2235,10 @@
   .consent-link:hover { opacity:.8; }
   .consent-link:disabled { opacity:.55; cursor:wait; }
   .consent-link:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; border-radius:3px; }
-  .consent-link-error { margin-left:8px; color:#d04444; }
+  .consent-link-error { margin-left:8px; color:var(--c-muted); }
 
-  .consent-error { margin:12px 0 0; padding:10px 13px; border:1px solid var(--c-danger, #d14343); border-radius:10px; background:color-mix(in srgb, var(--c-danger, #d14343) 8%, transparent); }
-  .consent-error.offline { border-color:var(--c-warning, #c88a1e); background:color-mix(in srgb, var(--c-warning, #c88a1e) 8%, transparent); }
+  .consent-error { margin:12px 0 0; padding:10px 13px; border:1px solid var(--c-field-border); border-radius:10px; background:var(--c-field-bg); }
+  .consent-error.offline { border-color:var(--c-field-border); background:var(--c-field-bg); }
   .consent-error-text { margin:0; font-size:12.5px; line-height:17px; color:var(--c-text); }
 
   .consent-options { margin:14px 0 0; padding:0; border:0; display:flex; flex-direction:column; gap:8px; }
@@ -2251,10 +2266,13 @@
   .btn:disabled { cursor:not-allowed; opacity:.48; }
 
   .inline-note { margin:10px 0 0; color:var(--c-muted); font-size:12px; line-height:16px; }
-  .inline-note.error { color:#d04444; }
+  .inline-note.error,
   .inline-note.warning { color:var(--c-text); }
-  .finish-action-error { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:10px 0 0; color:var(--c-danger, #d14343); font-size:12px; line-height:16px; }
+  .finish-action,
+  .finish-action-error { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:10px 0 0; color:var(--c-text); font-size:12px; line-height:16px; }
+  .finish-action button,
   .finish-action-error button { flex:0 0 auto; padding:0; border:0; border-bottom:1px solid currentcolor; border-radius:0; background:transparent; color:inherit; font:inherit; font-weight:700; cursor:pointer; }
+  .finish-action button:disabled,
   .finish-action-error button:disabled { opacity:.58; cursor:wait; }
   .setup-caution {
     display:flex;
@@ -2285,14 +2303,6 @@
   .setup-caution-copy { display:flex; flex-direction:column; gap:1px; }
   .setup-caution-copy strong { font-weight:600; }
   .setup-caution-copy span { color:var(--c-muted); }
-  .setup-caution code {
-    padding:0 3px;
-    border-radius:4px;
-    background:var(--c-btn2-bg);
-    color:inherit;
-    font-family:ui-monospace,"SF Mono",Menlo,Monaco,monospace;
-    font-size:11px;
-  }
 
   .list { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
   .li { display:flex; align-items:center; gap:10px; color:var(--c-text); font-size:13px; line-height:18px; }
@@ -2328,16 +2338,16 @@
   .manual-tools button { appearance:none; border:0.5px solid var(--c-field-border); border-radius:6px; background:var(--c-btn2-bg); color:var(--c-muted); font:inherit; font-size:11.5px; line-height:15px; padding:4px 7px; cursor:pointer; }
   .manual-tools button:hover:not(:disabled) { color:var(--c-text); }
   .manual-tools button:disabled { opacity:.5; cursor:not-allowed; }
-  .copy-action-error {
+  .copy-action {
     display:flex;
     align-items:center;
     gap:8px;
     margin-top:8px;
-    color:#d04444;
+    color:var(--c-muted);
     font-size:12px;
     line-height:16px;
   }
-  .copy-action-error button {
+  .copy-action button {
     appearance:none;
     border:0;
     padding:0;
@@ -2349,7 +2359,7 @@
     text-underline-offset:2px;
     cursor:pointer;
   }
-  .copy-action-error button:disabled { opacity:.55; cursor:wait; }
+  .copy-action button:disabled { opacity:.55; cursor:wait; }
 
   .mn { font-family:ui-monospace,"SF Mono",Menlo,Monaco,monospace; }
   .medium, .strong { font-weight:500; }

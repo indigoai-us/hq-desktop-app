@@ -28,6 +28,7 @@ describe('desktop leaf actions expose immediate pending feedback', () => {
     const team = source('../../src/desktop-alt/panels/TeamPanel.svelte');
     const company = source('../../src/desktop-alt/pages/CompanyPage.svelte');
     const operations = source('../../src/desktop-alt/panels/CompanyOperationsPanel.svelte');
+    const activity = source('../../src/desktop-alt/panels/ActivityPanel.svelte');
     const deployments = source('../../src/desktop-alt/panels/DeploymentsPanel.svelte');
     const secrets = source('../../src/desktop-alt/panels/SecretsPanel.svelte');
 
@@ -43,8 +44,7 @@ describe('desktop leaf actions expose immediate pending feedback', () => {
     expect(secrets).toContain("aria-busy={actionBusy === 'export'}");
     expect(secrets).toContain("aria-busy={actionBusy === 'new'}");
 
-    // US-020 removed ActivityPanel; the surviving operations panels keep the contract.
-    for (const panel of [deployments, secrets]) {
+    for (const panel of [activity, deployments, secrets]) {
       expect(panel).toContain("loading = force");
       expect(panel).toContain("loading ? 'Retrying…' : 'Retry'");
       expect(panel).toContain('aria-busy={loading}');

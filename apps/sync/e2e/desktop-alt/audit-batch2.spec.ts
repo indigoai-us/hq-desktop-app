@@ -26,12 +26,8 @@ describe('audit batch 2: confirmed-finding fixes', () => {
   it('invited channel renders a read-only preview, not a fake working composer', () => {
     const view = readRepoFile('src/components/messaging/ChannelView.svelte');
     // The invited Conversation must be readonly so a typed message can't silently
-    // vanish through a no-op onsend. The invited branch may appear as `{#if invited}`
-    // or `{:else if invited}` depending on surrounding branches (US-00x project tabs
-    // prepended branches), so anchor on the condition rather than the block opener.
-    const anchor = view.search(/\{(#|:else )if invited\}/);
-    expect(anchor, 'invited branch missing from ChannelView').toBeGreaterThan(-1);
-    const invitedBlock = view.slice(anchor);
+    // vanish through a no-op onsend.
+    const invitedBlock = view.slice(view.indexOf('{#if invited}'));
     expect(invitedBlock).toContain('readonly={true}');
   });
 

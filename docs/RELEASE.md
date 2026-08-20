@@ -61,6 +61,26 @@ For a **stable** release the workflow requires the tag commit to be contained in
 pushed tag after a failed release; fix the release path and cut a fresh SemVer
 tag.
 
+## Desktop shell guard
+
+The V2 chat shell was developed in this repo and now lives in
+`indigoai-us/hq-work-mono`. Between v0.10.106 and v0.10.116 it reached stable
+users nine times (106, 108, and every release from 110 to 116), every time
+because a tag was cut from a `main` tip that still carried it — the branch
+policy above cannot catch that, because such a tag is legitimately contained
+in `main`.
+
+The `validate` job therefore inspects the tag's own tree and fails the release
+if `apps/sync/src/desktop-alt/chat/` exists, or if the v1 sidebars
+(`v4/V4Sidebar.svelte`, `v4/V4SecondarySidebar.svelte`) are absent. If you are
+deliberately shipping a new desktop shell from this repo, update that step and
+`scripts/release-workflow.test.ts` in the same change — do not bypass it.
+
+Unlike the branch policy, this guard also applies to `workflow_dispatch`
+retries: a retry re-publishes that tag's artifacts to stable, so retrying any
+of v0.10.106–v0.10.116 would put the V2 shell back in front of users. Those
+retries fail by design.
+
 `pnpm version:app` and `pnpm version:check` remain available for local work —
 `pnpm version:app --set-version X.Y.Z` is exactly what CI runs.
 
@@ -68,6 +88,51 @@ tag.
 tag contents while loading the reviewed publication helpers from the workflow
 commit. If that tag is already public and healthy, the retry is read-only:
 release creation/reset, asset deletion/upload, and publication are all skipped.
+
+## Stable release lineage
+
+A stable tag may publish only when its commit *contains* the commit of the
+current public latest stable release. Two gates enforce this on the stable
+channel, at both the validate step and the in-publication-lock revalidation
+step:
+
+- **Numeric order** (`release-stable-order.mjs stable-order`) rejects a tag
+  whose version number is lower than public latest.
+- **Commit lineage** (`release-stable-order.mjs lineage`) rejects a tag whose
+  *commit* is behind or diverged from public latest even when its number is
+  higher. It reads the GitHub compare status between public latest and the tag:
+  `ahead` and `identical` publish exactly as before; `behind` and `diverged` are
+  blocked.
+
+The lineage gate exists because a higher version number can still carry strictly
+older code. v0.10.107 and v0.10.109 were both tagged on the pre-fix v0.10.105
+commit, so the numeric gate saw a normal advance while the stable fleet was
+moved back onto pre-fix builds. The lineage gate closes that gap.
+
+### Intentional rollbacks
+
+An emergency rollback is still possible without a workflow or code change. Tag
+the **older commit whose code you want back on stable**, and give the tag a
+`Rollback-Of:` trailer naming the exact current public latest stable tag. Name
+that commit explicitly: tagging without a commit argument tags your current
+`HEAD`, which would republish current code instead of rolling back.
+
+```text
+# <rollback-commit> is the commit whose code you want back on stable.
+git tag -a vX.Y.Z <rollback-commit> -m "HQ vX.Y.Z emergency rollback
+
+Rollback-Of: vA.B.C"
+git push origin vX.Y.Z
+```
+
+The `Rollback-Of: vX.Y.Z` line must sit in the tag message's trailer block (its
+last paragraph) and name the current public latest stable tag exactly — a stale
+or copied trailer, a `Rollback-Of:` line buried in the body, or a lightweight
+tag (one with no annotated message) all fail closed. A declared rollback still
+publishes, but never silently: the release log carries a warning and the job
+summary enumerates the withdrawn commits. A rollback
+**drops every fix the named release contains** but the rolled-back commit does
+not, so confirm you intend to lose those fixes before you tag it.
 
 ## Required GitHub Secrets
 

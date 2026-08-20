@@ -116,12 +116,10 @@ describe('DESKTOP-003: actionable company overview', () => {
     expect(companyPage).toContain('data-testid="company-accept-invite"');
     expect(companyPage).toContain('company-action-error');
     expect(panel).toContain('data-testid="board-error"');
-    // Daybook: company routes remap to Messages; overview is not a shell page.
-    expect(desktopApp).toContain("incoming.kind === 'company'");
-    expect(desktopApp).toContain("dest = { kind: 'messages' }");
-    // US-018: overview "Open inbox" still exists on the salvage page; shell
-    // notifications remain a first-class destination.
-    expect(desktopApp).toContain("navigate({ kind: 'notifications' })");
+    // Navigation wired from shell.
+    expect(desktopApp).toContain("tab: 'projects'");
+    expect(desktopApp).toContain("tab: 'goals'");
+    expect(desktopApp).toContain("navigate({ kind: 'inbox' })");
     expect(digest).toContain('data-testid="overview-open-inbox"');
     expect(digest).toContain('companyStore.loadActivity<Partial<CompanyActivity>>');
     // No fabricated live state.

@@ -7,11 +7,7 @@ import '@fontsource-variable/geist-mono/wght.css';
 import '../styles/design-system.css';
 import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
 import { installDesktopZoom } from '../lib/desktopZoom';
-import {
-  applyAppearancePreferences,
-  installAppearancePreferences,
-  readBrowserAppearancePreferences,
-} from '../lib/appearancePreferences';
+import { installAppearancePreferences } from '../lib/appearancePreferences';
 import DesktopApp from './DesktopApp.svelte';
 
 const windowLabel = getCurrentWindow().label;
@@ -21,11 +17,6 @@ document.documentElement.dataset.window = windowLabel;
 // Layouts; HQ toolbar sits below — US-003).
 const isWindows = /Windows/i.test(navigator.userAgent);
 document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
-
-// D-09: apply persisted theme synchronously on document root BEFORE mount so
-// the first paint (including titlebar) matches light/dark preference.
-applyAppearancePreferences(document.documentElement, readBrowserAppearancePreferences());
-
 installDesktopZoom();
 installAppearancePreferences({
   applyNativeTheme: (theme) => setTheme(theme),

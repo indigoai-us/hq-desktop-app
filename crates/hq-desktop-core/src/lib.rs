@@ -5,11 +5,13 @@
 pub mod activity;
 pub mod agency;
 pub mod banner;
-pub mod client_info;
 pub mod claude_launch;
+pub mod cli_update_lock;
+pub mod client_info;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
+pub mod cpu_throttle;
 pub mod daemon;
 pub mod desktop_alt;
 pub mod dm_notify;
