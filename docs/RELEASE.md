@@ -89,6 +89,47 @@ tag contents while loading the reviewed publication helpers from the workflow
 commit. If that tag is already public and healthy, the retry is read-only:
 release creation/reset, asset deletion/upload, and publication are all skipped.
 
+## Stable release lineage
+
+A stable tag may publish only when its commit *contains* the commit of the
+current public latest stable release. Two gates enforce this on the stable
+channel, at both the validate step and the in-publication-lock revalidation
+step:
+
+- **Numeric order** (`release-stable-order.mjs stable-order`) rejects a tag
+  whose version number is lower than public latest.
+- **Commit lineage** (`release-stable-order.mjs lineage`) rejects a tag whose
+  *commit* is behind or diverged from public latest even when its number is
+  higher. It reads the GitHub compare status between public latest and the tag:
+  `ahead` and `identical` publish exactly as before; `behind` and `diverged` are
+  blocked.
+
+The lineage gate exists because a higher version number can still carry strictly
+older code. v0.10.107 and v0.10.109 were both tagged on the pre-fix v0.10.105
+commit, so the numeric gate saw a normal advance while the stable fleet was
+moved back onto pre-fix builds. The lineage gate closes that gap.
+
+### Intentional rollbacks
+
+An emergency rollback is still possible without a workflow or code change.
+Annotate the older tag with a machine-readable trailer that names the exact
+current public latest stable tag:
+
+```text
+git tag -a vX.Y.Z -m "HQ vX.Y.Z emergency rollback
+
+Rollback-Of: vA.B.C"
+git push origin vX.Y.Z
+```
+
+The `Rollback-Of: vX.Y.Z` trailer must name the current public latest stable tag
+exactly — a stale or copied trailer does not validate, and a lightweight tag
+(one with no annotated message) fails closed. A declared rollback still
+publishes, but never silently: the release log carries a warning and the job
+summary enumerates every commit being withdrawn. A rollback
+**withdraws every fix merged since** the named release, so confirm you intend to
+lose those fixes before you tag it.
+
 ## Required GitHub Secrets
 
 ### macOS Signing and Notarization
