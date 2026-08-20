@@ -1232,6 +1232,7 @@ mod tests {
         assert_eq!(settings_path_dirs_in(root), vec![base]);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn is_executable_file_requires_exec_bit_and_regular_file() {
         let tmp = tempfile::TempDir::new().unwrap();
