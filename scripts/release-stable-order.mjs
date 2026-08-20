@@ -130,7 +130,38 @@ async function fetchCompareStatus({ repository, base, head, token, fetchImpl }) 
   return response.json();
 }
 
-const rollbackTrailerPattern = /^Rollback-Of:[ \t]*(\S+)[ \t]*$/m;
+// Parse the terminal Git trailer block — the last paragraph, and only when
+// every line in it is `Token: value` — and return the Rollback-Of value if the
+// block declares one. This deliberately ignores a `Rollback-Of:` line quoted or
+// discussed in the message BODY (only a real trailer authorizes a rollback) and
+// reads the whole block so an earlier mention cannot mask the actual trailer.
+function extractRollbackTarget(message) {
+  const normalized = message.replace(/\r\n?/g, "\n").replace(/\s+$/, "");
+  if (!normalized) {
+    return null;
+  }
+  const lines = normalized.split("\n");
+  let start = lines.length;
+  while (start > 0 && lines[start - 1].trim() !== "") {
+    start -= 1;
+  }
+  const block = lines.slice(start);
+  const trailerLine = /^[A-Za-z][A-Za-z0-9-]*:[ \t]*(.*)$/;
+  let target = null;
+  for (const line of block) {
+    if (/^[ \t]/.test(line)) {
+      continue; // folded continuation of the previous trailer
+    }
+    const match = trailerLine.exec(line);
+    if (!match) {
+      return null; // a prose line — this is not a pure trailer block
+    }
+    if (line.slice(0, line.indexOf(":")) === "Rollback-Of") {
+      target = match[1].trim();
+    }
+  }
+  return target;
+}
 
 // Read a tag's annotated message. Returns the message for an annotated tag, or
 // null for a lightweight tag — whose ref points straight at a commit object, so
@@ -177,8 +208,7 @@ async function fetchAnnotatedTagMessage({ repository, tag, token, fetchImpl }) {
   return typeof tagObject?.message === "string" ? tagObject.message : null;
 }
 
-function withdrawnCommitList(compare) {
-  const commits = Array.isArray(compare?.commits) ? compare.commits : [];
+function toCommitSummaries(commits) {
   return commits.map((entry) => ({
     sha: typeof entry?.sha === "string" ? entry.sha : "",
     title:
@@ -186,6 +216,53 @@ function withdrawnCommitList(compare) {
         ? entry.commit.message.split("\n", 1)[0]
         : "",
   }));
+}
+
+// Enumerate the commits a rollback withdraws — those present in the current
+// public latest but absent from the rollback target. The compare endpoint caps
+// `commits` at 100 per page, so paginate until the collected count reaches
+// `total_commits`; otherwise a rollback of more than one page would silently
+// undercount despite the summary promising to list every one. `total_commits`
+// is the authoritative count even when the page cap truncates enumeration.
+async function fetchWithdrawnCommits({ repository, base, head, token, fetchImpl }) {
+  if (typeof repository !== "string" || !repository.includes("/")) {
+    throw orderError(`invalid repository ${String(repository)}`);
+  }
+  if (typeof token !== "string" || !token) {
+    throw orderError("GitHub token is required");
+  }
+
+  const collected = [];
+  let total = 0;
+  const maxPages = 100; // hard loop bound: 100 pages * 100 = 10k commits
+  for (let page = 1; page <= maxPages; page += 1) {
+    const response = await fetchImpl(
+      `https://api.github.com/repos/${repository}/compare/${base}...${head}?per_page=100&page=${page}`,
+      {
+        headers: githubHeaders(token),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    if (!response.ok) {
+      throw orderError(
+        `could not compare ${base}...${head}: HTTP ${response.status}`,
+      );
+    }
+    const body = await response.json();
+    if (page === 1) {
+      total = Number.isInteger(body?.total_commits) ? body.total_commits : 0;
+    }
+    const commits = Array.isArray(body?.commits) ? body.commits : [];
+    collected.push(...commits);
+    if (commits.length === 0 || collected.length >= total) {
+      break;
+    }
+  }
+
+  return {
+    total: total || collected.length,
+    commits: toCommitSummaries(collected),
+  };
 }
 
 // An emergency rollback stays possible without a workflow or code change: the
@@ -210,15 +287,14 @@ async function evaluateDeclaredRollback({
   if (typeof message !== "string") {
     return null;
   }
-  const match = rollbackTrailerPattern.exec(message);
-  if (!match || match[1] !== latestTag) {
+  if (extractRollbackTarget(message) !== latestTag) {
     return null;
   }
 
   // The withdrawn fixes are the commits present in the current public latest
-  // but not in the rollback target: compare(target...latest) lists exactly
+  // but absent from the rollback target: compare(target...latest) lists exactly
   // those on its `commits` array.
-  const withdrawn = await fetchCompareStatus({
+  const withdrawn = await fetchWithdrawnCommits({
     repository,
     base: targetTag,
     head: latestTag,
@@ -230,7 +306,8 @@ async function evaluateDeclaredRollback({
     targetTag,
     latestTag,
     rollbackOf: latestTag,
-    withdrawnCommits: withdrawnCommitList(withdrawn),
+    withdrawnCount: withdrawn.total,
+    withdrawnCommits: withdrawn.commits,
   };
 }
 
@@ -390,22 +467,30 @@ export async function confirmReleaseChannel({
 // Actions log with a warning and enumerate every withdrawn commit in the job
 // summary so the operator sees exactly which merged fixes are leaving stable.
 function reportDeclaredRollback(result) {
-  const count = result.withdrawnCommits.length;
+  const total = result.withdrawnCount;
+  const shown = result.withdrawnCommits.length;
   console.log(
     `::warning::Stable ${result.targetTag} is a DECLARED ROLLBACK of public latest ` +
-      `${result.latestTag}. Publishing it withdraws ${count} merged commit(s) from stable.`,
+      `${result.latestTag}. Publishing it drops ${total} commit(s) that ${result.latestTag} ` +
+      `contains and this rollback does not.`,
   );
 
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (!summaryPath) {
     return;
   }
+  const enumeration =
+    shown < total
+      ? `It drops ${total} commit(s) that \`${result.latestTag}\` contains and ` +
+        `\`${result.targetTag}\` does not (first ${shown} shown):`
+      : `It drops the following ${total} commit(s) that \`${result.latestTag}\` contains ` +
+        `and \`${result.targetTag}\` does not:`;
   const lines = [
     `### Stable lineage rollback: ${result.targetTag}`,
     "",
     `\`${result.targetTag}\` is publishing as a declared rollback of the current public ` +
-      `latest \`${result.latestTag}\`. It withdraws the following ${count} commit(s) merged ` +
-      `since \`${result.rollbackOf}\`:`,
+      `latest \`${result.latestTag}\`.`,
+    enumeration,
     "",
     ...result.withdrawnCommits.map(
       (commit) => `- \`${commit.sha.slice(0, 12)}\` ${commit.title}`,

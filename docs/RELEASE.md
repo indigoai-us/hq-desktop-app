@@ -111,24 +111,28 @@ moved back onto pre-fix builds. The lineage gate closes that gap.
 
 ### Intentional rollbacks
 
-An emergency rollback is still possible without a workflow or code change.
-Annotate the older tag with a machine-readable trailer that names the exact
-current public latest stable tag:
+An emergency rollback is still possible without a workflow or code change. Tag
+the **older commit whose code you want back on stable**, and give the tag a
+`Rollback-Of:` trailer naming the exact current public latest stable tag. Name
+that commit explicitly: tagging without a commit argument tags your current
+`HEAD`, which would republish current code instead of rolling back.
 
 ```text
-git tag -a vX.Y.Z -m "HQ vX.Y.Z emergency rollback
+# <rollback-commit> is the commit whose code you want back on stable.
+git tag -a vX.Y.Z <rollback-commit> -m "HQ vX.Y.Z emergency rollback
 
 Rollback-Of: vA.B.C"
 git push origin vX.Y.Z
 ```
 
-The `Rollback-Of: vX.Y.Z` trailer must name the current public latest stable tag
-exactly — a stale or copied trailer does not validate, and a lightweight tag
-(one with no annotated message) fails closed. A declared rollback still
+The `Rollback-Of: vX.Y.Z` line must sit in the tag message's trailer block (its
+last paragraph) and name the current public latest stable tag exactly — a stale
+or copied trailer, a `Rollback-Of:` line buried in the body, or a lightweight
+tag (one with no annotated message) all fail closed. A declared rollback still
 publishes, but never silently: the release log carries a warning and the job
-summary enumerates every commit being withdrawn. A rollback
-**withdraws every fix merged since** the named release, so confirm you intend to
-lose those fixes before you tag it.
+summary enumerates the withdrawn commits. A rollback
+**drops every fix the named release contains** but the rolled-back commit does
+not, so confirm you intend to lose those fixes before you tag it.
 
 ## Required GitHub Secrets
 

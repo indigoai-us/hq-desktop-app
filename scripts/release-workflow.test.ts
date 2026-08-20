@@ -245,7 +245,9 @@ describe("release workflow channel contract", () => {
 
   it("documents the stable lineage rollback contract and the Rollback-Of trailer", () => {
     expect(releaseDocs).toContain("Rollback-Of: vX.Y.Z");
-    expect(releaseDocs).toContain("withdraws every fix merged since");
+    expect(releaseDocs).toContain("drops every fix the named release contains");
+    // The rollback tag must name the older commit explicitly, not tag HEAD.
+    expect(releaseDocs).toContain("git tag -a vX.Y.Z <rollback-commit>");
   });
 
   it("classifies stable separately from beta and alpha", () => {
