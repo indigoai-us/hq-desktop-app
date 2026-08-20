@@ -13,6 +13,7 @@ name: Windows check (Phase 3)
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "apps/sync/**"
       - "imports/hq-installer-react/**"
@@ -30,6 +31,7 @@ on:
 
 jobs:
   windows-check:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
     defaults:
@@ -318,6 +320,7 @@ jobs:
       #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
 
   windows-installer-e2e:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: installer E2E (x64 MSI + NSIS)
     runs-on: windows-latest
     timeout-minutes: 45

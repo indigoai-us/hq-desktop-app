@@ -2159,6 +2159,14 @@ where
         register_process_gen_with_containment(handle, pid, &mut containment)
     };
 
+    // Hold HQ's background work under its machine-wide CPU ceiling. The child
+    // already runs in its own process group (`put_in_own_process_group` above),
+    // and on Unix a group leader's pid IS its pgid, so this addresses the child
+    // and everything it spawns — `npx` -> `node` -> the sync runner's workers.
+    // The guard lives until this function returns, and dropping it always
+    // resumes the group, so no exit path can strand a stopped child.
+    let _cpu_throttle = hq_desktop_core::cpu_throttle::CpuThrottle::attach(pid as i32);
+
     let stdout = child.stdout.take().expect("stdout pipe");
     let stderr = child.stderr.take().expect("stderr pipe");
 
