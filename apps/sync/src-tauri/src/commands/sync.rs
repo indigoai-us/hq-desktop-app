@@ -2225,7 +2225,26 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             .filter(|s| scope.includes(s))
             .collect();
         let prep_start = std::time::Instant::now();
-        let to_transfer = crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
+        // Off the async runtime: this walk is blocking, and now that its
+        // hashing is CPU-paced it also *sleeps*. Running it on a Tokio worker
+        // would park that worker for the whole paced duration and stall
+        // unrelated commands and timers — a cost paid by the rest of the app
+        // for work that is only supposed to slow itself down.
+        let walk_root = prep_root.clone();
+        let walk_slugs = slugs.clone();
+        let to_transfer = match tokio::task::spawn_blocking(move || {
+            crate::commands::personal::count_files_to_transfer(&walk_root, &walk_slugs)
+        })
+        .await
+        {
+            Ok(count) => count,
+            Err(error) => {
+                // The bar loses its denominator and falls back to a bare
+                // "N transferred"; the sync itself is unaffected.
+                log("sync", &format!("preparing: file count failed: {error}"));
+                0
+            }
+        };
         let elapsed = prep_start.elapsed().as_millis();
         log(
             "sync",

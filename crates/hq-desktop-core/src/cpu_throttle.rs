@@ -62,6 +62,11 @@ const MIN_RUN_FRACTION: f64 = 0.02;
 /// single noisy measurement cannot slam the group to the floor.
 const SMOOTHING: f64 = 0.5;
 
+/// How many consecutive idle samples the governor tolerates before it forgets
+/// the duty cycle its last workload earned. One sample is a gap between two
+/// children of the same burst; several in a row is genuine quiet.
+const IDLE_TICKS_BEFORE_CONTROLLER_RESET: u32 = 5;
+
 /// A run fraction at or above this is treated as "unthrottled" — the supervisor
 /// issues no signals at all, so an idle or cheap child pays nothing.
 const UNTHROTTLED_FRACTION: f64 = 0.999;
@@ -379,6 +384,12 @@ pub struct Governor<S: CpuSampler, G: GroupSignaller> {
     /// see `ingest`. Held as a field rather than read per sample so tests can
     /// pin it and assert the cap deterministically on any host.
     machine_cores: f64,
+    /// Consecutive idle ticks — see the controller reset in `ingest`.
+    idle_ticks: u32,
+    /// Whether the last tick asked for a duty cycle rather than idling. Idle
+    /// ticks resume every group and issue nothing, so the reported state has to
+    /// distinguish them from an enforced cycle — see `state`.
+    last_tick_cycled: bool,
     /// Rate (in cores) the registered set sustained over the last window that
     /// produced a usable delta. Reporting only — the controller keeps its own
     /// state — but it is what makes a throttling decision explicable in the
@@ -420,6 +431,8 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             stopped_since: None,
             total_stopped: Duration::ZERO,
             machine_cores: machine_cores(),
+            idle_ticks: 0,
+            last_tick_cycled: false,
             last_measured_cores: 0.0,
         }
     }
@@ -438,7 +451,14 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             measured_cores: self.last_measured_cores,
             target_cores: self.controller.target_cores(),
             run_fraction: self.controller.run_fraction(),
-            throttling: !self.groups.is_empty()
+            // Whether signals are ACTUALLY being issued, not merely whether
+            // the controller is holding a reduced fraction. When `ps` fails the
+            // governor resumes everything and idles for a second with that
+            // fraction untouched — reporting "throttling" there would have the
+            // log assert enforcement during exactly the window where
+            // enforcement is suspended.
+            throttling: self.last_tick_cycled
+                && !self.groups.is_empty()
                 && self.controller.run_fraction() < UNTHROTTLED_FRACTION,
         }
     }
@@ -509,16 +529,29 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
         if self.groups.is_empty() {
             self.last_cpu_seconds.clear();
             self.last_measured_cores = 0.0;
+            self.last_tick_cycled = false;
             self.last_delta.clear();
-            // Reset the duty cycle with the workload that earned it. Otherwise a
-            // CPU-heavy sync leaves the fraction near its floor, and the next
-            // unrelated git command starts under that stale aggressive cycle,
-            // recovering only over several damped samples — seconds of delay
-            // for a command that never approached the budget.
-            self.controller = DutyCycleController::new(self.controller.target_cores());
+            // Reset the duty cycle with the workload that earned it — but only
+            // once the governor has been genuinely idle, not the instant the
+            // last group exits. Otherwise a stream of short-lived children
+            // (each realtime mutation is its own process) starts every one of
+            // them from an unthrottled fraction, and since a child that lives
+            // a second or two never survives long enough for a second sample
+            // to produce a delta, it is never throttled at all. Holding the
+            // fraction across a brief gap treats consecutive children as the
+            // continuing workload they are.
+            //
+            // The delay still gets the behaviour the reset exists for: a
+            // CPU-heavy sync must not leave the next unrelated git command
+            // starting under its stale aggressive cycle.
+            self.idle_ticks = self.idle_ticks.saturating_add(1);
+            if self.idle_ticks >= IDLE_TICKS_BEFORE_CONTROLLER_RESET {
+                self.controller = DutyCycleController::new(self.controller.target_cores());
+            }
             self.resume_all();
             return Tick::Idle;
         }
+        self.idle_ticks = 0;
         if now_cpu.is_empty() {
             // An empty sample does NOT prove the groups died: `ps` may have
             // failed to spawn, exited non-zero, or returned nothing parseable.
@@ -530,6 +563,7 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             // holding anything stopped.
             self.last_cpu_seconds.clear();
             self.last_measured_cores = 0.0;
+            self.last_tick_cycled = false;
             self.resume_all();
             return Tick::Idle;
         }
@@ -552,17 +586,44 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             // other registered group for the many damped samples it takes to
             // climb back. No process can burn more CPU in a window than the
             // machine can deliver, so that is the cap.
+            //
+            // The cap is on the newcomers' AGGREGATE, not on each one. Capping
+            // per pid would still let ten first-sighting processes on an
+            // eight-core box contribute eighty CPU-seconds to a one-second
+            // window — the same physically impossible figure, just reached by a
+            // different route. Scaling the whole newcomer cohort down together
+            // also keeps their relative weights intact, so the per-pid deltas
+            // stay usable as the exit credit for the next window.
             let first_sighting_ceiling = wall * self.machine_cores;
             let mut consumed = 0.0;
             let mut delta = HashMap::with_capacity(now_cpu.len());
+            let mut newcomers: Vec<i32> = Vec::new();
+            let mut newcomer_total = 0.0;
             for (pid, now) in &now_cpu {
-                let d = match self.last_cpu_seconds.get(pid) {
-                    Some(prev) => (now - prev).max(0.0),
-                    None => now.max(0.0).min(first_sighting_ceiling),
-                };
-                delta.insert(*pid, d);
-                consumed += d;
+                match self.last_cpu_seconds.get(pid) {
+                    Some(prev) => {
+                        let d = (now - prev).max(0.0);
+                        delta.insert(*pid, d);
+                        consumed += d;
+                    }
+                    None => {
+                        let d = now.max(0.0);
+                        delta.insert(*pid, d);
+                        newcomers.push(*pid);
+                        newcomer_total += d;
+                    }
+                }
             }
+            if newcomer_total > first_sighting_ceiling && newcomer_total > 0.0 {
+                let scale = first_sighting_ceiling / newcomer_total;
+                for pid in &newcomers {
+                    if let Some(d) = delta.get_mut(pid) {
+                        *d *= scale;
+                    }
+                }
+                newcomer_total = first_sighting_ceiling;
+            }
+            consumed += newcomer_total;
             // A pid in the previous sample but absent from this one exited
             // inside the window, taking its final counter with it. Counting it
             // as zero makes a burst of short-lived workers — git hooks, runner
@@ -583,6 +644,7 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
         }
         self.last_cpu_seconds = now_cpu;
         let (run, stop) = self.controller.cycle_split(CYCLE);
+        self.last_tick_cycled = true;
         Tick::Cycle { run, stop }
     }
 
@@ -906,6 +968,36 @@ pub fn configured_in_process_duty() -> Option<f64> {
     Some(target.min(1.0))
 }
 
+/// Is the governor currently supervising any child group?
+///
+/// Cheap and lock-brief; `false` when throttling is off entirely.
+pub fn governor_has_registered_groups() -> bool {
+    governor()
+        .and_then(|g| g.lock().ok().map(|g| !g.groups().is_empty()))
+        .unwrap_or(false)
+}
+
+/// Split the budget when in-process work and governed child groups run at the
+/// same time.
+///
+/// The governor holds ONE budget for every group it supervises, and paced
+/// in-process work cannot join that duty cycle — it has no group to signal. It
+/// is therefore a second, independent consumer, and left alone the two together
+/// can reach twice the advertised machine-wide ceiling. Halving the in-process
+/// share whenever any group is registered keeps the total inside the ceiling.
+///
+/// This is deliberately a conservative split rather than exact accounting:
+/// the halves are not proportional to what each side is actually demanding, so
+/// the pair can land under the ceiling rather than exactly on it. Under is the
+/// right direction to be wrong in for a promise about CPU.
+pub fn shared_in_process_duty(base: f64, groups_registered: bool) -> f64 {
+    if groups_registered {
+        base / 2.0
+    } else {
+        base
+    }
+}
+
 /// Cooperative CPU pacing for work that runs *inside* the app's own process.
 ///
 /// The duty-cycle governor cannot help here, by design: it enforces the ceiling
@@ -931,6 +1023,9 @@ pub struct InProcessPacer {
     duty: Option<f64>,
     busy_since: Instant,
     accumulated: Duration,
+    /// Whether the governor is supervising child groups right now. A field so
+    /// tests can drive the budget split without a live governor.
+    groups_registered: Box<dyn Fn() -> bool + Send>,
 }
 
 impl InProcessPacer {
@@ -941,10 +1036,21 @@ impl InProcessPacer {
 
     /// A pacer with an explicit duty cycle. `None` disables pacing.
     pub fn with_duty(duty: Option<f64>) -> Self {
+        Self::with_duty_and_groups(duty, Box::new(governor_has_registered_groups))
+    }
+
+    /// A pacer with an explicit duty cycle and an explicit answer to "is the
+    /// governor supervising anything right now?". Tests use this to exercise
+    /// the budget split deterministically.
+    pub fn with_duty_and_groups(
+        duty: Option<f64>,
+        groups_registered: Box<dyn Fn() -> bool + Send>,
+    ) -> Self {
         Self {
             duty: duty.filter(|d| d.is_finite() && *d < 1.0),
             busy_since: Instant::now(),
             accumulated: Duration::ZERO,
+            groups_registered,
         }
     }
 
@@ -971,7 +1077,11 @@ impl InProcessPacer {
         if self.accumulated < PACER_SLICE {
             return;
         }
-        let sleep = pacer_sleep_for(self.accumulated, duty);
+        // Re-read the shared state each time rather than fixing the duty at
+        // construction: a governed group can register or exit at any point
+        // during a long walk, and the split has to follow it.
+        let effective = shared_in_process_duty(duty, (self.groups_registered)());
+        let sleep = pacer_sleep_for(self.accumulated, effective);
         self.accumulated = Duration::ZERO;
         if !sleep.is_zero() {
             std::thread::sleep(sleep);
@@ -1230,6 +1340,177 @@ mod tests {
         assert!(g.run_fraction() < 1.0);
     }
 
+    #[test]
+    fn many_late_joiners_cannot_together_exceed_machine_capacity() {
+        // Capping each newcomer separately still lets ten first sightings on an
+        // eight-core box claim eighty CPU-seconds in a one-second window — the
+        // same impossible figure by another route. The cohort is capped as a
+        // whole.
+        let mut late = HashMap::from([(1, 1.0)]);
+        for pid in 10..20 {
+            late.insert(pid, 3600.0);
+        }
+        let script = vec![HashMap::from([(1, 1.0)]), late];
+        let (mut g, _sig) = governor(0.5, script);
+        g.set_machine_cores(8.0);
+        g.register(100);
+
+        g.sample(Duration::from_secs(1)); // baseline
+        g.sample(Duration::from_secs(1)); // ten hour-old joiners at once
+
+        assert!(
+            g.state().measured_cores <= 8.0 + 0.01,
+            "ten newcomers reported {} cores on an 8-core machine",
+            g.state().measured_cores
+        );
+    }
+
+    #[test]
+    fn scaling_a_newcomer_cohort_keeps_their_relative_weights() {
+        // The per-pid deltas double as next window's exit credit, so scaling
+        // must be proportional rather than truncating.
+        let script = vec![
+            HashMap::from([(1, 1.0)]),
+            HashMap::from([(1, 1.0), (10, 300.0), (11, 100.0)]),
+        ];
+        let (mut g, _sig) = governor(0.5, script);
+        g.set_machine_cores(2.0);
+        g.register(100);
+        g.sample(Duration::from_secs(1));
+        g.sample(Duration::from_secs(1));
+
+        // 400s of newcomer claim scaled down to a 2-core window, 3:1 preserved.
+        let d = &g.last_delta;
+        assert!((d[&10] / d[&11] - 3.0).abs() < 0.01, "weights: {d:?}");
+        assert!((d[&10] + d[&11] - 2.0).abs() < 0.01, "total: {d:?}");
+    }
+
+    // --- reported state vs. what is actually enforced -----------------------
+
+    #[test]
+    fn a_sampler_failure_is_not_reported_as_enforcement() {
+        // REGRESSION: `ps` failing resumes every group and idles for a second
+        // without issuing a single signal, but the controller keeps its reduced
+        // fraction. Reporting "throttling" there would have the log assert
+        // enforcement during exactly the window enforcement is suspended.
+        let script = vec![
+            HashMap::from([(1, 0.0)]),
+            HashMap::from([(1, 8.0)]), // way over budget → controller clamps
+            HashMap::new(),            // sampler comes back empty
+        ];
+        let (mut g, _sig) = governor(0.5, script);
+        g.register(100);
+
+        g.sample(Duration::from_secs(1));
+        g.sample(Duration::from_secs(1));
+        assert!(g.state().throttling, "over budget and cycling");
+
+        assert_eq!(g.sample(Duration::from_secs(1)), Tick::Idle);
+        assert!(
+            !g.state().throttling,
+            "an idle tick issues no signals, so it must not claim enforcement"
+        );
+        assert!(
+            g.run_fraction() < UNTHROTTLED_FRACTION,
+            "the controller should still be holding its reduced fraction",
+        );
+    }
+
+    // --- short-lived children keep the earned duty cycle --------------------
+
+    #[test]
+    fn a_burst_of_short_lived_children_is_not_each_started_unthrottled() {
+        // Every realtime mutation is its own process. A child that lives a
+        // second or two never survives long enough for a second sample to
+        // produce a delta, so if the controller reset the instant the previous
+        // one exited, none of them would ever be throttled.
+        let script = vec![
+            HashMap::from([(1, 0.0)]),
+            HashMap::from([(1, 8.0)]), // heavy: earns a tight duty cycle
+            HashMap::new(),            // that child exits
+        ];
+        let (mut g, _sig) = governor(0.5, script);
+        g.register(100);
+        g.sample(Duration::from_secs(1));
+        g.sample(Duration::from_secs(1));
+        let earned = g.run_fraction();
+        assert!(
+            earned < UNTHROTTLED_FRACTION,
+            "workload should be throttled"
+        );
+
+        g.unregister(100);
+        g.sample(Duration::from_secs(1)); // one idle tick — a gap, not quiet
+
+        assert!(
+            (g.run_fraction() - earned).abs() < f64::EPSILON,
+            "a one-tick gap must not forget the duty cycle: {} vs {earned}",
+            g.run_fraction()
+        );
+    }
+
+    #[test]
+    fn sustained_quiet_still_forgets_a_stale_aggressive_cycle() {
+        // The reset exists so a CPU-heavy sync does not leave the next
+        // unrelated git command starting under its tight cycle. Delaying it
+        // must not remove it.
+        let script = vec![HashMap::from([(1, 0.0)]), HashMap::from([(1, 8.0)])];
+        let (mut g, _sig) = governor(0.5, script);
+        g.register(100);
+        g.sample(Duration::from_secs(1));
+        g.sample(Duration::from_secs(1));
+        assert!(g.run_fraction() < UNTHROTTLED_FRACTION);
+
+        g.unregister(100);
+        for _ in 0..IDLE_TICKS_BEFORE_CONTROLLER_RESET {
+            g.sample(Duration::from_secs(1));
+        }
+        assert_eq!(
+            g.run_fraction(),
+            1.0,
+            "sustained quiet must hand the next workload a clean slate"
+        );
+    }
+
+    // --- sharing the budget with governed groups ----------------------------
+
+    #[test]
+    fn in_process_work_halves_its_share_while_groups_are_governed() {
+        // The governor holds ONE budget for its groups and paced in-process
+        // work cannot join that duty cycle, so unsplit the two together reach
+        // twice the advertised ceiling.
+        assert_eq!(shared_in_process_duty(0.5, false), 0.5);
+        assert_eq!(shared_in_process_duty(0.5, true), 0.25);
+    }
+
+    #[test]
+    fn the_split_follows_groups_registering_mid_walk() {
+        use std::sync::atomic::AtomicBool;
+        let governed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&governed);
+        let mut pacer = InProcessPacer::with_duty_and_groups(
+            Some(0.5),
+            Box::new(move || flag.load(Ordering::Relaxed)),
+        );
+
+        // Ungoverned: one slice of work at a 50% duty owes about one slice.
+        let started = Instant::now();
+        pacer.charge(PACER_SLICE);
+        let alone = started.elapsed();
+
+        // A group registers mid-walk: the in-process share halves, so the same
+        // slice of work now owes about three.
+        governed.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        pacer.charge(PACER_SLICE);
+        let shared = started.elapsed();
+
+        assert!(
+            shared > alone,
+            "sharing the ceiling must slow in-process work further: {alone:?} then {shared:?}"
+        );
+    }
+
     // --- reporting cadence --------------------------------------------------
 
     #[test]
@@ -1265,12 +1546,17 @@ mod tests {
 
     #[test]
     fn state_reports_throttling_only_when_signals_are_actually_issued() {
-        let (mut g, _sig) = governor(0.5, vec![]);
+        // Driven through real ticks: the flag means "signals are going out
+        // right now", so a controller fraction set without a cycling tick — as
+        // happens when the sampler fails — must not read as enforcement.
+        let script = vec![HashMap::from([(1, 0.0)]), HashMap::from([(1, 8.0)])];
+        let (mut g, _sig) = governor(0.5, script);
         assert!(!g.state().throttling, "nothing registered");
         g.register(100);
+        g.sample(Duration::from_secs(1)); // baseline only
         assert!(!g.state().throttling, "registered but under budget");
-        g.controller.observe(4.0);
-        assert!(g.state().throttling, "over budget");
+        g.sample(Duration::from_secs(1)); // 8 cores against a 0.5 budget
+        assert!(g.state().throttling, "over budget and cycling");
     }
 
     // --- in-process pacer ---------------------------------------------------
@@ -1760,6 +2046,12 @@ mod tests {
     fn going_idle_resets_the_duty_cycle_for_the_next_workload() {
         // Otherwise a CPU-heavy sync leaves the fraction near its floor and the
         // next unrelated git command starts under that stale aggressive cycle.
+        //
+        // The reset now waits for SUSTAINED quiet rather than firing on the
+        // first idle tick, so that a burst of short-lived children — each
+        // realtime mutation is its own process — is treated as one continuing
+        // workload instead of resetting between every pair. The guarantee this
+        // test exists for is unchanged, only its timing.
         let (mut g, _sig) = governor(0.5, vec![one(1, 0.0), one(1, 8.0)]);
         g.register(100);
         g.sample(SAMPLE_INTERVAL);
@@ -1769,7 +2061,9 @@ mod tests {
             "expected the heavy pass to throttle"
         );
         g.unregister(100);
-        assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
+        for _ in 0..IDLE_TICKS_BEFORE_CONTROLLER_RESET {
+            assert_eq!(g.sample(SAMPLE_INTERVAL), Tick::Idle);
+        }
         assert_eq!(
             g.run_fraction(),
             1.0,
