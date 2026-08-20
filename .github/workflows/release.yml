@@ -246,6 +246,12 @@ jobs:
           echo "version=$MSI_VERSION" >> "$GITHUB_OUTPUT"
           echo "App version $APP_VERSION maps to Windows MSI ProductVersion $MSI_VERSION"
 
+      # Two independent rollback gates. `stable-order` compares the numeric tag
+      # against public latest; `lineage` compares COMMIT ancestry through the
+      # GitHub compare API, catching a higher version number cut from an older
+      # on-main commit (the silent content rollback that shipped pre-fix code
+      # under v0.10.107 and v0.10.109). A declared `Rollback-Of:` trailer keeps
+      # an intentional emergency rollback possible.
       - name: Reject stable release rollback
         if: ${{ steps.classify.outputs.channel == 'stable' }}
         env:
@@ -256,6 +262,9 @@ jobs:
         run: |
           set -euo pipefail
           node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+          node .release-control/scripts/release-stable-order.mjs lineage \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 
@@ -376,6 +385,17 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[",]//g')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      # Stamp the tag's own commit into the build env so hq-telemetry records it
+      # as the Sentry `build_commit` tag. A content rollback — a higher version
+      # number carrying strictly older code — then shows up in a single Sentry
+      # event instead of hiding behind the version-only release identity. HEAD is
+      # the tag commit here because the job checked out refs/tags/<tag>.
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Build unsigned universal app and updater archive
         env:
@@ -736,6 +756,15 @@ jobs:
 
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Windows MSI ProductVersion: $actual"
+
+      # Stamp the tag's own commit into the build env so hq-telemetry records it
+      # as the Sentry `build_commit` tag (see the macOS job for why). HEAD is the
+      # tag commit here because the job checked out refs/tags/<tag>.
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Tauri build (${{ matrix.target }})
         # The release-only overlay carries the Recall externalBin (a per-target PE
@@ -1257,6 +1286,9 @@ jobs:
         run: |
           set -euo pipefail
           node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+          node .release-control/scripts/release-stable-order.mjs lineage \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 

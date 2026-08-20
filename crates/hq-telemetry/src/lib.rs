@@ -771,12 +771,39 @@ pub fn init_with_identity(
         session_mode: sentry::SessionMode::Application,
         ..Default::default()
     });
+    configure_identity_scope(identity);
+    Some(guard)
+}
+
+/// Bind the process-wide attribution tags onto the current Sentry scope.
+///
+/// `build_commit` stamps the exact commit the binary was built from, so a
+/// stable release carrying strictly older code (a silent content rollback) is
+/// visible in a single Sentry event rather than hidden behind a version-only
+/// release identity. Split out from `init_with_identity` so the tag wiring is
+/// exercised directly by a captured-event test without a live client.
+fn configure_identity_scope(identity: SentryIdentity<'_>) {
     sentry::configure_scope(|scope| {
         scope.set_tag("repo", identity.repo);
         scope.set_tag("app", identity.app);
         scope.set_tag("flavor", identity.flavor);
+        scope.set_tag("build_commit", build_commit());
     });
-    Some(guard)
+}
+
+/// The commit SHA the binary was built from, captured at compile time from the
+/// `HQ_BUILD_COMMIT` build-time env the release workflow exports. Local and PR
+/// builds do not set it, so they report the `"unknown"` sentinel — that is the
+/// intended value, not an error.
+fn build_commit() -> &'static str {
+    resolve_build_commit(option_env!("HQ_BUILD_COMMIT"))
+}
+
+fn resolve_build_commit(value: Option<&'static str>) -> &'static str {
+    match value {
+        Some(commit) if !commit.is_empty() => commit,
+        _ => "unknown",
+    }
 }
 
 #[cfg(test)]
@@ -814,6 +841,43 @@ mod tests {
         assert_eq!(identity.repo, "hq-sync");
         assert_eq!(identity.app, "hq-desktop-app");
         assert_eq!(identity.flavor, "sync");
+    }
+
+    #[test]
+    fn resolve_build_commit_uses_the_sha_when_present() {
+        assert_eq!(
+            resolve_build_commit(Some("b8e74e289d845c45c612cb99d4758202d22b6599")),
+            "b8e74e289d845c45c612cb99d4758202d22b6599",
+        );
+    }
+
+    #[test]
+    fn resolve_build_commit_falls_back_to_unknown_when_absent_or_empty() {
+        // A local or PR build never sets HQ_BUILD_COMMIT (None); a misconfigured
+        // export could set it empty. Both degrade to the documented sentinel.
+        assert_eq!(resolve_build_commit(None), "unknown");
+        assert_eq!(resolve_build_commit(Some("")), "unknown");
+    }
+
+    #[test]
+    fn identity_scope_carries_build_commit_tag() {
+        let events = sentry::test::with_captured_events(|| {
+            configure_identity_scope(SentryIdentity::default());
+            sentry::capture_message("build-commit-probe", sentry::Level::Info);
+        });
+
+        assert_eq!(events.len(), 1);
+        let tags = &events[0].tags;
+        assert!(
+            tags.contains_key("build_commit"),
+            "identity scope must carry a build_commit tag"
+        );
+        // HQ_BUILD_COMMIT is unset under `cargo test`, so the sentinel applies.
+        assert_eq!(tags["build_commit"], "unknown");
+        // The pre-existing attribution tags are unchanged by the addition.
+        assert_eq!(tags["app"], "hq-desktop-app");
+        assert_eq!(tags["repo"], "hq-sync");
+        assert_eq!(tags["flavor"], "sync");
     }
 
     // 2. Header strip
