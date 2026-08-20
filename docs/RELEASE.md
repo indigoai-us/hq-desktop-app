@@ -89,6 +89,51 @@ tag contents while loading the reviewed publication helpers from the workflow
 commit. If that tag is already public and healthy, the retry is read-only:
 release creation/reset, asset deletion/upload, and publication are all skipped.
 
+## Stable release lineage
+
+A stable tag may publish only when its commit *contains* the commit of the
+current public latest stable release. Two gates enforce this on the stable
+channel, at both the validate step and the in-publication-lock revalidation
+step:
+
+- **Numeric order** (`release-stable-order.mjs stable-order`) rejects a tag
+  whose version number is lower than public latest.
+- **Commit lineage** (`release-stable-order.mjs lineage`) rejects a tag whose
+  *commit* is behind or diverged from public latest even when its number is
+  higher. It reads the GitHub compare status between public latest and the tag:
+  `ahead` and `identical` publish exactly as before; `behind` and `diverged` are
+  blocked.
+
+The lineage gate exists because a higher version number can still carry strictly
+older code. v0.10.107 and v0.10.109 were both tagged on the pre-fix v0.10.105
+commit, so the numeric gate saw a normal advance while the stable fleet was
+moved back onto pre-fix builds. The lineage gate closes that gap.
+
+### Intentional rollbacks
+
+An emergency rollback is still possible without a workflow or code change. Tag
+the **older commit whose code you want back on stable**, and give the tag a
+`Rollback-Of:` trailer naming the exact current public latest stable tag. Name
+that commit explicitly: tagging without a commit argument tags your current
+`HEAD`, which would republish current code instead of rolling back.
+
+```text
+# <rollback-commit> is the commit whose code you want back on stable.
+git tag -a vX.Y.Z <rollback-commit> -m "HQ vX.Y.Z emergency rollback
+
+Rollback-Of: vA.B.C"
+git push origin vX.Y.Z
+```
+
+The `Rollback-Of: vX.Y.Z` line must sit in the tag message's trailer block (its
+last paragraph) and name the current public latest stable tag exactly — a stale
+or copied trailer, a `Rollback-Of:` line buried in the body, or a lightweight
+tag (one with no annotated message) all fail closed. A declared rollback still
+publishes, but never silently: the release log carries a warning and the job
+summary enumerates the withdrawn commits. A rollback
+**drops every fix the named release contains** but the rolled-back commit does
+not, so confirm you intend to lose those fixes before you tag it.
+
 ## Required GitHub Secrets
 
 ### macOS Signing and Notarization
@@ -96,11 +141,25 @@ release creation/reset, asset deletion/upload, and publication are all skipped.
 - `APPLE_CERTIFICATE`: base64-encoded Developer ID Application `.p12`.
 - `APPLE_CERTIFICATE_PASSWORD`: password for the `.p12`.
 - `APPLE_SIGNING_IDENTITY`: full identity string, for example `Developer ID Application: NAME (TEAMID)`.
-- `APPLE_ID`: the Apple ID (email) used for notarization.
-- `APPLE_PASSWORD`: an app-specific password for that Apple ID (notarytool).
 - `APPLE_TEAM_ID`: the Apple Developer Team ID.
+- `APPLE_API_KEY_ID`: App Store Connect API key ID (notarization).
+- `APPLE_API_ISSUER_ID`: App Store Connect API issuer ID (notarization).
+- `APPLE_API_PRIVATE_KEY`: contents of the App Store Connect API `.p8` private key.
 
-Notarization uses the Apple-ID method (`xcrun notarytool --apple-id/--password/--team-id`) — the same credential set as the legacy `hq-sync` / `hq-installer` repos. (The App Store Connect API-key method is **not** used; `scripts/notarize.sh` still implements it for local runs but the workflow inlines the Apple-ID call.)
+Signing and notarization run under the **Indigo AI, Inc.** organization team
+(`HWFZ2QDTMR`). The `.p12` bundles the leaf certificate, the Apple Developer ID
+G2 intermediate, and the private key.
+
+Notarization uses the **App Store Connect API-key method**
+(`xcrun notarytool --key/--key-id/--issuer`). The workflow writes the `.p8` to a
+`chmod 600` file under `$RUNNER_TEMP` and removes it on exit. The older Apple-ID
+method (`--apple-id/--password/--team-id`) is deliberately **not** used, because
+it requires an individual's Apple account and an app-specific password to sit in
+the release path. `APPLE_ID` and `APPLE_PASSWORD` are no longer read by this
+workflow.
+
+Background and the full account-migration record:
+`companies/indigo/knowledge/engineering/apple-account-migration.md` in HQ.
 
 ### Tauri updater channels
 

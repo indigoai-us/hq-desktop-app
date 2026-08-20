@@ -207,6 +207,49 @@ describe("release workflow channel contract", () => {
     expect(validate).toContain('--tag "$TARGET_TAG"');
   });
 
+  it("runs the commit-lineage rollback gate at both stable call sites", () => {
+    const validate = jobBody("validate");
+    const publish = jobBody("publish");
+
+    // Validate job, before the expensive native builds.
+    const rejectStep = stepBody(validate, "Reject stable release rollback");
+    expect(rejectStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs lineage",
+    );
+    expect(rejectStep).toContain('--repository "$TARGET_REPOSITORY"');
+    expect(rejectStep).toContain('--tag "$TARGET_TAG"');
+    expect(validate).toContain(
+      "if: ${{ steps.classify.outputs.channel == 'stable' }}",
+    );
+
+    // Publish job, inside the global publication lock, immediately before the
+    // only public-state mutation.
+    const revalidateStep = stepBody(publish, "Revalidate stable publication order");
+    expect(revalidateStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs lineage",
+    );
+    expect(revalidateStep).toContain('--repository "$TARGET_REPOSITORY"');
+    expect(publish).toContain(
+      "needs.validate.outputs.channel == 'stable' && steps.release-plan.outputs.action != 'already-published'",
+    );
+  });
+
+  it("stamps the tag's own commit into both build jobs for the Sentry build_commit tag", () => {
+    for (const job of ["macos", "windows"]) {
+      const step = stepBody(jobBody(job), "Stamp build commit identity");
+      expect(step).toContain(
+        'echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"',
+      );
+    }
+  });
+
+  it("documents the stable lineage rollback contract and the Rollback-Of trailer", () => {
+    expect(releaseDocs).toContain("Rollback-Of: vX.Y.Z");
+    expect(releaseDocs).toContain("drops every fix the named release contains");
+    // The rollback tag must name the older commit explicitly, not tag HEAD.
+    expect(releaseDocs).toContain("git tag -a vX.Y.Z <rollback-commit>");
+  });
+
   it("classifies stable separately from beta and alpha", () => {
     const validate = jobBody("validate");
 

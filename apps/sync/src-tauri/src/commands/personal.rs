@@ -140,6 +140,10 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
     };
 
     let mut to_upload: u64 = 0;
+    // Holds the hashing below inside the same machine-wide CPU ceiling the
+    // governor enforces on child processes. This walk runs in the app's own
+    // process, which the governor will not signal, so it has to pace itself.
+    let mut pacer = hq_desktop_core::cpu_throttle::InProcessPacer::new();
 
     // ── Personal allowlist (.claude, knowledge, policies, projects) ───────
     // Read the SAME journal slug the steady-state runner writes
@@ -166,7 +170,7 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
         if !is_personal_vault_path(&rel) && !continuity.contains(rel.as_str()) {
             continue;
         }
-        if file_needs_upload(entry.path(), &rel, &personal_journal) {
+        if file_needs_upload(entry.path(), &rel, &personal_journal, &mut pacer) {
             to_upload += 1;
         }
     }
@@ -192,7 +196,7 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
                 Ok(r) => r.to_string_lossy().replace('\\', "/"),
                 Err(_) => continue,
             };
-            if file_needs_upload(entry.path(), &rel_to_company, &company_journal) {
+            if file_needs_upload(entry.path(), &rel_to_company, &company_journal, &mut pacer) {
                 to_upload += 1;
             }
         }
@@ -201,25 +205,74 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
     to_upload
 }
 
+/// Tolerance when comparing a local mtime against the journal's `mtimeMs`.
+///
+/// The journal is authored by the Node engine, whose `stat().mtimeMs` carries
+/// a fractional millisecond; Rust's `Duration::as_millis` truncates to a whole
+/// one. Comparing them exactly would fail on nearly every file and silently
+/// disable the fast path. A couple of milliseconds is far below any real edit
+/// interval, and this comparison only feeds a progress estimate.
+const MTIME_EPSILON_MS: f64 = 2.0;
+
+/// Local mtime in milliseconds since the epoch, in the same units the engine
+/// records. `None` when the platform or filesystem will not report one.
+fn mtime_ms(meta: &std::fs::Metadata) -> Option<f64> {
+    let modified = meta.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(since.as_millis() as f64)
+}
+
 /// True iff the file's current sha256 differs from its journal entry (or has
 /// no journal entry). Mirrors `share.ts` skipUnchanged logic. Hashing errors
 /// (missing file, permission denied) are treated as "needs upload" to err on
 /// the side of including it — the runner will hit the same error and surface
 /// it cleanly.
+///
+/// `pacer` is charged for the hashing only — see the metadata fast path below
+/// for why the surrounding walk is deliberately left unpaced.
 fn file_needs_upload(
     abs_path: &Path,
     journal_key: &str,
     journal: &crate::util::journal::SyncJournal,
+    pacer: &mut hq_desktop_core::cpu_throttle::InProcessPacer,
 ) -> bool {
+    let Some(entry) = journal.files.get(journal_key) else {
+        // Never synced: it uploads, and there is nothing to compare against.
+        return true;
+    };
+
+    // Metadata fast path — the same rule the hq-cloud runner applies on its own
+    // push side (see `JournalEntry::mtime_ms`: "the push side skips re-hashing
+    // when size + mtimeMs match"). This pre-pass exists to PREDICT the runner's
+    // upload count, so mirroring the runner's skip rule makes the estimate more
+    // faithful, not less.
+    //
+    // It is also the difference between a `stat` per file and a full read plus
+    // SHA-256 of every syncable byte. On a large HQ root the unconditional
+    // version was a multi-minute, single-core burn on every sync — and because
+    // it runs inside the app's own process, the CPU governor cannot touch it
+    // (it refuses to signal its own process group). Not doing the work beats
+    // throttling it.
+    if let Ok(meta) = std::fs::metadata(abs_path) {
+        if meta.len() == entry.size {
+            if let (Some(journalled), Some(local)) = (entry.mtime_ms, mtime_ms(&meta)) {
+                if (journalled - local).abs() < MTIME_EPSILON_MS {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Slow path: the file looks changed (or the journal predates `mtimeMs`).
+    // Reading and hashing it is the expensive part, so it is what gets paced.
+    let started = std::time::Instant::now();
     let contents = match std::fs::read(abs_path) {
         Ok(c) => c,
         Err(_) => return true,
     };
     let hash = format!("{:x}", Sha256::digest(&contents));
-    match journal.files.get(journal_key) {
-        Some(entry) => entry.hash != hash,
-        None => true,
-    }
+    pacer.charge(started.elapsed());
+    entry.hash != hash
 }
 
 pub(crate) fn is_personal_vault_path(rel: &str) -> bool {
@@ -1170,6 +1223,156 @@ mod tests {
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // --- prepare-phase metadata fast path -----------------------------------
+
+    /// Build a journal entry for a file on disk, optionally recording the
+    /// engine-authored `mtimeMs` that unlocks the no-hash fast path.
+    fn entry_for(path: &Path, hash: &str, with_mtime: bool) -> crate::util::journal::JournalEntry {
+        let meta = std::fs::metadata(path).unwrap();
+        crate::util::journal::JournalEntry {
+            hash: hash.to_string(),
+            size: meta.len(),
+            synced_at: "2026-01-01T00:00:00Z".into(),
+            direction: crate::util::journal::Direction::Up,
+            remote_etag: None,
+            mtime_ms: with_mtime.then(|| mtime_ms(&meta).unwrap()),
+            extra: Default::default(),
+        }
+    }
+
+    fn journal_with(
+        key: &str,
+        entry: crate::util::journal::JournalEntry,
+    ) -> crate::util::journal::SyncJournal {
+        let mut j = crate::util::journal::SyncJournal::default();
+        j.files.insert(key.to_string(), entry);
+        j
+    }
+
+    fn sha_of(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// A pacer that never sleeps, so these tests measure the decision, not the
+    /// pacing. Pacing arithmetic is covered in `cpu_throttle`.
+    fn unpaced() -> hq_desktop_core::cpu_throttle::InProcessPacer {
+        hq_desktop_core::cpu_throttle::InProcessPacer::with_duty(None)
+    }
+
+    /// REGRESSION: the "Preparing sync…" pre-pass read and SHA-256'd every
+    /// syncable file on every sync. On a large HQ root that was a multi-minute
+    /// single-core burn — and because it runs inside the app's own process, the
+    /// CPU governor cannot throttle it (it refuses to signal its own group).
+    /// The engine's own push side already skips re-hashing when size + mtimeMs
+    /// match; this pre-pass, whose whole job is to predict what the engine will
+    /// upload, must apply the same rule.
+    #[test]
+    fn an_unchanged_file_is_recognised_without_reading_its_contents() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("unchanged.md");
+        std::fs::write(&file, b"hello").unwrap();
+
+        // A journal entry whose hash is deliberately WRONG. If the fast path is
+        // working, the hash is never consulted, so a stale one cannot matter —
+        // and if it regresses, this test fails loudly instead of silently
+        // getting slower.
+        let journal = journal_with("unchanged.md", entry_for(&file, "not-the-real-hash", true));
+
+        assert!(
+            !file_needs_upload(&file, "unchanged.md", &journal, &mut unpaced()),
+            "matching size + mtime must settle it without hashing",
+        );
+    }
+
+    #[test]
+    fn a_file_whose_size_changed_is_hashed_and_flagged() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("grown.md");
+        std::fs::write(&file, b"hello").unwrap();
+        let journal = journal_with("grown.md", entry_for(&file, &sha_of(b"hello"), true));
+
+        std::fs::write(&file, b"hello world").unwrap();
+
+        assert!(
+            file_needs_upload(&file, "grown.md", &journal, &mut unpaced()),
+            "a size change must fall through to hashing and flag the upload",
+        );
+    }
+
+    /// mtime moving is only a HINT that contents changed. Touching a file
+    /// without editing it must not inflate the count the progress bar uses as
+    /// its denominator — so the fall-through has to actually compare hashes
+    /// rather than trust the metadata mismatch.
+    #[test]
+    fn a_touched_but_unedited_file_is_not_counted_as_an_upload() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("touched.md");
+        std::fs::write(&file, b"same bytes").unwrap();
+        let mut entry = entry_for(&file, &sha_of(b"same bytes"), true);
+        // Journal records an mtime well in the past; contents are identical.
+        entry.mtime_ms = Some(entry.mtime_ms.unwrap() - 60_000.0);
+        let journal = journal_with("touched.md", entry);
+
+        assert!(
+            !file_needs_upload(&file, "touched.md", &journal, &mut unpaced()),
+            "identical contents must not be counted just because mtime moved",
+        );
+    }
+
+    /// Journals written before the engine recorded `mtimeMs` have no fast path
+    /// available. They must keep working — by hashing, as before.
+    #[test]
+    fn a_journal_without_mtime_falls_back_to_hashing() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("legacy.md");
+        std::fs::write(&file, b"legacy").unwrap();
+
+        let unchanged = journal_with("legacy.md", entry_for(&file, &sha_of(b"legacy"), false));
+        assert!(
+            !file_needs_upload(&file, "legacy.md", &unchanged, &mut unpaced()),
+            "matching hash means no upload even with no mtime to shortcut on",
+        );
+
+        let changed = journal_with("legacy.md", entry_for(&file, &sha_of(b"different"), false));
+        assert!(
+            file_needs_upload(&file, "legacy.md", &changed, &mut unpaced()),
+            "a hash mismatch must still flag the upload",
+        );
+    }
+
+    #[test]
+    fn a_file_the_journal_has_never_seen_always_needs_upload() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("brand-new.md");
+        std::fs::write(&file, b"new").unwrap();
+
+        assert!(
+            file_needs_upload(
+                &file,
+                "brand-new.md",
+                &crate::util::journal::SyncJournal::default(),
+                &mut unpaced()
+            ),
+            "no journal entry means it has never been synced",
+        );
+    }
+
+    #[test]
+    fn an_unreadable_file_errs_toward_counting_it() {
+        // The runner will hit the same error and report it; the pre-pass must
+        // not quietly drop the file from the denominator.
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("gone.md");
+        let mut entry = entry_for(tmp.path(), "whatever", false);
+        entry.size = 3;
+        let journal = journal_with("gone.md", entry);
+
+        assert!(
+            file_needs_upload(&missing, "gone.md", &journal, &mut unpaced()),
+            "a file that cannot be read must still count",
+        );
+    }
 
     #[test]
     fn steady_state_gate_closes_once_runner_journal_exists() {

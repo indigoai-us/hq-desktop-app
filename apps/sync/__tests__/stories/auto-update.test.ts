@@ -394,7 +394,24 @@ describe('master automatic-updates switch', () => {
   });
 
   it('Rust CI cannot repair a stale lockfile before checking it', () => {
-    expect(ciWorkflow).toContain('cargo test --workspace --locked');
+    // Assert the invariant -- every cargo test/check/build in CI passes
+    // --locked, so a stale Cargo.lock fails loudly instead of being silently
+    // repaired -- rather than pinning one literal command. The previous form
+    // asserted `cargo test --workspace --locked`, which broke the moment the
+    // shared crates moved to the Linux job even though every invocation still
+    // carried --locked. Pinning the invariant survives that reshuffle and
+    // catches a dropped flag anywhere, including in jobs added later.
+    const invocations = [
+      ...ciWorkflow.matchAll(/run: (cargo (?:test|check|build)[^\n]*)/g),
+    ].map((match) => match[1]);
+
+    expect(invocations.length).toBeGreaterThan(0);
+    for (const invocation of invocations) {
+      expect(invocation).toContain('--locked');
+    }
+
+    // The app crate's suite still runs from its own manifest directory, so the
+    // workspace-excluded Tauri crate is genuinely exercised.
     expect(ciWorkflow).toMatch(/working-directory: apps\/sync\/src-tauri\s+run: cargo test --locked/);
   });
 
