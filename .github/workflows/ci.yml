@@ -20,6 +20,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
   push:
     branches: [main]
@@ -37,6 +38,7 @@ env:
 
 jobs:
   frontend:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Frontend (typecheck + lint + coverage)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -83,6 +85,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   rust-macos:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Rust tests (macOS)
     runs-on: macos-latest
     timeout-minutes: 30
@@ -148,6 +151,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
   e2e-desktop-alt:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Desktop-alt E2E
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -38,7 +38,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{mpsc, LazyLock, Mutex};
@@ -389,6 +389,80 @@ fn parse_bulk_override(raw: Option<&str>) -> bool {
 
 fn is_bulk_override_set() -> bool {
     parse_bulk_override(std::env::var(BULK_OVERRIDE_ENV).ok().as_deref())
+}
+
+/// Size ceiling for the mirrored repo's *staged content*, above which the
+/// mirror starts dropping the largest ephemeral subtrees from what it tracks.
+///
+/// The gate measures the summed blob size of the staged snapshot (the tree the
+/// next commit would record), not the `.git` directory. That choice is
+/// deliberate on both ends: measuring the staged index rather than HEAD catches
+/// a newly-added oversized file before it is committed and pushed into history;
+/// and measuring content rather than `.git` means `git rm --cached` — which
+/// shrinks tracked content immediately but leaves historical blobs in the pack
+/// until a history rewrite + gc — actually moves the number the gate reads.
+/// Content size is also a conservative proxy for the pushed pack (text/JSON
+/// session logs compress several-fold), so firing at 2 GiB keeps the pushed repo
+/// comfortably under GitHub's 2 GB repo ceiling while there is still margin.
+///
+/// This governs the git mirror (`hassaans/hq` push) only. HQ cloud sync follows
+/// `.hqignore`/`.hqinclude`, never `.gitignore`, so excluding a path here does
+/// **not** remove it from the vault — the mirror is a secondary snapshot.
+const MIRROR_SIZE_CAP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Operator/testing override for [`MIRROR_SIZE_CAP_BYTES`], expressed in whole
+/// mebibytes. Tests set a tiny cap so the gate can fire on a small repo without
+/// staging two gigabytes of scratch data.
+const MIRROR_SIZE_CAP_ENV: &str = "HQ_MIRROR_SIZE_CAP_MB";
+
+/// Marker comment the mirror leaves above the first line it appends to
+/// `.gitignore`, so a human reading the file later knows the exclusion was
+/// automatic and why. Presence-checked so it is written at most once.
+const MIRROR_GITIGNORE_MARKER: &str =
+    "# Excluded by the HQ desktop git-mirror to keep the pushed repo under its size cap.";
+
+/// One rung of the size-gate escalation ladder: a path the mirror will stop
+/// tracking, in order, when the tracked content stays over the cap.
+struct GatedExclusion {
+    /// Line appended to `.gitignore` (directory form, trailing slash) so future
+    /// `git add -A` passes never re-stage the subtree.
+    gitignore_line: &'static str,
+    /// Pathspec handed to `git rm -r --cached` (no trailing slash) to untrack
+    /// whatever is currently tracked under the subtree.
+    pathspec: &'static str,
+}
+
+/// The escalation ladder, narrowest first. Session logs are the usual culprit —
+/// high-churn, regenerable, and never needed in a versioned snapshot — so they
+/// go first; the whole `workspace/` (orchestrator scratch, threads, drafts) is
+/// the last resort. The ladder is deliberately fixed and short: the mirror will
+/// never start deleting arbitrary user content to chase the cap. If the content
+/// is still over the cap after both rungs, it logs and stops.
+const GATED_EXCLUSIONS: &[GatedExclusion] = &[
+    GatedExclusion {
+        // Root-anchored (leading `/`) so the ignore rule matches the same single
+        // subtree the `pathspec` untracks — an unanchored `workspace/` would also
+        // ignore any nested `companies/<co>/workspace/`, silently dropping those
+        // from the mirror. A git pathspec is already root-relative, so it needs
+        // no anchor.
+        gitignore_line: "/workspace/.session-logs/",
+        pathspec: "workspace/.session-logs",
+    },
+    GatedExclusion {
+        gitignore_line: "/workspace/",
+        pathspec: "workspace",
+    },
+];
+
+/// Resolve the tracked-content ceiling, honoring the [`MIRROR_SIZE_CAP_ENV`]
+/// override when it parses as a whole number of mebibytes.
+fn resolve_mirror_size_cap() -> u64 {
+    if let Ok(raw) = std::env::var(MIRROR_SIZE_CAP_ENV) {
+        if let Ok(mb) = raw.trim().parse::<u64>() {
+            return mb.saturating_mul(1024 * 1024);
+        }
+    }
+    MIRROR_SIZE_CAP_BYTES
 }
 
 /// Staged deletions and a stable identity for their path set. The digest is
@@ -1790,12 +1864,563 @@ enum MirrorOutcome {
     Push,
 }
 
+/// Render a byte count for a log line at the coarsest sensible unit.
+fn human_bytes(bytes: u64) -> String {
+    const GIB: f64 = (1024 * 1024 * 1024) as f64;
+    const MIB: f64 = (1024 * 1024) as f64;
+    let b = bytes as f64;
+    if b >= GIB {
+        format!("{:.2} GiB", b / GIB)
+    } else {
+        format!("{:.1} MiB", b / MIB)
+    }
+}
+
+/// Sum the blob sizes of the *staged* snapshot — the tree the next commit would
+/// record, i.e. the index after `run_mirror`'s `git add -A`. Measuring the index
+/// rather than HEAD is what lets the gate catch a newly-added oversized file on
+/// the same pass it appears, before it is ever committed and pushed into history
+/// where untracking can no longer remove it.
+///
+/// `git write-tree` serializes the current index into a (dangling, gc-able) tree
+/// object without touching HEAD or committing; `git ls-tree -l` then reports each
+/// blob's size inline. A failed measurement fails CLOSED — it errors rather than
+/// reporting 0 bytes, because a 0 would send `enforce_mirror_size_cap` down the
+/// under-cap path and let an unmeasured, possibly-oversized index commit and push
+/// (the same fail-closed rule the bulk-delete guard already follows). A genuinely
+/// empty index still measures 0 via the success path (`write-tree` returns the
+/// empty-tree id and `ls-tree` yields no rows). Non-blob entries (submodule /
+/// knowledge gitlinks, mode 160000) carry a `-` size column and are skipped.
+fn staged_content_bytes(hq_folder: &str) -> Result<u64, String> {
+    let tree = git_output(hq_folder, &["write-tree"], GIT_INDEX_TIMEOUT)?;
+    if !tree.status.success() {
+        return Err(format!(
+            "git write-tree failed while measuring the staged snapshot: {}",
+            String::from_utf8_lossy(&tree.stderr).trim()
+        ));
+    }
+    let tree_sha = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+    if tree_sha.is_empty() {
+        return Err("git write-tree produced no tree id".to_string());
+    }
+    let out = git_output(
+        hq_folder,
+        &["ls-tree", "-r", "-l", "-z", &tree_sha],
+        GIT_INDEX_TIMEOUT,
+    )?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-tree failed while measuring the staged snapshot: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let mut total: u64 = 0;
+    for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        // Record shape: `<mode> SP <type> SP <sha> SP <size> TAB <path>`. Only
+        // the metadata left of the TAB is needed; the path may hold arbitrary
+        // bytes and is never parsed.
+        let meta_end = match record.iter().position(|b| *b == b'\t') {
+            Some(i) => i,
+            None => continue,
+        };
+        let meta = String::from_utf8_lossy(&record[..meta_end]);
+        let mut fields = meta.split_whitespace();
+        let _mode = fields.next();
+        let typ = fields.next();
+        let _sha = fields.next();
+        let size = fields.next();
+        if typ != Some("blob") {
+            continue;
+        }
+        if let Some(bytes) = size.and_then(|v| v.parse::<u64>().ok()) {
+            total = total.saturating_add(bytes);
+        }
+    }
+    Ok(total)
+}
+
+/// Ensure `line` is the *effective* final ignore rule for its subtree in the HQ
+/// root `.gitignore`, appending it (once, under [`MIRROR_GITIGNORE_MARKER`]) when
+/// it is not. Returns whether it wrote.
+///
+/// Three hazards this guards against, all surfaced in review:
+/// - **Non-UTF-8 contents:** the file is read and rewritten as raw bytes, so a
+///   `.gitignore` holding a non-UTF-8 path is never silently truncated, and a
+///   real read error is distinguished from a missing file rather than treated as
+///   empty (which would erase the user's rules on the next write).
+/// - **Symlinked `.gitignore`:** git deliberately does not follow a symlinked
+///   `.gitignore`, so the exclusion could never take effect anyway, and writing
+///   through it would corrupt an unrelated target. Detected and refused (`Err`).
+/// - **A later negation:** a `!subtree/...` rule after our line would re-include
+///   the subtree, so the presence check is precedence-aware — the last matching
+///   rule wins, so we reassert our line at the end when a negation of the same
+///   subtree is currently the last word.
+fn ensure_gitignore_line(hq_folder: &str, line: &str) -> Result<bool, String> {
+    let path = Path::new(hq_folder).join(".gitignore");
+
+    // Never write through a symlink — git ignores a symlinked .gitignore, so the
+    // exclusion would be inert, and the write would land on an unrelated target.
+    if let Ok(meta) = fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() {
+            return Err(".gitignore is a symlink; refusing to modify it".to_string());
+        }
+    }
+
+    let existing: Vec<u8> = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+        // A real read error (permissions, etc.) must NOT be treated as an empty
+        // file — that would truncate the user's ignore rules on the write below.
+        Err(e) => return Err(format!("read .gitignore: {e}")),
+    };
+
+    // Precedence-aware presence check: the last matching rule wins, so an earlier
+    // copy of our line is ineffective if a later `!subtree` negation re-includes.
+    let text = String::from_utf8_lossy(&existing);
+    let stem = line.trim_start_matches('/').trim_end_matches('/');
+    let mut effective_excluded = false;
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t == line {
+            effective_excluded = true;
+        } else if let Some(neg) = t.strip_prefix('!') {
+            let neg = neg.trim_start_matches('/');
+            if neg == stem || neg.starts_with(&format!("{stem}/")) {
+                effective_excluded = false;
+            }
+        }
+    }
+    if effective_excluded {
+        return Ok(false);
+    }
+    // Capture the marker check before moving `existing`, which `text` borrows.
+    let has_marker = text.contains(MIRROR_GITIGNORE_MARKER);
+    drop(text);
+
+    let mut out = existing;
+    if !out.is_empty() && out.last() != Some(&b'\n') {
+        out.push(b'\n');
+    }
+    if !has_marker {
+        out.push(b'\n');
+        out.extend_from_slice(MIRROR_GITIGNORE_MARKER.as_bytes());
+        out.push(b'\n');
+    }
+    out.extend_from_slice(line.as_bytes());
+    out.push(b'\n');
+    // Atomic publish: write a sibling temp then rename over the target, so a
+    // crash or a full disk mid-write can never leave a truncated `.gitignore`
+    // that has lost the user's rules (`fs::rename` replaces the destination on
+    // both Unix and Windows). The temp name ends in `.tmp` (matched by the
+    // scaffold's own ignore rules), so a crash-orphaned temp is never mirrored.
+    let tmp = path.with_file_name(".gitignore.hqmirror.tmp");
+    // Clear any stale/planted temp first — `remove_file` unlinks a symlink
+    // itself rather than following it — then create with `create_new` (O_EXCL),
+    // which refuses to follow or reuse an existing path. Together these ensure
+    // the write lands on a fresh regular file, never through a symlink.
+    let _ = fs::remove_file(&tmp);
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| format!("create .gitignore temp: {e}"))?;
+        f.write_all(&out)
+            .map_err(|e| format!("write .gitignore temp: {e}"))?;
+    }
+    // Preserve the destination's permissions so the atomic replace never widens a
+    // restrictive mode (e.g. 0600 or read-only) to the temp's default, which
+    // could expose secret-related ignore lines or drop an intentional lock.
+    // Symlinks were refused above, so this metadata is the real regular file.
+    if let Ok(meta) = fs::metadata(&path) {
+        let _ = fs::set_permissions(&tmp, meta.permissions());
+    }
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("publish .gitignore: {e}")
+    })?;
+    Ok(true)
+}
+
+/// Untrack one gated subtree, record the exclusion in `.gitignore`, and commit
+/// that removal. Returns whether a commit was made — a rung with nothing tracked
+/// under it (already excluded on a prior pass) stages nothing and makes no empty
+/// commit.
+///
+/// The index is reset to HEAD first so the commit carries ONLY the untracking of
+/// this one subtree (plus the `.gitignore` line) — never unrelated changes staged
+/// on entry, which would otherwise ride along in a commit that bypasses
+/// [`guard_bulk_deletions`]. The commit deliberately carries no pathspec: a
+/// path-limited `git commit -- <path>` re-reads the still-present files from the
+/// working tree and would silently undo the `git rm --cached`.
+///
+/// The `.gitignore` edit is best-effort: correctness does not depend on it,
+/// because the caller re-stages with `git add -A` then `git reset` on the excluded
+/// subtrees, which keeps them out regardless of any `.gitignore` (root, nested,
+/// symlinked, or negated). The edit still matters for a clean `git status` and for OTHER
+/// writers of this repo — the HQ autocommit hook runs a plain `git add -A` — so a
+/// failure is logged and the untracking proceeds rather than being skipped.
+fn exclude_path_from_mirror(
+    hq_folder: &str,
+    git_dir: &Path,
+    rung: &GatedExclusion,
+    size: u64,
+    cap: u64,
+) -> Result<bool, String> {
+    // Best-effort .gitignore record (see doc). Log and proceed on failure — the
+    // `:(exclude)` re-stage keeps the subtree out regardless.
+    let recorded = match ensure_gitignore_line(hq_folder, rung.gitignore_line) {
+        Ok(wrote) => wrote,
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{hq_folder}: could not record {} in .gitignore — {e}; relying on the pathspec exclusion",
+                    rung.gitignore_line
+                ),
+            );
+            false
+        }
+    };
+
+    // Clean base: index → HEAD. Touches only the index, never the working tree.
+    run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT)?;
+
+    // Untrack whatever is currently tracked under the subtree. `--ignore-unmatch`
+    // keeps this a no-op (not an error) when nothing is tracked there yet.
+    run_git(
+        hq_folder,
+        &[
+            "rm",
+            "-r",
+            "--cached",
+            "--ignore-unmatch",
+            "-q",
+            "--",
+            rung.pathspec,
+        ],
+        GIT_INDEX_TIMEOUT,
+    )?;
+    // Stage the `.gitignore` edit alongside the untracking, only when it changed.
+    if recorded {
+        run_git(hq_folder, &["add", "--", ".gitignore"], GIT_INDEX_TIMEOUT)?;
+    }
+
+    // Index is a clean HEAD plus only what was staged above; if nothing is
+    // staged, this rung is already excluded — skip, so no empty commit is made.
+    let clean = git_output(
+        hq_folder,
+        &["diff", "--cached", "--quiet"],
+        GIT_INDEX_TIMEOUT,
+    )?
+    .status
+    .success();
+    if clean {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: {} already excluded from the mirror",
+                rung.pathspec
+            ),
+        );
+        return Ok(false);
+    }
+
+    let msg = format!(
+        "hq-mirror: stop tracking {} (staged content {} over {} cap)",
+        rung.pathspec,
+        human_bytes(size),
+        human_bytes(cap),
+    );
+    run_git(
+        hq_folder,
+        &["commit", "--no-gpg-sign", "--no-verify", "-m", &msg],
+        GIT_INDEX_TIMEOUT,
+    )?;
+    log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
+    // A structural exclusion is a healthy pass; clear any refusal episode so a
+    // later genuine wedge starts from a clean confirmation window.
+    note_mirror_recovered(hq_folder, git_dir);
+    Ok(true)
+}
+
+/// What the size gate did to a pass.
+struct GateOutcome {
+    /// Whether any exclusion commit was made — the caller pushes it even when the
+    /// ordinary snapshot finds nothing else to do.
+    committed: bool,
+    /// Whether the staged snapshot is STILL over the cap after the ladder was
+    /// exhausted — the bloat is outside the gated subtrees, so the caller must
+    /// refuse the ordinary snapshot rather than commit and push oversized content.
+    over_cap: bool,
+}
+
+/// Keep the mirror's staged snapshot under [`resolve_mirror_size_cap`] by
+/// dropping the [`GATED_EXCLUSIONS`] rungs, in order, until it fits or the ladder
+/// is exhausted. Runs after `run_mirror` has staged the working tree, so it
+/// measures the tree the next commit would record — catching a newly-added
+/// oversized file before it is committed.
+///
+/// A firing gate resets the index to commit each exclusion, so on the way out it
+/// re-stages the working tree; the caller can therefore treat the index as the
+/// current snapshot whether or not the gate did anything.
+fn enforce_mirror_size_cap(hq_folder: &str, git_dir: &Path) -> Result<GateOutcome, String> {
+    let cap = resolve_mirror_size_cap();
+    let mut last_size = staged_content_bytes(hq_folder)?;
+    // Common path: under the cap on the first (and only) measurement. The index
+    // is left exactly as the caller staged it.
+    if last_size <= cap {
+        return Ok(GateOutcome {
+            committed: false,
+            over_cap: false,
+        });
+    }
+    let mut committed = false;
+    let mut excluded: Vec<&str> = Vec::new();
+    for rung in GATED_EXCLUSIONS {
+        if last_size <= cap {
+            break;
+        }
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: staged content {} over the {} mirror cap — excluding {} from the mirror",
+                human_bytes(last_size),
+                human_bytes(cap),
+                rung.pathspec,
+            ),
+        );
+        if exclude_path_from_mirror(hq_folder, git_dir, rung, last_size, cap)? {
+            committed = true;
+        }
+        excluded.push(rung.pathspec);
+        // Persist that the gate activated this rung, so later under-cap passes
+        // keep it excluded (durability) without mistaking a user's identical
+        // `.gitignore` line for a gate exclusion.
+        record_activated_exclusion(git_dir, rung.pathspec);
+        // The exclusion reset the index to make its commit. Re-stage the working
+        // tree MINUS every excluded subtree so the next measurement reflects
+        // reality — including a newly-added file OUTSIDE this rung, so the ladder
+        // keeps escalating instead of stopping short once the reset drops it.
+        stage_all_except(hq_folder, &excluded)?;
+        last_size = staged_content_bytes(hq_folder)?;
+    }
+    let over_cap = last_size > cap;
+    if over_cap {
+        // Both rungs are excluded and the bloat is elsewhere — a large file the
+        // ladder deliberately will not touch. The caller refuses the ordinary
+        // snapshot; log the reason loudly and actionably here.
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: staged content still {} over the {} mirror cap after the gated exclusions — the oversized content is outside workspace/, which the mirror will not auto-drop. Remove or relocate it, or the mirror cannot snapshot.",
+                human_bytes(last_size),
+                human_bytes(cap),
+            ),
+        );
+    }
+    Ok(GateOutcome {
+        committed,
+        over_cap,
+    })
+}
+
+/// Stage the working tree for the ordinary snapshot while keeping the gate's
+/// excluded subtrees out. `git add -A` stages everything (respecting `.gitignore`,
+/// so the excluded subtrees are normally skipped); the following `git reset` then
+/// force-unstages those subtrees unconditionally, so the exclusion holds even if
+/// a nested or negating `.gitignore` re-included them — and without tripping the
+/// "paths are ignored by .gitignore" error that an explicit pathspec would.
+fn stage_all_except(hq_folder: &str, excluded: &[&str]) -> Result<(), String> {
+    run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
+    if !excluded.is_empty() {
+        let mut args: Vec<&str> = vec!["reset", "-q", "--"];
+        args.extend_from_slice(excluded);
+        run_git(hq_folder, &args, GIT_INDEX_TIMEOUT)?;
+    }
+    Ok(())
+}
+
+/// The set of subtrees the size gate itself has activated as exclusions, kept in
+/// the git dir (never committed, never mirrored). This is deliberately NOT
+/// derived from `.gitignore`: a user may author an identical `/workspace/` rule
+/// while legitimately tracking files there, and treating that as a gate exclusion
+/// would `git reset` their staged changes away every pass. Only rungs the gate
+/// activated (recorded here) are re-enforced.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PersistedExclusions {
+    pathspecs: Vec<String>,
+}
+
+fn mirror_exclusions_path(git_dir: &Path) -> PathBuf {
+    git_dir.join("hq-mirror-exclusions.json")
+}
+
+fn read_activated_exclusions(git_dir: &Path) -> Vec<String> {
+    fs::read_to_string(mirror_exclusions_path(git_dir))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<PersistedExclusions>(&raw).ok())
+        .map(|p| p.pathspecs)
+        .unwrap_or_default()
+}
+
+/// Record that the gate activated `pathspec` as an exclusion, so later passes
+/// re-enforce it even when the repo is back under the cap. Persisted atomically
+/// (temp + rename), because a torn write — likely under the very disk pressure
+/// that triggers the gate — would otherwise read back as an empty set and drop
+/// the durability guarantee. A failure is logged, never silently swallowed.
+fn record_activated_exclusion(git_dir: &Path, pathspec: &str) {
+    let mut current = read_activated_exclusions(git_dir);
+    if current.iter().any(|p| p == pathspec) {
+        return;
+    }
+    current.push(pathspec.to_string());
+    let encoded = match serde_json::to_string(&PersistedExclusions { pathspecs: current }) {
+        Ok(encoded) => encoded,
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!("failed to encode mirror exclusion state for {pathspec}: {e}"),
+            );
+            return;
+        }
+    };
+    let path = mirror_exclusions_path(git_dir);
+    let tmp = path.with_extension("json.tmp");
+    let _ = fs::remove_file(&tmp);
+    let result = fs::write(&tmp, &encoded).and_then(|_| fs::rename(&tmp, &path));
+    if let Err(e) = result {
+        let _ = fs::remove_file(&tmp);
+        log(
+            LOG_TAG,
+            &format!(
+                "failed to persist mirror exclusion {pathspec}: {e} — durability falls back to .gitignore this pass"
+            ),
+        );
+    }
+}
+
+/// Unstage every subtree the gate has activated as an exclusion, so the ordinary
+/// snapshot never re-commits it — even on an under-cap pass that skips the gate
+/// loop, and even if a nested `.gitignore` negation or a plain autocommit
+/// `git add -A` re-staged it after a prior exclusion.
+fn unstage_recorded_exclusions(hq_folder: &str, git_dir: &Path) -> Result<(), String> {
+    let active = read_activated_exclusions(git_dir);
+    if active.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<&str> = vec!["reset", "-q", "--"];
+    for pathspec in &active {
+        args.push(pathspec.as_str());
+    }
+    run_git(hq_folder, &args, GIT_INDEX_TIMEOUT)
+}
+
+/// Packed size of the objects reachable from HEAD but not from the upstream —
+/// i.e. what a push would send. `None` when it can't be measured (no upstream, or
+/// an older git without `rev-list --disk-usage`).
+fn unpushed_pack_bytes(hq_folder: &str) -> Option<u64> {
+    let out = git_output(
+        hq_folder,
+        &["rev-list", "--disk-usage", "--objects", "@{u}..HEAD"],
+        GIT_INDEX_TIMEOUT,
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// Resolve whether to push after a mirror pass. `committed` is whether this pass
+/// produced any commit (ordinary snapshot or a size-gate exclusion). No commit
+/// → nothing to push; a commit with no upstream → local-only snapshot.
+fn push_decision(hq_folder: &str, committed: bool) -> Result<MirrorOutcome, String> {
+    if !committed {
+        return Ok(MirrorOutcome::NoPush);
+    }
+    let upstream = git_output(
+        hq_folder,
+        &["rev-parse", "--abbrev-ref", "@{u}"],
+        GIT_INDEX_TIMEOUT,
+    )?;
+    if !upstream.status.success() {
+        log(LOG_TAG, &format!("{hq_folder}: no upstream, skipping push"));
+        return Ok(MirrorOutcome::NoPush);
+    }
+    // The oversized-history backstop is enforced in `push_with_backoff`, right
+    // before `git push` — that is after the mirror lock is released, so it re-reads
+    // the true HEAD and can't be fooled by another writer advancing the branch
+    // between this decision and the push.
+    Ok(MirrorOutcome::Push)
+}
+
+/// Whether the objects a push would send exceed the cap in packed form. Untracking
+/// going forward never removes an oversized blob from an unpushed ANCESTOR, so a
+/// resumed push could still carry it to the remote; this refuses that push. It is
+/// checked in `push_with_backoff` immediately before `git push` (not in
+/// `push_decision`), so a branch advanced by another writer after the size gate
+/// ran is still caught. Fail-open when it can't be measured (older git without
+/// `rev-list --disk-usage`) — the remote's own size limit remains the hard backstop.
+fn unpushed_history_over_cap(hq_folder: &str) -> bool {
+    match unpushed_pack_bytes(hq_folder) {
+        Some(bytes) => bytes > resolve_mirror_size_cap(),
+        None => false,
+    }
+}
+
 fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> {
     // Pre-run self-heal: clear an orphaned lock from an earlier killed run so
     // this cycle isn't the third one in a row to fail for the same reason.
     reap_index_lock_if_stale(hq_folder, git_dir, STALE_LOCK_MIN_AGE, SystemTime::now());
 
+    // Stage the working tree first, then size-gate the *staged snapshot*, so a
+    // newly-added oversized file is caught before it is committed — measuring
+    // HEAD instead would let this pass commit and push it into history, where
+    // untracking can no longer remove it. Each gate exclusion is its own
+    // committed change, so `gate_committed` must feed the push decision below —
+    // an exclusion needs pushing even when the ordinary snapshot finds nothing.
     run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
+
+    let gate = enforce_mirror_size_cap(hq_folder, git_dir)?;
+
+    // If the gated exclusions could not bring the snapshot under the cap, the
+    // remaining bloat is outside workspace/ — content the ladder will not
+    // auto-drop. Refuse the ordinary snapshot rather than commit and push
+    // oversized content into history: reset the index so nothing is left staged.
+    //
+    // Withhold the push entirely (do not even push an exclusion commit made this
+    // pass): the oversized content may already sit in an unpushed local ancestor,
+    // and pushing the exclusion commit would carry that ancestor to the remote —
+    // exactly the content the refusal is meant to keep off it. The exclusion
+    // commits stay local and push on a later pass once the repo is back under cap.
+    if gate.over_cap {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: refusing the mirror snapshot — over the size cap and not reducible by the gated exclusions; withholding the push"
+            ),
+        );
+        if let Err(e) = run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
+            log(
+                LOG_TAG,
+                &format!("{hq_folder}: index reset after cap refusal failed: {e}"),
+            );
+        }
+        return Ok(MirrorOutcome::NoPush);
+    }
+
+    // Durability: unstage any subtree the gate has activated as an exclusion, so
+    // the ordinary snapshot never re-commits it — even on this under-cap pass, and
+    // even if a nested `.gitignore` negation or a plain autocommit `git add -A`
+    // re-staged it after a prior exclusion.
+    unstage_recorded_exclusions(hq_folder, git_dir)?;
 
     // `diff --cached --quiet` exits 0 when index == HEAD, 1 when staged
     // changes exist. Anything else is unexpected (signal, missing HEAD on
@@ -1811,7 +2436,8 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
             // A clean pass ends any refusal episode: the condition was
             // transient, so the next one deserves its own confirmation.
             note_mirror_recovered(hq_folder, git_dir);
-            return Ok(MirrorOutcome::NoPush);
+            // A size-gate exclusion may still be waiting to push.
+            return push_decision(hq_folder, gate.committed);
         }
         Some(1) => {} // staged changes — proceed to commit
         Some(code) => {
@@ -1824,7 +2450,9 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     }
 
     if guard_bulk_deletions(hq_folder, git_dir)? == BulkDeleteVerdict::Refuse {
-        return Ok(MirrorOutcome::NoPush);
+        // The ordinary snapshot was refused, but a size-gate exclusion may have
+        // already landed this pass and is safe to push on its own.
+        return push_decision(hq_folder, gate.committed);
     }
 
     // ISO-8601 to the second; sortable in `git log` without quoting issues.
@@ -1838,26 +2466,17 @@ fn run_mirror(hq_folder: &str, git_dir: &Path) -> Result<MirrorOutcome, String> 
     // commits a day. An automated snapshot gains nothing from a signature.
     run_git(
         hq_folder,
-        &["commit", "--no-gpg-sign", "-m", &msg],
+        &["commit", "--no-gpg-sign", "--no-verify", "-m", &msg],
         GIT_INDEX_TIMEOUT,
     )?;
     log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
     // The mirror committed, so this root is healthy again.
     note_mirror_recovered(hq_folder, git_dir);
 
-    // No upstream → skip push. Covers detached HEAD, never-pushed branches,
-    // and one-off forks. User runs `git push -u` once; later syncs push.
-    let upstream = git_output(
-        hq_folder,
-        &["rev-parse", "--abbrev-ref", "@{u}"],
-        GIT_INDEX_TIMEOUT,
-    )?;
-    if upstream.status.success() {
-        Ok(MirrorOutcome::Push)
-    } else {
-        log(LOG_TAG, &format!("{hq_folder}: no upstream, skipping push"));
-        Ok(MirrorOutcome::NoPush)
-    }
+    // A commit landed; push if there is an upstream. Covers detached HEAD,
+    // never-pushed branches, and one-off forks — user runs `git push -u` once,
+    // then later syncs push.
+    push_decision(hq_folder, true)
 }
 
 fn push_after_mirror(hq_folder: &str, git_dir: &Path) {
@@ -1907,6 +2526,21 @@ fn push_with_backoff(hq_folder: &str, git_dir: &Path, now: DateTime<Utc>) {
                 &format!("{hq_folder}: push skipped — {} (backing off)", block.reason),
             );
         }
+        return;
+    }
+
+    // Size backstop at the last possible moment, re-reading the true HEAD: the
+    // mirror lock was released after the snapshot was validated, so another writer
+    // (the autocommit hook, a second mirror) could have advanced the branch to a
+    // never-measured — possibly oversized — commit. Refuse rather than push it.
+    if unpushed_history_over_cap(hq_folder) {
+        log(
+            LOG_TAG,
+            &format!(
+                "{hq_folder}: withholding push — unpushed history exceeds the {} mirror cap in packed form. It predates or bypassed the size gate and needs a one-time history rewrite to shed.",
+                human_bytes(resolve_mirror_size_cap()),
+            ),
+        );
         return;
     }
 
@@ -2533,7 +3167,23 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Own process group so the CPU throttle can address git and anything it
+    // spawns (hooks, credential helpers) without touching the rest of HQ.
+    put_git_in_own_process_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("spawn git: {e}"))?;
+
+    // The mirror's `git add -A` hashes every changed file on a tree that can
+    // hold hundreds of thousands of them, so it is the other half of what an
+    // operator feels as "HQ is eating my machine". It shares one budget with
+    // the sync runner rather than getting its own, so a mirror pass overlapping
+    // a sync tightens both instead of doubling the ceiling. The guard is dropped
+    // when this function returns — including the timeout-kill path — and its
+    // drop resumes the group, so a stopped git is never left behind.
+    //
+    // Throttling multiplies wall time, so `timeout` is now a ceiling on elapsed
+    // time for work that runs at a fraction of full speed. That is deliberate:
+    // GIT_INDEX_TIMEOUT is minutes and the throttled commands are seconds.
+    let _cpu_throttle = crate::cpu_throttle::CpuThrottle::attach(child.id() as i32);
 
     // Drain both pipes on their own threads. Polling `try_wait` while the
     // child blocks on a full pipe buffer would hang until the timeout even
@@ -2573,6 +3223,15 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
     })
 }
 
+#[cfg(unix)]
+fn put_git_in_own_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn put_git_in_own_process_group(_cmd: &mut Command) {}
+
 /// Read a child pipe to EOF on its own thread and deliver the bytes over a
 /// channel. The thread is deliberately never joined — see [`git_output`].
 fn drain_pipe<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<Vec<u8>> {
@@ -2594,17 +3253,22 @@ fn wait_with_timeout(
     timeout: Duration,
     label: &str,
 ) -> Result<std::process::ExitStatus, String> {
-    let started = Instant::now();
+    // The ceiling counts only time git was actually allowed to run. The CPU
+    // throttle duty-cycles this child's process group, so plain wall time would
+    // spend the whole allowance on stop windows and kill a healthy `git add -A`
+    // over a large tree on every mirror pass. A genuinely wedged git is never
+    // stopped, so it still trips the deadline on the original schedule.
+    let deadline = crate::cpu_throttle::RunnableDeadline::start(timeout);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {
-                if started.elapsed() >= timeout {
+                if deadline.expired() {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
-                        "git {label} timed out after {}s and was killed",
-                        timeout.as_secs()
+                        "git {label} timed out after {}s of runnable time and was killed",
+                        deadline.budget().as_secs()
                     ));
                 }
                 std::thread::sleep(GIT_POLL_INTERVAL);
@@ -5962,6 +6626,597 @@ mod tests {
 
         drop(push_guard);
         *LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    // ── size-gated mirror exclusions ─────────────────────────────────────
+
+    /// Removes the size-cap override on drop so a panicking test can't leak a
+    /// tiny cap into another (env vars are process-global; only `serial()` tests
+    /// set this, and the non-serial git tests all track well under 1 MiB).
+    struct CapEnvGuard;
+    impl Drop for CapEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(MIRROR_SIZE_CAP_ENV);
+        }
+    }
+    fn set_cap_mb(mb: &str) -> CapEnvGuard {
+        std::env::set_var(MIRROR_SIZE_CAP_ENV, mb);
+        CapEnvGuard
+    }
+
+    fn ls_files(dir: &Path, pathspec: &str) -> Vec<String> {
+        let out = git(dir, &["ls-files", "--", pathspec]);
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect()
+    }
+    fn log_subject(dir: &Path) -> String {
+        String::from_utf8_lossy(&git(dir, &["log", "-1", "--pretty=%s"]).stdout)
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn size_cap_env_override_parses_mebibytes() {
+        let _serial = serial();
+        let _cap = set_cap_mb("2048");
+        assert_eq!(resolve_mirror_size_cap(), 2048 * 1024 * 1024);
+        // A non-numeric override falls back to the compiled default.
+        std::env::set_var(MIRROR_SIZE_CAP_ENV, "not-a-number");
+        assert_eq!(resolve_mirror_size_cap(), MIRROR_SIZE_CAP_BYTES);
+    }
+
+    #[test]
+    fn gitignore_line_is_appended_once_with_a_single_marker() {
+        let tmp = TempDir::new().unwrap();
+        let hq = tmp.path().to_str().unwrap();
+        assert!(ensure_gitignore_line(hq, "/workspace/").unwrap());
+        // Idempotent: a second call for the same line writes nothing.
+        assert!(!ensure_gitignore_line(hq, "/workspace/").unwrap());
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert_eq!(
+            gi.lines().filter(|l| l.trim() == "/workspace/").count(),
+            1,
+            "line must appear once:\n{gi}"
+        );
+        assert_eq!(
+            gi.matches(MIRROR_GITIGNORE_MARKER).count(),
+            1,
+            "marker written once:\n{gi}"
+        );
+        // A second, different exclusion reuses the one marker.
+        assert!(ensure_gitignore_line(hq, "/workspace/.session-logs/").unwrap());
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert_eq!(
+            gi.matches(MIRROR_GITIGNORE_MARKER).count(),
+            1,
+            "marker stays single across appends:\n{gi}"
+        );
+    }
+
+    #[test]
+    fn gitignore_line_reasserts_after_a_later_negation() {
+        let tmp = TempDir::new().unwrap();
+        let hq = tmp.path().to_str().unwrap();
+        // Our rule is present but a later negation re-includes the subtree, so it
+        // is not the effective final rule — the mirror must reassert it.
+        fs::write(
+            tmp.path().join(".gitignore"),
+            "/workspace/\n!workspace/keep.txt\n",
+        )
+        .unwrap();
+        assert!(
+            ensure_gitignore_line(hq, "/workspace/").unwrap(),
+            "must reassert when a later negation overrides the rule"
+        );
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        // Now our rule is the last word again → idempotent.
+        assert!(!ensure_gitignore_line(hq, "/workspace/").unwrap());
+        assert!(
+            gi.trim_end().ends_with("/workspace/"),
+            "reasserted rule must be last:\n{gi}"
+        );
+    }
+
+    #[test]
+    fn gitignore_write_preserves_non_utf8_and_refuses_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let hq = tmp.path().to_str().unwrap();
+        let gi_path = tmp.path().join(".gitignore");
+        // Non-UTF-8 existing content must survive the append, not be truncated.
+        fs::write(&gi_path, [b'*', b'.', b'l', b'o', b'g', b'\n', 0xff, b'\n']).unwrap();
+        assert!(ensure_gitignore_line(hq, "/workspace/").unwrap());
+        let raw = fs::read(&gi_path).unwrap();
+        assert!(raw.contains(&0xff), "non-UTF-8 byte must be preserved");
+        assert!(
+            String::from_utf8_lossy(&raw).contains("/workspace/"),
+            "new rule must be appended"
+        );
+
+        // A symlinked .gitignore is refused (git ignores symlinked ignore files).
+        let tmp2 = TempDir::new().unwrap();
+        let target = tmp2.path().join("real-gitignore");
+        fs::write(&target, "seed\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, tmp2.path().join(".gitignore")).unwrap();
+        #[cfg(unix)]
+        {
+            assert!(ensure_gitignore_line(tmp2.path().to_str().unwrap(), "/workspace/").is_err());
+            // The symlink target must be untouched.
+            assert_eq!(fs::read_to_string(&target).unwrap(), "seed\n");
+        }
+    }
+
+    #[test]
+    fn size_gate_is_inert_below_cap() {
+        let _serial = serial();
+        let _cap = set_cap_mb("64"); // 64 MiB, far above the tiny seed
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let logs = tmp.path().join("workspace/.session-logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("s1.jsonl"), "small\n").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        assert_eq!(rev_count(tmp.path()), before, "under cap must not commit");
+        assert!(
+            !ls_files(tmp.path(), "workspace/.session-logs").is_empty(),
+            "session-logs must stay tracked when under cap"
+        );
+    }
+
+    #[test]
+    fn size_gate_excludes_session_logs_when_over_cap() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1"); // 1 MiB
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let logs = tmp.path().join("workspace/.session-logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("s1.jsonl"), vec![b'x'; 2 * 1024 * 1024]).unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // session-logs untracked; README still tracked; workspace/ not excluded.
+        assert!(
+            ls_files(tmp.path(), "workspace/.session-logs").is_empty(),
+            "session-logs must be untracked after the gate"
+        );
+        assert_eq!(ls_files(tmp.path(), "README"), vec!["README".to_string()]);
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(
+            gi.lines().any(|l| l.trim() == "/workspace/.session-logs/"),
+            "gitignore must list the excluded subtree:\n{gi}"
+        );
+        assert!(
+            !gi.lines().any(|l| l.trim() == "/workspace/"),
+            "workspace/ must not be excluded yet:\n{gi}"
+        );
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "exactly one exclusion commit"
+        );
+        assert!(
+            log_subject(tmp.path()).starts_with("hq-mirror: stop tracking workspace/.session-logs"),
+            "unexpected subject: {}",
+            log_subject(tmp.path())
+        );
+        // Untracking is not deletion — the file stays on disk.
+        assert!(logs.join("s1.jsonl").exists());
+    }
+
+    #[test]
+    fn size_gate_escalates_to_workspace_when_still_over_cap() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(ws.join(".session-logs")).unwrap();
+        fs::write(
+            ws.join(".session-logs/s1.jsonl"),
+            vec![b'x'; 2 * 1024 * 1024],
+        )
+        .unwrap();
+        // A big blob directly under workspace/ (outside session-logs) so dropping
+        // session-logs alone is not enough to get under the cap.
+        fs::write(ws.join("big.bin"), vec![b'y'; 2 * 1024 * 1024]).unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // Entire workspace/ untracked; README still tracked.
+        assert!(
+            ls_files(tmp.path(), "workspace").is_empty(),
+            "workspace/ must be untracked after escalation"
+        );
+        assert_eq!(ls_files(tmp.path(), "README"), vec!["README".to_string()]);
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(gi.lines().any(|l| l.trim() == "/workspace/.session-logs/"));
+        assert!(gi.lines().any(|l| l.trim() == "/workspace/"));
+        // Two exclusion commits: session-logs first, then workspace/.
+        assert_eq!(rev_count(tmp.path()), before + 2);
+        assert!(ws.join("big.bin").exists());
+    }
+
+    #[test]
+    fn size_gate_skips_already_excluded_rung_without_an_empty_commit() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        // session-logs already excluded: gitignored up front, nothing tracked there.
+        fs::write(tmp.path().join(".gitignore"), "/workspace/.session-logs/\n").unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("big.bin"), vec![b'y'; 2 * 1024 * 1024]).unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // Only ONE commit — the workspace/ exclusion. The already-satisfied
+        // session-logs rung must not produce an empty commit.
+        assert_eq!(rev_count(tmp.path()), before + 1);
+        assert!(
+            log_subject(tmp.path()).starts_with("hq-mirror: stop tracking workspace ("),
+            "unexpected subject: {}",
+            log_subject(tmp.path())
+        );
+        assert!(ls_files(tmp.path(), "workspace").is_empty());
+    }
+
+    #[test]
+    fn size_gate_exclusion_is_pushed_even_with_no_other_changes() {
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let work = TempDir::new().unwrap();
+        let remote = TempDir::new().unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(remote.path())
+            .output()
+            .expect("git available")
+            .status
+            .success());
+        init_repo(work.path());
+        assert!(git(
+            work.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()]
+        )
+        .status
+        .success());
+        let logs = work.path().join("workspace/.session-logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("s1.jsonl"), vec![b'x'; 2 * 1024 * 1024]).unwrap();
+        fs::write(work.path().join("README"), "seed").unwrap();
+        assert!(git(work.path(), &["add", "-A"]).status.success());
+        assert!(git(work.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        assert!(git(work.path(), &["push", "-q", "-u", "origin", "main"])
+            .status
+            .success());
+        *LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+        // The only thing to do this pass is the exclusion — no other working-tree
+        // change. It must still be pushed.
+        run_mirror_at(work.path()).expect("mirror ok");
+
+        let local = String::from_utf8(git(work.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+        let remote_head =
+            String::from_utf8(git(remote.path(), &["rev-parse", "main"]).stdout).unwrap();
+        assert_eq!(
+            local.trim(),
+            remote_head.trim(),
+            "the exclusion commit must reach the remote even with nothing else to commit"
+        );
+        assert!(ls_files(work.path(), "workspace/.session-logs").is_empty());
+
+        *LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    #[test]
+    fn size_gate_excludes_a_newly_added_oversized_file_before_it_is_committed() {
+        // The gate must measure the STAGED snapshot, not HEAD. HEAD here is tiny
+        // and under the cap; the oversized file is brand new and uncommitted, so
+        // a HEAD-based gate would commit and push it into history — where
+        // untracking can never remove it — before ever reacting.
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1"); // 1 MiB
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+
+        // Brand-new, never-committed oversized file under the gated subtree.
+        let logs = tmp.path().join("workspace/.session-logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("big.jsonl"), vec![b'x'; 2 * 1024 * 1024]).unwrap();
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // It must never enter history: not in HEAD's tree, not in any commit.
+        assert!(
+            !git(
+                tmp.path(),
+                &["cat-file", "-e", "HEAD:workspace/.session-logs/big.jsonl"]
+            )
+            .status
+            .success(),
+            "the oversized file must never be committed"
+        );
+        let all_blobs = git(
+            tmp.path(),
+            &["log", "--all", "--pretty=format:", "--name-only"],
+        );
+        let listed = String::from_utf8_lossy(&all_blobs.stdout);
+        assert!(
+            !listed.contains("big.jsonl"),
+            "the oversized file must appear in no commit:\n{listed}"
+        );
+        // But it is still on disk, now ignored.
+        assert!(logs.join("big.jsonl").exists());
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(gi.lines().any(|l| l.trim() == "/workspace/.session-logs/"));
+    }
+
+    #[test]
+    fn size_gate_escalates_when_a_new_oversized_file_sits_outside_session_logs() {
+        // The escalation must survive the index reset each exclusion performs: a
+        // brand-new (uncommitted) big.bin outside session-logs would be lost from
+        // the remeasurement if the gate did not re-stage after resetting, so the
+        // loop would stop after session-logs and the ordinary commit would ship
+        // big.bin. Re-staging with `:(exclude)` keeps it counted → escalate.
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        // Both brand-new and uncommitted; big.bin is OUTSIDE session-logs.
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(ws.join(".session-logs")).unwrap();
+        fs::write(
+            ws.join(".session-logs/s1.jsonl"),
+            vec![b'x'; 2 * 1024 * 1024],
+        )
+        .unwrap();
+        fs::write(ws.join("big.bin"), vec![b'y'; 2 * 1024 * 1024]).unwrap();
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // Neither oversized file may reach history; the gate escalated to
+        // workspace/ (two exclusion commits) rather than shipping big.bin.
+        let listed = String::from_utf8_lossy(
+            &git(
+                tmp.path(),
+                &["log", "--all", "--pretty=format:", "--name-only"],
+            )
+            .stdout,
+        )
+        .to_string();
+        assert!(
+            !listed.contains("big.bin") && !listed.contains("s1.jsonl"),
+            "no oversized file may be committed:\n{listed}"
+        );
+        assert_eq!(rev_count(tmp.path()), before + 2, "escalated to workspace/");
+        let gi = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(gi.lines().any(|l| l.trim() == "/workspace/"));
+        assert!(ws.join("big.bin").exists());
+    }
+
+    #[test]
+    fn size_gate_refuses_snapshot_when_bloat_is_outside_workspace() {
+        // Oversized content the ladder cannot drop (a root-level file). After both
+        // exclusions the snapshot is still over the cap, so the mirror must REFUSE
+        // the ordinary commit rather than push oversized content into history.
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+
+        // Brand-new oversized file at the repo root — outside every gated subtree.
+        fs::write(tmp.path().join("big-root.bin"), vec![b'z'; 2 * 1024 * 1024]).unwrap();
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // The oversized root file must never be committed.
+        assert!(
+            !git(tmp.path(), &["cat-file", "-e", "HEAD:big-root.bin"])
+                .status
+                .success(),
+            "the oversized root file must be refused, not committed"
+        );
+        let listed = String::from_utf8_lossy(
+            &git(
+                tmp.path(),
+                &["log", "--all", "--pretty=format:", "--name-only"],
+            )
+            .stdout,
+        )
+        .to_string();
+        assert!(
+            !listed.contains("big-root.bin"),
+            "no commit may contain the oversized root file:\n{listed}"
+        );
+        // Refusal must not delete the user's file, and must leave the index clean.
+        assert!(tmp.path().join("big-root.bin").exists());
+        assert!(index_is_clean(tmp.path()));
+    }
+
+    #[test]
+    fn recorded_exclusion_is_not_recommitted_on_a_later_under_cap_pass() {
+        // Once the gate has ACTIVATED an exclusion, it stays out on later
+        // under-cap passes — even if the subtree is force-staged (as a nested
+        // `.gitignore` negation or an autocommit `git add -f` could do).
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("1");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("big.bin"), vec![b'y'; 2 * 1024 * 1024]).unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+
+        // Pass 1: over cap → the gate excludes and RECORDS workspace/.
+        run_mirror_at(tmp.path()).expect("mirror ok");
+        assert!(
+            ls_files(tmp.path(), "workspace").is_empty(),
+            "workspace/ excluded on pass 1"
+        );
+
+        // A workspace file is force-staged despite the exclusion; repo now under cap.
+        fs::write(ws.join("scratch.txt"), "x").unwrap();
+        assert!(git(tmp.path(), &["add", "-f", "workspace/scratch.txt"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        // Pass 2: under cap, but the gate-recorded exclusion keeps workspace/ out.
+        run_mirror_at(tmp.path()).expect("mirror ok");
+        assert!(
+            ls_files(tmp.path(), "workspace").is_empty(),
+            "recorded exclusion must be durable — workspace/ must not be re-committed"
+        );
+        assert_eq!(
+            rev_count(tmp.path()),
+            before,
+            "nothing new to commit once the recorded exclusion is unstaged"
+        );
+    }
+
+    #[test]
+    fn user_authored_gitignore_rule_is_not_treated_as_a_gate_exclusion() {
+        // A user may author `/workspace/` themselves while force-tracking files
+        // there. The gate never activated it, so the mirror must NOT reset their
+        // staged changes — exclusion state is gate-owned, not derived from
+        // `.gitignore`.
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        let _cap = set_cap_mb("64"); // under cap → the gate never fires
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join(".gitignore"), "/workspace/\n").unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("keep.txt"), "v1").unwrap();
+        assert!(git(tmp.path(), &["add", "-f", "workspace/keep.txt"])
+            .status
+            .success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+        let before = rev_count(tmp.path());
+
+        // The user edits their force-tracked workspace file.
+        fs::write(ws.join("keep.txt"), "v2").unwrap();
+
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        // The gate never activated, so the user's change is committed normally —
+        // not silently reset away.
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "the user's tracked workspace change must be committed"
+        );
+        let head_blob =
+            String::from_utf8_lossy(&git(tmp.path(), &["show", "HEAD:workspace/keep.txt"]).stdout)
+                .to_string();
+        assert_eq!(
+            head_blob, "v2",
+            "committed content must be the user's update"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mirror_commits_bypass_pre_commit_hooks() {
+        // A user pre-commit hook must not run for the automated mirror commit —
+        // it could stage generated/ignored files after the size measurement, and
+        // a failing hook would silently stop the mirror. `--no-verify` bypasses it.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"])
+            .status
+            .success());
+
+        // A pre-commit hook that always fails — a hook-respecting commit aborts.
+        let hook = tmp.path().join(".git/hooks/pre-commit");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let before = rev_count(tmp.path());
+        fs::write(tmp.path().join("new.txt"), "x").unwrap();
+        run_mirror_at(tmp.path()).expect("mirror ok");
+
+        assert_eq!(
+            rev_count(tmp.path()),
+            before + 1,
+            "--no-verify must bypass the failing pre-commit hook"
+        );
     }
 
     // ── B1 regression: the 2026-07-30 mass-deletion shape ────────────────

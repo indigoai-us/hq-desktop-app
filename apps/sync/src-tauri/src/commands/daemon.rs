@@ -89,6 +89,12 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 const DAEMON_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Multiple of [`DAEMON_HEARTBEAT_TIMEOUT`] at which the heartbeat is judged on
+/// plain wall time regardless of throttling. Bounds the CPU-bound-wedge case
+/// that runnable-time accounting cannot see; deliberately generous so it never
+/// binds on healthy throttled work.
+const HEARTBEAT_WALL_BACKSTOP: f32 = 8.0;
+
 /// How long the singleton "starting" guard may be held with no live daemon
 /// before the supervisor treats it as wedged and force-clears it. A healthy
 /// start writes its PID within seconds, so this is comfortably longer than any
@@ -317,7 +323,7 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
 
 fn start_daemon_heartbeat_watchdog(
     generation: u64,
-    last_heartbeat: Arc<Mutex<Instant>>,
+    last_heartbeat: Arc<Mutex<hq_desktop_core::cpu_throttle::RunnableMark>>,
     finished: Arc<AtomicBool>,
 ) {
     thread::spawn(move || loop {
@@ -325,10 +331,26 @@ fn start_daemon_heartbeat_watchdog(
         if finished.load(Ordering::Acquire) {
             return;
         }
-        let heartbeat_age = last_heartbeat
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .elapsed();
+        // The watch daemon runs under HQ's CPU ceiling, so wall time since the
+        // last protocol record overstates how much work the pass actually got
+        // to do: on a small machine a five-minute window can buy well under a
+        // minute of runnable time, and a healthy large-tree pass that emits no
+        // record during a heavy phase would be killed and restarted forever.
+        // Charge the heartbeat only for runnable time, and keep an absolute
+        // wall-clock backstop so a wedge that spins on CPU — which the governor
+        // keeps stopping, and would otherwise be credited stop windows without
+        // end — is still caught.
+        let heartbeat_age = {
+            let since = last_heartbeat
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let wall = since.wall_elapsed();
+            if wall >= DAEMON_HEARTBEAT_TIMEOUT.mul_f32(HEARTBEAT_WALL_BACKSTOP) {
+                wall
+            } else {
+                since.runnable_elapsed()
+            }
+        };
         if should_cancel_stalled_daemon(
             generation_for_handle(DAEMON_HANDLE) == Some(generation),
             heartbeat_age,
@@ -913,7 +935,9 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     let watcher_phase = Arc::new(Mutex::new(WatcherPhaseContext::default()));
     let hq_folder = hq_folder_path.clone();
-    let last_heartbeat = Arc::new(Mutex::new(Instant::now()));
+    let last_heartbeat = Arc::new(Mutex::new(
+        hq_desktop_core::cpu_throttle::RunnableMark::now(),
+    ));
     let daemon_finished = Arc::new(AtomicBool::new(false));
     // Bounded and generation-local. Raw lines remain process-local; only the
     // fixed-vocabulary stack shape derived at exit can leave the process.
@@ -974,7 +998,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                 watcher_stdout_line_count.saturating_add(1);
                             *process_heartbeat
                                 .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                hq_desktop_core::cpu_throttle::RunnableMark::now();
                             // Heartbeat cadence: sample the live Job Object PID set
                             // so a runner descendant that later faults is bindable
                             // to this generation at exit. Windows-only; a no-op
