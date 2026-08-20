@@ -38,6 +38,7 @@ jobs:
       prerelease: ${{ steps.classify.outputs.prerelease }}
       make_latest: ${{ steps.classify.outputs.make_latest }}
       msi_version: ${{ steps.msi-version.outputs.version }}
+      commit_sha: ${{ steps.release-commit.outputs.commit_sha }}
 
     steps:
       # Keep these strict shapes aligned with
@@ -171,6 +172,22 @@ jobs:
             exit 1
           }
 
+      # Resolve the tag to its commit ONCE, here, and pin the whole pipeline to
+      # it. Every build job asserts it built this exact commit and the
+      # publication-lock lineage recheck compares this exact commit, so a tag
+      # force-moved during the long native builds cannot publish stale artifacts
+      # past the lineage gate.
+      - name: Resolve release commit
+        id: release-commit
+        env:
+          TAG: ${{ steps.classify.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          echo "commit_sha=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Release tag $TAG resolves to commit $COMMIT"
+
       # The V2 chat shell was moved to the hq-work-mono repo. It reached stable
       # users nine times (v0.10.106, 108, and every release from 110 to 116)
       # purely because a tag was cut from a main tip that still carried it, so
@@ -256,6 +273,9 @@ jobs:
         run: |
           set -euo pipefail
           node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+          node .release-control/scripts/release-stable-order.mjs lineage \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 
@@ -376,6 +396,26 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[",]//g')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      # Pin this build to the commit `validate` resolved: assert the tag still
+      # points there (fail closed if it was force-moved mid-release) and stamp
+      # HQ_BUILD_COMMIT from it, so a future lineage rollback is visible in Sentry
+      # within one event (build_commit tag). rerun-if-env-changed in build.rs
+      # makes this cache-correct across releases.
+      - name: Resolve build commit
+        shell: bash
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "::error::Release tag ${TAG} moved after validation (built ${COMMIT}, validated ${EXPECTED_COMMIT}); refusing to build artifacts from an unvalidated commit."
+            exit 1
+          fi
+          echo "HQ_BUILD_COMMIT=$EXPECTED_COMMIT" >> "$GITHUB_ENV"
+          echo "Build commit for $TAG pinned to $EXPECTED_COMMIT"
 
       - name: Build unsigned universal app and updater archive
         env:
@@ -736,6 +776,26 @@ jobs:
 
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Windows MSI ProductVersion: $actual"
+
+      # Pin this build to the commit `validate` resolved: assert the tag still
+      # points there (fail closed if it was force-moved mid-release) and stamp
+      # HQ_BUILD_COMMIT from it, so a future lineage rollback is visible in Sentry
+      # within one event (build_commit tag). rerun-if-env-changed in build.rs
+      # makes this cache-correct across releases.
+      - name: Resolve build commit
+        shell: bash
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "::error::Release tag ${TAG} moved after validation (built ${COMMIT}, validated ${EXPECTED_COMMIT}); refusing to build artifacts from an unvalidated commit."
+            exit 1
+          fi
+          echo "HQ_BUILD_COMMIT=$EXPECTED_COMMIT" >> "$GITHUB_ENV"
+          echo "Build commit for $TAG pinned to $EXPECTED_COMMIT"
 
       - name: Tauri build (${{ matrix.target }})
         # The release-only overlay carries the Recall externalBin (a per-target PE
@@ -1254,11 +1314,19 @@ jobs:
         env:
           TARGET_REPOSITORY: ${{ github.repository }}
           TARGET_TAG: ${{ needs.validate.outputs.tag }}
+          TARGET_COMMIT: ${{ needs.validate.outputs.commit_sha }}
         run: |
           set -euo pipefail
           node .release-control/scripts/release-stable-order.mjs stable-order \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
+          # Compare the exact commit validated and built (--head-sha), not the
+          # tag re-resolved from GitHub: a tag force-moved after validation
+          # cannot make these stale artifacts look like an advance.
+          node .release-control/scripts/release-stable-order.mjs lineage \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG" \
+            --head-sha "$TARGET_COMMIT"
 
       - name: Publish verified GitHub release
         if: ${{ steps.release-plan.outputs.action != 'already-published' }}

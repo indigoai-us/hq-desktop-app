@@ -76,6 +76,10 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
     repo: "hq-sync-win",
     app: "hq-desktop-app",
     flavor: "windows-sync-installer",
+    build_commit: match option_env!("HQ_BUILD_COMMIT") {
+        Some(commit) => commit,
+        None => "unknown",
+    },
 };
 
 #[cfg(target_os = "macos")]
@@ -84,6 +88,10 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
     repo: "hq-sync",
     app: "hq-desktop-app",
     flavor: "macos-sync-installer",
+    build_commit: match option_env!("HQ_BUILD_COMMIT") {
+        Some(commit) => commit,
+        None => "unknown",
+    },
 };
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -92,6 +100,10 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
     repo: "hq-desktop-app",
     app: "hq-desktop-app",
     flavor: "desktop",
+    build_commit: match option_env!("HQ_BUILD_COMMIT") {
+        Some(commit) => commit,
+        None => "unknown",
+    },
 };
 
 fn register_global_shortcuts(app: &tauri::AppHandle) {

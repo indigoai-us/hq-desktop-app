@@ -89,6 +89,67 @@ tag contents while loading the reviewed publication helpers from the workflow
 commit. If that tag is already public and healthy, the retry is read-only:
 release creation/reset, asset deletion/upload, and publication are all skipped.
 
+## Stable release lineage guard
+
+A stable tag with a higher version number is not proof of newer code. The
+branch policy above only checks that the tag's commit is *contained in* `main`,
+and `scripts/release-stable-order.mjs stable-order` only compares the numeric
+tag against the public latest release. An annotated tag placed on an **older**
+commit that is still on `main` satisfies both — which is exactly how v0.10.107
+and v0.10.109 reached the stable channel carrying strictly older git-mirror code
+under bigger numbers, silently rolling the fleet back and reopening
+HQ-DESKTOP-43.
+
+`scripts/release-stable-order.mjs lineage` closes that gap. It runs at both
+stable-channel call sites — before the native builds and again inside the
+publication lock — and reads the actual commit lineage from the GitHub compare
+endpoint (`compare/<public latest>...<target tag>`):
+
+- `ahead` (a genuine advance) and `identical` (a rerun) publish exactly as
+  today.
+- `behind` and `diverged` are lineage rollbacks and fail the release closed,
+  naming the public latest tag and how many commits would be withdrawn.
+
+### Declaring an intentional rollback
+
+An emergency rollback stays possible without editing the workflow. Annotate the
+rollback tag with a machine-readable trailer naming the **exact current public
+latest stable tag**:
+
+```bash
+git tag -a v0.10.110 -m "HQ v0.10.110 - emergency rollback
+
+Rollback-Of: v0.10.109"
+git push origin v0.10.110
+```
+
+When the trailer names the current public latest, the release is allowed but is
+no longer silent: the job logs a warning and writes a job-summary block
+enumerating every merged commit being withdrawn from the stable channel. A
+lightweight tag (no annotated message), a missing trailer, or a trailer that
+names any tag other than the current public latest all fail closed — re-tag with
+a corrected annotated message to recover.
+
+**A rollback withdraws every fix merged since the named release.** The
+job-summary enumeration is the record of exactly what is being given up; read it
+before you push.
+
+### Code identity in telemetry
+
+The release pins itself to the commit `validate` resolves from the tag: every
+build job asserts it built that exact commit and stamps it into the binary as
+`HQ_BUILD_COMMIT`, and the publication-lock lineage recheck compares that same
+commit rather than re-resolving the tag. A tag force-moved during the long
+native builds therefore fails the build instead of publishing stale artifacts
+past the gate.
+
+Each Sentry event carries the build's commit as an additive `build_commit` tag
+(`"unknown"` for local and non-release builds). The Sentry `release` stays
+`{prefix}@{version}` and `dist` is untouched, so issue grouping and
+release-health data are unchanged — but a higher version number carrying older
+code is now visible in a single event instead of invisible, which is what made
+the v0.10.107 / v0.10.109 rollback undetectable at the time.
+
 ## Required GitHub Secrets
 
 ### macOS Signing and Notarization
@@ -239,8 +300,9 @@ direction.
 
 The publish job is globally serialized across release tags. It:
 
-1. Rejects a stable rollback before native builds and rechecks stable order
-   immediately before publication.
+1. Rejects both a stable version rollback and a stable lineage rollback (a
+   higher tag number sitting on older code) before native builds, and rechecks
+   both immediately before publication.
 2. Creates or resets a hidden draft and uploads the complete 15-asset set.
 3. Verifies the exact names, upload state, byte sizes, SHA-256 digests,
    updater-platform URLs, and detached signature sidecars.

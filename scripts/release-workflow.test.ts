@@ -574,6 +574,87 @@ describe("release workflow channel contract", () => {
     expect(publish).toContain("Download Windows ARM64 release artifacts");
     expect(publish).not.toContain("hq-debug-");
   });
+
+  it("runs the commit-lineage gate at the validate stable-channel call site", () => {
+    // The pre-build "Reject stable release rollback" step runs BOTH the numeric
+    // stable-order check and the commit-lineage check, gated on stable. Deleting
+    // the lineage call from this step turns exactly this case red.
+    const rollbackStep = stepBody(
+      jobBody("validate"),
+      "Reject stable release rollback",
+    );
+    expect(rollbackStep).toContain(
+      "if: ${{ steps.classify.outputs.channel == 'stable' }}",
+    );
+    expect(rollbackStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs stable-order",
+    );
+    expect(rollbackStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs lineage",
+    );
+    expect(rollbackStep).toContain('--repository "$TARGET_REPOSITORY"');
+    expect(rollbackStep).toContain('--tag "$TARGET_TAG"');
+  });
+
+  it("runs the commit-lineage gate at the publish in-lock call site", () => {
+    // The in-publication-lock "Revalidate stable publication order" step also
+    // runs the lineage check, so a rollback cannot slip in between validation and
+    // the only public-state mutation. Deleting the lineage call here turns
+    // exactly this case red.
+    const revalidateStep = stepBody(
+      jobBody("publish"),
+      "Revalidate stable publication order",
+    );
+    expect(revalidateStep).toContain("needs.validate.outputs.channel == 'stable'");
+    expect(revalidateStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs stable-order",
+    );
+    expect(revalidateStep).toContain(
+      "node .release-control/scripts/release-stable-order.mjs lineage",
+    );
+  });
+
+  it("pins both platform build jobs to the validated commit and stamps it into telemetry", () => {
+    for (const job of ["macos", "windows"]) {
+      const resolveStep = stepBody(jobBody(job), "Resolve build commit");
+      expect(resolveStep, job).toContain("TAG: ${{ needs.validate.outputs.tag }}");
+      expect(resolveStep, job).toContain(
+        "EXPECTED_COMMIT: ${{ needs.validate.outputs.commit_sha }}",
+      );
+      expect(resolveStep, job).toContain(
+        'git rev-parse "refs/tags/${TAG}^{commit}"',
+      );
+      // Fail closed if the tag was force-moved between validation and this build.
+      expect(resolveStep, job).toContain(
+        'if [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then',
+      );
+      expect(resolveStep, job).toContain("HQ_BUILD_COMMIT=$EXPECTED_COMMIT");
+      expect(resolveStep, job).toContain('>> "$GITHUB_ENV"');
+    }
+  });
+
+  it("pins the release to one validated commit across validate, build, and publish", () => {
+    // validate resolves the tag to its commit exactly once and exports it.
+    expect(workflow).toContain(
+      "commit_sha: ${{ steps.release-commit.outputs.commit_sha }}",
+    );
+    const resolveStep = stepBody(jobBody("validate"), "Resolve release commit");
+    expect(resolveStep).toContain('git rev-parse "refs/tags/${TAG}^{commit}"');
+    expect(resolveStep).toContain("commit_sha=$COMMIT");
+    expect(resolveStep).toContain('>> "$GITHUB_OUTPUT"');
+
+    // The publication-lock lineage recheck compares that exact commit via
+    // --head-sha, so a tag force-moved after validation cannot pass the gate
+    // against artifacts built from a different commit.
+    const revalidateStep = stepBody(
+      jobBody("publish"),
+      "Revalidate stable publication order",
+    );
+    expect(revalidateStep).toContain(
+      "TARGET_COMMIT: ${{ needs.validate.outputs.commit_sha }}",
+    );
+    expect(revalidateStep).toContain('--head-sha "$TARGET_COMMIT"');
+  });
 });
 
 
