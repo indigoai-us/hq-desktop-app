@@ -63,17 +63,32 @@ echo "  on-disk mtime: $(stat -f '%Sm' "$APP")"
 codesign -dvv "$APP" 2>&1 | grep -E "^(Identifier|Authority|TeamIdentifier|CDHash)" | sed 's/^/  /' || true
 echo ""
 
-# ── Recall Desktop SDK ───────────────────────────────────────────────────
-# The SDK sidecar is no longer bundled (its node_modules payload was resolved
-# at build time from a caret range and grew 149 MB -> 377 MB upstream, pushing
-# the bundle past its 300 MB ceiling). Assert it is ABSENT so a stray
-# reintroduction is caught here rather than in a release build.
-echo "Recall Desktop SDK (must be absent — no longer bundled):"
+# ── Required SDK assets ──────────────────────────────────────────────────
+echo "SDK assets (must be present for meeting detection to work):"
 
-check "no recall-sdk-bridge resource dir" \
-  test ! -e "$APP/Contents/Resources/recall-sdk-bridge"
-check "no Tauri sidecar wrapper" \
-  test ! -e "$APP/Contents/MacOS/recall-desktop-sdk"
+BRIDGE="$APP/Contents/Resources/recall-sdk-bridge/bridge.mjs"
+check "bridge.mjs at $BRIDGE" \
+  test -f "$BRIDGE"
+
+SDK_EXE="$APP/Contents/Resources/recall-sdk-bridge/node_modules/@recallai/desktop-sdk/desktop_sdk_macos_exe"
+check "Recall SDK helper at desktop_sdk_macos_exe" \
+  test -f "$SDK_EXE"
+
+WRAPPER="$APP/Contents/MacOS/recall-desktop-sdk"
+check "Tauri sidecar wrapper at $WRAPPER" \
+  test -f "$WRAPPER"
+
+GST="$APP/Contents/Resources/recall-sdk-bridge/node_modules/@recallai/desktop-sdk/Frameworks/GStreamer.framework"
+check "GStreamer.framework bundled" \
+  test -d "$GST"
+
+# Framework symlinks (the post-build fix-recall-framework-symlinks.sh
+# step). If these are missing, the SDK SIGABRTs at first dlopen on
+# libgstaudio-1.0.0.dylib.
+check "GStreamer.framework symlink: Versions/Current -> 1.0" \
+  test -L "$GST/Versions/Current"
+check "GStreamer.framework symlink: top-level GStreamer mach-O" \
+  test -L "$GST/GStreamer"
 
 echo ""
 

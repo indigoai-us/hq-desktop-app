@@ -73,6 +73,9 @@ jobs:
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
 
+      - name: Install Recall sidecar deps (build.rs resource)
+        run: pnpm run sidecar:install
+
       - name: Build Svelte bundle (satisfies tauri frontendDist)
         run: pnpm run build
 
@@ -330,6 +333,7 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
+      RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v4
@@ -359,6 +363,9 @@ jobs:
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps
+        run: pnpm run sidecar:install
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
@@ -394,6 +401,7 @@ jobs:
           --target x86_64-pc-windows-msvc
           --bundles msi nsis
           --config src-tauri/tauri.windows.conf.json
+          --config src-tauri/tauri.windows.release.conf.json
           --config src-tauri/tauri.windows.ci.conf.json
           --config $env:TAURI_MSI_VERSION_CONFIG
           --features e2e-automation

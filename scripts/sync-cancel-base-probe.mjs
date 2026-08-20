@@ -19,9 +19,6 @@ const mergeBase = execFileSync("git", ["-C", repo, "merge-base", "HEAD", "origin
   encoding: "utf8",
   timeout: 60_000,
 }).trim();
-/** Thrown to end the probe as a NO-OP success (see the sidecar guard below). */
-class SkipProbe extends Error {}
-
 const worktreeRoot = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), "sync-cancel-base-"));
 const processPath = join(worktreeRoot, "apps", "sync", "src-tauri", "src", "commands", "process.rs");
 const mainPath = join(worktreeRoot, "apps", "sync", "src-tauri", "src", "main.rs");
@@ -143,37 +140,13 @@ try {
   run("git", ["-C", repo, "worktree", "add", "--detach", worktreeRoot, mergeBase], {
     timeout: 120_000,
   });
-  // The Recall SDK sidecar is no longer bundled, so its dependencies are not
-  // installed anywhere on the runner. A merge base from BEFORE that removal
-  // still declares `sidecar/recall-sdk-bridge/node_modules` as a Tauri bundled
-  // resource, and `cargo build` fails that resource validation long before it
-  // reaches the cancellation seam this probe exists to exercise.
-  //
-  // Skip rather than fail in that case: a base that cannot be packaged for an
-  // unrelated reason proves nothing about the cancellation decision seam, and
-  // reporting it as a probe failure would block every PR whose merge base
-  // predates the removal. Once the removal IS the merge base, this is
-  // unreachable. `SkipProbe` unwinds through the existing `finally`, so the
-  // detached worktree is still removed and unregistered.
-  const baseDeclaresSidecar = ["tauri.conf.json", "tauri.macos.conf.json"].some(
-    (name) => {
-      const file = join(worktreeRoot, "apps", "sync", "src-tauri", name);
-      return existsSync(file) && readFileSync(file, "utf8").includes("recall-sdk-bridge");
-    },
-  );
-  if (baseDeclaresSidecar && !existsSync(sidecarNodeModules)) {
-    throw new SkipProbe(
-      "merge base predates the Recall sidecar removal and its dependencies are " +
-        "no longer installed — skipping the base red proof",
-    );
+  if (!existsSync(sidecarNodeModules)) {
+    throw new Error("the checked-out sidecar dependencies are unavailable for the base-artifact proof");
   }
-
   // The detached merge-base worktree deliberately has no untracked dependencies.
   // A junction lets its Tauri build use the workflow's already-installed sidecar
   // dependencies without copying them into, or changing, the base source tree.
-  if (existsSync(sidecarNodeModules)) {
-    symlinkSync(sidecarNodeModules, baseSidecarNodeModules, "junction");
-  }
+  symlinkSync(sidecarNodeModules, baseSidecarNodeModules, "junction");
   const processSource = readFileSync(processPath, "utf8");
   const processMarker = "// Tauri commands";
   if (!processSource.includes(processMarker)) {
@@ -244,11 +217,6 @@ try {
     process.stdout.write(`${JSON.stringify({ ...probe, base: mergeBase })}
 `);
   }
-} catch (error) {
-  // Only the deliberate skip exits clean. Every other error keeps its existing
-  // behaviour: rethrow, non-zero exit, red step.
-  if (!(error instanceof SkipProbe)) throw error;
-  console.log(`[sync-cancel-base-probe] ${error.message}`);
 } finally {
   try {
     run("git", ["-C", repo, "worktree", "remove", "--force", worktreeRoot], {

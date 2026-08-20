@@ -103,7 +103,9 @@ jobs:
       # build.rs validates the bundled `resources` paths in tauri.conf.json —
       # including the Recall sidecar's node_modules, which only exists after the
       # sidecar install. Without it `cargo test` fails the build script.
-
+      - name: Install Recall sidecar deps (bundled resource)
+        working-directory: apps/sync
+        run: pnpm run sidecar:install
       # tauri's `generate_context!` embeds the frontend dist at compile time, so
       # the Svelte bundle must exist before the app crate will build for tests.
       - name: Build Svelte bundle (satisfies tauri frontendDist)
