@@ -830,17 +830,22 @@ pub struct WatcherJobSample {
 /// Sampled live Job Object process images, keyed by process-registry generation
 /// and then by PID. The value is the PID's image mapped through the allow-list AT
 /// SAMPLE TIME — the fault read runs only after the tree dies, so the image must
-/// be resolved while the process is still alive. Union of every heartbeat sample
-/// so the runner descendant (dead by exit) is still describable at exit.
-/// Populated only on Windows; drained at exit so it can never grow unbounded.
-/// Kept out of the registry `Entry` so it cannot perturb job-accounting or
-/// containment paths.
+/// be resolved while the process is still alive. `None` means the PID was seen but
+/// its image could NOT be read (the process exited between the Job Object query
+/// and the image query, or the query failed): the PID is still retained for WER
+/// binding, but no image observation is recorded, so a failed lookup never
+/// masquerades as an `other` culprit. Union of every heartbeat sample so the
+/// runner descendant (dead by exit) is still describable at exit. Populated only
+/// on Windows; drained at exit so it can never grow unbounded. Kept out of the
+/// registry `Entry` so it cannot perturb job-accounting or containment paths.
 static WATCHER_JOB_PID_SAMPLES: OnceLock<
-    Mutex<HashMap<u64, HashMap<u32, hq_desktop_core::watcher_fault::WatcherFaultBinary>>>,
+    Mutex<HashMap<u64, HashMap<u32, Option<hq_desktop_core::watcher_fault::WatcherFaultBinary>>>>,
 > = OnceLock::new();
 
-fn watcher_job_pid_samples(
-) -> &'static Mutex<HashMap<u64, HashMap<u32, hq_desktop_core::watcher_fault::WatcherFaultBinary>>> {
+#[allow(clippy::type_complexity)]
+fn watcher_job_pid_samples() -> &'static Mutex<
+    HashMap<u64, HashMap<u32, Option<hq_desktop_core::watcher_fault::WatcherFaultBinary>>>,
+> {
     WATCHER_JOB_PID_SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -855,7 +860,9 @@ pub fn take_watcher_job_sample(generation: u64) -> WatcherJobSample {
         .unwrap_or_default();
     let mut images = hq_desktop_core::watcher_fault::WatcherJobImageDescriptor::default();
     for image in map.values().copied() {
-        images.record(image);
+        // `None` (image unresolved) records nothing; every PID is still retained
+        // below for WER binding. Absence never masquerades as an observation.
+        images.record_optional(image);
     }
     WatcherJobSample {
         pids: map.into_keys().collect(),
@@ -941,16 +948,14 @@ pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
         if set.len() >= WATCHER_PID_SAMPLE_CAP {
             break;
         }
-        // Resolve the image once while alive. Keep the first non-`other` reading
-        // if a later sample of the same PID can no longer resolve, so a live-tree
-        // observation is never downgraded by a post-death sample.
-        let image = resolve_process_image_token(pid)
-            .unwrap_or(hq_desktop_core::watcher_fault::WatcherFaultBinary::Other);
+        // Resolve the image once while alive. `None` means it could not be read
+        // (the PID is gone or cannot be opened) — retain the PID for WER binding
+        // but record NO image, and never let a later unresolved (or less specific)
+        // sample downgrade a real live-tree reading.
+        let image = resolve_process_image_token(pid);
         set.entry(pid)
             .and_modify(|existing| {
-                if *existing == hq_desktop_core::watcher_fault::WatcherFaultBinary::Other {
-                    *existing = image;
-                }
+                *existing = hq_desktop_core::watcher_fault::more_specific_image(*existing, image);
             })
             .or_insert(image);
     }
@@ -1044,7 +1049,15 @@ pub fn read_watcher_fault(
                     counters.ms_to_verdict = elapsed_ms(start);
                     return outcome.with_counters(counters);
                 }
-                last_rejection = Some(outcome);
+                // Retain the MOST actionable rejection across sweeps. A later sweep
+                // whose newest-record set no longer contains the in-window
+                // code-mismatch record must not overwrite a `rejected_code_mismatch`
+                // verdict with a vaguer `rejected_out_of_window` one, else the final
+                // provenance and counters would hide the more actionable finding.
+                last_rejection = Some(match last_rejection {
+                    Some(prev) => prev.stronger_rejection(outcome),
+                    None => outcome,
+                });
             }
         }
         if std::time::Instant::now() >= deadline {

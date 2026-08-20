@@ -2088,40 +2088,86 @@ impl DeferredWatcherFaultCapture {
     }
 }
 
-static PENDING_WATCHER_FAULT_CAPTURES: OnceLock<Mutex<Vec<(u64, DeferredWatcherFaultCapture)>>> =
+/// The deferred fault-capture registry plus a one-way shutdown latch. The latch is
+/// armed by the FIRST teardown flush and closes a shutdown race: once a flush has
+/// drained, a watcher-exit callback that was still building its payload could
+/// otherwise `register` a fresh ~60s deferral into a vector nothing will ever drain
+/// again, silently losing the fault report at shutdown. With the latch, a
+/// registration that arrives after a flush is handed back to its caller to emit
+/// IMMEDIATELY instead of being deferred. The flag and the vector live under ONE
+/// mutex so arming-and-draining is atomic against a concurrent registration.
+#[derive(Default)]
+struct PendingWatcherFaultRegistry {
+    /// Set once a teardown flush has run; never cleared in production (the process
+    /// is exiting). A later registration must send immediately, not defer.
+    shutting_down: bool,
+    items: Vec<(u64, DeferredWatcherFaultCapture)>,
+}
+
+static PENDING_WATCHER_FAULT_CAPTURES: OnceLock<Mutex<PendingWatcherFaultRegistry>> =
     OnceLock::new();
 static WATCHER_FAULT_DEFERRAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-fn pending_watcher_fault_captures() -> &'static Mutex<Vec<(u64, DeferredWatcherFaultCapture)>> {
-    PENDING_WATCHER_FAULT_CAPTURES.get_or_init(|| Mutex::new(Vec::new()))
+fn pending_watcher_fault_captures() -> &'static Mutex<PendingWatcherFaultRegistry> {
+    PENDING_WATCHER_FAULT_CAPTURES
+        .get_or_init(|| Mutex::new(PendingWatcherFaultRegistry::default()))
 }
 
-fn register_pending_watcher_fault_capture(payload: DeferredWatcherFaultCapture) -> u64 {
-    let id = WATCHER_FAULT_DEFERRAL_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
-    pending_watcher_fault_captures()
+/// Register a capture for deferred resolution, or — when a teardown flush has
+/// already armed the shutdown latch — hand the payload BACK so the caller emits it
+/// immediately. `Ok(id)` means it was queued and a worker owns it; `Err(payload)`
+/// means shutdown is under way and it must be sent now, never deferred.
+fn register_pending_watcher_fault_capture(
+    payload: DeferredWatcherFaultCapture,
+) -> Result<u64, DeferredWatcherFaultCapture> {
+    let mut registry = pending_watcher_fault_captures()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push((id, payload));
-    id
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.shutting_down {
+        return Err(payload);
+    }
+    let id = WATCHER_FAULT_DEFERRAL_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+    registry.items.push((id, payload));
+    Ok(id)
 }
 
 /// Claim one pending capture. Returns `None` when a teardown flush already took
 /// it, which is what makes a deferral resolve EXACTLY once.
 fn take_pending_watcher_fault_capture(id: u64) -> Option<DeferredWatcherFaultCapture> {
-    let mut pending = pending_watcher_fault_captures()
+    let mut registry = pending_watcher_fault_captures()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let index = pending.iter().position(|(pending_id, _)| *pending_id == id)?;
-    Some(pending.remove(index).1)
+    let index = registry
+        .items
+        .iter()
+        .position(|(pending_id, _)| *pending_id == id)?;
+    Some(registry.items.remove(index).1)
 }
 
-fn take_all_pending_watcher_fault_captures() -> Vec<DeferredWatcherFaultCapture> {
-    pending_watcher_fault_captures()
+/// Arm the shutdown latch AND drain every in-flight capture in one locked step, so
+/// no registration can slip in between the arm and the drain. After this returns,
+/// every later `register` sees the latch and its caller sends immediately.
+fn arm_shutdown_and_drain_pending_watcher_fault_captures() -> Vec<DeferredWatcherFaultCapture> {
+    let mut registry = pending_watcher_fault_captures()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.shutting_down = true;
+    registry
+        .items
         .drain(..)
         .map(|(_, payload)| payload)
         .collect()
+}
+
+/// Test-only: clear the registry and disarm the shutdown latch so each test that
+/// exercises the shared static starts from a known state.
+#[cfg(test)]
+fn reset_pending_watcher_fault_registry_for_test() {
+    let mut registry = pending_watcher_fault_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.shutting_down = false;
+    registry.items.clear();
 }
 
 /// Emit every deferred fault capture still in flight, IMMEDIATELY, with its
@@ -2152,7 +2198,7 @@ fn flush_pending_watcher_fault_captures_with<F>(mut send: F) -> usize
 where
     F: FnMut(DeferredWatcherFaultCapture),
 {
-    let pending = take_all_pending_watcher_fault_captures();
+    let pending = arm_shutdown_and_drain_pending_watcher_fault_captures();
     let flushed = pending.len();
     for payload in pending {
         send(payload);
@@ -2160,27 +2206,70 @@ where
     flushed
 }
 
-/// Hand a fault capture to a bounded worker thread that performs the deferred OS
-/// fault read OFF the exit path, then resolves and sends it. A std thread (not a
-/// tokio task) because the read is a blocking, bounded poll of the Windows event
-/// log; nothing awaits it, and the exit callback has already fully returned.
+/// Extra the OUTER supervisor waits beyond the reader's own bounded horizon before
+/// giving up on a verdict. `read_watcher_fault` polls under its own deadline, but
+/// the wevtapi calls it makes (`EvtQuery`/`EvtRender`) take NO timeout — only
+/// `EvtNext` does — so a stalled Event Log service could wedge the reader thread
+/// past its deadline and it would never return. This grace cleanly separates a
+/// normal slow return (≤ budget + one sweep) from a genuine wedge.
+const WATCHER_FAULT_READ_SUPERVISOR_GRACE: Duration = Duration::from_secs(5);
+
+/// Hand a fault capture to a bounded worker that performs the deferred OS fault
+/// read OFF the exit path, then resolves and sends it. Two guards make it robust:
+///
+/// 1. **Shutdown barrier.** If a teardown flush already armed the latch,
+///    `register` returns the payload back and it is sent IMMEDIATELY rather than
+///    deferred into a registry nothing will drain again — so a shutdown that races
+///    a just-detected fault cannot lose the report.
+/// 2. **Outer supervisor bound.** The blocking read runs on an INNER thread and
+///    reports over a channel; a supervisor waits at most `budget + grace` for the
+///    verdict and then claims and sends the capture itself with honest unresolved
+///    provenance. A wevtapi call with no timeout can therefore never hang the
+///    capture forever or leak the pending payload — the wedged reader thread is
+///    abandoned (never joined); it holds no lock and is bounded in count by fault
+///    frequency. std threads (not tokio tasks): nothing awaits them and the exit
+///    callback has already fully returned.
 fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
     let read = payload.read.clone();
-    let id = register_pending_watcher_fault_capture(payload);
-    let _worker = std::thread::spawn(move || {
-        // Bounded by its own deadline inside read_watcher_fault — never an
-        // unbounded poll; the worker returns a verdict or the horizon expires.
-        let outcome = crate::commands::process::read_watcher_fault(
-            &read.sampled_pids,
-            read.exception_code,
-            read.gen_start_ms,
-            read.gen_end_ms,
-            crate::commands::process::deferred_watcher_fault_budget(),
-        );
+    let id = match register_pending_watcher_fault_capture(payload) {
+        Ok(id) => id,
+        Err(payload) => {
+            // Teardown latch already armed: emit now with honest `deferred`
+            // provenance instead of deferring into an abandoned registry.
+            send_deferred_watcher_fault_capture(payload, None, "shutdown_immediate");
+            return;
+        }
+    };
+    let _supervisor = std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Inner reader — may block in a timeout-less wevtapi call if the Event Log
+        // service stalls. Abandoned if it outlasts the supervisor bound below.
+        let _reader = std::thread::spawn(move || {
+            let outcome = crate::commands::process::read_watcher_fault(
+                &read.sampled_pids,
+                read.exception_code,
+                read.gen_start_ms,
+                read.gen_end_ms,
+                crate::commands::process::deferred_watcher_fault_budget(),
+            );
+            // Ignore a send error: the supervisor may have already timed out and
+            // dropped the receiver, in which case the capture has already shipped.
+            let _ = tx.send(outcome);
+        });
+        // Bounded outer wait: a verdict, or the supervisor deadline, whichever
+        // comes first. `None` means the reader wedged or died before reporting.
+        let bound = crate::commands::process::deferred_watcher_fault_budget()
+            + WATCHER_FAULT_READ_SUPERVISOR_GRACE;
+        let outcome = rx.recv_timeout(bound).ok();
         // Claim send-rights EXACTLY once. If a teardown flush already claimed it,
         // this is a no-op — the event has already shipped with honest provenance.
         if let Some(payload) = take_pending_watcher_fault_capture(id) {
-            send_deferred_watcher_fault_capture(payload, Some(outcome), "read_resolved");
+            let resolution = if outcome.is_some() {
+                "read_resolved"
+            } else {
+                "read_supervisor_timeout"
+            };
+            send_deferred_watcher_fault_capture(payload, outcome, resolution);
         }
     });
 }
@@ -5496,7 +5585,8 @@ mod tests {
         // The pending registry drains take-once: a teardown flush emits every
         // in-flight capture exactly once, and a second flush drains nothing, so a
         // completing worker can never double-send.
-        let _ = take_all_pending_watcher_fault_captures(); // isolate from residue
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_pending_watcher_fault_registry_for_test();
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
@@ -5511,8 +5601,9 @@ mod tests {
                 },
             )
         };
-        register_pending_watcher_fault_capture(make());
-        register_pending_watcher_fault_capture(make());
+        let first = register_pending_watcher_fault_capture(make());
+        let second = register_pending_watcher_fault_capture(make());
+        assert!(first.is_ok() && second.is_ok(), "registrations queue before shutdown");
         let mut sent: Vec<DeferredWatcherFaultCapture> = Vec::new();
         assert_eq!(
             flush_pending_watcher_fault_captures_with(|payload| sent.push(payload)),
@@ -5524,7 +5615,52 @@ mod tests {
             flush_pending_watcher_fault_captures_with(|payload| sent.push(payload)),
             0
         );
-        assert!(take_pending_watcher_fault_capture(1).is_none());
+        assert!(take_pending_watcher_fault_capture(first.unwrap()).is_none());
+        reset_pending_watcher_fault_registry_for_test();
+    }
+
+    #[test]
+    fn watcher_fault_flush_is_a_barrier_against_later_registration() {
+        // The shutdown race Codex flagged: once a teardown flush has drained, a
+        // watcher-exit callback that was still building its payload could `register`
+        // a fresh deferral into a vector nothing will drain again. The armed latch
+        // must reject that registration so the caller emits it immediately instead.
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_pending_watcher_fault_registry_for_test();
+        let make = || {
+            DeferredWatcherFaultCapture::new(
+                "auto-sync watcher exited unexpectedly",
+                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[("watcher_fault_provenance", "deferred".to_string())],
+                &[],
+                WatcherFaultDeferredRead {
+                    sampled_pids: vec![],
+                    exception_code: 0xC000_0409,
+                    gen_start_ms: 0,
+                    gen_end_ms: 1,
+                },
+            )
+        };
+        // Before any flush a registration queues normally.
+        assert!(register_pending_watcher_fault_capture(make()).is_ok());
+        // The flush arms the latch and drains the one queued capture.
+        assert_eq!(
+            flush_pending_watcher_fault_captures_with(|_| {}),
+            1,
+            "the flush drains the pre-registered capture"
+        );
+        // A registration arriving AFTER the flush is refused, handing the payload
+        // back so `spawn_deferred_watcher_fault_capture` sends it immediately rather
+        // than losing it to an abandoned registry.
+        match register_pending_watcher_fault_capture(make()) {
+            Err(returned) => {
+                assert_eq!(returned.message, "auto-sync watcher exited unexpectedly");
+            }
+            Ok(_) => panic!("registration after a flush must be refused by the shutdown latch"),
+        }
+        // The refused registration was NOT queued: a further flush drains nothing.
+        assert_eq!(flush_pending_watcher_fault_captures_with(|_| {}), 0);
+        reset_pending_watcher_fault_registry_for_test();
     }
 
     #[test]

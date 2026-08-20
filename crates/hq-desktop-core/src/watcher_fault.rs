@@ -127,6 +127,31 @@ pub fn classify_watcher_fault_binary(name: &str) -> WatcherFaultBinary {
     }
 }
 
+/// Merge two observations of the SAME sampled PID's image across heartbeat
+/// samples, keeping the most specific. Specificity ranks `None` (image not read
+/// — process gone or query failed) below `Some(Other)` (an image WAS read but is
+/// not on the allow-list) below `Some(<named>)` (a recognised binary). A real
+/// live-tree reading is therefore never downgraded by a later post-death sample
+/// that could not resolve the image, and an unresolved reading never displaces a
+/// recognised one. Ties keep `current`. Pure, so it is unit-tested off Windows.
+pub fn more_specific_image(
+    current: Option<WatcherFaultBinary>,
+    candidate: Option<WatcherFaultBinary>,
+) -> Option<WatcherFaultBinary> {
+    fn rank(image: Option<WatcherFaultBinary>) -> u8 {
+        match image {
+            None => 0,
+            Some(WatcherFaultBinary::Other) => 1,
+            Some(_) => 2,
+        }
+    }
+    if rank(candidate) > rank(current) {
+        candidate
+    } else {
+        current
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Provenance honesty token
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,6 +235,22 @@ impl WatcherFaultProvenance {
     /// provenance is caught by the invariant test.
     pub fn is_bound(self) -> bool {
         matches!(self, Self::PidMatched | Self::WindowOnly)
+    }
+
+    /// Diagnostic specificity ordering among the non-binding REJECTION states, so
+    /// the deferred reader can retain the MOST actionable rejection across polling
+    /// sweeps instead of letting a later, vaguer sweep overwrite it. Higher is more
+    /// specific: a code mismatch names an in-window record for a different fault
+    /// (the strongest "records existed, none were ours" signal); an unparsable
+    /// record points at a parser/template gap; an out-of-window rejection is the
+    /// vaguest. Every non-rejection state returns 0.
+    pub fn rejection_specificity(self) -> u8 {
+        match self {
+            Self::RejectedCodeMismatch => 3,
+            Self::RejectedUnparsable => 2,
+            Self::RejectedOutOfWindow => 1,
+            _ => 0,
+        }
     }
 }
 
@@ -391,6 +432,14 @@ impl WatcherFaultReadCounters {
             self.ms_to_verdict,
         )
     }
+
+    /// Total rejected-record evidence across both reasons, saturating. Used only
+    /// to tie-break which of two equally-specific rejections to retain across the
+    /// deferred read's polling sweeps — never rendered on its own.
+    pub fn total_rejected(&self) -> u32 {
+        self.rejected_out_of_window
+            .saturating_add(self.rejected_code_mismatch)
+    }
 }
 
 /// The content-safe result of attributing a fault to this watcher generation.
@@ -476,6 +525,29 @@ impl WatcherFaultOutcome {
     /// The rendered read-counters tag.
     pub fn counters_tag(&self) -> String {
         self.counters.tag_value()
+    }
+
+    /// Between two non-binding REJECTION outcomes gathered on different polling
+    /// sweeps, the one the deferred reader should retain. The more diagnostically
+    /// specific provenance wins (code mismatch > unparsable > out-of-window); on a
+    /// tie the outcome carrying more rejected-record evidence wins; otherwise
+    /// `self`. Without this a later sweep whose newest-record set no longer
+    /// contains the in-window mismatch would overwrite a `rejected_code_mismatch`
+    /// verdict with a vaguer `rejected_out_of_window` one, hiding the more
+    /// actionable finding. Pure and order-independent so it is unit-tested off
+    /// Windows.
+    pub fn stronger_rejection(self, other: Self) -> Self {
+        let mine = self.provenance.rejection_specificity();
+        let theirs = other.provenance.rejection_specificity();
+        if theirs > mine {
+            other
+        } else if theirs < mine {
+            self
+        } else if other.counters.total_rejected() > self.counters.total_rejected() {
+            other
+        } else {
+            self
+        }
     }
 }
 
@@ -615,6 +687,19 @@ impl WatcherJobImageDescriptor {
             | WatcherFaultBinary::KernelbaseDll
             | WatcherFaultBinary::UcrtbaseDll
             | WatcherFaultBinary::MsvcrtDll => {}
+        }
+    }
+
+    /// Fold an OPTIONAL observed image: a `None` (the PID's image could not be
+    /// read — the process exited between the Job Object query and the image query,
+    /// or the query failed) records NOTHING, so a failed lookup never masquerades
+    /// as an `other` observation, is never selected as a culprit candidate, and is
+    /// never labelled `job_tree_observed`. The PID is still retained for WER
+    /// binding by the caller; only the image observation is omitted. Absence never
+    /// masquerades as evidence.
+    pub fn record_optional(&mut self, image: Option<WatcherFaultBinary>) {
+        if let Some(image) = image {
+            self.record(image);
         }
     }
 
@@ -1193,6 +1278,105 @@ mod tests {
         assert_eq!(unknown.culprit_candidate_token(), "other");
         let tag = unknown.images_tag().unwrap();
         assert!(!tag.contains("cognito") && !tag.contains("abc123") && !tag.contains("private"));
+    }
+
+    #[test]
+    fn record_optional_omits_unresolved_images_so_absence_is_never_a_candidate() {
+        // A failed image lookup (`None`) must contribute NOTHING: no set entry, no
+        // culprit candidate, no `job_tree_observed` label — absence never
+        // masquerades as an `other` observation.
+        let mut descriptor = WatcherJobImageDescriptor::default();
+        descriptor.record_optional(None);
+        descriptor.record_optional(None);
+        assert_eq!(descriptor.images_tag(), None);
+        assert_eq!(descriptor.culprit_candidate(), None);
+        assert_eq!(descriptor.culprit_candidate_token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(descriptor.provenance_token(), WATCHER_FAULT_UNAVAILABLE);
+
+        // A resolved reading records normally; a later `None` (a post-death sample
+        // that could not resolve) does not wipe the real observation.
+        descriptor.record_optional(Some(WatcherFaultBinary::NodeExe));
+        descriptor.record_optional(None);
+        assert_eq!(descriptor.images_tag().as_deref(), Some("node_exe"));
+        assert_eq!(descriptor.culprit_candidate(), Some(WatcherFaultBinary::NodeExe));
+    }
+
+    #[test]
+    fn more_specific_image_never_downgrades_a_real_reading() {
+        use WatcherFaultBinary::{NodeExe, Other};
+        // Rank: None < Some(Other) < Some(<named>). A better reading is adopted;
+        // a worse or absent one never displaces a real live-tree observation.
+        assert_eq!(more_specific_image(None, None), None);
+        assert_eq!(more_specific_image(None, Some(Other)), Some(Other));
+        assert_eq!(more_specific_image(None, Some(NodeExe)), Some(NodeExe));
+        assert_eq!(more_specific_image(Some(Other), None), Some(Other));
+        assert_eq!(more_specific_image(Some(NodeExe), None), Some(NodeExe));
+        assert_eq!(more_specific_image(Some(Other), Some(NodeExe)), Some(NodeExe));
+        // Never downgrade a recognised reading to `other` or to absent.
+        assert_eq!(more_specific_image(Some(NodeExe), Some(Other)), Some(NodeExe));
+        // A tie between two recognised images keeps the current one (stable).
+        assert_eq!(
+            more_specific_image(Some(NodeExe), Some(WatcherFaultBinary::CmdExe)),
+            Some(NodeExe)
+        );
+    }
+
+    #[test]
+    fn stronger_rejection_retains_the_most_actionable_reason_across_sweeps() {
+        // Specificity ordering: code mismatch > unparsable > out-of-window; every
+        // binding/empty state is 0.
+        assert!(
+            WatcherFaultProvenance::RejectedCodeMismatch.rejection_specificity()
+                > WatcherFaultProvenance::RejectedUnparsable.rejection_specificity()
+        );
+        assert!(
+            WatcherFaultProvenance::RejectedUnparsable.rejection_specificity()
+                > WatcherFaultProvenance::RejectedOutOfWindow.rejection_specificity()
+        );
+        assert_eq!(WatcherFaultProvenance::PidMatched.rejection_specificity(), 0);
+        assert_eq!(WatcherFaultProvenance::NoRecords.rejection_specificity(), 0);
+
+        let code_mismatch = WatcherFaultOutcome::unresolved(
+            WatcherFaultProvenance::RejectedCodeMismatch,
+        )
+        .with_counters(WatcherFaultReadCounters {
+            rejected_code_mismatch: 1,
+            ..Default::default()
+        });
+        let out_of_window = WatcherFaultOutcome::unresolved(
+            WatcherFaultProvenance::RejectedOutOfWindow,
+        )
+        .with_counters(WatcherFaultReadCounters {
+            rejected_out_of_window: 5,
+            ..Default::default()
+        });
+        // Order-independent: the code mismatch is retained whichever sweep saw it,
+        // even though the out-of-window sweep carries more rejected records.
+        assert_eq!(
+            code_mismatch.stronger_rejection(out_of_window).provenance,
+            WatcherFaultProvenance::RejectedCodeMismatch
+        );
+        assert_eq!(
+            out_of_window.stronger_rejection(code_mismatch).provenance,
+            WatcherFaultProvenance::RejectedCodeMismatch
+        );
+
+        // On equal specificity, the outcome with more rejected-record evidence wins.
+        let sparse = WatcherFaultOutcome::unresolved(WatcherFaultProvenance::RejectedOutOfWindow)
+            .with_counters(WatcherFaultReadCounters {
+                rejected_out_of_window: 1,
+                ..Default::default()
+            });
+        assert_eq!(sparse.stronger_rejection(out_of_window).counters.rejected_out_of_window, 5);
+        assert_eq!(out_of_window.stronger_rejection(sparse).counters.rejected_out_of_window, 5);
+
+        // total_rejected sums both reasons, saturating.
+        let both = WatcherFaultReadCounters {
+            rejected_out_of_window: 3,
+            rejected_code_mismatch: 4,
+            ..Default::default()
+        };
+        assert_eq!(both.total_rejected(), 7);
     }
 
     #[test]

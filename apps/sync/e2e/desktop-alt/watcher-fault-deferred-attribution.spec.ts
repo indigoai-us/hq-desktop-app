@@ -146,6 +146,42 @@ describe('watcher fault deferred attribution — source contracts', () => {
     // The cross-crate anti-drift pin enumerates the emitter's OWN vocabulary.
     expect(telemetrySource).toContain('every_watcher_fault_token_survives_and_lookalikes_fail_closed');
   });
+
+  it('a teardown flush is a barrier: a later registration sends immediately, never defers', () => {
+    // The shutdown race: once a flush drains, a still-building fault callback must
+    // not `register` a fresh deferral into a registry nothing will drain again.
+    expect(daemonSource).toContain('shutting_down: bool');
+    expect(daemonSource).toContain('arm_shutdown_and_drain_pending_watcher_fault_captures');
+    // `register` hands the payload back once the latch is armed…
+    expect(daemonSource).toContain('Result<u64, DeferredWatcherFaultCapture>');
+    // …and the caller emits it immediately with the honest deferred provenance.
+    expect(daemonSource).toContain('"shutdown_immediate"');
+  });
+
+  it('the deferred read has an OUTER bound a stalled Event Log call cannot defeat', () => {
+    // `EvtQuery`/`EvtRender` take no timeout, so the read runs on an inner thread
+    // and a supervisor claims+sends the honest capture if it wedges past the bound.
+    expect(daemonSource).toContain('const WATCHER_FAULT_READ_SUPERVISOR_GRACE: Duration');
+    expect(daemonSource).toContain('rx.recv_timeout(bound)');
+    expect(daemonSource).toContain('"read_supervisor_timeout"');
+  });
+
+  it('a failed job-image lookup is never rendered as an `other` culprit', () => {
+    // The PID is retained for WER binding, but an unreadable image records NOTHING
+    // — absence never masquerades as an observation (was `.unwrap_or(...Other)`).
+    expect(coreSource).toContain('pub fn record_optional(');
+    expect(coreSource).toContain('pub fn more_specific_image(');
+    expect(processSource).toContain('let image = resolve_process_image_token(pid);');
+    expect(processSource).toContain('more_specific_image(');
+    expect(processSource).toContain('images.record_optional(image)');
+  });
+
+  it('the deferred read retains the MOST actionable rejection across polling sweeps', () => {
+    // A later, vaguer sweep must not overwrite a code-mismatch verdict.
+    expect(coreSource).toContain('pub fn stronger_rejection(');
+    expect(coreSource).toContain('pub fn rejection_specificity(');
+    expect(processSource).toContain('.stronger_rejection(outcome)');
+  });
 });
 
 // ---------------------------------------------------------------------------
