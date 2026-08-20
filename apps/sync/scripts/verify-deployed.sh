@@ -108,8 +108,8 @@ else
   # the function name itself misses real positives, as we hit on the
   # first run of this script). These strings are baked into the binary
   # via the `log()` macro and only appear in their respective modules.
-  check "@getindigo.ai gate compiled in (meeting_detect: log signature)" \
-    bash -c "strings '$MENUBAR' | grep -q 'start_recall_sdk: user not in @getindigo.ai allowlist'"
+  check "signed-in-user gate compiled in (meeting_detect: log signature)" \
+    bash -c "strings '$MENUBAR' | grep -q 'start_recall_sdk: no signed-in user'"
   check "Permission registration compiled in (CGRequestScreenCaptureAccess log)" \
     bash -c "strings '$MENUBAR' | grep -q 'CGRequestScreenCaptureAccess'"
   check "Recall SDK lifecycle compiled in (start_recall_sdk: initialising log)" \
