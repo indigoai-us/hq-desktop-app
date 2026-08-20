@@ -75,6 +75,22 @@ pub enum RunnerErrorShape {
 }
 
 impl RunnerErrorShape {
+    /// Every variant, so content-safety and cross-crate parity tests can
+    /// enumerate the emitter's own token set instead of a hand-copied list.
+    pub const ALL: [RunnerErrorShape; 11] = [
+        Self::ContainmentEscape,
+        Self::DanglingSymlinkParent,
+        Self::ConflictProbeFailed,
+        Self::ConflictIndexWriteFailed,
+        Self::TombstoneHeadVerifyFailed,
+        Self::TombstoneUnlinkFailed,
+        Self::ContentLengthMismatch,
+        Self::PresignedGetFailed,
+        Self::PresignedHeadFailed,
+        Self::PresignNoRow,
+        Self::Unknown,
+    ];
+
     /// Fixed vocabulary safe for Sentry tags. Never derived from runner input.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -244,6 +260,26 @@ pub enum RunnerPathRoot {
 }
 
 impl RunnerPathRoot {
+    /// Every variant, so content-safety and cross-crate parity tests can
+    /// enumerate the emitter's own token set instead of a hand-copied list.
+    pub const ALL: [RunnerPathRoot; 15] = [
+        Self::Knowledge,
+        Self::Projects,
+        Self::Repos,
+        Self::Sources,
+        Self::Signals,
+        Self::Data,
+        Self::Settings,
+        Self::Workers,
+        Self::Registry,
+        Self::Clients,
+        Self::Core,
+        Self::Companies,
+        Self::Personal,
+        Self::Workspace,
+        Self::Other,
+    ];
+
     /// Fixed vocabulary safe for Sentry tags. Never derived from the input path.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -358,6 +394,522 @@ impl RunnerErrorPathRootRollup {
     }
 
     /// Render the top-N path roots by count as a bounded Sentry tag.
+    pub fn tag_value(&self) -> Option<String> {
+        render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP-status axis (HQ-DESKTOP-4T)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fixed, content-safe HTTP-status tokens for runner errors.
+///
+/// The HTTP status is the single most discriminating fact about the failures
+/// that actually terminate these runs, yet the class/op/shape axes all discard
+/// it: a company-scope `describeError` rendering carries it as ` http=<status>`
+/// (hq-cloud `src/lib/describe-error.ts`), and a per-file presigned failure
+/// carries it verbatim after the `: ` (hq-cloud `src/object-io.ts`). This axis
+/// parses only those two anchored grammars, maps the integer to a token *in
+/// code*, and then drops it — so no runner byte is ever emitted, and an
+/// unparseable message yields no token rather than a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorHttpStatus {
+    Http400,
+    Http401,
+    Http403,
+    Http404,
+    Http409,
+    Http412,
+    Http429,
+    /// Any other 4xx not called out above.
+    Http4xx,
+    Http500,
+    Http502,
+    Http503,
+    Http504,
+    /// Any other 5xx not called out above.
+    Http5xx,
+    /// A valid but unfamiliar 1xx/2xx/3xx status. A non-status (outside 100..=599)
+    /// never reaches this axis at all — it classifies to `None`.
+    HttpOther,
+}
+
+impl RunnerErrorHttpStatus {
+    /// Every variant, so content-safety and cross-crate parity tests can
+    /// enumerate the emitter's own token set instead of a hand-copied list. The
+    /// order matches the enum's discriminants, so `variant as usize` indexes the
+    /// rollup's count array.
+    pub const ALL: [RunnerErrorHttpStatus; 14] = [
+        Self::Http400,
+        Self::Http401,
+        Self::Http403,
+        Self::Http404,
+        Self::Http409,
+        Self::Http412,
+        Self::Http429,
+        Self::Http4xx,
+        Self::Http500,
+        Self::Http502,
+        Self::Http503,
+        Self::Http504,
+        Self::Http5xx,
+        Self::HttpOther,
+    ];
+
+    /// Fixed vocabulary safe for Sentry tags. Never derived from runner input.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http400 => "http_400",
+            Self::Http401 => "http_401",
+            Self::Http403 => "http_403",
+            Self::Http404 => "http_404",
+            Self::Http409 => "http_409",
+            Self::Http412 => "http_412",
+            Self::Http429 => "http_429",
+            Self::Http4xx => "http_4xx",
+            Self::Http500 => "http_500",
+            Self::Http502 => "http_502",
+            Self::Http503 => "http_503",
+            Self::Http504 => "http_504",
+            Self::Http5xx => "http_5xx",
+            Self::HttpOther => "http_other",
+        }
+    }
+}
+
+/// Map a status integer to its fixed token. Familiar codes get their own token;
+/// other 4xx/5xx collapse to the family token; a valid but unfamiliar 1xx/2xx/3xx
+/// becomes `http_other`. Anything outside 100..=599 is not an HTTP status and
+/// returns `None`.
+fn http_status_token(status: u16) -> Option<RunnerErrorHttpStatus> {
+    let token = match status {
+        400 => RunnerErrorHttpStatus::Http400,
+        401 => RunnerErrorHttpStatus::Http401,
+        403 => RunnerErrorHttpStatus::Http403,
+        404 => RunnerErrorHttpStatus::Http404,
+        409 => RunnerErrorHttpStatus::Http409,
+        412 => RunnerErrorHttpStatus::Http412,
+        429 => RunnerErrorHttpStatus::Http429,
+        500 => RunnerErrorHttpStatus::Http500,
+        502 => RunnerErrorHttpStatus::Http502,
+        503 => RunnerErrorHttpStatus::Http503,
+        504 => RunnerErrorHttpStatus::Http504,
+        // Overlapping ranges: the familiar codes above win by first-match, so
+        // these arms stay reachable for every other 4xx / 5xx.
+        400..=499 => RunnerErrorHttpStatus::Http4xx,
+        500..=599 => RunnerErrorHttpStatus::Http5xx,
+        100..=399 => RunnerErrorHttpStatus::HttpOther,
+        _ => return None,
+    };
+    Some(token)
+}
+
+/// Read exactly three ASCII digits of an HTTP status at `bytes[from..]`, bounded
+/// by a non-digit (or end of input) so a four-digit run such as `4030` is never
+/// misread as `403`. Returns the parsed status only when it is a valid HTTP
+/// status (100..=599).
+fn three_digit_http_status_at(bytes: &[u8], from: usize) -> Option<u16> {
+    let digits = bytes.get(from..from + 3)?;
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    // A fourth digit means this is not a three-digit status.
+    if bytes
+        .get(from + 3)
+        .copied()
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let status = u16::from(digits[0] - b'0') * 100
+        + u16::from(digits[1] - b'0') * 10
+        + u16::from(digits[2] - b'0');
+    (100..=599).contains(&status).then_some(status)
+}
+
+/// Grammar (a): the `describeError` ` http=<status>` key. Anchored on a `http=`
+/// at the start of input or preceded by ASCII whitespace, so `xhttp=500` in free
+/// prose never matches.
+fn parse_http_key_status(message: &str) -> Option<RunnerErrorHttpStatus> {
+    let bytes = message.as_bytes();
+    for (idx, _) in message.match_indices("http=") {
+        let boundary_ok = idx == 0 || bytes[idx - 1].is_ascii_whitespace();
+        if !boundary_ok {
+            continue;
+        }
+        if let Some(status) = three_digit_http_status_at(bytes, idx + "http=".len()) {
+            return http_status_token(status);
+        }
+    }
+    None
+}
+
+/// Grammar (b/c) tail parser: the `<key>: <status> <detail>` (presigned/HEAD/
+/// verify) or `… failed: <status> <body>` (STS-vend) form. Scans every `": "`
+/// boundary and returns a status only when every valid three-digit-status
+/// candidate agrees on a single value. This is provably safe against a
+/// `": <digits> "` embedded in a valid object key *or* in the free-text detail:
+/// a valid POSIX/S3 key such as `report: 123 notes.md` would otherwise let the
+/// first separator win and mislabel `123` as the status, so when two different
+/// statuses appear the boundary is ambiguous and this returns `None` (honest
+/// absence) rather than a confident wrong token. The caller's gate (a recognised
+/// shape or an STS-vend failure) keeps an arbitrary number in unrelated prose
+/// from ever opening this parser.
+fn parse_status_tail(message: &str) -> Option<RunnerErrorHttpStatus> {
+    let bytes = message.as_bytes();
+    let mut agreed: Option<u16> = None;
+    for (idx, _) in message.match_indices(": ") {
+        if let Some(status) = three_digit_http_status_at(bytes, idx + ": ".len()) {
+            match agreed {
+                None => agreed = Some(status),
+                Some(existing) if existing == status => {}
+                // Two different statuses in the tail — the boundary is ambiguous
+                // (e.g. a `: <digits> ` inside the object key), so emit nothing.
+                Some(_) => return None,
+            }
+        }
+    }
+    agreed.and_then(http_status_token)
+}
+
+/// A company-scope STS-vend failure. hq-cloud's `entity-resolver.ts` surfaces an
+/// `EntityResolutionError` wrapping `STS /sts/vend failed: <status> <body>`, and
+/// the desktop's own tests model the `STS vend failed for <company>: <status>`
+/// form; both carry the HTTP status in the tail but neither an `http=` key nor a
+/// presigned shape. Requiring all three tokens keeps this gate narrow so an
+/// unrelated message can never open the tail parser.
+fn is_sts_vend_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("sts") && lower.contains("vend") && lower.contains("failed")
+}
+
+/// Map an untrusted runner error message to a fixed HTTP-status token, or `None`
+/// when no anchored grammar parses. Three grammars are read, and nothing else:
+///
+/// * (a) the `describeError` ` http=<status>` key;
+/// * (b) the `<key>: <status>` tail of a message the shape classifier already
+///   resolved to a presigned/HEAD/tombstone-verify form; and
+/// * (c) the `… failed: <status>` tail of an STS-vend failure.
+///
+/// Grammars (b) and (c) are gated — a recognised shape or an STS-vend failure —
+/// and only emit a status when the `: <status>` boundary is unambiguous, so a
+/// three-digit number in free prose, an object key, or the detail can never be
+/// mislabelled as a status.
+pub fn classify_runner_error_http_status(message: &str) -> Option<RunnerErrorHttpStatus> {
+    if let Some(token) = parse_http_key_status(message) {
+        return Some(token);
+    }
+    let has_status_tail_shape = matches!(
+        classify_runner_error_shape(message),
+        RunnerErrorShape::PresignedGetFailed
+            | RunnerErrorShape::PresignedHeadFailed
+            | RunnerErrorShape::TombstoneHeadVerifyFailed
+    );
+    if has_status_tail_shape || is_sts_vend_failure(message) {
+        return parse_status_tail(message);
+    }
+    None
+}
+
+/// Saturating per-pass counts of the closed HTTP-status vocabulary, indexed by
+/// [`RunnerErrorHttpStatus`] discriminant. Renders a bounded Sentry tag such as
+/// `http_500:40,http_403:8`. A message that carries no parseable status
+/// contributes nothing, so absence never renders as evidence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorHttpRollup {
+    counts: [u32; RunnerErrorHttpStatus::ALL.len()],
+}
+
+impl RunnerErrorHttpRollup {
+    /// Classify one runner error message and, when a status parses, increment it.
+    pub fn record(&mut self, message: &str) {
+        if let Some(status) = classify_runner_error_http_status(message) {
+            let index = status as usize;
+            self.counts[index] = self.counts[index].saturating_add(1);
+        }
+    }
+
+    /// Declaration-ordered `(token, count)` pairs — the tie-break for equal counts.
+    fn counts(&self) -> Vec<(&'static str, u32)> {
+        RunnerErrorHttpStatus::ALL
+            .iter()
+            .map(|&status| (status.as_str(), self.counts[status as usize]))
+            .collect()
+    }
+
+    /// Render the top-N statuses by count as a bounded Sentry tag. `None` when no
+    /// status was recorded, so no tag should be sent.
+    pub fn tag_value(&self) -> Option<String> {
+        render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Error-cause axis (HQ-DESKTOP-4T)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fixed, content-safe error-cause tokens for runner errors.
+///
+/// The vocabulary is grounded in the producers that actually reach the desktop's
+/// error channel: the hq-cloud error classes whose constructors set `this.name`
+/// (so `describeError` emits the name first), the AWS S3/STS error names
+/// `describeError` surfaces, and the filesystem errno codes the class axis
+/// already distinguishes. Every token is spelled to avoid Sentry's default
+/// `@password:filter` denylist — hence `expired_identity` and `vault_identity`,
+/// never `expired_token` or `vault_auth`, which is the exact HQ-DESKTOP-4T
+/// scrubber failure mode this module guards against. `Unknown` is the honest
+/// fallback (never a nearest guess); its count is itself the signal that the
+/// vocabulary needs one more entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorCause {
+    // hq-cloud error classes (`this.name` set in the constructor).
+    EntityNotFound,
+    EntityPermission,
+    EntityResolution,
+    OperationLocked,
+    OperationLockUnwritable,
+    ScopeShrinkBlocked,
+    ScopeShrinkLargePrune,
+    DeltaGap,
+    MultipartSourceChanged,
+    MultipartAbort,
+    RealtimeConflict,
+    UnreachablePushPaths,
+    PushEventDecode,
+    LocalSnapshotChanged,
+    RescuePathChanged,
+    VaultIdentity,
+    // AWS S3 / STS error names.
+    AccessDenied,
+    NoSuchKey,
+    NoSuchBucket,
+    SlowDown,
+    InternalError,
+    RequestTimeout,
+    ExpiredIdentity,
+    InvalidIdentity,
+    UnknownError,
+    // Filesystem errno codes the class axis already knows.
+    Eperm,
+    Eacces,
+    Enospc,
+    Ebusy,
+    /// Nothing in the closed vocabulary matched.
+    Unknown,
+}
+
+impl RunnerErrorCause {
+    /// Every variant, in discriminant order, so content-safety and cross-crate
+    /// parity tests enumerate the emitter's own token set and `variant as usize`
+    /// indexes the rollup's count array.
+    pub const ALL: [RunnerErrorCause; 30] = [
+        Self::EntityNotFound,
+        Self::EntityPermission,
+        Self::EntityResolution,
+        Self::OperationLocked,
+        Self::OperationLockUnwritable,
+        Self::ScopeShrinkBlocked,
+        Self::ScopeShrinkLargePrune,
+        Self::DeltaGap,
+        Self::MultipartSourceChanged,
+        Self::MultipartAbort,
+        Self::RealtimeConflict,
+        Self::UnreachablePushPaths,
+        Self::PushEventDecode,
+        Self::LocalSnapshotChanged,
+        Self::RescuePathChanged,
+        Self::VaultIdentity,
+        Self::AccessDenied,
+        Self::NoSuchKey,
+        Self::NoSuchBucket,
+        Self::SlowDown,
+        Self::InternalError,
+        Self::RequestTimeout,
+        Self::ExpiredIdentity,
+        Self::InvalidIdentity,
+        Self::UnknownError,
+        Self::Eperm,
+        Self::Eacces,
+        Self::Enospc,
+        Self::Ebusy,
+        Self::Unknown,
+    ];
+
+    /// Fixed vocabulary safe for Sentry tags. Never derived from runner input.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EntityNotFound => "entity_not_found",
+            Self::EntityPermission => "entity_permission",
+            Self::EntityResolution => "entity_resolution",
+            Self::OperationLocked => "operation_locked",
+            Self::OperationLockUnwritable => "operation_lock_unwritable",
+            Self::ScopeShrinkBlocked => "scope_shrink_blocked",
+            Self::ScopeShrinkLargePrune => "scope_shrink_large_prune",
+            Self::DeltaGap => "delta_gap",
+            Self::MultipartSourceChanged => "multipart_source_changed",
+            Self::MultipartAbort => "multipart_abort",
+            Self::RealtimeConflict => "realtime_conflict",
+            Self::UnreachablePushPaths => "unreachable_push_paths",
+            Self::PushEventDecode => "push_event_decode",
+            Self::LocalSnapshotChanged => "local_snapshot_changed",
+            Self::RescuePathChanged => "rescue_path_changed",
+            Self::VaultIdentity => "vault_identity",
+            Self::AccessDenied => "access_denied",
+            Self::NoSuchKey => "no_such_key",
+            Self::NoSuchBucket => "no_such_bucket",
+            Self::SlowDown => "slow_down",
+            Self::InternalError => "internal_error",
+            Self::RequestTimeout => "request_timeout",
+            Self::ExpiredIdentity => "expired_identity",
+            Self::InvalidIdentity => "invalid_identity",
+            Self::UnknownError => "unknown_error",
+            Self::Eperm => "eperm",
+            Self::Eacces => "eacces",
+            Self::Enospc => "enospc",
+            Self::Ebusy => "ebusy",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Lower-case an identifier and drop every non-alphanumeric byte, bounded so a
+/// pathological token can never allocate without limit. Never emitted — used only
+/// to select a fixed token, so `AccessDenied`, `access_denied` and `access-denied`
+/// all resolve identically.
+fn canonical_identifier(identifier: &str) -> String {
+    identifier
+        .bytes()
+        .take(64)
+        .filter(u8::is_ascii_alphanumeric)
+        .map(|byte| byte.to_ascii_lowercase() as char)
+        .collect()
+}
+
+/// Resolve a raw identifier — an error `name`, or a `code=`/`cause=`/`syscall=`
+/// value — against the closed cause vocabulary, or `None` when nothing matches.
+fn cause_from_identifier(identifier: &str) -> Option<RunnerErrorCause> {
+    let cause = match canonical_identifier(identifier).as_str() {
+        // hq-cloud error class names, with the `Error` suffix the constructors set.
+        "entitynotfounderror" => RunnerErrorCause::EntityNotFound,
+        "entitypermissionerror" => RunnerErrorCause::EntityPermission,
+        "entityresolutionerror" => RunnerErrorCause::EntityResolution,
+        "operationlockederror" => RunnerErrorCause::OperationLocked,
+        "operationlockunwritableerror" => RunnerErrorCause::OperationLockUnwritable,
+        "scopeshrinkblockederror" => RunnerErrorCause::ScopeShrinkBlocked,
+        "scopeshrinklargepruneerror" => RunnerErrorCause::ScopeShrinkLargePrune,
+        "deltagaperror" => RunnerErrorCause::DeltaGap,
+        "multipartsourcechangederror" => RunnerErrorCause::MultipartSourceChanged,
+        "multipartaborterror" => RunnerErrorCause::MultipartAbort,
+        "realtimeconflicterror" => RunnerErrorCause::RealtimeConflict,
+        "unreachablepushpathserror" => RunnerErrorCause::UnreachablePushPaths,
+        "pusheventdecodeerror" => RunnerErrorCause::PushEventDecode,
+        "localsnapshotchangederror" => RunnerErrorCause::LocalSnapshotChanged,
+        "rescuepathchangederror" => RunnerErrorCause::RescuePathChanged,
+        // The vault identity family. The canonicalised class name is only ever a
+        // lookup key here, never an emitted token, so the emitted `vault_identity`
+        // stays denylist-free while the real class name still resolves.
+        "vaultautherror" | "vaultidentityerror" => RunnerErrorCause::VaultIdentity,
+        // AWS S3 / STS error names.
+        "accessdenied" => RunnerErrorCause::AccessDenied,
+        "nosuchkey" => RunnerErrorCause::NoSuchKey,
+        "nosuchbucket" => RunnerErrorCause::NoSuchBucket,
+        "slowdown" => RunnerErrorCause::SlowDown,
+        "internalerror" => RunnerErrorCause::InternalError,
+        "requesttimeout" => RunnerErrorCause::RequestTimeout,
+        "expiredtoken" | "expiredtokenexception" => RunnerErrorCause::ExpiredIdentity,
+        "invalidaccesskeyid" | "invalididentitytoken" | "invalidclienttokenid" => {
+            RunnerErrorCause::InvalidIdentity
+        }
+        "unknownerror" => RunnerErrorCause::UnknownError,
+        // Filesystem errno codes (a leading `EPERM:` token, or a `code=`/`cause=`
+        // value). The class axis already distinguishes exactly these four.
+        "eperm" => RunnerErrorCause::Eperm,
+        "eacces" => RunnerErrorCause::Eacces,
+        "enospc" => RunnerErrorCause::Enospc,
+        "ebusy" => RunnerErrorCause::Ebusy,
+        _ => return None,
+    };
+    Some(cause)
+}
+
+/// Read the whitespace-delimited value of a `describeError` `key=` (`code=EPERM`,
+/// `syscall=unlink`), or `None` when the key is absent. Anchored on a key at the
+/// start of input or preceded by ASCII whitespace, so `xcode=…` never matches.
+/// Only the value up to the next ASCII whitespace is inspected; nothing is kept.
+fn describe_error_key_value<'a>(message: &'a str, key: &str) -> Option<&'a str> {
+    let bytes = message.as_bytes();
+    for (idx, _) in message.match_indices(key) {
+        let boundary_ok = idx == 0 || bytes[idx - 1].is_ascii_whitespace();
+        if !boundary_ok {
+            continue;
+        }
+        let value = message[idx + key.len()..]
+            .split(|character: char| character.is_ascii_whitespace())
+            .next()
+            .unwrap_or("");
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Map an untrusted runner error message to a fixed cause token. Reads ONLY the
+/// leading name token and the values of the `code=`, `cause=` and `syscall=`
+/// `describeError` keys — never the `host=` value (the vault hostname) or any
+/// free prose — each looked up in the closed allow-list. Returns `Unknown` rather
+/// than a nearest guess, so the axis can only ever add information.
+pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
+    // 1. The leading name token — `describeError` pushes `e.name` first. A real
+    //    name never contains `=`, so a `key=value` leading token (name === "Error"
+    //    was skipped) falls through to the key scan below.
+    if let Some(token) = message.split_whitespace().next() {
+        if !token.contains('=') {
+            if let Some(cause) = cause_from_identifier(token) {
+                return cause;
+            }
+        }
+    }
+    // 2. The `code=`, `cause=` and `syscall=` key values, in that order. `host=`
+    //    is deliberately never read.
+    for key in ["code=", "cause=", "syscall="] {
+        if let Some(value) = describe_error_key_value(message, key) {
+            if let Some(cause) = cause_from_identifier(value) {
+                return cause;
+            }
+        }
+    }
+    RunnerErrorCause::Unknown
+}
+
+/// Saturating per-pass counts of the closed cause vocabulary, indexed by
+/// [`RunnerErrorCause`] discriminant. Renders a bounded Sentry tag such as
+/// `access_denied:8,unknown:160`. Unlike the HTTP axis, every recorded error
+/// contributes (an unrecognised message increments `unknown`), so the tag is
+/// present whenever any runner error was recorded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorCauseRollup {
+    counts: [u32; RunnerErrorCause::ALL.len()],
+}
+
+impl RunnerErrorCauseRollup {
+    /// Classify one runner error message and increment its cause count.
+    pub fn record(&mut self, message: &str) {
+        let index = classify_runner_error_cause(message) as usize;
+        self.counts[index] = self.counts[index].saturating_add(1);
+    }
+
+    /// Declaration-ordered `(token, count)` pairs — the tie-break for equal counts.
+    fn counts(&self) -> Vec<(&'static str, u32)> {
+        RunnerErrorCause::ALL
+            .iter()
+            .map(|&cause| (cause.as_str(), self.counts[cause as usize]))
+            .collect()
+    }
+
+    /// Render the top-N causes by count as a bounded Sentry tag. `None` when no
+    /// runner error was recorded, so no tag should be sent.
     pub fn tag_value(&self) -> Option<String> {
         render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
     }
@@ -656,38 +1208,10 @@ mod tests {
             "private_key",
             "privatekey",
         ];
-        let shape_tokens = [
-            RunnerErrorShape::ContainmentEscape,
-            RunnerErrorShape::DanglingSymlinkParent,
-            RunnerErrorShape::ConflictProbeFailed,
-            RunnerErrorShape::ConflictIndexWriteFailed,
-            RunnerErrorShape::TombstoneHeadVerifyFailed,
-            RunnerErrorShape::TombstoneUnlinkFailed,
-            RunnerErrorShape::ContentLengthMismatch,
-            RunnerErrorShape::PresignedGetFailed,
-            RunnerErrorShape::PresignedHeadFailed,
-            RunnerErrorShape::PresignNoRow,
-            RunnerErrorShape::Unknown,
-        ]
-        .map(RunnerErrorShape::as_str);
-        let path_tokens = [
-            RunnerPathRoot::Knowledge,
-            RunnerPathRoot::Projects,
-            RunnerPathRoot::Repos,
-            RunnerPathRoot::Sources,
-            RunnerPathRoot::Signals,
-            RunnerPathRoot::Data,
-            RunnerPathRoot::Settings,
-            RunnerPathRoot::Workers,
-            RunnerPathRoot::Registry,
-            RunnerPathRoot::Clients,
-            RunnerPathRoot::Core,
-            RunnerPathRoot::Companies,
-            RunnerPathRoot::Personal,
-            RunnerPathRoot::Workspace,
-            RunnerPathRoot::Other,
-        ]
-        .map(RunnerPathRoot::as_str);
+        let shape_tokens = RunnerErrorShape::ALL.map(RunnerErrorShape::as_str);
+        let path_tokens = RunnerPathRoot::ALL.map(RunnerPathRoot::as_str);
+        let http_tokens = RunnerErrorHttpStatus::ALL.map(RunnerErrorHttpStatus::as_str);
+        let cause_tokens = RunnerErrorCause::ALL.map(RunnerErrorCause::as_str);
         let stack_tokens = [
             RunnerStackInput::NdjsonErrorRecords,
             RunnerStackInput::PlainStderr,
@@ -698,6 +1222,8 @@ mod tests {
         for token in shape_tokens
             .into_iter()
             .chain(path_tokens)
+            .chain(http_tokens)
+            .chain(cause_tokens)
             .chain(stack_tokens)
         {
             for denied in DENYLIST {
@@ -707,5 +1233,272 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn http_and_cause_all_arrays_are_in_discriminant_order() {
+        // The rollups index their count arrays by `variant as usize`, so `ALL`
+        // must stay in discriminant order or a rollup would count the wrong token.
+        for (index, status) in RunnerErrorHttpStatus::ALL.into_iter().enumerate() {
+            assert_eq!(status as usize, index, "http ALL out of discriminant order");
+        }
+        for (index, cause) in RunnerErrorCause::ALL.into_iter().enumerate() {
+            assert_eq!(cause as usize, index, "cause ALL out of discriminant order");
+        }
+    }
+
+    #[test]
+    fn classify_runner_error_http_status_maps_verbatim_producer_strings() {
+        // describeError ` http=` grammar (company scope) and the presigned/HEAD
+        // `: <status>` tail (per-file), taken verbatim from the cited hq-cloud
+        // sources, plus the family fallbacks.
+        for (message, expected) in [
+            (
+                "AccessDenied http=403 The provided credentials could not be validated",
+                RunnerErrorHttpStatus::Http403,
+            ),
+            (
+                "NoSuchKey http=404 The specified key does not exist",
+                RunnerErrorHttpStatus::Http404,
+            ),
+            (
+                "InternalError http=500 We encountered an internal error",
+                RunnerErrorHttpStatus::Http500,
+            ),
+            (
+                "SlowDown http=503 Please reduce your request rate",
+                RunnerErrorHttpStatus::Http503,
+            ),
+            (
+                "Error http=409 journal write conflict",
+                RunnerErrorHttpStatus::Http409,
+            ),
+            (
+                "presigned GET failed for knowledge/a.md: 403 Forbidden",
+                RunnerErrorHttpStatus::Http403,
+            ),
+            (
+                "presigned HEAD failed for knowledge/a.md: 404 ",
+                RunnerErrorHttpStatus::Http404,
+            ),
+            (
+                "tombstone HEAD verify failed (deferring): 500 Internal Server Error",
+                RunnerErrorHttpStatus::Http500,
+            ),
+            // Unmodelled but valid statuses collapse to the family token.
+            ("Error http=418 teapot", RunnerErrorHttpStatus::Http4xx),
+            (
+                "Error http=599 network read timeout",
+                RunnerErrorHttpStatus::Http5xx,
+            ),
+        ] {
+            assert_eq!(
+                classify_runner_error_http_status(message),
+                Some(expected),
+                "message did not classify as expected: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_runner_error_http_status_never_reads_a_number_from_free_prose() {
+        // A three-digit number that is not an anchored HTTP status must never be
+        // mislabelled — a confident wrong status is worse than none.
+        for message in [
+            "downloaded 404 files",
+            "retry after 500 ms",
+            "tombstone unlink failed: EPERM",
+            "403",
+            "presigned GET succeeded for knowledge/a.md: 200 ",
+            "conflict convergence probe failed: ETIMEDOUT",
+            "download skipped: local parent escaped the sync root",
+            // A four-digit run after the key is not a three-digit status.
+            "Error http=4030 malformed",
+            // Out of the 100..=599 HTTP range.
+            "Error http=099 nonsense",
+            // A valid object key that itself contains `: <digits> ` makes the
+            // key/status boundary ambiguous, so no status is emitted rather than a
+            // wrong one (the number inside the key is never read as the status).
+            "presigned GET failed for knowledge/report: 123 notes.md: 500 Server Error",
+        ] {
+            assert_eq!(
+                classify_runner_error_http_status(message),
+                None,
+                "message should not yield a status: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_runner_error_http_status_attributes_sts_vend_failures() {
+        // Company-scope STS-vend failures carry the status in a tail with no
+        // `http=` key and no presigned shape (hq-cloud entity-resolver.ts). The
+        // narrow STS-vend gate recovers it via the same unambiguous-boundary parser.
+        for (message, expected) in [
+            (
+                "EntityResolutionError STS vending failed for entity 'acme': STS /sts/vend failed: 500 Internal Server Error",
+                RunnerErrorHttpStatus::Http500,
+            ),
+            (
+                "STS vend failed for cmp_01ABC: 503 Slow Down",
+                RunnerErrorHttpStatus::Http503,
+            ),
+            ("STS /sts/vend failed: 403 Forbidden", RunnerErrorHttpStatus::Http403),
+        ] {
+            assert_eq!(
+                classify_runner_error_http_status(message),
+                Some(expected),
+                "STS-vend message did not classify as expected: {message:?}"
+            );
+        }
+        // A normal presigned failure still resolves via the single unambiguous
+        // boundary — the review fix does not regress the common case.
+        assert_eq!(
+            classify_runner_error_http_status("presigned GET failed for repos/x: 500 Server Error"),
+            Some(RunnerErrorHttpStatus::Http500)
+        );
+        // But `sts`/`vend`/`failed` must all be present; a lone token stays None.
+        assert_eq!(
+            classify_runner_error_http_status("token vend failed for cmp: 500 nope"),
+            None
+        );
+    }
+
+    #[test]
+    fn http_rollup_renders_top_three_by_count_and_is_empty_when_no_status() {
+        let mut rollup = RunnerErrorHttpRollup::default();
+        for _ in 0..40 {
+            rollup.record("presigned GET failed for repos/x: 500 ");
+        }
+        for _ in 0..8 {
+            rollup.record("AccessDenied http=403 denied");
+        }
+        for _ in 0..2 {
+            rollup.record("Error http=404 missing");
+        }
+        // A statusless message contributes nothing — absence never renders.
+        for _ in 0..7205 {
+            rollup.record("download skipped: local parent escaped the sync root");
+        }
+        let value = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert_eq!(value, "http_500:40,http_403:8,http_404:2");
+        assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
+        assert_eq!(RunnerErrorHttpRollup::default().tag_value(), None);
+    }
+
+    #[test]
+    fn classify_runner_error_cause_maps_names_codes_and_defaults_to_unknown() {
+        for (message, expected) in [
+            // hq-cloud class names (describeError emits `this.name` first).
+            (
+                "EntityNotFoundError Entity 'acme' not found. Available: personal",
+                RunnerErrorCause::EntityNotFound,
+            ),
+            (
+                "OperationLockedError operation is locked",
+                RunnerErrorCause::OperationLocked,
+            ),
+            (
+                "DeltaGapError cursor gap detected",
+                RunnerErrorCause::DeltaGap,
+            ),
+            (
+                "RealtimeConflictError realtime convergence failed",
+                RunnerErrorCause::RealtimeConflict,
+            ),
+            // AWS S3 / STS names and the opaque wrapper.
+            (
+                "AccessDenied http=403 denied",
+                RunnerErrorCause::AccessDenied,
+            ),
+            ("NoSuchKey http=404 missing", RunnerErrorCause::NoSuchKey),
+            (
+                "UnknownError cause=EAI_AGAIN syscall=getaddrinfo host=vault.example",
+                RunnerErrorCause::UnknownError,
+            ),
+            // Node fs errno via a leading token and via `code=`.
+            (
+                "EPERM: operation not permitted, unlink 'k/a.md'",
+                RunnerErrorCause::Eperm,
+            ),
+            (
+                "Error code=EACCES syscall=open host=irrelevant",
+                RunnerErrorCause::Eacces,
+            ),
+            // Unmodelled name → Unknown, never a nearest guess.
+            (
+                "WidgetExplodedError the widget exploded",
+                RunnerErrorCause::Unknown,
+            ),
+            (
+                "presigned GET failed for k/a.md: 403 Forbidden",
+                RunnerErrorCause::Unknown,
+            ),
+        ] {
+            assert_eq!(
+                classify_runner_error_cause(message),
+                expected,
+                "message did not classify as expected: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_runner_error_cause_never_reads_the_host_value() {
+        // The vault hostname carries a company identifier and must never be read.
+        let message =
+            "AccessDenied http=403 host=hq-vault-cmp-abc123.s3.us-east-1.amazonaws.com denied";
+        let cause = classify_runner_error_cause(message);
+        assert_eq!(cause, RunnerErrorCause::AccessDenied);
+        assert!(
+            !cause.as_str().contains("hq-vault")
+                && !cause.as_str().contains("amazonaws")
+                && !cause.as_str().contains("abc123"),
+            "cause token leaked a host fragment: {}",
+            cause.as_str()
+        );
+    }
+
+    #[test]
+    fn cause_rollup_counts_unknown_and_renders_top_three() {
+        let mut rollup = RunnerErrorCauseRollup::default();
+        for _ in 0..160 {
+            rollup.record("download skipped: local parent escaped the sync root");
+        }
+        for _ in 0..8 {
+            rollup.record("AccessDenied http=403 denied");
+        }
+        for _ in 0..3 {
+            rollup.record("NoSuchKey http=404 missing");
+        }
+        let value = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert_eq!(value, "unknown:160,access_denied:8,no_such_key:3");
+        assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
+        assert_eq!(RunnerErrorCauseRollup::default().tag_value(), None);
+    }
+
+    #[test]
+    fn http_and_cause_rollups_are_order_independent_for_the_same_multiset() {
+        let messages = [
+            "AccessDenied http=403 denied",
+            "presigned GET failed for repos/x: 500 ",
+            "NoSuchKey http=404 missing",
+            "download skipped: local parent escaped the sync root",
+            "presigned GET failed for repos/y: 500 ",
+        ];
+        let mut forward_http = RunnerErrorHttpRollup::default();
+        let mut forward_cause = RunnerErrorCauseRollup::default();
+        for message in messages {
+            forward_http.record(message);
+            forward_cause.record(message);
+        }
+        let mut reverse_http = RunnerErrorHttpRollup::default();
+        let mut reverse_cause = RunnerErrorCauseRollup::default();
+        for message in messages.iter().rev() {
+            reverse_http.record(message);
+            reverse_cause.record(message);
+        }
+        assert_eq!(forward_http.tag_value(), reverse_http.tag_value());
+        assert_eq!(forward_cause.tag_value(), reverse_cause.tag_value());
     }
 }

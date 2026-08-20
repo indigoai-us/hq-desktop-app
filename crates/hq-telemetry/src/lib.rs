@@ -329,6 +329,102 @@ fn is_unmatched_stderr_shape_rollup(value: &str) -> bool {
         })
 }
 
+/// The closed message-shape rollup vocabulary, mirrored from
+/// `hq_desktop_core::runner_error_shape::RunnerErrorShape::as_str`. Kept in sync
+/// by `runner_error_rollup_vocabularies_match_across_crates`.
+const RUNNER_ERROR_SHAPE_TOKENS: &[&str] = &[
+    "containment_escape",
+    "dangling_symlink_parent",
+    "conflict_probe_failed",
+    "conflict_index_write_failed",
+    "tombstone_head_verify_failed",
+    "tombstone_unlink_failed",
+    "content_length_mismatch",
+    "presigned_get_failed",
+    "presigned_head_failed",
+    "presign_no_row",
+    "unknown",
+];
+
+/// The closed path-root rollup vocabulary, mirrored from
+/// `hq_desktop_core::runner_error_shape::RunnerPathRoot::as_str`.
+const RUNNER_ERROR_PATH_ROOT_TOKENS: &[&str] = &[
+    "knowledge",
+    "projects",
+    "repos",
+    "sources",
+    "signals",
+    "data",
+    "settings",
+    "workers",
+    "registry",
+    "clients",
+    "core",
+    "companies",
+    "personal",
+    "workspace",
+    "other",
+];
+
+/// The closed HTTP-status rollup vocabulary, mirrored from
+/// `hq_desktop_core::runner_error_shape::RunnerErrorHttpStatus::as_str`.
+const RUNNER_ERROR_HTTP_TOKENS: &[&str] = &[
+    "http_400", "http_401", "http_403", "http_404", "http_409", "http_412", "http_429", "http_4xx",
+    "http_500", "http_502", "http_503", "http_504", "http_5xx", "http_other",
+];
+
+/// The closed error-cause rollup vocabulary, mirrored from
+/// `hq_desktop_core::runner_error_shape::RunnerErrorCause::as_str`.
+const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
+    "entity_not_found",
+    "entity_permission",
+    "entity_resolution",
+    "operation_locked",
+    "operation_lock_unwritable",
+    "scope_shrink_blocked",
+    "scope_shrink_large_prune",
+    "delta_gap",
+    "multipart_source_changed",
+    "multipart_abort",
+    "realtime_conflict",
+    "unreachable_push_paths",
+    "push_event_decode",
+    "local_snapshot_changed",
+    "rescue_path_changed",
+    "vault_identity",
+    "access_denied",
+    "no_such_key",
+    "no_such_bucket",
+    "slow_down",
+    "internal_error",
+    "request_timeout",
+    "expired_identity",
+    "invalid_identity",
+    "unknown_error",
+    "eperm",
+    "eacces",
+    "enospc",
+    "ebusy",
+    "unknown",
+];
+
+/// A `token:count(,token:count)*` rollup whose tokens are all drawn from a closed
+/// `vocabulary` and whose counts are bare integers. Bounded so a malformed
+/// producer value can never carry a runner byte, path, or message fragment
+/// through egress. Shared by every runner-error rollup axis so each gets the same
+/// independent guard.
+fn is_closed_vocab_rollup(value: &str, vocabulary: &[&str], max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && value.split(',').all(|entry| {
+            entry.split_once(':').is_some_and(|(token, count)| {
+                vocabulary.contains(&token)
+                    && !count.is_empty()
+                    && count.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -414,6 +510,18 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "watcher_fault_exception_code" => Some(is_bounded_decimal(value, 10)),
         "watcher_fault_offset" => Some(is_bounded_decimal(value, 20)),
         "runner_unmatched_stderr_shapes" => Some(is_unmatched_stderr_shape_rollup(value)),
+        // Runner-error attribution rollups (HQ-DESKTOP-4T). Each producer renders a
+        // bounded, closed-vocabulary `token:count` rollup; these independent egress
+        // guards degrade a future producer bug to `[Filtered]` instead of shipping a
+        // raw path, message fragment, hostname, or company slug. `runner_error_shapes`
+        // and `runner_error_path_roots` predate this change and had NO egress guard —
+        // the same rollup family from the same seam — so they are registered here too.
+        "runner_error_shapes" => Some(is_closed_vocab_rollup(value, RUNNER_ERROR_SHAPE_TOKENS, 128)),
+        "runner_error_path_roots" => {
+            Some(is_closed_vocab_rollup(value, RUNNER_ERROR_PATH_ROOT_TOKENS, 128))
+        }
+        "runner_error_http" => Some(is_closed_vocab_rollup(value, RUNNER_ERROR_HTTP_TOKENS, 128)),
+        "runner_error_causes" => Some(is_closed_vocab_rollup(value, RUNNER_ERROR_CAUSE_TOKENS, 128)),
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
         // these independent egress checks degrade a producer bug to `[Filtered]`
@@ -1950,6 +2058,116 @@ mod tests {
                 valid_runner_stack_shape(token),
                 "producer token {token} must validate at egress"
             );
+        }
+    }
+
+    /// Cross-crate parity guard (HQ-DESKTOP-4T): each runner-error rollup axis's
+    /// egress vocabulary must equal the core producer's own `as_str` token set. A
+    /// producer variant added without registering it here would silently
+    /// `[Filtered]` exactly the attribution this change adds. This also proves the
+    /// pre-existing shapes/path-root axes — previously shipped with no egress guard
+    /// at all — now validate, and drives every producer token through the real
+    /// `before_send`.
+    #[test]
+    fn runner_error_rollup_vocabularies_match_across_crates() {
+        use hq_desktop_core::runner_error_shape::{
+            RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerPathRoot,
+        };
+        use std::collections::HashSet;
+
+        let axes: [(&str, &[&str], Vec<&'static str>); 4] = [
+            (
+                "runner_error_shapes",
+                RUNNER_ERROR_SHAPE_TOKENS,
+                RunnerErrorShape::ALL.iter().map(|&v| v.as_str()).collect(),
+            ),
+            (
+                "runner_error_path_roots",
+                RUNNER_ERROR_PATH_ROOT_TOKENS,
+                RunnerPathRoot::ALL.iter().map(|&v| v.as_str()).collect(),
+            ),
+            (
+                "runner_error_http",
+                RUNNER_ERROR_HTTP_TOKENS,
+                RunnerErrorHttpStatus::ALL.iter().map(|&v| v.as_str()).collect(),
+            ),
+            (
+                "runner_error_causes",
+                RUNNER_ERROR_CAUSE_TOKENS,
+                RunnerErrorCause::ALL.iter().map(|&v| v.as_str()).collect(),
+            ),
+        ];
+
+        for (key, mirror, producer) in axes {
+            let mirror_set: HashSet<&str> = mirror.iter().copied().collect();
+            let producer_set: HashSet<&str> = producer.iter().copied().collect();
+            assert_eq!(
+                mirror_set, producer_set,
+                "{key} vocabulary drifted between hq-telemetry and hq-desktop-core"
+            );
+            // Every producer token passes the egress guard as a single-entry rollup.
+            for token in &producer {
+                assert_eq!(
+                    valid_runner_diagnostic_field(key, &format!("{token}:7")),
+                    Some(true),
+                    "{key} producer token {token} must validate at egress"
+                );
+            }
+            // A rendered top-3 rollup survives the real before_send unchanged.
+            let rendered = producer
+                .iter()
+                .take(3)
+                .map(|token| format!("{token}:3"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), rendered.clone());
+            let out = before_send(event).expect("event sendable");
+            assert_eq!(out.tags[key], rendered, "{key} rendered rollup must survive");
+        }
+    }
+
+    /// The runner-error rollup egress guard degrades a malformed producer value to
+    /// `[Filtered]` rather than shipping a raw path, message fragment, off-vocabulary
+    /// token, non-numeric count, or unbounded value.
+    #[test]
+    fn runner_error_rollups_filter_malformed_values() {
+        for key in [
+            "runner_error_shapes",
+            "runner_error_path_roots",
+            "runner_error_http",
+            "runner_error_causes",
+        ] {
+            for bad in [
+                "not_a_token:1",                        // off-vocabulary token
+                "unknown:notanumber",                   // bad count or off-vocab token
+                "companies/acme/knowledge/secret.md:1", // a raw path
+                "http=403 the provided creds:1",        // a raw message fragment
+                "",                                     // empty
+            ] {
+                assert_eq!(
+                    valid_runner_diagnostic_field(key, bad),
+                    Some(false),
+                    "{key} must reject malformed value {bad:?}"
+                );
+            }
+            // An over-length value (many valid entries) is rejected by the length cap.
+            let over_long = std::iter::repeat("unknown:1")
+                .take(40)
+                .collect::<Vec<_>>()
+                .join(",");
+            assert_eq!(
+                valid_runner_diagnostic_field(key, &over_long),
+                Some(false),
+                "{key} must reject an over-length rollup"
+            );
+            // And a raw path degrades through the real before_send.
+            let mut event = Event::default();
+            event
+                .tags
+                .insert(key.to_string(), "companies/acme:1".to_string());
+            let out = before_send(event).expect("event sendable");
+            assert_eq!(out.tags[key], "[Filtered]", "{key} must filter a raw path");
         }
     }
 

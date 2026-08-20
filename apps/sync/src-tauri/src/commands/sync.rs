@@ -347,6 +347,17 @@ fn runner_exit_telemetry_context(
     if let Some(path_roots) = totals.runner_error_path_roots.tag_value() {
         tags.push(("runner_error_path_roots", path_roots));
     }
+    // HTTP-status and error-cause axes (HQ-DESKTOP-4T): the two facts the
+    // class/op/shape axes discard — the `http=`/`: <status>` status and the
+    // hq-cloud/AWS error identity. Read from the SAME RunTotals source the watcher
+    // route reads. Present only when something parsed, so an absent axis is
+    // simply absent rather than rendering as evidence.
+    if let Some(http) = totals.runner_error_http.tag_value() {
+        tags.push(("runner_error_http", http));
+    }
+    if let Some(causes) = totals.runner_error_causes.tag_value() {
+        tags.push(("runner_error_causes", causes));
+    }
     // Runner provenance: npx resolves `~6.14.x` at spawn, so the desktop release
     // tag alone cannot say which runner emitted the errors. Mirrors the watcher
     // route's watcher_hq_cloud_version/package.
@@ -3547,7 +3558,10 @@ mod tests {
                     "type": "error",
                     "company": "acme",
                     "path": "(company)",
-                    "message": "Entity cmp_SECRET NOT FOUND",
+                    // A real company-scope describeError rendering: a name, an
+                    // `http=` status, and a `host=` carrying a company identifier
+                    // that must never reach a tag.
+                    "message": "AccessDenied http=403 host=hq-vault-cmp_SECRET.s3.amazonaws.com Access Denied",
                 })
                 .to_string(),
             );
@@ -3609,6 +3623,14 @@ mod tests {
             event.tags["runner_error_path_roots"],
             "knowledge:120,repos:40"
         );
+        // The two axes this fix adds: the presigned-tail 500s (per-file) and the
+        // describeError http=403 (company scope), plus the AccessDenied cause on
+        // the company errors — none of which any prior axis carried.
+        assert_eq!(event.tags["runner_error_http"], "http_500:40,http_403:8");
+        assert_eq!(
+            event.tags["runner_error_causes"],
+            "unknown:160,access_denied:8"
+        );
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -3648,7 +3670,7 @@ mod tests {
             );
         }
 
-        // (3) No seeded path, filename, message fragment, or company leaks.
+        // (3) No seeded path, filename, message fragment, company, or host leaks.
         for forbidden in [
             "secret-a",
             "secret-b",
@@ -3656,8 +3678,10 @@ mod tests {
             "acme",
             "escaped the sync root",
             "presigned GET failed",
-            "Entity",
             "knowledge/secret",
+            // The describeError `host=` value must never be copied into a tag.
+            "amazonaws",
+            "hq-vault",
         ] {
             assert!(
                 !serialized.contains(forbidden),

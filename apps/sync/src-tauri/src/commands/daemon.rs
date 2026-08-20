@@ -1298,6 +1298,8 @@ struct WatcherExitCaptureContext {
     runner_error_ops: Option<String>,
     runner_error_shapes: Option<String>,
     runner_error_path_roots: Option<String>,
+    runner_error_http: Option<String>,
+    runner_error_causes: Option<String>,
     runner_error_scope: Option<String>,
     runner_error_companies: u32,
     runner_phase: String,
@@ -1404,6 +1406,8 @@ impl Default for WatcherExitCaptureContext {
             runner_error_ops: None,
             runner_error_shapes: None,
             runner_error_path_roots: None,
+            runner_error_http: None,
+            runner_error_causes: None,
             runner_error_scope: None,
             runner_error_companies: 0,
             runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
@@ -1543,6 +1547,8 @@ fn watcher_exit_capture_context(
         // source as the manual route so the two can never drift apart.
         runner_error_shapes: totals.runner_error_shapes.tag_value(),
         runner_error_path_roots: totals.runner_error_path_roots.tag_value(),
+        runner_error_http: totals.runner_error_http.tag_value(),
+        runner_error_causes: totals.runner_error_causes.tag_value(),
         runner_error_scope: totals.runner_error_scope(),
         runner_error_companies: totals.runner_error_company_count(),
         runner_phase: phase_context.phase.to_string(),
@@ -2488,6 +2494,14 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
     if let Some(path_roots) = &context.runner_error_path_roots {
         tags.push(("runner_error_path_roots", path_roots.clone()));
+    }
+    // HTTP-status and error-cause axes (HQ-DESKTOP-4T), byte-identical to the
+    // manual route from the same RunTotals source so the two seams cannot drift.
+    if let Some(http) = &context.runner_error_http {
+        tags.push(("runner_error_http", http.clone()));
+    }
+    if let Some(causes) = &context.runner_error_causes {
+        tags.push(("runner_error_causes", causes.clone()));
     }
     if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none() {
         if let Some(attribution) = context.windows_terminator {
@@ -5964,11 +5978,13 @@ mod tests {
             totals.record_error(&SyncErrorEvent {
                 company: Some("acme".to_string()),
                 path: "(company)".to_string(),
-                message: "Entity cmp_SECRET NOT FOUND".to_string(),
+                message:
+                    "AccessDenied http=403 host=hq-vault-cmp_SECRET.s3.amazonaws.com Access Denied"
+                        .to_string(),
             });
         }
         let ndjson_tail = vec![
-            r#"{"type":"error","company":"acme","path":"(company)","message":"Entity cmp_SECRET NOT FOUND"}"#
+            r#"{"type":"error","company":"acme","path":"(company)","message":"AccessDenied http=403 host=hq-vault-cmp_SECRET.s3.amazonaws.com Access Denied"}"#
                 .to_string(),
         ];
 
@@ -5979,6 +5995,8 @@ mod tests {
             runner_error_ops: totals.runner_error_ops.tag_value(),
             runner_error_shapes: totals.runner_error_shapes.tag_value(),
             runner_error_path_roots: totals.runner_error_path_roots.tag_value(),
+            runner_error_http: totals.runner_error_http.tag_value(),
+            runner_error_causes: totals.runner_error_causes.tag_value(),
             runner_error_scope: totals.runner_error_scope(),
             runner_stack_input: classify_runner_stack_input(&ndjson_tail)
                 .as_str()
@@ -6014,6 +6032,14 @@ mod tests {
             recorded_tag(event, "runner_error_path_roots"),
             "knowledge:120,repos:40"
         );
+        // The two new axes are emitted at the watcher seam byte-identically to the
+        // manual seam: presigned-tail 500s (per-file) and describeError http=403
+        // (company scope), with a real cause on the company errors.
+        assert_eq!(recorded_tag(event, "runner_error_http"), "http_500:40,http_403:8");
+        assert_eq!(
+            recorded_tag(event, "runner_error_causes"),
+            "unknown:160,access_denied:8"
+        );
         assert_eq!(
             recorded_string_extra(event, "runner_error_scope"),
             "company:8,file:160"
@@ -6036,6 +6062,9 @@ mod tests {
             "cmp_SECRET",
             "acme",
             "escaped the sync root",
+            // The describeError `host=` value must never be read into a tag.
+            "amazonaws",
+            "hq-vault",
         ] {
             assert!(
                 wire_strings.iter().all(|value| !value.contains(forbidden)),
