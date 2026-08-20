@@ -268,6 +268,75 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// `Command::new` will then error with the original "os error 2", which
 /// surfaces as a sync error the UI can show. We don't invent a path that
 /// doesn't exist.
+/// Read `env.PATH` from the HQ root's Claude Code settings and return its
+/// directories, most-authoritative file first. `.claude/settings.local.json`
+/// (the machine-local override that a session — and the `ensure-hq-cli` hook —
+/// writes) wins over the generated `.claude/settings.json`. Only absolute,
+/// existing directories are returned, de-duplicated in file/segment order.
+///
+/// This is what lets the app resolve the SAME `hq` a Claude Code session would:
+/// the session finds `hq` via this PATH, so the version check / auto-update /
+/// install must consult it too, or it wrongly concludes the CLI is missing or
+/// stale when it merely lives on a prefix only the settings PATH knows about.
+pub(crate) fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
+    let claude = hq_root.join(".claude");
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for file in ["settings.local.json", "settings.json"] {
+        let raw = match std::fs::read_to_string(claude.join(file)) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let value: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let path_val = value
+            .get("env")
+            .and_then(|env| env.get("PATH"))
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        if path_val.is_empty() {
+            continue;
+        }
+        for seg in path_val.split(PATH_SEP) {
+            if seg.is_empty() {
+                continue;
+            }
+            let dir = PathBuf::from(seg);
+            // Absolute + real directory only: a relative or missing entry from a
+            // hand-edited settings file must not shadow the real search order.
+            if dir.is_absolute() && dir.is_dir() && seen.insert(dir.clone()) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
+}
+
+/// Zero-arg HQ folder resolution for PATH lookups: menubar.json `hqPath`, then
+/// config.json `hqFolderPath`, then core.yaml discovery, then `~/HQ`. Mirrors
+/// [`crate::agency::resolve_hq_folder`] without reaching outside this module so
+/// `paths` stays self-contained.
+fn resolved_hq_folder_for_path() -> PathBuf {
+    fn json_str_field(path: Result<PathBuf, String>, key: &str) -> Option<String> {
+        let p = path.ok()?;
+        let s = std::fs::read_to_string(&p).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+        v.get(key)?.as_str().map(str::to_string)
+    }
+    // resolve_hq_folder priority is (menubar override, then config path).
+    let menubar = json_str_field(menubar_json_path(), "hqPath");
+    let config = json_str_field(config_json_path(), "hqFolderPath");
+    resolve_hq_folder(config.as_deref(), menubar.as_deref())
+}
+
+/// [`settings_path_dirs_in`] against the resolved HQ folder. Empty when there is
+/// no HQ folder or settings file, so callers degrade to their existing search.
+pub(crate) fn settings_path_dirs() -> Vec<PathBuf> {
+    settings_path_dirs_in(&resolved_hq_folder_for_path())
+}
+
 pub fn resolve_bin(name: &str) -> String {
     resolve_bin_with_kind(name).path
 }
@@ -283,6 +352,15 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
     #[cfg(target_os = "windows")]
     {
         let candidates = candidate_filenames(name);
+
+        // Strict session parity for `hq`: prefer the exact binary a Claude Code
+        // session would resolve via `env.PATH` in .claude/settings.local.json,
+        // ahead of the app's managed toolchain and every other search dir.
+        if name == "hq" {
+            if let Some(found) = select_program_on_disk(&settings_path_dirs(), &candidates) {
+                return found;
+            }
+        }
 
         if let Some(found) = select_program_on_disk(&extended_search_dirs(), &candidates) {
             return found;
@@ -310,6 +388,21 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Strict session parity for `hq`: prefer the exact binary a Claude Code
+        // session would resolve via `env.PATH` in .claude/settings.local.json,
+        // ahead of the app's managed toolchain and every other search dir.
+        if name == "hq" {
+            for dir in settings_path_dirs() {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    return ResolvedProgram {
+                        path: candidate.to_string_lossy().to_string(),
+                        kind: ResolvedProgramKind::Exe,
+                    };
+                }
+            }
+        }
+
         // Unix has no extension-based spawnability contract: a file the
         // resolver found is a program the loader will attempt. Report it as
         // `Exe` so the closed diagnostics stay meaningful cross-platform.
@@ -798,6 +891,15 @@ pub fn child_path() -> String {
         let mut parts: Vec<String> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+        // Claude Code settings PATH first — strict parity with the PATH a
+        // session hands to `hq`, so a node-shebanged `hq` finds the same tools.
+        for dir in settings_path_dirs() {
+            let s = dir.to_string_lossy().to_string();
+            if !s.is_empty() && seen.insert(s.to_lowercase()) {
+                parts.push(s);
+            }
+        }
+
         for dir in extended_search_dirs() {
             let s = dir.to_string_lossy().to_string();
             if !s.is_empty() && seen.insert(s.to_lowercase()) {
@@ -833,6 +935,12 @@ pub fn child_path() -> String {
     #[cfg(not(target_os = "windows"))]
     {
         let mut parts: Vec<String> = Vec::new();
+
+        // Claude Code settings PATH first — strict parity with the PATH a
+        // session hands to `hq`, so a node-shebanged `hq` finds the same tools.
+        for dir in settings_path_dirs() {
+            parts.push(dir.to_string_lossy().to_string());
+        }
 
         if let Some(home) = home_dir() {
             // Managed HQ toolchain (installed by hq-installer) — checked first
@@ -883,6 +991,11 @@ pub fn child_path() -> String {
                 }
             }
         }
+
+        // Stable de-dup: a settings-PATH dir may repeat a managed/system entry
+        // pushed later. Keep the first (highest-priority) occurrence.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        parts.retain(|p| seen.insert(p.clone()));
 
         parts.join(&PATH_SEP.to_string())
     }
@@ -1025,6 +1138,112 @@ mod tests {
     fn test_hq_config_dir() {
         let dir = hq_config_dir().unwrap();
         assert!(dir.ends_with(".hq"));
+    }
+
+    // ---- settings_path_dirs_in: the strict-parity PATH reader -------------
+
+    /// Write `.claude/<file>` under `root` with the given JSON body.
+    fn write_settings(root: &Path, file: &str, body: &str) {
+        let claude = root.join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join(file), body).unwrap();
+    }
+
+    #[test]
+    fn settings_path_dirs_reads_local_env_path_in_order() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let sep = PATH_SEP;
+        write_settings(
+            root,
+            "settings.local.json",
+            &format!(
+                "{{\"env\":{{\"PATH\":\"{}{sep}{}\"}}}}",
+                a.display(),
+                b.display()
+            ),
+        );
+        let dirs = settings_path_dirs_in(root);
+        assert_eq!(dirs, vec![a, b]);
+    }
+
+    #[test]
+    fn settings_path_dirs_local_wins_and_merges_base() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let local = tmp.path().join("local");
+        let base = tmp.path().join("base");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&base).unwrap();
+        write_settings(
+            root,
+            "settings.local.json",
+            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", local.display()),
+        );
+        write_settings(
+            root,
+            "settings.json",
+            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
+        );
+        // local first (higher authority), then base appended.
+        assert_eq!(settings_path_dirs_in(root), vec![local, base]);
+    }
+
+    #[test]
+    fn settings_path_dirs_dedups_across_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let shared = tmp.path().join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        write_settings(
+            root,
+            "settings.local.json",
+            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", shared.display()),
+        );
+        write_settings(
+            root,
+            "settings.json",
+            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", shared.display()),
+        );
+        assert_eq!(settings_path_dirs_in(root), vec![shared]);
+    }
+
+    #[test]
+    fn settings_path_dirs_skips_relative_and_missing_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let sep = PATH_SEP;
+        write_settings(
+            root,
+            "settings.local.json",
+            &format!(
+                "{{\"env\":{{\"PATH\":\"{}{sep}some/relative/dir{sep}{}\"}}}}",
+                real.display(),
+                missing.display()
+            ),
+        );
+        // Only the absolute, existing directory survives.
+        assert_eq!(settings_path_dirs_in(root), vec![real]);
+    }
+
+    #[test]
+    fn settings_path_dirs_empty_when_no_settings_or_no_env_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // No .claude at all.
+        assert!(settings_path_dirs_in(tmp.path()).is_empty());
+        // Present but no env.PATH key.
+        write_settings(tmp.path(), "settings.local.json", "{\"env\":{}}");
+        assert!(settings_path_dirs_in(tmp.path()).is_empty());
+        // Malformed JSON is ignored, not a panic.
+        write_settings(tmp.path(), "settings.json", "{not json");
+        assert!(settings_path_dirs_in(tmp.path()).is_empty());
     }
 
     #[test]
