@@ -147,6 +147,14 @@ async fn invoke_mutation(input: MutationInput) -> MutationOutcome {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    // Its own process group, so the CPU governor is allowed to throttle it.
+    // Without this the child inherits the app's group, and the governor
+    // refuses to signal that one on purpose — `killpg` there would freeze the
+    // UI along with the work. Every realtime mutation therefore used to run
+    // outside the machine-wide ceiling, which on a busy tree is a steady
+    // fraction of a core the operator was promised would be capped.
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -157,6 +165,12 @@ async fn invoke_mutation(input: MutationInput) -> MutationOutcome {
             return MutationOutcome::Retry;
         }
     };
+    // A group leader's pid IS its pgid, so this covers the child and anything
+    // it spawns. The guard lives to the end of this function — which outlives
+    // the child — and its drop always resumes the group.
+    let _cpu_throttle = child
+        .id()
+        .and_then(|pid| hq_desktop_core::cpu_throttle::CpuThrottle::attach(pid as i32));
     let Some(mut stdin) = child.stdin.take() else {
         log("realtime-mutation", "realtime mutation stdin pipe missing");
         return MutationOutcome::Retry;

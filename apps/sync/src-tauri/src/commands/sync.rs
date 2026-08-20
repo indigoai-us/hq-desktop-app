@@ -78,12 +78,20 @@ use crate::util::paths;
 /// Singleton handle — only one sync at a time.
 const SYNC_HANDLE: &str = "hq-sync";
 
-/// Hard timeout for a sync run (1 hour of unthrottled wall time).
+/// Hard timeout for a sync run (4 hours of runnable time).
 ///
 /// Spent through [`hq_desktop_core::cpu_throttle::RunnableDeadline`], never as
 /// plain wall time: the CPU ceiling duty-cycles the runner, and a wall-clock
 /// watchdog would cancel precisely the long passes it exists to let finish.
-const SYNC_TIMEOUT: Duration = Duration::from_secs(3600);
+///
+/// It was one hour, which the CPU ceiling turned out to make too tight: a
+/// first-push of a few thousand files on a large tree genuinely needs more
+/// than an hour of *work*, and the watchdog cancelled it mid-flight — the
+/// operator saw a sync that simply never completed. Crediting stopped time
+/// does not help there, because the budget being exhausted is real work, not
+/// throttled-away time. A capped sync is meant to be slow, so the budget has
+/// to be large enough for slow to still mean finishing.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
 
 /// SIGKILL delay after SIGTERM on cancel.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);

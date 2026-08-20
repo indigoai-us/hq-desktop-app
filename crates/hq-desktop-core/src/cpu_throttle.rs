@@ -375,6 +375,27 @@ pub struct Governor<S: CpuSampler, G: GroupSignaller> {
     /// command is not killed for time it was never allowed to use.
     stopped_since: Option<Instant>,
     total_stopped: Duration,
+    /// Physical capacity, used only to bound a first-sighting's credited CPU —
+    /// see `ingest`. Held as a field rather than read per sample so tests can
+    /// pin it and assert the cap deterministically on any host.
+    machine_cores: f64,
+    /// Rate (in cores) the registered set sustained over the last window that
+    /// produced a usable delta. Reporting only — the controller keeps its own
+    /// state — but it is what makes a throttling decision explicable in the
+    /// log instead of something an operator has to infer from `ps`.
+    last_measured_cores: f64,
+}
+
+/// A snapshot of what the governor is doing, for logging.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GovernorState {
+    pub groups: Vec<i32>,
+    pub measured_cores: f64,
+    pub target_cores: f64,
+    pub run_fraction: f64,
+    /// Whether the duty cycle is actually issuing signals, as opposed to
+    /// running the groups flat out because they are under budget.
+    pub throttling: bool,
 }
 
 /// What the governor wants applied for the next cycle.
@@ -398,6 +419,27 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             stopped: false,
             stopped_since: None,
             total_stopped: Duration::ZERO,
+            machine_cores: machine_cores(),
+            last_measured_cores: 0.0,
+        }
+    }
+
+    /// Pin the physical-capacity figure. Tests only: production reads the real
+    /// machine in [`Self::new`], and a test that asserts the first-sighting cap
+    /// must not depend on how many cores the host running it happens to have.
+    pub fn set_machine_cores(&mut self, cores: f64) {
+        self.machine_cores = cores.max(1.0);
+    }
+
+    /// What the governor is currently doing — for the log line, not control.
+    pub fn state(&self) -> GovernorState {
+        GovernorState {
+            groups: self.groups.clone(),
+            measured_cores: self.last_measured_cores,
+            target_cores: self.controller.target_cores(),
+            run_fraction: self.controller.run_fraction(),
+            throttling: !self.groups.is_empty()
+                && self.controller.run_fraction() < UNTHROTTLED_FRACTION,
         }
     }
 
@@ -466,6 +508,7 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
     pub fn ingest(&mut self, now_cpu: HashMap<i32, f64>, elapsed: Duration) -> Tick {
         if self.groups.is_empty() {
             self.last_cpu_seconds.clear();
+            self.last_measured_cores = 0.0;
             self.last_delta.clear();
             // Reset the duty cycle with the workload that earned it. Otherwise a
             // CPU-heavy sync leaves the fraction near its floor, and the next
@@ -486,6 +529,7 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             // group is a harmless ESRCH, and an idle governor has no business
             // holding anything stopped.
             self.last_cpu_seconds.clear();
+            self.last_measured_cores = 0.0;
             self.resume_all();
             return Tick::Idle;
         }
@@ -497,12 +541,24 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
             // absent from `now_cpu` — its final slice is unobservable, and
             // crucially its departure can no longer drag the total down and
             // hide a busy sibling's work.
+            //
+            // "In full" needs a ceiling, though. A first sighting is USUALLY a
+            // short-lived worker born inside the window, but it is also what a
+            // long-lived process looks like the moment its group joins the
+            // governor — a watch daemon registered after running for an hour
+            // arrives carrying an hour of CPU. Crediting that to a one-second
+            // window reports a rate hundreds of times the machine's capacity,
+            // which pins the shared duty cycle at its floor and starves every
+            // other registered group for the many damped samples it takes to
+            // climb back. No process can burn more CPU in a window than the
+            // machine can deliver, so that is the cap.
+            let first_sighting_ceiling = wall * self.machine_cores;
             let mut consumed = 0.0;
             let mut delta = HashMap::with_capacity(now_cpu.len());
             for (pid, now) in &now_cpu {
                 let d = match self.last_cpu_seconds.get(pid) {
                     Some(prev) => (now - prev).max(0.0),
-                    None => now.max(0.0),
+                    None => now.max(0.0).min(first_sighting_ceiling),
                 };
                 delta.insert(*pid, d);
                 consumed += d;
@@ -521,7 +577,9 @@ impl<S: CpuSampler, G: GroupSignaller> Governor<S, G> {
                 }
             }
             self.last_delta = delta;
-            self.controller.observe(consumed / wall);
+            let measured = consumed / wall;
+            self.last_measured_cores = measured;
+            self.controller.observe(measured);
         }
         self.last_cpu_seconds = now_cpu;
         let (run, stop) = self.controller.cycle_split(CYCLE);
@@ -618,6 +676,7 @@ fn abandon_governor(shared: &SharedGovernor) {
 fn governor_loop(shared: SharedGovernor) {
     let mut last_sample = Instant::now();
     let mut elapsed = SAMPLE_INTERVAL;
+    let mut reporter = ThrottleReporter::new();
     loop {
         // Resume BEFORE measuring. The previous cycle ends in its stop phase,
         // and `ps` is an unbounded external process: sampling while stopped
@@ -641,13 +700,15 @@ fn governor_loop(shared: SharedGovernor) {
             PsSampler.groups_cpu_seconds(&groups)
         };
 
-        let tick = {
+        let (tick, state) = {
             let Ok(mut g) = shared.lock() else {
                 abandon_governor(&shared);
                 return;
             };
-            g.ingest(now_cpu, elapsed)
+            let tick = g.ingest(now_cpu, elapsed);
+            (tick, g.state())
         };
+        reporter.observe(&state);
 
         match tick {
             Tick::Idle => std::thread::sleep(SAMPLE_INTERVAL),
@@ -733,6 +794,209 @@ fn own_process_group() -> i32 {
 // ─────────────────────────────────────────────────────────────────────────────
 // Production seams
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// How often the governor restates an ongoing throttle in the log. Transitions
+/// are always reported; this only bounds the "still throttling" heartbeat.
+const REPORT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Pure decision: should the governor emit a log line now?
+///
+/// Split out from [`ThrottleReporter`] so the cadence is testable without a
+/// clock or a log file. `prev` is `None` before anything has been reported.
+pub fn should_report_throttle(prev: Option<bool>, now: bool, since_last: Duration) -> bool {
+    match prev {
+        // First observation is worth a line only if something is happening;
+        // an app that never throttles should not open with a log entry saying
+        // so, and then never speak again.
+        None => now,
+        // A transition either way is always news.
+        Some(was) if was != now => true,
+        // Steady state: restate an ongoing throttle periodically so an
+        // operator reading the log can see it is still in force, but say
+        // nothing at all while under budget.
+        Some(_) => now && since_last >= REPORT_INTERVAL,
+    }
+}
+
+/// Emits the governor's decisions to the HQ log.
+///
+/// The first version of this module logged nothing, which made a live
+/// investigation disproportionately hard: answering "is the ceiling actually
+/// being enforced right now?" meant polling `ps` for `T` states and inferring
+/// the duty cycle from CPU-time deltas. The governor already knows the answer;
+/// it just never said it out loud.
+struct ThrottleReporter {
+    last_throttling: Option<bool>,
+    last_report: Instant,
+}
+
+impl ThrottleReporter {
+    fn new() -> Self {
+        Self {
+            last_throttling: None,
+            last_report: Instant::now(),
+        }
+    }
+
+    fn observe(&mut self, state: &GovernorState) {
+        if !should_report_throttle(
+            self.last_throttling,
+            state.throttling,
+            self.last_report.elapsed(),
+        ) {
+            self.last_throttling = Some(state.throttling);
+            return;
+        }
+        let groups = state
+            .groups
+            .iter()
+            .map(|g| g.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let msg = if state.throttling {
+            format!(
+                "holding groups [{}] to {:.2} cores — measured {:.2}, running {:.0}% of each cycle",
+                groups,
+                state.target_cores,
+                state.measured_cores,
+                state.run_fraction * 100.0
+            )
+        } else {
+            format!(
+                "released groups [{}] — measured {:.2} cores, under the {:.2} ceiling",
+                groups, state.measured_cores, state.target_cores
+            )
+        };
+        crate::logfile::log("cpu-throttle", &msg);
+        self.last_throttling = Some(state.throttling);
+        self.last_report = Instant::now();
+    }
+}
+
+/// Smallest amount of accumulated busy time an [`InProcessPacer`] will sleep
+/// on. Pacing every single file would spend more time in `nanosleep` bookkeeping
+/// than in work; batching into slices keeps the overhead invisible while still
+/// yielding many times a second.
+const PACER_SLICE: Duration = Duration::from_millis(25);
+
+/// How long to sleep after `busy` time working, to hold an average duty cycle
+/// of `duty`.
+///
+/// Pure so the arithmetic is testable. `duty >= 1.0` means "no pacing".
+pub fn pacer_sleep_for(busy: Duration, duty: f64) -> Duration {
+    if !duty.is_finite() || duty >= 1.0 {
+        return Duration::ZERO;
+    }
+    let duty = duty.max(MIN_RUN_FRACTION);
+    busy.mul_f64((1.0 / duty) - 1.0)
+}
+
+/// The duty cycle in-process work must hold to stay inside the ceiling, or
+/// `None` when throttling is off.
+///
+/// A single thread can consume at most one core, so the fraction of the time it
+/// may run IS its core budget: a 0.5-core budget means run half the time. A
+/// budget of a core or more does not constrain one thread at all.
+pub fn configured_in_process_duty() -> Option<f64> {
+    let percent = configured_max_machine_cpu_percent()?;
+    let target = target_cores(percent, machine_cores());
+    if target <= 0.0 {
+        return None;
+    }
+    Some(target.min(1.0))
+}
+
+/// Cooperative CPU pacing for work that runs *inside* the app's own process.
+///
+/// The duty-cycle governor cannot help here, by design: it enforces the ceiling
+/// with `SIGSTOP` on a child's process group and refuses to signal the group
+/// the app itself lives in, because `killpg` there would freeze the UI along
+/// with the work. So HQ's one CPU-heavy in-process job — the "Preparing sync…"
+/// pre-pass, which reads and SHA-256s every syncable file — ran at full speed
+/// no matter what the ceiling said. On a large HQ root that is a multi-minute
+/// single-core burn the operator feels and the governor never touches.
+///
+/// The remedy is for such a loop to pace itself. Call [`Self::tick`] once per
+/// unit of work; it tracks how long the loop has actually been busy and, once
+/// that reaches a slice worth sleeping on, sleeps long enough to hold the
+/// loop's average CPU at the configured share of the machine. The work takes
+/// longer in wall-clock terms, which is the intended trade: the ceiling is a
+/// promise about CPU, not about latency.
+///
+/// This is a *second* consumer of the same budget rather than a participant in
+/// the shared one — it cannot join the duty cycle, since it has no group to
+/// signal. In practice they do not overlap: the pre-pass runs to completion
+/// before the sync runner it is measuring for is spawned.
+pub struct InProcessPacer {
+    duty: Option<f64>,
+    busy_since: Instant,
+    accumulated: Duration,
+}
+
+impl InProcessPacer {
+    /// A pacer honouring the configured machine-wide ceiling.
+    pub fn new() -> Self {
+        Self::with_duty(configured_in_process_duty())
+    }
+
+    /// A pacer with an explicit duty cycle. `None` disables pacing.
+    pub fn with_duty(duty: Option<f64>) -> Self {
+        Self {
+            duty: duty.filter(|d| d.is_finite() && *d < 1.0),
+            busy_since: Instant::now(),
+            accumulated: Duration::ZERO,
+        }
+    }
+
+    /// Whether this pacer will ever sleep.
+    pub fn is_pacing(&self) -> bool {
+        self.duty.is_some()
+    }
+
+    /// Charge an explicitly measured amount of busy time, sleeping once enough
+    /// has accumulated to be worth a pause.
+    ///
+    /// Preferred over [`Self::tick`] when only *part* of a loop is expensive.
+    /// The sync pre-pass is the motivating case: it walks a very large tree but
+    /// only a handful of files actually need reading and hashing. Charging the
+    /// hashing alone paces the cost that matters and leaves the cheap
+    /// `stat`-only walk running at full speed — pacing the whole walk would
+    /// stretch a twenty-second traversal into several minutes to save CPU that
+    /// was never being spent.
+    pub fn charge(&mut self, busy: Duration) {
+        let Some(duty) = self.duty else {
+            return;
+        };
+        self.accumulated += busy;
+        if self.accumulated < PACER_SLICE {
+            return;
+        }
+        let sleep = pacer_sleep_for(self.accumulated, duty);
+        self.accumulated = Duration::ZERO;
+        if !sleep.is_zero() {
+            std::thread::sleep(sleep);
+        }
+        // Restart the busy window *after* sleeping, so the pause is not itself
+        // counted as work and immediately repaid with another pause.
+        self.busy_since = Instant::now();
+    }
+
+    /// Account for the wall time since the last tick, sleeping if the loop has
+    /// earned a pause. For loops whose every iteration is expensive; use
+    /// [`Self::charge`] when only part of the iteration is.
+    pub fn tick(&mut self) {
+        let now = Instant::now();
+        let busy = now.saturating_duration_since(self.busy_since);
+        self.busy_since = now;
+        self.charge(busy);
+    }
+}
+
+impl Default for InProcessPacer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Samples cumulative group CPU with one `ps` call. `ps` is used rather than
 /// libproc FFI because the whole point of this module is to *reduce* load: one
@@ -889,6 +1153,208 @@ mod tests {
             Governor::new(target, ScriptedSampler::new(script), sig.clone()),
             sig,
         )
+    }
+
+    // --- first-sighting credit cap ------------------------------------------
+
+    /// A long-lived process whose group registers late arrives at its first
+    /// sample carrying every second of CPU it has ever used. Crediting that to
+    /// one window reports a rate the machine cannot physically produce, and the
+    /// controller then pins the shared duty cycle at its floor — punishing every
+    /// other registered group for an accounting artefact.
+    #[test]
+    fn first_sighting_cannot_credit_more_cpu_than_the_machine_can_deliver() {
+        // pid 42 shows up already holding an hour of CPU.
+        let (mut g, _sig) = governor(0.5, vec![one(42, 3600.0), one(42, 3600.1)]);
+        g.set_machine_cores(8.0);
+        g.register(100);
+
+        // First sample only establishes a baseline — no delta yet.
+        g.sample(Duration::from_secs(1));
+        // Second sample: pid 42 was seen before, so the delta is the honest
+        // 0.1s. The cap matters for the sample where it FIRST appears, which is
+        // exercised below with a mid-run joiner.
+        g.sample(Duration::from_secs(1));
+        assert!(g.state().measured_cores < 8.0);
+    }
+
+    #[test]
+    fn a_group_joining_mid_run_does_not_slam_the_duty_cycle_to_the_floor() {
+        // pid 1 is a modest, already-tracked worker. pid 2 is a watch daemon
+        // that has been running for an hour and only now joins the governor.
+        let script = vec![
+            HashMap::from([(1, 10.0)]),
+            HashMap::from([(1, 10.2), (2, 3600.0)]),
+        ];
+        let (mut g, _sig) = governor(0.5, script);
+        g.set_machine_cores(4.0);
+        g.register(100);
+
+        g.sample(Duration::from_secs(1)); // baseline
+        g.sample(Duration::from_secs(1)); // pid 2's first sighting
+
+        // Uncapped this would report 3600.2 cores on a 4-core box. Capped, the
+        // worst it can claim is the whole machine for the whole window, plus
+        // pid 1's honest delta.
+        assert!(
+            g.state().measured_cores <= 4.0 + 0.3,
+            "measured {} cores on a 4-core machine",
+            g.state().measured_cores
+        );
+        // And the duty cycle lands somewhere sane rather than at the floor.
+        assert!(
+            g.run_fraction() > MIN_RUN_FRACTION,
+            "run fraction {} pinned to the floor by an accounting artefact",
+            g.run_fraction()
+        );
+    }
+
+    #[test]
+    fn a_genuinely_new_short_lived_worker_is_still_credited_in_full() {
+        // The cap must not blind the governor to a burst of real short-lived
+        // children — the case the per-pid accounting exists for.
+        let script = vec![
+            HashMap::from([(1, 1.0)]),
+            HashMap::from([(1, 1.0), (2, 0.9), (3, 0.9)]),
+        ];
+        let (mut g, _sig) = governor(0.5, script);
+        g.set_machine_cores(8.0);
+        g.register(100);
+
+        g.sample(Duration::from_secs(1));
+        g.sample(Duration::from_secs(1));
+
+        // 1.8 cores of genuinely new work is well under the 8-core cap, so it
+        // is credited in full and the controller reacts to it.
+        assert!((g.state().measured_cores - 1.8).abs() < 0.01);
+        assert!(g.run_fraction() < 1.0);
+    }
+
+    // --- reporting cadence --------------------------------------------------
+
+    #[test]
+    fn nothing_is_reported_until_something_is_actually_throttled() {
+        assert!(!should_report_throttle(None, false, Duration::ZERO));
+        assert!(should_report_throttle(None, true, Duration::ZERO));
+    }
+
+    #[test]
+    fn both_directions_of_a_transition_are_reported_immediately() {
+        assert!(should_report_throttle(Some(false), true, Duration::ZERO));
+        assert!(should_report_throttle(Some(true), false, Duration::ZERO));
+    }
+
+    #[test]
+    fn an_ongoing_throttle_is_restated_only_on_the_heartbeat() {
+        assert!(!should_report_throttle(
+            Some(true),
+            true,
+            REPORT_INTERVAL - Duration::from_secs(1)
+        ));
+        assert!(should_report_throttle(Some(true), true, REPORT_INTERVAL));
+    }
+
+    #[test]
+    fn staying_under_budget_is_never_restated() {
+        assert!(!should_report_throttle(
+            Some(false),
+            false,
+            REPORT_INTERVAL * 100
+        ));
+    }
+
+    #[test]
+    fn state_reports_throttling_only_when_signals_are_actually_issued() {
+        let (mut g, _sig) = governor(0.5, vec![]);
+        assert!(!g.state().throttling, "nothing registered");
+        g.register(100);
+        assert!(!g.state().throttling, "registered but under budget");
+        g.controller.observe(4.0);
+        assert!(g.state().throttling, "over budget");
+    }
+
+    // --- in-process pacer ---------------------------------------------------
+
+    #[test]
+    fn pacing_sleeps_long_enough_to_hold_the_duty_cycle() {
+        // Half the time working means an equal amount sleeping.
+        assert_eq!(
+            pacer_sleep_for(Duration::from_millis(100), 0.5),
+            Duration::from_millis(100)
+        );
+        // A tenth of the time working means nine times as long asleep.
+        assert_eq!(
+            pacer_sleep_for(Duration::from_millis(100), 0.1),
+            Duration::from_millis(900)
+        );
+    }
+
+    #[test]
+    fn a_budget_of_a_whole_core_does_not_pace_a_single_thread() {
+        // One thread cannot exceed one core, so there is nothing to hold back.
+        assert_eq!(
+            pacer_sleep_for(Duration::from_millis(100), 1.0),
+            Duration::ZERO
+        );
+        assert_eq!(
+            pacer_sleep_for(Duration::from_millis(100), 4.0),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn pacing_never_freezes_a_loop_outright() {
+        // A pathological duty is clamped to the same floor the duty cycle uses,
+        // so a paced loop always makes progress.
+        let at_floor = pacer_sleep_for(Duration::from_millis(100), MIN_RUN_FRACTION);
+        assert_eq!(pacer_sleep_for(Duration::from_millis(100), 0.0), at_floor);
+        assert_eq!(pacer_sleep_for(Duration::from_millis(100), -5.0), at_floor);
+        assert_eq!(
+            pacer_sleep_for(Duration::from_millis(100), f64::NAN),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn small_charges_accumulate_before_any_sleep_happens() {
+        let mut pacer = InProcessPacer::with_duty(Some(0.5));
+        let started = Instant::now();
+        // Well under one slice: must not sleep, or a hot loop would spend all
+        // its time in nanosleep bookkeeping.
+        for _ in 0..5 {
+            pacer.charge(Duration::from_millis(1));
+        }
+        assert!(started.elapsed() < Duration::from_millis(20));
+    }
+
+    #[test]
+    fn a_full_slice_of_work_earns_a_proportional_pause() {
+        let mut pacer = InProcessPacer::with_duty(Some(0.5));
+        let started = Instant::now();
+        pacer.charge(PACER_SLICE);
+        // At a 50% duty cycle, one slice of work owes one slice of sleep.
+        assert!(
+            started.elapsed() >= PACER_SLICE,
+            "charged a full slice but did not pause"
+        );
+    }
+
+    #[test]
+    fn a_disabled_pacer_never_sleeps() {
+        let mut pacer = InProcessPacer::with_duty(None);
+        assert!(!pacer.is_pacing());
+        let started = Instant::now();
+        pacer.charge(Duration::from_secs(10));
+        assert!(started.elapsed() < Duration::from_millis(20));
+    }
+
+    #[test]
+    fn a_budget_of_a_whole_core_disables_the_pacer_entirely() {
+        // `with_duty` drops any duty that cannot constrain one thread, so the
+        // hot loop pays nothing — not even the accumulate-and-compare.
+        assert!(!InProcessPacer::with_duty(Some(1.0)).is_pacing());
+        assert!(!InProcessPacer::with_duty(Some(2.5)).is_pacing());
+        assert!(InProcessPacer::with_duty(Some(0.25)).is_pacing());
     }
 
     // --- config parsing ----------------------------------------------------
