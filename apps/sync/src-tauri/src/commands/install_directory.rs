@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+use crate::util::win32_path::strip_windows_verbatim_prefix;
+
 fn home_base() -> Option<PathBuf> {
     #[cfg(unix)]
     {
@@ -143,10 +145,11 @@ pub fn resolve_hq_path() -> Result<String, String> {
         std::fs::create_dir_all(&hq_path)
             .map_err(|e| format!("Failed to create {}: {e}", hq_path.display()))?;
     }
-    // Canonicalize to get an absolute, symlink-resolved path.
-    // Fall back to the unresolved path if canonicalize fails (e.g. race).
-    let canonical = hq_path.canonicalize().unwrap_or_else(|_| hq_path.clone());
-    Ok(canonical.to_string_lossy().into_owned())
+    // Realpath, then drop `\\?\` only when legacy Win32 can name the path.
+    // Same portable gate as Copy/Explorer — reserved DOS names, trailing
+    // dots/spaces, oversize components, and MAX_PATH keep the prefix.
+    let canonical = std::fs::canonicalize(&hq_path).unwrap_or(hq_path);
+    Ok(strip_windows_verbatim_prefix(&canonical.to_string_lossy()))
 }
 
 /// Persist the user's chosen HQ install directory to `~/.hq/menubar.json`
@@ -160,13 +163,14 @@ pub fn set_hq_install_path(path: String) -> Result<(), String> {
         return Err("Install path cannot be empty".to_string());
     }
     let expanded = expand_tilde(trimmed);
+    // Persist a Win32 verbatim prefix only when stripping it would be unsafe
+    // (reserved DOS names, trailing dots/spaces, MAX_PATH). Older installs
+    // may still have `\\?\` in hqPath; resolve_hq_path uses the same gate.
+    let stored = strip_windows_verbatim_prefix(&expanded.to_string_lossy());
     let menubar_path = crate::util::paths::menubar_json_path()?;
     hq_desktop_core::first_run::merge_menubar_flags(
         &menubar_path,
-        &[(
-            "hqPath",
-            serde_json::Value::String(expanded.to_string_lossy().into_owned()),
-        )],
+        &[("hqPath", serde_json::Value::String(stored))],
     )
 }
 
@@ -273,6 +277,29 @@ mod tests {
         let r = detect_hq(dir.path().to_string_lossy().into_owned());
         assert!(r.exists);
         assert!(r.is_hq);
+    }
+
+    #[test]
+    fn resolve_and_persist_use_win32_safety_gate() {
+        let src = include_str!("install_directory.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production source");
+        assert!(production.contains("std::fs::canonicalize(&hq_path)"));
+        assert!(production.contains("strip_windows_verbatim_prefix"));
+        assert!(!production.contains("dunce::canonicalize"));
+        assert!(!production.contains("dunce::simplified"));
+        assert!(!production.contains("hq_path.canonicalize"));
+    }
+
+    #[test]
+    fn persist_keeps_verbatim_when_legacy_win32_cannot_name_path() {
+        use crate::util::win32_path::strip_windows_verbatim_prefix;
+        assert_eq!(strip_windows_verbatim_prefix(r"\\?\C:\CON"), r"\\?\C:\CON");
+        let long = format!(r"\\?\C:\x\{}", "a".repeat(255));
+        assert_eq!(strip_windows_verbatim_prefix(&long), long);
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"\\?\C:\Users\person\hq"),
+            r"C:\Users\person\hq"
+        );
     }
 
     #[test]

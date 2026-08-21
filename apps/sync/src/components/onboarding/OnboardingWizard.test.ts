@@ -283,6 +283,15 @@ describe('onboarding launch handoff', () => {
     expect(done?.getAttribute('aria-busy')).toBe('false');
   });
 
+  it('copies a user-facing path, stripping Windows verbatim prefixes', () => {
+    expect(wizardSource).toContain('toUserFacingPath');
+    expect(wizardSource).toContain('userFacingInstallPath');
+    expect(wizardSource).toMatch(
+      /runCopyAction\(\s*'path',\s*userFacingInstallPath \?\? '~\/hq'/,
+    );
+    expect(wizardSource).toContain('readyCommandFor(userFacingInstallPath, aiTools)');
+  });
+
   it('uses the injected timer cadence for download watching and deep-linking', async () => {
     vi.useFakeTimers();
     const poll = vi.fn().mockResolvedValue({ installed: true, logged_in: true });

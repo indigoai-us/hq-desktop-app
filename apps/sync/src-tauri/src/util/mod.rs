@@ -11,6 +11,9 @@ pub use hq_desktop_core::{
 // Journal remains as an app-local facade; test_support stays app-local.
 pub mod journal;
 
+// Portable `\\?\` strip used by Copy path, Explorer Reveal, and HQ-path persist.
+pub mod win32_path;
+
 // TLS transport builder for the MQTT-over-WSS connections (dm_mqtt, outpost).
 // App-local because it's specific to this app's rumqttc usage.
 pub mod mqtt_tls;
