@@ -474,6 +474,49 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('install_failure_detail_with_environment(');
   });
 
+  it('classifies an HQ-managed CLI shadow and repairs it before wedging auto-update (HQ-DESKTOP-46)', () => {
+    const core = normalize(cliUpdateCore);
+    // Core names the Windows shape — a second HQ-managed `hq` inside the SAME
+    // toolchain root shadowing the freshly-installed managed prefix — as its own
+    // kind, apart from the foreign-managed layout HQ genuinely cannot drive.
+    expect(cliUpdateCore).toContain('ManagedShadowed');
+    expect(cliUpdateCore).toContain('same_managed_root(passed, &active_prefix, managed_roots)');
+    // The arm is delivery-gated AND same-root gated: the installer must have
+    // provably written `latest` into the prefix it aimed at and BOTH paths must
+    // sit inside one managed root, so a delivery shortfall or a cross-root split
+    // stays out of this class.
+    expect(core).toContain(
+      'if target_delivered && same_managed_root(passed, &active_prefix, managed_roots) =>',
+    );
+    // A repairable episode (pre-repair, or a converged repair) writes NO durable
+    // marker and pages nothing, so `should_auto_install` stays true for that
+    // version and the update self-heals instead of being wedged for the release.
+    expect(cliUpdateCore).toContain(
+      'ManagedShadowRepair::NotAttempted | ManagedShadowRepair::Converged',
+    );
+    // The removal is provenance-gated: HQ only ever deletes a copy whose own
+    // manifest proves it is `@indigoai-us/hq-cli`.
+    expect(cliUpdateCore).toContain('pub fn repair_managed_shadow(');
+    expect(cliUpdateCore).toContain('install_executor_for_hq_bin(Path::new(shadow_bin))');
+    // The user copy names HQ's own second copy instead of the false
+    // pnpm/Homebrew "update it with the tool that installed it" dead end.
+    expect(cliUpdateCore).toContain('pub fn managed_shadowed_detail(');
+    expect(cliUpdateCore).toContain('second HQ-managed copy');
+    // Self-diagnosing telemetry: a closed repair-outcome tag rides every event.
+    expect(cliUpdateCore).toContain('"managed-shadowed"');
+    expect(cliUpdateCore).toContain('"managed_shadow_repair"');
+
+    // The app repairs the shadow only on the ManagedShadowed branch, then
+    // RE-RESOLVES the binary it executes and decides again — it never reports
+    // success from delivery evidence alone.
+    expect(cliUpdate).toContain(
+      'if first.non_convergence_kind != Some(NonConvergenceKind::ManagedShadowed)',
+    );
+    expect(cliUpdate).toContain('repair_managed_shadow(');
+    expect(cliUpdate).toContain('reresolve_after_install');
+    expect(cliUpdate).toContain('let converged_now = install_converged(after_version.as_deref(), latest);');
+  });
+
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {
     // HQ-DESKTOP-4Y: an EEXIST on the package's second declared shim
     // (`hq-auth-refresh`) classified as `EEXIST:unknown:other` and never armed

@@ -209,4 +209,36 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // sourced from hq-desktop-core, so they can never drift apart.
     expect(syncRs).toContain('hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR');
   });
+
+  it('removes an HQ-managed CLI shadow in place and re-verifies before wedging auto-update (HQ-DESKTOP-46)', () => {
+    // The Windows managed-toolchain shadow (`toolchain\node\hq.cmd` shadowing the
+    // `toolchain\npm-prefix` the installer wrote to) is HQ's OWN second copy, so
+    // it is classified apart from the foreign layout HQ cannot drive and repaired
+    // in place — one bounded removal, then a re-resolve, never a "healed" success
+    // from delivery evidence alone. Scoped to finalize_convergence so the counts
+    // cannot be satisfied by unrelated code elsewhere in the module.
+    const finalize = cli.slice(
+      cli.indexOf('async fn finalize_convergence('),
+      cli.indexOf('fn npm_post_install_ctx<'),
+    );
+    // The repair fires ONLY on the same-toolchain shadow branch; every other
+    // layout (macOS, pnpm, Bun, foreign-managed, shortfall) applies the first
+    // decision untouched.
+    expect(finalize).toContain(
+      'if first.non_convergence_kind != Some(NonConvergenceKind::ManagedShadowed)',
+    );
+    // Exactly one bounded, filesystem-only removal, run off the async runtime —
+    // no loop, no second removal.
+    expect(occurrences(finalize, 'repair_managed_shadow(')).toBe(1);
+    expect(finalize).toContain('spawn_blocking(move || {');
+    // It then RE-RESOLVES the binary the app executes and re-decides through the
+    // shared pure decision with the repair outcome attached — success is never
+    // reported from the install's delivery evidence alone.
+    expect(finalize).toContain('reresolve_after_install');
+    expect(finalize).toContain(
+      'let converged_now = install_converged(after_version.as_deref(), latest);',
+    );
+    expect(finalize).toContain('let repair_for_decision =');
+    expect(occurrences(finalize, 'decide_post_install(&npm_post_install_ctx(')).toBe(2);
+  });
 });
