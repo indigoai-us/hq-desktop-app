@@ -2310,20 +2310,33 @@ pub fn repair_managed_shadow(
     if !delivered_ok {
         return ManagedShadowRepair::ProvenanceRefused;
     }
+    // Gate (b2): the managed prefix holds a USABLE replacement shim, not just a
+    // manifest at latest. If antivirus quarantine or a partial bin-link left the fresh
+    // package without its `hq` shim, removing the stale-but-working shadow would strand
+    // the user with no CLI — so refuse unless a replacement shim FILE is present to take
+    // over. Existence only; no spawn, so the periodic check stays subprocess-free.
+    if !managed_prefix_has_replacement_shim(installed_prefix_path) {
+        return ManagedShadowRepair::ProvenanceRefused;
+    }
     // Gate (c): the shadow really is @indigoai-us/hq-cli. `install_executor_for_hq_bin`
     // returns None unless a readable @indigoai-us/hq-cli manifest anchors the binary,
     // so an unrelated `hq` is never removed.
     if install_executor_for_hq_bin(Path::new(shadow_bin)).is_none() {
         return ManagedShadowRepair::ProvenanceRefused;
     }
-    // Gate (d): remove ONLY the enumerated shims present in the shadow dir and ONLY
-    // the scoped @indigoai-us/hq-cli package dir. Any removal error is non-fatal and
-    // degrades to RepairFailed so the caller still reports (and blocks) rather than
-    // erroring the install command. `symlink_metadata` (never `exists`) so a dangling
-    // symlink shim is still seen and removed.
+    // Gate (d): remove ONLY the enumerated shims that INDIVIDUALLY prove they belong to
+    // @indigoai-us/hq-cli — an npm shim embeds the package's own script path, or on unix
+    // symlinks into its tree — plus the scoped package dir. A same-named file a user or a
+    // different package left in this directory is never touched. Any removal error is
+    // non-fatal and degrades to RepairFailed so the caller still reports (and blocks)
+    // rather than erroring the install command. `symlink_metadata` (never `exists`) so a
+    // dangling symlink shim is still seen.
     let mut removal_error = false;
     for shim in hq_cli_shim_paths_in(&shadow_dir) {
-        if shim.symlink_metadata().is_ok() && std::fs::remove_file(&shim).is_err() {
+        if shim.symlink_metadata().is_ok()
+            && shim_belongs_to_hq_cli(&shim)
+            && std::fs::remove_file(&shim).is_err()
+        {
             removal_error = true;
         }
     }
@@ -2338,6 +2351,47 @@ pub fn repair_managed_shadow(
         // Removal completed cleanly. Whether it CONVERGED is the caller's re-resolve to
         // decide; it downgrades this to RepairFailed if the app still resolves stale.
         ManagedShadowRepair::Converged
+    }
+}
+
+/// Whether the managed prefix holds a USABLE `hq` shim to take over once the shadow is
+/// removed — not merely an `@indigoai-us/hq-cli` manifest. npm writes the shim flat into
+/// the prefix on Windows (`<prefix>\hq[.cmd|.ps1]`) and into `<prefix>/bin/hq` on unix.
+/// Existence only, no spawn.
+fn managed_prefix_has_replacement_shim(prefix: &Path) -> bool {
+    [
+        prefix.join("hq"),
+        prefix.join("hq.cmd"),
+        prefix.join("hq.ps1"),
+        prefix.join("bin").join("hq"),
+    ]
+    .iter()
+    .any(|candidate| candidate.symlink_metadata().is_ok())
+}
+
+/// Whether a shim file individually proves it belongs to `@indigoai-us/hq-cli`, so the
+/// repair never deletes a same-named file a user or another package left in the shadow
+/// directory. An npm script shim (Windows `.cmd`/`.ps1`, or a unix wrapper) embeds the
+/// package's own script path; a unix symlink shim points into the package tree. Either
+/// is decisive; an unreadable file is treated as NOT ours and left in place.
+fn shim_belongs_to_hq_cli(shim: &Path) -> bool {
+    const PACKAGE_MARKER: &str = "@indigoai-us/hq-cli";
+    if let Ok(target) = std::fs::read_link(shim) {
+        if target
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .contains(PACKAGE_MARKER)
+        {
+            return true;
+        }
+    }
+    match std::fs::read(shim) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes)
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .contains(PACKAGE_MARKER),
+        Err(_) => false,
     }
 }
 
@@ -5383,9 +5437,12 @@ mod tests {
             br#"{"name":"@indigoai-us/hq-cli","version":"5.101.0"}"#,
         )
         .unwrap();
-        // The stale shims, plus files that MUST survive.
+        // The stale shims — each with the content npm writes, which embeds the
+        // @indigoai-us/hq-cli package path so the per-file ownership check recognises
+        // it as HQ's own. Plus files that MUST survive.
+        let hq_cli_shim = b"@echo off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n";
         for shim in ["hq", "hq.cmd", "hq.ps1", "hq-auth-refresh.cmd"] {
-            std::fs::write(node.join(shim), b"stale shim").unwrap();
+            std::fs::write(node.join(shim), hq_cli_shim).unwrap();
         }
         for keep in ["node.exe", "npm.cmd", "npx.cmd", "node"] {
             std::fs::write(node.join(keep), b"keep me").unwrap();
@@ -5393,7 +5450,8 @@ mod tests {
         let unrelated = node.join("node_modules").join("left-pad");
         std::fs::create_dir_all(&unrelated).unwrap();
         std::fs::write(unrelated.join("package.json"), br#"{"name":"left-pad"}"#).unwrap();
-        // The managed prefix that already holds latest — must be untouched.
+        // The managed prefix that already holds latest AND a usable replacement shim —
+        // must be untouched.
         let prefix = root.join("npm-prefix");
         let prefix_scoped = prefix
             .join("node_modules")
@@ -5405,6 +5463,7 @@ mod tests {
             br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
         )
         .unwrap();
+        std::fs::write(prefix.join("hq.cmd"), hq_cli_shim).unwrap();
 
         let roots = vec![root.to_path_buf()];
         let shadow_bin = node.join("hq.cmd");
@@ -5457,10 +5516,15 @@ mod tests {
         .unwrap();
         let shim = node.join("hq.cmd");
         std::fs::write(&shim, b"stale").unwrap();
+        // A valid replacement shim exists, so this refusal is the PROVENANCE gate (the
+        // manifest is not @indigoai-us/hq-cli), not the replacement-shim gate.
+        let prefix = root.join("npm-prefix");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("hq.cmd"), b"replacement").unwrap();
         let roots = vec![root.to_path_buf()];
         let outcome = repair_managed_shadow(
             &shim.to_string_lossy(),
-            Some(&root.join("npm-prefix").to_string_lossy()),
+            Some(&prefix.to_string_lossy()),
             Some("5.101.7"),
             "5.101.7",
             &roots,
@@ -5521,6 +5585,101 @@ mod tests {
         );
         assert_eq!(outcome3, ManagedShadowRepair::ProvenanceRefused);
         assert!(shim3.exists(), "a shadow outside every managed root is refused");
+    }
+
+    /// Per-file ownership: a same-named file that a user or another package left in the
+    /// shadow directory — one that does NOT reference @indigoai-us/hq-cli — is left in
+    /// place, while the genuine hq-cli shims beside it are removed.
+    #[test]
+    fn repair_skips_a_shim_it_cannot_prove_is_hq_cli() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let node = root.join("node");
+        let scoped = node
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
+        )
+        .unwrap();
+        let hq_cli_shim = b"@echo off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n";
+        std::fs::write(node.join("hq.cmd"), hq_cli_shim).unwrap();
+        // A file at an hq-cli shim NAME that a user replaced with an unrelated command.
+        std::fs::write(
+            node.join("hq-auth-refresh.cmd"),
+            b"@echo off\r\necho a user's own command\r\n",
+        )
+        .unwrap();
+        let prefix = root.join("npm-prefix");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("hq.cmd"), hq_cli_shim).unwrap();
+
+        let roots = vec![root.to_path_buf()];
+        let outcome = repair_managed_shadow(
+            &node.join("hq.cmd").to_string_lossy(),
+            Some(&prefix.to_string_lossy()),
+            Some("5.101.7"),
+            "5.101.7",
+            &roots,
+        );
+        assert_eq!(outcome, ManagedShadowRepair::Converged);
+        assert!(!node.join("hq.cmd").exists(), "the genuine hq-cli shim is removed");
+        assert!(
+            node.join("hq-auth-refresh.cmd").exists(),
+            "an unrelated command at an hq-cli name is never deleted"
+        );
+    }
+
+    /// Require a usable replacement: when the managed prefix has the manifest at latest
+    /// but NO `hq` shim (antivirus quarantine, a partial bin-link), the repair refuses so
+    /// it never deletes the stale-but-working shadow and strands the user with no CLI.
+    #[test]
+    fn repair_refuses_when_the_prefix_has_no_replacement_shim() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let node = root.join("node");
+        let scoped = node
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.0"}"#,
+        )
+        .unwrap();
+        let hq_cli_shim = b"@echo off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n";
+        let shim = node.join("hq.cmd");
+        std::fs::write(&shim, hq_cli_shim).unwrap();
+        // The managed prefix holds the manifest at latest, but NO shim file to take over.
+        let prefix = root.join("npm-prefix");
+        let prefix_scoped = prefix
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&prefix_scoped).unwrap();
+        std::fs::write(
+            prefix_scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
+        )
+        .unwrap();
+
+        let roots = vec![root.to_path_buf()];
+        let outcome = repair_managed_shadow(
+            &shim.to_string_lossy(),
+            Some(&prefix.to_string_lossy()),
+            Some("5.101.7"),
+            "5.101.7",
+            &roots,
+        );
+        assert_eq!(outcome, ManagedShadowRepair::ProvenanceRefused);
+        assert!(
+            shim.exists(),
+            "the stale shim stays until a usable replacement exists"
+        );
     }
 
     /// Telemetry-string stability: adding the variant must not perturb any existing

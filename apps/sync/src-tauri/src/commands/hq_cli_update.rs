@@ -86,7 +86,8 @@ pub use hq_desktop_core::hq_cli_update::{
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
-    non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
+    non_convergence_kind, non_convergent_cli_contract, non_convergent_cli_version,
+    non_convergent_detail,
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
     non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
     npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env,
@@ -2382,6 +2383,110 @@ fn clear_non_convergent_version() {
 /// `hq-cli-update:cleared`; any failure leaves the clickable banner that
 /// `check_once` already emitted and Sentry-captures for triage. No fragile
 /// prefix-guessing heuristic.
+/// One-time recovery for a machine already WEDGED by the managed-shadow layout before
+/// this build. Such a machine persisted the durable non-convergent marker for the
+/// version it is frozen at, so `should_auto_install` returns false and the background
+/// loop never reaches the install path — and therefore never reaches the shadow repair.
+/// If the CURRENT resolved layout is exactly a repairable managed shadow of a managed
+/// prefix that already holds that version, run the bounded repair ONCE and clear the
+/// marker on convergence, so the fix reaches affected machines on upgrade rather than
+/// only on the next CLI publish. A no-op (single marker read) for every machine with no
+/// marker, which is the overwhelming majority.
+async fn recover_wedged_managed_shadow(app: &AppHandle) {
+    let Some(marker_version) = non_convergent_cli_version() else {
+        return;
+    };
+    let managed_roots = paths::managed_toolchain_roots();
+    if managed_roots.is_empty() {
+        return;
+    }
+    let hq = paths::resolve_bin("hq");
+    let npm = paths::resolve_bin("npm");
+    let Some(prefix) = hq_cli_install_prefix(&npm, &hq) else {
+        return;
+    };
+
+    // Read what the managed prefix holds and classify the current layout off the main
+    // thread. This is the SAME pure classifier the install path uses, so the recovery
+    // fires on exactly the shape the fix targets and nothing else.
+    let (delivered, is_shadow) = {
+        let hq = hq.clone();
+        let prefix = prefix.clone();
+        let roots = managed_roots.clone();
+        let marker = marker_version.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let delivered = installed_hq_cli_version_in_prefix(&prefix, &hq);
+            let target_delivered = delivered
+                .as_deref()
+                .is_some_and(|d| cmp_semver(d, &marker) != std::cmp::Ordering::Less);
+            let kind = non_convergence_kind(
+                InstallExecutor::Npm,
+                Some(&prefix),
+                false,
+                &hq,
+                target_delivered,
+                &roots,
+            );
+            (delivered, kind == NonConvergenceKind::ManagedShadowed)
+        })
+        .await
+        .unwrap_or((None, false))
+    };
+    if !is_shadow {
+        return;
+    }
+
+    log(
+        "hq-cli-update",
+        "a wedged HQ-managed CLI shadow was detected on startup; attempting a one-time repair",
+    );
+    let repair = {
+        let hq = hq.clone();
+        let prefix = prefix.clone();
+        let delivered = delivered.clone();
+        let marker = marker_version.clone();
+        let roots = managed_roots.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            repair_managed_shadow(&hq, Some(&prefix), delivered.as_deref(), &marker, &roots)
+        })
+        .await
+        .unwrap_or(ManagedShadowRepair::RepairFailed)
+    };
+
+    // Re-resolve once: if the wedged version now resolves, the shadow is gone — clear the
+    // durable marker and drop the banner. If not, leave the marker exactly as it was.
+    let after = {
+        let hq2 = paths::resolve_bin("hq");
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq2))
+            .await
+            .ok()
+            .flatten()
+    };
+    if install_converged(after.as_deref(), &marker_version) {
+        clear_non_convergent_version();
+        let info = HqCliUpdateInfo {
+            local: after,
+            latest: marker_version,
+        };
+        let _ = app.emit("hq-cli-update:cleared", &info);
+        log(
+            "hq-cli-update",
+            &format!(
+                "managed-shadow recovery converged ({}); cleared the non-convergent marker",
+                repair.telemetry_value()
+            ),
+        );
+    } else {
+        log(
+            "hq-cli-update",
+            &format!(
+                "managed-shadow recovery did not converge ({}); marker left in place",
+                repair.telemetry_value()
+            ),
+        );
+    }
+}
+
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -2404,6 +2509,12 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             clear_non_convergent_version();
         }
         tokio::time::sleep(INITIAL_DELAY).await;
+        // One-time recovery for machines already WEDGED by the managed-shadow layout
+        // before this build shipped: their durable marker makes `should_auto_install`
+        // false, so the loop below never reaches the install path (and its repair).
+        // Repair the shadow directly here so the fix lands on upgrade, not only on the
+        // next CLI publish. A no-op for every machine with no marker.
+        recover_wedged_managed_shadow(&handle).await;
         loop {
             match check_once(&handle).await {
                 Ok(Some(info)) => {
