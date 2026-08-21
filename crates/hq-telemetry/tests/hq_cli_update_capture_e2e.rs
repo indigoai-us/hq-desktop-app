@@ -5,9 +5,9 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     BinaryAnchorShape, ConvergenceVerdict, InstallExecutor, LocalVersionProbeDiagnostics,
-    NonConvergenceKind, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
-    PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind, VersionProbeOutcome,
-    NON_CONVERGENT_ERROR_PREFIX,
+    ManagedShadowRepair, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    ResolvedProgramKind, VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -101,6 +101,8 @@ fn pnpm_context<'a>(
             exit_status: "0".to_string(),
             output_len: 128,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: None,
     }
 }
 
@@ -975,6 +977,8 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: None,
     };
 
     let clears = Cell::new(0usize);
@@ -1168,4 +1172,117 @@ fn true_pnpm_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_
         fingerprint(event),
         ["hq-cli-update", "install-non-convergent"]
     );
+}
+
+/// HQ-DESKTOP-46 (Windows managed-toolchain shadow): a residual shadow whose
+/// repair could not converge captures an event tagged `managed-shadowed` with a
+/// `managed_shadow_repair` outcome, in the SAME Sentry group, and with `hq_bin`
+/// / `npm_prefix` still home-redacted. On base this same input tags
+/// `foreign-managed` and carries no repair tag.
+#[test]
+fn managed_shadow_repair_failed_event_is_tagged_and_home_redacted() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let root = home.join("AppData/Local/IndigoHQ/toolchain");
+    let install_prefix = root.join("npm-prefix").to_string_lossy().to_string();
+    let shadow_bin = root.join("node/hq.cmd").to_string_lossy().to_string();
+    let installer_npm = root.join("npm-prefix/npm.cmd").to_string_lossy().to_string();
+    let roots = vec![root.clone()];
+    let ctx = PostInstallContext::npm(
+        &shadow_bin,
+        &shadow_bin,
+        Some("5.77.14"),
+        Some("5.77.14"),
+        "5.84.0",
+        Some(&install_prefix),
+        &installer_npm,
+        false,
+        Some("5.84.0"),
+    )
+    .with_managed_roots(&roots)
+    .with_managed_shadow_repair(ManagedShadowRepair::RepairFailed);
+
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(records, 1, "an unrepairable shadow persists the durable marker");
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"],
+        "the new kind must not split the existing Sentry group"
+    );
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("managed-shadowed")
+    );
+    assert_eq!(
+        event.tags.get("managed_shadow_repair").map(String::as_str),
+        Some("repair-failed")
+    );
+    assert_eq!(
+        event.tags.get("install_executor").map(String::as_str),
+        Some("npm")
+    );
+    assert_eq!(
+        event.tags.get("prefix_known").map(String::as_str),
+        Some("true")
+    );
+    // Home redaction: neither the hq_bin nor the npm_prefix extra may leak the
+    // account name in front of the layout.
+    let hq_bin_extra = event
+        .extra
+        .get("hq_bin")
+        .and_then(Value::as_str)
+        .expect("hq_bin extra present");
+    assert!(hq_bin_extra.contains('~'), "hq_bin is home-redacted");
+    assert!(!hq_bin_extra.contains(&home_text));
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(
+        !serialized.contains(&home_text),
+        "no home path may reach Sentry verbatim"
+    );
+}
+
+/// The success case: a managed shadow whose removal lets resolution converge
+/// produces an ordinary success and captures NO Sentry event at all.
+#[test]
+fn a_converged_managed_shadow_repair_captures_nothing() {
+    let roots = vec![std::path::PathBuf::from("/x/IndigoHQ/toolchain")];
+    let fresh_bin = "/x/IndigoHQ/toolchain/npm-prefix/hq.cmd";
+    let ctx = PostInstallContext::npm(
+        fresh_bin,
+        fresh_bin,
+        Some("5.77.14"),
+        Some("5.84.0"), // the app now executes latest — converged
+        "5.84.0",
+        Some("/x/IndigoHQ/toolchain/npm-prefix"),
+        "/x/IndigoHQ/toolchain/npm-prefix/npm.cmd",
+        false,
+        Some("5.84.0"),
+    )
+    .with_managed_roots(&roots)
+    .with_managed_shadow_repair(ManagedShadowRepair::Converged);
+
+    let events = captured_events(|| {
+        let outcome = decide_post_install(&ctx);
+        assert_eq!(outcome.verdict, ConvergenceVerdict::Converged);
+        assert!(outcome.non_convergence_kind.is_none());
+        let record = |_v: String| Ok(());
+        let clear = || {};
+        let capture = |_r: NonConvergentReport| panic!("a converged repair must not capture");
+        let record_failure = |_e: String| {};
+        let result = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+        assert!(result.is_ok());
+    });
+    assert!(events.is_empty(), "no Sentry event on a converged repair");
 }

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, ManagedShadowRepair,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
     NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::test::with_captured_events_options;
@@ -139,6 +139,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 exit_status: "0".to_string(),
                 output_len: 64,
             }),
+            managed_roots: &[],
+            managed_shadow_repair: None,
         },
         5,
     );
@@ -179,6 +181,8 @@ fn pnpm_marker_ctx(
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: None,
     }
 }
 
@@ -243,4 +247,53 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
         );
         assert_eq!(captures, 1);
     }
+}
+
+/// HQ-DESKTOP-46: the managed-shadow marker contract. A repairable FIRST episode
+/// (pre-repair, outcome unknown) persists NO durable marker — so
+/// `should_auto_install` stays true and the next check self-heals — while a
+/// repair that FAILED persists exactly one, exactly like a foreign layout, so an
+/// unrepairable machine stops re-paging.
+#[test]
+fn a_repairable_managed_shadow_writes_no_marker_but_a_failed_repair_writes_one() {
+    let roots = vec![std::path::PathBuf::from("/local/IndigoHQ/toolchain")];
+    let install_prefix = "/local/IndigoHQ/toolchain/npm-prefix";
+    let shadow_bin = "/local/IndigoHQ/toolchain/node/hq.cmd";
+    let installer_npm = "/local/IndigoHQ/toolchain/npm-prefix/npm.cmd";
+
+    // Pre-repair: no marker written, nothing captured — the caller is about to
+    // repair and decide again.
+    let pre = PostInstallContext::npm(
+        shadow_bin,
+        shadow_bin,
+        Some("5.93.0"),
+        Some("5.93.0"),
+        "5.97.2",
+        Some(install_prefix),
+        installer_npm,
+        false,
+        Some("5.97.2"),
+    )
+    .with_managed_roots(&roots);
+    let (records, captures) = drive_success_path(&pre);
+    assert_eq!(records, 0, "a repairable shadow must not wedge auto-update");
+    assert_eq!(captures, 0, "the pre-repair pass captures nothing");
+
+    // Repair-failed: persists exactly one durable marker and captures once.
+    let failed = PostInstallContext::npm(
+        shadow_bin,
+        shadow_bin,
+        Some("5.93.0"),
+        Some("5.93.0"),
+        "5.97.2",
+        Some(install_prefix),
+        installer_npm,
+        false,
+        Some("5.97.2"),
+    )
+    .with_managed_roots(&roots)
+    .with_managed_shadow_repair(ManagedShadowRepair::RepairFailed);
+    let (records, captures) = drive_success_path(&failed);
+    assert_eq!(records, 1, "an unrepairable shadow persists exactly one marker");
+    assert_eq!(captures, 1);
 }

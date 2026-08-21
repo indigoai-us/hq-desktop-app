@@ -495,6 +495,54 @@ describe('master automatic-updates switch', () => {
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
     expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
   });
+
+  it('a Windows managed-toolchain shadow is repaired and re-decided, not wedged', () => {
+    // HQ-DESKTOP-46 Windows slice: HQ installs `latest` into
+    // <toolchain>\npm-prefix, but resolves a SECOND HQ-managed copy at
+    // <toolchain>\node\hq.cmd, so the convergence gate misreads its own layout as
+    // foreign-managed and writes the durable marker that disables auto-update.
+    // The fix names the shape, removes the shadow, re-resolves, and re-decides —
+    // a converged re-decision clears the marker (and emits the cleared banner)
+    // through the SAME success path, and blocking is conditional on the repair
+    // outcome so a repairable machine self-heals instead of wedging.
+
+    // Classification + provenance-gated removal live in core.
+    expect(cliUpdateCore).toContain('ManagedShadowed');
+    expect(cliUpdateCore).toContain('"managed-shadowed"');
+    expect(cliUpdateCore).toContain('pub fn attempt_managed_shadow_removal(');
+    expect(cliUpdateCore).toContain('pub fn managed_shadowed_detail(');
+    // Blocking is decided by the post-repair outcome, not the kind alone.
+    expect(cliUpdateCore).toContain('managed_shadow_repair: Option<ManagedShadowRepair>');
+    expect(cliUpdateCore).toContain('let managed_shadow_pending =');
+
+    // Only the finalize path supplies managed roots, so only it can detect the
+    // shadow; on detection it repairs then re-decides rather than applying the
+    // pre-repair outcome.
+    const finalizeStart = cliUpdate.indexOf('async fn finalize_convergence(');
+    const repairDefStart = cliUpdate.indexOf('async fn repair_managed_shadow_and_finalize(');
+    expect(finalizeStart).toBeGreaterThan(-1);
+    expect(repairDefStart).toBeGreaterThan(finalizeStart);
+    const finalizeSlice = cliUpdate.slice(finalizeStart, repairDefStart);
+    expect(finalizeSlice).toContain('.with_managed_roots(&managed_roots)');
+    expect(finalizeSlice).toContain('Some(NonConvergenceKind::ManagedShadowed)');
+    expect(finalizeSlice).toContain('return repair_managed_shadow_and_finalize(');
+
+    // The repair re-resolves the executed binary and routes the result back
+    // through the shared decision + effects seam, so a converged repair clears
+    // and emits the banner exactly like an ordinary success.
+    const repairSlice = cliUpdate.slice(
+      repairDefStart,
+      cliUpdate.indexOf('async fn ', repairDefStart + 1),
+    );
+    expect(repairSlice).toContain('attempt_managed_shadow_removal(');
+    expect(repairSlice).toContain('paths::resolve_bin("hq")');
+    expect(repairSlice).toContain('.with_managed_shadow_repair(');
+    expect(repairSlice).toContain('apply_post_install_with_app(app, &outcome)');
+
+    // The install target never moves into the managed Node dir — the repair only
+    // REMOVES the shadow; installs still go to the managed npm prefix.
+    expect(cliUpdate).toContain('paths::managed_npm_prefix_in(&root)');
+  });
 });
 
 describe('installs the CLI when the machine has none', () => {
