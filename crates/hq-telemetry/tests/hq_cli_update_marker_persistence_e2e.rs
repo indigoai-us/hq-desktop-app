@@ -3,9 +3,9 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
-    NON_CONVERGENT_ERROR_PREFIX,
+    reset_non_convergent_marker_unpersisted_capture_for_tests, should_auto_install, InstallExecutor,
+    ManagedShadowRepair, NonConvergenceKind, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
+    PostInstallContext, PostInstallCoreEffects, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::test::with_captured_events_options;
 
@@ -139,6 +139,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 exit_status: "0".to_string(),
                 output_len: 64,
             }),
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepair::NotAttempted,
         },
         5,
     );
@@ -179,6 +181,8 @@ fn pnpm_marker_ctx(
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
     }
 }
 
@@ -243,4 +247,56 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
         );
         assert_eq!(captures, 1);
     }
+}
+
+/// HQ-DESKTOP-46 at the marker layer: a REPAIRABLE managed-shadow first episode (the
+/// pre-repair pass, `NotAttempted`) persists NO durable marker — so `should_auto_install`
+/// stays true for that version and the next check self-heals — while a `RepairFailed`
+/// episode persists exactly one marker plus one capture, like a foreign layout. On base
+/// this shape always persisted the marker (it read as ForeignManaged).
+#[test]
+fn a_repairable_managed_shadow_writes_no_marker_but_a_failed_repair_writes_one() {
+    let managed_roots = vec![std::path::PathBuf::from("/managed/toolchain")];
+    let shadow = "/managed/toolchain/node/hq.cmd";
+    let prefix = "/managed/toolchain/npm-prefix";
+
+    let repairable = PostInstallContext {
+        executor: InstallExecutor::Npm,
+        before_bin: shadow,
+        after_bin: shadow,
+        before_version: Some("5.101.0"),
+        after_version: Some("5.101.0"),
+        latest: "5.101.7",
+        npm_prefix_passed: Some(prefix),
+        delivered_version: Some("5.101.7"),
+        installer_bin: "/managed/toolchain/npm-prefix/npm",
+        already_blocked: false,
+        nonblocking_episode_keys: &[],
+        pnpm: None,
+        managed_roots: &managed_roots,
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
+    };
+    // Classified as the shadow, but pre-repair writes no marker and captures nothing.
+    let outcome = decide_post_install(&repairable);
+    assert_eq!(
+        outcome.non_convergence_kind,
+        Some(NonConvergenceKind::ManagedShadowed)
+    );
+    assert!(
+        outcome.record_non_convergent.is_none(),
+        "a repairable first episode writes no durable marker"
+    );
+    assert!(should_auto_install("5.101.7", outcome.record_non_convergent.as_deref()));
+    let (records, captures) = drive_success_path(&repairable);
+    assert_eq!(records, 0, "no marker write on the repairable pre-repair pass");
+    assert_eq!(captures, 0, "no capture on the repairable pre-repair pass");
+
+    // A repair that was attempted and failed persists exactly one marker + capture.
+    let failed = PostInstallContext {
+        managed_shadow_repair: ManagedShadowRepair::RepairFailed,
+        ..repairable
+    };
+    let (records, captures) = drive_success_path(&failed);
+    assert_eq!(records, 1, "a failed repair persists exactly one durable marker");
+    assert_eq!(captures, 1);
 }
