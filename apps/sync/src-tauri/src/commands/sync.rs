@@ -1006,6 +1006,11 @@ pub fn build_sync_spawn_args(
     // Per-company Off toggles persist in menubar.json; honor them on All-scope
     // fanout so Sync Now does not upload/download paused companies.
     apply_skip_companies_env(&mut env, scope);
+    // Bandwidth governor: tell the runner what share of the link it may use.
+    hq_desktop_core::bandwidth::apply_bandwidth_env(
+        &mut env,
+        hq_desktop_core::bandwidth::prefs_bandwidth_percent(),
+    );
 
     let mut args = vec![
         "-y".to_string(),
