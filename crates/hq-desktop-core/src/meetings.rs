@@ -83,6 +83,15 @@ struct ScheduledBotWire {
     bot_id: Option<String>,
     #[serde(default)]
     recall_bot_id: Option<String>,
+    // `title` and `meetingTitle` get the same two-field treatment as
+    // botId/recallBotId above: /v1/bot/list sends BOTH names for the same
+    // value (older clients read `title`, newer read `meetingTitle`), and a
+    // serde alias would reject that body as `duplicate field meetingTitle` —
+    // which silently killed the unattributed-meeting poll every cycle.
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    meeting_title: Option<String>,
     #[serde(flatten)]
     rest: ScheduledBotRest,
 }
@@ -99,8 +108,6 @@ struct ScheduledBotRest {
     calendar_series_id: Option<String>,
     #[serde(default)]
     recurring_meeting: bool,
-    #[serde(default, alias = "title")]
-    meeting_title: Option<String>,
     #[serde(default)]
     scheduled_start_time: Option<String>,
     #[serde(default)]
@@ -132,7 +139,7 @@ impl From<ScheduledBotWire> for ScheduledBot {
             calendar_event_id: r.calendar_event_id,
             calendar_series_id: r.calendar_series_id,
             recurring_meeting: r.recurring_meeting,
-            meeting_title: r.meeting_title,
+            meeting_title: w.meeting_title.filter(|s| !s.is_empty()).or(w.title),
             scheduled_start_time: r.scheduled_start_time,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -723,6 +730,29 @@ mod tests {
         let bot: ScheduledBot =
             serde_json::from_str(json).expect("both botId and recallBotId must parse");
         assert_eq!(bot.bot_id, "bot-canonical");
+    }
+
+    /// Regression — `/v1/bot/list` sends a bot's title under BOTH `title` and
+    /// `meetingTitle` in the same object (it always has; older clients read
+    /// `title`). With `#[serde(alias = "title")]` mapping both keys to
+    /// `meeting_title`, serde rejected the payload as
+    /// `duplicate field meetingTitle` — the same failure class as the
+    /// botId/recallBotId case above, observed 2026-08-21 as a permanently
+    /// failing unattributed poll ("Could not refresh meeting bot status").
+    /// Both keys present must parse, preferring the canonical `meetingTitle`.
+    #[test]
+    fn scheduled_bot_tolerates_both_title_and_meeting_title() {
+        let json = r#"{
+            "botId": "bot-title",
+            "status": "scheduled",
+            "meetingUrl": "https://us06web.zoom.us/j/85906",
+            "platform": "zoom",
+            "title": "Legacy title",
+            "meetingTitle": "Canonical title"
+        }"#;
+        let bot: ScheduledBot =
+            serde_json::from_str(json).expect("both title and meetingTitle must parse");
+        assert_eq!(bot.meeting_title.as_deref(), Some("Canonical title"));
     }
 
     /// The real failing shape: a `GET /v1/bot/list` body whose bot carries both
