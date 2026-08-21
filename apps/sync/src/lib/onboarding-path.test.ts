@@ -49,7 +49,7 @@ describe('toUserFacingPath', () => {
   it('leaves POSIX and already-normal Windows paths unchanged', () => {
     expect(toUserFacingPath('/Users/ada/hq')).toBe('/Users/ada/hq');
     expect(toUserFacingPath(String.raw`C:\Users\Ada\hq`)).toBe(String.raw`C:\Users\Ada\hq`);
-    expect(toUserFacingPath('  C:\\Users\\Ada\\hq  ')).toBe(String.raw`C:\Users\Ada\hq`);
+    expect(toUserFacingPath('  C:\\Users\\Ada\\hq')).toBe(String.raw`C:\Users\Ada\hq`);
   });
 
   it('keeps the verbatim prefix when legacy Win32 cannot name the path', () => {
@@ -62,6 +62,12 @@ describe('toUserFacingPath', () => {
     expect(toUserFacingPath(String.raw`\\?\C:\foo\..\bar`)).toBe(String.raw`\\?\C:\foo\..\bar`);
     expect(toUserFacingPath(String.raw`\\?\C:\HQ.\repo`)).toBe(String.raw`\\?\C:\HQ.\repo`);
     expect(toUserFacingPath(String.raw`\\?\C:\HQ \repo`)).toBe(String.raw`\\?\C:\HQ \repo`);
+    expect(toUserFacingPath('\\\\?\\C:\\HQ ')).toBe('\\\\?\\C:\\HQ ');
+    expect(
+      toUserFacingPath(
+        String.raw`\\?\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}\Users\Ada\hq`,
+      ),
+    ).toBe(String.raw`\\?\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}\Users\Ada\hq`);
     const longLegacy = `C:\\${'a'.repeat(260)}`;
     const longVerbatim = `\\\\?\\${longLegacy}`;
     expect(toUserFacingPath(longVerbatim)).toBe(longVerbatim);

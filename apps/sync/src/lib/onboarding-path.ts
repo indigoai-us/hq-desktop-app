@@ -3,6 +3,7 @@ const WINDOWS_VERBATIM_PREFIX = '\\\\?\\';
 const WINDOWS_LEGACY_MAX_LEN = 260;
 const WINDOWS_RESERVED_STEM = /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i;
 const WINDOWS_DRIVE = /^[A-Za-z]:$/;
+const WINDOWS_DRIVE_PATH = /^[A-Za-z]:[\\/]/;
 
 function trimTrailingSeparators(path: string): string {
   if (/^[A-Za-z]:[\\/]?$/.test(path)) return path.replace(/[\\/]$/, '\\');
@@ -36,13 +37,18 @@ function canSimplifyWin32(legacy: string): boolean {
  * Keep the prefix when legacy Win32 cannot name the path (long paths, reserved DOS names).
  */
 export function toUserFacingPath(path: string): string {
-  const trimmed = path.trim();
+  // Leading whitespace only — a trailing space on `\\?\C:\HQ ` is a real
+  // component; trim() would drop it and then simplify to a different folder.
+  const trimmed = path.trimStart();
   if (trimmed.toUpperCase().startsWith(WINDOWS_UNC_PREFIX.toUpperCase())) {
     const legacy = `\\\\${trimmed.slice(WINDOWS_UNC_PREFIX.length)}`;
     return canSimplifyWin32(legacy) ? legacy : trimmed;
   }
   if (trimmed.startsWith(WINDOWS_VERBATIM_PREFIX)) {
     const legacy = trimmed.slice(WINDOWS_VERBATIM_PREFIX.length);
+    // Only VerbatimDisk (`\\?\C:\…`). Volume GUID / device namespaces must keep
+    // the prefix; stripping yields a relative path like `Volume{GUID}\…`.
+    if (!WINDOWS_DRIVE_PATH.test(legacy)) return trimmed;
     return canSimplifyWin32(legacy) ? legacy : trimmed;
   }
   return trimmed;

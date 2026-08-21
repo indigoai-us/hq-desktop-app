@@ -106,7 +106,9 @@ pub(crate) fn strip_windows_verbatim_prefix(path: &str) -> String {
             path.to_string()
         }
     } else if let Some(rest) = path.strip_prefix(VERBATIM) {
-        if win32_legacy_is_safe(rest) {
+        // Only VerbatimDisk (`\\?\C:\…`). Volume GUID / device namespaces must
+        // keep the prefix; stripping yields a relative `Volume{GUID}\…`.
+        if is_win32_drive_path(rest) && win32_legacy_is_safe(rest) {
             rest.to_string()
         } else {
             path.to_string()
@@ -114,6 +116,14 @@ pub(crate) fn strip_windows_verbatim_prefix(path: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+fn is_win32_drive_path(legacy: &str) -> bool {
+    let bytes = legacy.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 #[cfg(test)]
@@ -182,6 +192,13 @@ mod tests {
         assert_eq!(
             strip_windows_verbatim_prefix(r"\\?\C:\HQ \repo"),
             r"\\?\C:\HQ \repo"
+        );
+        assert_eq!(strip_windows_verbatim_prefix(r"\\?\C:\HQ "), r"\\?\C:\HQ ");
+        assert_eq!(
+            strip_windows_verbatim_prefix(
+                r"\\?\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}\Users\Ada\hq"
+            ),
+            r"\\?\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}\Users\Ada\hq"
         );
         let long = format!(r"\\?\C:\{}", "a".repeat(260));
         assert_eq!(strip_windows_verbatim_prefix(&long), long);
