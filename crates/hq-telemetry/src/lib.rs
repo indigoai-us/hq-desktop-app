@@ -302,6 +302,16 @@ fn is_bounded_decimal(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// A comma-joined set of allow-listed faulting-binary tokens — the WER-independent
+/// job-image descriptor (HQ-DESKTOP-4X). Bounded, and every entry must be an
+/// allow-list token, so a producer bug that shipped a path or raw process name
+/// degrades to `[Filtered]` instead of leaking it.
+fn is_watcher_job_image_set(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.split(',').all(is_watcher_fault_binary_token)
+}
+
 /// A `token:count(,token:count)*` rollup whose tokens are the closed
 /// unmatched-stderr shape vocabulary (mirrored from
 /// `hq_desktop_core::watcher_fault::UnmatchedStderrShape`) and whose counts are
@@ -400,19 +410,55 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_heap_used_mb" | "runner_heap_total_mb" | "runner_oom_frame_count" => {
             Some(value.is_empty() || value.parse::<u64>().is_ok())
         }
-        // Windows fault provenance (HQ-DESKTOP-4X). The producer already emits
-        // fixed vocabulary and bare integers; these independent checks make a
-        // future producer bug that shipped a path, product string, or raw record
-        // byte degrade to `[Filtered]` instead.
+        // Windows fault provenance (HQ-DESKTOP-4X). The producer emits a resolved,
+        // self-diagnosing vocabulary that separates every state the old
+        // `no_record`/`unavailable` pair collapsed; these independent checks make
+        // a future producer bug that shipped a path, product string, or raw record
+        // byte degrade to `[Filtered]` instead. Kept in lockstep with
+        // `hq_desktop_core::watcher_fault::WatcherFaultProvenance::ALL` by
+        // `every_watcher_fault_token_survives_and_lookalikes_fail_closed`.
         "watcher_fault_provenance" => Some(matches!(
             value,
-            "pid_matched" | "window_only" | "no_record" | "unavailable"
+            "pid_matched"
+                | "window_only"
+                | "rejected_code_mismatch"
+                | "rejected_out_of_window"
+                | "rejected_unparsable"
+                | "no_records"
+                | "deadline_expired"
+                | "unavailable"
+                | "not_applicable"
         )),
         "watcher_fault_faulting_image" | "watcher_fault_faulting_module" => {
             Some(is_watcher_fault_binary_token(value))
         }
         "watcher_fault_exception_code" => Some(is_bounded_decimal(value, 10)),
         "watcher_fault_offset" => Some(is_bounded_decimal(value, 20)),
+        // Self-diagnosing counters (HQ-DESKTOP-4X): bounded bare integers that make
+        // a second attribution failure actionable. Each reaches this check as `""`
+        // for a numeric `Value` (type-safe by construction); a string value must
+        // parse as an unsigned integer, so a producer bug that shipped raw text
+        // degrades to `[Filtered]`.
+        "watcher_fault_records_seen"
+        | "watcher_fault_records_parsed"
+        | "watcher_fault_rejected_out_of_window"
+        | "watcher_fault_rejected_code_mismatch"
+        | "watcher_fault_rejected_unparsable"
+        | "watcher_fault_sweeps"
+        | "watcher_fault_ms_to_verdict" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
+        // WER-independent job-image descriptor (HQ-DESKTOP-4X). A set and a single
+        // token of allow-listed binary names plus a tree-observation provenance
+        // that is deliberately NOT a fault-attribution token — so a named image
+        // here can never be misread as the faulting one. Any drift degrades to
+        // `[Filtered]`.
+        "watcher_job_image_set" => Some(is_watcher_job_image_set(value)),
+        "watcher_job_last_nonshim_image" => Some(is_watcher_fault_binary_token(value)),
+        "watcher_job_image_provenance" => Some(matches!(value, "tree_sampled" | "unavailable")),
+        // How a deferred fault capture resolved: the read completed, or a teardown
+        // force-flushed it with its honest unresolved provenance.
+        "watcher_fault_deferral_resolution" => {
+            Some(matches!(value, "read_completed" | "teardown_flush"))
+        }
         "runner_unmatched_stderr_shapes" => Some(is_unmatched_stderr_shape_rollup(value)),
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
@@ -1229,10 +1275,55 @@ mod tests {
             Some(true)
         );
 
+        // Self-diagnosing counters: a bare integer survives; the numeric-Value
+        // sentinel `""` survives (type-safe); raw text fails closed.
+        for key in [
+            "watcher_fault_records_seen",
+            "watcher_fault_records_parsed",
+            "watcher_fault_rejected_out_of_window",
+            "watcher_fault_rejected_code_mismatch",
+            "watcher_fault_rejected_unparsable",
+            "watcher_fault_sweeps",
+            "watcher_fault_ms_to_verdict",
+        ] {
+            assert_eq!(valid_runner_diagnostic_field(key, "12"), Some(true), "{key} integer survives");
+            assert_eq!(valid_runner_diagnostic_field(key, ""), Some(true), "{key} numeric sentinel survives");
+            assert_eq!(valid_runner_diagnostic_field(key, "-1"), Some(false), "{key} signed fails closed");
+            assert_eq!(
+                valid_runner_diagnostic_field(key, "/Users/Ada"),
+                Some(false),
+                "{key} raw text fails closed"
+            );
+        }
+
+        // WER-independent job-image descriptor: an allow-listed set/token survives,
+        // and its provenance is a tree observation, never a fault attribution.
+        for binary in WatcherFaultBinary::ALL {
+            assert_eq!(
+                valid_runner_diagnostic_field("watcher_job_last_nonshim_image", binary.as_str()),
+                Some(true),
+            );
+        }
+        assert_eq!(
+            valid_runner_diagnostic_field("watcher_job_image_set", "node_exe,cmd_exe,other"),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("watcher_job_last_nonshim_image", WATCHER_FAULT_UNAVAILABLE),
+            Some(true)
+        );
+        for provenance in ["tree_sampled", "unavailable"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("watcher_job_image_provenance", provenance),
+                Some(true)
+            );
+        }
+
         // Fail-closed: a producer bug that shipped a path, product string, hex,
         // sign, or an unknown token must be rejected so it degrades to [Filtered].
         for (key, value) in [
             ("watcher_fault_provenance", "pid_matched;/Users/Ada"),
+            ("watcher_fault_provenance", "no_record"), // the retired ambiguous token
             ("watcher_fault_faulting_image", r"C:\Users\Ada\node.exe"),
             ("watcher_fault_faulting_module", "kernelbase"),
             ("watcher_fault_exception_code", "0xC0000409"),
@@ -1240,6 +1331,10 @@ mod tests {
             ("watcher_fault_offset", "2a1b3"),
             ("runner_unmatched_stderr_shapes", "ndjson_record:6,/Users/Ada:1"),
             ("runner_unmatched_stderr_shapes", "not_a_shape:1"),
+            ("watcher_job_image_set", r"C:\Users\Ada\node.exe"),
+            ("watcher_job_image_set", "node_exe,not_a_binary"),
+            ("watcher_job_last_nonshim_image", "kernelbase"),
+            ("watcher_job_image_provenance", "pid_matched"),
         ] {
             assert_eq!(
                 valid_runner_diagnostic_field(key, value),
@@ -1253,9 +1348,12 @@ mod tests {
     fn watcher_fault_fields_survive_and_malformed_fail_closed_before_send() {
         let mut event = Event::default();
         for (key, value) in [
-            ("watcher_fault_provenance", "pid_matched"),
+            ("watcher_fault_provenance", "deadline_expired"),
             ("watcher_fault_faulting_image", "node_exe"),
             ("watcher_fault_faulting_module", "ntdll_dll"),
+            ("watcher_job_image_set", "node_exe,cmd_exe"),
+            ("watcher_job_last_nonshim_image", "node_exe"),
+            ("watcher_job_image_provenance", "tree_sampled"),
             (
                 "runner_unmatched_stderr_shapes",
                 "ndjson_record:6,stack_frame:2",
@@ -1271,15 +1369,26 @@ mod tests {
             "watcher_fault_offset".to_string(),
             Value::String("172467".to_string()),
         );
+        // The self-diagnosing counters ship as bare numbers, content-safe by type.
+        event
+            .extra
+            .insert("watcher_fault_sweeps".to_string(), Value::Number(58.into()));
+        event.extra.insert(
+            "watcher_fault_ms_to_verdict".to_string(),
+            Value::Number(59_842.into()),
+        );
         // A watcher-route line count as a bare number is content-safe by type.
         event
             .extra
             .insert("runner_stderr_line_count".to_string(), Value::Number(8.into()));
 
         let result = before_send(event).expect("event remains sendable");
-        assert_eq!(result.tags["watcher_fault_provenance"], "pid_matched");
+        assert_eq!(result.tags["watcher_fault_provenance"], "deadline_expired");
         assert_eq!(result.tags["watcher_fault_faulting_image"], "node_exe");
         assert_eq!(result.tags["watcher_fault_faulting_module"], "ntdll_dll");
+        assert_eq!(result.tags["watcher_job_image_set"], "node_exe,cmd_exe");
+        assert_eq!(result.tags["watcher_job_last_nonshim_image"], "node_exe");
+        assert_eq!(result.tags["watcher_job_image_provenance"], "tree_sampled");
         assert_eq!(
             result.tags["runner_unmatched_stderr_shapes"],
             "ndjson_record:6,stack_frame:2"
@@ -1288,6 +1397,7 @@ mod tests {
             result.extra["watcher_fault_exception_code"],
             Value::String("3221226505".to_string())
         );
+        assert_eq!(result.extra["watcher_fault_sweeps"], Value::Number(58.into()));
         assert_eq!(
             result.extra["runner_stderr_line_count"],
             Value::Number(8.into())
@@ -1300,12 +1410,19 @@ mod tests {
             "watcher_fault_faulting_image".to_string(),
             "kernelbase".to_string(),
         );
+        bad.tags.insert(
+            // A job-image descriptor is never allowed to name a fault-attribution
+            // provenance — a producer bug that tried degrades to [Filtered].
+            "watcher_job_image_provenance".to_string(),
+            "pid_matched".to_string(),
+        );
         bad.extra.insert(
             "watcher_fault_exception_code".to_string(),
             Value::String("0xC0000409".to_string()),
         );
         let result = before_send(bad).expect("event remains sendable");
         assert_eq!(result.tags["watcher_fault_faulting_image"], "[Filtered]");
+        assert_eq!(result.tags["watcher_job_image_provenance"], "[Filtered]");
         assert_eq!(
             result.extra["watcher_fault_exception_code"],
             Value::String("[Filtered]".to_string())

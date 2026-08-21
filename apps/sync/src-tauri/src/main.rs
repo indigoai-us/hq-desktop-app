@@ -1196,6 +1196,12 @@ fn main() {
                 // external kill must not silently swallow it. Bounded and
                 // panic-free — it drains a vector and sends what it took.
                 commands::daemon::flush_pending_session_end_captures();
+                // A deferred Windows fault capture (HQ-DESKTOP-4X) mid-read is a
+                // genuine crash whether or not the app is quitting, so it is FLUSHED
+                // here with its honest unresolved provenance plus the already-sampled
+                // job-image candidate — never silently swallowed. Bounded, panic-free
+                // and performs no Event Log read.
+                commands::daemon::flush_pending_watcher_fault_captures();
                 #[cfg(target_os = "windows")]
                 if let Some(observer) = _app_handle
                     .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
@@ -1239,6 +1245,16 @@ fn main() {
                         // and allocation-only — it adds no uncapped work to a
                         // teardown that runs inside a window procedure.
                         commands::daemon::drop_pending_session_end_captures();
+                        // A deferred Windows FAULT capture is FLUSHED, not dropped,
+                        // even here: unlike a session-terminate capture (which the
+                        // session ending caused), a 0xC0000409 fault is a real crash
+                        // regardless of the session end, so dropping it would silently
+                        // shrink this cluster's volume (HQ-DESKTOP-4X risk 1). Emitted
+                        // with its honest unresolved provenance plus the job-image
+                        // candidate, ahead of the capped Sentry flush below so the
+                        // event is queued before the flush. Bounded, allocation-only,
+                        // and performs no Event Log read inside the window procedure.
+                        commands::daemon::flush_pending_watcher_fault_captures();
 
                         // Corroborating signal, read BEFORE the observer is shut
                         // down (shutdown moves its readiness out of the

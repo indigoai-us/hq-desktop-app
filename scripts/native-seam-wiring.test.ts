@@ -522,3 +522,105 @@ describe("native panic seam wiring", () => {
     }
   });
 });
+
+// ── HQ-DESKTOP-4X: deferred watcher fault-capture drain ──────────────────────
+// A 0xC0000409 fault capture is deferred off the terminal exit callback for a
+// bounded WER read, so it must be FLUSHED (not dropped, and never left in the
+// registry) at BOTH teardown seams — a genuine crash is a genuine crash whether
+// the app is quitting or the OS is ending the session. The same call name lives
+// in both arms, so it is pinned here rather than in `boundaryContracts` (whose
+// file-unique invariant a twice-present hook would violate).
+describe("deferred watcher fault-capture drain wiring", () => {
+  const FLUSH = "commands::daemon::flush_pending_watcher_fault_captures();";
+  const TERMINATE = "commands::process::terminate_all_for_exit(";
+  const EXIT_REQUESTED_START =
+    "if let tauri::RunEvent::ExitRequested { .. } = event {";
+  const SESSION_END_START = "if matches!(&event, tauri::RunEvent::Exit) {";
+  const SESSION_END_END = "// Dock-icon click on the already-running app.";
+
+  function exitRequestedArm(source: string): string {
+    return sourceBetween(source, EXIT_REQUESTED_START, SESSION_END_START);
+  }
+  function sessionEndArm(source: string): string {
+    return sourceBetween(source, SESSION_END_START, SESSION_END_END);
+  }
+
+  // Remove ONLY the flush call from a specific arm (not the surrounding
+  // whitespace), so the mutation probe is robust to formatting.
+  function removeFlushFromArm(
+    source: string,
+    armStart: string,
+    armEnd: string,
+  ): string {
+    const start = source.indexOf(armStart);
+    const end = source.indexOf(armEnd, start + armStart.length);
+    const arm = source.slice(start, end);
+    const flushIndex = arm.indexOf(FLUSH);
+    if (flushIndex === -1) {
+      throw new Error(`arm ${armStart} is missing the fault flush`);
+    }
+    const mutatedArm = arm.slice(0, flushIndex) + arm.slice(flushIndex + FLUSH.length);
+    return source.slice(0, start) + mutatedArm + source.slice(end);
+  }
+
+  it("flushes fault captures at both teardown seams, before terminating children", () => {
+    // Present in each arm exactly once, and exactly twice across the whole file —
+    // neither seam may silently swallow a deferred fault.
+    expect(countOccurrences(main, FLUSH)).toBe(2);
+    const exitArm = exitRequestedArm(main);
+    const sessionArm = sessionEndArm(main);
+    expect(countOccurrences(exitArm, FLUSH)).toBe(1);
+    expect(countOccurrences(sessionArm, FLUSH)).toBe(1);
+
+    // Ahead of the child teardown in both arms: once children are terminated,
+    // further watcher exits are cancelled teardown, not the crash being held.
+    for (const arm of [exitArm, sessionArm]) {
+      expect(arm.indexOf(FLUSH)).toBeGreaterThanOrEqual(0);
+      expect(arm.indexOf(TERMINATE)).toBeGreaterThan(arm.indexOf(FLUSH));
+    }
+
+    // In the session-end arm the fault flush is the mirror of the session-end
+    // DROP: the fault is flushed while the session-terminate capture is dropped,
+    // so the asymmetry is deliberate and both are present.
+    expect(sessionArm).toContain(
+      "commands::daemon::drop_pending_session_end_captures();",
+    );
+  });
+
+  it("rejects deleting the fault flush from either teardown seam", () => {
+    // Delete from the app-quit arm: the session-end arm still has its own copy,
+    // so a naive whole-file presence check would miss this — the per-arm count is
+    // what catches a half-deletion that silently drops the app-quit crash.
+    const withoutExit = removeFlushFromArm(
+      main,
+      EXIT_REQUESTED_START,
+      SESSION_END_START,
+    );
+    expect(countOccurrences(exitRequestedArm(withoutExit), FLUSH)).toBe(0);
+    expect(countOccurrences(withoutExit, FLUSH)).toBe(1);
+
+    // Delete from the session-end arm the same way.
+    const withoutSession = removeFlushFromArm(
+      main,
+      SESSION_END_START,
+      SESSION_END_END,
+    );
+    expect(countOccurrences(sessionEndArm(withoutSession), FLUSH)).toBe(0);
+    expect(countOccurrences(withoutSession, FLUSH)).toBe(1);
+  });
+
+  it("rejects reordering the fault flush after the child teardown", () => {
+    const exitArm = exitRequestedArm(main);
+    // As shipped, the flush precedes the teardown.
+    expect(exitArm.indexOf(FLUSH)).toBeLessThan(exitArm.indexOf(TERMINATE));
+    // Move the flush to AFTER the teardown by deleting it and re-appending it past
+    // the terminate call; the precedence check must now report the violation.
+    const flushIndex = exitArm.indexOf(FLUSH);
+    const withoutFlush =
+      exitArm.slice(0, flushIndex) + exitArm.slice(flushIndex + FLUSH.length);
+    const reorderedArm = `${withoutFlush}\n                ${FLUSH}\n`;
+    expect(reorderedArm.indexOf(FLUSH)).toBeGreaterThan(
+      reorderedArm.indexOf(TERMINATE),
+    );
+  });
+});

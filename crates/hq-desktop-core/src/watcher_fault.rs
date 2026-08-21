@@ -102,6 +102,31 @@ impl WatcherFaultBinary {
             Self::Other => "other",
         }
     }
+
+    /// This variant's stable position in [`Self::ALL`], for compact bookkeeping
+    /// in the job-image rollup. Kept in lockstep with `ALL` by
+    /// `binary_index_round_trips_all` so a reordering cannot silently mis-index.
+    pub fn index(self) -> usize {
+        match self {
+            Self::NodeExe => 0,
+            Self::NpxCmd => 1,
+            Self::CmdExe => 2,
+            Self::HqSyncMenubarExe => 3,
+            Self::NtdllDll => 4,
+            Self::KernelbaseDll => 5,
+            Self::UcrtbaseDll => 6,
+            Self::MsvcrtDll => 7,
+            Self::Other => 8,
+        }
+    }
+
+    /// True for the batch-shim interpreters the runner is dispatched through
+    /// (`cmd.exe`, `npx.cmd`) and for the app's own binary. None of these is the
+    /// runner whose crash we are trying to name, so the last observed NON-shim
+    /// image is the culprit candidate the job-image descriptor surfaces.
+    pub fn is_shim_or_self(self) -> bool {
+        matches!(self, Self::CmdExe | Self::NpxCmd | Self::HqSyncMenubarExe)
+    }
 }
 
 /// Map an untrusted image/module name (as WER records it) to a fixed allow-listed
@@ -131,10 +156,16 @@ pub fn classify_watcher_fault_binary(name: &str) -> WatcherFaultBinary {
 // Provenance honesty token
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// How confidently a read WER record is bound to *this* watcher generation.
-/// Emitted alongside the image/module tokens so a time-window-only coincidence,
-/// an absent record, and an unreadable log are three visibly different states
-/// that can never be misread as a confirmed attribution.
+/// How confidently a read WER record is bound to *this* watcher generation, and
+/// — when nothing bound — exactly WHY. HQ-DESKTOP-4X reopened because the prior
+/// fix collapsed three distinct failure states (WER wrote nothing, WER wrote
+/// records that failed window/code binding, WER had not published yet when the
+/// budget expired) into the single `no_record` token, so the field data could
+/// not say which one occurred. This resolved, mutually-exclusive vocabulary
+/// separates every one of them, so the very next occurrence is actionable
+/// instead of ambiguous. Only `PidMatched`/`WindowOnly` are attributions; every
+/// other value is an honest "no attribution, and here is the reason", and none
+/// of them may ever render a named image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatcherFaultProvenance {
     /// The record's faulting PID is a member of the generation's sampled Job
@@ -144,28 +175,63 @@ pub enum WatcherFaultProvenance {
     /// the observed exception code), but its PID is not in the sampled set — a
     /// weaker, coincidence-possible binding.
     WindowOnly,
-    /// The query ran but produced no record attributable to this generation.
-    NoRecord,
-    /// The query could not run (non-Windows, disabled/unreadable WER, or a
-    /// timed-out query). Absence of a reader, not absence of a fault.
+    /// In-window record(s) existed but every one carried a DIFFERENT exception
+    /// code than the abort this exit observed — a real crash, but not this one.
+    RejectedCodeMismatch,
+    /// Parsed record(s) existed but every one fell OUTSIDE the generation window
+    /// (a stale earlier crash, or a coincidental unrelated one).
+    RejectedOutOfWindow,
+    /// Record(s) were present but none carried a bindable timestamp, so none
+    /// could be time-bound to this generation at all.
+    RejectedUnparsable,
+    /// The query ran and the Application log yielded ZERO Application Error 1000
+    /// records at all — WER wrote nothing (yet). Distinct from a deadline that
+    /// expired on the deferred read (`DeadlineExpired`).
+    NoRecords,
+    /// The deferred read exhausted its whole bounded horizon and WER still never
+    /// published any record — the actionable "we waited and it never came"
+    /// signal that a blind 4s retry could never distinguish from `no_records`.
+    DeadlineExpired,
+    /// The query could not run (disabled/unreadable WER, or an `EvtQuery` that
+    /// never opened the log). Absence of a reader, not absence of a fault.
     Unavailable,
+    /// No read was warranted at all: a non-Windows exit, or a non-fault exit, so
+    /// a macOS/Linux exit stops masquerading as a failed Windows read.
+    NotApplicable,
 }
 
 impl WatcherFaultProvenance {
-    pub const ALL: [WatcherFaultProvenance; 4] = [
+    pub const ALL: [WatcherFaultProvenance; 9] = [
         Self::PidMatched,
         Self::WindowOnly,
-        Self::NoRecord,
+        Self::RejectedCodeMismatch,
+        Self::RejectedOutOfWindow,
+        Self::RejectedUnparsable,
+        Self::NoRecords,
+        Self::DeadlineExpired,
         Self::Unavailable,
+        Self::NotApplicable,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PidMatched => "pid_matched",
             Self::WindowOnly => "window_only",
-            Self::NoRecord => "no_record",
+            Self::RejectedCodeMismatch => "rejected_code_mismatch",
+            Self::RejectedOutOfWindow => "rejected_out_of_window",
+            Self::RejectedUnparsable => "rejected_unparsable",
+            Self::NoRecords => "no_records",
+            Self::DeadlineExpired => "deadline_expired",
             Self::Unavailable => "unavailable",
+            Self::NotApplicable => "not_applicable",
         }
+    }
+
+    /// True only for the two provenances that actually name a faulting image.
+    /// The deferred read loop polls until one of these is reached or its horizon
+    /// expires; the egress layer relies on it to keep an unresolved read unnamed.
+    pub fn is_attribution(self) -> bool {
+        matches!(self, Self::PidMatched | Self::WindowOnly)
     }
 }
 
@@ -310,10 +376,50 @@ fn parse_hex_u64(token: &str) -> Option<u64> {
 // Attribution decision
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Bounded, saturating per-read counters that make a SECOND attribution failure
+/// actionable instead of another blind `no_record`. Every field is a fixed
+/// integer that renders as a bare number — never an input byte. The pure
+/// attribution fills the parse/rejection tallies; the Win32 read loop stamps the
+/// runtime counters it alone owns (`records_seen`, `sweeps`, `ms_to_verdict`)
+/// via [`WatcherFaultOutcome::with_runtime_counters`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WatcherFaultCounters {
+    /// Raw Application Error 1000 XML fragments the query returned (caller-owned).
+    pub records_seen: u32,
+    /// How many of those parsed into a usable [`WerApplicationError`].
+    pub records_parsed: u32,
+    /// Parsed records rejected because their timestamp fell outside the window.
+    pub rejected_out_of_window: u32,
+    /// Parsed records rejected because their exception code disagreed in-window.
+    pub rejected_code_mismatch: u32,
+    /// Parsed records rejected because they carried no bindable timestamp.
+    pub rejected_unparsable: u32,
+    /// Query sweeps the deferred read performed (caller-owned).
+    pub sweeps: u32,
+    /// Milliseconds from the watcher exit to this verdict (caller-owned).
+    pub ms_to_verdict: u32,
+}
+
+impl WatcherFaultCounters {
+    /// The counters as fixed-key bare integers, for the caller to emit as Sentry
+    /// extras. Keys are code constants; values are bounded `u32`s.
+    pub fn as_extras(&self) -> [(&'static str, u32); 7] {
+        [
+            ("watcher_fault_records_seen", self.records_seen),
+            ("watcher_fault_records_parsed", self.records_parsed),
+            ("watcher_fault_rejected_out_of_window", self.rejected_out_of_window),
+            ("watcher_fault_rejected_code_mismatch", self.rejected_code_mismatch),
+            ("watcher_fault_rejected_unparsable", self.rejected_unparsable),
+            ("watcher_fault_sweeps", self.sweeps),
+            ("watcher_fault_ms_to_verdict", self.ms_to_verdict),
+        ]
+    }
+}
+
 /// The content-safe result of attributing a fault to this watcher generation.
 /// Every field is a fixed token or a bare integer. `image`/`module` are `None`
-/// (rendered as [`WATCHER_FAULT_UNAVAILABLE`]) whenever the provenance is
-/// `NoRecord`/`Unavailable`, so absence can never masquerade as evidence.
+/// (rendered as [`WATCHER_FAULT_UNAVAILABLE`]) whenever the provenance is not an
+/// attribution, so absence can never masquerade as evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WatcherFaultOutcome {
     pub provenance: WatcherFaultProvenance,
@@ -321,39 +427,72 @@ pub struct WatcherFaultOutcome {
     pub module: Option<WatcherFaultBinary>,
     pub exception_code: Option<u32>,
     pub fault_offset: Option<u64>,
+    pub counters: WatcherFaultCounters,
 }
 
 impl WatcherFaultOutcome {
-    /// The query could not run at all.
+    fn unresolved(provenance: WatcherFaultProvenance, counters: WatcherFaultCounters) -> Self {
+        Self {
+            provenance,
+            image: None,
+            module: None,
+            exception_code: None,
+            fault_offset: None,
+            counters,
+        }
+    }
+
+    /// The query could not run at all (unreadable WER / failed `EvtQuery`).
     pub fn unavailable() -> Self {
-        Self {
-            provenance: WatcherFaultProvenance::Unavailable,
-            image: None,
-            module: None,
-            exception_code: None,
-            fault_offset: None,
-        }
+        Self::unresolved(WatcherFaultProvenance::Unavailable, WatcherFaultCounters::default())
     }
 
-    /// The query ran but nothing bound to this generation.
-    pub fn no_record() -> Self {
-        Self {
-            provenance: WatcherFaultProvenance::NoRecord,
-            image: None,
-            module: None,
-            exception_code: None,
-            fault_offset: None,
-        }
+    /// No read was warranted: a non-Windows exit, or a non-fault exit. Keeps a
+    /// macOS/Linux watcher exit from masquerading as a failed Windows read.
+    pub fn not_applicable() -> Self {
+        Self::unresolved(WatcherFaultProvenance::NotApplicable, WatcherFaultCounters::default())
     }
 
-    fn from_record(record: &WerApplicationError, provenance: WatcherFaultProvenance) -> Self {
+    /// The query ran but the Application log held zero Application Error 1000
+    /// records. Carries the counters observed so far.
+    pub fn no_records(counters: WatcherFaultCounters) -> Self {
+        Self::unresolved(WatcherFaultProvenance::NoRecords, counters)
+    }
+
+    fn from_record(
+        record: &WerApplicationError,
+        provenance: WatcherFaultProvenance,
+        counters: WatcherFaultCounters,
+    ) -> Self {
         Self {
             provenance,
             image: Some(record.image),
             module: Some(record.module),
             exception_code: record.exception_code,
             fault_offset: record.fault_offset,
+            counters,
         }
+    }
+
+    /// Stamp the runtime counters the Win32 read loop owns, leaving the
+    /// parse/rejection tallies and the binding untouched.
+    pub fn with_runtime_counters(mut self, records_seen: u32, sweeps: u32, ms_to_verdict: u32) -> Self {
+        self.counters.records_seen = records_seen;
+        self.counters.sweeps = sweeps;
+        self.counters.ms_to_verdict = ms_to_verdict;
+        self
+    }
+
+    /// Map a still-empty `NoRecords` verdict to `DeadlineExpired` once the
+    /// deferred read has exhausted its whole horizon. ONLY `NoRecords` is
+    /// remapped: a rejection or a real binding keeps its more-informative token,
+    /// so "we waited and WER never wrote anything" stays distinct from "records
+    /// existed but none bound".
+    pub fn into_deadline_expired(mut self) -> Self {
+        if self.provenance == WatcherFaultProvenance::NoRecords {
+            self.provenance = WatcherFaultProvenance::DeadlineExpired;
+        }
+        self
     }
 
     /// Fixed token for the faulting executable, or [`WATCHER_FAULT_UNAVAILABLE`].
@@ -376,7 +515,8 @@ impl WatcherFaultOutcome {
 }
 
 /// Bind zero or more read WER Application Error records to this watcher
-/// generation and choose the single most-confident provenance.
+/// generation and choose the single most-confident provenance — or, when
+/// nothing binds, the most-informative reason WHY.
 ///
 /// `records` are the parsed candidates (newest first is preferred but not
 /// required — the strongest binding wins regardless of order). `sampled_pids` is
@@ -386,14 +526,19 @@ impl WatcherFaultOutcome {
 /// itself carried, used to reject an in-window record for an unrelated fault.
 ///
 /// Precedence, strongest first:
-///  1. `PidMatched` — faulting PID ∈ `sampled_pids` AND time ∈ window.
+///  1. `PidMatched` — faulting PID ∈ `sampled_pids` AND time ∈ window (code ok).
 ///  2. `WindowOnly` — time ∈ window AND (no observed code, or codes agree).
-///  3. `NoRecord` — records exist but none bind to this generation.
+///  3. When nothing binds, the dominant rejection reason, most-informative
+///     first: `RejectedCodeMismatch` (a real in-window crash, wrong code) beats
+///     `RejectedOutOfWindow` (a stale/coincidental crash) beats
+///     `RejectedUnparsable` (no bindable timestamp); `NoRecords` when the set is
+///     empty.
 ///
 /// A weaker binding is never upgraded, and a record outside the window is never
 /// reported, so PID reuse or a coincidental unrelated crash on the same machine
 /// downgrades to `window_only` or is rejected outright rather than producing a
-/// false `pid_matched`.
+/// false `pid_matched`. The returned counters record parse/rejection tallies so
+/// a second failure states exactly which cause occurred.
 pub fn attribute_watcher_fault(
     records: &[WerApplicationError],
     sampled_pids: &[u32],
@@ -401,9 +546,14 @@ pub fn attribute_watcher_fault(
     gen_end_ms: i64,
     observed_exception_code: Option<u32>,
 ) -> WatcherFaultOutcome {
+    let mut counters = WatcherFaultCounters {
+        records_parsed: records.len().min(u32::MAX as usize) as u32,
+        ..WatcherFaultCounters::default()
+    };
     if records.is_empty() {
-        return WatcherFaultOutcome::no_record();
+        return WatcherFaultOutcome::no_records(counters);
     }
+    let has_timestamp = |record: &WerApplicationError| record.event_time_unix_ms.is_some();
     let in_window = |record: &WerApplicationError| {
         record
             .event_time_unix_ms
@@ -427,7 +577,7 @@ pub fn attribute_watcher_fault(
                 .faulting_pid
                 .is_some_and(|pid| sampled_pids.contains(&pid))
     }) {
-        return WatcherFaultOutcome::from_record(record, WatcherFaultProvenance::PidMatched);
+        return WatcherFaultOutcome::from_record(record, WatcherFaultProvenance::PidMatched, counters);
     }
 
     // Weaker: in-window and code-consistent, but PID not confirmed.
@@ -435,10 +585,117 @@ pub fn attribute_watcher_fault(
         .iter()
         .find(|record| in_window(record) && code_agrees(record))
     {
-        return WatcherFaultOutcome::from_record(record, WatcherFaultProvenance::WindowOnly);
+        return WatcherFaultOutcome::from_record(record, WatcherFaultProvenance::WindowOnly, counters);
     }
 
-    WatcherFaultOutcome::no_record()
+    // Nothing bound — tally WHY each parsed record was rejected. Every record
+    // falls in exactly one bucket: an in-window, code-agreeing record would have
+    // bound above, so an in-window survivor here can only be a code mismatch.
+    for record in records {
+        if !has_timestamp(record) {
+            counters.rejected_unparsable = counters.rejected_unparsable.saturating_add(1);
+        } else if !in_window(record) {
+            counters.rejected_out_of_window = counters.rejected_out_of_window.saturating_add(1);
+        } else {
+            counters.rejected_code_mismatch = counters.rejected_code_mismatch.saturating_add(1);
+        }
+    }
+    let provenance = if counters.rejected_code_mismatch > 0 {
+        WatcherFaultProvenance::RejectedCodeMismatch
+    } else if counters.rejected_out_of_window > 0 {
+        WatcherFaultProvenance::RejectedOutOfWindow
+    } else {
+        WatcherFaultProvenance::RejectedUnparsable
+    };
+    WatcherFaultOutcome::unresolved(provenance, counters)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WER-independent job-image descriptor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Provenance token for the job-image descriptor. It marks the descriptor as a
+/// process-TREE OBSERVATION (the app's own Job Object PID sampling) and NOT a WER
+/// fault attribution, so a named image here can never be misread as "this is what
+/// faulted" — only "this ran in the generation's tree". Absence renders
+/// [`WATCHER_FAULT_UNAVAILABLE`].
+pub const WATCHER_JOB_IMAGE_TREE_SAMPLED: &str = "tree_sampled";
+
+/// Cap on how many image tokens the descriptor renders. The watcher tree is a
+/// handful of processes and the allow-list is nine tokens, so this only guards a
+/// pathological producer; the render is bounded well under Sentry's tag limit.
+const JOB_IMAGE_SET_TAG_MAX: usize = WatcherFaultBinary::ALL.len();
+
+/// A bounded, content-safe rollup of the allow-listed IMAGE basenames observed
+/// alive in a watcher generation's Job Object across the sampling cadence.
+///
+/// This is the WER-INDEPENDENT half of the fix: even when WER never publishes a
+/// fault record (a `__fastfail`/0xC0000409 abort may simply not be reported), the
+/// descriptor still supplies a named culprit CANDIDATE from the app's own
+/// process-tree enumeration — without ever letting absence masquerade as
+/// evidence, and carrying its own tree-observation provenance so it is never
+/// confused with a fault attribution. Only fixed allow-list tokens are retained;
+/// an image outside the list folds to `other`, exactly like the WER image
+/// position, so no path, product string, or username can leak.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatcherJobImageRollup {
+    seen: [bool; WatcherFaultBinary::ALL.len()],
+    last_nonshim: Option<WatcherFaultBinary>,
+}
+
+impl WatcherJobImageRollup {
+    /// Fold one observed image name through the SAME closed allow-list the WER
+    /// image position uses. The name is inspected only to select a fixed token;
+    /// nothing is retained. Updates the "last non-shim image" candidate when the
+    /// observed binary is not a shim or the app itself.
+    pub fn record_image_name(&mut self, name: &str) {
+        self.record_binary(classify_watcher_fault_binary(name));
+    }
+
+    /// Fold an already-classified binary in — the unit-test seam for
+    /// [`Self::record_image_name`], and what the Win32 sampler calls after
+    /// classifying a `QueryFullProcessImageNameW` basename.
+    pub fn record_binary(&mut self, binary: WatcherFaultBinary) {
+        self.seen[binary.index()] = true;
+        if !binary.is_shim_or_self() {
+            self.last_nonshim = Some(binary);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.seen.iter().any(|seen| *seen)
+    }
+
+    /// The distinct allow-listed image tokens observed, in `ALL` declaration
+    /// order, comma-joined and bounded. `None` when nothing was observed, so no
+    /// tag is sent.
+    pub fn image_set_tag(&self) -> Option<String> {
+        let rendered: Vec<&'static str> = WatcherFaultBinary::ALL
+            .iter()
+            .filter(|binary| self.seen[binary.index()])
+            .take(JOB_IMAGE_SET_TAG_MAX)
+            .map(|binary| binary.as_str())
+            .collect();
+        (!rendered.is_empty()).then(|| rendered.join(","))
+    }
+
+    /// The last observed non-shim image — the culprit candidate — as a fixed
+    /// token, or [`WATCHER_FAULT_UNAVAILABLE`] when none was seen.
+    pub fn last_nonshim_token(&self) -> &'static str {
+        self.last_nonshim
+            .map(WatcherFaultBinary::as_str)
+            .unwrap_or(WATCHER_FAULT_UNAVAILABLE)
+    }
+
+    /// The descriptor's own provenance: a tree observation when anything was
+    /// sampled, else the unavailable sentinel. Never a fault-attribution token.
+    pub fn provenance_token(&self) -> &'static str {
+        if self.is_empty() {
+            WATCHER_FAULT_UNAVAILABLE
+        } else {
+            WATCHER_JOB_IMAGE_TREE_SAMPLED
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -730,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn attribute_prefers_pid_match_then_window_then_no_record() {
+    fn attribute_prefers_pid_match_then_window_then_rejection() {
         let base = WerApplicationError {
             image: WatcherFaultBinary::NodeExe,
             module: WatcherFaultBinary::NtdllDll,
@@ -741,33 +998,105 @@ mod tests {
         };
         let window = (1_000_000_i64, 1_001_000_i64);
 
-        // PID in the sampled set + in window → pid_matched, fields populated.
+        // PID in the sampled set + in window → pid_matched, fields populated,
+        // and the parsed-record counter reflects the one candidate.
         let outcome = attribute_watcher_fault(&[base], &[6700], window.0, window.1, Some(0xC000_0409));
         assert_eq!(outcome.provenance, WatcherFaultProvenance::PidMatched);
         assert_eq!(outcome.image_token(), "node_exe");
         assert_eq!(outcome.module_token(), "ntdll_dll");
         assert_eq!(outcome.exception_code, Some(0xC000_0409));
+        assert_eq!(outcome.counters.records_parsed, 1);
 
         // Same record, PID NOT sampled → downgrades to window_only, still named.
         let outcome = attribute_watcher_fault(&[base], &[42], window.0, window.1, Some(0xC000_0409));
         assert_eq!(outcome.provenance, WatcherFaultProvenance::WindowOnly);
         assert_eq!(outcome.image_token(), "node_exe");
 
-        // Record timestamped OUTSIDE the window → rejected → no_record, unnamed.
+        // Record timestamped OUTSIDE the window → distinct rejected token, unnamed,
+        // and the per-reason counter says exactly why.
         let stale = WerApplicationError {
             event_time_unix_ms: Some(999_000),
             ..base
         };
         let outcome = attribute_watcher_fault(&[stale], &[6700], window.0, window.1, Some(0xC000_0409));
-        assert_eq!(outcome.provenance, WatcherFaultProvenance::NoRecord);
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedOutOfWindow);
         assert_eq!(outcome.image_token(), WATCHER_FAULT_UNAVAILABLE);
         assert_eq!(outcome.module_token(), WATCHER_FAULT_UNAVAILABLE);
         assert_eq!(outcome.exception_code, None);
+        assert_eq!(outcome.counters.rejected_out_of_window, 1);
+        assert_eq!(outcome.counters.rejected_code_mismatch, 0);
 
-        // No records at all → no_record.
+        // No records at all → no_records (distinct from a rejected set).
+        let empty = attribute_watcher_fault(&[], &[6700], window.0, window.1, None);
+        assert_eq!(empty.provenance, WatcherFaultProvenance::NoRecords);
+        assert_eq!(empty.counters.records_parsed, 0);
+    }
+
+    #[test]
+    fn attribute_distinguishes_every_rejection_reason_and_tallies_it() {
+        let window = (1_000_000_i64, 1_001_000_i64);
+        let good = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0409),
+            fault_offset: Some(0x2a1b3),
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(1_000_500),
+        };
+
+        // In-window but a DIFFERENT code → rejected_code_mismatch, the most
+        // informative reason (a real crash at the right time, wrong code).
+        let mismatch = WerApplicationError { exception_code: Some(0xC000_0005), ..good };
+        let outcome = attribute_watcher_fault(&[mismatch], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedCodeMismatch);
+        assert_eq!(outcome.counters.rejected_code_mismatch, 1);
+        assert_eq!(outcome.image_token(), WATCHER_FAULT_UNAVAILABLE, "a rejection never names an image");
+
+        // No bindable timestamp → rejected_unparsable.
+        let no_time = WerApplicationError { event_time_unix_ms: None, ..good };
+        let outcome = attribute_watcher_fault(&[no_time], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedUnparsable);
+        assert_eq!(outcome.counters.rejected_unparsable, 1);
+
+        // Mixed set with no binding: code-mismatch outranks out-of-window, and both
+        // per-reason counters are recorded.
+        let stale = WerApplicationError { event_time_unix_ms: Some(500), ..good };
+        let outcome = attribute_watcher_fault(&[mismatch, stale], &[6700], window.0, window.1, Some(0xC000_0409));
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedCodeMismatch);
+        assert_eq!(outcome.counters.rejected_code_mismatch, 1);
+        assert_eq!(outcome.counters.rejected_out_of_window, 1);
+        assert_eq!(outcome.counters.records_parsed, 2);
+    }
+
+    #[test]
+    fn runtime_counters_and_deadline_mapping_are_honest() {
+        // A no-records verdict maps to deadline_expired only after the full horizon.
+        let empty = attribute_watcher_fault(&[], &[], 0, 10, None)
+            .with_runtime_counters(0, 4, 61_000);
+        assert_eq!(empty.provenance, WatcherFaultProvenance::NoRecords);
+        assert_eq!(empty.counters.records_seen, 0);
+        assert_eq!(empty.counters.sweeps, 4);
+        assert_eq!(empty.counters.ms_to_verdict, 61_000);
+        let expired = empty.into_deadline_expired();
+        assert_eq!(expired.provenance, WatcherFaultProvenance::DeadlineExpired);
+        assert_eq!(expired.image_token(), WATCHER_FAULT_UNAVAILABLE, "deadline_expired is never named");
+
+        // into_deadline_expired NEVER upgrades a real binding or a rejection.
+        let base = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0409),
+            fault_offset: Some(0x2a1b3),
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(5),
+        };
+        let bound = attribute_watcher_fault(&[base], &[6700], 0, 10, Some(0xC000_0409));
+        assert_eq!(bound.into_deadline_expired().provenance, WatcherFaultProvenance::PidMatched);
+        let stale = WerApplicationError { event_time_unix_ms: Some(100), ..base };
+        let rejected = attribute_watcher_fault(&[stale], &[6700], 0, 10, Some(0xC000_0409));
         assert_eq!(
-            attribute_watcher_fault(&[], &[6700], window.0, window.1, None).provenance,
-            WatcherFaultProvenance::NoRecord
+            rejected.into_deadline_expired().provenance,
+            WatcherFaultProvenance::RejectedOutOfWindow
         );
     }
 
@@ -807,21 +1136,71 @@ mod tests {
             event_time_unix_ms: Some(1_000_500),
         };
         // Even with the PID sampled and in-window, a mismatched code is not our
-        // fault → no attribution rather than a confident wrong one.
+        // fault → the distinct rejected token rather than a confident wrong one.
         let outcome =
             attribute_watcher_fault(&[other_fault], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
-        assert_eq!(outcome.provenance, WatcherFaultProvenance::NoRecord);
+        assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedCodeMismatch);
+        assert_eq!(outcome.counters.rejected_code_mismatch, 1);
     }
 
     #[test]
-    fn unavailable_and_no_record_are_distinct_and_unnamed() {
-        assert_eq!(
-            WatcherFaultOutcome::unavailable().provenance_token(),
-            "unavailable"
-        );
-        assert_eq!(WatcherFaultOutcome::no_record().provenance_token(), "no_record");
-        assert_eq!(WatcherFaultOutcome::unavailable().image_token(), "unavailable");
-        assert_eq!(WatcherFaultOutcome::no_record().image_token(), "unavailable");
+    fn unresolved_constructors_are_distinct_and_never_named() {
+        // The states the old two-token vocabulary collapsed are now distinct, and
+        // none of them renders a named image.
+        for (outcome, token) in [
+            (WatcherFaultOutcome::unavailable(), "unavailable"),
+            (WatcherFaultOutcome::not_applicable(), "not_applicable"),
+            (WatcherFaultOutcome::no_records(WatcherFaultCounters::default()), "no_records"),
+            (
+                WatcherFaultOutcome::no_records(WatcherFaultCounters::default()).into_deadline_expired(),
+                "deadline_expired",
+            ),
+        ] {
+            assert_eq!(outcome.provenance_token(), token);
+            assert_eq!(outcome.image_token(), WATCHER_FAULT_UNAVAILABLE, "{token} must be unnamed");
+            assert_eq!(outcome.module_token(), WATCHER_FAULT_UNAVAILABLE);
+            assert!(!outcome.provenance.is_attribution(), "{token} is not an attribution");
+        }
+        // The two real bindings are the only attributions.
+        assert!(WatcherFaultProvenance::PidMatched.is_attribution());
+        assert!(WatcherFaultProvenance::WindowOnly.is_attribution());
+    }
+
+    #[test]
+    fn job_image_rollup_names_only_allow_listed_tokens_and_tracks_the_culprit() {
+        let mut rollup = WatcherJobImageRollup::default();
+        assert!(rollup.is_empty());
+        assert_eq!(rollup.provenance_token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(rollup.last_nonshim_token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(rollup.image_set_tag(), None);
+
+        // A cmd.exe shim first, then the node.exe runner: the shim is recorded in
+        // the set but the non-shim runner is the culprit candidate.
+        rollup.record_image_name(r"C:\Windows\System32\cmd.exe");
+        rollup.record_image_name(r"C:\Users\Ada\AppData\Local\HQ\node.exe");
+        assert!(!rollup.is_empty());
+        assert_eq!(rollup.provenance_token(), "tree_sampled");
+        assert_eq!(rollup.last_nonshim_token(), "node_exe");
+        let set = rollup.image_set_tag().expect("a nonempty rollup renders a tag");
+        // Declaration order (node before cmd), deduped, comma-joined.
+        assert_eq!(set, "node_exe,cmd_exe");
+
+        // An unknown private binary folds to `other` — never a path or raw name.
+        let mut leaky = WatcherJobImageRollup::default();
+        leaky.record_image_name(r"C:\Users\cognito-token-abc123\secret-loader.exe");
+        assert_eq!(leaky.last_nonshim_token(), "other");
+        let set = leaky.image_set_tag().expect("nonempty");
+        assert!(!set.contains("cognito") && !set.contains("abc123") && !set.contains("secret"));
+        assert_eq!(set, "other");
+    }
+
+    #[test]
+    fn binary_index_round_trips_all() {
+        // The compact index the job-image rollup uses must stay in lockstep with
+        // ALL, or a reordering would silently mis-bucket an observed image.
+        for (position, binary) in WatcherFaultBinary::ALL.iter().enumerate() {
+            assert_eq!(binary.index(), position, "index drift for {:?}", binary);
+        }
     }
 
     #[test]
@@ -886,6 +1265,7 @@ mod tests {
             .chain(provenance)
             .chain(shapes)
             .chain(std::iter::once(WATCHER_FAULT_UNAVAILABLE))
+            .chain(std::iter::once(WATCHER_JOB_IMAGE_TREE_SAMPLED))
         {
             assert!(!token.is_empty() && token.len() <= 64);
             assert!(

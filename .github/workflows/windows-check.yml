@@ -144,14 +144,17 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml watcher_fault
 
-      # The capture wiring: the new watcher_fault_* tags + runner_stderr_line_count
-      # ride the watcher exit capture, additive to the untouched classifier
-      # channels and fingerprint. Compiled and run on the msvc target (cargo check
-      # never builds #[cfg(test)] code, so without this the wiring ships unrun).
+      # HQ-DESKTOP-4X deferral wiring: a genuine Windows fault exit DEFERS its send
+      # off the terminal callback (the bounded WER read then names the binary off
+      # the deregister-blocking path); a non-fault exit sends immediately as
+      # not_applicable; the resolved fields + job-image descriptor assemble
+      # content-safely; and a pending capture flushes exactly once on teardown.
+      # Compiled and run on the msvc target (cargo check never builds #[cfg(test)]
+      # code, so without this the wiring ships unrun).
       - name: Windows watcher fault capture tests
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins watcher_capture_reports -- --nocapture
+        run: cargo test --target x86_64-pc-windows-msvc --bins windows_fault_exit_defers non_fault_exit_reports deferred_fault_capture_fields pending_fault_captures_flush -- --nocapture
 
       # HQ-DESKTOP-4X artifact E2E: run the REAL wevtapi reader against the REAL
       # Windows Application log (content-safe + bounded, panic-free) and reproduce
@@ -163,6 +166,22 @@ jobs:
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::watcher_fault_e2e_tests -- --nocapture --include-ignored
+
+      # HQ-DESKTOP-4X base-red / candidate-pass DETERMINISTIC gate. The
+      # both-directions envelope simulator + source contracts: the pre-fix policy
+      # reproduces the observed 0.10.105 no_record/unavailable envelope for a
+      # record published after the 4s budget (the base-red proof — non-vacuous
+      # because it asserts pre-fix differs from post-fix), while the post-fix
+      # policy binds the SAME late record to pid_matched/node_exe and reports the
+      # distinct deadline_expired token (never no_record) with counters + the
+      # job-image candidate when WER never publishes. Scripted (node, no app), so
+      # the pair is provable deterministically here without a WER crash on the
+      # headless runner; the real-wevtapi reader above supplies the best-effort
+      # genuine-OS signal. Also pins the deferral seam, the ~60s horizon, the
+      # resolved vocabulary, the egress arms, and the teardown drain against the
+      # shipping source, so deleting or bypassing any seam fails here too.
+      - name: Windows watcher fault deferred-attribution gate
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/watcher-fault-deferred-attribution.spec.ts
 
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync

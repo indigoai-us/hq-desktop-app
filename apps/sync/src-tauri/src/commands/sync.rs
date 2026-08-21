@@ -131,7 +131,7 @@ pub use hq_desktop_core::sync_outcome::RunTotals;
 /// Shared by `report_sync_error` (manual Sync Now) and the auto-sync daemon so
 /// BOTH paths surface runner failures in #hq-alerts.
 pub(crate) fn capture_sync_error(company: Option<&str>, path: &str, message: &str) {
-    capture_sync_error_impl(company, path, message, None, &[], &[]);
+    capture_sync_error_impl(company, path, message, None, &[], &[], None);
 }
 
 pub(crate) fn capture_sync_error_with_fingerprint(
@@ -140,7 +140,7 @@ pub(crate) fn capture_sync_error_with_fingerprint(
     message: &str,
     fingerprint: &[&str],
 ) {
-    capture_sync_error_impl(company, path, message, Some(fingerprint), &[], &[]);
+    capture_sync_error_impl(company, path, message, Some(fingerprint), &[], &[], None);
 }
 
 /// Capture a sync error with content-safe context for a single diagnostic
@@ -155,7 +155,34 @@ pub(crate) fn capture_sync_error_with_fingerprint_and_context(
     tags: &[(&str, String)],
     extras: &[(&str, sentry::protocol::Value)],
 ) {
-    capture_sync_error_impl(company, path, message, Some(fingerprint), tags, extras);
+    capture_sync_error_impl(company, path, message, Some(fingerprint), tags, extras, None);
+}
+
+/// Capture a sync error stamped with a specific WALL-CLOCK instant instead of the
+/// send instant. HQ-DESKTOP-4X's deferred fault capture emits ~60s after the
+/// crash (once the bounded WER read resolves), so it stamps the exit time here —
+/// keeping grouping, breadcrumb ordering and the regression watermark dated at
+/// the crash. Only the timestamp differs from
+/// [`capture_sync_error_with_fingerprint_and_context`]; message, level, tags,
+/// extras and fingerprint are identical.
+pub(crate) fn capture_sync_error_with_context_at(
+    company: Option<&str>,
+    path: &str,
+    message: &str,
+    fingerprint: &[&str],
+    tags: &[(&str, String)],
+    extras: &[(&str, sentry::protocol::Value)],
+    occurred_at: std::time::SystemTime,
+) {
+    capture_sync_error_impl(
+        company,
+        path,
+        message,
+        Some(fingerprint),
+        tags,
+        extras,
+        Some(occurred_at),
+    );
 }
 
 fn capture_sync_error_impl(
@@ -165,6 +192,7 @@ fn capture_sync_error_impl(
     fingerprint: Option<&[&str]>,
     tags: &[(&str, String)],
     extras: &[(&str, sentry::protocol::Value)],
+    occurred_at: Option<std::time::SystemTime>,
 ) {
     sentry::with_scope(
         |scope| {
@@ -182,8 +210,22 @@ fn capture_sync_error_impl(
                 scope.set_extra(*key, value.clone());
             }
         },
-        || {
-            sentry::capture_message(&format!("[sync] {message}"), sentry::Level::Error);
+        || match occurred_at {
+            // Default path: identical to before — the SDK stamps the send instant.
+            None => {
+                sentry::capture_message(&format!("[sync] {message}"), sentry::Level::Error);
+            }
+            // Deferred path: build the same event `capture_message` would (message
+            // + Error level, scope merged by the client) but override the
+            // timestamp to the crash instant.
+            Some(timestamp) => {
+                sentry::capture_event(sentry::protocol::Event {
+                    message: Some(format!("[sync] {message}")),
+                    level: sentry::Level::Error,
+                    timestamp,
+                    ..Default::default()
+                });
+            }
         },
     );
 }

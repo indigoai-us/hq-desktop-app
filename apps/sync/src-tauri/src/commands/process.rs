@@ -786,57 +786,81 @@ unsafe fn query_job_accounting(job: isize) -> Option<WatcherJobAccounting> {
 // any failure. All interpretation lives in `hq_desktop_core::watcher_fault` so it
 // is unit-tested off Windows; here is only the Win32 I/O.
 
-/// Max WER Application Error records pulled per exit query. Newest-first, so a
-/// dozen is far more than the one relevant crash while keeping the scan bounded.
+/// Max WER Application Error records pulled per query. Newest-first, so a dozen
+/// is far more than the one relevant crash while keeping the scan bounded.
 #[cfg(target_os = "windows")]
 const WER_MAX_RECORDS: usize = 12;
 
-/// Hard cap on how long the terminal exit callback waits for the worker thread's
-/// fault read. This bounds the exit/deregister path — and therefore supervisor
-/// recovery — even if the Windows Event Log service hangs entirely; on expiry the
-/// worker is abandoned and provenance stays `unavailable`.
+/// Total wall-clock budget for the DEFERRED fault read. Unlike the prior fix's
+/// 4.5s exit-path cap (which reopened HQ-DESKTOP-4X because it could not outwait
+/// WER's asynchronous publication), this read runs entirely OFF the terminal
+/// exit callback — the exit path now performs ZERO Event Log work — so it can
+/// wait long enough for WER to publish the Application Error (Event 1000) record
+/// AFTER the child dies. Still hard-bounded: a wedged Event Log service can never
+/// hang the worker past this deadline.
 #[cfg(target_os = "windows")]
-const WER_TOTAL_BUDGET: Duration = Duration::from_millis(4500);
+const WER_DEFERRED_TOTAL_BUDGET: Duration = Duration::from_millis(60_000);
 
-/// The worker's own retry deadline, slightly under `WER_TOTAL_BUDGET` so it
-/// normally returns a verdict before the callback stops waiting.
+/// The inner read loop's own deadline, just under `WER_DEFERRED_TOTAL_BUDGET` so
+/// it returns a verdict before the outer wait abandons it.
 #[cfg(target_os = "windows")]
-const WER_READ_BUDGET: Duration = Duration::from_millis(4000);
+const WER_DEFERRED_READ_BUDGET: Duration = Duration::from_millis(58_000);
 
 /// Per-sweep budget for one EvtQuery/EvtNext/EvtRender pass.
 #[cfg(target_os = "windows")]
 const WER_PER_QUERY_BUDGET: Duration = Duration::from_millis(500);
 
 /// Sleep between sweeps while waiting for WER to asynchronously publish the
-/// Event 1000 record after the child has already exited.
+/// Event 1000 record after the child has already exited. One second over the
+/// ~60s horizon keeps the sweep count bounded (~58) without busy-waiting.
 #[cfg(target_os = "windows")]
-const WER_RETRY_INTERVAL: Duration = Duration::from_millis(300);
+const WER_DEFERRED_RETRY_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Cap on distinct PIDs retained per generation's sampled set. The watcher tree
 /// is ~7 processes; this bounds pathological growth without losing the runner.
 #[cfg(target_os = "windows")]
 const WATCHER_PID_SAMPLE_CAP: usize = 256;
 
-/// Sampled live Job Object PID sets, keyed by process-registry generation. Union
-/// of every heartbeat sample so the runner descendant (dead by exit) is still
-/// bindable at exit. Populated only on Windows; drained at exit so it can never
-/// grow unbounded. Kept out of the registry `Entry` so it cannot perturb the
-/// existing job-accounting or containment paths.
-static WATCHER_JOB_PID_SAMPLES: OnceLock<Mutex<HashMap<u64, HashSet<u32>>>> = OnceLock::new();
-
-fn watcher_job_pid_samples() -> &'static Mutex<HashMap<u64, HashSet<u32>>> {
-    WATCHER_JOB_PID_SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
+/// One generation's sampled process tree: the union of live Job Object PIDs
+/// AND the WER-independent allow-listed image descriptor observed alive across
+/// the heartbeat cadence. Populated only on Windows; drained exactly once at
+/// exit so the map can never grow unbounded. Kept out of the registry `Entry` so
+/// it cannot perturb the existing job-accounting or containment paths.
+#[derive(Default)]
+struct WatcherJobSample {
+    pids: HashSet<u32>,
+    images: hq_desktop_core::watcher_fault::WatcherJobImageRollup,
 }
 
-/// Remove and return this generation's sampled PID set. Called once at exit both
-/// to read the sample and to release its memory.
-fn take_watcher_job_sampled_pids(generation: u64) -> Vec<u32> {
-    watcher_job_pid_samples()
+static WATCHER_JOB_SAMPLES: OnceLock<Mutex<HashMap<u64, WatcherJobSample>>> = OnceLock::new();
+
+fn watcher_job_samples() -> &'static Mutex<HashMap<u64, WatcherJobSample>> {
+    WATCHER_JOB_SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The drained sample the deferred read binds against. Carrying it in the
+/// deferred capture payload — rather than leaving it in the global map until the
+/// read completes — means the map is drained deterministically at exit whether or
+/// not a read is deferred, so a generation key can never leak.
+pub struct DrainedWatcherJobSample {
+    pub pids: Vec<u32>,
+    pub images: hq_desktop_core::watcher_fault::WatcherJobImageRollup,
+}
+
+/// Remove and return this generation's sample. Called EXACTLY ONCE per
+/// generation on the exit path, so the map releases the generation's memory
+/// immediately even for a non-fault exit that defers nothing. On non-Windows the
+/// map is never populated, so this returns an empty sample.
+pub fn take_watcher_job_sample(generation: u64) -> DrainedWatcherJobSample {
+    let sample = watcher_job_samples()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&generation)
-        .map(|set| set.into_iter().collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    DrainedWatcherJobSample {
+        pids: sample.pids.into_iter().collect(),
+        images: sample.images,
+    }
 }
 
 /// Sample the live process-id set of the EXACT `generation`'s retained Job
@@ -873,115 +897,186 @@ pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
     let Some(pids) = pids else {
         return;
     };
-    let mut samples = watcher_job_pid_samples()
+    let mut samples = watcher_job_samples()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let set = samples.entry(generation).or_default();
+    let sample = samples.entry(generation).or_default();
     for pid in pids {
-        if set.len() >= WATCHER_PID_SAMPLE_CAP {
+        if sample.pids.contains(&pid) {
+            // Already sampled this generation — its image was folded in once.
+            continue;
+        }
+        if sample.pids.len() >= WATCHER_PID_SAMPLE_CAP {
             break;
         }
-        set.insert(pid);
+        // Fold the live process's image basename through the SAME allow-list the
+        // WER image position uses, BEFORE recording the pid, so even a capped set
+        // still names what it saw. A failed open/query simply contributes no
+        // token (the descriptor degrades to `unavailable`), never a raw name.
+        // SAFETY: a read-only OpenProcess/QueryFullProcessImageNameW/CloseHandle
+        // on a live pid; the handle it opens it always closes.
+        if let Some(name) = unsafe { query_process_image_basename(pid) } {
+            sample.images.record_image_name(&name);
+        }
+        sample.pids.insert(pid);
     }
+}
+
+/// Resolve a live process's full image path via `QueryFullProcessImageNameW` and
+/// return it for the pure allow-list classifier. Read-only and best-effort:
+/// `None` on any failure (the process may have exited, or be unqueryable), so the
+/// job-image descriptor degrades to a sentinel rather than guessing. The returned
+/// string is only ever handed to `classify_watcher_fault_binary`, which keeps
+/// nothing but a fixed token, so no path byte leaves the process.
+#[cfg(target_os = "windows")]
+unsafe fn query_process_image_basename(pid: u32) -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+    let mut buffer = [0u16; 260]; // MAX_PATH; a longer path simply truncates safely.
+    let mut size = buffer.len() as u32;
+    let queried = QueryFullProcessImageNameW(
+        handle,
+        PROCESS_NAME_WIN32,
+        PWSTR(buffer.as_mut_ptr()),
+        &mut size,
+    );
+    // Close the handle regardless of the query result; never leak it.
+    let _ = CloseHandle(handle);
+    queried.ok()?;
+    if size == 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buffer[..size as usize]))
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn sample_watcher_job_pids_for_generation(_handle: &str, _generation: u64) {}
 
 /// Read the Windows fault record for THIS watcher generation and attribute it,
-/// content-safely, to a fixed faulting-image/module token plus a provenance
-/// honesty token. Runs off the terminal hot path under a hard bounded query
-/// budget; on non-Windows, a failed/timed-out/disabled query, or an unreadable
-/// log it degrades to the `unavailable` sentinel. Never blocks the exit path,
-/// never mutates lifecycle/containment state, and never changes whether an event
-/// is captured. `gen_start_ms`/`gen_end_ms` bound the generation lifetime in unix
-/// millis; `observed_exception_code` is the fault status the exit itself carried.
+/// content-safely, to a fixed faulting-image/module token plus the resolved,
+/// self-diagnosing provenance and its counters. This is the DEFERRED read: it
+/// runs on the deferred-capture worker, NEVER on the terminal exit callback, so
+/// it can wait the full [`WER_DEFERRED_TOTAL_BUDGET`] for WER to publish after
+/// the child dies. `sampled_pids` is the generation's drained Job Object PID set
+/// (carried from the exit path); `gen_start_ms`/`gen_end_ms` bound the generation
+/// lifetime; `observed_exception_code` is the fault status the exit carried;
+/// `deferred_at` is the instant the capture was deferred (≈ the exit), so the
+/// verdict can stamp its own age. Still hard-bounded: a wedged Event Log service
+/// can never hang the worker past the total budget.
 #[cfg(target_os = "windows")]
-pub fn watcher_fault_provenance_for_generation(
-    generation: u64,
-    observed_exception_code: Option<u32>,
+pub fn read_watcher_fault_deferred(
+    sampled_pids: Vec<u32>,
+    observed_exception_code: u32,
     gen_start_ms: i64,
     gen_end_ms: i64,
+    deferred_at: std::time::Instant,
 ) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
     use hq_desktop_core::watcher_fault::WatcherFaultOutcome;
-    let sampled = take_watcher_job_sampled_pids(generation);
-    // Only a genuine Windows fault exit warrants scanning the event log; every
-    // other exit (clean, deliberate stop, non-fault) skips the scan entirely.
-    let Some(code) = observed_exception_code else {
-        return WatcherFaultOutcome::unavailable();
-    };
-    // Run the read on a worker thread and await it under a HARD total deadline, so
-    // a slow or stalled Event Log service can never wedge this terminal callback
-    // (which holds up emit_exit_then_deregister, and therefore supervisor
-    // recovery). On deadline the worker is abandoned — it ends on its own — and the
-    // provenance stays `unavailable`: absence of a reader result, not of a fault.
+    // Run the read on a worker thread and await it under a HARD total deadline so
+    // a stalled Event Log service can never hang the deferred worker forever. On
+    // deadline the inner worker is abandoned (it ends on its own) and the verdict
+    // is an honest deadline-expired stamped with the elapsed age.
     let (tx, rx) = mpsc::channel();
     let _worker = thread::spawn(move || {
-        let _ = tx.send(read_and_attribute_wer(&sampled, code, gen_start_ms, gen_end_ms));
+        let _ = tx.send(read_and_attribute_wer(
+            &sampled_pids,
+            observed_exception_code,
+            gen_start_ms,
+            gen_end_ms,
+            deferred_at,
+        ));
     });
-    rx.recv_timeout(WER_TOTAL_BUDGET)
-        .unwrap_or_else(|_| WatcherFaultOutcome::unavailable())
+    match rx.recv_timeout(WER_DEFERRED_TOTAL_BUDGET) {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            let ms = deferred_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+            WatcherFaultOutcome::no_records(Default::default())
+                .with_runtime_counters(0, 0, ms)
+                .into_deadline_expired()
+        }
+    }
 }
 
 /// Read the WER fault record for a generation and attribute it, POLLING for the
 /// record to appear. WER publishes the "Application Error" (Event 1000) entry
 /// asynchronously AFTER the child dies, so a single immediate query usually finds
-/// nothing; this retries within a bounded budget until a matching record is
-/// attributed or the budget expires. It also distinguishes a never-readable log
-/// (`unavailable`) from a readable log that has no matching record (`no_record`).
-/// Runs only on the worker thread spawned above, never on the terminal hot path.
+/// nothing; this retries within the deferred budget until a concrete attribution
+/// is reached or the budget expires. It records bounded counters (sweeps,
+/// records seen, ms-to-verdict) and separates every no-binding reason so a second
+/// failure is actionable: a never-readable log stays `unavailable`; a readable
+/// but empty log that never fills becomes `deadline_expired`; records that exist
+/// but do not bind keep their distinct rejection token.
 #[cfg(target_os = "windows")]
 fn read_and_attribute_wer(
     sampled: &[u32],
     code: u32,
     gen_start_ms: i64,
     gen_end_ms: i64,
+    deferred_at: std::time::Instant,
 ) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
     use hq_desktop_core::watcher_fault::{
-        attribute_watcher_fault, parse_application_error_event, WatcherFaultOutcome,
-        WatcherFaultProvenance,
+        attribute_watcher_fault, parse_application_error_event, WatcherFaultCounters,
+        WatcherFaultOutcome,
     };
-    let deadline = std::time::Instant::now() + WER_READ_BUDGET;
+    let deadline = std::time::Instant::now() + WER_DEFERRED_READ_BUDGET;
+    let elapsed_ms = |at: std::time::Instant| at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
     let mut query_ever_ran = false;
+    let mut sweeps: u32 = 0;
+    let mut records_seen: u32 = 0;
+    // The most recent non-binding verdict, so a deadline preserves its counters
+    // and rejection reason rather than flattening everything to one token.
+    let mut last = WatcherFaultOutcome::no_records(WatcherFaultCounters::default());
     loop {
+        sweeps = sweeps.saturating_add(1);
         if let Some(xmls) = query_wer_application_error_xml(WER_MAX_RECORDS, WER_PER_QUERY_BUDGET) {
             query_ever_ran = true;
+            records_seen = records_seen.max(xmls.len().min(u32::MAX as usize) as u32);
             let records: Vec<_> = xmls
                 .iter()
                 .filter_map(|xml| parse_application_error_event(xml))
                 .collect();
             let outcome =
                 attribute_watcher_fault(&records, sampled, gen_start_ms, gen_end_ms, Some(code));
-            // A concrete attribution is terminal; keep polling only while the
-            // record has not been published yet (still `no_record`).
-            if outcome.provenance != WatcherFaultProvenance::NoRecord {
-                return outcome;
+            // A concrete attribution (pid_matched/window_only) is terminal; keep
+            // polling only while WER has not yet published a bindable record.
+            if outcome.provenance.is_attribution() {
+                return outcome.with_runtime_counters(records_seen, sweeps, elapsed_ms(deferred_at));
             }
+            last = outcome;
         }
         if std::time::Instant::now() >= deadline {
-            // Out of retry budget: a readable log with no matching record is a
-            // genuine `no_record`; a log that never opened stays `unavailable`.
+            let ms = elapsed_ms(deferred_at);
+            // A log that never opened stays `unavailable`; otherwise return the
+            // last non-binding verdict — an empty log maps to `deadline_expired`,
+            // a rejected set keeps its rejection token — with the final counters.
             return if query_ever_ran {
-                WatcherFaultOutcome::no_record()
+                last.with_runtime_counters(records_seen, sweeps, ms)
+                    .into_deadline_expired()
             } else {
-                WatcherFaultOutcome::unavailable()
+                WatcherFaultOutcome::unavailable().with_runtime_counters(records_seen, sweeps, ms)
             };
         }
-        thread::sleep(WER_RETRY_INTERVAL);
+        thread::sleep(WER_DEFERRED_RETRY_INTERVAL);
     }
 }
 
+/// Non-Windows: no Windows Error Reporting exists, so a deferred fault read is
+/// never applicable. Returns the `not_applicable` sentinel rather than a failed
+/// read, keeping a macOS/Linux watcher exit from masquerading as a Windows one.
 #[cfg(not(target_os = "windows"))]
-pub fn watcher_fault_provenance_for_generation(
-    generation: u64,
-    _observed_exception_code: Option<u32>,
+pub fn read_watcher_fault_deferred(
+    _sampled_pids: Vec<u32>,
+    _observed_exception_code: u32,
     _gen_start_ms: i64,
     _gen_end_ms: i64,
+    _deferred_at: std::time::Instant,
 ) -> hq_desktop_core::watcher_fault::WatcherFaultOutcome {
-    // Non-Windows never samples, but drain defensively so the map cannot retain a
-    // generation key if this platform ever populated one.
-    let _ = take_watcher_job_sampled_pids(generation);
-    hq_desktop_core::watcher_fault::WatcherFaultOutcome::unavailable()
+    hq_desktop_core::watcher_fault::WatcherFaultOutcome::not_applicable()
 }
 
 /// Read the live process-id list of a Job Object. A single read-only
