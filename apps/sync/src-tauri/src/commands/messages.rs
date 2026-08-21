@@ -1127,4 +1127,5 @@ mod tests {
 
         assert_eq!(dm_notify::current_unread_dms(&handle), 0);
     }
+
 }

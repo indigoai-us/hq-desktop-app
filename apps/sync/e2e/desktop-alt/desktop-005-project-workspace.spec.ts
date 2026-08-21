@@ -182,7 +182,11 @@ describe('DESKTOP-005: project workspace', () => {
 
   it('preserves the open project workspace across same-company background refreshes', () => {
     expect(projects).toContain('let loadedSlug: string | null = null');
+    expect(projects).toContain('let loadedCompanyUid: string | null = null');
     expect(projects).toContain('const companyChanged = loadedSlug !== activeSlug');
+    expect(projects).toContain(
+      'const companyUidChanged = loadedCompanyUid !== activeCompanyUid',
+    );
     expect(projects).toContain('if (companyChanged) {');
     expect(projects).toContain('const selectedIdentity = projectIdentity(selected)');
     expect(projects).toContain(

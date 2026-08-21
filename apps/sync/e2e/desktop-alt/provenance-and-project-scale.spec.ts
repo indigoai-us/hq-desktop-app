@@ -30,13 +30,13 @@ describe('project and task provenance source contract', () => {
       expect(source).toContain('indexProjectProvenance');
       expect(source).toContain('applyProjectProvenance');
     }
-    expect(projects).toContain("responsiblePerson(project.provenance, 'project')");
+    expect(projects).toContain('responsibleProjectPerson(');
     expect(projects).not.toContain('creatorByKey');
   });
 
   it('never promotes a creator into the project owner field', () => {
     expect(projects).toMatch(
-      /function leadLabel[\s\S]*?responsiblePerson\(project\.provenance,\s*'project'\)/,
+      /function leadPerson[\s\S]*?responsibleProjectPerson\([\s\S]*?project\.provenance,[\s\S]*?'project'/,
     );
     expect(projects).not.toContain('ownerLabel={leadLabel(project)}');
     expect(projectRow).toContain('normalizeProvenance(ownerLabel ? { owner: ownerLabel } : null)');

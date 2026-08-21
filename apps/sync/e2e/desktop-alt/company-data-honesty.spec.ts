@@ -22,7 +22,7 @@ describe('company surfaces show real data, not fabrications', () => {
   const goals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
 
   it('Projects uses recorded responsibility without inventing an owner', () => {
-    expect(projects).toContain("responsiblePerson(project.provenance, 'project')");
+    expect(projects).toContain('responsibleProjectPerson(');
     expect(projects).not.toContain('ownerLabel={leadLabel(project)}');
     expect(projects).not.toContain("return 'Agent'");
     expect(projects).not.toContain('projectIndex');

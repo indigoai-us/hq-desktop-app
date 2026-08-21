@@ -219,7 +219,7 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(page).toContain('data-testid="filtered-projects-empty-state"');
     expect(page).toContain('aria-busy={loading}');
     expect(page).toContain('get_company_project_creators');
-    expect(page).toContain("responsiblePerson(project.provenance, 'project')");
+    expect(page).toContain('responsibleProjectPerson(');
     expect(page).toContain("'No goal'");
     expect(page).not.toContain("ownerLabel={leadLabel(project)}");
     // The company shell owns the always-visible action and exposes immediate
@@ -228,7 +228,9 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(companyPage).toContain('onclick={() => void startNewProject()}');
     expect(companyPage).toContain('disabled={newProjectBusy}');
     expect(companyPage).toContain('aria-busy={newProjectBusy}');
-    expect(companyPage).toContain('<CompanyProjectsPage slug={company.slug} />');
+    expect(companyPage).toContain(
+      '<CompanyProjectsPage slug={company.slug} companyUid={company.cloudUid} />',
+    );
   });
 
   it('allows the board to horizontal-scroll while primary controls stay visible', () => {

@@ -144,11 +144,25 @@ fn background_update_action(
     sync_in_progress: bool,
     silent_install_supported: bool,
 ) -> BackgroundUpdateAction {
-    match (automatic_updates && silent_install_supported, sync_in_progress) {
+    match (
+        automatic_updates && silent_install_supported,
+        sync_in_progress,
+    ) {
         (true, false) => BackgroundUpdateAction::Install,
         (true, true) => BackgroundUpdateAction::DeferForSync,
         (false, _) => BackgroundUpdateAction::Announce,
     }
+}
+
+/// Published release checks must never replace a locally-built debug app.
+///
+/// Debug bundles intentionally share HQ's bundle identifier and update
+/// configuration so they exercise the real desktop integration. Without this
+/// compile-mode boundary, the background updater downloads the latest public
+/// release after launch, restarts the app, and silently discards the branch
+/// under test from the bundle.
+pub(crate) fn background_app_updates_enabled(debug_assertions: bool) -> bool {
+    !debug_assertions
 }
 
 /// Windows must never install silently in the background: the NSIS installer
@@ -606,6 +620,11 @@ pub async fn is_indigo_user() -> bool {
 /// defers the attempt for 30 seconds; an install failure falls back to the
 /// ordinary update notification so the user still has a recovery path.
 pub fn setup_update_checker(app: &AppHandle) {
+    if !background_app_updates_enabled(cfg!(debug_assertions)) {
+        log("updater", "debug bundle — automatic app updater disabled");
+        return;
+    }
+
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // Wait 10 seconds for app to settle
@@ -854,6 +873,11 @@ mod tests {
             background_update_action(true, false, true),
             BackgroundUpdateAction::Install
         );
+    }
+
+    #[test]
+    fn debug_bundles_never_start_the_background_release_updater() {
+        assert!(!background_app_updates_enabled(true));
     }
 
     #[test]

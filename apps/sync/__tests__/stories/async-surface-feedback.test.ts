@@ -61,7 +61,9 @@ describe('async desktop surfaces expose immediate, scoped feedback', () => {
     expect(projects).toContain('let newProjectPending = $state(false)');
     expect(projects).toContain('{#if onnewproject}');
     expect(projects).toContain('aria-busy={newProjectPending}');
-    expect(company).toContain('<CompanyProjectsPage slug={company.slug} />');
+    expect(company).toContain(
+      '<CompanyProjectsPage slug={company.slug} companyUid={company.cloudUid} />',
+    );
   });
 
   it('covers titlebar recovery, Home cards, and the raw activity log handoff', () => {

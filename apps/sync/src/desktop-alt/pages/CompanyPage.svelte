@@ -313,7 +313,7 @@
         {:else if tab === 'goals'}
           <CompanyGoalsPage slug={company.slug} />
         {:else if tab === 'projects'}
-          <CompanyProjectsPage slug={company.slug} />
+          <CompanyProjectsPage slug={company.slug} companyUid={company.cloudUid} />
         {:else if tab === 'skills'}
           <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
         {:else if tab === 'workers'}

@@ -58,6 +58,19 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain('should_raise_transient_update_surface');
   });
 
+  it('never replaces a local debug bundle with a published release', () => {
+    const versionGate = read('src-tauri/src/commands/version_gate.rs');
+    expect(appUpdater).toContain('fn background_app_updates_enabled(');
+    expect(appUpdater).toContain(
+      'if !background_app_updates_enabled(cfg!(debug_assertions)) {',
+    );
+    expect(appUpdater).toContain('debug bundle — automatic app updater disabled');
+    expect(versionGate).toContain(
+      'if !crate::updater::background_app_updates_enabled(cfg!(debug_assertions)) {',
+    );
+    expect(versionGate).toContain('debug bundle — automatic version gate disabled');
+  });
+
   it('Windows never installs updates silently in the background (2026-08-02 field failure)', () => {
     // NSIS cannot overwrite files held open by the running app/sidecar, so a
     // silent background install on Windows can destroy the installation.
@@ -66,8 +79,8 @@ describe('master automatic-updates switch', () => {
     expect(appUpdater).toContain('fn silent_install_supported()');
     expect(appUpdater).toContain('!cfg!(target_os = "windows")');
     expect(appUpdater).toContain('silent_install_supported(),');
-    expect(appUpdater).toContain(
-      'match (automatic_updates && silent_install_supported, sync_in_progress)',
+    expect(normalize(appUpdater)).toContain(
+      'automatic_updates && silent_install_supported, sync_in_progress,',
     );
     // The hard version gate is a second background install path and must
     // respect the same platform gate: on Windows the blocking modal stays up

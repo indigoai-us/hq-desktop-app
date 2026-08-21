@@ -27,7 +27,13 @@
     PROJECT_RENDER_BATCH,
     progressiveWindow,
   } from '../lib/progressive-collection';
-  import { responsiblePerson } from '../lib/provenance';
+  import {
+    buildProjectPersonDirectory,
+    canonicalizeProjectProvenance,
+    normalizeProjectMembers,
+    responsibleProjectPerson,
+    type ProjectPersonMember,
+  } from '../lib/project-people';
   import {
     compareProjectsByRecency,
     groupProjectsByPortfolioColumn,
@@ -56,13 +62,15 @@
 
   interface Props {
     slug: string;
+    companyUid?: string | null;
     onnewproject?: () => void | Promise<void>;
   }
 
   /** Legacy cycle filter kept for needs-link + work-actions contracts. */
   type ProjectFilter = 'all' | 'active' | 'needs-link';
 
-  let { slug, onnewproject }: Props = $props();
+  let { slug, companyUid = null, onnewproject }: Props = $props();
+  const personalWorkspace = $derived(slug === 'personal');
 
   let objectives = $state<Objective[]>([]);
   let projects = $state<Project[]>([]);
@@ -72,7 +80,7 @@
   let searchQuery = $state('');
   /** Portfolio state filter (All states / column). */
   let stateFilter = $state<PortfolioStateFilter>('all');
-  /** Owner filter — empty string means Anyone. */
+  /** Canonical person filter key — empty string means Anyone. */
   let ownerFilter = $state('');
   /** Board is the DESKTOP-004 default. */
   let viewMode = $state<PortfolioViewMode>('board');
@@ -103,11 +111,14 @@
    * reset local navigation.
    */
   let loadedSlug: string | null = null;
+  let loadedCompanyUid: string | null = null;
   // Best-effort cloud attribution fills only fields absent from local metadata.
   let cloudProvenance = $state<ProjectProvenanceIndex>(
     emptyProjectProvenanceIndex(),
   );
   let provenanceUnavailable = $state(false);
+  let companyProjectMembers = $state<ProjectPersonMember[]>([]);
+  let signedInProjectPerson = $state<ProjectPersonMember | null>(null);
   let visibleByColumn = $state<Record<PortfolioColumn, number>>({
     'not-started': PROJECT_RENDER_BATCH,
     'in-progress': PROJECT_RENDER_BATCH,
@@ -187,18 +198,41 @@
     return () => clearInterval(tick);
   });
 
+  const projectMembers = $derived([
+    ...companyProjectMembers,
+    ...(signedInProjectPerson ? [signedInProjectPerson] : []),
+  ]);
+  const personDirectory = $derived(buildProjectPersonDirectory(projectMembers));
+
+  function withVisibleProvenance(
+    project: Project,
+    index: ProjectProvenanceIndex = cloudProvenance,
+  ): Project {
+    const enriched = applyProjectProvenance(project, index);
+    return {
+      ...enriched,
+      provenance: canonicalizeProjectProvenance(
+        enriched.provenance,
+        personDirectory,
+      ),
+    };
+  }
+
   const companyProjects = $derived(
     projects
       .filter((project) => project.company === slug)
-      .map((project) => applyProjectProvenance(project, cloudProvenance))
+      .map((project) => withVisibleProvenance(project))
       .sort(compareProjectsByRecency),
   );
 
   const sessions = $derived(sessionsStore.sessions);
 
-  function leadLabel(project: Project): string | null {
-    const person = responsiblePerson(project.provenance, 'project');
-    return person === 'Unassigned' ? null : person;
+  function leadPerson(project: Project) {
+    return responsibleProjectPerson(
+      project.provenance,
+      'project',
+      personDirectory,
+    );
   }
 
   function showMoreProjects(column: PortfolioColumn, nextCount: number): void {
@@ -275,12 +309,14 @@
   }
 
   const ownerOptions = $derived.by(() => {
-    const names = new Set<string>();
+    const people = new Map<string, string>();
     for (const project of companyProjects) {
-      const lead = leadLabel(project);
-      if (lead) names.add(lead);
+      const lead = leadPerson(project);
+      if (lead) people.set(lead.key, lead.label);
     }
-    return [...names].sort((a, b) => a.localeCompare(b));
+    return [...people.entries()]
+      .map(([key, label]) => ({ key, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
   });
 
   const filteredCompanyProjects = $derived(
@@ -288,7 +324,7 @@
       if (!matchesProjectFilter(project, projectFilter)) return false;
       const col = resolveColumn(project);
       if (!matchesPortfolioStateFilter(col, stateFilter)) return false;
-      if (ownerFilter && leadLabel(project) !== ownerFilter) return false;
+      if (ownerFilter && leadPerson(project)?.key !== ownerFilter) return false;
       const q = searchQuery.trim().toLowerCase();
       if (!q) return true;
       const name = projectDisplayName(project).toLowerCase();
@@ -317,6 +353,15 @@
     };
   });
 
+  $effect(() => {
+    if (
+      ownerFilter &&
+      !ownerOptions.some((option) => option.key === ownerFilter)
+    ) {
+      ownerFilter = '';
+    }
+  });
+
   const selectedStory = $derived(
     selectedStoryId === null
       ? null
@@ -325,9 +370,12 @@
 
   $effect(() => {
     const activeSlug = slug;
+    const activeCompanyUid = personalWorkspace ? null : companyUid;
     error = null;
     const companyChanged = loadedSlug !== activeSlug;
+    const companyUidChanged = loadedCompanyUid !== activeCompanyUid;
     loadedSlug = activeSlug;
+    loadedCompanyUid = activeCompanyUid;
 
     if (companyChanged) {
       invalidateStoryLoad();
@@ -339,6 +387,11 @@
       selectedStoryId = null;
       cloudProvenance = emptyProjectProvenanceIndex();
       provenanceUnavailable = false;
+      companyProjectMembers = [];
+    } else if (companyUidChanged) {
+      // Cloud hydration may attach the UID after local projects are already
+      // visible. Refresh identity aliases without closing an open workspace.
+      companyProjectMembers = [];
     }
 
     if (!activeSlug) {
@@ -351,26 +404,60 @@
     provenanceUnavailable = false;
 
     // Best-effort and decoupled: cloud attribution must never gate local work.
-    void loadCompanyProjectProvenance(activeSlug)
-      .then((rows) => {
-        if (cancelled) return;
-        cloudProvenance = indexProjectProvenance(rows);
-        provenanceUnavailable = false;
-        if (selected) {
-          const refreshed = applyProjectProvenance(selected, cloudProvenance);
-          selected = refreshed;
-          void refreshSelectedStoriesForProvenance(refreshed);
-        }
+    // Personal is user-owned and has no company provenance endpoint.
+    if (!personalWorkspace) {
+      // The company DM-contact endpoint intentionally omits the signed-in
+      // person. Load that identity from Cognito so legacy Git display names and
+      // cloud email attribution still resolve to one owner.
+      void invoke<unknown>('get_signed_in_project_person')
+        .then((response) => {
+          if (cancelled) return;
+          signedInProjectPerson = normalizeProjectMembers([response])[0] ?? null;
+          if (selected) selected = withVisibleProvenance(selected);
+        })
+        .catch((err) => {
+          console.warn('get_signed_in_project_person failed:', err);
+        });
+
+      void loadCompanyProjectProvenance(activeSlug)
+        .then((rows) => {
+          if (cancelled) return;
+          cloudProvenance = indexProjectProvenance(rows);
+          provenanceUnavailable = false;
+          if (selected) {
+            const refreshed = withVisibleProvenance(selected, cloudProvenance);
+            selected = refreshed;
+            void refreshSelectedStoriesForProvenance(refreshed);
+          }
+        })
+        .catch((err) => {
+          console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+          if (!cancelled) provenanceUnavailable = true;
+        });
+    }
+
+    // Member UIDs coalesce legacy Git names and cloud emails into one person.
+    // This lookup is best-effort and never gates local project rendering.
+    if (!personalWorkspace && activeCompanyUid) {
+      void invoke<unknown>('list_company_members', {
+        companyUid: activeCompanyUid,
       })
-      .catch((err) => {
-        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
-        if (!cancelled) provenanceUnavailable = true;
-      });
+        .then((response) => {
+          if (cancelled) return;
+          companyProjectMembers = normalizeProjectMembers(response);
+          if (selected) selected = withVisibleProvenance(selected);
+        })
+        .catch((err) => {
+          console.warn(`list_company_members(${activeCompanyUid}) failed:`, err);
+        });
+    }
 
     void (async () => {
       try {
         const [goals, allProjects] = await Promise.all([
-          loadCompanyGoals(activeSlug),
+          personalWorkspace
+            ? Promise.resolve({ objectives: [], initiatives: [] })
+            : loadCompanyGoals(activeSlug),
           loadLocalProjects(),
         ]);
         if (cancelled) return;
@@ -381,7 +468,7 @@
           const refreshed =
             allProjects.find((project) => projectIdentity(project) === selectedIdentity) ??
             selected;
-          selected = applyProjectProvenance(refreshed, cloudProvenance);
+          selected = withVisibleProvenance(refreshed);
         }
       } catch (err) {
         console.error('CompanyProjectsPage load failed:', err);
@@ -636,26 +723,29 @@
       <label class="tool-select">
         <span class="visually-hidden">Filter by owner or creator</span>
         <select
-          bind:value={ownerFilter}
+          value={ownerFilter}
+          onchange={(event) => (ownerFilter = event.currentTarget.value)}
           data-testid="portfolio-owner-filter"
           aria-label="Filter by project owner or creator"
         >
           <option value="">Person · Anyone</option>
-          {#each ownerOptions as owner (owner)}
-            <option value={owner}>{owner}</option>
+          {#each ownerOptions as owner (owner.key)}
+            <option value={owner.key}>{owner.label}</option>
           {/each}
         </select>
       </label>
 
-      <!-- Legacy cycle filter (All / Active / Needs link) for link handoff + contracts. -->
-      <button
-        type="button"
-        class="tool-button"
-        data-testid="portfolio-legacy-filter"
-        onclick={cycleFilter}
-      >
-        Filter: {filterLabel(projectFilter)}
-      </button>
+      {#if !personalWorkspace}
+        <!-- Legacy cycle filter (All / Active / Needs link) for company goal handoff. -->
+        <button
+          type="button"
+          class="tool-button"
+          data-testid="portfolio-legacy-filter"
+          onclick={cycleFilter}
+        >
+          Filter: {filterLabel(projectFilter)}
+        </button>
+      {/if}
 
       <div class="view-toggle" role="group" aria-label="Project view">
         <button
@@ -758,7 +848,7 @@
                       stateContext={portfolioStateContext(column, project)}
                       {now}
                       onselect={(p) => void openProject(p)}
-                      onlinkgoal={!goal ? requestLinkProject : undefined}
+                      onlinkgoal={!personalWorkspace && !goal ? requestLinkProject : undefined}
                       linkBusy={actionBusy === `link-${projectIdentity(project)}`}
                     />
                   {/each}
@@ -817,7 +907,7 @@
                         (project.createdAt
                           ? `started ${formatProjectDate(project.createdAt)}`
                           : 'No description')}
-                      {#if !goal}
+                      {#if !personalWorkspace && !goal}
                         <button
                           type="button"
                           class="link-nudge"
@@ -832,7 +922,7 @@
                       {/if}
                     </span>
                   </div>
-                  <div class="list-goal">{goal ?? 'No goal'}</div>
+                  <div class="list-goal">{personalWorkspace ? '—' : (goal ?? 'No goal')}</div>
                   <div class="list-provenance" data-testid="project-list-provenance">
                     <ProvenanceLine
                       provenance={project.provenance}
