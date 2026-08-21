@@ -174,6 +174,21 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+/// Explorer and other user-facing Windows shells reject the Win32 verbatim
+/// prefix (`\\?\C:\…`, `\\?\UNC\…`) that `Path::canonicalize` emits. Strip it
+/// before handing a path to `explorer.exe`. Filesystem callers keep the original.
+fn strip_windows_verbatim_for_explorer(path: &str) -> String {
+    const UNC: &str = r"\\?\UNC\";
+    const VERBATIM: &str = r"\\?\";
+    if path.len() >= UNC.len() && path[..UNC.len()].eq_ignore_ascii_case(UNC) {
+        format!(r"\\{}", &path[UNC.len()..])
+    } else if let Some(rest) = path.strip_prefix(VERBATIM) {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 /// Open a new Terminal window at `path` and auto-run `claude`.
 #[cfg(not(windows))]
 #[tauri::command]
@@ -361,11 +376,12 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn reveal_folder(path: String) -> Result<(), String> {
     let target = validate_reveal_target(&path)?;
+    let explorer_target = strip_windows_verbatim_for_explorer(&target.to_string_lossy());
     // `explorer <dir>` opens the folder; explorer exits non-zero in some
     // shells even on success, so we don't gate on the status code — a spawn
     // failure is the only meaningful error here.
     Command::new("explorer")
-        .arg(&target)
+        .arg(&explorer_target)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch Explorer: {e}"))
@@ -456,6 +472,34 @@ mod tests {
         let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // `~/..` canonicalizes above home and is rejected.
         assert!(validate_reveal_target("~/../..").is_err());
+    }
+
+    #[test]
+    fn strip_windows_verbatim_prefix_for_explorer() {
+        assert_eq!(
+            strip_windows_verbatim_for_explorer(r"\\?\C:\Users\person\hq"),
+            r"C:\Users\person\hq"
+        );
+        assert_eq!(
+            strip_windows_verbatim_for_explorer(r"\\?\C:\HQ Setup"),
+            r"C:\HQ Setup"
+        );
+        assert_eq!(
+            strip_windows_verbatim_for_explorer(r"\\?\UNC\server\share\HQ"),
+            r"\\server\share\HQ"
+        );
+        assert_eq!(
+            strip_windows_verbatim_for_explorer(r"\\?\unc\server\share\HQ"),
+            r"\\server\share\HQ"
+        );
+        assert_eq!(
+            strip_windows_verbatim_for_explorer(r"C:\Users\Ada\hq"),
+            r"C:\Users\Ada\hq"
+        );
+        assert_eq!(
+            strip_windows_verbatim_for_explorer("/Users/ada/hq"),
+            "/Users/ada/hq"
+        );
     }
 
     #[test]

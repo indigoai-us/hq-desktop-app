@@ -1,7 +1,26 @@
+const WINDOWS_UNC_PREFIX = '\\\\?\\UNC\\';
+const WINDOWS_VERBATIM_PREFIX = '\\\\?\\';
+
 function trimTrailingSeparators(path: string): string {
   if (/^[A-Za-z]:[\\/]?$/.test(path)) return path.replace(/[\\/]$/, '\\');
   if (path === '/' || path === '\\') return path;
   return path.replace(/[\\/]+$/, '');
+}
+
+/**
+ * Strip Windows' internal verbatim prefix (`\\?\` / `\\?\UNC\`) so the path is
+ * pasteable in Explorer, Claude Code Open Folder, and a terminal `cd`.
+ * Filesystem callers that need the extended prefix should keep the original.
+ */
+export function toUserFacingPath(path: string): string {
+  const trimmed = path.trim();
+  if (trimmed.toUpperCase().startsWith(WINDOWS_UNC_PREFIX.toUpperCase())) {
+    return `\\\\${trimmed.slice(WINDOWS_UNC_PREFIX.length)}`;
+  }
+  if (trimmed.startsWith(WINDOWS_VERBATIM_PREFIX)) {
+    return trimmed.slice(WINDOWS_VERBATIM_PREFIX.length);
+  }
+  return trimmed;
 }
 
 function separatorFor(path: string): '/' | '\\' {

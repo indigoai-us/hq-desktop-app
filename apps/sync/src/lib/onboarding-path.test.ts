@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { friendlyPath, homeDirFromDefaultHqPath } from './onboarding-path';
+import {
+  friendlyPath,
+  homeDirFromDefaultHqPath,
+  toUserFacingPath,
+} from './onboarding-path';
 
 describe('friendlyPath', () => {
   it('collapses a POSIX home prefix', () => {
@@ -22,6 +26,30 @@ describe('friendlyPath', () => {
 
   it('returns a trimmed absolute path when no home directory is known', () => {
     expect(friendlyPath('  /opt/hq/  ', null)).toBe('/opt/hq');
+  });
+});
+
+describe('toUserFacingPath', () => {
+  it('strips the Windows verbatim prefix so Explorer and Claude can consume the path', () => {
+    expect(toUserFacingPath(String.raw`\\?\C:\Users\person\hq`)).toBe(
+      String.raw`C:\Users\person\hq`,
+    );
+    expect(toUserFacingPath(String.raw`\\?\C:\HQ Setup`)).toBe(String.raw`C:\HQ Setup`);
+  });
+
+  it('rewrites verbatim UNC paths to a normal UNC path', () => {
+    expect(toUserFacingPath(String.raw`\\?\UNC\server\share\HQ`)).toBe(
+      String.raw`\\server\share\HQ`,
+    );
+    expect(toUserFacingPath(String.raw`\\?\unc\server\share\HQ`)).toBe(
+      String.raw`\\server\share\HQ`,
+    );
+  });
+
+  it('leaves POSIX and already-normal Windows paths unchanged', () => {
+    expect(toUserFacingPath('/Users/ada/hq')).toBe('/Users/ada/hq');
+    expect(toUserFacingPath(String.raw`C:\Users\Ada\hq`)).toBe(String.raw`C:\Users\Ada\hq`);
+    expect(toUserFacingPath('  C:\\Users\\Ada\\hq  ')).toBe(String.raw`C:\Users\Ada\hq`);
   });
 });
 
