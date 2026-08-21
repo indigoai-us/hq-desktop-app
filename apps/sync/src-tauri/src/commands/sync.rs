@@ -389,6 +389,16 @@ fn runner_exit_telemetry_context(
     if let Some(path_roots) = totals.runner_error_path_roots.tag_value() {
         tags.push(("runner_error_path_roots", path_roots));
     }
+    // HTTP status and error identity — the two facts the OTHER/other/unknown
+    // collapse discarded. Read from the SAME RunTotals source the watcher route
+    // reads; absent (no tag) when nothing parsed, so absence never renders as
+    // evidence.
+    if let Some(http) = totals.runner_error_http.tag_value() {
+        tags.push(("runner_error_http", http));
+    }
+    if let Some(causes) = totals.runner_error_causes.tag_value() {
+        tags.push(("runner_error_causes", causes));
+    }
     // Runner provenance: npx resolves `~6.14.x` at spawn, so the desktop release
     // tag alone cannot say which runner emitted the errors. Mirrors the watcher
     // route's watcher_hq_cloud_version/package.
@@ -1048,6 +1058,11 @@ pub fn build_sync_spawn_args(
     // Per-company Off toggles persist in menubar.json; honor them on All-scope
     // fanout so Sync Now does not upload/download paused companies.
     apply_skip_companies_env(&mut env, scope);
+    // Bandwidth governor: tell the runner what share of the link it may use.
+    hq_desktop_core::bandwidth::apply_bandwidth_env(
+        &mut env,
+        hq_desktop_core::bandwidth::prefs_bandwidth_percent(),
+    );
 
     let mut args = vec![
         "-y".to_string(),
@@ -3589,7 +3604,10 @@ mod tests {
                     "type": "error",
                     "company": "acme",
                     "path": "(company)",
-                    "message": "Entity cmp_SECRET NOT FOUND",
+                    // The company-scope family: a describeError rendering carrying
+                    // the http= status and AWS name the desktop used to discard,
+                    // plus a secret-looking host= that must never surface.
+                    "message": "AccessDenied http=403 host=hq-vault-cmp_SECRET.s3.us-east-1.amazonaws.com access is denied",
                 })
                 .to_string(),
             );
@@ -3651,6 +3669,11 @@ mod tests {
             event.tags["runner_error_path_roots"],
             "knowledge:120,repos:40"
         );
+        // The two additive axes: the HTTP status (from the presigned `: 500` tail
+        // and the company-scope describeError `http=403`) and the error identity
+        // (the AWS name; the pull-leg prose has none, so it reads `unknown`).
+        assert_eq!(event.tags["runner_error_http"], "http_500:40,http_403:8");
+        assert_eq!(event.tags["runner_error_causes"], "unknown:160,access_denied:8");
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -3690,7 +3713,9 @@ mod tests {
             );
         }
 
-        // (3) No seeded path, filename, message fragment, or company leaks.
+        // (3) No seeded path, filename, message fragment, or company leaks. The
+        // new axes emit `access_denied`/`http_403`, never the raw `AccessDenied`
+        // name or the `host=` bytes.
         for forbidden in [
             "secret-a",
             "secret-b",
@@ -3698,7 +3723,9 @@ mod tests {
             "acme",
             "escaped the sync root",
             "presigned GET failed",
-            "Entity",
+            "AccessDenied",
+            "hq-vault",
+            "amazonaws",
             "knowledge/secret",
         ] {
             assert!(

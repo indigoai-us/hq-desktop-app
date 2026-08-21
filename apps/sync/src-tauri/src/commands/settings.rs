@@ -41,6 +41,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             realtime_sync: Some(true),
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
+            // Absent = the built-in default percent applies (see bandwidth.rs).
+            sync_bandwidth_percent: None,
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
@@ -97,6 +99,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // and `is_instant_sync_enabled` in daemon.rs. Only ever takes effect
         // for `event_push_eligible()` users (Phase 1: @getindigo.ai).
         instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+        // Pass through as persisted; absent means the built-in default percent
+        // (bandwidth::DEFAULT_BANDWIDTH_PERCENT) governs — see bandwidth.rs.
+        sync_bandwidth_percent: prefs.sync_bandwidth_percent,
         drift_staging_repo: prefs.drift_staging_repo,
         // Share notifications default ON — re-read on each poll cycle so the
         // toggle takes effect without restart. Only active for @getindigo.ai

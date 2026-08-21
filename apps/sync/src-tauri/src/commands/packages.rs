@@ -35,7 +35,8 @@ use crate::util::paths;
 
 /// Offset from app launch before the first pack-update check fires. 20s keeps
 /// it out of lockstep with the app updater (10s) and CLI updater (15s).
-const INITIAL_DELAY: Duration = Duration::from_secs(20);
+// Staggered against version_gate (90s), hq_cli_update (4m), hq_core_state (12m).
+const INITIAL_DELAY: Duration = Duration::from_secs(8 * 60);
 
 /// Re-check cadence. Pack update probing may hit the network per installed
 /// pack, so keep it on the same 6h background rhythm as the other updaters.

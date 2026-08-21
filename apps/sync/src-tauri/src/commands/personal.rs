@@ -214,6 +214,10 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
 /// interval, and this comparison only feeds a progress estimate.
 const MTIME_EPSILON_MS: f64 = 2.0;
 
+/// How many uploaded files may accumulate in the first-push journal before it
+/// is flushed to disk mid-run. See the batching comment at the write site.
+const JOURNAL_WRITE_BATCH: usize = 25;
+
 /// Local mtime in milliseconds since the epoch, in the same units the engine
 /// records. `None` when the platform or filesystem will not report one.
 fn mtime_ms(meta: &std::fs::Metadata) -> Option<f64> {
@@ -599,6 +603,9 @@ where
     // the walk total there made a 1-file delta read "x of 2,877 files".
     let mut upload_err: Option<String> = None;
     let mut plan: Vec<(PathBuf, String)> = Vec::new();
+    // The scan hashes in the app's own process, which the CPU governor cannot
+    // signal — pace it ourselves, same as count_files_to_transfer.
+    let mut scan_pacer = hq_desktop_core::cpu_throttle::InProcessPacer::new();
     'scan: for (i, abs) in file_paths.into_iter().enumerate() {
         let rel_key = match abs.strip_prefix(hq_root) {
             Ok(p) => p.to_string_lossy().replace('\\', "/"),
@@ -616,6 +623,28 @@ where
             continue;
         }
 
+        // Metadata fast path — same size + mtimeMs rule as file_needs_upload
+        // and the hq-cloud runner's push side. Skipping on a stat beats
+        // reading and SHA-256ing every unchanged byte; on a re-push of a
+        // large, mostly-synced vault this is the difference between seconds
+        // and minutes of single-core burn. Rust-seeded entries carry no
+        // mtimeMs, so a true first push still hashes (journal is empty
+        // there anyway) — the fast path only fires once the steady-state
+        // runner has stamped mtimes.
+        if let Some(entry) = journal.files.get(&rel_key) {
+            if let Ok(meta) = std::fs::metadata(&abs) {
+                if meta.len() == entry.size {
+                    if let (Some(journalled), Some(local)) = (entry.mtime_ms, mtime_ms(&meta)) {
+                        if (journalled - local).abs() < MTIME_EPSILON_MS {
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        let started = std::time::Instant::now();
         let contents = match std::fs::read(&abs) {
             Ok(c) => c,
             // A single file that vanished between the walk and this read (temp
@@ -633,6 +662,7 @@ where
         };
         let digest = Sha256::digest(&contents);
         let sha256_hex = format!("{:x}", digest);
+        scan_pacer.charge(started.elapsed());
 
         if let Some(entry) = journal.files.get(&rel_key) {
             if entry.hash == sha256_hex {
@@ -702,8 +732,15 @@ where
                     extra: Default::default(),
                 },
             );
-            write_journal(PERSONAL_VAULT_JOURNAL_SLUG, &journal)?;
             uploaded += 1;
+            // Batched: a full-journal serialize+write per uploaded file turns a
+            // large first push into thousands of redundant JSON writes. The
+            // final write below persists everything on every exit path (success
+            // and upload_err alike); a hard crash inside a batch loses at most
+            // JOURNAL_WRITE_BATCH entries, and re-uploading those is idempotent.
+            if uploaded % JOURNAL_WRITE_BATCH == 0 {
+                write_journal(PERSONAL_VAULT_JOURNAL_SLUG, &journal)?;
+            }
         }
         on_progress(plan_total, plan_total, None);
     }

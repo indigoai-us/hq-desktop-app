@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
-    DISCOVERY_ERROR_PATH_SENTINEL,
+    RunnerErrorCauseRollup, RunnerErrorHttpRollup, RunnerErrorPathRootRollup, RunnerErrorShapeRollup,
+    COMPANY_ERROR_PATH_SENTINEL, DISCOVERY_ERROR_PATH_SENTINEL,
 };
 use sha2::{Digest, Sha256};
 
@@ -105,6 +105,17 @@ pub struct RunTotals {
     /// flood confined to one subtree is distinguishable from a whole-company one
     /// without ever emitting a user path.
     pub runner_error_path_roots: RunnerErrorPathRootRollup,
+    /// Content-safe HTTP-status counts for the runner errors seen this pass. The
+    /// single most discriminating fact about an S3/STS or HTTP-shaped fault — the
+    /// status is present verbatim in both the `describeError` `http=` key and the
+    /// presigned `: <status>` tail, and was previously discarded on every axis.
+    /// Every rendered token is chosen in code, never copied from a runner message.
+    pub runner_error_http: RunnerErrorHttpRollup,
+    /// Content-safe error-identity counts for the runner errors seen this pass —
+    /// the hq-cloud error class or AWS error name behind the fault. A companion to
+    /// the HTTP-status axis: together they turn the OTHER/other/unknown collapse
+    /// into an actionable signal. Every rendered token is chosen in code.
+    pub runner_error_causes: RunnerErrorCauseRollup,
     /// Count of company-scope errors (`path == "(company)"`) seen this pass.
     runner_error_company_scope: u32,
     /// Count of pre-fanout discovery-phase errors (`path == "(discovery)"`) seen
@@ -191,6 +202,12 @@ impl RunTotals {
         // a path root. The company and discovery sentinels are not file paths, so
         // they are counted by scope and never given a path root.
         self.runner_error_shapes.record(&err.message);
+        // HTTP status and error identity for every error regardless of scope —
+        // the company-scope path is precisely the one that currently yields
+        // nothing, and its describeError message is where `http=`/the error name
+        // live. Both parse only content-safe fixed vocabulary from err.message.
+        self.runner_error_http.record(&err.message);
+        self.runner_error_causes.record(&err.message);
         if err.path == COMPANY_ERROR_PATH_SENTINEL {
             self.runner_error_company_scope = self.runner_error_company_scope.saturating_add(1);
         } else if err.path == DISCOVERY_ERROR_PATH_SENTINEL {
@@ -2607,6 +2624,78 @@ mod tests {
             totals.runner_error_shapes.tag_value().as_deref(),
             Some("containment_escape:1,unknown:1")
         );
+    }
+
+    #[test]
+    fn record_error_populates_new_axes_across_scopes_without_perturbing_existing_ones() {
+        let mut totals = RunTotals::default();
+        // Company-scope describeError carrying an `http=` status, an AWS name, and
+        // a secret-looking `host=` that must never surface on any axis.
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message:
+                "AccessDenied http=403 host=hq-vault-cmp-acme-9f3.s3.us-east-1.amazonaws.com denied"
+                    .to_string(),
+        });
+        // Per-file presigned failures carrying the status in the `: <status>` tail.
+        for i in 0..3 {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("acme".to_string()),
+                path: format!("knowledge/secret-{i}.md"),
+                message: format!("presigned GET failed for knowledge/secret-{i}.md: 500 "),
+            });
+        }
+        // A pre-fanout discovery describeError with its own `http=` status + name.
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(discovery)".to_string(),
+            message: "InternalError http=500 we encountered an internal error".to_string(),
+        });
+
+        // New axes are populated for company-, per-file-, and discovery-scope
+        // errors alike — the company-scope path is precisely the one that yielded
+        // nothing before this change.
+        assert_eq!(
+            totals.runner_error_http.tag_value().as_deref(),
+            Some("http_500:4,http_403:1")
+        );
+        assert_eq!(
+            totals.runner_error_causes.tag_value().as_deref(),
+            Some("unknown:3,access_denied:1,internal_error:1")
+        );
+
+        // Every pre-existing axis is byte-identical to its pre-change value for
+        // the same inputs — the two added record() calls perturb nothing.
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:1,file:3,discovery:1")
+        );
+        assert_eq!(
+            totals.runner_error_shapes.tag_value().as_deref(),
+            Some("presigned_get_failed:3,unknown:2")
+        );
+        assert_eq!(
+            totals.runner_error_path_roots.tag_value().as_deref(),
+            Some("knowledge:3")
+        );
+        assert_eq!(totals.runner_error_rollup.tag_value().as_deref(), Some("OTHER:5"));
+        assert_eq!(totals.runner_error_ops.tag_value().as_deref(), Some("other:5"));
+        assert_eq!(totals.runner_error_rollup.fingerprint_token(), "other");
+        assert!(totals.saw_alertable_error);
+
+        // Content safety: the rendered new-axis tags carry no host or path byte.
+        for rendered in [
+            totals.runner_error_http.tag_value().unwrap(),
+            totals.runner_error_causes.tag_value().unwrap(),
+        ] {
+            for fragment in ["hq-vault", "acme", "9f3", "amazonaws", "secret-"] {
+                assert!(
+                    !rendered.contains(fragment),
+                    "new-axis tag leaked {fragment:?}: {rendered}"
+                );
+            }
+        }
     }
 
     // ── describe_exit ────────────────────────────────────────────────────────────

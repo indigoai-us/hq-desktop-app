@@ -1,3 +1,4 @@
+import { toUserFacingPath } from '../lib/onboarding-path';
 import type { Workspace } from '../lib/workspaces';
 import {
   sortV4CompaniesConnectedFirst,
@@ -523,16 +524,7 @@ export function getDesktopSecondarySidebar(
 }
 
 export function normalizeNativePath(path: string): string {
-  const trimmed = path.trim();
-  const windowsUncPrefix = '\\\\?\\UNC\\';
-  const windowsVerbatimPrefix = '\\\\?\\';
-  if (trimmed.toUpperCase().startsWith(windowsUncPrefix.toUpperCase())) {
-    return '\\\\' + trimmed.slice(windowsUncPrefix.length);
-  }
-  if (trimmed.startsWith(windowsVerbatimPrefix)) {
-    return trimmed.slice(windowsVerbatimPrefix.length);
-  }
-  return trimmed;
+  return toUserFacingPath(path);
 }
 
 export function formatHqFolderMeta(path: string | null | undefined): string {

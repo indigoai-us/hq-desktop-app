@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MeetingEvent, ScheduledBot } from './meetings-model';
+import {
+  isOptimisticAlreadyInvitedBot,
+  OPTIMISTIC_ALREADY_INVITED_TTL_MS,
+} from './meetings-model';
 
 const invoke = vi.hoisted(() => vi.fn());
 const saveMeetingsCache = vi.hoisted(() => vi.fn());
@@ -17,7 +21,12 @@ vi.mock('../../lib/activeMeetings', () => ({
   seedActiveMeetingsFromBackend: vi.fn(async () => undefined),
 }));
 
-import { meetingsStore } from './meetings-store.svelte';
+import {
+  meetingsStore,
+  stopMeetingsStore,
+  MEETINGS_BOT_LIST_BACKOFF_MS,
+  MEETINGS_LOADING_WATCHDOG_MS,
+} from './meetings-store.svelte';
 
 const planRequiredError =
   'bot/invite HTTP 402: {"requiredPlan":"agents-500","code":"MEETING_PLAN_REQUIRED"}';
@@ -82,8 +91,14 @@ async function expectPlanGateDoesNotCommitOrRefresh(
 }
 
 beforeEach(() => {
+  stopMeetingsStore();
   invoke.mockReset();
   saveMeetingsCache.mockReset();
+});
+
+afterEach(() => {
+  stopMeetingsStore();
+  vi.useRealTimers();
 });
 
 describe('meetings store refresh coordination', () => {
@@ -196,5 +211,115 @@ describe('meetings store Team-plan gate', () => {
         companyId: null,
       },
     );
+  });
+});
+
+function mockAgendaCommands(opts: {
+  upcoming?: MeetingEvent[] | Promise<MeetingEvent[]>;
+  bots?: ScheduledBot[] | Promise<ScheduledBot[]> | (() => Promise<ScheduledBot[]>);
+  invite?: () => Promise<ScheduledBot>;
+}): void {
+  invoke.mockImplementation((command: string) => {
+    if (command === 'meetings_list_upcoming') {
+      return opts.upcoming instanceof Promise
+        ? opts.upcoming
+        : Promise.resolve(opts.upcoming ?? [event]);
+    }
+    if (
+      command === 'meetings_list_memberships' ||
+      command === 'meetings_list_accounts'
+    ) {
+      return Promise.resolve([]);
+    }
+    if (command === 'meetings_list_scheduled_bots') {
+      if (typeof opts.bots === 'function') return opts.bots();
+      if (opts.bots instanceof Promise) return opts.bots;
+      if (opts.bots === undefined) {
+        return Promise.reject(new Error('bot/list parse: missing field `meetingUrl`'));
+      }
+      return Promise.resolve(opts.bots);
+    }
+    if (command === 'meetings_invite_bot') {
+      return opts.invite
+        ? opts.invite()
+        : Promise.reject('bot/invite HTTP 409: {"code":"bot-already-scheduled"}');
+    }
+    throw new Error(`Unexpected invoke: ${command}`);
+  });
+}
+
+describe('meetings store refresh resilience', () => {
+  it('clears loading after a bot-list failure', async () => {
+    mockAgendaCommands({ bots: undefined });
+    await meetingsStore.refresh();
+    expect(meetingsStore.loading).toBe(false);
+    expect(meetingsStore.fetchError).toBe('Could not refresh meeting bot status.');
+  });
+
+  it('schedules a bounded backoff retry after bot-list failure', async () => {
+    vi.useFakeTimers();
+    mockAgendaCommands({ bots: undefined });
+
+    await meetingsStore.refresh();
+    const afterFirst = invoke.mock.calls.filter(
+      ([command]) => command === 'meetings_list_scheduled_bots',
+    ).length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    await vi.advanceTimersByTimeAsync(MEETINGS_BOT_LIST_BACKOFF_MS[0] - 1);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'meetings_list_scheduled_bots')
+        .length,
+    ).toBe(afterFirst);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'meetings_list_scheduled_bots')
+        .length,
+    ).toBeGreaterThan(afterFirst);
+  });
+
+  it('clears loading via the watchdog when a refresh hangs', async () => {
+    vi.useFakeTimers();
+    mockAgendaCommands({ upcoming: new Promise(() => undefined) });
+
+    void meetingsStore.refresh();
+    await Promise.resolve();
+    expect(meetingsStore.loading).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(MEETINGS_LOADING_WATCHDOG_MS);
+    expect(meetingsStore.loading).toBe(false);
+
+    mockAgendaCommands({ upcoming: [], bots: [] });
+    await meetingsStore.refresh();
+    expect(meetingsStore.loading).toBe(false);
+    expect(meetingsStore.events).toEqual([]);
+  });
+
+  it('expires an optimistic already-invited seed that is never reconciled', async () => {
+    vi.useFakeTimers();
+    mockAgendaCommands({ bots: undefined });
+
+    await expect(meetingsStore.inviteBot(event)).resolves.toEqual({
+      kind: 'info',
+      text: 'Already invited — refreshing.',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const seeded = meetingsStore.botsByEventId.get(event.id);
+    expect(seeded).toBeDefined();
+    expect(isOptimisticAlreadyInvitedBot(seeded!)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(OPTIMISTIC_ALREADY_INVITED_TTL_MS - 1);
+    expect(isOptimisticAlreadyInvitedBot(meetingsStore.botsByEventId.get(event.id)!)).toBe(
+      true,
+    );
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(meetingsStore.botsByEventId.get(event.id)).toBeUndefined();
+    expect(
+      meetingsStore.scheduledBots.some((bot) => isOptimisticAlreadyInvitedBot(bot)),
+    ).toBe(false);
   });
 });

@@ -155,6 +155,7 @@ mod tests {
             realtime_sync: None,
             personal_sync_enabled: None,
             instant_sync: None,
+            sync_bandwidth_percent: None,
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,

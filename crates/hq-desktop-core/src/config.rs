@@ -99,6 +99,14 @@ pub struct MenubarPrefs {
     /// (see `is_instant_sync_enabled` in daemon.rs and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instant_sync: Option<bool>,
+    /// Sync bandwidth ceiling as a percent (1-99) of the observed link
+    /// capacity, enforced by the hq-cloud sync runner (adaptive pacing with a
+    /// progress floor). Absent = the built-in default
+    /// (`bandwidth::DEFAULT_BANDWIDTH_PERCENT`); 0 or ≥100 = unlimited.
+    /// Machine-wide env override: `HQ_MAX_BANDWIDTH_PERCENT` (sibling of
+    /// `HQ_MAX_CPU_PERCENT`). See `crates/hq-desktop-core/src/bandwidth.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_bandwidth_percent: Option<u8>,
     /// Staging repo (`owner/name`) for Core-Drift staging classification.
     /// When set, drifted locked-scope files are cross-referenced against this
     /// repo's `main` tree + open PRs and tagged (`staging main` / `PR #n` /

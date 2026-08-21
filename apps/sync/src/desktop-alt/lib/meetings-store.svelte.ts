@@ -15,11 +15,15 @@ import {
   calendarEventIdsForBotLookup,
   eventMeetingUrl,
   friendlyError,
+  isOptimisticAlreadyInvitedBot,
   isPlausibleMeetingUrl,
+  meetingUrlsMatch,
   MEETINGS_STALE_NOTICE_FAILURES,
   meetingsRefreshGate,
   mergeScheduledBotLookups,
   mergeScheduledBots,
+  OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX,
+  OPTIMISTIC_ALREADY_INVITED_TTL_MS,
   optimisticAlreadyInvitedBot,
   recurringSeriesId,
   urlInviteDestinationLabel,
@@ -72,6 +76,15 @@ interface CalendarSnapshot {
 // enough that an agenda opened minutes later is already current.
 const POLL_INTERVAL_MS = 30_000;
 
+/** Defensive cap so `loading` cannot pin the Refresh button if a call hangs. */
+export const MEETINGS_LOADING_WATCHDOG_MS = 30_000;
+
+/**
+ * Extra retries after a bot-list leg failure, then give up until the next
+ * 30s poll or window focus.
+ */
+export const MEETINGS_BOT_LIST_BACKOFF_MS = [5_000, 15_000, 45_000] as const;
+
 // ---------------------------------------------------------------------------
 // Module-level singleton state.
 //
@@ -116,6 +129,12 @@ let loading = $state(false);
 let refreshInFlight: Promise<void> | null = null;
 let forceTrailingRefresh = false;
 let mutationRevision = 0;
+let loadingGeneration = 0;
+let loadingWatchdog: ReturnType<typeof setTimeout> | null = null;
+let botListBackoffAttempt = 0;
+let botListBackoffTimer: ReturnType<typeof setTimeout> | null = null;
+let optimisticSeeds = new Map<string, { bot: ScheduledBot; seededAt: number }>();
+let optimisticSeedExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 // Per-row optimistic lock for bot actions (invite / cancel / join-now), keyed
 // by calendar event id. The agenda reads it to disable a row's buttons + show a
 // spinner while its invoke is in flight. Re-assigned a cloned Set on every
@@ -132,8 +151,12 @@ function hydrateFromCache() {
   const snapshot = loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>();
   if (!snapshot) return;
   events = snapshot.events ?? [];
-  botsByEventId = new Map(snapshot.botsByEventId ?? []);
-  allBots = snapshot.scheduledBots ?? (snapshot.botsByEventId ?? []).map(([, bot]) => bot);
+  botsByEventId = new Map(
+    (snapshot.botsByEventId ?? []).filter(([, bot]) => !isOptimisticAlreadyInvitedBot(bot)),
+  );
+  allBots = (snapshot.scheduledBots ?? (snapshot.botsByEventId ?? []).map(([, bot]) => bot)).filter(
+    (bot) => !isOptimisticAlreadyInvitedBot(bot),
+  );
   companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
   accounts = snapshot.accounts ?? [];
   accountEmailById = new Map(snapshot.accountEmailById ?? []);
@@ -160,13 +183,26 @@ function hydrateFromCache() {
  * prompt re-sign-in) instead of faking "0 meetings".
  */
 function refresh(forceAfterMutation = false): Promise<void> {
+  return beginRefresh(forceAfterMutation, { resetBackoff: true });
+}
+
+function beginRefresh(
+  forceAfterMutation: boolean,
+  opts: { resetBackoff: boolean },
+): Promise<void> {
+  if (opts.resetBackoff) {
+    clearBotListBackoffTimer();
+    if (!refreshInFlight) botListBackoffAttempt = 0;
+  }
   if (refreshInFlight) {
     if (forceAfterMutation) forceTrailingRefresh = true;
     return refreshInFlight;
   }
 
+  const generation = ++loadingGeneration;
   const run = async (): Promise<void> => {
     loading = true;
+    armLoadingWatchdog(generation);
     try {
       do {
         forceTrailingRefresh = false;
@@ -174,7 +210,10 @@ function refresh(forceAfterMutation = false): Promise<void> {
         await refreshOnce(refreshRevision);
       } while (forceTrailingRefresh);
     } finally {
-      loading = false;
+      if (generation === loadingGeneration) {
+        loading = false;
+        clearLoadingWatchdog();
+      }
     }
   };
 
@@ -183,6 +222,44 @@ function refresh(forceAfterMutation = false): Promise<void> {
   });
   refreshInFlight = operation;
   return operation;
+}
+
+function armLoadingWatchdog(generation: number): void {
+  clearLoadingWatchdog();
+  loadingWatchdog = setTimeout(() => {
+    loadingWatchdog = null;
+    if (generation !== loadingGeneration) return;
+    loading = false;
+    refreshInFlight = null;
+  }, MEETINGS_LOADING_WATCHDOG_MS);
+}
+
+function clearLoadingWatchdog(): void {
+  if (loadingWatchdog === null) return;
+  clearTimeout(loadingWatchdog);
+  loadingWatchdog = null;
+}
+
+function clearBotListBackoffTimer(): void {
+  if (botListBackoffTimer === null) return;
+  clearTimeout(botListBackoffTimer);
+  botListBackoffTimer = null;
+}
+
+function resetBotListBackoff(): void {
+  clearBotListBackoffTimer();
+  botListBackoffAttempt = 0;
+}
+
+function scheduleBotListBackoffRetry(): void {
+  if (botListBackoffTimer !== null) return;
+  if (botListBackoffAttempt >= MEETINGS_BOT_LIST_BACKOFF_MS.length) return;
+  const delay = MEETINGS_BOT_LIST_BACKOFF_MS[botListBackoffAttempt];
+  botListBackoffAttempt += 1;
+  botListBackoffTimer = setTimeout(() => {
+    botListBackoffTimer = null;
+    void beginRefresh(false, { resetBackoff: false });
+  }, delay);
 }
 
 async function refreshOnce(refreshRevision: number): Promise<void> {
@@ -252,10 +329,7 @@ async function refreshOnce(refreshRevision: number): Promise<void> {
     }
 
     events = evts ?? [];
-    if (bots !== null) {
-      botsByEventId = buildBotMap(bots);
-      allBots = bots;
-    }
+    applyScheduledBots(bots);
     memberships = members ?? [];
     companyNamesByUid = buildCompanyNameMap(members ?? []);
     accounts = accts ?? [];
@@ -347,10 +421,14 @@ async function loadCalendarsForAccounts(
 }
 
 function persistSnapshot(): void {
+  const realBots = allBots.filter((bot) => !isOptimisticAlreadyInvitedBot(bot));
+  const realBotMap = Array.from(botsByEventId.entries()).filter(
+    ([, bot]) => !isOptimisticAlreadyInvitedBot(bot),
+  );
   saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
     events,
-    scheduledBots: allBots,
-    botsByEventId: Array.from(botsByEventId.entries()),
+    scheduledBots: realBots,
+    botsByEventId: realBotMap,
     companyNamesByUid: Array.from(companyNamesByUid.entries()),
     accounts,
     accountEmailById: Array.from(accountEmailById.entries()),
@@ -388,6 +466,96 @@ function isActiveStatus(s: string): boolean {
     s === 'processing' ||
     s === 'completed'
   );
+}
+
+function applyScheduledBots(serverBots: ScheduledBot[] | null): void {
+  dropExpiredOptimisticSeeds();
+  if (serverBots === null) {
+    scheduleBotListBackoffRetry();
+    return;
+  }
+  resetBotListBackoff();
+  forgetReplacedOptimisticSeeds(serverBots);
+  const survivingSeeds = collectSurvivingOptimisticSeeds();
+  const merged = mergeScheduledBots(serverBots, survivingSeeds);
+  botsByEventId = buildBotMap(merged);
+  allBots = merged;
+}
+
+function realBotReplacesSeed(seed: ScheduledBot, bots: ScheduledBot[]): boolean {
+  return bots.some((bot) => {
+    if (isOptimisticAlreadyInvitedBot(bot)) return false;
+    if (!isActiveStatus(bot.status)) return false;
+    if (seed.calendarEventId && bot.calendarEventId === seed.calendarEventId) return true;
+    const series = seed.calendarSeriesId?.trim();
+    if (series && bot.calendarSeriesId?.trim() === series) return true;
+    return meetingUrlsMatch(seed.meetingUrl, bot.meetingUrl);
+  });
+}
+
+function forgetReplacedOptimisticSeeds(serverBots: ScheduledBot[]): void {
+  for (const [eventId, entry] of [...optimisticSeeds]) {
+    if (realBotReplacesSeed(entry.bot, serverBots)) optimisticSeeds.delete(eventId);
+  }
+}
+
+function collectSurvivingOptimisticSeeds(now = Date.now()): ScheduledBot[] {
+  const live: ScheduledBot[] = [];
+  for (const [eventId, entry] of [...optimisticSeeds]) {
+    if (now - entry.seededAt >= OPTIMISTIC_ALREADY_INVITED_TTL_MS) {
+      optimisticSeeds.delete(eventId);
+      continue;
+    }
+    live.push(entry.bot);
+  }
+  return live;
+}
+
+function dropExpiredOptimisticSeeds(now = Date.now()): void {
+  const expiredIds: string[] = [];
+  for (const [eventId, entry] of optimisticSeeds) {
+    if (now - entry.seededAt >= OPTIMISTIC_ALREADY_INVITED_TTL_MS) expiredIds.push(eventId);
+  }
+  if (expiredIds.length === 0) return;
+  for (const eventId of expiredIds) optimisticSeeds.delete(eventId);
+  let botsChanged = false;
+  const nextMap = new Map(botsByEventId);
+  for (const eventId of expiredIds) {
+    const current = nextMap.get(eventId);
+    if (current && isOptimisticAlreadyInvitedBot(current)) {
+      nextMap.delete(eventId);
+      botsChanged = true;
+    }
+  }
+  const nextAll = allBots.filter((bot) => {
+    if (!isOptimisticAlreadyInvitedBot(bot)) return true;
+    const eventId = bot.calendarEventId ?? bot.botId.slice(OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX.length);
+    return !expiredIds.includes(eventId);
+  });
+  if (nextAll.length !== allBots.length) {
+    allBots = nextAll;
+    botsChanged = true;
+  }
+  if (botsChanged) botsByEventId = nextMap;
+  armOptimisticSeedExpiry();
+}
+
+function armOptimisticSeedExpiry(): void {
+  if (optimisticSeedExpiryTimer !== null) {
+    clearTimeout(optimisticSeedExpiryTimer);
+    optimisticSeedExpiryTimer = null;
+  }
+  const now = Date.now();
+  let soonest: number | null = null;
+  for (const { seededAt } of optimisticSeeds.values()) {
+    const remaining = OPTIMISTIC_ALREADY_INVITED_TTL_MS - (now - seededAt);
+    if (soonest === null || remaining < soonest) soonest = Math.max(0, remaining);
+  }
+  if (soonest === null) return;
+  optimisticSeedExpiryTimer = setTimeout(() => {
+    optimisticSeedExpiryTimer = null;
+    dropExpiredOptimisticSeeds();
+  }, soonest);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,10 +629,12 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
 function seedAlreadyInvited(evt: MeetingEvent, meetingUrl: string): void {
   if (botForEvent(evt, botsByEventId, allBots)) return;
   const seeded = optimisticAlreadyInvitedBot(evt, meetingUrl);
+  optimisticSeeds.set(evt.id, { bot: seeded, seededAt: Date.now() });
   const nextMap = new Map(botsByEventId);
   nextMap.set(evt.id, seeded);
   botsByEventId = nextMap;
   allBots = mergeScheduledBots([seeded], allBots);
+  armOptimisticSeedExpiry();
 }
 
 /** Cancel the event's scheduled bot. No-op (returns null) when there's no bot
@@ -616,6 +786,34 @@ export function stopMeetingsStore(): void {
     pollTimer = null;
   }
   started = false;
+  loadingGeneration += 1;
+  clearLoadingWatchdog();
+  resetBotListBackoff();
+  if (optimisticSeedExpiryTimer !== null) {
+    clearTimeout(optimisticSeedExpiryTimer);
+    optimisticSeedExpiryTimer = null;
+  }
+  optimisticSeeds = new Map();
+  loading = false;
+  refreshInFlight = null;
+  forceTrailingRefresh = false;
+  mutationRevision = 0;
+  events = [];
+  accounts = [];
+  calendarsByAccount = new Map();
+  enabledCalIdsByAccount = new Map();
+  botsByEventId = new Map();
+  allBots = [];
+  companyNamesByUid = new Map();
+  accountEmailById = new Map();
+  calendarSummaryByKey = new Map();
+  memberships = [];
+  membershipsError = '';
+  fetchError = '';
+  refreshBlocked = false;
+  refreshFailureCount = 0;
+  lastRefreshErrorRaw = '';
+  rowPending = new Map();
 }
 
 // Reactive read surface. Consumers read these getters inside their own

@@ -142,6 +142,8 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     if !personal_sync_enabled {
         env.insert("HQ_SYNC_SKIP_PERSONAL".to_string(), "1".to_string());
     }
+    // Bandwidth governor: tell the runner what share of the link it may use.
+    crate::bandwidth::apply_bandwidth_env(&mut env, crate::bandwidth::prefs_bandwidth_percent());
 
     let mut runner_args = vec![
         "--companies".to_string(),
