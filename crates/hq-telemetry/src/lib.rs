@@ -569,6 +569,22 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // Emitted as a bare integer (reaches this check as `""` for a numeric
         // Value); a string value must parse as an unsigned integer.
         "exec_not_runnable_streak" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
+        // Pull-based Windows teardown probe (HQ-DESKTOP-4N r2). The producer emits
+        // only fixed-vocabulary tokens from the pure verdict/parser; these
+        // independent egress checks degrade a producer bug that shipped raw
+        // event-log XML, an initiating user, a process path, or a machine name to
+        // `[Filtered]` instead of leaking it.
+        "windows_teardown_probe_verdict" => Some(matches!(
+            value,
+            "teardown_confirmed" | "teardown_absent" | "teardown_unknown"
+        )),
+        "windows_teardown_probe_shuttingdown" => {
+            Some(matches!(value, "yes" | "no" | "unavailable"))
+        }
+        "windows_teardown_probe_log" => Some(matches!(
+            value,
+            "user32_1074" | "kernel_general_13" | "kernel_power_109" | "none" | "unavailable"
+        )),
         _ => None,
     }
 }
@@ -1312,6 +1328,65 @@ mod tests {
             ),
             Some(false)
         );
+    }
+
+    #[test]
+    fn every_windows_teardown_probe_token_survives_and_lookalikes_fail_closed() {
+        use hq_desktop_core::sync_outcome::{
+            TeardownLogClass, TeardownLogReading, TeardownShuttingDown, WindowsTeardownVerdict,
+        };
+        // Drive the accepted set from the producer's OWN vocabulary so the egress
+        // check can never drift behind a newly-added token and blank a real value.
+        for token in [
+            WindowsTeardownVerdict::Confirmed.class_name(),
+            WindowsTeardownVerdict::Absent.class_name(),
+            WindowsTeardownVerdict::Unknown.class_name(),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("windows_teardown_probe_verdict", token),
+                Some(true),
+                "verdict token {token:?} must survive egress"
+            );
+        }
+        for token in [
+            TeardownShuttingDown::Yes.class_name(),
+            TeardownShuttingDown::No.class_name(),
+            TeardownShuttingDown::Unavailable.class_name(),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("windows_teardown_probe_shuttingdown", token),
+                Some(true),
+                "shuttingdown token {token:?} must survive egress"
+            );
+        }
+        for token in [
+            TeardownLogReading::Record(TeardownLogClass::User32Initiated).class_name(),
+            TeardownLogReading::Record(TeardownLogClass::KernelGeneral).class_name(),
+            TeardownLogReading::Record(TeardownLogClass::KernelPower).class_name(),
+            TeardownLogReading::None.class_name(),
+            TeardownLogReading::Unavailable.class_name(),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("windows_teardown_probe_log", token),
+                Some(true),
+                "log token {token:?} must survive egress"
+            );
+        }
+
+        // Raw event-log text — the exact leak the allowlist exists to stop — must
+        // fail closed on every one of the three probe keys.
+        let leak = r"1074: shutdown.exe (DESKTOP-QOH7J4N) by Ada at C:\Windows";
+        for key in [
+            "windows_teardown_probe_verdict",
+            "windows_teardown_probe_shuttingdown",
+            "windows_teardown_probe_log",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, leak),
+                Some(false),
+                "{key} must reject raw event-log text"
+            );
+        }
     }
 
     #[test]

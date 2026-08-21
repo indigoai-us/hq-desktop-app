@@ -189,6 +189,18 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::process::watcher_fault_e2e_tests -- --nocapture --include-ignored
 
+      # HQ-DESKTOP-4N (r2) artifact E2E: run the pull-based teardown probe against
+      # the REAL OS on the runner. `GetSystemMetrics(SM_SHUTTINGDOWN)` must read 0
+      # (the runner is not shutting down) and a real bounded EvtQuery against the
+      # System channel must open unelevated and return a definite reading, so the
+      # combined verdict is TeardownAbsent and NEVER TeardownConfirmed — the probe
+      # reads OS state, never fabricates a teardown, and closes the r1 artifact gap
+      # that a signed-out runner (which owns no watcher child) could not exercise.
+      - name: Windows teardown probe artifact E2E
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::windows_teardown_probe::tests -- --nocapture
+
       # The base half is deliberately a red proof: it materializes this PR's
       # merge-base in a CI-local worktree and requires the legacy manual-sync
       # decision seam to report capture for code 1/no signal.

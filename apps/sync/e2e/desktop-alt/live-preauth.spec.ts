@@ -132,6 +132,18 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     );
   });
 
+  it('reports the live OS as not tearing down through the teardown probe (HQ-DESKTOP-4N)', async () => {
+    // The r2 pull-based teardown probe reads the real OS shutdown flag
+    // (`GetSystemMetrics(SM_SHUTTINGDOWN)`) rather than waiting for a window
+    // message. On a healthy runner that is genuinely not shutting down, the real
+    // built binary must report exactly `no`. This is what proves the probe
+    // answers to the OS state and not to any message: nothing short of a real
+    // session teardown can make it read `yes`, so a bare `WM_QUERYENDSESSION`
+    // delivered to the app can never manufacture a confirmed teardown.
+    const status = await app.invokeCommand<string>('session_end_teardown_probe_status');
+    expect(status, `teardown probe reported ${status} on a healthy runner`).toBe('no');
+  });
+
   it('refuses to open the desktop window for a signed-out user', async () => {
     // `desktop_alt_enabled` is what App.svelte, the tray and the notification
     // deep-links consult before offering the surface at all.
