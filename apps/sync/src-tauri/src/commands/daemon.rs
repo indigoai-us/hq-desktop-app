@@ -7509,12 +7509,14 @@ mod tests {
             Some(WindowsTerminatorAttribution::SessionEndProbed)
         );
 
-        // A bracketing System-channel record confirms just as well as the flag.
+        // A bracketing COMMITTED System-channel record (the OS actually shut
+        // down) confirms just as well as the flag. An initiation-only 1074 does
+        // NOT — that case is covered by the pure verdict test.
         let confirmed_by_log = WindowsTeardownProbeReading {
             shuttingdown_at_exit: TeardownShuttingDown::No,
             shuttingdown_at_resolve: TeardownShuttingDown::No,
             log: TeardownLogReading::Record(
-                hq_desktop_core::sync_outcome::TeardownLogClass::User32Initiated,
+                hq_desktop_core::sync_outcome::TeardownLogClass::KernelGeneral,
             ),
         };
         let resolution = resolve_deferred_decision(Some(reading), confirmed_by_log);
@@ -7523,6 +7525,19 @@ mod tests {
             resolution.final_attribution,
             Some(WindowsTerminatorAttribution::SessionEndProbed)
         );
+
+        // An initiation-only record with no live flag fails closed to a send —
+        // an aborted shutdown must not suppress a coincident real crash.
+        let initiation_only = WindowsTeardownProbeReading {
+            shuttingdown_at_exit: TeardownShuttingDown::No,
+            shuttingdown_at_resolve: TeardownShuttingDown::No,
+            log: TeardownLogReading::Record(
+                hq_desktop_core::sync_outcome::TeardownLogClass::User32Initiated,
+            ),
+        };
+        let resolution = resolve_deferred_decision(Some(reading), initiation_only);
+        assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Capture);
+        assert_eq!(resolution.verdict, WindowsTeardownVerdict::Unknown);
 
         // An observer that could not be consulted at all still fails closed even
         // with a confirmed teardown: nothing to rename, so it sends.

@@ -2070,6 +2070,21 @@ impl TeardownLogClass {
             Self::KernelPower => "kernel_power_109",
         }
     }
+
+    /// Whether this record is evidence the teardown actually PROCEEDED, as
+    /// opposed to merely being *initiated*.
+    ///
+    /// User32 EventID 1074 is an initiation record: a process asked Windows to
+    /// shut down or restart. That request can still be aborted or vetoed
+    /// (`shutdown /a`, an app returning FALSE to `WM_QUERYENDSESSION`), so a bare
+    /// 1074 is the log-side equivalent of the observer's query phase — it must
+    /// never suppress a real watcher crash that merely coincides with it inside
+    /// the bracketing window. Kernel-General 13 ("the operating system is
+    /// shutting down") and Kernel-Power 109 are written as the OS commits to the
+    /// teardown, so they are the ones that confirm it proceeded.
+    pub fn is_committed_teardown(self) -> bool {
+        matches!(self, Self::KernelGeneral | Self::KernelPower)
+    }
 }
 
 /// One parsed, content-safe System-channel teardown record. `class` is an
@@ -2141,19 +2156,30 @@ impl WindowsTeardownVerdict {
 ///
 /// The rule is deliberately asymmetric and fail-closed:
 ///
-/// - *Any* positive source confirms — either `SM_SHUTTINGDOWN` read (they are
-///   taken six seconds apart precisely so a flag that sets late is still caught)
-///   or a bracketing System-channel record.
+/// - A positive confirmation is either a live `SM_SHUTTINGDOWN` read (taken six
+///   seconds apart precisely so a flag that sets late is still caught) or a
+///   System-channel record proving the teardown actually PROCEEDED
+///   ([`TeardownLogClass::is_committed_teardown`]). An initiation-only record
+///   (User32 1074) does NOT confirm on its own: a shutdown can be initiated and
+///   then aborted, so it is the log-side query phase and must not suppress a real
+///   watcher crash that merely coincides with it.
 /// - `Absent` requires positive negative evidence from *every* source: both
-///   flags read `No` AND the channel opened and held no bracketing record. Only
-///   then can the probe assert the OS was verifiably not tearing down.
-/// - Anything else — an unreadable channel, an unavailable flag, any mix short
-///   of unanimous negatives — is `Unknown`, which the caller must treat exactly
-///   like today's behaviour and send.
+///   flags read `No` AND the channel opened and held no bracketing record at all
+///   — not even an initiation. Only then can the probe assert the OS was
+///   verifiably not tearing down.
+/// - Anything else — an unreadable channel, an unavailable flag, a bracketing
+///   *initiation-only* record, any mix short of unanimous negatives — is
+///   `Unknown`, which the caller must treat exactly like today's behaviour and
+///   send. The record class is still stamped on the diagnostics for the next
+///   round.
 pub fn windows_teardown_verdict(reading: WindowsTeardownProbeReading) -> WindowsTeardownVerdict {
+    let committed_teardown_record = matches!(
+        reading.log,
+        TeardownLogReading::Record(class) if class.is_committed_teardown()
+    );
     if reading.shuttingdown_at_exit == TeardownShuttingDown::Yes
         || reading.shuttingdown_at_resolve == TeardownShuttingDown::Yes
-        || matches!(reading.log, TeardownLogReading::Record(_))
+        || committed_teardown_record
     {
         return WindowsTeardownVerdict::Confirmed;
     }
@@ -5210,7 +5236,7 @@ mod tests {
             })
         };
 
-        // Any single positive source confirms.
+        // A live shutting-down flag confirms from either read.
         assert_eq!(
             verdict(Sd::Yes, Sd::No, Log::None),
             WindowsTeardownVerdict::Confirmed
@@ -5219,21 +5245,44 @@ mod tests {
             verdict(Sd::No, Sd::Yes, Log::None),
             WindowsTeardownVerdict::Confirmed
         );
-        assert_eq!(
-            verdict(
-                Sd::No,
-                Sd::No,
-                Log::Record(TeardownLogClass::User32Initiated)
-            ),
-            WindowsTeardownVerdict::Confirmed
-        );
+        // A COMMITTED System-channel record (the OS actually shut down) confirms
+        // even with both flags negative.
+        for committed in [TeardownLogClass::KernelGeneral, TeardownLogClass::KernelPower] {
+            assert!(committed.is_committed_teardown());
+            assert_eq!(
+                verdict(Sd::No, Sd::No, Log::Record(committed)),
+                WindowsTeardownVerdict::Confirmed,
+                "{committed:?} proves the teardown proceeded"
+            );
+        }
         // A positive flag wins even when the log is unreadable.
         assert_eq!(
             verdict(Sd::Yes, Sd::Unavailable, Log::Unavailable),
             WindowsTeardownVerdict::Confirmed
         );
 
-        // Absent requires unanimous negatives across every source.
+        // An INITIATION-only record (User32 1074) does NOT confirm on its own: a
+        // shutdown can be initiated and then aborted. With both flags negative it
+        // is neither Confirmed nor Absent — it fails closed to Unknown, and the
+        // record is preserved for diagnostics rather than suppressing an alert.
+        assert!(!TeardownLogClass::User32Initiated.is_committed_teardown());
+        assert_eq!(
+            verdict(Sd::No, Sd::No, Log::Record(TeardownLogClass::User32Initiated)),
+            WindowsTeardownVerdict::Unknown,
+            "a bare initiation must never suppress a coincident real crash"
+        );
+        // But a live flag still confirms even when only an initiation was logged.
+        assert_eq!(
+            verdict(
+                Sd::Yes,
+                Sd::No,
+                Log::Record(TeardownLogClass::User32Initiated)
+            ),
+            WindowsTeardownVerdict::Confirmed
+        );
+
+        // Absent requires unanimous negatives across every source, with the
+        // channel open and holding NO record at all — not even an initiation.
         assert_eq!(
             verdict(Sd::No, Sd::No, Log::None),
             WindowsTeardownVerdict::Absent

@@ -134,12 +134,35 @@ pub fn sample_shuttingdown() -> TeardownShuttingDown {
     }
 }
 
+/// At most one System-channel sweep thread runs at a time.
+///
+/// `EvtNext` is already bounded (its own 250ms per-call timeout) and `EvtRender`
+/// is a CPU-bound formatting call, but `EvtQuery` opening a query offers no
+/// mid-call cancellation — the same limitation the shipped WER reader accepts —
+/// so a stalled Event Log service (e.g. while services are stopping during a
+/// teardown) could keep a worker blocked past the resolver's own six-second
+/// wait. This flag caps that worst case at a SINGLE outstanding thread instead
+/// of one per deferred exit: while a sweep is in flight, later deferrals do not
+/// spawn another thread — they read `Unavailable` and fail closed to a send.
+#[cfg(target_os = "windows")]
+static TEARDOWN_SWEEP_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Kick the bounded System-channel sweep on a detached worker thread so it runs
 /// concurrently with the grace and off the exit path. The returned handle's
 /// cached result is read at resolution; the thread ends on its own within its
-/// budget.
+/// budget. Single-flight (see [`TEARDOWN_SWEEP_IN_FLIGHT`]): if a prior sweep is
+/// still running, this returns an already-`Unavailable` handle without spawning
+/// another thread, so a stalled Event Log service can never accumulate threads.
 #[cfg(target_os = "windows")]
 pub fn spawn_teardown_log_sweep() -> TeardownSweepHandle {
+    use std::sync::atomic::Ordering;
+    if TEARDOWN_SWEEP_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return TeardownSweepHandle::unavailable();
+    }
     let handle = TeardownSweepHandle::pending();
     let cell = handle.cell.clone();
     // Anchor the bracketing window on "now" ≈ the watcher exit instant.
@@ -147,6 +170,7 @@ pub fn spawn_teardown_log_sweep() -> TeardownSweepHandle {
     std::thread::spawn(move || {
         let reading = sweep_system_channel_for_teardown(exit_unix_ms);
         let _ = cell.set(reading);
+        TEARDOWN_SWEEP_IN_FLIGHT.store(false, Ordering::Release);
     });
     handle
 }
@@ -209,7 +233,19 @@ fn query_system_teardown_xml(
     };
 
     let channel = to_wide("System");
-    let query = to_wide("*[System[(EventID=1074 or EventID=13 or EventID=109)]]");
+    // Scope each EventID to its provider IN the query, not only in the parser:
+    // these ids are provider-relative, so a bare `EventID=13/109/1074` filter
+    // would also select unrelated providers that reuse them. Without the provider
+    // gate here, 16 such newer events could fill the reverse-scan cap and push a
+    // contemporaneous teardown record out of the result set, making the sweep
+    // report `None` and letting the false alert survive. The pure parser still
+    // re-checks provider + id as an independent content-safe gate.
+    let query = to_wide(
+        "*[System[\
+         (Provider[@Name='User32'] and EventID=1074) or \
+         (Provider[@Name='Microsoft-Windows-Kernel-General'] and EventID=13) or \
+         (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=109)]]",
+    );
     let deadline = Instant::now() + budget;
     let mut out: Vec<String> = Vec::new();
 
