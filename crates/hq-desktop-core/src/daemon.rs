@@ -96,9 +96,9 @@ pub fn resolve_hq_folder_path() -> Result<String, String> {
 /// (`resolveEventSync`, exact-email allowlist + `HQ_SYNC_EVENT_SYNC` override);
 /// no new menubar flag is involved. Adaptive polling stays as the correctness
 /// backstop.)
-/// Conflict policy is `keep` (skip-and-surface) — local
-/// edits win and the conflict store routes them through the existing modal so
-/// auto-pull never clobbers an in-progress resolution.
+/// Conflict policy is `keep` (cloud-wins with a local sidecar) — the cloud body
+/// takes the working path while the displaced local edit stays recoverable in
+/// the conflict store for the existing resolution modal.
 
 /// Pure decision: should the watch runner get `--event-push`?
 ///
@@ -905,9 +905,10 @@ mod tests {
     //   --watch — keep the runner alive after the first pass; hq-cloud owns
     //             the adaptive correctness-poll cadence
     //
-    // Conflict policy stays `keep` (skip-and-surface) — local edits win and
-    // the conflict store routes them through the existing modal. Direction
-    // stays `both`. Companies stays fanned out (`--companies`).
+    // Conflict policy stays `keep` (cloud-wins with a local sidecar) — cloud
+    // takes the working path and the displaced local edit remains recoverable
+    // through the existing modal. Direction stays `both`. Companies stays
+    // fanned out (`--companies`).
 
     #[test]
     fn test_build_watch_runner_args_uses_npx_runner() {
