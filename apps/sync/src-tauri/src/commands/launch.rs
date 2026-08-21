@@ -178,9 +178,13 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
 /// prefix (`\\?\C:\…`, `\\?\UNC\…`) that `Path::canonicalize` emits. Strip it
 /// before handing a path to `explorer.exe`. Filesystem callers keep the original.
 fn strip_windows_verbatim_for_explorer(path: &str) -> String {
-    const UNC: &str = r"\\?\UNC\";
+    const UNC: &[u8] = br"\\?\UNC\";
     const VERBATIM: &str = r"\\?\";
-    if path.len() >= UNC.len() && path[..UNC.len()].eq_ignore_ascii_case(UNC) {
+    let bytes = path.as_bytes();
+    // Prefixes are ASCII, so a byte match is a char-boundary match. Never
+    // slice the UTF-8 `str` at a fixed byte offset — `C:\ééé` is ≥ 8 bytes
+    // with index 8 inside a multibyte character.
+    if bytes.len() >= UNC.len() && bytes[..UNC.len()].eq_ignore_ascii_case(UNC) {
         format!(r"\\{}", &path[UNC.len()..])
     } else if let Some(rest) = path.strip_prefix(VERBATIM) {
         rest.to_string()
@@ -500,6 +504,11 @@ mod tests {
             strip_windows_verbatim_for_explorer("/Users/ada/hq"),
             "/Users/ada/hq"
         );
+        // `C:\ééé` is ≥ `\\?\UNC\` bytes with a non-boundary at index 8.
+        // The old `path[..UNC.len()]` str-slice panics here.
+        let multibyte = "C:\\ééé";
+        assert!(multibyte.len() >= br"\\?\UNC\".len());
+        assert_eq!(strip_windows_verbatim_for_explorer(multibyte), multibyte);
     }
 
     #[test]
