@@ -63,8 +63,9 @@ describe('hq-CLI updater removes an HQ-managed shadow instead of wedging (HQ-DES
   it('only the finalize path can detect a shadow, and on detection it repairs then re-decides', () => {
     expect(finalizeStart).toBeGreaterThan(-1);
     expect(repairStart).toBeGreaterThan(finalizeStart);
-    // Only finalize supplies real roots (so no other decide path can misfire).
-    expect(finalizeSlice).toContain('paths::managed_toolchain_roots()');
+    // Only finalize supplies real roots (so no other decide path can misfire),
+    // resolved through the CHECKED discovery API.
+    expect(finalizeSlice).toContain('paths::managed_toolchain_roots_checked()');
     expect(finalizeSlice).toContain('.with_managed_roots(&managed_roots)');
     // On a shadow it returns into the repair path rather than applying the
     // pre-repair outcome (which deliberately persists nothing).
