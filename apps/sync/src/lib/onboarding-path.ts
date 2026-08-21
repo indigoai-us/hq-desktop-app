@@ -2,6 +2,7 @@ const WINDOWS_UNC_PREFIX = '\\\\?\\UNC\\';
 const WINDOWS_VERBATIM_PREFIX = '\\\\?\\';
 const WINDOWS_LEGACY_MAX_LEN = 260;
 const WINDOWS_RESERVED_STEM = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+const WINDOWS_DRIVE = /^[A-Za-z]:$/;
 
 function trimTrailingSeparators(path: string): string {
   if (/^[A-Za-z]:[\\/]?$/.test(path)) return path.replace(/[\\/]$/, '\\');
@@ -17,10 +18,12 @@ function windowsComponentStem(component: string): string {
 
 /** Same safety gate as dunce::simplified: only drop `\\?\` when legacy Win32 can name the path. */
 function canSimplifyWin32(legacy: string): boolean {
-  if (legacy.length > WINDOWS_LEGACY_MAX_LEN) return false;
+  // MAX_PATH is 260 including the terminating NUL, so 259 usable code units.
+  if (legacy.length >= WINDOWS_LEGACY_MAX_LEN) return false;
   for (const part of legacy.split(/[\\/]/)) {
     if (!part) continue;
-    if (part === '.' || part === '..') return false;
+    if (WINDOWS_DRIVE.test(part)) continue;
+    if (part === '.' || part === '..' || part.endsWith('.') || part.endsWith(' ')) return false;
     if (WINDOWS_RESERVED_STEM.test(windowsComponentStem(part))) return false;
   }
   return true;

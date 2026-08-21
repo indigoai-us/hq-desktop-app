@@ -53,11 +53,22 @@ describe('toUserFacingPath', () => {
   });
 
   it('keeps the verbatim prefix when legacy Win32 cannot name the path', () => {
-    expect(toUserFacingPath(String.raw`\\?\C:\CON`)).toBe(String.raw`\\?\C:\CON`);
+    expect(toUserFacingPath(String.raw`\\?\C:\COM1`)).toBe(String.raw`\\?\C:\COM1`);
+    expect(toUserFacingPath(String.raw`\\?\C:\Users\person\CON.txt`)).toBe(
+      String.raw`\\?\C:\Users\person\CON.txt`,
+    );
     expect(toUserFacingPath(String.raw`\\?\C:\foo\..\bar`)).toBe(String.raw`\\?\C:\foo\..\bar`);
+    expect(toUserFacingPath(String.raw`\\?\C:\HQ.\repo`)).toBe(String.raw`\\?\C:\HQ.\repo`);
+    expect(toUserFacingPath(String.raw`\\?\C:\HQ \repo`)).toBe(String.raw`\\?\C:\HQ \repo`);
     const longLegacy = `C:\\${'a'.repeat(260)}`;
     const longVerbatim = `\\\\?\\${longLegacy}`;
     expect(toUserFacingPath(longVerbatim)).toBe(longVerbatim);
+    const exactLegacy = `C:\\${'a'.repeat(257)}`;
+    expect(exactLegacy.length).toBe(260);
+    expect(toUserFacingPath(`\\\\?\\${exactLegacy}`)).toBe(`\\\\?\\${exactLegacy}`);
+    const underMax = `C:\\${'a'.repeat(256)}`;
+    expect(underMax.length).toBe(259);
+    expect(toUserFacingPath(`\\\\?\\${underMax}`)).toBe(underMax);
   });
 });
 

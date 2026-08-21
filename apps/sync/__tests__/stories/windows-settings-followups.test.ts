@@ -27,6 +27,9 @@ describe('Windows settings follow-up regressions', () => {
     expect(formatHqFolderMeta(String.raw`\\?\UNC\server\share\HQ`)).toBe(
       String.raw`\\server\share\HQ`,
     );
+    expect(formatHqFolderMeta(String.raw`\\?\C:\Users\person\COM1`)).toBe(
+      String.raw`\\?\C:\Users\person\COM1`,
+    );
   });
 
   it('keeps action groups and platform chips horizontal', () => {
