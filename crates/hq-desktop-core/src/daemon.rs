@@ -98,7 +98,8 @@ pub fn resolve_hq_folder_path() -> Result<String, String> {
 /// backstop.)
 /// Conflict policy is `keep` (cloud-wins with a local sidecar) — the cloud body
 /// takes the working path while the displaced local edit stays recoverable in
-/// the conflict store for the existing resolution modal.
+/// the conflict store. Live sync reports an aggregate conflict banner; use its
+/// `/resolve-conflicts` recovery path to inspect and resolve preserved copies.
 
 /// Pure decision: should the watch runner get `--event-push`?
 ///
