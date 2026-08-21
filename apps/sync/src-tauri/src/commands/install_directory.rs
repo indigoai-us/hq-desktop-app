@@ -143,9 +143,11 @@ pub fn resolve_hq_path() -> Result<String, String> {
         std::fs::create_dir_all(&hq_path)
             .map_err(|e| format!("Failed to create {}: {e}", hq_path.display()))?;
     }
-    // Canonicalize to get an absolute, symlink-resolved path.
-    // Fall back to the unresolved path if canonicalize fails (e.g. race).
-    let canonical = hq_path.canonicalize().unwrap_or_else(|_| hq_path.clone());
+    // dunce::canonicalize = std realpath then simplify Windows `\\?\C:\…` to
+    // `C:\…` when safe (legacy Explorer / Claude / cmd). Falls back to a
+    // no-I/O simplify of the unresolved path if realpath races.
+    let canonical =
+        dunce::canonicalize(&hq_path).unwrap_or_else(|_| dunce::simplified(&hq_path).to_path_buf());
     Ok(canonical.to_string_lossy().into_owned())
 }
 
@@ -160,12 +162,15 @@ pub fn set_hq_install_path(path: String) -> Result<(), String> {
         return Err("Install path cannot be empty".to_string());
     }
     let expanded = expand_tilde(trimmed);
+    // Never persist a Win32 verbatim prefix. Older installs may still have
+    // `\\?\` in hqPath; resolve_hq_path also simplifies on read.
+    let stored = dunce::simplified(&expanded);
     let menubar_path = crate::util::paths::menubar_json_path()?;
     hq_desktop_core::first_run::merge_menubar_flags(
         &menubar_path,
         &[(
             "hqPath",
-            serde_json::Value::String(expanded.to_string_lossy().into_owned()),
+            serde_json::Value::String(stored.to_string_lossy().into_owned()),
         )],
     )
 }
@@ -273,6 +278,16 @@ mod tests {
         let r = detect_hq(dir.path().to_string_lossy().into_owned());
         assert!(r.exists);
         assert!(r.is_hq);
+    }
+
+    #[test]
+    fn resolve_and_persist_use_dunce_not_std_canonicalize() {
+        let src = include_str!("install_directory.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production source");
+        assert!(production.contains("dunce::canonicalize(&hq_path)"));
+        assert!(production.contains("dunce::simplified(&expanded)"));
+        assert!(!production.contains("std::fs::canonicalize"));
+        assert!(!production.contains("hq_path.canonicalize"));
     }
 
     #[test]

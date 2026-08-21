@@ -11,6 +11,15 @@ const titleBar = read('src/desktop-alt/v4/V4TitleBar.svelte');
 const paths = read('../../crates/hq-desktop-core/src/paths.rs');
 
 describe('Windows settings follow-up regressions', () => {
+  it('canonicalizes the HQ folder with dunce so ingest never emits \\\\?\\', () => {
+    const installDirectory = read('src-tauri/src/commands/install_directory.rs');
+    const production = installDirectory.split('#[cfg(test)]')[0] ?? '';
+    expect(production).toContain('dunce::canonicalize(&hq_path)');
+    expect(production).toContain('dunce::simplified(&expanded)');
+    expect(production).not.toContain('std::fs::canonicalize');
+    expect(production).not.toContain('hq_path.canonicalize');
+  });
+
   it('renders Windows verbatim paths as normal user-facing paths', () => {
     expect(formatHqFolderMeta(String.raw`\\?\C:\Users\person\lr-hq`)).toBe(
       String.raw`C:\Users\person\lr-hq`,
