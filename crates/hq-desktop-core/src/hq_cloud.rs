@@ -377,7 +377,12 @@
 /// an install still pinned at `~6.15.14` keeps serving its cached pre-6.15.18
 /// resolution — so the floor MUST move in the same change that enables the
 /// throttle, not merely alongside it.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.18";
+/// 6.15.24 raises the state-store WAL frame ceiling from 64 MiB to 256 MiB.
+/// A large personal vault's first stat-fast-path restamp can encode roughly
+/// 87 MiB in one journal delta; an older runner rejects that write every pass
+/// and never converges. Moving the spec also gives npx a new cache key, so an
+/// existing desktop cannot keep serving its cached pre-fix resolution.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.24";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -444,7 +449,15 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.18");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.24");
+    }
+
+    /// The first stat-fast-path restamp of a large personal vault can exceed
+    /// the old 64 MiB WAL frame ceiling. The desktop must not resolve a runner
+    /// that permanently rejects that journal delta on every pass.
+    #[test]
+    fn version_floor_accepts_large_personal_vault_journal_frames() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 24));
     }
 
     /// The CPU throttle multiplies wall time, and before hq-cloud 6.15.18
