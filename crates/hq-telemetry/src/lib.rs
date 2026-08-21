@@ -329,6 +329,79 @@ fn is_unmatched_stderr_shape_rollup(value: &str) -> bool {
         })
 }
 
+// Closed vocabularies for the four runner-error rollup axes, mirrored from the
+// `hq_desktop_core::runner_error_shape` producers exactly as
+// `is_unmatched_stderr_shape_rollup` mirrors its shape set. Kept local so the
+// egress guard stays independent of the producer crate; a
+// `#[cfg(test)]` drift check drives every producer variant through these lists
+// so a producer that adds a token without updating the mirror fails CI.
+const RUNNER_ERROR_HTTP_TOKENS: &[&str] = &[
+    "http_400", "http_401", "http_403", "http_404", "http_409", "http_412", "http_429", "http_4xx",
+    "http_500", "http_502", "http_503", "http_504", "http_5xx", "http_other",
+];
+const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
+    "entity_not_found",
+    "entity_permission",
+    "entity_resolution",
+    "operation_locked",
+    "operation_lock_unwritable",
+    "scope_shrink_blocked",
+    "scope_shrink_large_prune",
+    "delta_gap",
+    "multipart_source_changed",
+    "multipart_abort",
+    "realtime_conflict",
+    "unreachable_push_paths",
+    "push_event_decode",
+    "local_snapshot_changed",
+    "rescue_path_changed",
+    "vault_identity",
+    "access_denied",
+    "no_such_key",
+    "no_such_bucket",
+    "slow_down",
+    "internal_error",
+    "request_timeout",
+    "expired_identity",
+    "invalid_identity",
+    "unknown_error",
+    "unknown",
+];
+const RUNNER_ERROR_SHAPE_TOKENS: &[&str] = &[
+    "containment_escape",
+    "dangling_symlink_parent",
+    "conflict_probe_failed",
+    "conflict_index_write_failed",
+    "tombstone_head_verify_failed",
+    "tombstone_unlink_failed",
+    "content_length_mismatch",
+    "presigned_get_failed",
+    "presigned_head_failed",
+    "presign_no_row",
+    "unknown",
+];
+const RUNNER_ERROR_PATH_ROOT_TOKENS: &[&str] = &[
+    "knowledge", "projects", "repos", "sources", "signals", "data", "settings", "workers",
+    "registry", "clients", "core", "companies", "personal", "workspace", "other",
+];
+
+/// A `token:count(,token:count)*` rollup whose tokens are drawn from a closed
+/// `vocabulary` and whose counts are bare integers. Bounded like
+/// [`is_unmatched_stderr_shape_rollup`] so a malformed producer value — a raw
+/// path, hostname, or message fragment — can never pass egress: it either
+/// carries a non-vocabulary token or a non-digit count, or exceeds the cap.
+fn is_closed_vocab_count_rollup(value: &str, vocabulary: &[&str]) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.split(',').all(|entry| {
+            entry.split_once(':').is_some_and(|(token, count)| {
+                vocabulary.contains(&token)
+                    && !count.is_empty()
+                    && count.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+}
+
 /// Validate the fields whose producer consumes untrusted runner output. The
 /// producer already returns fixed vocabulary; this independent egress check
 /// ensures a future producer bug degrades to `[Filtered]` instead of shipping
@@ -414,6 +487,18 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "watcher_fault_exception_code" => Some(is_bounded_decimal(value, 10)),
         "watcher_fault_offset" => Some(is_bounded_decimal(value, 20)),
         "runner_unmatched_stderr_shapes" => Some(is_unmatched_stderr_shape_rollup(value)),
+        // The four runner-error rollup axes (HQ-DESKTOP-4T). The two new axes
+        // (`runner_error_http`, `runner_error_causes`) plus the pre-existing
+        // `runner_error_shapes` / `runner_error_path_roots`, which shipped without
+        // any egress guard — the same rollup family from the same seam, so closing
+        // that hole here costs four arms and stops a future producer bug in any of
+        // them from shipping a raw path or message fragment.
+        "runner_error_http" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_HTTP_TOKENS)),
+        "runner_error_causes" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_CAUSE_TOKENS)),
+        "runner_error_shapes" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SHAPE_TOKENS)),
+        "runner_error_path_roots" => {
+            Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_PATH_ROOT_TOKENS))
+        }
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
         // these independent egress checks degrade a producer bug to `[Filtered]`
@@ -1247,6 +1332,110 @@ mod tests {
                 "lookalike {key}={value:?} must fail closed"
             );
         }
+    }
+
+    #[test]
+    fn every_runner_error_rollup_token_survives_and_lookalikes_fail_closed() {
+        use hq_desktop_core::runner_error_shape::{
+            RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerPathRoot,
+        };
+        // Cross-crate anti-drift: enumerate each producer's OWN token set and
+        // assert every rendered `token:count` survives the independent egress
+        // check. A producer that adds a variant without updating the mirrored
+        // vocabulary here fails CI instead of silently blanking a live tag.
+        let http: Vec<&str> = RunnerErrorHttpStatus::ALL.iter().map(|s| s.as_str()).collect();
+        let causes: Vec<&str> = RunnerErrorCause::ALL.iter().map(|c| c.as_str()).collect();
+        let shapes: Vec<&str> = RunnerErrorShape::ALL.iter().map(|s| s.as_str()).collect();
+        let path_roots: Vec<&str> = RunnerPathRoot::ALL.iter().map(|p| p.as_str()).collect();
+        for (key, tokens) in [
+            ("runner_error_http", &http),
+            ("runner_error_causes", &causes),
+            ("runner_error_shapes", &shapes),
+            ("runner_error_path_roots", &path_roots),
+        ] {
+            for token in tokens.iter() {
+                assert_eq!(
+                    valid_runner_diagnostic_field(key, &format!("{token}:7")),
+                    Some(true),
+                    "producer token {token:?} must survive egress on {key}"
+                );
+            }
+        }
+
+        // Fail-closed: an off-vocabulary token, a non-numeric count, a raw path
+        // or message fragment, and an over-length value must all be rejected so a
+        // producer bug degrades to [Filtered] instead of shipping runner bytes.
+        let overlong = format!("http_403:{}", "9".repeat(200));
+        for (key, value) in [
+            ("runner_error_http", "http_403:12,not_a_status:1"),
+            ("runner_error_http", "http_403:x"),
+            ("runner_error_causes", "access_denied:1,/Users/Ada/secret:1"),
+            ("runner_error_shapes", "presigned_get_failed:9,knowledge/a.md:1"),
+            ("runner_error_path_roots", "companies:1,cognito-abc:1"),
+            ("runner_error_http", overlong.as_str()),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "lookalike {key}={value:?} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn runner_error_rollups_survive_before_send_and_malformed_is_filtered() {
+        use hq_desktop_core::runner_error_shape::{
+            RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerPathRoot,
+        };
+        // The plan's companion check: drive every producer variant through a
+        // rendered rollup tag and the real before_send, asserting each survives.
+        let per_key: [(&str, Vec<String>); 4] = [
+            (
+                "runner_error_http",
+                RunnerErrorHttpStatus::ALL.iter().map(|s| format!("{}:3", s.as_str())).collect(),
+            ),
+            (
+                "runner_error_causes",
+                RunnerErrorCause::ALL.iter().map(|c| format!("{}:3", c.as_str())).collect(),
+            ),
+            (
+                "runner_error_shapes",
+                RunnerErrorShape::ALL.iter().map(|s| format!("{}:3", s.as_str())).collect(),
+            ),
+            (
+                "runner_error_path_roots",
+                RunnerPathRoot::ALL.iter().map(|p| format!("{}:3", p.as_str())).collect(),
+            ),
+        ];
+        for (key, values) in &per_key {
+            for value in values {
+                let mut event = Event::default();
+                event.tags.insert(key.to_string(), value.clone());
+                let result = before_send(event).expect("event remains sendable");
+                assert_eq!(
+                    result.tags[*key], *value,
+                    "before_send filtered a valid producer token: {key}={value}"
+                );
+            }
+        }
+
+        // A realistic multi-token value on each axis survives together.
+        let mut event = Event::default();
+        event.tags.insert("runner_error_http".into(), "http_500:40,http_403:8".into());
+        event.tags.insert("runner_error_causes".into(), "unknown:160,access_denied:8".into());
+        event.tags.insert("runner_error_shapes".into(), "containment_escape:120,unknown:8".into());
+        event.tags.insert("runner_error_path_roots".into(), "knowledge:120,repos:40".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(survived.tags["runner_error_http"], "http_500:40,http_403:8");
+        assert_eq!(survived.tags["runner_error_causes"], "unknown:160,access_denied:8");
+        assert_eq!(survived.tags["runner_error_shapes"], "containment_escape:120,unknown:8");
+        assert_eq!(survived.tags["runner_error_path_roots"], "knowledge:120,repos:40");
+
+        // An off-vocabulary value degrades to [Filtered] instead of shipping.
+        let mut leaky = Event::default();
+        leaky.tags.insert("runner_error_causes".into(), "not_a_cause:1".into());
+        let filtered = before_send(leaky).expect("event remains sendable");
+        assert_eq!(filtered.tags["runner_error_causes"], "[Filtered]");
     }
 
     #[test]
