@@ -377,7 +377,16 @@
 /// an install still pinned at `~6.15.14` keeps serving its cached pre-6.15.18
 /// resolution — so the floor MUST move in the same change that enables the
 /// throttle, not merely alongside it.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.18";
+///
+/// `~6.15.18` -> `~6.15.25`: floor the pin at cloud-wins conflict
+/// convergence. Before 6.15.25, `--on-conflict keep` held a divergent local
+/// body in place and armed `localDiverges`, which also prevented the push leg
+/// from publishing it; the desktop's default strategy could therefore leave a
+/// file permanently stuck. 6.15.25 adopts the cloud body at the working path,
+/// preserves the local edit in a conflict sidecar, and journals the converged
+/// remote body in both directions. Raising the floor changes the npx cache key
+/// so existing installs cannot keep serving the old semantics.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.25";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -444,7 +453,15 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.18");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.25");
+    }
+
+    /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
+    /// the cloud-wins implementation, not merely accept it as a later patch
+    /// that an existing npx cache may never resolve.
+    #[test]
+    fn version_floor_delivers_cloud_wins_keep() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 25));
     }
 
     /// The CPU throttle multiplies wall time, and before hq-cloud 6.15.18
