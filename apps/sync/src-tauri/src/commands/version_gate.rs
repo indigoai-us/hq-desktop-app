@@ -49,7 +49,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// First check fires this long after launch. Smaller than the soft updater
 /// (10s) so the hard gate is the *first* update prompt the user can see.
-const INITIAL_DELAY: Duration = Duration::from_secs(5);
+// Staggered against the other 6-hour checkers (hq_cli_update, packages,
+// hq_core_state) so launch doesn't fire four GitHub round-trips at once —
+// on a slow link that burst visibly competes with the user's own traffic.
+const INITIAL_DELAY: Duration = Duration::from_secs(90);
 
 /// Re-check cadence. Matches `updater::setup_update_checker`.
 const CHECK_INTERVAL: Duration = Duration::from_secs(21_600);

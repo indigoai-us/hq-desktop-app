@@ -27,6 +27,8 @@ use std::process::Command;
 
 #[cfg(windows)]
 use crate::commands::install_deps::extended_search_path;
+#[cfg(windows)]
+use crate::util::win32_path::strip_windows_verbatim_prefix;
 
 #[cfg(windows)]
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
@@ -361,11 +363,12 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn reveal_folder(path: String) -> Result<(), String> {
     let target = validate_reveal_target(&path)?;
+    let explorer_target = strip_windows_verbatim_prefix(&target.to_string_lossy());
     // `explorer <dir>` opens the folder; explorer exits non-zero in some
     // shells even on success, so we don't gate on the status code — a spawn
     // failure is the only meaningful error here.
     Command::new("explorer")
-        .arg(&target)
+        .arg(&explorer_target)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch Explorer: {e}"))

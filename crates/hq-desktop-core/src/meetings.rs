@@ -83,6 +83,15 @@ struct ScheduledBotWire {
     bot_id: Option<String>,
     #[serde(default)]
     recall_bot_id: Option<String>,
+    // `title` and `meetingTitle` get the same two-field treatment as
+    // botId/recallBotId above: /v1/bot/list sends BOTH names for the same
+    // value (older clients read `title`, newer read `meetingTitle`), and a
+    // serde alias would reject that body as `duplicate field meetingTitle` —
+    // which silently killed the unattributed-meeting poll every cycle.
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    meeting_title: Option<String>,
     #[serde(flatten)]
     rest: ScheduledBotRest,
 }
@@ -99,8 +108,6 @@ struct ScheduledBotRest {
     calendar_series_id: Option<String>,
     #[serde(default)]
     recurring_meeting: bool,
-    #[serde(default, alias = "title")]
-    meeting_title: Option<String>,
     #[serde(default)]
     scheduled_start_time: Option<String>,
     #[serde(default)]
@@ -132,7 +139,7 @@ impl From<ScheduledBotWire> for ScheduledBot {
             calendar_event_id: r.calendar_event_id,
             calendar_series_id: r.calendar_series_id,
             recurring_meeting: r.recurring_meeting,
-            meeting_title: r.meeting_title,
+            meeting_title: w.meeting_title.filter(|s| !s.is_empty()).or(w.title),
             scheduled_start_time: r.scheduled_start_time,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -338,8 +345,44 @@ pub struct SelectedCalendarRef {
 
 #[derive(Deserialize)]
 pub struct BotsResponse {
-    #[serde(default)]
+    /// Row-tolerant: a single malformed bot must not poison the whole list
+    /// parse (the same class of failure as the `botId`/`recallBotId` shim).
+    #[serde(default, deserialize_with = "deserialize_bots_row_tolerant")]
     pub bots: Vec<ScheduledBot>,
+}
+
+fn deserialize_bots_row_tolerant<'de, D>(deserializer: D) -> Result<Vec<ScheduledBot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(scheduled_bots_from_values(values))
+}
+
+/// Deserialize each bot row independently so one bad object is skipped
+/// (and logged) instead of failing `GET /v1/bot/list` for every meeting.
+fn scheduled_bots_from_values(values: Vec<serde_json::Value>) -> Vec<ScheduledBot> {
+    let mut bots = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        let bot_id = value
+            .get("botId")
+            .or_else(|| value.get("recallBotId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        match serde_json::from_value::<ScheduledBot>(value) {
+            Ok(bot) => bots.push(bot),
+            Err(err) => {
+                crate::logfile::log(
+                    "meetings",
+                    &format!(
+                        "skipping malformed scheduled-bot row {index} (botId={bot_id}): {err}"
+                    ),
+                );
+            }
+        }
+    }
+    bots
 }
 
 /// `GET /membership/me` projection used by the modal.
@@ -689,6 +732,29 @@ mod tests {
         assert_eq!(bot.bot_id, "bot-canonical");
     }
 
+    /// Regression — `/v1/bot/list` sends a bot's title under BOTH `title` and
+    /// `meetingTitle` in the same object (it always has; older clients read
+    /// `title`). With `#[serde(alias = "title")]` mapping both keys to
+    /// `meeting_title`, serde rejected the payload as
+    /// `duplicate field meetingTitle` — the same failure class as the
+    /// botId/recallBotId case above, observed 2026-08-21 as a permanently
+    /// failing unattributed poll ("Could not refresh meeting bot status").
+    /// Both keys present must parse, preferring the canonical `meetingTitle`.
+    #[test]
+    fn scheduled_bot_tolerates_both_title_and_meeting_title() {
+        let json = r#"{
+            "botId": "bot-title",
+            "status": "scheduled",
+            "meetingUrl": "https://us06web.zoom.us/j/85906",
+            "platform": "zoom",
+            "title": "Legacy title",
+            "meetingTitle": "Canonical title"
+        }"#;
+        let bot: ScheduledBot =
+            serde_json::from_str(json).expect("both title and meetingTitle must parse");
+        assert_eq!(bot.meeting_title.as_deref(), Some("Canonical title"));
+    }
+
     /// The real failing shape: a `GET /v1/bot/list` body whose bot carries both
     /// id keys must deserialize into `BotsResponse`, not blow up the whole list.
     #[test]
@@ -706,6 +772,49 @@ mod tests {
             serde_json::from_str(json).expect("bot list with duplicate id keys must parse");
         assert_eq!(parsed.bots.len(), 1);
         assert_eq!(parsed.bots[0].bot_id, "bot-1");
+    }
+
+    /// Residual of the "Could not refresh meeting bot status" wedge: hq-pro
+    /// can emit a bot row missing `meetingUrl` (or `platform`/`status`). The
+    /// previous strict `ScheduledBotRest` parse failed the WHOLE list. One
+    /// malformed row must be skipped so the other rows still land.
+    #[test]
+    fn bots_response_skips_malformed_row_missing_meeting_url() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        let json = r#"{
+            "bots": [
+                {
+                    "botId": "bot-good",
+                    "status": "scheduled",
+                    "meetingUrl": "https://meet.google.com/abc",
+                    "platform": "google_meet"
+                },
+                {
+                    "botId": "bot-bad",
+                    "status": "scheduled",
+                    "platform": "zoom"
+                },
+                {
+                    "botId": "bot-also-good",
+                    "status": "recording",
+                    "meetingUrl": "https://zoom.us/j/1",
+                    "platform": "zoom"
+                }
+            ]
+        }"#;
+        let parsed: BotsResponse =
+            serde_json::from_str(json).expect("bot list with one malformed row must still parse");
+        assert_eq!(parsed.bots.len(), 2);
+        assert_eq!(parsed.bots[0].bot_id, "bot-good");
+        assert_eq!(parsed.bots[1].bot_id, "bot-also-good");
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            log.contains("skipping malformed scheduled-bot row 1"),
+            "expected skip log, got: {log}"
+        );
+        assert!(log.contains("botId=bot-bad"), "expected bot id in skip log");
     }
 
     /// The cancel response shares the same `recallBotId` alias, so it must also

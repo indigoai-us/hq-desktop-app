@@ -198,9 +198,22 @@ pub async fn first_push_company(
         // kill it. Same posture as run_cli_provision.
         .kill_on_drop(true);
 
+    // Own process group so the machine-wide CPU governor can duty-cycle this
+    // child (and anything it spawns) without ever signalling the app's own
+    // group — same posture as run_process_impl_inner.
+    #[cfg(unix)]
+    cmd.process_group(0);
+
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn `hq sync push` ({}): {e}", invocation.label()))?;
+
+    // Holds the first-push subprocess under the same machine-wide CPU ceiling
+    // as the steady-state sync runner. Dropping the guard always resumes the
+    // group, so no exit path can strand a stopped child.
+    let _cpu_throttle = child
+        .id()
+        .map(|pid| hq_desktop_core::cpu_throttle::CpuThrottle::attach(pid as i32));
 
     // Step 4: Pipe payload JSON to the child's stdin, then close stdin so
     // the CLI's `for await (chunk of process.stdin)` loop terminates and

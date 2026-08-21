@@ -14,7 +14,11 @@
     escapeForLaunch,
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
-  import { friendlyPath, homeDirFromDefaultHqPath } from '../../lib/onboarding-path';
+  import {
+    friendlyPath,
+    homeDirFromDefaultHqPath,
+    toUserFacingPath,
+  } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
     NO_AI_TOOLS,
@@ -245,7 +249,10 @@
   const readyCaution = $derived(
     launchEscape ?? (needsAttention ? SETUP_NEEDS_PASS : COMPLETE_SETUP),
   );
-  const manualCommand = $derived(readyCommandFor(installPath, aiTools));
+  const userFacingInstallPath = $derived(
+    installPath ? toUserFacingPath(installPath) : null,
+  );
+  const manualCommand = $derived(readyCommandFor(userFacingInstallPath, aiTools));
   const launchOptions = $derived(availableLaunches(aiTools));
   const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
@@ -1010,7 +1017,11 @@
   }
 
   async function handleCopyPath() {
-    await runCopyAction('path', installPath ?? '~/hq', (value) => (pathCopied = value));
+    await runCopyAction(
+      'path',
+      userFacingInstallPath ?? '~/hq',
+      (value) => (pathCopied = value),
+    );
   }
 
   async function handleCopyImportPrompt() {

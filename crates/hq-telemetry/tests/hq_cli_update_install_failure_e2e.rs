@@ -204,6 +204,23 @@ const DISK_FULL_STDERR: &str = "npm error code ENOSPC\n\
     npm error errno -28\n\
     npm error ENOSPC: no space left on device, write";
 
+/// Reproduce HQ-DESKTOP-56: `npm i -g @indigoai-us/hq-cli` under a PATH Node
+/// 6.17.1. Modern npm cannot parse under Node 6, so it dies with a bare Node
+/// `SyntaxError` and NONE of npm's structured markers — so `npm_error_code=none`,
+/// `npm_syscall=unknown`, `npm_path_shape=none`, `npm_lifecycle_failed=false`,
+/// the exact `none:unknown:none` shape the reported issue grouped under at Error.
+const NODE_SIX_STDERR: &str = "/usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/index.js:1\n\
+    export { Arborist }\n\
+    ^^^^^^\n\
+    SyntaxError: Unexpected token export\n\
+        at createScript (vm.js:56:10)\n\
+        at Object.runInThisContext (vm.js:97:10)\n\
+        at Module._compile (module.js:549:28)\n\
+        at Object.Module._extensions..js (module.js:586:10)\n\
+        at Module.load (module.js:494:32)\n\
+        at tryModuleLoad (module.js:453:12)\n\
+        at Function.Module._load (module.js:445:3)";
+
 fn single_event(events: Vec<sentry::protocol::Event<'static>>) -> sentry::protocol::Event<'static> {
     assert_eq!(events.len(), 1, "expected exactly one capture: {events:?}");
     events.into_iter().next().expect("captured event")
@@ -991,6 +1008,120 @@ fn malformed_probe_values_are_rejected_to_unknown_before_tagging() {
         assert_eq!(tag(&event, key), Some(value), "tag {key}");
     }
     assert_path_safe(&event, &["/Users/", "alice", "rm -rf", "nightly"]);
+}
+
+/// HQ-DESKTOP-56 reconstructed end to end through the real `before_send`
+/// pipeline: the Node-6 markerless install, probed as Node 6.17.1 (ABI 48) on the
+/// user's own PATH. It must now group as `unsupported-node:6` at WARNING —
+/// distinct from the genuinely-unknown `none:unknown:none` bucket it used to page
+/// under at Error — with the runtime provenance retained and nothing path-unsafe.
+#[test]
+fn unsupported_node_capture_groups_by_major_at_warning_with_retained_provenance() {
+    let env = InstallEnvironment {
+        node_version: Some("v6.17.1".to_string()),
+        node_abi: Some("48".to_string()),
+        npm_version: None,
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            NODE_SIX_STDERR,
+            Some("/usr/local"),
+            false,
+            &env,
+        )
+    }));
+
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (unsupported-node:6)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unsupported-node",
+            "unsupported-node:6"
+        ]
+    );
+    for (key, value) in [
+        ("install_failure_kind", "unsupported-node"),
+        ("node_version", "6.17.1"),
+        ("node_abi", "48"),
+        ("npm_version", "unknown"),
+        ("npm_toolchain_source", "user-path"),
+        ("npm_managed_toolchain_retry", "false"),
+        ("npm_error_code", "none"),
+        ("npm_syscall", "unknown"),
+        ("npm_path_shape", "none"),
+        ("npm_lifecycle_failed", "false"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    assert_eq!(
+        tag(&event, "npm_stderr_len"),
+        Some(NODE_SIX_STDERR.len().to_string().as_str())
+    );
+    assert!(
+        !event.extra.contains_key("npm_stderr"),
+        "raw npm/Node stderr must never reach Sentry"
+    );
+    assert_path_safe(
+        &event,
+        &[
+            "/usr/local",
+            "SyntaxError",
+            "Arborist",
+            "arborist",
+            "vm.js",
+            "node_modules",
+        ],
+    );
+}
+
+/// The reclassification is strictly gated on an OLD Node: the SAME markerless
+/// stderr, but probed under HQ's managed Node 22 (ABI 127) during a
+/// managed-toolchain retry, is NOT unsupported-node — 22 is above the floor — so
+/// it stays the generic `Unexpected` capture at Error, carrying managed
+/// provenance. Proves a managed run can never be mislabeled unsupported-node and
+/// that a failed managed retry is still reported, never silently dropped.
+#[test]
+fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports() {
+    let env = InstallEnvironment {
+        node_version: Some("v22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::Managed,
+        managed_toolchain_retry: true,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            NODE_SIX_STDERR,
+            Some("/usr/local"),
+            false,
+            &env,
+        )
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (none:unknown:none)")
+    );
+    for (key, value) in [
+        ("node_version", "22.17.0"),
+        ("node_abi", "127"),
+        ("npm_toolchain_source", "managed"),
+        ("npm_managed_toolchain_retry", "true"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    assert_path_safe(&event, &["/usr/local", "SyntaxError", "Arborist", "vm.js"]);
 }
 
 /// HQ-DESKTOP-4S, node-llama-cpp's cmake-js build failing because the compiler

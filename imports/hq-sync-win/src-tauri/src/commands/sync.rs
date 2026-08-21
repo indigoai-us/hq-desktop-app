@@ -207,11 +207,11 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// events, so the Recent Changes activity log can attribute downloaded files
 /// to whoever uploaded them.
 ///
-/// Pinned to `~6.10.0` to match the macOS `hq-sync` app's
+/// Pinned to `~6.15.25` to match the macOS `hq-sync` app's
 /// `HQ_CLOUD_VERSION` exactly — both apps share this runner protocol
 /// (the `events.rs` discriminated union is identical between the two
 /// repos), so they must track the same engine line. Bumped here from
-/// `~5.38.0` (US-001) via `~5.47.0` → `~6.0.3` → `~6.10.0`.
+/// `~5.38.0` (US-001) via `~5.47.0` → `~6.0.3` → `~6.10.0` → `~6.15.25`.
 ///
 /// Why ≥6.1, not just the `toPosixKey` line: a `~MAJOR.MINOR.PATCH` range
 /// is locked to that minor, and `~6.0.3` froze the runner at exactly
@@ -223,7 +223,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// SHA-256 content hash (what the journal persists; see
 /// `util/journal.rs::JournalEntry`) against the remote S3 ETag (MD5 for
 /// single-part objects), two algorithms that can never compare equal.
-/// Matching macOS's `~6.10.0` picks up the reconcile fix. (Already-
+/// Matching macOS's `~6.15.25` picks up the reconcile fix. (Already-
 /// corrupted backslash S3 keys from the old 5.38.0 era are a separate
 /// server-side cleanup owned by the HQ team — the engine bump only fixes
 /// detection going forward.)
@@ -236,11 +236,11 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// (`companies\indigo\board.json` instead of `companies/indigo/board.json`),
 /// corrupting the remote layout and breaking cross-platform pulls. The
 /// old `~5.38.0` pin resolved to `5.38.x`, which predates the fix — every
-/// Windows runner sync on that pin wrote corrupt keys. `~6.10.0` carries
-/// both fixes and matches the macOS app.
+/// Windows runner sync on that pin wrote corrupt keys. `~6.15.25` carries
+/// both fixes, adds cloud-wins `keep` convergence, and matches the macOS app.
 /// (5.47.2 was the 5.x hotfix line; mainline — and the macOS app — moved
 /// to 6.x. See indigoai-us/hq-cloud#44.)
-pub const HQ_CLOUD_VERSION: &str = "~6.10.0";
+pub const HQ_CLOUD_VERSION: &str = "~6.15.25";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -417,7 +417,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@~6.10.0 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@~6.15.25 hq-sync-runner \
 ///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
@@ -436,10 +436,10 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
 ///   for back-compat; the menubar explicitly opts into `both` so a single
 ///   "Sync Now" click broadcasts local edits AND pulls remote updates.
-/// - `--on-conflict keep` — preserve local edits when a divergent file is
-///   detected, instead of aborting the company-wide sync. With `abort`, a
-///   single conflicting file halted every other file's progress. `keep`
-///   keeps the user's local copy as-is and continues syncing the rest.
+/// - `--on-conflict keep` — adopt the cloud body when a divergent file is
+///   detected, move the displaced local edit to a recoverable conflict
+///   sidecar, and continue the company-wide sync. With `abort`, one conflict
+///   would halt every other file's progress.
 /// - `--hq-root <path>` — local HQ directory
 ///
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
@@ -1299,12 +1299,12 @@ mod tests {
         assert!(args.args.contains(&"both".to_string()));
     }
 
-    /// Sync Now must use `--on-conflict keep` so a divergent local file
-    /// preserves the user's edits instead of aborting the company-wide sync.
-    /// Regressing to `abort` would cause a single conflicting file to halt
-    /// every other file's progress on the affected company.
+    /// Sync Now must use `--on-conflict keep` so a divergent file adopts the
+    /// cloud body while retaining the displaced local edit in a sidecar,
+    /// instead of aborting the company-wide sync. Regressing to `abort` would
+    /// cause one conflict to halt every other file's progress.
     #[test]
-    fn test_build_sync_spawn_args_on_conflict_is_keep() {
+    fn test_build_sync_spawn_args_on_conflict_is_cloud_wins_keep() {
         let args = build_sync_spawn_args("/tmp", true);
         let joined = args.args.join(" ");
         assert!(

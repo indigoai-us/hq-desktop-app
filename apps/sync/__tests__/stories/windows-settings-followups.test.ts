@@ -11,12 +11,25 @@ const titleBar = read('src/desktop-alt/v4/V4TitleBar.svelte');
 const paths = read('../../crates/hq-desktop-core/src/paths.rs');
 
 describe('Windows settings follow-up regressions', () => {
+  it('canonicalizes the HQ folder then strips \\\\?\\ only when legacy Win32 is safe', () => {
+    const installDirectory = read('src-tauri/src/commands/install_directory.rs');
+    const production = installDirectory.split('#[cfg(test)]')[0] ?? '';
+    expect(production).toContain('std::fs::canonicalize(&hq_path)');
+    expect(production).toContain('strip_windows_verbatim_prefix');
+    expect(production).not.toContain('dunce::canonicalize');
+    expect(production).not.toContain('dunce::simplified');
+    expect(production).not.toContain('hq_path.canonicalize');
+  });
+
   it('renders Windows verbatim paths as normal user-facing paths', () => {
     expect(formatHqFolderMeta(String.raw`\\?\C:\Users\person\lr-hq`)).toBe(
       String.raw`C:\Users\person\lr-hq`,
     );
     expect(formatHqFolderMeta(String.raw`\\?\UNC\server\share\HQ`)).toBe(
       String.raw`\\server\share\HQ`,
+    );
+    expect(formatHqFolderMeta(String.raw`\\?\C:\Users\person\COM1`)).toBe(
+      String.raw`\\?\C:\Users\person\COM1`,
     );
   });
 

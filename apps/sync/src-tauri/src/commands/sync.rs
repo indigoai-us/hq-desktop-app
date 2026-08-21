@@ -347,6 +347,16 @@ fn runner_exit_telemetry_context(
     if let Some(path_roots) = totals.runner_error_path_roots.tag_value() {
         tags.push(("runner_error_path_roots", path_roots));
     }
+    // HTTP status and error identity — the two facts the OTHER/other/unknown
+    // collapse discarded. Read from the SAME RunTotals source the watcher route
+    // reads; absent (no tag) when nothing parsed, so absence never renders as
+    // evidence.
+    if let Some(http) = totals.runner_error_http.tag_value() {
+        tags.push(("runner_error_http", http));
+    }
+    if let Some(causes) = totals.runner_error_causes.tag_value() {
+        tags.push(("runner_error_causes", causes));
+    }
     // Runner provenance: npx resolves `~6.14.x` at spawn, so the desktop release
     // tag alone cannot say which runner emitted the errors. Mirrors the watcher
     // route's watcher_hq_cloud_version/package.
@@ -977,10 +987,10 @@ fn apply_skip_companies_env(env: &mut HashMap<String, String>, scope: &SyncRunSc
 ///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
 ///   for back-compat; the menubar explicitly opts into `both` so a single
 ///   "Sync Now" click broadcasts local edits AND pulls remote updates.
-/// - `--on-conflict keep` — preserve local edits when a divergent file is
-///   detected, instead of aborting the company-wide sync. With `abort`, a
-///   single conflicting file halted every other file's progress. `keep`
-///   keeps the user's local copy as-is and continues syncing the rest.
+/// - `--on-conflict keep` — adopt the cloud body when a divergent file is
+///   detected, move the displaced local edit to a recoverable conflict
+///   sidecar, and continue the company-wide sync. With `abort`, one conflict
+///   would halt every other file's progress.
 /// - `--hq-root <path>` — local HQ directory
 ///
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
@@ -1006,6 +1016,11 @@ pub fn build_sync_spawn_args(
     // Per-company Off toggles persist in menubar.json; honor them on All-scope
     // fanout so Sync Now does not upload/download paused companies.
     apply_skip_companies_env(&mut env, scope);
+    // Bandwidth governor: tell the runner what share of the link it may use.
+    hq_desktop_core::bandwidth::apply_bandwidth_env(
+        &mut env,
+        hq_desktop_core::bandwidth::prefs_bandwidth_percent(),
+    );
 
     let mut args = vec![
         "-y".to_string(),
@@ -1341,8 +1356,11 @@ pub(crate) fn handle_runner_stderr_line<R: tauri::Runtime>(
 // capture policy).
 
 /// Node major-version floor the sync runner requires — its deps use APIs added
-/// in Node 20 and it crashes at startup on anything older.
-const MIN_NODE_MAJOR: u32 = 20;
+/// in Node 20 and it crashes at startup on anything older. Sourced from
+/// hq-desktop-core's published minimum (which the hq-CLI's own `engines.node`
+/// also tracks) so the Sync-lane preflight and the CLI-updater's unsupported-Node
+/// classifier can never drift apart.
+const MIN_NODE_MAJOR: u32 = hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR;
 
 /// Minimum gap between managed-Node repair attempts. A machine that cannot
 /// install (offline, locked down, out of disk) must not re-download the
@@ -2906,12 +2924,12 @@ mod tests {
         );
     }
 
-    /// Sync Now must use `--on-conflict keep` so a divergent local file
-    /// preserves the user's edits instead of aborting the company-wide sync.
-    /// Regressing to `abort` would cause a single conflicting file to halt
-    /// every other file's progress on the affected company.
+    /// Sync Now must use `--on-conflict keep` so a divergent file adopts the
+    /// cloud body while retaining the displaced local edit in a sidecar,
+    /// instead of aborting the company-wide sync. Regressing to `abort` would
+    /// cause one conflict to halt every other file's progress.
     #[test]
-    fn test_build_sync_spawn_args_on_conflict_is_keep() {
+    fn test_build_sync_spawn_args_on_conflict_is_cloud_wins_keep() {
         let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
@@ -3547,7 +3565,10 @@ mod tests {
                     "type": "error",
                     "company": "acme",
                     "path": "(company)",
-                    "message": "Entity cmp_SECRET NOT FOUND",
+                    // The company-scope family: a describeError rendering carrying
+                    // the http= status and AWS name the desktop used to discard,
+                    // plus a secret-looking host= that must never surface.
+                    "message": "AccessDenied http=403 host=hq-vault-cmp_SECRET.s3.us-east-1.amazonaws.com access is denied",
                 })
                 .to_string(),
             );
@@ -3609,6 +3630,11 @@ mod tests {
             event.tags["runner_error_path_roots"],
             "knowledge:120,repos:40"
         );
+        // The two additive axes: the HTTP status (from the presigned `: 500` tail
+        // and the company-scope describeError `http=403`) and the error identity
+        // (the AWS name; the pull-leg prose has none, so it reads `unknown`).
+        assert_eq!(event.tags["runner_error_http"], "http_500:40,http_403:8");
+        assert_eq!(event.tags["runner_error_causes"], "unknown:160,access_denied:8");
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -3648,7 +3674,9 @@ mod tests {
             );
         }
 
-        // (3) No seeded path, filename, message fragment, or company leaks.
+        // (3) No seeded path, filename, message fragment, or company leaks. The
+        // new axes emit `access_denied`/`http_403`, never the raw `AccessDenied`
+        // name or the `host=` bytes.
         for forbidden in [
             "secret-a",
             "secret-b",
@@ -3656,7 +3684,9 @@ mod tests {
             "acme",
             "escaped the sync root",
             "presigned GET failed",
-            "Entity",
+            "AccessDenied",
+            "hq-vault",
+            "amazonaws",
             "knowledge/secret",
         ] {
             assert!(
@@ -4195,6 +4225,17 @@ mod tests {
             msg.contains("Node 18"),
             "message must name the current major: {msg}"
         );
+    }
+
+    /// HQ-DESKTOP-56 de-duplication: the Sync-lane floor is now SOURCED from
+    /// hq-desktop-core's published minimum rather than a second literal `20`, so
+    /// the CLI-updater's unsupported-Node classifier and this preflight can never
+    /// drift apart. The value is still 20, so the thresholds asserted above are
+    /// unchanged.
+    #[test]
+    fn node_floor_is_sourced_from_the_core_crate() {
+        assert_eq!(MIN_NODE_MAJOR, hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR);
+        assert_eq!(MIN_NODE_MAJOR, 20);
     }
 
     #[test]

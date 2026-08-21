@@ -278,6 +278,16 @@ export function botForEvent(
   });
 }
 
+/** Prefix for locally-seeded 409 recovery rows — never a real Recall bot id. */
+export const OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX = 'local-already-invited:';
+
+/**
+ * Wall-clock TTL for an optimistic "already invited" seed. If a real server
+ * row has not replaced it within this window, drop the seed so the agenda
+ * cannot stay on "Already invited — refreshing." forever.
+ */
+export const OPTIMISTIC_ALREADY_INVITED_TTL_MS = 2 * 60 * 1000;
+
 /**
  * Optimistic bot row seeded on HTTP 409 invite conflicts so the agenda flips
  * to "already invited" immediately while a background refresh reconciles the
@@ -288,7 +298,7 @@ export function optimisticAlreadyInvitedBot(
   meetingUrl: string,
 ): ScheduledBot {
   return {
-    botId: `local-already-invited:${event.id}`,
+    botId: `${OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX}${event.id}`,
     meetingUrl,
     platform: platformKeyFromUrl(meetingUrl),
     status: 'scheduled',
@@ -297,6 +307,10 @@ export function optimisticAlreadyInvitedBot(
     meetingTitle: event.summary ?? null,
     autoScheduled: false,
   };
+}
+
+export function isOptimisticAlreadyInvitedBot(bot: ScheduledBot): boolean {
+  return bot.botId.startsWith(OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX);
 }
 
 function platformKeyFromUrl(url: string): string {
