@@ -160,7 +160,10 @@ fn background_update_action(
 /// configuration so they exercise the real desktop integration. Without this
 /// compile-mode boundary, the background updater downloads the latest public
 /// release after launch, restarts the app, and silently discards the branch
-/// under test from the bundle.
+/// under test from the bundle. The automatic hard-version loop uses the same
+/// boundary: a debug build may intentionally exercise an older branch contract
+/// and must not replace itself or block that local test. Production and manual
+/// update checks retain their normal behavior.
 pub(crate) fn background_app_updates_enabled(debug_assertions: bool) -> bool {
     !debug_assertions
 }

@@ -199,8 +199,8 @@
   });
 
   const projectMembers = $derived([
-    ...companyProjectMembers,
     ...(signedInProjectPerson ? [signedInProjectPerson] : []),
+    ...companyProjectMembers,
   ]);
   const personDirectory = $derived(buildProjectPersonDirectory(projectMembers));
 

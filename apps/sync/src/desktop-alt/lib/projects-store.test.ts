@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from './projects-model';
-import { projectsStore, setProjectStatus } from './projects-store.svelte';
+import { boardPathFor, projectsStore, setProjectStatus } from './projects-store.svelte';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -33,6 +33,23 @@ describe('project status mutation identity', () => {
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
     projectsStore._reset();
+  });
+
+  it('writes Personal project status to the Personal board', async () => {
+    const personal = {
+      ...project('personal/projects/moved-project/prd.json'),
+      company: 'personal',
+    };
+
+    expect(boardPathFor(personal)).toBe('personal/board.json');
+    await setProjectStatus(personal, 'planned', 'active');
+
+    expect(invokeMock).toHaveBeenCalledWith('set_local_project_status', {
+      boardPath: 'personal/board.json',
+      projectId: 'duplicate-id',
+      prdPath: 'personal/projects/moved-project/prd.json',
+      status: 'active',
+    });
   });
 
   it('keeps same-id projects isolated by PRD path in IPC writes and optimistic state', async () => {

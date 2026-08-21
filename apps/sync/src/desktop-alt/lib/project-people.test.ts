@@ -45,10 +45,49 @@ describe('project people', () => {
     expect(members).toEqual([
       {
         personUid: 'prs_scott',
+        email: 'scott@mlstrategies.us',
+        displayName: 'Scott Thielmann',
+      },
+    ]);
+  });
+
+  it('keeps the signed-in UID stable when its company record hydrates later', () => {
+    const members = normalizeProjectMembers([
+      {
+        personUid: 'cognito_scott',
+        email: 'scott@mlstrategies.us',
+        displayName: 'Scott Thielmann',
+      },
+      {
+        personUid: 'prs_scott',
         email: 'SCOTT@MLSTRATEGIES.US',
         displayName: 'Scott Thielmann',
       },
     ]);
+
+    expect(resolveProjectPerson('Scott Thielmann', buildProjectPersonDirectory(members))).toEqual({
+      key: 'person:cognito_scott',
+      label: 'Scott Thielmann',
+    });
+  });
+
+  it('never renders an unresolved raw person UID', () => {
+    expect(resolveProjectPerson('prs_01ABC-123_test', buildProjectPersonDirectory([]))).toBeNull();
+  });
+
+  it('resolves a known raw person UID to the member label', () => {
+    const directory = buildProjectPersonDirectory([
+      {
+        personUid: 'prs_scott',
+        email: 'scott@mlstrategies.us',
+        displayName: 'Scott Thielmann',
+      },
+    ]);
+
+    expect(resolveProjectPerson('prs_scott', directory)).toEqual({
+      key: 'person:prs_scott',
+      label: 'Scott Thielmann',
+    });
   });
 
   it('keeps different members with the same display name distinct', () => {

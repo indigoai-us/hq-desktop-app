@@ -228,6 +228,8 @@ describe('DESKTOP-004: project portfolio Kanban', () => {
     expect(companyPage).toContain('onclick={() => void startNewProject()}');
     expect(companyPage).toContain('disabled={newProjectBusy}');
     expect(companyPage).toContain('aria-busy={newProjectBusy}');
+    expect(companyPage).toContain('personal/projects/<project>/prd.json');
+    expect(companyPage).toContain('update personal/board.json');
     expect(companyPage).toContain(
       '<CompanyProjectsPage slug={company.slug} companyUid={company.cloudUid} />',
     );

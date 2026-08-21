@@ -81,7 +81,7 @@ export function normalizeProjectMembers(response: unknown): ProjectPersonMember[
     }
 
     const previous = members[existingIndex];
-    const mergedEmail = email ?? previous.email;
+    const mergedEmail = previous.email ?? email;
     members[existingIndex] = {
       personUid: previous.personUid,
       email: mergedEmail,
@@ -168,9 +168,9 @@ export function resolveProjectPerson(
     directory.byRenderedLabel.get(alias) ??
     directory.byDisplayName.get(alias) ??
     null;
-  return member
-    ? { key: `person:${member.personUid}`, label: member.label }
-    : { key: `label:${alias}`, label: clean };
+  if (member) return { key: `person:${member.personUid}`, label: member.label };
+  if (/^prs_[a-z0-9_-]+$/i.test(clean)) return null;
+  return { key: `label:${alias}`, label: clean };
 }
 
 /** Replace known member aliases with their canonical human-facing label. */

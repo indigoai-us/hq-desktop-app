@@ -198,6 +198,16 @@ describe('local/cloud provenance adapter', () => {
         storiesComplete: 0,
       }).provenance?.origin,
     ).toBe('companies/indigo/board.json');
+
+    expect(
+      toProject({
+        id: 'personal-board-only',
+        title: 'Personal board only',
+        company: 'personal',
+        storyCount: 0,
+        storiesComplete: 0,
+      }).provenance?.origin,
+    ).toBe('personal/board.json');
   });
 
   it('uses the Git first-add author as creator-only fallback', () => {
