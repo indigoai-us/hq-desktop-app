@@ -51,6 +51,14 @@ describe('toUserFacingPath', () => {
     expect(toUserFacingPath(String.raw`C:\Users\Ada\hq`)).toBe(String.raw`C:\Users\Ada\hq`);
     expect(toUserFacingPath('  C:\\Users\\Ada\\hq  ')).toBe(String.raw`C:\Users\Ada\hq`);
   });
+
+  it('keeps the verbatim prefix when legacy Win32 cannot name the path', () => {
+    expect(toUserFacingPath(String.raw`\\?\C:\CON`)).toBe(String.raw`\\?\C:\CON`);
+    expect(toUserFacingPath(String.raw`\\?\C:\foo\..\bar`)).toBe(String.raw`\\?\C:\foo\..\bar`);
+    const longLegacy = `C:\\${'a'.repeat(260)}`;
+    const longVerbatim = `\\\\?\\${longLegacy}`;
+    expect(toUserFacingPath(longVerbatim)).toBe(longVerbatim);
+  });
 });
 
 describe('homeDirFromDefaultHqPath', () => {

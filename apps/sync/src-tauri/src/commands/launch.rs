@@ -175,22 +175,14 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
 }
 
 /// Explorer and other user-facing Windows shells reject the Win32 verbatim
-/// prefix (`\\?\C:\…`, `\\?\UNC\…`) that `Path::canonicalize` emits. Strip it
-/// before handing a path to `explorer.exe`. Filesystem callers keep the original.
+/// prefix (`\\?\C:\…`, `\\?\UNC\…`) that `Path::canonicalize` emits. Use
+/// `dunce::simplified` so we only drop the prefix when the path is representable
+/// in legacy Win32 form (same rule as ingest). Long / reserved-DOS paths keep
+/// `\\?\`. Off Windows this is a no-op.
 fn strip_windows_verbatim_for_explorer(path: &str) -> String {
-    const UNC: &[u8] = br"\\?\UNC\";
-    const VERBATIM: &str = r"\\?\";
-    let bytes = path.as_bytes();
-    // Prefixes are ASCII, so a byte match is a char-boundary match. Never
-    // slice the UTF-8 `str` at a fixed byte offset — `C:\ééé` is ≥ 8 bytes
-    // with index 8 inside a multibyte character.
-    if bytes.len() >= UNC.len() && bytes[..UNC.len()].eq_ignore_ascii_case(UNC) {
-        format!(r"\\{}", &path[UNC.len()..])
-    } else if let Some(rest) = path.strip_prefix(VERBATIM) {
-        rest.to_string()
-    } else {
-        path.to_string()
-    }
+    dunce::simplified(std::path::Path::new(path))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Open a new Terminal window at `path` and auto-run `claude`.
@@ -481,22 +473,6 @@ mod tests {
     #[test]
     fn strip_windows_verbatim_prefix_for_explorer() {
         assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\Users\person\hq"),
-            r"C:\Users\person\hq"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\HQ Setup"),
-            r"C:\HQ Setup"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\UNC\server\share\HQ"),
-            r"\\server\share\HQ"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\unc\server\share\HQ"),
-            r"\\server\share\HQ"
-        );
-        assert_eq!(
             strip_windows_verbatim_for_explorer(r"C:\Users\Ada\hq"),
             r"C:\Users\Ada\hq"
         );
@@ -504,11 +480,37 @@ mod tests {
             strip_windows_verbatim_for_explorer("/Users/ada/hq"),
             "/Users/ada/hq"
         );
-        // `C:\ééé` is ≥ `\\?\UNC\` bytes with a non-boundary at index 8.
-        // The old `path[..UNC.len()]` str-slice panics here.
         let multibyte = "C:\\ééé";
-        assert!(multibyte.len() >= br"\\?\UNC\".len());
         assert_eq!(strip_windows_verbatim_for_explorer(multibyte), multibyte);
+
+        // dunce::simplified only rewrites VerbatimDisk (`\\?\C:\…`). VerbatimUNC
+        // and reserved DOS names keep the prefix — matching ingest.
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                strip_windows_verbatim_for_explorer(r"\\?\C:\Users\person\hq"),
+                r"C:\Users\person\hq"
+            );
+            assert_eq!(
+                strip_windows_verbatim_for_explorer(r"\\?\C:\HQ Setup"),
+                r"C:\HQ Setup"
+            );
+            assert_eq!(
+                strip_windows_verbatim_for_explorer(r"\\?\UNC\server\share\HQ"),
+                r"\\?\UNC\server\share\HQ"
+            );
+            assert_eq!(
+                strip_windows_verbatim_for_explorer(r"\\?\C:\CON"),
+                r"\\?\C:\CON"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                strip_windows_verbatim_for_explorer(r"\\?\C:\Users\person\hq"),
+                r"\\?\C:\Users\person\hq"
+            );
+        }
     }
 
     #[test]

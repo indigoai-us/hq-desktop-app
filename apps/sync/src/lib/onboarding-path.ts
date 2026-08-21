@@ -1,5 +1,7 @@
 const WINDOWS_UNC_PREFIX = '\\\\?\\UNC\\';
 const WINDOWS_VERBATIM_PREFIX = '\\\\?\\';
+const WINDOWS_LEGACY_MAX_LEN = 260;
+const WINDOWS_RESERVED_STEM = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
 
 function trimTrailingSeparators(path: string): string {
   if (/^[A-Za-z]:[\\/]?$/.test(path)) return path.replace(/[\\/]$/, '\\');
@@ -7,18 +9,37 @@ function trimTrailingSeparators(path: string): string {
   return path.replace(/[\\/]+$/, '');
 }
 
+function windowsComponentStem(component: string): string {
+  const trimmed = component.replace(/[. ]+$/g, '');
+  const dot = trimmed.indexOf('.');
+  return (dot === -1 ? trimmed : trimmed.slice(0, dot)).toUpperCase();
+}
+
+/** Same safety gate as dunce::simplified: only drop `\\?\` when legacy Win32 can name the path. */
+function canSimplifyWin32(legacy: string): boolean {
+  if (legacy.length > WINDOWS_LEGACY_MAX_LEN) return false;
+  for (const part of legacy.split(/[\\/]/)) {
+    if (!part) continue;
+    if (part === '.' || part === '..') return false;
+    if (WINDOWS_RESERVED_STEM.test(windowsComponentStem(part))) return false;
+  }
+  return true;
+}
+
 /**
  * Strip Windows' internal verbatim prefix (`\\?\` / `\\?\UNC\`) so the path is
  * pasteable in Explorer, Claude Code Open Folder, and a terminal `cd`.
- * Filesystem callers that need the extended prefix should keep the original.
+ * Keep the prefix when dunce would (long paths, reserved DOS names).
  */
 export function toUserFacingPath(path: string): string {
   const trimmed = path.trim();
   if (trimmed.toUpperCase().startsWith(WINDOWS_UNC_PREFIX.toUpperCase())) {
-    return `\\\\${trimmed.slice(WINDOWS_UNC_PREFIX.length)}`;
+    const legacy = `\\\\${trimmed.slice(WINDOWS_UNC_PREFIX.length)}`;
+    return canSimplifyWin32(legacy) ? legacy : trimmed;
   }
   if (trimmed.startsWith(WINDOWS_VERBATIM_PREFIX)) {
-    return trimmed.slice(WINDOWS_VERBATIM_PREFIX.length);
+    const legacy = trimmed.slice(WINDOWS_VERBATIM_PREFIX.length);
+    return canSimplifyWin32(legacy) ? legacy : trimmed;
   }
   return trimmed;
 }
