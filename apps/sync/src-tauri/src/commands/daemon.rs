@@ -2076,6 +2076,20 @@ fn take_pending_watcher_fault_capture(id: u64) -> Option<DeferredWatcherFaultCap
     Some(pending.remove(index).1)
 }
 
+/// Clone a pending capture's read parameters WITHOUT removing it from the
+/// registry. The deferred worker peeks these to run its ~60s read while the
+/// payload stays registered, so a teardown flush during that read still finds
+/// and preserves the crash (HQ-DESKTOP-4X risk 1); the payload is claimed only
+/// at send time. `None` once a teardown flush has already drained it.
+fn peek_pending_watcher_fault_read(id: u64) -> Option<DeferredWatcherFaultRead> {
+    pending_watcher_fault_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|(pending_id, _)| *pending_id == id)
+        .map(|(_, payload)| payload.read.clone())
+}
+
 fn take_all_pending_watcher_fault_captures() -> Vec<DeferredWatcherFaultCapture> {
     pending_watcher_fault_captures()
         .lock()
@@ -2121,28 +2135,47 @@ pub fn flush_pending_watcher_fault_captures() -> usize {
 /// teardown flush claims the payload first.
 fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
     let id = register_pending_watcher_fault_capture(payload);
+    // Capture the hub on the scheduling thread — the one that added the watcher
+    // lifecycle + runner-stderr breadcrumbs — and bind it inside the worker so
+    // the deferred capture carries the same scope those breadcrumbs live on,
+    // matching the immediate watcher-exit path. A plain worker thread would
+    // otherwise get a fresh thread-local hub and drop them.
+    let hub = sentry::Hub::current();
     // A plain thread: the read is blocking and internally hard-bounded, so it
     // needs no async runtime and cannot outlive its own deadline.
     let _worker = std::thread::Builder::new()
         .name("wer-deferred-fault".into())
-        .spawn(move || resolve_deferred_watcher_fault_capture(id));
+        .spawn(move || {
+            sentry::Hub::run(hub, || resolve_deferred_watcher_fault_capture(id));
+        });
 }
 
 /// Resolve one deferral: claim the payload, run the deferred WER read, and send
 /// with the resolved provenance. Returns early if a teardown flush already
 /// claimed it, so a capture is sent exactly once.
 fn resolve_deferred_watcher_fault_capture(id: u64) {
-    let Some(payload) = take_pending_watcher_fault_capture(id) else {
+    // Peek the read parameters but leave the payload registered: the ~60s read
+    // must not remove it from the registry, or a teardown flush during the read
+    // would find an empty registry and the process could exit before this worker
+    // sends, silently losing the crash. The payload stays claimable throughout.
+    let Some(read) = peek_pending_watcher_fault_read(id) else {
         // A teardown flush already emitted it. Deliberate; never resolve twice.
         return;
     };
     let outcome = crate::commands::process::read_watcher_fault_deferred(
-        payload.read.sampled_pids.clone(),
-        payload.read.observed_exception_code,
-        payload.read.gen_start_ms,
-        payload.read.gen_end_ms,
-        payload.read.exit_at,
+        read.sampled_pids.clone(),
+        read.observed_exception_code,
+        read.gen_start_ms,
+        read.gen_end_ms,
+        read.exit_at,
     );
+    // Claim only now, at send time. If a teardown flush won the race during the
+    // read, the payload is already gone (emitted as `unavailable` — preserved,
+    // never lost) and this becomes a no-op, so the event sends exactly once with
+    // the best outcome available at claim time.
+    let Some(payload) = take_pending_watcher_fault_capture(id) else {
+        return;
+    };
     finalize_and_send_watcher_fault_capture(payload, outcome, WATCHER_FAULT_RESOLUTION_READ);
 }
 
@@ -5511,6 +5544,50 @@ mod tests {
         assert_eq!(
             event.extra["watcher_fault_deferral_resolution"],
             sentry::protocol::Value::String("teardown_flush".to_string())
+        );
+    }
+
+    #[test]
+    fn deferred_read_keeps_the_capture_flushable_until_send() {
+        // HQ-DESKTOP-4X risk 1: the deferred worker's ~60s read must leave the
+        // payload registered, or a teardown that lands during the read would find
+        // an empty registry and the process could exit before the worker sends —
+        // losing the very crash the teardown flush exists to preserve. Peeking the
+        // read params must NOT claim the payload; only a send-time claim does.
+        let read = DeferredWatcherFaultRead {
+            observed_exception_code: 0xC000_0409,
+            gen_start_ms: 0,
+            gen_end_ms: 10,
+            sampled_pids: vec![7100],
+            job_images: WatcherJobImageRollup::default(),
+            exit_at: Instant::now(),
+        };
+        let id = register_pending_watcher_fault_capture(DeferredWatcherFaultCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+            &[],
+            &[],
+            read,
+        ));
+        // The worker reads its params by peeking — the entry stays registered.
+        assert!(
+            peek_pending_watcher_fault_read(id).is_some(),
+            "peek returns the read params"
+        );
+        // Because it is still registered, a teardown flush that lands mid-read
+        // preserves the crash rather than losing it.
+        let captured = sentry::test::with_captured_events(|| {
+            assert_eq!(
+                flush_pending_watcher_fault_captures(),
+                1,
+                "still flushable while the deferred read is in flight"
+            );
+        });
+        assert_eq!(captured.len(), 1, "the crash is preserved, never lost to a mid-read teardown");
+        // The worker's send-time claim now finds nothing — exactly one send.
+        assert!(
+            take_pending_watcher_fault_capture(id).is_none(),
+            "the send-time claim is a no-op once a teardown flush has emitted it"
         );
     }
 

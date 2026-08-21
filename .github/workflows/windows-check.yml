@@ -154,7 +154,7 @@ jobs:
       - name: Windows watcher fault capture tests
         timeout-minutes: 15
         working-directory: apps/sync/src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc --bins -- windows_fault_exit_defers non_fault_exit_reports deferred_fault_capture_fields pending_fault_captures_flush --nocapture
+        run: cargo test --target x86_64-pc-windows-msvc --bins -- windows_fault_exit_defers non_fault_exit_reports deferred_fault_capture_fields pending_fault_captures_flush deferred_read_keeps --nocapture
 
       # HQ-DESKTOP-4X artifact E2E: run the REAL wevtapi reader against the REAL
       # Windows Application log (content-safe + bounded, panic-free) and reproduce
