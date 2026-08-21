@@ -504,9 +504,11 @@ impl RunnerErrorHttpStatus {
 /// so a substring such as `?ehttp=` inside a URL can never be read as the key.
 const HTTP_STATUS_KEY: &str = " http=";
 
-/// The exactly-three-ASCII-digit status at the start of `text`, in `100..=599`.
-/// Requires the run to be exactly three digits (a fourth digit means this was a
-/// longer number — e.g. a byte length — not a status), so `4041` never parses.
+/// The exactly-three-ASCII-digit status field at the start of `text`, in
+/// `100..=599`. The three digits must be a standalone field: the next byte, if
+/// any, must be a boundary (not an ASCII letter or digit), so a longer number
+/// like `4041` (a byte length) and a glued suffix like `403ms` or `500Internal`
+/// are both rejected rather than truncated to a status.
 fn take_exactly_three_digit_status(text: &str) -> Option<u16> {
     let bytes = text.as_bytes();
     if bytes.len() < 3 {
@@ -516,25 +518,57 @@ fn take_exactly_three_digit_status(text: &str) -> Option<u16> {
     if !(d0.is_ascii_digit() && d1.is_ascii_digit() && d2.is_ascii_digit()) {
         return None;
     }
-    if bytes.get(3).is_some_and(|byte| byte.is_ascii_digit()) {
+    // Require a field boundary after the third digit: end of input, or any byte
+    // that is neither a digit (a longer number) nor a letter (a glued suffix).
+    if bytes.get(3).is_some_and(|byte| byte.is_ascii_alphanumeric()) {
         return None;
     }
     let status = u16::from(d0 - b'0') * 100 + u16::from(d1 - b'0') * 10 + u16::from(d2 - b'0');
     (100..=599).contains(&status).then_some(status)
 }
 
-/// Grammar (a): the three digits after the `describeError` ` http=` key.
+/// True when `prefix` — the text preceding the ` http=` key — is a `describeError`
+/// header and nothing else: an optional leading bare error-name token followed by
+/// an optional `code=<val>` token. Those are the only tokens `describeError`
+/// emits before `http=` (src/lib/describe-error.ts:30-32), so this rejects a
+/// stray `http=<n>` that appears inside free runner prose.
+fn is_describe_error_header(prefix: &str) -> bool {
+    let mut tokens = prefix.split_whitespace();
+    let mut next = tokens.next();
+    // An optional leading error name — a bare token carrying no `=`.
+    if next.is_some_and(|token| !token.contains('=')) {
+        next = tokens.next();
+    }
+    // An optional single `code=<val>` token.
+    if let Some(token) = next {
+        if !token.starts_with("code=") {
+            return false;
+        }
+        next = tokens.next();
+    }
+    // Nothing else may precede ` http=`.
+    next.is_none()
+}
+
+/// Grammar (a): the three digits after the `describeError` ` http=` key, accepted
+/// only when the text before the key is a `describeError` header — so the key is
+/// anchored to the structure that emits it, not to any `http=<n>` in free prose.
 fn parse_http_eq_status(message: &str) -> Option<u16> {
     let index = message.find(HTTP_STATUS_KEY)?;
+    if !is_describe_error_header(&message[..index]) {
+        return None;
+    }
     take_exactly_three_digit_status(&message[index + HTTP_STATUS_KEY.len()..])
 }
 
-/// Grammar (b): the three digits immediately after the FINAL `": "`. Only ever
+/// Grammar (b): the three digits immediately after the FIRST `": "`. Only ever
 /// consulted for a message whose shape is already a presigned/HEAD-verify one,
-/// so a `": <n>"` fragment in unrelated prose can never be read as a status.
+/// where the producer format is `<prefix>: <status> <detail>` and the key/prefix
+/// never contains `": "`, so the first separator is the status field — a later
+/// `": "` inside the detail can never be mistaken for it.
 fn parse_shape_anchored_status(message: &str) -> Option<u16> {
     const SEPARATOR: &str = ": ";
-    let index = message.rfind(SEPARATOR)?;
+    let index = message.find(SEPARATOR)?;
     take_exactly_three_digit_status(&message[index + SEPARATOR.len()..])
 }
 
@@ -1198,6 +1232,12 @@ mod tests {
             // Unmodelled statuses bucket to their class.
             ("Error http=418 i am a teapot", RunnerErrorHttpStatus::Http4xx),
             ("Error http=599 network connect timeout", RunnerErrorHttpStatus::Http5xx),
+            // A presigned detail that itself contains ": <n>": the FIRST separator
+            // after the key is the status, never the later one in the detail.
+            (
+                "presigned GET failed for k/a.md: 403 proxy: 500 upstream",
+                RunnerErrorHttpStatus::Http403,
+            ),
         ] {
             assert_eq!(
                 classify_runner_error_http_status(message),
@@ -1219,6 +1259,12 @@ mod tests {
             "presigned GET succeeded for knowledge/a.md: 200 ",
             "conflict mirror index write failed: 500", // a shape, but not an anchored one
             "download skipped: local parent escaped the sync root",
+            // `http=<n>` in free prose is not a describeError header → not a status.
+            "download failed; retry http=500 ms",
+            "connection dropped, will retry http=503 shortly",
+            // Three digits glued to a suffix are not a standalone status field.
+            "Error http=403ms timeout",
+            "presigned GET failed for k/a.md: 500InternalError",
         ] {
             assert_eq!(
                 classify_runner_error_http_status(message),
@@ -1229,14 +1275,30 @@ mod tests {
     }
 
     #[test]
-    fn take_exactly_three_digit_status_rejects_longer_and_out_of_range() {
+    fn take_exactly_three_digit_status_requires_a_bounded_in_range_field() {
         assert_eq!(take_exactly_three_digit_status("403 x"), Some(403));
         assert_eq!(take_exactly_three_digit_status("404"), Some(404));
+        assert_eq!(take_exactly_three_digit_status("409:"), Some(409)); // punctuation boundary ok
         assert_eq!(take_exactly_three_digit_status("4041"), None); // four digits
+        assert_eq!(take_exactly_three_digit_status("403ms"), None); // glued letters
+        assert_eq!(take_exactly_three_digit_status("500InternalError"), None);
         assert_eq!(take_exactly_three_digit_status("99 x"), None); // two digits
         assert_eq!(take_exactly_three_digit_status("099"), None); // 099 < 100
         assert_eq!(take_exactly_three_digit_status("600"), None); // 600 > 599
         assert_eq!(take_exactly_three_digit_status("abc"), None);
+    }
+
+    #[test]
+    fn is_describe_error_header_accepts_only_the_name_and_code_prefix() {
+        // The exact set describeError emits before ` http=`.
+        assert!(is_describe_error_header("AccessDenied"));
+        assert!(is_describe_error_header("code=ETIMEDOUT"));
+        assert!(is_describe_error_header("UnknownError code=EAI_AGAIN"));
+        assert!(is_describe_error_header("")); // no prefix at all
+        // Free prose is not a header — the anchor that stops a prose false positive.
+        assert!(!is_describe_error_header("download failed; retry"));
+        assert!(!is_describe_error_header("please wait")); // two bare words
+        assert!(!is_describe_error_header("cause=ENOENT")); // cause= never precedes http=
     }
 
     #[test]
