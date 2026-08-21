@@ -2322,6 +2322,21 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
 /// Errors if npm is not available.
 #[cfg(not(windows))]
 async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
+    // Cross-process cli-update lock (contract with hq-cli's version gate —
+    // see hq_desktop_core::cli_update_lock). A concurrent updater or `hq`
+    // self-update writing the same global package can collide with npm's
+    // mid-rename staging and gut the install; a held lock means skip and let
+    // the user retry. Guard held through the streamed install below.
+    let _install_lock = match crate::commands::hq_cli_update::acquire_cli_install_lock(
+        &app,
+        "hq-desktop-app-install-deps",
+    ) {
+        Ok(guard) => guard,
+        Err(msg) => {
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
+        }
+    };
     let prefix = npm_global_prefix_arg(&app, "hq")?;
     let npm = match which::which_in(
         "npm",
@@ -4125,6 +4140,18 @@ pub fn ensure_shims() -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
+    // Cross-process cli-update lock — same rationale and contract as the
+    // macOS leg above; held through the streamed install.
+    let _install_lock = match crate::commands::hq_cli_update::acquire_cli_install_lock(
+        &app,
+        "hq-desktop-app-install-deps",
+    ) {
+        Ok(guard) => guard,
+        Err(msg) => {
+            emit_progress(&app, &msg);
+            return Err(msg);
+        }
+    };
     emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
     let result_inner = run_streaming(
         &app,

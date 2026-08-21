@@ -29,6 +29,14 @@ on:
       - ".github/workflows/windows-check.yml"
       - "workspace/evidence/**"
 
+# A pull_request workflow with no concurrency group keeps burning Windows
+# minutes (2x) on commits the branch has already moved past. Measured over 30
+# days, 153 of 689 runs here were still executing when a newer push superseded
+# them. Mirrors the group ci.yml already declares.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows-check:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -60,18 +68,30 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # actions/cache archived target/ wholesale (several GB for this app), so
+      # entries evicted each other out of the repository's 10 GB cache budget:
+      # the restore step measured 0-1s (a miss) on every run while the save step
+      # still paid 231s to upload. rust-cache prunes to the registry plus
+      # dependency artifacts and cleans stale ones, and covers BOTH workspaces —
+      # the old key hashed only the app Cargo.lock and cached only the app
+      # target/, so root-workspace changes neither invalidated nor reused it.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            apps/sync/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/sync/src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          key: windows-check-debug
+          # This job is red ~15% of the time and the compile step that fills
+          # the cache runs BEFORE the tests that fail. rust-cache defaults to
+          # cache-on-failure:false, so those runs discard valid dependency
+          # artifacts and the next run starts cold again.
+          cache-on-failure: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps (build.rs resource)
+        run: pnpm run sidecar:install
 
       - name: Build Svelte bundle (satisfies tauri frontendDist)
         run: pnpm run build
@@ -355,6 +375,7 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
+      RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v4
@@ -370,20 +391,27 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Disjoint from the check job's key: this job builds the release profile
+      # and that one builds debug. The old restore-keys fallback to
+      # `${{ runner.os }}-cargo-` pulled the debug artifacts in here, rebuilt
+      # from scratch anyway, then paid to re-upload the mismatched archive.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            apps/sync/src-tauri/target
-          key: ${{ runner.os }}-installer-cargo-${{ hashFiles('apps/sync/src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-installer-cargo-
-            ${{ runner.os }}-cargo-
+          workspaces: |
+            .
+            apps/sync/src-tauri
+          key: windows-installer-release
+          # This job is red ~15% of the time and the compile step that fills
+          # the cache runs BEFORE the tests that fail. rust-cache defaults to
+          # cache-on-failure:false, so those runs discard valid dependency
+          # artifacts and the next run starts cold again.
+          cache-on-failure: true
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
+
+      - name: Install Recall sidecar deps
+        run: pnpm run sidecar:install
 
       - name: Install Tauri WebDriver bridge
         run: cargo install tauri-driver --locked
@@ -419,6 +447,7 @@ jobs:
           --target x86_64-pc-windows-msvc
           --bundles msi nsis
           --config src-tauri/tauri.windows.conf.json
+          --config src-tauri/tauri.windows.release.conf.json
           --config src-tauri/tauri.windows.ci.conf.json
           --config $env:TAURI_MSI_VERSION_CONFIG
           --features e2e-automation

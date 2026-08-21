@@ -18,17 +18,19 @@ import { describe, expect, it } from 'vitest';
 // other gate and only explodes in the release pipeline — exactly the blind spot
 // tauri-conf.spec.ts guards for tauri.conf.json.
 //
-// Rule enforced here: the entitlements plist must (a) carry
-// com.apple.security.device.audio-input so
+// Rule enforced here: the entitlements plist must (a) carry the
+// disable-library-validation entitlement the Team-ID-less GStreamer dylibs need
+// under the hardened runtime, (b) carry com.apple.security.device.audio-input so
 // the hardened-runtime app can actually be granted Microphone access — without it
 // AVCaptureDevice.authorizationStatus returns .denied and macOS never prompts,
 // while screen capture (which needs no entitlement) still works; that exact
-// asymmetry shipped in v0.4.4-beta.2 — (c) NOT carry the three SDK-only
-// hardened-runtime exceptions (disable-library-validation, allow-jit,
-// allow-unsigned-executable-memory), which existed solely for the now-unbundled
-// Recall SDK's GStreamer/ORC media stack and are otherwise just permission to
-// load unvalidated libraries and run unsigned writable memory — and (d) contain
-// NO XML comments, because AMFI rejects
+// asymmetry shipped in v0.4.4-beta.2 — (c) carry com.apple.security.cs.allow-jit
+// AND com.apple.security.cs.allow-unsigned-executable-memory so the Recall SDK's
+// bundled GStreamer ORC JIT can allocate write+exec memory under the hardened
+// runtime — without them the SDK server SIGABRT-loops ("Failed to create write
+// and exec mmap regions") the instant a recording starts, so recording:started
+// fires but stop never confirms and the UI hangs forever in "Stopping…" (shipped
+// through v0.4.4-beta.3) — and (d) contain NO XML comments, because AMFI rejects
 // them at sign time. Keep all rationale in scripts/sign-bundle.sh's header (a bash
 // file AMFI never parses), never in the .plist itself.
 
@@ -38,27 +40,37 @@ const plistPath = fileURLToPath(
 const plist = readFileSync(plistPath, 'utf8');
 
 describe('src-tauri/Entitlements.plist (hardened-runtime signing entitlements)', () => {
-  // The Recall Desktop SDK is no longer bundled. These three entitlements
-  // existed ONLY for its GStreamer media stack: disable-library-validation for
-  // the Team-ID-less GStreamer dylibs, and allow-jit +
-  // allow-unsigned-executable-memory for ORC's runtime compiler (both the
-  // MAP_JIT and the legacy single write+exec region paths). Without the SDK
-  // they are pure attack surface — they let the signed app load unvalidated
-  // libraries and execute unsigned writable memory — so assert they are GONE
-  // and stay gone. Restoring the SDK means restoring these together.
-  it('does not declare disable-library-validation (SDK-only, SDK is unbundled)', () => {
-    expect(plist).not.toMatch(
-      /<key>com\.apple\.security\.cs\.disable-library-validation<\/key>/,
+  it('declares disable-library-validation = true (Team-ID-less SDK dylibs)', () => {
+    // The <key> must be immediately followed by <true/> (allowing whitespace),
+    // not <false/> — library validation MUST be disabled or the SDK's GStreamer
+    // dylibs SIGABRT-loop under the hardened runtime.
+    expect(plist).toMatch(
+      /<key>com\.apple\.security\.cs\.disable-library-validation<\/key>\s*<true\/>/,
     );
   });
 
-  it('does not declare cs.allow-jit (SDK-only, SDK is unbundled)', () => {
-    expect(plist).not.toMatch(/<key>com\.apple\.security\.cs\.allow-jit<\/key>/);
+  it('declares cs.allow-jit = true (Recall SDK GStreamer/ORC JIT under hardened runtime)', () => {
+    // The Recall SDK bundles GStreamer, whose ORC runtime compiler JITs media
+    // code. Under the hardened runtime, allocating executable memory needs
+    // com.apple.security.cs.allow-jit — without it the SDK server SIGABRT-loops
+    // ("Failed to create write and exec mmap regions") the moment a recording
+    // starts, so recording:started fires but stop never confirms and the UI
+    // hangs in "Stopping…" forever. The <key> must be immediately followed by
+    // <true/> (allowing whitespace).
+    expect(plist).toMatch(
+      /<key>com\.apple\.security\.cs\.allow-jit<\/key>\s*<true\/>/,
+    );
   });
 
-  it('does not declare cs.allow-unsigned-executable-memory (SDK-only, SDK is unbundled)', () => {
-    expect(plist).not.toMatch(
-      /<key>com\.apple\.security\.cs\.allow-unsigned-executable-memory<\/key>/,
+  it('declares cs.allow-unsigned-executable-memory = true (ORC legacy RWX JIT path)', () => {
+    // allow-jit covers ORC's MAP_JIT path; older ORC builds map a single
+    // write+exec region instead (the legacy path), which is gated by
+    // com.apple.security.cs.allow-unsigned-executable-memory. The crash wording
+    // ("write and exec" in one region) is the legacy path, so BOTH keys are
+    // required to fully unblock the SDK media stack. The <key> must be
+    // immediately followed by <true/> (allowing whitespace).
+    expect(plist).toMatch(
+      /<key>com\.apple\.security\.cs\.allow-unsigned-executable-memory<\/key>\s*<true\/>/,
     );
   });
 

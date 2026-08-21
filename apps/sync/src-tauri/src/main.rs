@@ -1103,25 +1103,10 @@ fn main() {
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    // Recover any recording that was in flight when the app last
-                    // closed. This runs BEFORE the eligibility gate and does not
-                    // depend on the SDK: it reads the durable recordings ledger
-                    // and asks hq-pro for each still-open recording's status.
-                    //
-                    // A user upgrading INTO a build with the SDK disabled is
-                    // exactly the case that needs it — their previous version may
-                    // have been force-quit mid-recording, leaving an entry in
-                    // ~/.hq/recordings-ledger.json that hq-pro is still
-                    // processing. Gating this behind eligibility would strand
-                    // those recordings permanently, with no path to surface or
-                    // clear them. Best-effort: all failures are logged and
-                    // swallowed inside.
-                    commands::recall_sdk::reconcile_recordings_on_launch(handle.clone()).await;
-
                     if !commands::recall_sdk::meeting_detect_eligible().await {
                         util::logfile::log(
                             "recall-sdk",
-                            "setup: meeting detection is disabled — skipping SDK spawn",
+                            "setup: user not in @getindigo.ai allowlist — skipping SDK spawn",
                         );
                         return;
                     }
@@ -1167,6 +1152,15 @@ fn main() {
                         }
                     }
 
+                    // Recover any recording that was in flight when the app
+                    // last closed. The durable recordings ledger persists the
+                    // windowId→recordingId mapping on start and clears it on a
+                    // clean stop; a leftover entry means a crash/forced-quit
+                    // mid-recording. This queries hq-pro for each such
+                    // recording's status and surfaces a "still processing" /
+                    // "ingest failed" thread instead of silently losing it.
+                    // Best-effort: all failures are logged + swallowed inside.
+                    commands::recall_sdk::reconcile_recordings_on_launch(handle).await;
                 });
             }
 

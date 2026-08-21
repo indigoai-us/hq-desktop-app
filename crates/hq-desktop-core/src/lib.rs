@@ -6,6 +6,7 @@ pub mod activity;
 pub mod agency;
 pub mod banner;
 pub mod claude_launch;
+pub mod cli_update_lock;
 pub mod client_info;
 pub mod cognito;
 pub mod config;

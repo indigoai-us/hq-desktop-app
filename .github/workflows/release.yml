@@ -246,6 +246,12 @@ jobs:
           echo "version=$MSI_VERSION" >> "$GITHUB_OUTPUT"
           echo "App version $APP_VERSION maps to Windows MSI ProductVersion $MSI_VERSION"
 
+      # Two independent rollback gates. `stable-order` compares the numeric tag
+      # against public latest; `lineage` compares COMMIT ancestry through the
+      # GitHub compare API, catching a higher version number cut from an older
+      # on-main commit (the silent content rollback that shipped pre-fix code
+      # under v0.10.107 and v0.10.109). A declared `Rollback-Of:` trailer keeps
+      # an intentional emergency rollback possible.
       - name: Reject stable release rollback
         if: ${{ steps.classify.outputs.channel == 'stable' }}
         env:
@@ -256,6 +262,9 @@ jobs:
         run: |
           set -euo pipefail
           node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+          node .release-control/scripts/release-stable-order.mjs lineage \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 
@@ -335,6 +344,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
       # The tag checkout still carries whatever version was committed. Overwrite
       # the five version files with the bytes the validate job stamped from the
       # tag, so the bundle, the updater archive and the DMG all carry it.
@@ -376,6 +388,17 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[",]//g')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      # Stamp the tag's own commit into the build env so hq-telemetry records it
+      # as the Sentry `build_commit` tag. A content rollback — a higher version
+      # number carrying strictly older code — then shows up in a single Sentry
+      # event instead of hiding behind the version-only release identity. HEAD is
+      # the tag commit here because the job checked out refs/tags/<tag>.
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Build unsigned universal app and updater archive
         env:
@@ -523,6 +546,10 @@ jobs:
               print(f"Verified Sentry debug-file record for {debug_id}")
           PY
 
+      - name: Fix Recall framework symlinks
+        shell: bash
+        run: bash scripts/fix-recall-framework-symlinks.sh "src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
+
       - name: Sign app bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -542,20 +569,28 @@ jobs:
       - name: Notarize and staple app bundle
         if: ${{ env.UNVERIFIED_RELEASE != 'true' }}
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
           APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app"
           ZIP_PATH="$RUNNER_TEMP/HQ-notarize.zip"
+          # Notarization authenticates with an App Store Connect API key rather
+          # than an Apple ID + app-specific password, so no individual's Apple
+          # account sits in the release path. See
+          # companies/indigo/knowledge/engineering/apple-account-migration.md
+          API_KEY_PATH="$RUNNER_TEMP/asc-api-key.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+          trap 'rm -f "$API_KEY_PATH"' EXIT
           # notarytool needs a zip/dmg; staple the .app after the ticket is issued.
           /usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
           SUBMIT_JSON="$(xcrun notarytool submit "$ZIP_PATH" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
             --wait \
             --timeout 1800 \
             --output-format json)"
@@ -567,9 +602,9 @@ jobs:
           if [ "$STATUS" != "Accepted" ]; then
             echo "::error::Notarization status: $STATUS — fetching notary log for $SUB_ID"
             xcrun notarytool log "$SUB_ID" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" || true
+              --key "$API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" || true
             exit 1
           fi
           xcrun stapler staple "$APP_PATH"
@@ -598,9 +633,9 @@ jobs:
         env:
           TAG: ${{ needs.validate.outputs.tag }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -616,11 +651,16 @@ jobs:
             echo "UNVERIFIED_RELEASE=true — ad-hoc signing DMG, skipping notarization."
             codesign --force --sign - "$DMG_PATH" || true
           else
+            # App Store Connect API key auth — see the app-bundle notarize step.
+            API_KEY_PATH="$RUNNER_TEMP/asc-api-key.p8"
+            printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_KEY_PATH"
+            chmod 600 "$API_KEY_PATH"
+            trap 'rm -f "$API_KEY_PATH"' EXIT
             codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG_PATH"
             xcrun notarytool submit "$DMG_PATH" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
+              --key "$API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
               --wait \
               --timeout 1800
             xcrun stapler staple "$DMG_PATH"
@@ -690,6 +730,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
       # The tag checkout still carries whatever version was committed. Overwrite
       # the five version files with the bytes the validate job stamped from the
       # tag, so both installers and the updater artifacts all carry it.
@@ -712,10 +755,50 @@ jobs:
           fi
           echo "Building version $actual"
 
+      - name: Download native ARM64 Node runtime for Recall launcher
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $version = node -p "process.version"
+          $archiveName = "node-$version-win-arm64.zip"
+          $baseUrl = "https://nodejs.org/dist/$version"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $checksums = Join-Path $env:RUNNER_TEMP "SHASUMS256.txt"
+          $extract = Join-Path $env:RUNNER_TEMP "node-$version-win-arm64"
+
+          Invoke-WebRequest "$baseUrl/$archiveName" -OutFile $archive
+          Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksums
+          $checksumLine = Get-Content $checksums | Where-Object { $_ -match "\s+$([regex]::Escape($archiveName))$" } | Select-Object -First 1
+          if (-not $checksumLine) {
+            throw "No Node checksum found for $archiveName"
+          }
+          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Node ARM64 checksum mismatch: expected $expected, got $actual"
+          }
+
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP -Force
+          $nodeExe = Join-Path $extract "node.exe"
+          if (-not (Test-Path $nodeExe)) {
+            throw "ARM64 node.exe was not extracted at $nodeExe"
+          }
+          "RECALL_SIDECAR_NODE_EXECUTABLE=$nodeExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       # Windows recording depends on a real PE sidecar launcher. Tauri's
       # `bundle.externalBin` now requires this file to exist for each target
       # triple, so build and assert it before the bundle step rather than
       # publishing an installer with the Recall bridge resources but no launcher.
+      - name: Build Recall SDK sidecar (${{ matrix.target }})
+        shell: pwsh
+        env:
+          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        run: |
+          pnpm -C sidecar/recall-sdk-bridge build
+          $launcher = "src-tauri/binaries/recall-desktop-sdk-${{ matrix.target }}.exe"
+          if (-not (Test-Path $launcher)) {
+            throw "Recall sidecar launcher was not produced for ${{ matrix.target }} at $launcher"
+          }
 
       - name: Generate Windows MSI version overlay
         shell: pwsh
@@ -737,12 +820,25 @@ jobs:
           "TAURI_MSI_VERSION_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Windows MSI ProductVersion: $actual"
 
+      # Stamp the tag's own commit into the build env so hq-telemetry records it
+      # as the Sentry `build_commit` tag (see the macOS job for why). HEAD is the
+      # tag commit here because the job checked out refs/tags/<tag>.
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Tauri build (${{ matrix.target }})
         # The release-only overlay carries the Recall externalBin (a per-target PE
         # launcher built by the step above). It is kept out of the auto-merged
         # tauri.windows.conf.json so `cargo check` (windows-check.yml) — where the
         # launcher is absent — still passes; Tauri merges the overlay here.
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
+        env:
+          # Tauri runs the overlay's beforeBuildCommand, which builds the launcher
+          # again. Keep that nested build on the matrix architecture as well.
+          RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
 
       - name: Install Sentry CLI
         shell: pwsh
@@ -1257,6 +1353,9 @@ jobs:
         run: |
           set -euo pipefail
           node .release-control/scripts/release-stable-order.mjs stable-order \
+            --repository "$TARGET_REPOSITORY" \
+            --tag "$TARGET_TAG"
+          node .release-control/scripts/release-stable-order.mjs lineage \
             --repository "$TARGET_REPOSITORY" \
             --tag "$TARGET_TAG"
 

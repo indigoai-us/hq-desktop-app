@@ -8,15 +8,20 @@ name: CI
 # Blocking gates:
 #   - frontend: typecheck (svelte-check), lint (svelte-check --threshold error),
 #     build, and vitest-with-coverage.
-#   - rust-macos: Rust unit tests for the app crate AND the workspace crates
-#     (macOS = the shipping platform).
+#   - rust-macos: Rust unit tests for the app crate only (macOS = the shipping
+#     platform, and the only runner where the real-child SIGKILL regressions
+#     mean anything).
+#   - rust-linux: the two heavy shared crates (hq-desktop-core, hq-telemetry),
+#     which need nothing but rustc and so run at 1x instead of the 10x macOS
+#     rate. hq-platform stays on rust-macos -- see that job's comment.
 # Also blocking:
 #   - e2e-desktop-alt: the desktop-alt source-contract suite (mirrors hq-sync's
 #     desktop-alt-e2e.yml). Windows compile stays in windows-check.yml.
 # Non-blocking (continue-on-error) informational steps, flipping to required
 # after a dedicated cleanup pass:
-#   - cargo fmt --check + cargo clippy -D warnings (the app carries ~110
-#     pre-existing clippy warnings, incl. several await-holding-lock sites).
+#   - cargo fmt --check (rust-linux) + cargo clippy -D warnings (rust-macos;
+#     the app carries ~110 pre-existing clippy warnings, incl. several
+#     await-holding-lock sites).
 
 on:
   pull_request:
@@ -86,6 +91,9 @@ jobs:
 
   rust-macos:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # NAME IS LOAD-BEARING: "Rust tests (macOS)" is a required status check in
+    # the active `main` ruleset. Renaming this job makes that check never
+    # report, which blocks every PR from merging. Change the ruleset first.
     name: Rust tests (macOS)
     runs-on: macos-latest
     timeout-minutes: 30
@@ -103,7 +111,9 @@ jobs:
       # build.rs validates the bundled `resources` paths in tauri.conf.json —
       # including the Recall sidecar's node_modules, which only exists after the
       # sidecar install. Without it `cargo test` fails the build script.
-
+      - name: Install Recall sidecar deps (bundled resource)
+        working-directory: apps/sync
+        run: pnpm run sidecar:install
       # tauri's `generate_context!` embeds the frontend dist at compile time, so
       # the Svelte bundle must exist before the app crate will build for tests.
       - name: Build Svelte bundle (satisfies tauri frontendDist)
@@ -122,8 +132,7 @@ jobs:
           workspaces: |
             .
             apps/sync/src-tauri
-      - name: Workspace crate tests (hq-desktop-core, hq-platform, hq-telemetry)
-        run: cargo test --workspace --locked
+          cache-on-failure: true
       - name: App crate tests (hq-sync-menubar)
         timeout-minutes: 20
         working-directory: apps/sync/src-tauri
@@ -135,20 +144,64 @@ jobs:
         timeout-minutes: 10
         working-directory: apps/sync/src-tauri
         run: cargo test --locked commands::process::cross_generation_escalation_tests -- --nocapture
+      # hq-platform's tests and the full-workspace lockfile check live here
+      # rather than on rust-linux: both need window-vibrancy, whose Linux
+      # backend links GTK3. See the rust-linux job comment.
+      - name: Platform crate tests (hq-platform)
+        run: cargo test -p hq-platform --locked
       - name: Root workspace lockfile check
         run: cargo check --workspace --locked
       - name: App workspace lockfile check
         working-directory: apps/sync/src-tauri
         run: cargo check --locked
       # ── Non-blocking style gates (flip to required after the cleanup pass) ──
-      - name: cargo fmt --check (non-blocking)
-        continue-on-error: true
-        working-directory: apps/sync/src-tauri
-        run: cargo fmt --check
       - name: cargo clippy (non-blocking)
         continue-on-error: true
         working-directory: apps/sync/src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+  # macOS runners bill at 10x a Linux minute, so only work that genuinely needs
+  # the shipping platform belongs in rust-macos. The root workspace (crates/*)
+  # is not that work: hq-desktop-core declares its Unix dependencies under
+  # cfg(any(target_os = "macos", target_os = "linux")) and hq-telemetry is pure
+  # Rust. hq-platform has no Linux implementation at all -- every seam in it is
+  # cfg(macos)/cfg(windows) -- but it still has to link its window-vibrancy
+  # dependency, which needs GTK3 headers on Linux.
+  rust-linux:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Rust tests (shared crates, Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          cache-on-failure: true
+      # hq-platform is deliberately absent: its window-vibrancy dependency links
+      # GTK3 on Linux, and installing those headers cost 2.5 of this job's 4.5
+      # minutes and failed 2 of 3 runs on Ubuntu mirror outages (runs
+      # 32299864862, 32302036015) -- a network dependency worth more than the
+      # crate it serves. hq-desktop-core and hq-telemetry are the heavy two and
+      # need nothing beyond rustc; hq-platform stays on rust-macos.
+      - name: Shared crate tests (hq-desktop-core, hq-telemetry)
+        run: cargo test -p hq-desktop-core -p hq-telemetry --locked
+      # rustfmt only parses, so it needs neither the Tauri toolchain nor a macOS
+      # runner. Kept non-blocking exactly as it was on rust-macos -- this change
+      # moves the check, it does not promote it to a required gate.
+      - name: cargo fmt --check, root workspace (non-blocking)
+        continue-on-error: true
+        run: cargo fmt --check
+      - name: cargo fmt --check, app crate (non-blocking)
+        continue-on-error: true
+        working-directory: apps/sync/src-tauri
+        run: cargo fmt --check
 
   e2e-desktop-alt:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

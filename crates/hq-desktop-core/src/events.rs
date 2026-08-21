@@ -547,7 +547,7 @@ pub struct RecordingStartedEvent {
 /// it / everyone leaves). The SDK does NOT reliably auto-stop on its own when
 /// the meeting window closes — its CHANGELOG documents per-platform auto-stop
 /// as unreliable — so the bridge issues the stop explicitly (see the
-/// `meeting-closed` handler in the Recall SDK sidecar, which is no longer bundled).
+/// `meeting-closed` handler in sidecar/recall-sdk-bridge/bridge.mjs).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingEndedEvent {
