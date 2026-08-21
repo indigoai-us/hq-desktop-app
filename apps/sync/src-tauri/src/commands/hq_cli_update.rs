@@ -112,7 +112,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Offset from app launch before the first check fires. 15s vs. the app
 /// updater's 10s so they don't spike CPU + network in lockstep on launch.
-const INITIAL_DELAY: Duration = Duration::from_secs(15);
+// Staggered against version_gate (90s), packages (8m), hq_core_state (12m).
+const INITIAL_DELAY: Duration = Duration::from_secs(4 * 60);
 
 /// Re-check cadence. Matches `updater::setup_update_checker` (6h).
 const CHECK_INTERVAL: Duration = Duration::from_secs(21600);

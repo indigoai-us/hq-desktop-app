@@ -57,7 +57,8 @@ use crate::util::paths;
 const PROD_REPO: &str = "indigoai-us/hq-core";
 const DEFAULT_STAGING_REPO: &str = "indigoai-us/hq-core-staging";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-const INITIAL_DELAY: Duration = Duration::from_secs(30);
+// Staggered against version_gate (90s), hq_cli_update (4m), packages (8m).
+const INITIAL_DELAY: Duration = Duration::from_secs(12 * 60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
 
 /// Channel the user is tracking. Drives target selection + the action-pill
