@@ -338,8 +338,44 @@ pub struct SelectedCalendarRef {
 
 #[derive(Deserialize)]
 pub struct BotsResponse {
-    #[serde(default)]
+    /// Row-tolerant: a single malformed bot must not poison the whole list
+    /// parse (the same class of failure as the `botId`/`recallBotId` shim).
+    #[serde(default, deserialize_with = "deserialize_bots_row_tolerant")]
     pub bots: Vec<ScheduledBot>,
+}
+
+fn deserialize_bots_row_tolerant<'de, D>(deserializer: D) -> Result<Vec<ScheduledBot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(scheduled_bots_from_values(values))
+}
+
+/// Deserialize each bot row independently so one bad object is skipped
+/// (and logged) instead of failing `GET /v1/bot/list` for every meeting.
+fn scheduled_bots_from_values(values: Vec<serde_json::Value>) -> Vec<ScheduledBot> {
+    let mut bots = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        let bot_id = value
+            .get("botId")
+            .or_else(|| value.get("recallBotId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        match serde_json::from_value::<ScheduledBot>(value) {
+            Ok(bot) => bots.push(bot),
+            Err(err) => {
+                crate::logfile::log(
+                    "meetings",
+                    &format!(
+                        "skipping malformed scheduled-bot row {index} (botId={bot_id}): {err}"
+                    ),
+                );
+            }
+        }
+    }
+    bots
 }
 
 /// `GET /membership/me` projection used by the modal.
@@ -706,6 +742,49 @@ mod tests {
             serde_json::from_str(json).expect("bot list with duplicate id keys must parse");
         assert_eq!(parsed.bots.len(), 1);
         assert_eq!(parsed.bots[0].bot_id, "bot-1");
+    }
+
+    /// Residual of the "Could not refresh meeting bot status" wedge: hq-pro
+    /// can emit a bot row missing `meetingUrl` (or `platform`/`status`). The
+    /// previous strict `ScheduledBotRest` parse failed the WHOLE list. One
+    /// malformed row must be skipped so the other rows still land.
+    #[test]
+    fn bots_response_skips_malformed_row_missing_meeting_url() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        let json = r#"{
+            "bots": [
+                {
+                    "botId": "bot-good",
+                    "status": "scheduled",
+                    "meetingUrl": "https://meet.google.com/abc",
+                    "platform": "google_meet"
+                },
+                {
+                    "botId": "bot-bad",
+                    "status": "scheduled",
+                    "platform": "zoom"
+                },
+                {
+                    "botId": "bot-also-good",
+                    "status": "recording",
+                    "meetingUrl": "https://zoom.us/j/1",
+                    "platform": "zoom"
+                }
+            ]
+        }"#;
+        let parsed: BotsResponse =
+            serde_json::from_str(json).expect("bot list with one malformed row must still parse");
+        assert_eq!(parsed.bots.len(), 2);
+        assert_eq!(parsed.bots[0].bot_id, "bot-good");
+        assert_eq!(parsed.bots[1].bot_id, "bot-also-good");
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            log.contains("skipping malformed scheduled-bot row 1"),
+            "expected skip log, got: {log}"
+        );
+        assert!(log.contains("botId=bot-bad"), "expected bot id in skip log");
     }
 
     /// The cancel response shares the same `recallBotId` alias, so it must also

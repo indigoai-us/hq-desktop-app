@@ -173,18 +173,31 @@ async fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
+/// Per-request budget for meetings HTTP. Matches `client_info::build_client`'s
+/// 15s default and is applied on the RequestBuilder so a hung hq-pro call
+/// still errors even if that shared timeout is later removed. Without this,
+/// a wedged `/v1/bot/list` or `/v1/calendar/events` pins the UI `loading`
+/// flag and the Refresh button forever.
+const MEETINGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn with_timeout(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    req.timeout(MEETINGS_REQUEST_TIMEOUT)
+}
+
 /// `GET /v1/calendar/events` — upcoming events from the caller's selected
 /// calendars (within hq-pro's configured sync window).
 #[tauri::command]
 pub async fn meetings_list_upcoming() -> Result<Vec<MeetingEvent>, String> {
     let base = vault_base().await?;
     let auth = auth_header().await?;
-    let res = build_client()
-        .get(format!("{base}/v1/calendar/events"))
-        .header("authorization", &auth)
-        .send()
-        .await
-        .map_err(|e| format!("events fetch: {e}"))?;
+    let res = with_timeout(
+        build_client()
+            .get(format!("{base}/v1/calendar/events"))
+            .header("authorization", &auth),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("events fetch: {e}"))?;
     let status = res.status();
     let text = res.text().await.map_err(|e| format!("events read: {e}"))?;
     if !status.is_success() {
@@ -205,12 +218,14 @@ pub async fn meetings_list_upcoming() -> Result<Vec<MeetingEvent>, String> {
 pub async fn meetings_list_accounts() -> Result<Vec<GoogleAccount>, String> {
     let base = vault_base().await?;
     let auth = auth_header().await?;
-    let res = build_client()
-        .get(format!("{base}/v1/google/accounts"))
-        .header("authorization", &auth)
-        .send()
-        .await
-        .map_err(|e| format!("accounts fetch: {e}"))?;
+    let res = with_timeout(
+        build_client()
+            .get(format!("{base}/v1/google/accounts"))
+            .header("authorization", &auth),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("accounts fetch: {e}"))?;
     let status = res.status();
     let text = res
         .text()
@@ -244,9 +259,7 @@ pub async fn meetings_list_calendars_for_account(
         return Err(format!("invalid accountId: {account_id}"));
     }
     let url = format!("{base}/v1/calendar/calendars?accountId={account_id}");
-    let res = build_client()
-        .get(url)
-        .header("authorization", &auth)
+    let res = with_timeout(build_client().get(url).header("authorization", &auth))
         .send()
         .await
         .map_err(|e| format!("calendars fetch: {e}"))?;
@@ -289,9 +302,7 @@ pub async fn meetings_list_scheduled_bots(
             url.push_str(&format!("?calendarEventIds={joined}"));
         }
     }
-    let res = build_client()
-        .get(url)
-        .header("authorization", &auth)
+    let res = with_timeout(build_client().get(url).header("authorization", &auth))
         .send()
         .await
         .map_err(|e| format!("bot/list fetch: {e}"))?;
@@ -330,14 +341,16 @@ pub async fn meetings_set_company(
     let auth = auth_header().await?;
     let url = format!("{base}/v1/meetings/{meeting_id}/company");
     let body = build_set_company_body(&company_id, apply_to_series.unwrap_or(true));
-    let res = build_client()
-        .post(url)
-        .header("authorization", &auth)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("meeting/company fetch: {e}"))?;
+    let res = with_timeout(
+        build_client()
+            .post(url)
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .json(&body),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("meeting/company fetch: {e}"))?;
     let status = res.status();
     let text = res
         .text()
@@ -385,14 +398,16 @@ pub async fn meetings_invite_bot(
         calendar_series_id,
         participants,
     };
-    let res = build_client()
-        .post(url)
-        .header("authorization", &auth)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("bot/invite fetch: {e}"))?;
+    let res = with_timeout(
+        build_client()
+            .post(url)
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .json(&body),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("bot/invite fetch: {e}"))?;
     let status = res.status();
     let text = res
         .text()
@@ -446,14 +461,16 @@ pub async fn meetings_join_bot_now(
         // for the bot-invite path lives in `meetings_invite_bot`.
         participants: Vec::new(),
     };
-    let res = build_client()
-        .post(url)
-        .header("authorization", &auth)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("bot/join-now fetch: {e}"))?;
+    let res = with_timeout(
+        build_client()
+            .post(url)
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .json(&body),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("bot/join-now fetch: {e}"))?;
     let status = res.status();
     let text = res
         .text()
@@ -506,9 +523,7 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<CancelBotResult, Stri
     let base = vault_base().await?;
     let auth = auth_header().await?;
     let url = format!("{base}/v1/bot/{bot_id}/cancel");
-    let res = build_client()
-        .post(url)
-        .header("authorization", &auth)
+    let res = with_timeout(build_client().post(url).header("authorization", &auth))
         .send()
         .await
         .map_err(|e| format!("bot/cancel fetch: {e}"))?;
@@ -540,10 +555,12 @@ pub async fn meetings_check_bot_for_url(
 ) -> Result<Option<ScheduledBot>, String> {
     let base = vault_base().await?;
     let auth = auth_header().await?;
-    let mut req = build_client()
-        .get(format!("{base}/v1/bot/list"))
-        .header("authorization", &auth)
-        .query(&[("meetingUrl", meeting_url.as_str())]);
+    let mut req = with_timeout(
+        build_client()
+            .get(format!("{base}/v1/bot/list"))
+            .header("authorization", &auth)
+            .query(&[("meetingUrl", meeting_url.as_str())]),
+    );
     if let Some(id) = event_id.as_deref().filter(|s| !s.is_empty()) {
         req = req.query(&[("eventId", id)]);
     }
@@ -622,11 +639,13 @@ pub async fn poll_unattributed_once(app: AppHandle) {
         }
     };
 
-    let res = match build_client()
-        .get(format!("{base}/v1/bot/list"))
-        .header("authorization", &auth)
-        .send()
-        .await
+    let res = match with_timeout(
+        build_client()
+            .get(format!("{base}/v1/bot/list"))
+            .header("authorization", &auth),
+    )
+    .send()
+    .await
     {
         Ok(res) => res,
         Err(e) => {
