@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
@@ -13,6 +14,14 @@ use crate::util::{hq_resolver, paths};
 /// Canonical default-package set is a product decision; empty for now —
 /// populate with slugs to auto-install at onboarding.
 const DEFAULT_PACKAGES: &[&str] = &[];
+const STARTUP_READINESS_ARGS: &[&str] = &["doctor", "startup", "--publish", "--json"];
+const STARTUP_READINESS_SOURCE: &str = "hq-desktop";
+const COMPLETED_STARTUP_READINESS_EXITS: &[i32] = &[0, 10, 20, 30];
+
+/// A resumed onboarding flow may request the launch more than once. One
+/// process launches at most one observation; the CLI publisher lock remains
+/// the cross-process serialization boundary when the app itself is restarted.
+static STARTUP_READINESS_LAUNCHED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct GitUser {
@@ -104,6 +113,118 @@ async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(format_hq_failure(args, &output))
+    }
+}
+
+fn claim_startup_readiness_launch(gate: &AtomicBool) -> bool {
+    gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// Reset the in-process gate unless the CLI completed a recognized published
+/// observation. This lease also resets during unwinding, so a failed or
+/// panicking detached task cannot permanently suppress a resumed onboarding
+/// attempt in the same app process.
+struct StartupReadinessLaunchLease<'a> {
+    gate: &'a AtomicBool,
+    keep_claimed: bool,
+}
+
+impl<'a> StartupReadinessLaunchLease<'a> {
+    fn new(gate: &'a AtomicBool) -> Self {
+        Self {
+            gate,
+            keep_claimed: false,
+        }
+    }
+
+    fn retain(&mut self) {
+        self.keep_claimed = true;
+    }
+}
+
+impl Drop for StartupReadinessLaunchLease<'_> {
+    fn drop(&mut self) {
+        if !self.keep_claimed {
+            self.gate.store(false, Ordering::Release);
+        }
+    }
+}
+
+fn startup_readiness_invocation(
+    program: paths::ResolvedProgram,
+) -> Result<hq_resolver::HqInvocation, String> {
+    if !program.is_resolved() {
+        return Err("installed hq-cli was not found after dependency setup".to_string());
+    }
+    if cfg!(target_os = "windows") && !program.is_spawnable() {
+        return Err("installed hq-cli is not directly executable on this platform".to_string());
+    }
+    Ok(hq_resolver::HqInvocation::Local(program.path))
+}
+
+fn startup_readiness_command(
+    invocation: &hq_resolver::HqInvocation,
+    hq_root: &Path,
+    path_env: &str,
+) -> tokio::process::Command {
+    let mut command = invocation.command();
+    command
+        .args(STARTUP_READINESS_ARGS)
+        .current_dir(hq_root)
+        .env("PATH", path_env)
+        .env("HQ_STARTUP_SOURCE", STARTUP_READINESS_SOURCE)
+        // Dependency setup owns hq-cli installation. Keep the readiness bridge
+        // offline and prevent the CLI's normal startup gate from self-updating.
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+fn is_completed_startup_readiness_exit(code: Option<i32>) -> bool {
+    code.is_some_and(|code| COMPLETED_STARTUP_READINESS_EXITS.contains(&code))
+}
+
+async fn observe_startup_readiness(
+    hq_root: PathBuf,
+    invocation: hq_resolver::HqInvocation,
+    path_env: String,
+) -> bool {
+    let invocation_label = invocation.label();
+    let status = startup_readiness_command(&invocation, &hq_root, &path_env)
+        .status()
+        .await;
+
+    match status {
+        Ok(status) if is_completed_startup_readiness_exit(status.code()) => {
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!(
+                    "completed observation via {invocation_label} with exit {}",
+                    status.code().unwrap_or_default()
+                ),
+            );
+            true
+        }
+        Ok(status) => {
+            let exit = status
+                .code()
+                .map_or_else(|| "no exit code".to_string(), |code| code.to_string());
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!("unexpected exit via {invocation_label}: {exit}"),
+            );
+            false
+        }
+        Err(error) => {
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!("spawn failed via {invocation_label}: {error}"),
+            );
+            false
+        }
     }
 }
 
@@ -219,6 +340,50 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
     } else {
         Ok(Some(GitUser { name, email }))
     }
+}
+
+/// Launch the CLI-owned startup-readiness observation without blocking or
+/// failing onboarding. Rust deliberately does not parse the JSON or write any
+/// readiness state; `hq doctor startup --publish` owns that contract.
+#[tauri::command]
+pub fn launch_startup_readiness() -> Result<(), String> {
+    // Capture the exact root and child PATH at the post-git-init call boundary.
+    // Do not use the generic resolver's npx self-heal fallback here: dependency
+    // setup owns hq-cli installation, and this adapter must remain offline.
+    let hq_root = match resolve_hq_path() {
+        Ok(path) => PathBuf::from(path),
+        Err(error) => {
+            crate::util::logfile::log(
+                "startup-readiness",
+                &format!("launch failed: resolve HQ root: {error}"),
+            );
+            return Ok(());
+        }
+    };
+    let invocation = match startup_readiness_invocation(paths::resolve_bin_with_kind("hq")) {
+        Ok(invocation) => invocation,
+        Err(error) => {
+            crate::util::logfile::log("startup-readiness", &format!("launch failed: {error}"));
+            return Ok(());
+        }
+    };
+    let path_env = paths::child_path();
+
+    if !claim_startup_readiness_launch(&STARTUP_READINESS_LAUNCHED) {
+        crate::util::logfile::log(
+            "startup-readiness",
+            "launch skipped: observation already requested in this process",
+        );
+        return Ok(());
+    }
+
+    let mut lease = StartupReadinessLaunchLease::new(&STARTUP_READINESS_LAUNCHED);
+    tauri::async_runtime::spawn(async move {
+        if observe_startup_readiness(hq_root, invocation, path_env).await {
+            lease.retain();
+        }
+    });
+    Ok(())
 }
 
 /// Build the local search index and refresh CLI-generated registries.
@@ -340,6 +505,7 @@ pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tempfile::tempdir;
 
     #[test]
@@ -349,5 +515,85 @@ mod tests {
         git_init_path(dir.path(), None, None).unwrap();
 
         assert!(dir.path().join(".git").is_dir());
+    }
+
+    #[test]
+    fn startup_readiness_launch_is_idempotent_in_process() {
+        let gate = AtomicBool::new(false);
+
+        assert!(claim_startup_readiness_launch(&gate));
+        assert!(!claim_startup_readiness_launch(&gate));
+        assert!(!claim_startup_readiness_launch(&gate));
+    }
+
+    #[test]
+    fn failed_startup_readiness_launch_can_be_retried() {
+        let gate = AtomicBool::new(false);
+
+        assert!(claim_startup_readiness_launch(&gate));
+        drop(StartupReadinessLaunchLease::new(&gate));
+        assert!(claim_startup_readiness_launch(&gate));
+
+        let mut completed = StartupReadinessLaunchLease::new(&gate);
+        completed.retain();
+        drop(completed);
+        assert!(!claim_startup_readiness_launch(&gate));
+    }
+
+    #[test]
+    fn startup_readiness_requires_the_installed_cli() {
+        assert!(startup_readiness_invocation(paths::ResolvedProgram::not_resolved("hq")).is_err());
+        assert!(matches!(
+            startup_readiness_invocation(paths::ResolvedProgram {
+                path: "/test/bin/hq".to_string(),
+                kind: paths::ResolvedProgramKind::Exe,
+            }),
+            Ok(hq_resolver::HqInvocation::Local(path)) if path == "/test/bin/hq"
+        ));
+    }
+
+    #[test]
+    fn startup_readiness_command_uses_cli_owned_contract() {
+        let dir = tempdir().unwrap();
+        let invocation = hq_resolver::HqInvocation::Local("/test/bin/hq".to_string());
+        let command = startup_readiness_command(&invocation, dir.path(), "/test/child-path");
+        let command = command.as_std();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let env = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(args, STARTUP_READINESS_ARGS);
+        assert_eq!(command.get_current_dir(), Some(dir.path()));
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            Some("/test/child-path")
+        );
+        assert_eq!(
+            env.get("HQ_STARTUP_SOURCE").map(String::as_str),
+            Some("hq-desktop")
+        );
+        assert_eq!(env.get("HQ_NO_UPDATE_CHECK").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn startup_readiness_exit_allowlist_is_completed_observation() {
+        for code in COMPLETED_STARTUP_READINESS_EXITS {
+            assert!(is_completed_startup_readiness_exit(Some(*code)));
+        }
+        assert!(!is_completed_startup_readiness_exit(Some(1)));
+        assert!(!is_completed_startup_readiness_exit(Some(31)));
+        assert!(!is_completed_startup_readiness_exit(None));
     }
 }

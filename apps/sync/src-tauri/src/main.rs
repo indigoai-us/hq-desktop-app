@@ -547,6 +547,7 @@ fn main() {
             commands::install_manifest::record_install_complete,
             commands::install_stages::git_init,
             commands::install_stages::git_probe_user,
+            commands::install_stages::launch_startup_readiness,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,
             commands::install_stages::personalize_hq,

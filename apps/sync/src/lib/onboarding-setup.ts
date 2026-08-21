@@ -251,6 +251,13 @@ export function stageCommandInvocations(
     });
   }
 
+  if (id === 'git-init') {
+    invocations.push({
+      command: 'launch_startup_readiness',
+      required: false,
+    });
+  }
+
   // TODO(windows): surface is_long_paths_enabled/enable_long_paths in a
   // dedicated remediation UI before deps; invoking it here could surprise
   // users with a UAC prompt.
