@@ -162,6 +162,31 @@ const boundaryContracts: BoundaryContract[] = [
     beforeMarkers: ["commands::process::terminate_all_for_exit("],
   },
   {
+    // HQ-DESKTOP-4X. A fault-exit capture held back by its deferred OS fault read
+    // names a REAL 0xC0000409-class crash. An app-initiated quit must SEND it —
+    // deleting this would lose the alert to the ~60s deferral horizon — before the
+    // children are torn down.
+    label: "app-quit deferred fault flush",
+    file: "main",
+    hook: 'commands::daemon::flush_pending_watcher_fault_captures("app_quit_flush");',
+    startMarker: "if let tauri::RunEvent::ExitRequested { .. } = event {",
+    endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    beforeMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
+    // Unlike the benign session-end capture the previous seam DROPS, the
+    // session-end teardown FLUSHES the fault capture: a crash event must survive
+    // the session end. It runs AFTER the session-end drop and BEFORE the children
+    // are terminated / the capped Sentry flush.
+    label: "session-end deferred fault flush",
+    file: "main",
+    hook: 'commands::daemon::flush_pending_watcher_fault_captures("session_end_flush");',
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+    afterMarkers: ["commands::daemon::drop_pending_session_end_captures();"],
+    beforeMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
     label: "running phase",
     file: "main",
     hook:

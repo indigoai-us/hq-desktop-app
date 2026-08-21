@@ -1196,6 +1196,11 @@ fn main() {
                 // external kill must not silently swallow it. Bounded and
                 // panic-free — it drains a vector and sends what it took.
                 commands::daemon::flush_pending_session_end_captures();
+                // Likewise, a fault-exit capture whose deferred OS fault read is
+                // still in flight (HQ-DESKTOP-4X) names a real crash — emit it now
+                // with its honest `deferred` provenance rather than lose it to the
+                // deferral horizon. Bounded, panic-free, no Event Log work.
+                commands::daemon::flush_pending_watcher_fault_captures("app_quit_flush");
                 #[cfg(target_os = "windows")]
                 if let Some(observer) = _app_handle
                     .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
@@ -1233,12 +1238,19 @@ fn main() {
                         );
 
                         // Reaching this arm IS the affirmation a deferred
-                        // watcher capture was waiting for: the OS told this app
-                        // directly that the session is ending. Drop the held-back
-                        // event instead of letting it race the teardown. Bounded
-                        // and allocation-only — it adds no uncapped work to a
-                        // teardown that runs inside a window procedure.
+                        // session-end watcher capture was waiting for: the OS told
+                        // this app directly that the session is ending. Drop the
+                        // held-back (benign) event instead of letting it race the
+                        // teardown. Bounded and allocation-only — it adds no
+                        // uncapped work to a teardown that runs inside a window
+                        // procedure.
                         commands::daemon::drop_pending_session_end_captures();
+                        // A deferred FAULT capture is different: it names a real
+                        // 0xC0000409-class crash, not a benign session end, so it
+                        // must NOT be dropped here. Flush it immediately with its
+                        // honest `deferred` provenance, ahead of the capped Sentry
+                        // flush below. Bounded, panic-free, no Event Log work.
+                        commands::daemon::flush_pending_watcher_fault_captures("session_end_flush");
 
                         // Corroborating signal, read BEFORE the observer is shut
                         // down (shutdown moves its readiness out of the

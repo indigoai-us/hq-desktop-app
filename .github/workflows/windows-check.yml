@@ -153,6 +153,31 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins watcher_capture_reports -- --nocapture
 
+      # HQ-DESKTOP-4X (r2). The deferral wiring, compiled and run on the msvc
+      # target (cargo check never builds #[cfg(test)] code): a Windows fault exit
+      # HOLDS its capture off the terminal exit callback with the honest `deferred`
+      # provenance + the job-image tree observation, the pending registry drains
+      # take-once so a teardown flush and a completing worker never double-send, and
+      # the finalize patches ONLY the watcher_fault_* fields (grouping unchanged).
+      - name: Windows watcher fault deferral wiring tests
+        timeout-minutes: 15
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins watcher_fault_deferred -- --nocapture
+
+      # HQ-DESKTOP-4X (r2) base-red / candidate-pass, proved deterministically on
+      # the Windows runner in Node (scripted, no tauri-driver): the pre-fix policy
+      # reproduces the observed 0.10.105 `no_record`/`unavailable` envelope verbatim
+      # and cannot distinguish zero-records from a late publication; the post-fix
+      # policy resolves the SAME late-published record to `pid_matched`/`node_exe`
+      # and, when WER never publishes, renders the distinct `deadline_expired` token
+      # plus the named job-image culprit candidate. Also source-contracts the
+      # deferral seams so deleting any one fails here, not only in the Rust suite.
+      # LIVE is deliberately unset so this runs the scripted (source-contract) set.
+      - name: Watcher fault deferred-attribution both-directions proof
+        timeout-minutes: 10
+        working-directory: apps/sync
+        run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/watcher-fault-deferred-attribution.spec.ts
+
       # HQ-DESKTOP-4X artifact E2E: run the REAL wevtapi reader against the REAL
       # Windows Application log (content-safe + bounded, panic-free) and reproduce
       # a genuine abort through the production cmd.exe batch-shim shape. WER's async

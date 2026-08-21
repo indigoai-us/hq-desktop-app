@@ -35,7 +35,10 @@ use hq_desktop_core::daemon::{
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
 use hq_desktop_core::runner_target::RunnerTargetState;
-use hq_desktop_core::watcher_fault::{UnmatchedStderrShapeRollup, WATCHER_FAULT_UNAVAILABLE};
+use hq_desktop_core::watcher_fault::{
+    UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
+    WATCHER_FAULT_UNAVAILABLE,
+};
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
@@ -1124,11 +1127,25 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .tag_value();
-                        // Read the OS's own fault record for this generation and bind
-                        // it content-safely, off the terminal hot path and under a
-                        // hard bounded budget. Only a Windows fault exit triggers the
-                        // log scan; every other exit and platform degrades to the
-                        // fixed sentinels. Never blocks exit or changes capture.
+                        // Drain this generation's sampled Job Object tree (PIDs +
+                        // the images resolved while those PIDs were alive). Fast,
+                        // synchronous, and unconditional so the sampled-PID map can
+                        // never retain a generation key. The images give a named
+                        // culprit CANDIDATE even if WER never yields a record; the
+                        // PIDs feed the deferred OS fault read below.
+                        let job_sample =
+                            crate::commands::process::take_watcher_job_sample(daemon_generation);
+                        if job_sample.images.images_tag().is_some() {
+                            exit_context.watcher_fault_job_images =
+                                job_sample.images.images_tag();
+                            exit_context.watcher_fault_job_culprit_candidate =
+                                Some(job_sample.images.culprit_candidate_token().to_string());
+                            exit_context.watcher_fault_job_image_provenance =
+                                Some(job_sample.images.provenance_token().to_string());
+                        }
+                        // Only a genuine Windows fault exit warrants reading the OS
+                        // fault record; every other exit and platform is not
+                        // applicable and keeps the honest sentinels.
                         let observed_exception_code =
                             code.filter(|_| signal.is_none()).and_then(|code| {
                                 match classify_windows_exit_status(code) {
@@ -1136,25 +1153,44 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                     _ => None,
                                 }
                             });
-                        let fault_window_end =
-                            now_unix_ms().saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
-                        let fault_window_start = generation_started_ms
-                            .max(fault_window_end.saturating_sub(WATCHER_FAULT_TERMINAL_LOOKBACK_MS));
-                        let fault =
-                            crate::commands::process::watcher_fault_provenance_for_generation(
-                                daemon_generation,
-                                observed_exception_code,
-                                fault_window_start,
-                                fault_window_end,
-                            );
-                        exit_context.watcher_fault_provenance =
-                            fault.provenance_token().to_string();
-                        exit_context.watcher_fault_faulting_image =
-                            fault.image_token().to_string();
-                        exit_context.watcher_fault_faulting_module =
-                            fault.module_token().to_string();
-                        exit_context.watcher_fault_exception_code = fault.exception_code;
-                        exit_context.watcher_fault_offset = fault.fault_offset;
+                        match observed_exception_code {
+                            Some(exception_code) => {
+                                // DEFER the OS fault read entirely off this terminal
+                                // exit callback: it publishes asynchronously seconds
+                                // after the child dies and the old on-exit-path 4.5s
+                                // wait could never outlast it. The exit path now does
+                                // ZERO Event Log work, so emit_exit_then_deregister —
+                                // and supervisor recovery — is no longer held up.
+                                // Seed the honest "not read yet" provenance; the
+                                // deferred worker upgrades it, or a teardown flush
+                                // emits it as-is.
+                                let fault_window_end = now_unix_ms()
+                                    .saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
+                                let fault_window_start = generation_started_ms.max(
+                                    fault_window_end
+                                        .saturating_sub(WATCHER_FAULT_TERMINAL_LOOKBACK_MS),
+                                );
+                                exit_context.watcher_fault_provenance =
+                                    WatcherFaultProvenance::Deferred.as_str().to_string();
+                                exit_context.watcher_fault_faulting_image =
+                                    WATCHER_FAULT_UNAVAILABLE.to_string();
+                                exit_context.watcher_fault_faulting_module =
+                                    WATCHER_FAULT_UNAVAILABLE.to_string();
+                                exit_context.watcher_fault_read_counters =
+                                    Some(WatcherFaultReadCounters::default().tag_value());
+                                exit_context.watcher_fault_deferred_read =
+                                    Some(WatcherFaultDeferredRead {
+                                        sampled_pids: job_sample.pids,
+                                        exception_code,
+                                        gen_start_ms: fault_window_start,
+                                        gen_end_ms: fault_window_end,
+                                    });
+                            }
+                            None => {
+                                exit_context.watcher_fault_provenance =
+                                    WatcherFaultProvenance::NotApplicable.as_str().to_string();
+                            }
+                        }
                         let last_stderr = stderr_tail.last().map(String::as_str);
                         handle_watcher_exit(
                             code,
@@ -1258,6 +1294,19 @@ fn is_unrecognized_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool 
             .unwrap_or(true)
 }
 
+/// What the deferred fault-read worker needs to complete a Windows fault exit's
+/// attribution off the terminal exit callback: the generation's sampled live
+/// PIDs, the fault code the exit carried, and the binding window. Platform-neutral
+/// data (just integers), drained synchronously at exit so the sampled-PID map
+/// cannot leak.
+#[derive(Debug, Clone)]
+struct WatcherFaultDeferredRead {
+    sampled_pids: Vec<u32>,
+    exception_code: u32,
+    gen_start_ms: i64,
+    gen_end_ms: i64,
+}
+
 #[derive(Debug, Clone)]
 struct WatcherExitCaptureContext {
     lifecycle_state: String,
@@ -1350,6 +1399,22 @@ struct WatcherExitCaptureContext {
     watcher_fault_faulting_module: String,
     watcher_fault_exception_code: Option<u32>,
     watcher_fault_offset: Option<u64>,
+    /// The rendered read-counters rollup (`seen:N,parsed:N,...`) for the fault
+    /// read; `None` for a non-fault exit so no counters tag is emitted. Seeded
+    /// all-zero on the exit path and refreshed by the deferred worker's verdict.
+    watcher_fault_read_counters: Option<String>,
+    /// WER-independent job-image tree observation (HQ-DESKTOP-4X): the allow-listed
+    /// image set the generation's Job Object was seen to run, a non-shim culprit
+    /// CANDIDATE, and a tree-observation honesty token — never a fault attribution.
+    /// `None` when nothing was sampled alive, so absence never renders as evidence.
+    watcher_fault_job_images: Option<String>,
+    watcher_fault_job_culprit_candidate: Option<String>,
+    watcher_fault_job_image_provenance: Option<String>,
+    /// Present only for a Windows fault exit whose OS fault read is deferred off
+    /// this terminal callback. Carries what the deferred worker needs to complete
+    /// the read; its presence is what tells the capture seam to defer the send
+    /// rather than emit now with the seeded `deferred` provenance.
+    watcher_fault_deferred_read: Option<WatcherFaultDeferredRead>,
     /// Exit-time probe of the runner target the watcher execs. Populated only for
     /// the exec-layer fast-fails whose provenance is in question (126/127 and the
     /// launcher pre-protocol nonzero leg); `None` — reported as `"unknown"` — for
@@ -1429,11 +1494,18 @@ impl Default for WatcherExitCaptureContext {
             saw_alertable_error: false,
             runner_stderr_line_count: None,
             runner_unmatched_stderr_shapes: None,
-            watcher_fault_provenance: WATCHER_FAULT_UNAVAILABLE.to_string(),
+            // No Windows fault read applies by default (non-Windows, or a clean /
+            // non-fault exit); the image/module keep the `unavailable` sentinel.
+            watcher_fault_provenance: WatcherFaultProvenance::NotApplicable.as_str().to_string(),
             watcher_fault_faulting_image: WATCHER_FAULT_UNAVAILABLE.to_string(),
             watcher_fault_faulting_module: WATCHER_FAULT_UNAVAILABLE.to_string(),
             watcher_fault_exception_code: None,
             watcher_fault_offset: None,
+            watcher_fault_read_counters: None,
+            watcher_fault_job_images: None,
+            watcher_fault_job_culprit_candidate: None,
+            watcher_fault_job_image_provenance: None,
+            watcher_fault_deferred_read: None,
             runner_exec_target: None,
             runner_target_repair_attempted: false,
         }
@@ -1582,11 +1654,16 @@ fn watcher_exit_capture_context(
         // and the sampled PID set); default them here so the snapshot is complete.
         runner_stderr_line_count: None,
         runner_unmatched_stderr_shapes: None,
-        watcher_fault_provenance: WATCHER_FAULT_UNAVAILABLE.to_string(),
+        watcher_fault_provenance: WatcherFaultProvenance::NotApplicable.as_str().to_string(),
         watcher_fault_faulting_image: WATCHER_FAULT_UNAVAILABLE.to_string(),
         watcher_fault_faulting_module: WATCHER_FAULT_UNAVAILABLE.to_string(),
         watcher_fault_exception_code: None,
         watcher_fault_offset: None,
+        watcher_fault_read_counters: None,
+        watcher_fault_job_images: None,
+        watcher_fault_job_culprit_candidate: None,
+        watcher_fault_job_image_provenance: None,
+        watcher_fault_deferred_read: None,
         runner_exec_target,
         runner_target_repair_attempted: runner_target_repair_attempted(),
     }
@@ -1961,6 +2038,346 @@ fn send_deferred_session_end_capture(
     effects.capture(&payload.message, &fingerprint, &tags, &extras);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Deferred watcher-fault capture (HQ-DESKTOP-4X)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The Windows fault record publishes asynchronously seconds after the child
+// dies — far later than the terminal exit callback can wait without holding up
+// supervisor recovery. So the fault-exit capture's SEND is deferred to a bounded
+// worker thread that performs the read OFF the exit path, patches ONLY the
+// watcher_fault_* fields with the resolved provenance, and sends. Nothing else
+// about the exit — crash counter, lifecycle, capture policy, fingerprint — is
+// deferred; all of that already ran, unchanged, before this is reached.
+//
+// A pending registry lets an app-quit or Windows session-end teardown FLUSH any
+// in-flight deferred capture IMMEDIATELY with its current honest `deferred`
+// provenance, so a genuine fault event is never lost to the horizon. Unlike the
+// session-end capture (which a session end DROPS as benign), a fault capture is
+// always emitted — it names a real crash — so BOTH teardown seams flush it.
+
+/// A fault-exit capture held back while its deferred OS fault read runs. It
+/// carries the payload exactly as the exit path built it (with the seeded
+/// `deferred` provenance) plus the read parameters the worker needs.
+#[derive(Debug, Clone)]
+struct DeferredWatcherFaultCapture {
+    message: String,
+    fingerprint: Vec<String>,
+    tags: Vec<(String, String)>,
+    extras: Vec<(String, sentry::protocol::Value)>,
+    read: WatcherFaultDeferredRead,
+    deferred_at: Instant,
+}
+
+impl DeferredWatcherFaultCapture {
+    fn new(
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        read: WatcherFaultDeferredRead,
+    ) -> Self {
+        Self {
+            message: message.to_string(),
+            fingerprint: fingerprint.iter().map(|part| (*part).to_string()).collect(),
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            extras: extras
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            read,
+            deferred_at: Instant::now(),
+        }
+    }
+}
+
+/// The deferred fault-capture registry plus a one-way shutdown latch. The latch is
+/// armed by the FIRST teardown flush and closes a shutdown race: once a flush has
+/// drained, a watcher-exit callback that was still building its payload could
+/// otherwise `register` a fresh ~60s deferral into a vector nothing will ever drain
+/// again, silently losing the fault report at shutdown. With the latch, a
+/// registration that arrives after a flush is handed back to its caller to emit
+/// IMMEDIATELY instead of being deferred. The flag and the vector live under ONE
+/// mutex so arming-and-draining is atomic against a concurrent registration.
+#[derive(Default)]
+struct PendingWatcherFaultRegistry {
+    /// Set once a teardown flush has run; never cleared in production (the process
+    /// is exiting). A later registration must send immediately, not defer.
+    shutting_down: bool,
+    items: Vec<(u64, DeferredWatcherFaultCapture)>,
+}
+
+static PENDING_WATCHER_FAULT_CAPTURES: OnceLock<Mutex<PendingWatcherFaultRegistry>> =
+    OnceLock::new();
+static WATCHER_FAULT_DEFERRAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn pending_watcher_fault_captures() -> &'static Mutex<PendingWatcherFaultRegistry> {
+    PENDING_WATCHER_FAULT_CAPTURES
+        .get_or_init(|| Mutex::new(PendingWatcherFaultRegistry::default()))
+}
+
+/// Register a capture for deferred resolution, or — when a teardown flush has
+/// already armed the shutdown latch — hand the payload BACK so the caller emits it
+/// immediately. `Ok(id)` means it was queued and a worker owns it; `Err(payload)`
+/// means shutdown is under way and it must be sent now, never deferred.
+fn register_pending_watcher_fault_capture(
+    payload: DeferredWatcherFaultCapture,
+) -> Result<u64, DeferredWatcherFaultCapture> {
+    let mut registry = pending_watcher_fault_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.shutting_down {
+        return Err(payload);
+    }
+    let id = WATCHER_FAULT_DEFERRAL_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+    registry.items.push((id, payload));
+    Ok(id)
+}
+
+/// Claim one pending capture. Returns `None` when a teardown flush already took
+/// it, which is what makes a deferral resolve EXACTLY once.
+fn take_pending_watcher_fault_capture(id: u64) -> Option<DeferredWatcherFaultCapture> {
+    let mut registry = pending_watcher_fault_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = registry
+        .items
+        .iter()
+        .position(|(pending_id, _)| *pending_id == id)?;
+    Some(registry.items.remove(index).1)
+}
+
+/// Arm the shutdown latch AND drain every in-flight capture in one locked step, so
+/// no registration can slip in between the arm and the drain. After this returns,
+/// every later `register` sees the latch and its caller sends immediately.
+fn arm_shutdown_and_drain_pending_watcher_fault_captures() -> Vec<DeferredWatcherFaultCapture> {
+    let mut registry = pending_watcher_fault_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.shutting_down = true;
+    registry
+        .items
+        .drain(..)
+        .map(|(_, payload)| payload)
+        .collect()
+}
+
+/// Test-only: clear the registry and disarm the shutdown latch so each test that
+/// exercises the shared static starts from a known state.
+#[cfg(test)]
+fn reset_pending_watcher_fault_registry_for_test() {
+    let mut registry = pending_watcher_fault_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.shutting_down = false;
+    registry.items.clear();
+}
+
+/// Emit every deferred fault capture still in flight, IMMEDIATELY, with its
+/// current honest `deferred` provenance. Both exit teardowns (app-initiated quit
+/// and Windows session end) call this: a fault event names a real crash and must
+/// not be lost to the deferral horizon. Bounded and panic-free — it drains a
+/// vector and sends what it took, doing NO Event Log work, so it adds no uncapped
+/// work to a teardown that may run inside a Windows window procedure.
+pub fn flush_pending_watcher_fault_captures(reason: &str) -> usize {
+    let flushed = flush_pending_watcher_fault_captures_with(|payload| {
+        // The read never completed; keep the seeded `deferred` provenance and
+        // stamp WHY it is being sent now (which teardown seam) so the event is
+        // self-explaining.
+        send_deferred_watcher_fault_capture(payload, None, reason);
+    });
+    if flushed > 0 {
+        log(
+            "daemon",
+            &format!("flushed {flushed} deferred watcher-fault capture(s) at {reason}"),
+        );
+    }
+    flushed
+}
+
+/// The flush itself, with its sender injected so a test can prove exactly-once
+/// draining without writing a real Sentry event.
+fn flush_pending_watcher_fault_captures_with<F>(mut send: F) -> usize
+where
+    F: FnMut(DeferredWatcherFaultCapture),
+{
+    let pending = arm_shutdown_and_drain_pending_watcher_fault_captures();
+    let flushed = pending.len();
+    for payload in pending {
+        send(payload);
+    }
+    flushed
+}
+
+/// Extra the OUTER supervisor waits beyond the reader's own bounded horizon before
+/// giving up on a verdict. `read_watcher_fault` polls under its own deadline, but
+/// the wevtapi calls it makes (`EvtQuery`/`EvtRender`) take NO timeout — only
+/// `EvtNext` does — so a stalled Event Log service could wedge the reader thread
+/// past its deadline and it would never return. This grace cleanly separates a
+/// normal slow return (≤ budget + one sweep) from a genuine wedge.
+const WATCHER_FAULT_READ_SUPERVISOR_GRACE: Duration = Duration::from_secs(5);
+
+/// Hand a fault capture to a bounded worker that performs the deferred OS fault
+/// read OFF the exit path, then resolves and sends it. Two guards make it robust:
+///
+/// 1. **Shutdown barrier.** If a teardown flush already armed the latch,
+///    `register` returns the payload back and it is sent IMMEDIATELY rather than
+///    deferred into a registry nothing will drain again — so a shutdown that races
+///    a just-detected fault cannot lose the report.
+/// 2. **Outer supervisor bound.** The blocking read runs on an INNER thread and
+///    reports over a channel; a supervisor waits at most `budget + grace` for the
+///    verdict and then claims and sends the capture itself with honest unresolved
+///    provenance. A wevtapi call with no timeout can therefore never hang the
+///    capture forever or leak the pending payload — the wedged reader thread is
+///    abandoned (never joined); it holds no lock and is bounded in count by fault
+///    frequency. std threads (not tokio tasks): nothing awaits them and the exit
+///    callback has already fully returned.
+fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
+    let read = payload.read.clone();
+    let id = match register_pending_watcher_fault_capture(payload) {
+        Ok(id) => id,
+        Err(payload) => {
+            // Teardown latch already armed: emit now with honest `deferred`
+            // provenance instead of deferring into an abandoned registry.
+            send_deferred_watcher_fault_capture(payload, None, "shutdown_immediate");
+            return;
+        }
+    };
+    let _supervisor = std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Inner reader — may block in a timeout-less wevtapi call if the Event Log
+        // service stalls. Abandoned if it outlasts the supervisor bound below.
+        let _reader = std::thread::spawn(move || {
+            let outcome = crate::commands::process::read_watcher_fault(
+                &read.sampled_pids,
+                read.exception_code,
+                read.gen_start_ms,
+                read.gen_end_ms,
+                crate::commands::process::deferred_watcher_fault_budget(),
+            );
+            // Ignore a send error: the supervisor may have already timed out and
+            // dropped the receiver, in which case the capture has already shipped.
+            let _ = tx.send(outcome);
+        });
+        // Bounded outer wait: a verdict, or the supervisor deadline, whichever
+        // comes first. `None` means the reader wedged or died before reporting.
+        let bound = crate::commands::process::deferred_watcher_fault_budget()
+            + WATCHER_FAULT_READ_SUPERVISOR_GRACE;
+        let outcome = rx.recv_timeout(bound).ok();
+        // Claim send-rights EXACTLY once. If a teardown flush already claimed it,
+        // this is a no-op — the event has already shipped with honest provenance.
+        if let Some(payload) = take_pending_watcher_fault_capture(id) {
+            let resolution = if outcome.is_some() {
+                "read_resolved"
+            } else {
+                "read_supervisor_timeout"
+            };
+            send_deferred_watcher_fault_capture(payload, outcome, resolution);
+        }
+    });
+}
+
+/// Patch ONLY the `watcher_fault_*` fields of a held-back payload with a resolved
+/// read outcome (or keep the seeded `deferred` provenance when the read did not
+/// complete) and stamp the resolution and deferral latency. Pure so a test can
+/// prove the patch without writing a real Sentry event. The message and
+/// fingerprint are untouched, so grouping is exactly what an immediate capture
+/// would have produced — only the watcher_fault_* fields and the resolution
+/// markers differ.
+fn finalize_watcher_fault_payload(
+    mut payload: DeferredWatcherFaultCapture,
+    outcome: Option<hq_desktop_core::watcher_fault::WatcherFaultOutcome>,
+    resolution: &str,
+) -> DeferredWatcherFaultCapture {
+    if let Some(outcome) = outcome {
+        set_payload_tag(
+            &mut payload.tags,
+            "watcher_fault_provenance",
+            outcome.provenance_token().to_string(),
+        );
+        set_payload_tag(
+            &mut payload.tags,
+            "watcher_fault_faulting_image",
+            outcome.image_token().to_string(),
+        );
+        set_payload_tag(
+            &mut payload.tags,
+            "watcher_fault_faulting_module",
+            outcome.module_token().to_string(),
+        );
+        set_payload_tag(&mut payload.tags, "watcher_fault_read", outcome.counters_tag());
+        set_payload_string_extra(
+            &mut payload.extras,
+            "watcher_fault_exception_code",
+            outcome.exception_code.map(|code| code.to_string()),
+        );
+        set_payload_string_extra(
+            &mut payload.extras,
+            "watcher_fault_offset",
+            outcome.fault_offset.map(|offset| offset.to_string()),
+        );
+    }
+    let waited_ms = payload
+        .deferred_at
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    payload.extras.push((
+        "watcher_fault_read_resolution".to_string(),
+        sentry::protocol::Value::String(resolution.to_string()),
+    ));
+    payload.extras.push((
+        "watcher_fault_deferred_ms".to_string(),
+        sentry::protocol::Value::Number(waited_ms.into()),
+    ));
+    payload
+}
+
+fn send_deferred_watcher_fault_capture(
+    payload: DeferredWatcherFaultCapture,
+    outcome: Option<hq_desktop_core::watcher_fault::WatcherFaultOutcome>,
+    resolution: &str,
+) {
+    let payload = finalize_watcher_fault_payload(payload, outcome, resolution);
+    let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
+    let tags: Vec<(&str, String)> = payload
+        .tags
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let extras: Vec<(&str, sentry::protocol::Value)> = payload
+        .extras
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let mut effects = ProductionWatcherProcessEffects;
+    effects.capture(&payload.message, &fingerprint, &tags, &extras);
+}
+
+/// Overwrite (or insert) one tag in a held-back payload's tag list.
+fn set_payload_tag(tags: &mut Vec<(String, String)>, key: &str, value: String) {
+    match tags.iter().position(|(existing, _)| existing == key) {
+        Some(index) => tags[index].1 = value,
+        None => tags.push((key.to_string(), value)),
+    }
+}
+
+/// Set or remove one string extra in a held-back payload. `None` removes the key
+/// so an unresolved read never carries a stale code/offset.
+fn set_payload_string_extra(
+    extras: &mut Vec<(String, sentry::protocol::Value)>,
+    key: &str,
+    value: Option<String>,
+) {
+    extras.retain(|(existing, _)| existing != key);
+    if let Some(value) = value {
+        extras.push((key.to_string(), sentry::protocol::Value::String(value)));
+    }
+}
+
 /// Effects used by the production watcher handlers.
 ///
 /// Keeping crash state, lifecycle, logging, breadcrumbs and capture behind one
@@ -1997,6 +2414,19 @@ trait WatcherProcessEffects {
         fingerprint: &[&str],
         tags: &[(&str, String)],
         extras: &[(&str, sentry::protocol::Value)],
+    );
+    /// Hold this fault-exit capture back while the deferred OS fault read runs off
+    /// the terminal callback (HQ-DESKTOP-4X). The worker patches ONLY the
+    /// `watcher_fault_*` fields with the resolved provenance, then sends; a
+    /// teardown flush may preempt it and send the honest `deferred` provenance.
+    /// Never cancels a capture on its own.
+    fn defer_watcher_fault_capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        read: WatcherFaultDeferredRead,
     );
 }
 
@@ -2084,6 +2514,23 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
             fingerprint,
             tags,
             extras,
+        ));
+    }
+
+    fn defer_watcher_fault_capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        read: WatcherFaultDeferredRead,
+    ) {
+        spawn_deferred_watcher_fault_capture(DeferredWatcherFaultCapture::new(
+            message,
+            fingerprint,
+            tags,
+            extras,
+            read,
         ));
     }
 }
@@ -2469,6 +2916,25 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         "watcher_fault_faulting_module",
         context.watcher_fault_faulting_module.clone(),
     ));
+    // Bounded read counters (`seen:N,parsed:N,...`), so a second failure states
+    // exactly why attribution failed rather than repeating a blind retry. Only
+    // present for a fault exit whose read was performed/deferred.
+    if let Some(counters) = &context.watcher_fault_read_counters {
+        tags.push(("watcher_fault_read", counters.clone()));
+    }
+    // WER-independent job-image tree observation: names a culprit CANDIDATE from
+    // the app's own process-tree sampling even when WER contributes no record.
+    // Its own provenance token marks it a tree observation, never an attribution;
+    // absent when nothing was sampled alive, so absence never renders as evidence.
+    if let Some(images) = &context.watcher_fault_job_images {
+        tags.push(("watcher_fault_job_images", images.clone()));
+    }
+    if let Some(candidate) = &context.watcher_fault_job_culprit_candidate {
+        tags.push(("watcher_fault_job_culprit_candidate", candidate.clone()));
+    }
+    if let Some(provenance) = &context.watcher_fault_job_image_provenance {
+        tags.push(("watcher_fault_job_image_provenance", provenance.clone()));
+    }
     // Structural rollup of stderr lines the fatal classifier did not recognise,
     // so "silent" is separable from "noisy but unrecognised". Only when nonempty.
     if let Some(shapes) = &context.runner_unmatched_stderr_shapes {
@@ -2557,6 +3023,18 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             ),
         );
         effects.defer_session_end_capture(&message, &fingerprint, &tags, &extras);
+        return;
+    }
+    // A Windows fault exit whose OS fault read was deferred off the terminal
+    // callback (HQ-DESKTOP-4X): hand the fully-built payload to the deferred
+    // worker, which performs the bounded read, patches ONLY the watcher_fault_*
+    // fields with the resolved provenance, and sends. If a teardown flush preempts
+    // it, the event still ships with the honest `deferred` provenance. Capture
+    // policy, fingerprint, message, and every other tag/extra are already decided
+    // and unchanged — only WHEN this event is sent and WHAT provenance it carries
+    // differ from an immediate send.
+    if let Some(read) = &context.watcher_fault_deferred_read {
+        effects.defer_watcher_fault_capture(&message, &fingerprint, &tags, &extras, read.clone());
         return;
     }
     effects.capture(&message, &fingerprint, &tags, &extras);
@@ -4320,6 +4798,10 @@ mod tests {
         /// Kept separate from `captures` so a test cannot mistake a held-back
         /// event for a sent one.
         deferred: Vec<RecordedCapture>,
+        /// Captures handed to the deferred watcher-fault read instead of being
+        /// sent now, with their seeded `deferred` provenance. Separate so a test
+        /// can prove the fault read is off the exit path.
+        deferred_watcher_fault: Vec<RecordedCapture>,
         lifecycle: Vec<(WatchDaemonState, DaemonFailureCategory)>,
     }
 
@@ -4390,6 +4872,18 @@ mod tests {
             extras: &[(&str, sentry::protocol::Value)],
         ) {
             self.deferred
+                .push(recorded_capture(message, fingerprint, tags, extras));
+        }
+
+        fn defer_watcher_fault_capture(
+            &mut self,
+            message: &str,
+            fingerprint: &[&str],
+            tags: &[(&str, String)],
+            extras: &[(&str, sentry::protocol::Value)],
+            _read: WatcherFaultDeferredRead,
+        ) {
+            self.deferred_watcher_fault
                 .push(recorded_capture(message, fingerprint, tags, extras));
         }
     }
@@ -5025,10 +5519,12 @@ mod tests {
     }
 
     #[test]
-    fn watcher_capture_reports_unavailable_fault_provenance_by_default() {
-        // No OS fault record (or non-Windows): provenance + image + module render
-        // the `unavailable` sentinel, and no code/offset extras are attached, so
-        // absence never masquerades as an attribution.
+    fn watcher_capture_reports_not_applicable_fault_provenance_by_default() {
+        // No Windows fault read applies to a default context (no deferred read
+        // seeded): provenance renders the honest `not_applicable` token — no longer
+        // masquerading as the overloaded `unavailable` — while image + module keep
+        // the `unavailable` sentinel and no code/offset extras are attached, so
+        // absence never renders as an attribution.
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(
             &mut effects,
@@ -5041,10 +5537,12 @@ mod tests {
             TerminationHost::Windows,
             &WatcherExitCaptureContext::default(),
         );
+        // No deferred read on a default context, so the capture is sent, not held.
+        assert!(effects.deferred_watcher_fault.is_empty());
         let capture = effects.captures.first().expect("captures");
         assert_eq!(
             recorded_tag(capture, "watcher_fault_provenance"),
-            "unavailable"
+            "not_applicable"
         );
         assert_eq!(
             recorded_tag(capture, "watcher_fault_faulting_image"),
@@ -5066,6 +5564,226 @@ mod tests {
             .extras
             .iter()
             .all(|(k, _)| k != "watcher_fault_offset"));
+    }
+
+    // ── Deferred watcher-fault capture wiring (HQ-DESKTOP-4X) ──
+
+    #[test]
+    fn watcher_fault_deferred_read_is_held_off_the_exit_path() {
+        // A Windows fault exit whose OS fault read is deferred: the capture is
+        // HELD, not sent, carrying the honest `deferred` provenance, the seeded
+        // all-zero counters, and the WER-independent job-image tree observation.
+        // The exit callback itself performs zero Event Log work — the read runs on
+        // the deferred worker, so emit_exit_then_deregister is never delayed by it.
+        let context = WatcherExitCaptureContext {
+            watcher_fault_provenance: WatcherFaultProvenance::Deferred.as_str().to_string(),
+            watcher_fault_read_counters: Some(WatcherFaultReadCounters::default().tag_value()),
+            watcher_fault_job_images: Some("node_exe,cmd_exe".to_string()),
+            watcher_fault_job_culprit_candidate: Some("node_exe".to_string()),
+            watcher_fault_job_image_provenance: Some("job_tree_observed".to_string()),
+            watcher_fault_deferred_read: Some(WatcherFaultDeferredRead {
+                sampled_pids: vec![6700],
+                exception_code: 0xC000_0409,
+                gen_start_ms: 1_000_000,
+                gen_end_ms: 1_001_000,
+            }),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            r"C:\Users\Ada\AppData\Roaming\npm\npx.cmd",
+            None,
+            TerminationHost::Windows,
+            &context,
+        );
+        assert!(
+            effects.captures.is_empty(),
+            "a deferred fault read must NOT send on the exit path"
+        );
+        let held = effects
+            .deferred_watcher_fault
+            .first()
+            .expect("fault capture deferred off the exit path");
+        assert_eq!(recorded_tag(held, "watcher_fault_provenance"), "deferred");
+        assert_eq!(recorded_tag(held, "watcher_fault_faulting_image"), "unavailable");
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_read"),
+            "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
+        );
+        assert_eq!(recorded_tag(held, "watcher_fault_job_images"), "node_exe,cmd_exe");
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_job_culprit_candidate"),
+            "node_exe"
+        );
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_job_image_provenance"),
+            "job_tree_observed"
+        );
+        // Grouping continuity: the deferred event's fingerprint is byte-identical
+        // to what an immediate capture for the same inputs would have produced.
+        assert_eq!(
+            held.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none"
+            ]
+        );
+        // Lifecycle recovery ran synchronously and is unaffected by the deferral.
+        assert!(effects
+            .lifecycle
+            .iter()
+            .any(|(state, _)| matches!(state, WatchDaemonState::Stopped | WatchDaemonState::Backoff)));
+    }
+
+    #[test]
+    fn watcher_fault_deferred_registry_flushes_exactly_once() {
+        // The pending registry drains take-once: a teardown flush emits every
+        // in-flight capture exactly once, and a second flush drains nothing, so a
+        // completing worker can never double-send.
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_pending_watcher_fault_registry_for_test();
+        let make = || {
+            DeferredWatcherFaultCapture::new(
+                "auto-sync watcher exited unexpectedly",
+                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[("watcher_fault_provenance", "deferred".to_string())],
+                &[],
+                WatcherFaultDeferredRead {
+                    sampled_pids: vec![],
+                    exception_code: 0xC000_0409,
+                    gen_start_ms: 0,
+                    gen_end_ms: 1,
+                },
+            )
+        };
+        let first = register_pending_watcher_fault_capture(make());
+        let second = register_pending_watcher_fault_capture(make());
+        assert!(first.is_ok() && second.is_ok(), "registrations queue before shutdown");
+        let mut sent: Vec<DeferredWatcherFaultCapture> = Vec::new();
+        assert_eq!(
+            flush_pending_watcher_fault_captures_with(|payload| sent.push(payload)),
+            2
+        );
+        assert_eq!(sent.len(), 2);
+        // Nothing left: the completing workers' takes will all return None.
+        assert_eq!(
+            flush_pending_watcher_fault_captures_with(|payload| sent.push(payload)),
+            0
+        );
+        assert!(take_pending_watcher_fault_capture(first.unwrap()).is_none());
+        reset_pending_watcher_fault_registry_for_test();
+    }
+
+    #[test]
+    fn watcher_fault_flush_is_a_barrier_against_later_registration() {
+        // The shutdown race Codex flagged: once a teardown flush has drained, a
+        // watcher-exit callback that was still building its payload could `register`
+        // a fresh deferral into a vector nothing will drain again. The armed latch
+        // must reject that registration so the caller emits it immediately instead.
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_pending_watcher_fault_registry_for_test();
+        let make = || {
+            DeferredWatcherFaultCapture::new(
+                "auto-sync watcher exited unexpectedly",
+                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[("watcher_fault_provenance", "deferred".to_string())],
+                &[],
+                WatcherFaultDeferredRead {
+                    sampled_pids: vec![],
+                    exception_code: 0xC000_0409,
+                    gen_start_ms: 0,
+                    gen_end_ms: 1,
+                },
+            )
+        };
+        // Before any flush a registration queues normally.
+        assert!(register_pending_watcher_fault_capture(make()).is_ok());
+        // The flush arms the latch and drains the one queued capture.
+        assert_eq!(
+            flush_pending_watcher_fault_captures_with(|_| {}),
+            1,
+            "the flush drains the pre-registered capture"
+        );
+        // A registration arriving AFTER the flush is refused, handing the payload
+        // back so `spawn_deferred_watcher_fault_capture` sends it immediately rather
+        // than losing it to an abandoned registry.
+        match register_pending_watcher_fault_capture(make()) {
+            Err(returned) => {
+                assert_eq!(returned.message, "auto-sync watcher exited unexpectedly");
+            }
+            Ok(_) => panic!("registration after a flush must be refused by the shutdown latch"),
+        }
+        // The refused registration was NOT queued: a further flush drains nothing.
+        assert_eq!(flush_pending_watcher_fault_captures_with(|_| {}), 0);
+        reset_pending_watcher_fault_registry_for_test();
+    }
+
+    #[test]
+    fn watcher_fault_deferred_finalize_resolves_or_keeps_provenance() {
+        use hq_desktop_core::watcher_fault::{
+            attribute_watcher_fault, WatcherFaultBinary, WerApplicationError,
+        };
+        let base = DeferredWatcherFaultCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+            &[
+                ("watcher_fault_provenance", "deferred".to_string()),
+                ("watcher_fault_faulting_image", "unavailable".to_string()),
+                ("watcher_fault_read", "seen:0,parsed:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
+            ],
+            &[],
+            WatcherFaultDeferredRead {
+                sampled_pids: vec![6700],
+                exception_code: 0xC000_0409,
+                gen_start_ms: 1_000_000,
+                gen_end_ms: 1_001_000,
+            },
+        );
+        let tag = |payload: &DeferredWatcherFaultCapture, key: &str| {
+            payload
+                .tags
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let has_extra = |payload: &DeferredWatcherFaultCapture, key: &str| {
+            payload.extras.iter().any(|(k, _)| k == key)
+        };
+
+        // A resolved read patches ONLY the watcher_fault_* fields and stamps the
+        // resolution; the fingerprint is untouched.
+        let record = WerApplicationError {
+            image: WatcherFaultBinary::NodeExe,
+            module: WatcherFaultBinary::NtdllDll,
+            exception_code: Some(0xC000_0409),
+            fault_offset: Some(0x2a1b3),
+            faulting_pid: Some(6700),
+            event_time_unix_ms: Some(1_000_500),
+        };
+        let resolved = attribute_watcher_fault(&[record], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
+        let out = finalize_watcher_fault_payload(base.clone(), Some(resolved), "read_resolved");
+        assert_eq!(tag(&out, "watcher_fault_provenance"), "pid_matched");
+        assert_eq!(tag(&out, "watcher_fault_faulting_image"), "node_exe");
+        assert_eq!(tag(&out, "watcher_fault_faulting_module"), "ntdll_dll");
+        assert!(has_extra(&out, "watcher_fault_exception_code"));
+        assert!(has_extra(&out, "watcher_fault_read_resolution"));
+        assert_eq!(out.fingerprint, base.fingerprint);
+
+        // An unresolved (teardown-flushed) payload keeps the honest `deferred`
+        // provenance and never names an image, only stamping the resolution.
+        let flushed = finalize_watcher_fault_payload(base.clone(), None, "teardown_flush");
+        assert_eq!(tag(&flushed, "watcher_fault_provenance"), "deferred");
+        assert_eq!(tag(&flushed, "watcher_fault_faulting_image"), "unavailable");
+        assert!(!has_extra(&flushed, "watcher_fault_exception_code"));
+        assert!(has_extra(&flushed, "watcher_fault_read_resolution"));
     }
 
     #[test]
