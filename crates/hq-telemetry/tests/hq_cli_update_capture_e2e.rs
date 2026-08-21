@@ -5,9 +5,9 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     BinaryAnchorShape, ConvergenceVerdict, InstallExecutor, LocalVersionProbeDiagnostics,
-    NonConvergenceKind, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
-    PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind, VersionProbeOutcome,
-    NON_CONVERGENT_ERROR_PREFIX,
+    ManagedShadowRepair, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    ResolvedProgramKind, VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -101,6 +101,8 @@ fn pnpm_context<'a>(
             exit_status: "0".to_string(),
             output_len: 128,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
     }
 }
 
@@ -975,6 +977,8 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
     };
 
     let clears = Cell::new(0usize);
@@ -1168,4 +1172,137 @@ fn true_pnpm_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_
         fingerprint(event),
         ["hq-cli-update", "install-non-convergent"]
     );
+}
+
+/// HQ-DESKTOP-46: a managed-toolchain shadow whose repair was ATTEMPTED and could
+/// not converge captures exactly like a foreign layout — one durable-record-gated
+/// event on the shared fingerprint — but tagged `non_convergence_kind=managed-shadowed`
+/// with the closed `managed_shadow_repair=repair-failed` outcome, and with both paths
+/// home-redacted. On base the same input tags `foreign-managed`.
+#[test]
+fn a_repair_failed_managed_shadow_captures_managed_shadowed_with_the_repair_tag() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let root = home.join("IndigoHQ-toolchain");
+    let managed_roots = vec![root.clone()];
+    let shadow = root.join("node").join("hq.cmd").to_string_lossy().to_string();
+    let prefix = root.join("npm-prefix").to_string_lossy().to_string();
+
+    let ctx = PostInstallContext {
+        executor: InstallExecutor::Npm,
+        before_bin: &shadow,
+        after_bin: &shadow,
+        before_version: Some("5.77.14"),
+        after_version: Some("5.77.14"),
+        latest: "5.84.0",
+        npm_prefix_passed: Some(&prefix),
+        delivered_version: Some("5.84.0"),
+        installer_bin: "/opt/homebrew/bin/npm",
+        already_blocked: false,
+        nonblocking_episode_keys: &[],
+        pnpm: None,
+        managed_roots: &managed_roots,
+        managed_shadow_repair: ManagedShadowRepair::RepairFailed,
+    };
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(records, 1, "a repair-failed shadow writes the durable marker");
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    // The shared fingerprint must NOT split — the new tag is a filter, not a group.
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("managed-shadowed")
+    );
+    assert_eq!(
+        event.tags.get("managed_shadow_repair").map(String::as_str),
+        Some("repair-failed")
+    );
+    // Both paths are home-redacted — the install LAYOUT is the diagnostic, never the
+    // account name in front of it.
+    let hq_bin = event.extra.get("hq_bin").and_then(Value::as_str).unwrap();
+    let npm_prefix = event.extra.get("npm_prefix").and_then(Value::as_str).unwrap();
+    assert!(hq_bin.starts_with('~'), "hq_bin must be home-redacted: {hq_bin}");
+    assert!(
+        npm_prefix.starts_with('~'),
+        "npm_prefix must be home-redacted: {npm_prefix}"
+    );
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text), "raw home path leaked");
+
+    // A failed marker write fails closed: no event, no capture, exactly like the
+    // foreign-managed contract this shape now shares when unrepaired.
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, false);
+    assert!(events.is_empty(), "a failed marker write must fail closed");
+    assert_eq!(records, 1);
+    assert_eq!(captures, 0);
+    assert_eq!(record_failures, 1);
+}
+
+/// A managed-shadow repair that CONVERGED emits NO Sentry event at all: the repaired
+/// resolution reaches `latest`, so the decision takes the success path, clears the
+/// marker, and captures nothing. The slice going quiet is itself the success signal.
+#[test]
+fn a_converged_managed_shadow_repair_emits_no_event() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let root = home.join("IndigoHQ-toolchain");
+    let managed_roots = vec![root.clone()];
+    // After the repair the app resolves the fresh copy in the npm prefix at latest.
+    let fresh = root
+        .join("npm-prefix")
+        .join("hq.cmd")
+        .to_string_lossy()
+        .to_string();
+    let stale = root.join("node").join("hq.cmd").to_string_lossy().to_string();
+    let prefix = root.join("npm-prefix").to_string_lossy().to_string();
+
+    let ctx = PostInstallContext {
+        executor: InstallExecutor::Npm,
+        before_bin: &stale,
+        after_bin: &fresh,
+        before_version: Some("5.77.14"),
+        after_version: Some("5.84.0"), // converged after the repair
+        latest: "5.84.0",
+        npm_prefix_passed: Some(&prefix),
+        delivered_version: Some("5.84.0"),
+        installer_bin: "/opt/homebrew/bin/npm",
+        already_blocked: false,
+        nonblocking_episode_keys: &[],
+        pnpm: None,
+        managed_roots: &managed_roots,
+        managed_shadow_repair: ManagedShadowRepair::Converged,
+    };
+    let clears = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(&ctx);
+        assert!(matches!(
+            outcome.verdict,
+            ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
+        ));
+        assert!(outcome.clear_non_convergent);
+        assert!(outcome.capture.is_none());
+        assert!(outcome.record_non_convergent.is_none());
+        let record = |_v: String| panic!("a converged repair must not record a marker");
+        let clear = || clears.set(clears.get() + 1);
+        let capture = |_r: NonConvergentReport| panic!("a converged repair must not capture");
+        let record_failure = |_e: String| panic!("no marker failure on a converged run");
+        let result = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+        assert!(result.is_ok(), "a converged repair returns success");
+    });
+    assert!(events.is_empty(), "a converged repair emits no event");
+    assert_eq!(clears.get(), 1);
 }

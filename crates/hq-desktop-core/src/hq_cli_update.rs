@@ -2,7 +2,7 @@
 //! reporting helpers plus its async single-flight boundary.
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -807,6 +807,15 @@ pub enum NonConvergenceKind {
     PnpmTargeted,
     BunTargeted,
     ForeignManaged,
+    /// npm delivered `latest` into HQ's OWN managed npm prefix, yet the `hq` the
+    /// app resolves is a SECOND HQ-managed copy at a different path inside the
+    /// SAME managed toolchain root (the Windows `toolchain\node\hq.cmd` shadow of
+    /// `toolchain\npm-prefix`). This is neither a genuine foreign layout HQ cannot
+    /// drive nor a delivery shortfall: HQ installed both copies, so HQ can repair
+    /// it by removing the stale shadow. Distinguished from `ForeignManaged` so the
+    /// updater can self-heal instead of falsely telling the user to "update it with
+    /// the tool that installed it" and wedging auto-update for the release.
+    ManagedShadowed,
     /// npm was aimed at the resolved binary's own prefix, yet the target version
     /// was never delivered INTO that prefix — the manifest there does not report
     /// the version we asked for. That is not a layout defect (the installer had
@@ -817,6 +826,45 @@ pub enum NonConvergenceKind {
     ResolutionShortfall,
 }
 
+/// What HQ's automatic shadow repair did on a [`NonConvergenceKind::ManagedShadowed`]
+/// episode. Closed domain, never a path. `NotAttempted` is the neutral default the
+/// pure classifier and every non-shadow caller pass — the pre-repair classification
+/// and any layout that never triggered a repair. The remaining values are supplied
+/// by the app command only after it has run (or refused) the removal and re-resolved
+/// the binary the app executes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedShadowRepair {
+    /// No repair ran: the pre-repair classification pass, or a caller that does not
+    /// drive the repair. Treated by [`decide_post_install`] as a repairable first
+    /// episode that writes NO durable marker and pages nothing, so the next check
+    /// retries and self-heals.
+    NotAttempted,
+    /// The repair removed the shadow and the re-resolved binary converged. Reported
+    /// for completeness only; a converged run reaches the success verdict and emits
+    /// no non-convergent event, so this value never rides a Sentry event.
+    Converged,
+    /// The repair ran (or a removal errored) and the app still resolves the stale
+    /// shadow. Falls back to the `ForeignManaged` contract: one durable-record-gated
+    /// capture per episode plus the marker, so a machine HQ could not repair stops
+    /// re-paging and stops reinstalling into the unused prefix every cycle.
+    RepairFailed,
+    /// The repair refused because the shadow's provenance was not `@indigoai-us/hq-cli`
+    /// or a safety gate was unmet. Same durable fallback as `RepairFailed`: HQ never
+    /// deletes a copy it cannot prove is its own, and still stops re-paging.
+    ProvenanceRefused,
+}
+
+impl ManagedShadowRepair {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "not-attempted",
+            Self::Converged => "converged",
+            Self::RepairFailed => "repair-failed",
+            Self::ProvenanceRefused => "provenance-refused",
+        }
+    }
+}
+
 impl NonConvergenceKind {
     pub fn telemetry_value(self) -> &'static str {
         match self {
@@ -824,6 +872,7 @@ impl NonConvergenceKind {
             Self::PnpmTargeted => "pnpm-targeted",
             Self::BunTargeted => "bun-targeted",
             Self::ForeignManaged => "foreign-managed",
+            Self::ManagedShadowed => "managed-shadowed",
             Self::ResolutionShortfall => "resolution-shortfall",
         }
     }
@@ -882,6 +931,7 @@ pub fn non_convergence_kind(
     pnpm_targeted: bool,
     post_install_hq_bin: &str,
     target_delivered: bool,
+    managed_roots: &[PathBuf],
 ) -> NonConvergenceKind {
     match executor {
         InstallExecutor::Pnpm => {
@@ -928,9 +978,67 @@ pub fn non_convergence_kind(
                     NonConvergenceKind::ResolutionShortfall
                 }
             }
+            // The prefixes DIFFER but both sit inside the SAME HQ-managed
+            // toolchain root, and the installer provably delivered `latest` into
+            // the one it aimed at: HQ owns BOTH copies (the Windows
+            // `toolchain\npm-prefix` it installed into and the stale
+            // `toolchain\node\hq.cmd` the app still resolves). That is not a
+            // foreign layout HQ cannot drive — it is a shadow HQ can remove, so it
+            // is classified apart from `ForeignManaged`. `target_delivered` keeps a
+            // delivery shortfall out of this arm, and same-root containment keeps a
+            // genuine cross-root or non-managed layout in `ForeignManaged`.
+            (Some(passed), Some(active_prefix))
+                if target_delivered
+                    && same_managed_root(passed, &active_prefix, managed_roots) =>
+            {
+                NonConvergenceKind::ManagedShadowed
+            }
             _ => NonConvergenceKind::ForeignManaged,
         },
     }
+}
+
+/// Whether `path` sits inside `root`, compared by path COMPONENTS — never a raw
+/// string prefix, which would both false-match a sibling like `<root>-old` and
+/// false-miss a case or separator difference. Case-insensitive on Windows (its
+/// filesystem is), case-sensitive elsewhere. An empty root is never a container.
+pub fn path_is_within(root: &Path, path: &Path) -> bool {
+    if root.as_os_str().is_empty() {
+        return false;
+    }
+    let root_components: Vec<_> = root.components().collect();
+    let path_components: Vec<_> = path.components().collect();
+    if path_components.len() < root_components.len() {
+        return false;
+    }
+    root_components
+        .iter()
+        .zip(path_components.iter())
+        .all(|(root_component, path_component)| {
+            #[cfg(target_os = "windows")]
+            {
+                root_component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&path_component.as_os_str().to_string_lossy())
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                root_component == path_component
+            }
+        })
+}
+
+/// Whether both prefixes are contained in the SAME managed toolchain root. Used to
+/// tell an HQ-owned shadow (both paths inside one `managed_toolchain_roots()` entry)
+/// apart from a genuinely foreign layout or a cross-root (`IndigoHQ` vs legacy
+/// `Indigo HQ`) split, which must both stay `ForeignManaged`.
+fn same_managed_root(a: &str, b: &str, managed_roots: &[PathBuf]) -> bool {
+    let a = Path::new(a);
+    let b = Path::new(b);
+    managed_roots
+        .iter()
+        .any(|root| path_is_within(root, a) && path_is_within(root, b))
 }
 
 /// How the pnpm home behind a resolved shim was derived. Closed domain — the
@@ -1157,6 +1265,10 @@ pub struct NonConvergentReport {
     /// inference.
     pub delivered_version: Option<String>,
     pub pnpm: Option<PnpmRunDiagnostics>,
+    /// What HQ's managed-shadow repair did for this episode. `NotAttempted` for every
+    /// non-shadow class (no repair applies); one of `repair-failed` / `provenance-refused`
+    /// on a `ManagedShadowed` event that stayed stale. A closed telemetry token.
+    pub managed_shadow_repair: ManagedShadowRepair,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1349,6 +1461,17 @@ pub struct PostInstallContext<'a> {
     /// pnpm executor only. `Some` means pnpm ran; the diagnostics describe what
     /// environment it was handed and what it reported back.
     pub pnpm: Option<PnpmRunDiagnostics>,
+    /// Every managed HQ toolchain root on this machine (`paths::managed_toolchain_roots()`),
+    /// passed in rather than read here so the decision stays pure and unit-testable.
+    /// Used only by the npm arm to tell an HQ-owned shadow (both prefixes inside one
+    /// root) apart from a genuinely foreign layout. An empty slice can never yield
+    /// `ManagedShadowed`, which is what every non-npm and every test-default caller
+    /// passes.
+    pub managed_roots: &'a [PathBuf],
+    /// What HQ's shadow repair did before this decision, or `NotAttempted` for the
+    /// pre-repair classification and every non-shadow caller. Governs whether a
+    /// `ManagedShadowed` episode writes the durable marker (see [`decide_post_install`]).
+    pub managed_shadow_repair: ManagedShadowRepair,
 }
 
 impl<'a> PostInstallContext<'a> {
@@ -1383,6 +1506,12 @@ impl<'a> PostInstallContext<'a> {
             // so it needs no episode bound.
             nonblocking_episode_keys: &[],
             pnpm: None,
+            // The convenience constructor is used by callers and tests that do not
+            // classify the managed-shadow shape (empty roots can never yield it) and
+            // have not driven a repair. The app's own finalize path constructs the
+            // struct directly so it can supply real roots and the repair outcome.
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepair::NotAttempted,
         }
     }
 }
@@ -1406,6 +1535,8 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         already_blocked,
         nonblocking_episode_keys,
         pnpm,
+        managed_roots,
+        managed_shadow_repair,
     } = ctx;
     let (executor, before_bin, after_bin, latest, installer_bin, already_blocked) = (
         *executor,
@@ -1415,6 +1546,8 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         *installer_bin,
         *already_blocked,
     );
+    let managed_roots = *managed_roots;
+    let managed_shadow_repair = *managed_shadow_repair;
     let (before_version, after_version, npm_prefix_passed, delivered_version) = (
         *before_version,
         *after_version,
@@ -1477,6 +1610,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         pnpm_targeted,
         after_bin,
         target_delivered,
+        managed_roots,
     );
     let hq_display = if after_bin == "hq" { "PATH" } else { after_bin };
     let detail = match kind {
@@ -1484,6 +1618,12 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         // fine, so its remedy differs from the "shadowed copy" wording.
         NonConvergenceKind::ResolutionShortfall => {
             resolution_shortfall_detail(hq_display, after_version, latest)
+        }
+        // An HQ-managed shadow is HQ's own second copy: the pnpm/Homebrew/"update
+        // it with the tool that installed it" wording is false and unactionable
+        // here, so it gets copy that names what HQ found and did about it.
+        NonConvergenceKind::ManagedShadowed => {
+            managed_shadowed_detail(hq_display, after_version, latest)
         }
         _ => non_convergent_detail(executor, hq_display, after_version, latest),
     };
@@ -1509,6 +1649,33 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         (None, first_episode, false, first_episode.then_some(episode_key))
     } else if kind.is_installer_targeted() {
         (Some(latest.to_string()), true, false, None)
+    } else if kind == NonConvergenceKind::ManagedShadowed {
+        // An HQ-managed shadow is repairable: HQ owns both copies. Its blocking
+        // behaviour is conditional on what the repair did, so the machine is never
+        // wedged while it is still fixable.
+        match managed_shadow_repair {
+            // Pre-repair classification (or a converged repair): write NO durable
+            // marker and page nothing. The caller runs the removal and re-resolves;
+            // a converged re-resolve clears through the success verdict above and
+            // emits `hq-cli-update:cleared`, so a healed machine produces no event.
+            // Leaving no marker means a crash mid-repair simply retries next check.
+            ManagedShadowRepair::NotAttempted | ManagedShadowRepair::Converged => {
+                (None, false, false, None)
+            }
+            // The repair ran (or was refused) and the shim is still stale: fall back
+            // to the exact `ForeignManaged` contract below — one durable-record-gated
+            // capture per episode plus the marker — so a machine HQ cannot repair
+            // stops re-paging and stops reinstalling into the unused prefix.
+            ManagedShadowRepair::RepairFailed | ManagedShadowRepair::ProvenanceRefused => {
+                let first_episode = !already_blocked;
+                (
+                    first_episode.then(|| latest.to_string()),
+                    first_episode,
+                    true,
+                    None,
+                )
+            }
+        }
     } else {
         let first_episode = !already_blocked;
         (
@@ -1529,6 +1696,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         hq_bin_changed: before_bin != after_bin,
         delivered_version: delivered_version.map(str::to_owned),
         pnpm: pnpm.clone(),
+        managed_shadow_repair,
     });
 
     PostInstallOutcome {
@@ -1674,6 +1842,25 @@ pub const NON_CONVERGENT_ERROR_PREFIX: &str = "hq-cli-update/non-convergent: ";
 /// converging. It has to name the specific binary that did not move: a machine
 /// in this state usually has two or three `hq` copies, and knowing *which* one
 /// the app resolves is the entire remedy.
+/// The message for an HQ-managed shadow: HQ found a SECOND HQ-managed copy of the
+/// CLI inside its own toolchain and could not make the fresh one take over, even
+/// after trying to remove the stale one. The npm "managed outside npm's global
+/// prefix (pnpm, Homebrew, or an earlier entry on PATH) … update it with the tool
+/// that installed it" wording is false here — HQ installed both copies and HQ's own
+/// npm is the tool — so this states what HQ found and did, and never blames a
+/// third-party tool. Surfaced only when a repair was attempted and the app still
+/// resolves the stale copy; a converged repair reaches the success path instead.
+pub fn managed_shadowed_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
+    let current = local.unwrap_or("an unreadable version");
+    format!(
+        "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} installed successfully into HQ's own managed \
+         toolchain, but the app still resolves an older copy (hq {current}) at {hq_bin} — a second \
+         HQ-managed copy inside the same toolchain. HQ tried to remove the stale copy automatically \
+         so the updated one would take over. If you still see this, fully quit HQ and reopen it so \
+         the update can take effect."
+    )
+}
+
 pub fn non_convergent_detail(
     executor: InstallExecutor,
     hq_bin: &str,
@@ -1744,6 +1931,15 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
             // against npm's default prefix.
             scope.set_tag("install_executor", executor.telemetry_value());
             scope.set_tag("non_convergence_kind", report.kind.telemetry_value());
+            // Self-diagnosing repair outcome for the managed-shadow class: which of
+            // {not-attempted, repair-failed, provenance-refused} the removal reached.
+            // Always present (a closed token, `not-attempted` for every other class),
+            // never a path — so the slice can be split on "HQ could not repair" vs
+            // "HQ refused to touch a copy it could not prove was its own".
+            scope.set_tag(
+                "managed_shadow_repair",
+                report.managed_shadow_repair.telemetry_value(),
+            );
             scope.set_tag("latest", report.latest.as_str());
             scope.set_tag("local", report.local.as_deref().unwrap_or("unreadable"));
             // Requested vs delivered: the version the installer was ASKED for
@@ -2012,6 +2208,192 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
 /// repo cannot see that package.json at build time, so this constant is the
 /// single source of truth for the shim names.
 const HQ_CLI_BIN_NAMES: [&str; 2] = ["hq", "hq-auth-refresh"];
+
+/// Every absolute path an `@indigoai-us/hq-cli` executable shim could occupy
+/// directly inside `dir`: each [`HQ_CLI_BIN_NAMES`] entry as the bare name plus the
+/// Windows `.cmd` / `.ps1` / `.bat` wrappers npm links beside it. A PATH BUILDER
+/// only — it neither checks existence nor removes anything; the shadow-repair caller
+/// deletes only those that exist and are proven to be HQ's. Keeping the enumeration
+/// here keeps `HQ_CLI_BIN_NAMES` the single source of truth for the shim names.
+pub fn hq_cli_shim_paths_in(dir: &Path) -> Vec<PathBuf> {
+    HQ_CLI_BIN_NAMES
+        .iter()
+        .flat_map(|name| {
+            [
+                dir.join(name),
+                dir.join(format!("{name}.cmd")),
+                dir.join(format!("{name}.ps1")),
+                dir.join(format!("{name}.bat")),
+            ]
+        })
+        .collect()
+}
+
+/// The `@indigoai-us/hq-cli` package directories that could sit under `dir` across
+/// the npm layouts the updater installs: the Windows flat `node_modules` and the
+/// unix `lib/node_modules`. A PATH BUILDER only — never touches the filesystem. The
+/// scoped `@indigoai-us/hq-cli` leaf is the deepest thing the repair ever removes,
+/// so `node_modules` / `lib` and everything else beside them are left intact.
+pub fn hq_cli_scoped_package_dirs_in(dir: &Path) -> Vec<PathBuf> {
+    [
+        dir.join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli"),
+        dir.join("lib")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli"),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Remove a single HQ-managed shadow of the CLI so the freshly-installed managed
+/// copy takes over. Filesystem-only and bounded — no subprocess, no loop, no
+/// logging. FOUR independent gates guard every unlink, and only the enumerated
+/// `@indigoai-us/hq-cli` shims ([`hq_cli_shim_paths_in`]) and the scoped package
+/// directory ([`hq_cli_scoped_package_dirs_in`]) inside the shadow are ever
+/// touched: `node.exe`, `npm`, `npx`, `git`, `rsync` and every unrelated global
+/// package are left byte-for-byte intact. It never converges the machine on its
+/// own — the caller re-resolves and decides that — and it never errors out of the
+/// install command; a removal error degrades to [`ManagedShadowRepair::RepairFailed`].
+///
+///   (a) the shadow directory (`shadow_bin`'s parent) is inside a managed toolchain
+///       root, AND it is NOT the prefix the install just wrote into (never delete
+///       the copy we want to keep);
+///   (b) the managed prefix already holds a version >= `latest`, so removing the
+///       shadow strands nothing — the copy that takes over is at least as new;
+///   (c) the shadow's OWN manifest is `@indigoai-us/hq-cli` (an unrelated `hq`, e.g.
+///       Homebrew's HTML-query formula, is never removed);
+///   (d) only the enumerated shims and scoped package dir that actually exist are
+///       removed.
+///
+/// Any refusal (a gate failed, or the install aimed at no prefix) returns
+/// [`ManagedShadowRepair::ProvenanceRefused`] — HQ never deletes a copy it cannot
+/// prove is its own and safe to replace.
+pub fn repair_managed_shadow(
+    shadow_bin: &str,
+    installed_prefix: Option<&str>,
+    delivered_version: Option<&str>,
+    latest: &str,
+    managed_roots: &[PathBuf],
+) -> ManagedShadowRepair {
+    // The install must have aimed at a prefix; without one there is no proven copy
+    // to fall back to, so refuse to remove anything.
+    let Some(installed_prefix) = installed_prefix else {
+        return ManagedShadowRepair::ProvenanceRefused;
+    };
+    let shadow_dir = match Path::new(shadow_bin).parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => return ManagedShadowRepair::ProvenanceRefused,
+    };
+    // Gate (a): inside a managed toolchain root, and NOT the prefix just installed
+    // into. `path_is_within` compares by components (case-insensitive on Windows),
+    // so a lookalike sibling directory never counts as "inside".
+    let inside_managed = managed_roots
+        .iter()
+        .any(|root| path_is_within(root, &shadow_dir));
+    if !inside_managed {
+        return ManagedShadowRepair::ProvenanceRefused;
+    }
+    let installed_prefix_path = Path::new(installed_prefix);
+    if path_is_within(&shadow_dir, installed_prefix_path)
+        && path_is_within(installed_prefix_path, &shadow_dir)
+    {
+        // The shadow directory IS the prefix we installed into — removing it would
+        // delete the copy we want to keep. Refuse.
+        return ManagedShadowRepair::ProvenanceRefused;
+    }
+    // Gate (b): the managed prefix already holds a version >= latest.
+    let delivered_ok = delivered_version
+        .is_some_and(|delivered| cmp_semver(delivered, latest) != std::cmp::Ordering::Less);
+    if !delivered_ok {
+        return ManagedShadowRepair::ProvenanceRefused;
+    }
+    // Gate (b2): the managed prefix holds a USABLE replacement shim, not just a
+    // manifest at latest. If antivirus quarantine or a partial bin-link left the fresh
+    // package without its `hq` shim, removing the stale-but-working shadow would strand
+    // the user with no CLI — so refuse unless a replacement shim FILE is present to take
+    // over. Existence only; no spawn, so the periodic check stays subprocess-free.
+    if !managed_prefix_has_replacement_shim(installed_prefix_path) {
+        return ManagedShadowRepair::ProvenanceRefused;
+    }
+    // Gate (c): the shadow really is @indigoai-us/hq-cli. `install_executor_for_hq_bin`
+    // returns None unless a readable @indigoai-us/hq-cli manifest anchors the binary,
+    // so an unrelated `hq` is never removed.
+    if install_executor_for_hq_bin(Path::new(shadow_bin)).is_none() {
+        return ManagedShadowRepair::ProvenanceRefused;
+    }
+    // Gate (d): remove ONLY the enumerated shims that INDIVIDUALLY prove they belong to
+    // @indigoai-us/hq-cli — an npm shim embeds the package's own script path, or on unix
+    // symlinks into its tree — plus the scoped package dir. A same-named file a user or a
+    // different package left in this directory is never touched. Any removal error is
+    // non-fatal and degrades to RepairFailed so the caller still reports (and blocks)
+    // rather than erroring the install command. `symlink_metadata` (never `exists`) so a
+    // dangling symlink shim is still seen.
+    let mut removal_error = false;
+    for shim in hq_cli_shim_paths_in(&shadow_dir) {
+        if shim.symlink_metadata().is_ok()
+            && shim_belongs_to_hq_cli(&shim)
+            && std::fs::remove_file(&shim).is_err()
+        {
+            removal_error = true;
+        }
+    }
+    for pkg in hq_cli_scoped_package_dirs_in(&shadow_dir) {
+        if pkg.symlink_metadata().is_ok() && std::fs::remove_dir_all(&pkg).is_err() {
+            removal_error = true;
+        }
+    }
+    if removal_error {
+        ManagedShadowRepair::RepairFailed
+    } else {
+        // Removal completed cleanly. Whether it CONVERGED is the caller's re-resolve to
+        // decide; it downgrades this to RepairFailed if the app still resolves stale.
+        ManagedShadowRepair::Converged
+    }
+}
+
+/// Whether the managed prefix holds a USABLE `hq` shim to take over once the shadow is
+/// removed — not merely an `@indigoai-us/hq-cli` manifest. npm writes the shim flat into
+/// the prefix on Windows (`<prefix>\hq[.cmd|.ps1]`) and into `<prefix>/bin/hq` on unix.
+/// Existence only, no spawn.
+fn managed_prefix_has_replacement_shim(prefix: &Path) -> bool {
+    [
+        prefix.join("hq"),
+        prefix.join("hq.cmd"),
+        prefix.join("hq.ps1"),
+        prefix.join("bin").join("hq"),
+    ]
+    .iter()
+    .any(|candidate| candidate.symlink_metadata().is_ok())
+}
+
+/// Whether a shim file individually proves it belongs to `@indigoai-us/hq-cli`, so the
+/// repair never deletes a same-named file a user or another package left in the shadow
+/// directory. An npm script shim (Windows `.cmd`/`.ps1`, or a unix wrapper) embeds the
+/// package's own script path; a unix symlink shim points into the package tree. Either
+/// is decisive; an unreadable file is treated as NOT ours and left in place.
+fn shim_belongs_to_hq_cli(shim: &Path) -> bool {
+    const PACKAGE_MARKER: &str = "@indigoai-us/hq-cli";
+    if let Ok(target) = std::fs::read_link(shim) {
+        if target
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .contains(PACKAGE_MARKER)
+        {
+            return true;
+        }
+    }
+    match std::fs::read(shim) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes)
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .contains(PACKAGE_MARKER),
+        Err(_) => false,
+    }
+}
 
 /// Whether an npm install failure is the EXPECTED "global npm prefix needs
 /// sudo" condition. This is deliberately stricter than an `EACCES` string
@@ -4635,6 +5017,8 @@ mod tests {
             already_blocked: true,
             nonblocking_episode_keys: &[],
             pnpm: Some(pnpm.clone()),
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepair::NotAttempted,
         });
         assert_eq!(
             outcome.non_convergence_kind,
@@ -4684,6 +5068,8 @@ mod tests {
                     exit_status: "0".to_string(),
                     output_len: 0,
                 }),
+                managed_roots: &[],
+                managed_shadow_repair: ManagedShadowRepair::NotAttempted,
             });
             assert_eq!(
                 outcome.non_convergence_kind,
@@ -4710,7 +5096,7 @@ mod tests {
             // them: npm has nowhere safe to aim. Delivery evidence is irrelevant
             // — the prefix never matched, so it never reaches the delivery gate.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Npm, None, false, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Npm, None, false, hq_bin, false, &[]),
                 NonConvergenceKind::ForeignManaged,
                 "npm/{hq_bin}"
             );
@@ -4719,21 +5105,21 @@ mod tests {
             // `pnpm bin -g` direction is no longer an input — delivery evidence
             // plus the executed reading decide this class.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, true),
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, true, &[]),
                 NonConvergenceKind::PnpmTargeted,
                 "pnpm-targeted/{hq_bin}"
             );
             // Aimed at the right home but the target was never delivered: a
             // transient resolution shortfall, exactly like the npm arm.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false, &[]),
                 NonConvergenceKind::ResolutionShortfall,
                 "pnpm-shortfall/{hq_bin}"
             );
             // Not aimed at all (underivable / PATH without the shim dir): the
             // ambient-spawn foreign-managed shape.
             assert_eq!(
-                non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin, false),
+                non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin, false, &[]),
                 NonConvergenceKind::ForeignManaged,
                 "pnpm-untargeted/{hq_bin}"
             );
@@ -4747,6 +5133,7 @@ mod tests {
                 false,
                 "/Users/t/.npm-global/bin/hq",
                 true,
+                &[],
             ),
             NonConvergenceKind::NpmTargeted
         );
@@ -4764,12 +5151,12 @@ mod tests {
         let hq_bin = "/Users/t/.npm-global/bin/hq";
         // Same tautological (prefix, bin) pair, opposite delivery evidence.
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, true),
+            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, true, &[]),
             NonConvergenceKind::NpmTargeted,
             "delivered target in a matching prefix is genuine shadowing"
         );
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, false),
+            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, false, &[]),
             NonConvergenceKind::ResolutionShortfall,
             "an undelivered target in a matching prefix is a resolution shortfall"
         );
@@ -4780,6 +5167,554 @@ mod tests {
         assert_eq!(
             NonConvergenceKind::ResolutionShortfall.telemetry_value(),
             "resolution-shortfall"
+        );
+    }
+
+    // ── HQ-DESKTOP-46: the Windows managed-toolchain CLI shadow ──────────────
+
+    /// Build the exact field shape all 12 foreign-managed events carry, expressed
+    /// with forward-slash-agnostic paths (`hq.cmd` is detected by extension on
+    /// every OS) so it runs on the Linux test host: npm delivered `latest` into
+    /// `<root>/npm-prefix` (the prefix it aimed at), but the app still resolves
+    /// `<root>/node/hq.cmd` — a SECOND HQ-managed copy inside the SAME toolchain
+    /// root.
+    fn managed_shadow_ctx<'a>(
+        roots: &'a [PathBuf],
+        already_blocked: bool,
+        repair: ManagedShadowRepair,
+    ) -> PostInstallContext<'a> {
+        PostInstallContext {
+            executor: InstallExecutor::Npm,
+            before_bin: "/managed/toolchain/node/hq.cmd",
+            after_bin: "/managed/toolchain/node/hq.cmd",
+            before_version: Some("5.101.0"),
+            after_version: Some("5.101.0"),
+            latest: "5.101.7",
+            npm_prefix_passed: Some("/managed/toolchain/npm-prefix"),
+            delivered_version: Some("5.101.7"),
+            installer_bin: "/managed/toolchain/npm-prefix/npm",
+            already_blocked,
+            nonblocking_episode_keys: &[],
+            pnpm: None,
+            managed_roots: roots,
+            managed_shadow_repair: repair,
+        }
+    }
+
+    /// The base failure: on `b538083…` this shape returns ForeignManaged, records the
+    /// durable marker, and shows the "managed outside npm's global prefix … update it
+    /// with the tool that installed it" copy. On the candidate it is ManagedShadowed,
+    /// the pre-repair pass writes NO durable marker (the machine is still repairable),
+    /// captures nothing, and its copy never blames a third-party tool.
+    #[test]
+    fn the_managed_toolchain_shadow_shape_classifies_managed_shadowed_without_a_marker() {
+        let roots = vec![PathBuf::from("/managed/toolchain")];
+        // Pure classifier.
+        assert_eq!(
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some("/managed/toolchain/npm-prefix"),
+                false,
+                "/managed/toolchain/node/hq.cmd",
+                true,
+                &roots,
+            ),
+            NonConvergenceKind::ManagedShadowed,
+        );
+        // Whole decision, pre-repair (NotAttempted).
+        let outcome = decide_post_install(&managed_shadow_ctx(
+            &roots,
+            false,
+            ManagedShadowRepair::NotAttempted,
+        ));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ManagedShadowed)
+        );
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "a repairable first episode writes no durable marker"
+        );
+        assert!(
+            outcome.capture.is_none(),
+            "the pre-repair pass captures nothing — a converged repair must emit no event"
+        );
+        assert!(!outcome.clear_non_convergent);
+        let detail = outcome.result.expect_err("a non-convergence returns Err");
+        assert!(
+            !detail.contains("managed outside npm's global prefix"),
+            "must not show the false pnpm/Homebrew copy: {detail}"
+        );
+        assert!(
+            !detail.contains("Update it with the tool that installed it"),
+            "must not show the dead-end remedy: {detail}"
+        );
+        assert!(
+            detail.contains("second HQ-managed copy"),
+            "must name what HQ found: {detail}"
+        );
+        // The pre-repair episode leaves auto-install ENABLED so the next check heals.
+        assert!(should_auto_install("5.101.7", None));
+
+        // Windows-exact: the literal redacted paths from event d802ac2b… classify
+        // the same, and containment is case-insensitive on Windows.
+        #[cfg(windows)]
+        {
+            let win = vec![PathBuf::from(
+                r"C:\Users\me\AppData\Local\IndigoHQ\toolchain",
+            )];
+            assert_eq!(
+                non_convergence_kind(
+                    InstallExecutor::Npm,
+                    Some(r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\npm-prefix"),
+                    false,
+                    r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\node\hq.cmd",
+                    true,
+                    &win,
+                ),
+                NonConvergenceKind::ManagedShadowed,
+            );
+            let mixed_case = vec![PathBuf::from(
+                r"C:\Users\me\AppData\Local\indigohq\TOOLCHAIN",
+            )];
+            assert_eq!(
+                non_convergence_kind(
+                    InstallExecutor::Npm,
+                    Some(r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\npm-prefix"),
+                    false,
+                    r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\node\hq.cmd",
+                    true,
+                    &mixed_case,
+                ),
+                NonConvergenceKind::ManagedShadowed,
+                "Windows containment is case-insensitive"
+            );
+        }
+    }
+
+    /// A repair that was attempted and FAILED (or was refused) falls back to the
+    /// exact ForeignManaged contract: the durable marker on the first episode, a
+    /// durable-record-gated capture, bounded to one per episode. So a machine HQ
+    /// cannot repair stops re-paging and stops reinstalling into the unused prefix.
+    #[test]
+    fn a_failed_or_refused_managed_shadow_repair_blocks_like_foreign_managed() {
+        let roots = vec![PathBuf::from("/managed/toolchain")];
+        for repair in [
+            ManagedShadowRepair::RepairFailed,
+            ManagedShadowRepair::ProvenanceRefused,
+        ] {
+            // First episode: writes the marker and captures once, durable-gated.
+            let first = decide_post_install(&managed_shadow_ctx(&roots, false, repair));
+            assert_eq!(
+                first.non_convergence_kind,
+                Some(NonConvergenceKind::ManagedShadowed)
+            );
+            assert_eq!(
+                first.record_non_convergent.as_deref(),
+                Some("5.101.7"),
+                "{repair:?} writes the durable marker on the first episode"
+            );
+            assert!(first.capture.is_some(), "{repair:?} captures once");
+            assert!(
+                first.capture_requires_durable_record,
+                "{repair:?} capture is gated on the marker write, like ForeignManaged"
+            );
+            let report = first.capture.as_ref().unwrap();
+            assert_eq!(report.kind, NonConvergenceKind::ManagedShadowed);
+            assert_eq!(report.managed_shadow_repair, repair);
+            // Second episode (already blocked): bounded — no re-page, no re-marker.
+            let repeat = decide_post_install(&managed_shadow_ctx(&roots, true, repair));
+            assert_eq!(repeat.record_non_convergent, None, "{repair:?} is bounded");
+            assert!(repeat.capture.is_none(), "{repair:?} does not re-page");
+        }
+    }
+
+    /// Narrowness — the predicate must NOT swallow a genuinely foreign layout or a
+    /// cross-root split. A resolved `hq` outside every managed root, and a prefix in
+    /// `IndigoHQ` with the resolved bin under the legacy `Indigo HQ` root, both stay
+    /// ForeignManaged with today's durable marker.
+    #[test]
+    fn genuinely_foreign_and_cross_root_layouts_stay_foreign_managed() {
+        let roots = vec![PathBuf::from("/managed/toolchain")];
+        // %APPDATA%\npm / Homebrew / pnpm home — resolved bin outside every root.
+        for (prefix, hq_bin) in [
+            ("/managed/toolchain/npm-prefix", "/opt/homebrew/bin/hq"),
+            ("/managed/toolchain/npm-prefix", "/usr/local/bin/hq"),
+            (
+                "/managed/toolchain/npm-prefix",
+                "/Users/t/.npm-global/bin/hq",
+            ),
+        ] {
+            assert_eq!(
+                non_convergence_kind(
+                    InstallExecutor::Npm,
+                    Some(prefix),
+                    false,
+                    hq_bin,
+                    true,
+                    &roots,
+                ),
+                NonConvergenceKind::ForeignManaged,
+                "{hq_bin} is outside every managed root"
+            );
+        }
+        // Cross-root: prefix under IndigoHQ, resolved bin under legacy Indigo HQ.
+        let both_roots = vec![
+            PathBuf::from("/x/IndigoHQ/toolchain"),
+            PathBuf::from("/x/Indigo HQ/toolchain"),
+        ];
+        assert_eq!(
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some("/x/IndigoHQ/toolchain/npm-prefix"),
+                false,
+                "/x/Indigo HQ/toolchain/node/hq.cmd",
+                true,
+                &both_roots,
+            ),
+            NonConvergenceKind::ForeignManaged,
+            "a cross-root split is not a same-root shadow"
+        );
+    }
+
+    /// `target_delivered=false` with the shadow shape is a shortfall, never a shadow:
+    /// the classifier must not remove anything when the prefix does not actually hold
+    /// the target. It stays ForeignManaged (no delivery) and never a blocking shadow.
+    #[test]
+    fn an_undelivered_shadow_shape_is_never_managed_shadowed() {
+        let roots = vec![PathBuf::from("/managed/toolchain")];
+        assert_eq!(
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some("/managed/toolchain/npm-prefix"),
+                false,
+                "/managed/toolchain/node/hq.cmd",
+                false, // not delivered
+                &roots,
+            ),
+            NonConvergenceKind::ForeignManaged,
+        );
+    }
+
+    /// Path containment is component-wise and case-aware, never a raw string prefix.
+    #[test]
+    fn path_is_within_is_component_wise_and_rejects_lookalikes() {
+        let root = PathBuf::from("/a/b");
+        assert!(path_is_within(&root, Path::new("/a/b")));
+        assert!(path_is_within(&root, Path::new("/a/b/c/d")));
+        // Sibling with a shared name PREFIX is not inside.
+        assert!(!path_is_within(&root, Path::new("/a/bc")));
+        assert!(!path_is_within(&root, Path::new("/a/b-old/x")));
+        // A shorter path is not inside a longer root.
+        assert!(!path_is_within(&root, Path::new("/a")));
+        // An empty root is never a container.
+        assert!(!path_is_within(Path::new(""), Path::new("/a/b")));
+        #[cfg(windows)]
+        {
+            assert!(path_is_within(
+                Path::new(r"C:\IndigoHQ\toolchain"),
+                Path::new(r"c:\indigohq\TOOLCHAIN\node\hq.cmd"),
+            ));
+        }
+    }
+
+    /// The repair removes EXACTLY the enumerated hq-cli shims and the scoped package
+    /// directory in the shadow, and NOTHING else — node.exe, npm/npx, and an unrelated
+    /// global package survive byte-for-byte. Driven against a fabricated temp toolchain
+    /// that mirrors the Windows layout (`node\hq.cmd` beside `node\node_modules`).
+    #[test]
+    fn repair_removes_only_the_stale_shims_and_scoped_package() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let node = root.join("node");
+        let scoped = node
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.0"}"#,
+        )
+        .unwrap();
+        // The stale shims — each with the content npm writes, which embeds the
+        // @indigoai-us/hq-cli package path so the per-file ownership check recognises
+        // it as HQ's own. Plus files that MUST survive.
+        let hq_cli_shim = b"@echo off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n";
+        for shim in ["hq", "hq.cmd", "hq.ps1", "hq-auth-refresh.cmd"] {
+            std::fs::write(node.join(shim), hq_cli_shim).unwrap();
+        }
+        for keep in ["node.exe", "npm.cmd", "npx.cmd", "node"] {
+            std::fs::write(node.join(keep), b"keep me").unwrap();
+        }
+        let unrelated = node.join("node_modules").join("left-pad");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(unrelated.join("package.json"), br#"{"name":"left-pad"}"#).unwrap();
+        // The managed prefix that already holds latest AND a usable replacement shim —
+        // must be untouched.
+        let prefix = root.join("npm-prefix");
+        let prefix_scoped = prefix
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&prefix_scoped).unwrap();
+        std::fs::write(
+            prefix_scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
+        )
+        .unwrap();
+        std::fs::write(prefix.join("hq.cmd"), hq_cli_shim).unwrap();
+
+        let roots = vec![root.to_path_buf()];
+        let shadow_bin = node.join("hq.cmd");
+        let outcome = repair_managed_shadow(
+            &shadow_bin.to_string_lossy(),
+            Some(&prefix.to_string_lossy()),
+            Some("5.101.7"),
+            "5.101.7",
+            &roots,
+        );
+        assert_eq!(outcome, ManagedShadowRepair::Converged);
+
+        // Removed: every hq-cli shim form and the scoped package dir.
+        for gone in ["hq", "hq.cmd", "hq.ps1", "hq-auth-refresh.cmd"] {
+            assert!(
+                !node.join(gone).exists(),
+                "stale shim {gone} must be removed"
+            );
+        }
+        assert!(!scoped.exists(), "the scoped hq-cli package must be removed");
+        // Survived: the runtime, npm/npx, an unrelated package, and the fresh prefix.
+        for keep in ["node.exe", "npm.cmd", "npx.cmd", "node"] {
+            assert!(node.join(keep).exists(), "{keep} must survive the repair");
+        }
+        assert!(unrelated.exists(), "an unrelated global package must survive");
+        assert!(
+            prefix_scoped.join("package.json").exists(),
+            "the freshly-installed managed copy must survive"
+        );
+    }
+
+    /// Provenance and delivery gates: the repair refuses (removing nothing) when the
+    /// shadow is not `@indigoai-us/hq-cli`, and when the managed prefix does not hold
+    /// >= latest. In both cases the caller falls back to bounded capture + marker.
+    #[test]
+    fn repair_refuses_without_provenance_or_delivery_evidence() {
+        // (1) The shadow's manifest is a DIFFERENT package — never removed.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let node = root.join("node");
+        let scoped = node
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("package.json"),
+            br#"{"name":"@someone-else/hq","version":"9.9.9"}"#,
+        )
+        .unwrap();
+        let shim = node.join("hq.cmd");
+        std::fs::write(&shim, b"stale").unwrap();
+        // A valid replacement shim exists, so this refusal is the PROVENANCE gate (the
+        // manifest is not @indigoai-us/hq-cli), not the replacement-shim gate.
+        let prefix = root.join("npm-prefix");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("hq.cmd"), b"replacement").unwrap();
+        let roots = vec![root.to_path_buf()];
+        let outcome = repair_managed_shadow(
+            &shim.to_string_lossy(),
+            Some(&prefix.to_string_lossy()),
+            Some("5.101.7"),
+            "5.101.7",
+            &roots,
+        );
+        assert_eq!(outcome, ManagedShadowRepair::ProvenanceRefused);
+        assert!(shim.exists(), "a non-hq-cli shadow is never removed");
+
+        // (2) Delivery evidence short of latest — never removed.
+        let tmp2 = tempfile::TempDir::new().unwrap();
+        let root2 = tmp2.path();
+        let node2 = root2.join("node");
+        let scoped2 = node2
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped2).unwrap();
+        std::fs::write(
+            scoped2.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.0"}"#,
+        )
+        .unwrap();
+        let shim2 = node2.join("hq.cmd");
+        std::fs::write(&shim2, b"stale").unwrap();
+        let roots2 = vec![root2.to_path_buf()];
+        let outcome2 = repair_managed_shadow(
+            &shim2.to_string_lossy(),
+            Some(&root2.join("npm-prefix").to_string_lossy()),
+            Some("5.100.0"), // prefix short of latest
+            "5.101.7",
+            &roots2,
+        );
+        assert_eq!(outcome2, ManagedShadowRepair::ProvenanceRefused);
+        assert!(shim2.exists(), "an under-delivered prefix strands nothing");
+
+        // (3) A shadow OUTSIDE every managed root is refused (never delete a copy we
+        // cannot prove HQ owns the location of).
+        let tmp3 = tempfile::TempDir::new().unwrap();
+        let root3 = tmp3.path();
+        let node3 = root3.join("node");
+        let scoped3 = node3
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped3).unwrap();
+        std::fs::write(
+            scoped3.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
+        )
+        .unwrap();
+        let shim3 = node3.join("hq.cmd");
+        std::fs::write(&shim3, b"stale").unwrap();
+        let outcome3 = repair_managed_shadow(
+            &shim3.to_string_lossy(),
+            Some(&root3.join("npm-prefix").to_string_lossy()),
+            Some("5.101.7"),
+            "5.101.7",
+            &[PathBuf::from("/some/other/managed/root")],
+        );
+        assert_eq!(outcome3, ManagedShadowRepair::ProvenanceRefused);
+        assert!(shim3.exists(), "a shadow outside every managed root is refused");
+    }
+
+    /// Per-file ownership: a same-named file that a user or another package left in the
+    /// shadow directory — one that does NOT reference @indigoai-us/hq-cli — is left in
+    /// place, while the genuine hq-cli shims beside it are removed.
+    #[test]
+    fn repair_skips_a_shim_it_cannot_prove_is_hq_cli() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let node = root.join("node");
+        let scoped = node
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
+        )
+        .unwrap();
+        let hq_cli_shim = b"@echo off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n";
+        std::fs::write(node.join("hq.cmd"), hq_cli_shim).unwrap();
+        // A file at an hq-cli shim NAME that a user replaced with an unrelated command.
+        std::fs::write(
+            node.join("hq-auth-refresh.cmd"),
+            b"@echo off\r\necho a user's own command\r\n",
+        )
+        .unwrap();
+        let prefix = root.join("npm-prefix");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("hq.cmd"), hq_cli_shim).unwrap();
+
+        let roots = vec![root.to_path_buf()];
+        let outcome = repair_managed_shadow(
+            &node.join("hq.cmd").to_string_lossy(),
+            Some(&prefix.to_string_lossy()),
+            Some("5.101.7"),
+            "5.101.7",
+            &roots,
+        );
+        assert_eq!(outcome, ManagedShadowRepair::Converged);
+        assert!(!node.join("hq.cmd").exists(), "the genuine hq-cli shim is removed");
+        assert!(
+            node.join("hq-auth-refresh.cmd").exists(),
+            "an unrelated command at an hq-cli name is never deleted"
+        );
+    }
+
+    /// Require a usable replacement: when the managed prefix has the manifest at latest
+    /// but NO `hq` shim (antivirus quarantine, a partial bin-link), the repair refuses so
+    /// it never deletes the stale-but-working shadow and strands the user with no CLI.
+    #[test]
+    fn repair_refuses_when_the_prefix_has_no_replacement_shim() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let node = root.join("node");
+        let scoped = node
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(
+            scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.0"}"#,
+        )
+        .unwrap();
+        let hq_cli_shim = b"@echo off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n";
+        let shim = node.join("hq.cmd");
+        std::fs::write(&shim, hq_cli_shim).unwrap();
+        // The managed prefix holds the manifest at latest, but NO shim file to take over.
+        let prefix = root.join("npm-prefix");
+        let prefix_scoped = prefix
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&prefix_scoped).unwrap();
+        std::fs::write(
+            prefix_scoped.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.101.7"}"#,
+        )
+        .unwrap();
+
+        let roots = vec![root.to_path_buf()];
+        let outcome = repair_managed_shadow(
+            &shim.to_string_lossy(),
+            Some(&prefix.to_string_lossy()),
+            Some("5.101.7"),
+            "5.101.7",
+            &roots,
+        );
+        assert_eq!(outcome, ManagedShadowRepair::ProvenanceRefused);
+        assert!(
+            shim.exists(),
+            "the stale shim stays until a usable replacement exists"
+        );
+    }
+
+    /// Telemetry-string stability: adding the variant must not perturb any existing
+    /// value, and the new tokens are exactly what the triage query filters on.
+    #[test]
+    fn telemetry_values_stay_stable_and_name_the_new_class() {
+        assert_eq!(NonConvergenceKind::NpmTargeted.telemetry_value(), "npm-targeted");
+        assert_eq!(NonConvergenceKind::PnpmTargeted.telemetry_value(), "pnpm-targeted");
+        assert_eq!(NonConvergenceKind::BunTargeted.telemetry_value(), "bun-targeted");
+        assert_eq!(
+            NonConvergenceKind::ForeignManaged.telemetry_value(),
+            "foreign-managed"
+        );
+        assert_eq!(
+            NonConvergenceKind::ResolutionShortfall.telemetry_value(),
+            "resolution-shortfall"
+        );
+        assert_eq!(
+            NonConvergenceKind::ManagedShadowed.telemetry_value(),
+            "managed-shadowed"
+        );
+        assert!(!NonConvergenceKind::ManagedShadowed.is_installer_targeted());
+        assert!(NonConvergenceKind::ManagedShadowed.may_block_auto_update());
+        assert_eq!(
+            ManagedShadowRepair::NotAttempted.telemetry_value(),
+            "not-attempted"
+        );
+        assert_eq!(ManagedShadowRepair::Converged.telemetry_value(), "converged");
+        assert_eq!(
+            ManagedShadowRepair::RepairFailed.telemetry_value(),
+            "repair-failed"
+        );
+        assert_eq!(
+            ManagedShadowRepair::ProvenanceRefused.telemetry_value(),
+            "provenance-refused"
         );
     }
 
@@ -5066,12 +6001,12 @@ mod tests {
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
         // Delivered => genuine shadowing (loud, blocks), regardless of direction.
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, true),
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, true, &[]),
             NonConvergenceKind::PnpmTargeted
         );
         // NOT delivered => transient shortfall (loud, never blocks).
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false),
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, hq_bin, false, &[]),
             NonConvergenceKind::ResolutionShortfall
         );
         // The direction diagnostic never promotes or demotes a class: a delivered
@@ -5091,6 +6026,8 @@ mod tests {
                 already_blocked: false,
                 nonblocking_episode_keys: &[],
                 pnpm: Some(pnpm_field_diagnostics(matches)),
+                managed_roots: &[],
+                managed_shadow_repair: ManagedShadowRepair::NotAttempted,
             });
             assert_eq!(
                 outcome.non_convergence_kind,
@@ -5133,6 +6070,8 @@ mod tests {
                 already_blocked: false,
                 nonblocking_episode_keys: keys,
                 pnpm: Some(pnpm_field_diagnostics(Some(false))),
+                managed_roots: &[],
+                managed_shadow_repair: ManagedShadowRepair::NotAttempted,
             }
         }
         let hq_bin = "/Users/t/Library/pnpm/bin/hq";
@@ -5211,6 +6150,8 @@ mod tests {
             already_blocked: true, // still loud + blocking anyway
             nonblocking_episode_keys: &[],
             pnpm: Some(pnpm_field_diagnostics(Some(true))),
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepair::NotAttempted,
         });
         assert_eq!(
             outcome.non_convergence_kind,
