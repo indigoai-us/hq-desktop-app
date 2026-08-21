@@ -1,7 +1,7 @@
 const WINDOWS_UNC_PREFIX = '\\\\?\\UNC\\';
 const WINDOWS_VERBATIM_PREFIX = '\\\\?\\';
 const WINDOWS_LEGACY_MAX_LEN = 260;
-const WINDOWS_RESERVED_STEM = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+const WINDOWS_RESERVED_STEM = /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i;
 const WINDOWS_DRIVE = /^[A-Za-z]:$/;
 
 function trimTrailingSeparators(path: string): string {

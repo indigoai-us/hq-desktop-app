@@ -18,36 +18,43 @@ fn windows_dos_stem(component: &str) -> &str {
 
 fn is_reserved_dos_device(component: &str) -> bool {
     let stem = windows_dos_stem(component);
-    stem.len() <= 4
-        && matches!(
-            stem.to_ascii_uppercase().as_str(),
-            "AUX"
-                | "NUL"
-                | "PRN"
-                | "CON"
-                | "COM1"
-                | "COM2"
-                | "COM3"
-                | "COM4"
-                | "COM5"
-                | "COM6"
-                | "COM7"
-                | "COM8"
-                | "COM9"
-                | "LPT1"
-                | "LPT2"
-                | "LPT3"
-                | "LPT4"
-                | "LPT5"
-                | "LPT6"
-                | "LPT7"
-                | "LPT8"
-                | "LPT9"
-        )
+    // Superscript ¹ ² ³ are DOS digits for COM/LPT (Win32 naming-a-file).
+    // Do not gate on UTF-8 `len()` — `COM¹` is 5 bytes / 4 UTF-16 units.
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "AUX"
+            | "NUL"
+            | "PRN"
+            | "CON"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "COM\u{00B9}"
+            | "COM\u{00B2}"
+            | "COM\u{00B3}"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            | "LPT\u{00B9}"
+            | "LPT\u{00B2}"
+            | "LPT\u{00B3}"
+    )
 }
 
 fn is_valid_legacy_win32_component(component: &str) -> bool {
-    if component.is_empty() || component.len() > 255 {
+    if component.is_empty() || component.encode_utf16().count() > 255 {
         return false;
     }
     if component.ends_with(' ') || component.ends_with('.') {
@@ -153,6 +160,14 @@ mod tests {
             r"\\?\C:\COM1"
         );
         assert_eq!(
+            strip_windows_verbatim_prefix("\\\\?\\C:\\COM\u{00B9}"),
+            "\\\\?\\C:\\COM\u{00B9}"
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix("\\\\?\\C:\\LPT\u{00B3}"),
+            "\\\\?\\C:\\LPT\u{00B3}"
+        );
+        assert_eq!(
             strip_windows_verbatim_prefix(r"\\?\C:\Users\person\CON.txt"),
             r"\\?\C:\Users\person\CON.txt"
         );
@@ -190,6 +205,13 @@ mod tests {
         assert_eq!(
             strip_windows_verbatim_prefix(&format!(r"\\?\{under_max}")),
             under_max
+        );
+        // 128 `é` is 256 UTF-8 bytes but 128 UTF-16 units — still a legal component.
+        let unicode_ok = format!(r"C:\{}", "é".repeat(128));
+        assert!(unicode_ok.encode_utf16().count() < 260);
+        assert_eq!(
+            strip_windows_verbatim_prefix(&format!(r"\\?\{unicode_ok}")),
+            unicode_ok
         );
     }
 }

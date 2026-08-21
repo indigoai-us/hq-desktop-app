@@ -54,6 +54,8 @@ describe('toUserFacingPath', () => {
 
   it('keeps the verbatim prefix when legacy Win32 cannot name the path', () => {
     expect(toUserFacingPath(String.raw`\\?\C:\COM1`)).toBe(String.raw`\\?\C:\COM1`);
+    expect(toUserFacingPath(String.raw`\\?\C:\COM¹`)).toBe(String.raw`\\?\C:\COM¹`);
+    expect(toUserFacingPath(String.raw`\\?\C:\LPT³`)).toBe(String.raw`\\?\C:\LPT³`);
     expect(toUserFacingPath(String.raw`\\?\C:\Users\person\CON.txt`)).toBe(
       String.raw`\\?\C:\Users\person\CON.txt`,
     );
@@ -73,6 +75,9 @@ describe('toUserFacingPath', () => {
     const underMax = `C:\\x\\${'a'.repeat(254)}`;
     expect(underMax.length).toBe(259);
     expect(toUserFacingPath(`\\\\?\\${underMax}`)).toBe(underMax);
+    const unicodeOk = `C:\\${'é'.repeat(128)}`;
+    expect(unicodeOk.length).toBeLessThan(260);
+    expect(toUserFacingPath(`\\\\?\\${unicodeOk}`)).toBe(unicodeOk);
   });
 });
 
