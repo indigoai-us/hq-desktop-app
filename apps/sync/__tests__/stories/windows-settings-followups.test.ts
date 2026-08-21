@@ -11,12 +11,13 @@ const titleBar = read('src/desktop-alt/v4/V4TitleBar.svelte');
 const paths = read('../../crates/hq-desktop-core/src/paths.rs');
 
 describe('Windows settings follow-up regressions', () => {
-  it('canonicalizes the HQ folder with dunce so ingest never emits \\\\?\\', () => {
+  it('canonicalizes the HQ folder then strips \\\\?\\ only when legacy Win32 is safe', () => {
     const installDirectory = read('src-tauri/src/commands/install_directory.rs');
     const production = installDirectory.split('#[cfg(test)]')[0] ?? '';
-    expect(production).toContain('dunce::canonicalize(&hq_path)');
-    expect(production).toContain('dunce::simplified(&expanded)');
-    expect(production).not.toContain('std::fs::canonicalize');
+    expect(production).toContain('std::fs::canonicalize(&hq_path)');
+    expect(production).toContain('strip_windows_verbatim_prefix');
+    expect(production).not.toContain('dunce::canonicalize');
+    expect(production).not.toContain('dunce::simplified');
     expect(production).not.toContain('hq_path.canonicalize');
   });
 

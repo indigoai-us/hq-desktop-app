@@ -16,13 +16,14 @@ function windowsComponentStem(component: string): string {
   return (dot === -1 ? trimmed : trimmed.slice(0, dot)).toUpperCase();
 }
 
-/** Same safety gate as dunce::simplified: only drop `\\?\` when legacy Win32 can name the path. */
+/** Same safety gate as strip_windows_verbatim_prefix: only drop `\\?\` when legacy Win32 can name the path. */
 function canSimplifyWin32(legacy: string): boolean {
   // MAX_PATH is 260 including the terminating NUL, so 259 usable code units.
   if (legacy.length >= WINDOWS_LEGACY_MAX_LEN) return false;
   for (const part of legacy.split(/[\\/]/)) {
     if (!part) continue;
     if (WINDOWS_DRIVE.test(part)) continue;
+    if (part.length > 255) return false;
     if (part === '.' || part === '..' || part.endsWith('.') || part.endsWith(' ')) return false;
     if (WINDOWS_RESERVED_STEM.test(windowsComponentStem(part))) return false;
   }
@@ -32,7 +33,7 @@ function canSimplifyWin32(legacy: string): boolean {
 /**
  * Strip Windows' internal verbatim prefix (`\\?\` / `\\?\UNC\`) so the path is
  * pasteable in Explorer, Claude Code Open Folder, and a terminal `cd`.
- * Keep the prefix when dunce would (long paths, reserved DOS names).
+ * Keep the prefix when legacy Win32 cannot name the path (long paths, reserved DOS names).
  */
 export function toUserFacingPath(path: string): string {
   const trimmed = path.trim();

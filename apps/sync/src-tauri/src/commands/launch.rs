@@ -27,6 +27,8 @@ use std::process::Command;
 
 #[cfg(windows)]
 use crate::commands::install_deps::extended_search_path;
+#[cfg(windows)]
+use crate::util::win32_path::strip_windows_verbatim_prefix;
 
 #[cfg(windows)]
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
@@ -172,115 +174,6 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
     }
 
     Ok(target)
-}
-
-/// Explorer and other user-facing Windows shells reject the Win32 verbatim
-/// prefix (`\\?\C:\…`, `\\?\UNC\…`) that `Path::canonicalize` emits. Strip it
-/// only when the remainder is a safe legacy Win32 path — the same contract as
-/// `dunce::simplified` (too long, reserved DOS names, trailing dots/spaces,
-/// `.`/`..` keep the prefix). Filesystem callers keep the original.
-///
-/// Implemented portably (not `dunce::simplified`) so Linux CI can lock the
-/// Windows string contract; dunce no-ops off Windows.
-fn strip_windows_verbatim_for_explorer(path: &str) -> String {
-    const UNC: &[u8] = br"\\?\UNC\";
-    const VERBATIM: &str = r"\\?\";
-    let bytes = path.as_bytes();
-    // Prefixes are ASCII, so a byte match is a char-boundary match. Never
-    // slice the UTF-8 `str` at a fixed byte offset — `C:\ééé` is ≥ 8 bytes
-    // with index 8 inside a multibyte character.
-    if bytes.len() >= UNC.len() && bytes[..UNC.len()].eq_ignore_ascii_case(UNC) {
-        let rewritten = format!(r"\\{}", &path[UNC.len()..]);
-        if win32_legacy_is_safe(&rewritten) {
-            rewritten
-        } else {
-            path.to_string()
-        }
-    } else if let Some(rest) = path.strip_prefix(VERBATIM) {
-        if win32_legacy_is_safe(rest) {
-            rest.to_string()
-        } else {
-            path.to_string()
-        }
-    } else {
-        path.to_string()
-    }
-}
-
-const WINDOWS_LEGACY_MAX_UTF16: usize = 260;
-
-fn windows_dos_stem(component: &str) -> &str {
-    let trimmed = component.trim_end_matches([' ', '.']);
-    match trimmed.split_once('.') {
-        Some((stem, _)) => stem,
-        None => trimmed,
-    }
-}
-
-fn is_reserved_dos_device(component: &str) -> bool {
-    let stem = windows_dos_stem(component);
-    stem.len() <= 4
-        && matches!(
-            stem.to_ascii_uppercase().as_str(),
-            "AUX"
-                | "NUL"
-                | "PRN"
-                | "CON"
-                | "COM1"
-                | "COM2"
-                | "COM3"
-                | "COM4"
-                | "COM5"
-                | "COM6"
-                | "COM7"
-                | "COM8"
-                | "COM9"
-                | "LPT1"
-                | "LPT2"
-                | "LPT3"
-                | "LPT4"
-                | "LPT5"
-                | "LPT6"
-                | "LPT7"
-                | "LPT8"
-                | "LPT9"
-        )
-}
-
-fn is_valid_legacy_win32_component(component: &str) -> bool {
-    if component.is_empty() || component.len() > 255 {
-        return false;
-    }
-    if component.ends_with(' ') || component.ends_with('.') {
-        return false;
-    }
-    !component.bytes().any(|c| {
-        matches!(
-            c,
-            0..=31 | b'<' | b'>' | b':' | b'"' | b'/' | b'\\' | b'|' | b'?' | b'*'
-        )
-    })
-}
-
-/// True when `legacy` can be named without a Win32 verbatim prefix.
-fn win32_legacy_is_safe(legacy: &str) -> bool {
-    // MAX_PATH is 260 including the terminating NUL, so 259 usable code units.
-    if legacy.encode_utf16().count() >= WINDOWS_LEGACY_MAX_UTF16 {
-        return false;
-    }
-    for component in legacy.split(['\\', '/']) {
-        if component.is_empty() {
-            continue;
-        }
-        let bytes = component.as_bytes();
-        if bytes.len() == 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-            continue;
-        }
-        if !is_valid_legacy_win32_component(component) || is_reserved_dos_device(component) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Open a new Terminal window at `path` and auto-run `claude`.
@@ -470,7 +363,7 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn reveal_folder(path: String) -> Result<(), String> {
     let target = validate_reveal_target(&path)?;
-    let explorer_target = strip_windows_verbatim_for_explorer(&target.to_string_lossy());
+    let explorer_target = strip_windows_verbatim_prefix(&target.to_string_lossy());
     // `explorer <dir>` opens the folder; explorer exits non-zero in some
     // shells even on success, so we don't gate on the status code — a spawn
     // failure is the only meaningful error here.
@@ -566,77 +459,6 @@ mod tests {
         let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // `~/..` canonicalizes above home and is rejected.
         assert!(validate_reveal_target("~/../..").is_err());
-    }
-
-    #[test]
-    fn strip_windows_verbatim_prefix_for_explorer() {
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\Users\person\hq"),
-            r"C:\Users\person\hq"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\HQ Setup"),
-            r"C:\HQ Setup"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\UNC\server\share\HQ"),
-            r"\\server\share\HQ"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\unc\server\share\HQ"),
-            r"\\server\share\HQ"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"C:\Users\Ada\hq"),
-            r"C:\Users\Ada\hq"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer("/Users/ada/hq"),
-            "/Users/ada/hq"
-        );
-        // `C:\ééé` is ≥ `\\?\UNC\` bytes with a non-boundary at index 8.
-        // The old `path[..UNC.len()]` str-slice panics here.
-        let multibyte = "C:\\ééé";
-        assert!(multibyte.len() >= br"\\?\UNC\".len());
-        assert_eq!(strip_windows_verbatim_for_explorer(multibyte), multibyte);
-    }
-
-    #[test]
-    fn strip_windows_verbatim_keeps_prefix_when_legacy_win32_cannot_name_path() {
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\COM1"),
-            r"\\?\C:\COM1"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\Users\person\CON.txt"),
-            r"\\?\C:\Users\person\CON.txt"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\foo\..\bar"),
-            r"\\?\C:\foo\..\bar"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\HQ.\repo"),
-            r"\\?\C:\HQ.\repo"
-        );
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(r"\\?\C:\HQ \repo"),
-            r"\\?\C:\HQ \repo"
-        );
-        let long = format!(r"\\?\C:\{}", "a".repeat(260));
-        assert_eq!(strip_windows_verbatim_for_explorer(&long), long);
-        let exact_legacy = format!(r"C:\{}", "a".repeat(257));
-        assert_eq!(exact_legacy.encode_utf16().count(), 260);
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(&format!(r"\\?\{exact_legacy}")),
-            format!(r"\\?\{exact_legacy}")
-        );
-        let under_max = format!(r"C:\{}", "a".repeat(256));
-        assert_eq!(under_max.encode_utf16().count(), 259);
-        assert_eq!(
-            strip_windows_verbatim_for_explorer(&format!(r"\\?\{under_max}")),
-            under_max
-        );
     }
 
     #[test]

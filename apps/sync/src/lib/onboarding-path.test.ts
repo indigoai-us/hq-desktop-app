@@ -63,10 +63,14 @@ describe('toUserFacingPath', () => {
     const longLegacy = `C:\\${'a'.repeat(260)}`;
     const longVerbatim = `\\\\?\\${longLegacy}`;
     expect(toUserFacingPath(longVerbatim)).toBe(longVerbatim);
-    const exactLegacy = `C:\\${'a'.repeat(257)}`;
+    // Nested so no component exceeds 255. `C:\x\` + 255 a's = 260.
+    const exactLegacy = `C:\\x\\${'a'.repeat(255)}`;
     expect(exactLegacy.length).toBe(260);
     expect(toUserFacingPath(`\\\\?\\${exactLegacy}`)).toBe(`\\\\?\\${exactLegacy}`);
-    const underMax = `C:\\${'a'.repeat(256)}`;
+    const oversizeComponent = `C:\\${'a'.repeat(256)}`;
+    expect(oversizeComponent.length).toBe(259);
+    expect(toUserFacingPath(`\\\\?\\${oversizeComponent}`)).toBe(`\\\\?\\${oversizeComponent}`);
+    const underMax = `C:\\x\\${'a'.repeat(254)}`;
     expect(underMax.length).toBe(259);
     expect(toUserFacingPath(`\\\\?\\${underMax}`)).toBe(underMax);
   });

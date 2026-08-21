@@ -28,11 +28,6 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls", "stream"] }
 dirs = "6"
 rfd = "0.15"
-# Windows `std::fs::canonicalize` emits `\\?\C:\…` verbatim paths that Explorer,
-# `claude://`, and cmd cannot consume. dunce is the ecosystem realpath (Cargo,
-# rustc#42869): simplify to `C:\…` unless the path is actually too long or a
-# reserved DOS name. Unix is a no-op.
-dunce = "1"
 # Onboarding content stage (commands/content.rs): decompress + parse the
 # hq-core template tarball fetched from GitHub releases.
 flate2 = "1"
