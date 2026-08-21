@@ -393,7 +393,14 @@
 /// these from both spawn paths). Same npx spec-string caching rule: the pin
 /// must move in the change that exports the env vars, or cached pre-6.15.26
 /// resolutions silently ignore the user's bandwidth setting.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.26";
+///
+/// `~6.15.26` -> `~6.15.27`: execute sync decisions from fresh file state.
+/// The runner now journals downloads immediately and rechecks uploads while
+/// executing them, preventing false conflicts and upload echoes when local and
+/// cloud already contain the same bytes. Raising the floor also changes the npx
+/// cache key so existing installs cannot keep serving the older two-pass
+/// behavior.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.27";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -460,7 +467,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.26");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.27");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
