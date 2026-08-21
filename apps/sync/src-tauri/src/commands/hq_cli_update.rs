@@ -83,7 +83,8 @@ pub use hq_desktop_core::hq_cli_update::{
     installed_hq_cli_version_in_bun_global, installed_hq_cli_version_in_pnpm_store,
     installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_npm_bin_collision,
     is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
-    legacy_marker_needs_recovery, non_convergent_cli_contract, non_convergent_cli_version,
+    legacy_marker_needs_recovery, managed_shadow_same_root, non_convergent_cli_contract,
+    non_convergent_cli_version,
     non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
     non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
     npm_lifecycle_cause, npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path,
@@ -1733,8 +1734,11 @@ async fn finalize_convergence(
     // The ordinary finalize path is the ONE npm caller that supplies managed
     // roots, so it is the only place a `ManagedShadowed` classification (and the
     // repair below) can arise. Every other decide path leaves roots empty and so
-    // keeps its exact pre-existing classification.
-    let managed_roots = paths::managed_toolchain_roots();
+    // keeps its exact pre-existing classification. Use the CHECKED discovery so a
+    // malformed LOCALAPPDATA/HOME (which the infallible wrapper would preserve as a
+    // relative root) cannot authorise a deletion; on failure the empty slice keeps
+    // the classification foreign-managed, exactly as before this fix.
+    let managed_roots = paths::managed_toolchain_roots_checked().unwrap_or_default();
     let outcome = decide_post_install(
         &PostInstallContext::npm(
             before_bin,
@@ -1766,6 +1770,8 @@ async fn finalize_convergence(
             prefix,
             already_blocked,
             &post_install_hq,
+            resolved.as_deref(),
+            delivered_version.as_deref(),
             &managed_roots,
         )
         .await;
@@ -1800,6 +1806,8 @@ async fn repair_managed_shadow_and_finalize(
     prefix: Option<&str>,
     already_blocked: bool,
     shadow_hq_bin: &str,
+    pre_resolved: Option<&str>,
+    pre_delivered: Option<&str>,
     managed_roots: &[std::path::PathBuf],
 ) -> Result<HqCliUpdateInfo, String> {
     // Both are guaranteed present by the `ManagedShadowed` classification (it
@@ -1825,56 +1833,78 @@ async fn repair_managed_shadow_and_finalize(
         }
         _ => ManagedShadowRemoval::NotAttempted,
     };
-    // The tag rides only on a residual (still non-convergent) event; a removal
-    // that lets resolution converge produces a success with no event, so mapping
-    // both `Removed` and `Failed` to `RepairFailed` is correct — the success path
-    // discards the tag, and a `Removed`-but-still-stale machine genuinely is a
-    // repair failure.
+    log("hq-cli-update", &format!("managed-shadow repair: removal={removal:?}"));
+
+    if matches!(removal, ManagedShadowRemoval::Removed) {
+        // A clean removal — let convergence decide. Re-resolve the binary the app
+        // now executes and re-read delivery evidence: a converged reading is an
+        // ordinary success that clears the marker and emits the cleared banner; a
+        // still-stale reading is a residual repair failure. The `RepairFailed` tag
+        // is consulted only on that residual path (the success path discards it).
+        let post_repair_hq = paths::resolve_bin("hq");
+        let resolved = {
+            let hq = post_repair_hq.clone();
+            tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+                .await
+                .ok()
+                .flatten()
+        };
+        let delivered_version = match prefix {
+            Some(prefix) => {
+                let prefix = prefix.to_string();
+                let hq = post_repair_hq.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    installed_hq_cli_version_in_prefix(&prefix, &hq)
+                })
+                .await
+                .ok()
+                .flatten()
+            }
+            None => None,
+        };
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                before_bin,
+                &post_repair_hq,
+                before_version,
+                resolved.as_deref(),
+                latest,
+                prefix,
+                installer_npm,
+                already_blocked,
+                delivered_version.as_deref(),
+            )
+            .with_managed_roots(managed_roots)
+            .with_managed_shadow_repair(ManagedShadowRepair::RepairFailed),
+        );
+        log("hq-cli-update", &outcome.log_line);
+        return apply_post_install_with_app(app, &outcome);
+    }
+
+    // Removal was refused, not attempted, or only partial. Do NOT re-resolve for a
+    // possible "success": a partial removal can leave the app resolving the fresh
+    // copy while the shadow is only half-gone, and declaring victory there would
+    // clear the marker on a machine that is not actually healed. Report the
+    // ORIGINAL shadow (still non-convergent by construction) as unrepaired, so the
+    // durable marker is written, the honest "could not remove it" copy is shown,
+    // and the reason rides the telemetry tag.
     let repair_tag = match removal {
-        ManagedShadowRemoval::Removed | ManagedShadowRemoval::Failed => {
-            ManagedShadowRepair::RepairFailed
-        }
         ManagedShadowRemoval::ProvenanceRefused => ManagedShadowRepair::ProvenanceRefused,
         ManagedShadowRemoval::NotAttempted => ManagedShadowRepair::NotAttempted,
-    };
-    log(
-        "hq-cli-update",
-        &format!("managed-shadow repair: removal={removal:?} tag={repair_tag:?}"),
-    );
-
-    // Re-resolve the binary the app now executes and re-read delivery evidence.
-    let post_repair_hq = paths::resolve_bin("hq");
-    let resolved = {
-        let hq = post_repair_hq.clone();
-        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
-            .await
-            .ok()
-            .flatten()
-    };
-    let delivered_version = match prefix {
-        Some(prefix) => {
-            let prefix = prefix.to_string();
-            let hq = post_repair_hq.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                installed_hq_cli_version_in_prefix(&prefix, &hq)
-            })
-            .await
-            .ok()
-            .flatten()
-        }
-        None => None,
+        // `Failed` (and, defensively, the unreachable `Removed`).
+        _ => ManagedShadowRepair::RepairFailed,
     };
     let outcome = decide_post_install(
         &PostInstallContext::npm(
             before_bin,
-            &post_repair_hq,
+            shadow_hq_bin,
             before_version,
-            resolved.as_deref(),
+            pre_resolved,
             latest,
             prefix,
             installer_npm,
             already_blocked,
-            delivered_version.as_deref(),
+            pre_delivered,
         )
         .with_managed_roots(managed_roots)
         .with_managed_shadow_repair(repair_tag),
@@ -2355,6 +2385,43 @@ fn clear_non_convergent_version() {
     }
 }
 
+/// Whether the CLI the app resolves is STILL an HQ-managed shadow whose fresh
+/// copy is already in place — the exact state a machine wedged by HQ-DESKTOP-46
+/// sits in. Filesystem-only (path resolution plus manifest reads; it adds no new
+/// subprocess beyond the `resolve_bin("hq")` the check already performs): a
+/// `true` result means clearing the durable marker once will let the next check
+/// re-enter the install path, which then removes the shadow.
+///
+/// `blocked` is the version the durable non-convergent marker recorded. The fresh
+/// managed copy must already be at least that version, or clearing the marker
+/// would only retry an install that cannot yet converge. `managed_roots` must come
+/// from the CHECKED discovery so a malformed environment cannot fabricate a root.
+fn resolved_hq_is_repairable_managed_shadow(
+    blocked: &str,
+    managed_roots: &[std::path::PathBuf],
+) -> bool {
+    let hq = paths::resolve_bin("hq");
+    let Some(shadow_prefix) = npm_prefix_from_hq_bin(&hq) else {
+        return false;
+    };
+    managed_roots.iter().any(|root| {
+        let managed_prefix = paths::managed_npm_prefix_in(root)
+            .to_string_lossy()
+            .to_string();
+        // The resolved shadow and the managed prefix must be two different
+        // directories inside this one managed root...
+        if !managed_shadow_same_root(&shadow_prefix, &managed_prefix, std::slice::from_ref(root)) {
+            return false;
+        }
+        // ...and the managed prefix must already hold >= the blocked version, so
+        // the repair has a converged target to fall onto.
+        matches!(
+            installed_hq_cli_version_in_prefix(&managed_prefix, &hq),
+            Some(version) if cmp_semver(&version, blocked) != std::cmp::Ordering::Less
+        )
+    })
+}
+
 /// Background loop: first check 15s after launch, then every 6h.
 /// Mirrors `updater::setup_update_checker`. Logs but does not propagate
 /// errors — a flaky network shouldn't kill the loop.
@@ -2386,6 +2453,26 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                 "clearing a legacy (pre-pin) non-convergent marker for one recovery re-attempt",
             );
             clear_non_convergent_version();
+        } else if let Some(blocked) = non_convergent_cli_version() {
+            // One-time-per-launch un-wedge for machines ALREADY blocked by
+            // HQ-DESKTOP-46: their marker equals `latest` WITH the pinned contract,
+            // so the legacy recovery above does not clear it and
+            // `should_auto_install` skips the very install path that runs the
+            // repair. If the resolved CLI is still a repairable managed shadow (a
+            // filesystem-only check, no new subprocess), clear the marker once so
+            // the next check installs and repairs. Bounded to once per launch: a
+            // failed repair re-writes the marker for this session, and a genuinely
+            // unrepairable shadow re-arms at most once per app start — never on the
+            // six-hour loop.
+            let roots = paths::managed_toolchain_roots_checked().unwrap_or_default();
+            if !roots.is_empty() && resolved_hq_is_repairable_managed_shadow(&blocked, &roots) {
+                log(
+                    "hq-cli-update",
+                    "resolved CLI is a repairable HQ-managed shadow — clearing its marker for one \
+                     recovery re-attempt",
+                );
+                clear_non_convergent_version();
+            }
         }
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {

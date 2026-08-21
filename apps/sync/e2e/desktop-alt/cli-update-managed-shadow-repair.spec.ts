@@ -120,4 +120,32 @@ describe('hq-CLI updater removes an HQ-managed shadow instead of wedging (HQ-DES
     expect(detailBody).not.toContain("managed outside npm's global prefix");
     expect(detailBody).not.toContain('Update it with the tool that installed it');
   });
+
+  it('is hardened: checked roots, re-arm for wedged machines, no dangling shim, honest failure copy', () => {
+    // Deletion is authorised only through the CHECKED root discovery, so a
+    // malformed LOCALAPPDATA/HOME cannot fabricate a relative root; the primitive
+    // additionally refuses non-absolute paths.
+    expect(finalizeSlice).toContain('paths::managed_toolchain_roots_checked()');
+    expect(core).toContain('is_absolute()');
+
+    // A machine ALREADY wedged (marker == latest with the pinned contract) never
+    // re-enters the install path, so the checker re-arms it once per launch via a
+    // filesystem-only shadow probe.
+    expect(cli).toContain('fn resolved_hq_is_repairable_managed_shadow(');
+    expect(cli).toContain('resolved_hq_is_repairable_managed_shadow(&blocked');
+    expect(core).toContain('pub fn managed_shadow_same_root(');
+
+    // A partial shim removal must keep the package so no surviving shim dangles.
+    expect(core).toContain('if shim_failed {');
+    const removalStart = core.indexOf('pub fn attempt_managed_shadow_removal(');
+    const removalBody = core.slice(removalStart, core.indexOf('\nfn hq_cli_shim_probe_name(', removalStart));
+    expect(removalBody.indexOf('shim_failed')).toBeLessThan(removalBody.indexOf('remove_dir_tolerant(&scoped_windows'));
+
+    // A repair that FAILED shows an honest remedy, never "no action is needed".
+    expect(core).toContain('pub fn managed_shadowed_unrepaired_detail(');
+    const failDetailStart = core.indexOf('pub fn managed_shadowed_unrepaired_detail(');
+    const failDetailBody = core.slice(failDetailStart, core.indexOf('\n}', failDetailStart));
+    expect(failDetailBody).not.toContain('no action is needed');
+    expect(failDetailBody).toContain('could not remove');
+  });
 });

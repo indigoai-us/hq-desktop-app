@@ -977,7 +977,12 @@ pub fn non_convergence_kind(
 /// case-sensitive elsewhere. Never raw string equality: a trailing separator or a
 /// case difference must not change the verdict. Same-directory inputs return
 /// `false` — a shadow is by definition a second, different copy.
-fn managed_shadow_same_root(passed: &str, active: &str, managed_roots: &[PathBuf]) -> bool {
+///
+/// Public so the background checker can cheaply (filesystem-only) recognise a
+/// machine still sitting on a managed shadow and re-arm its auto-install gate —
+/// a machine already wedged by this bug otherwise never re-enters the install
+/// path that runs the repair.
+pub fn managed_shadow_same_root(passed: &str, active: &str, managed_roots: &[PathBuf]) -> bool {
     let passed = path_components_ci(Path::new(passed));
     let active = path_components_ci(Path::new(active));
     if passed == active {
@@ -1088,6 +1093,19 @@ pub fn attempt_managed_shadow_removal(
     managed_roots: &[PathBuf],
     latest: &str,
 ) -> ManagedShadowRemoval {
+    // (0) Absolute-path floor. A relative shadow/install prefix or managed root
+    // (which a malformed LOCALAPPDATA/HOME can produce — the infallible
+    // `managed_toolchain_roots` wrapper preserves such values) would make the
+    // lexical component containment below approve paths relative to the process
+    // working directory. Refuse outright unless every path is absolute; callers
+    // additionally resolve roots through `managed_toolchain_roots_checked`.
+    if !shadow_prefix.is_absolute()
+        || !install_prefix.is_absolute()
+        || managed_roots.iter().any(|root| !root.is_absolute())
+    {
+        return ManagedShadowRemoval::NotAttempted;
+    }
+
     let shadow = path_components_ci(shadow_prefix);
     let install = path_components_ci(install_prefix);
 
@@ -1139,11 +1157,14 @@ pub fn attempt_managed_shadow_removal(
         return ManagedShadowRemoval::ProvenanceRefused;
     }
 
-    // (d) Enumerated removal. Every unlink is NotFound-tolerant (a form that does
-    // not exist on this platform is simply skipped) and any other error degrades
-    // to `Failed` rather than aborting — a partial removal is still safe because
-    // the fresh copy is already in place.
-    let mut failed = false;
+    // (d) Enumerated removal, shims BEFORE the package. Every unlink is
+    // NotFound-tolerant (a form absent on this platform is simply skipped) and any
+    // other error degrades to `Failed`. Crucially, the scoped package is removed
+    // ONLY when every shim removal succeeded: a shim left behind (e.g. a locked
+    // `hq-auth-refresh.cmd`) must never end up pointing at a package we already
+    // deleted. So a partial shim removal keeps the package intact, leaving every
+    // surviving shim backed by its manifest rather than dangling.
+    let mut shim_failed = false;
     for name in HQ_CLI_BIN_NAMES {
         for form in [
             name.to_string(),
@@ -1151,13 +1172,18 @@ pub fn attempt_managed_shadow_removal(
             format!("{name}.ps1"),
             format!("{name}.bat"),
         ] {
-            remove_file_tolerant(&shadow_prefix.join(form), &mut failed);
+            remove_file_tolerant(&shadow_prefix.join(form), &mut shim_failed);
         }
     }
-    remove_dir_tolerant(&scoped_windows, &mut failed);
-    remove_dir_tolerant(&scoped_unix, &mut failed);
+    if shim_failed {
+        // Leave the package in place so the surviving shim(s) still resolve it.
+        return ManagedShadowRemoval::Failed;
+    }
+    let mut package_failed = false;
+    remove_dir_tolerant(&scoped_windows, &mut package_failed);
+    remove_dir_tolerant(&scoped_unix, &mut package_failed);
 
-    if failed {
+    if package_failed {
         ManagedShadowRemoval::Failed
     } else {
         ManagedShadowRemoval::Removed
@@ -1793,11 +1819,20 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
             resolution_shortfall_detail(hq_display, after_version, latest)
         }
         // A managed shadow is HQ's own second copy, not a foreign layout — the
-        // "update it with the tool that installed it" advice is false here, so it
-        // gets copy that names what HQ found and did.
-        NonConvergenceKind::ManagedShadowed => {
-            managed_shadowed_detail(hq_display, after_version, latest)
-        }
+        // "update it with the tool that installed it" advice is false here. The
+        // pre-repair pass (repair outcome unknown) states HQ removes it
+        // automatically; a residual event whose repair FAILED must not — it names
+        // the stale copy and a concrete remedy instead.
+        NonConvergenceKind::ManagedShadowed => match managed_shadow_repair {
+            None | Some(ManagedShadowRepair::Converged) => {
+                managed_shadowed_detail(hq_display, after_version, latest)
+            }
+            Some(
+                ManagedShadowRepair::RepairFailed
+                | ManagedShadowRepair::ProvenanceRefused
+                | ManagedShadowRepair::NotAttempted,
+            ) => managed_shadowed_unrepaired_detail(hq_display, after_version, latest),
+        },
         _ => non_convergent_detail(executor, hq_display, after_version, latest),
     };
     // A resolution shortfall stays observable but NEVER persists the blocking
@@ -2065,6 +2100,22 @@ pub fn managed_shadowed_detail(hq_bin: &str, local: Option<&str>, latest: &str) 
          resolves an older HQ-managed copy, hq {current} at {hq_bin}. HQ keeps two copies of the \
          CLI inside its own managed toolchain and was running the stale one. HQ removes the extra \
          copy automatically so the freshly installed version takes over — no action is needed."
+    )
+}
+
+/// The message for a managed shadow HQ tried to remove but could NOT
+/// (a locked file, a refused provenance check, or an unmet precondition). Unlike
+/// [`managed_shadowed_detail`] this must not claim the copy was removed or that no
+/// action is needed — that would leave the user believing they are current while
+/// they stay on the stale CLI. It names the stale copy and the concrete remedy.
+pub fn managed_shadowed_unrepaired_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
+    let current = local.unwrap_or("an unreadable version");
+    format!(
+        "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} installed successfully, but the app still \
+         resolves an older HQ-managed copy, hq {current} at {hq_bin}, and HQ could not remove that \
+         extra copy automatically (it may be in use). Quit and reopen HQ so the running CLI is not \
+         holding the file, or remove the copy at {hq_bin}; HQ will retry the cleanup on its next \
+         check."
     )
 }
 
@@ -9509,5 +9560,78 @@ mod tests {
             attempt_managed_shadow_removal(&elsewhere, &prefix, &[root.clone()], "5.101.7"),
             ManagedShadowRemoval::NotAttempted
         );
+    }
+
+    /// A partial shim removal must NOT delete the package, or a surviving shim
+    /// would dangle at a gone manifest. Simulate a locked shim by turning one form
+    /// into a directory, which `remove_file` cannot delete.
+    #[test]
+    fn repair_partial_shim_failure_keeps_the_package_so_no_shim_dangles() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("IndigoHQ").join("toolchain");
+        fabricate_shadowed_toolchain(&root);
+        let node = root.join("node");
+        let prefix = root.join("npm-prefix");
+        // Make `hq-auth-refresh.cmd` un-removable (a non-empty directory).
+        std::fs::remove_file(node.join("hq-auth-refresh.cmd")).unwrap();
+        std::fs::create_dir(node.join("hq-auth-refresh.cmd")).unwrap();
+        std::fs::write(node.join("hq-auth-refresh.cmd").join("keep"), "x").unwrap();
+
+        let outcome =
+            attempt_managed_shadow_removal(&node, &prefix, &[root.clone()], "5.101.7");
+        assert_eq!(outcome, ManagedShadowRemoval::Failed);
+        assert!(
+            node.join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli")
+                .join("package.json")
+                .exists(),
+            "the scoped package must survive a partial shim removal so nothing dangles"
+        );
+    }
+
+    /// A relative shadow/install prefix or managed root (which a malformed
+    /// LOCALAPPDATA/HOME can produce) must never authorise a deletion.
+    #[test]
+    fn repair_refuses_relative_paths() {
+        assert_eq!(
+            attempt_managed_shadow_removal(
+                Path::new("relative/node"),
+                Path::new("relative/npm-prefix"),
+                &[PathBuf::from("relative")],
+                "5.101.7",
+            ),
+            ManagedShadowRemoval::NotAttempted
+        );
+        // Absolute shadow/install but a relative root still disqualifies.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("IndigoHQ").join("toolchain");
+        fabricate_shadowed_toolchain(&root);
+        assert_eq!(
+            attempt_managed_shadow_removal(
+                &root.join("node"),
+                &root.join("npm-prefix"),
+                &[PathBuf::from("IndigoHQ/toolchain")],
+                "5.101.7",
+            ),
+            ManagedShadowRemoval::NotAttempted
+        );
+    }
+
+    /// A residual whose repair FAILED must show an honest "could not remove it"
+    /// remedy, never the pre-repair "removed automatically, no action needed".
+    #[test]
+    fn managed_shadow_residual_repair_failure_shows_an_honest_remedy() {
+        let roots = managed_roots_fixture();
+        let failed = decide_post_install(
+            &managed_shadow_ctx(&roots, false)
+                .with_managed_shadow_repair(ManagedShadowRepair::RepairFailed),
+        );
+        let detail = failed.result.unwrap_err();
+        assert!(!detail.contains("no action is needed"));
+        assert!(detail.contains("could not remove"));
+        // The pre-repair (pending) pass keeps the optimistic copy.
+        let pending = decide_post_install(&managed_shadow_ctx(&roots, false));
+        assert!(pending.result.unwrap_err().contains("no action is needed"));
     }
 }
