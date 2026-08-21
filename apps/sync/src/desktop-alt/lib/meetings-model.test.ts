@@ -21,6 +21,7 @@ import {
   mergeScheduledBotLookups,
   mergeScheduledBots,
   normalizeMeetingUrl,
+  isOptimisticAlreadyInvitedBot,
   optimisticAlreadyInvitedBot,
   pickLiveMeeting,
   recurringSeriesId,
@@ -591,6 +592,8 @@ describe('meetings-model', () => {
       expect(seeded.calendarEventId).toBe('evt-409');
       expect(botAttachmentState(seeded)).toBe('invited');
       expect(rowButtonKind(seeded)).toBe('invited');
+      expect(isOptimisticAlreadyInvitedBot(seeded)).toBe(true);
+      expect(isOptimisticAlreadyInvitedBot({ ...seeded, botId: 'bot-real' })).toBe(false);
     });
   });
 
