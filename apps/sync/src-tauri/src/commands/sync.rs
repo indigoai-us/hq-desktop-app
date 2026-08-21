@@ -977,10 +977,10 @@ fn apply_skip_companies_env(env: &mut HashMap<String, String>, scope: &SyncRunSc
 ///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
 ///   for back-compat; the menubar explicitly opts into `both` so a single
 ///   "Sync Now" click broadcasts local edits AND pulls remote updates.
-/// - `--on-conflict keep` — preserve local edits when a divergent file is
-///   detected, instead of aborting the company-wide sync. With `abort`, a
-///   single conflicting file halted every other file's progress. `keep`
-///   keeps the user's local copy as-is and continues syncing the rest.
+/// - `--on-conflict keep` — adopt the cloud body when a divergent file is
+///   detected, move the displaced local edit to a recoverable conflict
+///   sidecar, and continue the company-wide sync. With `abort`, one conflict
+///   would halt every other file's progress.
 /// - `--hq-root <path>` — local HQ directory
 ///
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
@@ -2906,12 +2906,12 @@ mod tests {
         );
     }
 
-    /// Sync Now must use `--on-conflict keep` so a divergent local file
-    /// preserves the user's edits instead of aborting the company-wide sync.
-    /// Regressing to `abort` would cause a single conflicting file to halt
-    /// every other file's progress on the affected company.
+    /// Sync Now must use `--on-conflict keep` so a divergent file adopts the
+    /// cloud body while retaining the displaced local edit in a sidecar,
+    /// instead of aborting the company-wide sync. Regressing to `abort` would
+    /// cause one conflict to halt every other file's progress.
     #[test]
-    fn test_build_sync_spawn_args_on_conflict_is_keep() {
+    fn test_build_sync_spawn_args_on_conflict_is_cloud_wins_keep() {
         let args = build_sync_spawn_args("/tmp", true, &SyncRunScope::All);
         let joined = args.args.join(" ");
         assert!(
