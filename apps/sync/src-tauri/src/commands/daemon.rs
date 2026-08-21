@@ -5508,7 +5508,10 @@ mod tests {
         assert_eq!(captured.len(), 1, "exactly one event, never double-sent");
         let event = &captured[0];
         assert_eq!(event.tags["watcher_fault_provenance"], "unavailable");
-        assert_eq!(event.tags["watcher_fault_deferral_resolution"], "teardown_flush");
+        assert_eq!(
+            event.extra["watcher_fault_deferral_resolution"],
+            sentry::protocol::Value::String("teardown_flush".to_string())
+        );
     }
 
     #[test]
