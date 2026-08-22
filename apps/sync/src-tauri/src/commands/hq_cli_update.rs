@@ -89,7 +89,8 @@ pub use hq_desktop_core::hq_cli_update::{
     non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
     non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
-    npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    npm_prefix_from_hq_bin, partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path,
+    pnpm_global_env,
     pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
     read_installed_version, redact_home, redact_home_in, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
@@ -319,18 +320,22 @@ fn partial_install_scope_dir(prefix: &str) -> PathBuf {
     partial_install_scope_dir_for(prefix, cfg!(target_os = "windows"))
 }
 
-/// Remove partial `@indigoai-us/hq-cli` install debris left by an interrupted
-/// npm install so a fresh `npm install -g` can lay the package down cleanly.
-/// Scoped strictly to `<prefix>/lib/node_modules/@indigoai-us`: deletes the
-/// `hq-cli` package dir and any `.hq-cli-*` temp staging dir, and touches
-/// nothing else — sibling packages under the scope, and everything outside it,
-/// are left intact. Best-effort: every removal is logged, but a failure does not
-/// abort the caller's retry, since the subsequent install surfaces the real
-/// error. Mirrors the manual remedy `hq-heal` applies (back up the partial
-/// state, then reinstall).
-fn clean_partial_hq_cli_install(prefix: &str) {
-    let scope = partial_install_scope_dir(prefix);
-
+/// Remove partial `@indigoai-us/hq-cli` install debris from an already-resolved
+/// npm-global SCOPE dir (`…/node_modules/@indigoai-us`) so a fresh
+/// `npm install -g` can lay the package down cleanly. Deletes the `hq-cli`
+/// package dir and any `.hq-cli-*` temp staging dir, and touches nothing else —
+/// sibling packages under the scope, and everything outside it, are left intact,
+/// and the scope dir itself is never removed. Best-effort: every removal is
+/// logged, but a failure does not abort the caller's retry, since the subsequent
+/// install surfaces the real error. Mirrors the manual remedy `hq-heal` applies.
+///
+/// Both cleanup callers funnel through this ONE routine so the deletion set is
+/// identical no matter how the scope was derived: from a resolved install prefix
+/// ([`partial_install_scope_dir`]), or — when no prefix resolved (HQ-DESKTOP-5B)
+/// — from the absolute `…/node_modules/@indigoai-us` scope npm itself named in
+/// its ENOTEMPTY path ([`partial_install_scope_from_npm_path`], which fails
+/// closed).
+fn clean_partial_hq_cli_install_in_scope(scope: &Path) {
     let pkg = scope.join("hq-cli");
     if pkg.exists() {
         match std::fs::remove_dir_all(&pkg) {
@@ -351,7 +356,7 @@ fn clean_partial_hq_cli_install(prefix: &str) {
     // Sweep orphan `.hq-cli-*` staging dirs npm left behind mid-rename. Reading
     // the scope dir may fail (e.g. it doesn't exist yet) — that's fine, there is
     // simply nothing to sweep.
-    let Ok(entries) = std::fs::read_dir(&scope) else {
+    let Ok(entries) = std::fs::read_dir(scope) else {
         return;
     };
     for entry in entries.flatten() {
@@ -372,6 +377,17 @@ fn clean_partial_hq_cli_install(prefix: &str) {
             }
         }
     }
+}
+
+/// Prefix-derived entrypoint: resolve the npm-global scope for `prefix`
+/// (`<prefix>/lib/node_modules/@indigoai-us`, or the Windows layout) and clean
+/// it. Production callers derive the scope themselves (a resolved prefix, or —
+/// with no prefix — npm's own reported path) and call
+/// [`clean_partial_hq_cli_install_in_scope`] directly, so this thin
+/// prefix->scope->clean wrapper exists only as a test convenience.
+#[cfg(test)]
+fn clean_partial_hq_cli_install(prefix: &str) {
+    clean_partial_hq_cli_install_in_scope(&partial_install_scope_dir(prefix));
 }
 
 /// Spawn `npm <args>` on the blocking pool with the beefed-up child PATH and
@@ -545,21 +561,38 @@ async fn run_npm_install_with_retries(
     if !output.status.success() {
         let detail = npm_output_detail(&output);
         if is_partial_install_failure(&detail) {
-            if let Some(cleanup_prefix) = prefix {
+            // Resolve the cleanup SCOPE. Prefer the install prefix when one
+            // resolved (`<prefix>/lib/node_modules/@indigoai-us`, rung
+            // `cleanup-plain`). Otherwise — the HQ-DESKTOP-5B case, where
+            // `npm_prefix_from_hq_bin` returns None on every user-path machine so
+            // this remedy never ran and the debris wedged every retry — fall back
+            // to the absolute `…/node_modules/@indigoai-us` scope npm itself named
+            // in its ENOTEMPTY path (rung `cleanup-plain-npm-path`). The fallback
+            // fails closed: a path that is not an absolute
+            // `node_modules/@indigoai-us` component chain yields no scope, so no
+            // deletion happens. Both scopes feed the SAME scoped cleaner, so the
+            // deletion set is identical either way.
+            let scope = prefix
+                .map(|cleanup_prefix| (partial_install_scope_dir(cleanup_prefix), "cleanup-plain"))
+                .or_else(|| {
+                    partial_install_scope_from_npm_path(&detail)
+                        .map(|derived| (PathBuf::from(derived), "cleanup-plain-npm-path"))
+                });
+            if let Some((cleanup_scope, rung)) = scope {
                 log(
                     "hq-cli-update",
                     &format!(
                         "install hit ENOTEMPTY partial install; cleaning and retrying: {detail}"
                     ),
                 );
-                clean_partial_hq_cli_install(cleanup_prefix);
+                clean_partial_hq_cli_install_in_scope(&cleanup_scope);
                 output = run_recorded_npm_install_attempt(
                     npm,
                     path,
                     npm_cache,
                     prefix,
                     base_args.clone(),
-                    "cleanup-plain",
+                    rung,
                     false,
                     &mut ledger,
                 )
@@ -2791,6 +2824,168 @@ exit 0
                 run.final_attempt_forced,
             ),
             InstallFailureKind::ExpectedBinCollision
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn enotempty_with_no_prefix_cleans_the_npm_path_scope_and_retries() {
+        // HQ-DESKTOP-5B end to end: on a user-path machine no install prefix
+        // resolves, so the prefix-gated cleanup rung never ran and leftover
+        // `@indigoai-us/hq-cli` debris wedged every retry. With the fix the rung
+        // derives its scope from the absolute path npm names in its ENOTEMPTY
+        // error, cleans exactly that scope, and retries once. Pre-fix this makes a
+        // single attempt, leaves the debris, and returns failure.
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        // A real global tree the fake npm will name in its ENOTEMPTY path.
+        let scope = temp.path().join("lib/node_modules/@indigoai-us");
+        fs::create_dir_all(scope.join("hq-cli/dist")).unwrap();
+        fs::write(scope.join("hq-cli/package.json"), "{}").unwrap();
+        fs::create_dir_all(scope.join(".hq-cli-0DY3ww6z")).unwrap();
+        fs::write(scope.join(".hq-cli-0DY3ww6z/partial"), "x").unwrap();
+        // A sibling package and a loose file inside the scope that MUST survive.
+        fs::create_dir_all(scope.join("hq-other")).unwrap();
+        fs::write(scope.join("hq-other/package.json"), "{}").unwrap();
+        fs::write(scope.join("keep.txt"), "keep").unwrap();
+
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        let hq_cli_path = scope.join("hq-cli");
+        // Attempt 1 fails ENOTEMPTY naming the planted `hq-cli` dir; attempt 2
+        // (the post-cleanup plain retry) succeeds.
+        let script = format!(
+            r#"#!/bin/sh
+state="{state}"
+attempts="{attempts}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+case "$count" in
+  1) printf '%s\n' 'npm error code ENOTEMPTY' 'npm error syscall rename' 'npm error path {hq_cli}' >&2; exit 1 ;;
+esac
+exit 0
+"#,
+            state = state.display(),
+            attempts = attempts.display(),
+            hq_cli = hq_cli_path.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+
+        // prefix = None: the exact HQ-DESKTOP-5B state.
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            None,
+            install_argv(None, None),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            run.output.status.success(),
+            "the post-cleanup retry must recover"
+        );
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "prefix-less ENOTEMPTY must clean and retry exactly once"
+        );
+        // The planted debris is gone from the npm-path-derived scope...
+        assert!(
+            !scope.join("hq-cli").exists(),
+            "partial package dir must be removed"
+        );
+        assert!(
+            !scope.join(".hq-cli-0DY3ww6z").exists(),
+            "temp staging dir must be removed"
+        );
+        // ...while a sibling package and a loose file in the scope both survive.
+        assert!(
+            scope.join("hq-other").exists(),
+            "sibling package must be preserved"
+        );
+        assert!(
+            scope.join("keep.txt").exists(),
+            "loose file in scope must be preserved"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn enotempty_with_no_prefix_and_unusable_path_performs_no_cleanup() {
+        // The fallback fails closed: when npm's ENOTEMPTY names a path that is not
+        // an absolute `node_modules/@indigoai-us` component chain and no prefix
+        // resolved, the rung derives no scope, performs no deletion, and makes no
+        // retry — the failure is returned exactly as today.
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let npm = temp.path().join("fake-npm");
+        let state = temp.path().join("state");
+        let attempts = temp.path().join("attempts");
+        // An ENOTEMPTY whose path is NOT under node_modules/@indigoai-us.
+        let script = format!(
+            r#"#!/bin/sh
+state="{state}"
+attempts="{attempts}"
+count=0
+if [ -f "$state" ]; then count=$(cat "$state"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$state"
+printf '%s\n' "$*" >> "$attempts"
+printf '%s\n' 'npm error code ENOTEMPTY' 'npm error path /some/unrelated/dir' >&2
+exit 1
+"#,
+            state = state.display(),
+            attempts = attempts.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            None,
+            install_argv(None, None),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success());
+        let lines: Vec<_> = fs::read_to_string(&attempts)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "an unusable npm path must not trigger a cleanup retry"
         );
     }
 
