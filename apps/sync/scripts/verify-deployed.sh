@@ -74,9 +74,11 @@ SDK_EXE="$APP/Contents/Resources/recall-sdk-bridge/node_modules/@recallai/deskto
 check "Recall SDK helper at desktop_sdk_macos_exe" \
   test -f "$SDK_EXE"
 
-WRAPPER="$APP/Contents/MacOS/recall-desktop-sdk"
-check "Tauri sidecar wrapper at $WRAPPER" \
-  test -f "$WRAPPER"
+# The bridge is spawned as `node <bridge.mjs>` straight out of Resources.
+# There is deliberately NO Contents/MacOS sidecar any more — see the
+# no-non-Mach-O check further down.
+check "recording-tracker.mjs alongside bridge.mjs" \
+  test -f "$APP/Contents/Resources/recall-sdk-bridge/recording-tracker.mjs"
 
 GST="$APP/Contents/Resources/recall-sdk-bridge/node_modules/@recallai/desktop-sdk/Frameworks/GStreamer.framework"
 check "GStreamer.framework bundled" \
@@ -140,6 +142,49 @@ echo ""
 echo "Code signing:"
 check "codesign --verify --deep --strict passes" \
   codesign --verify --deep --strict "$APP"
+
+# Gatekeeper's own verdict. `codesign --verify` can pass on a bundle spctl
+# still rejects, and on a broken auto-updated install this reports
+# "rejected (no usable signature)" — the single clearest signal that TCC
+# grants will not stick. Warn-only: locally-built dev-cert bundles are
+# legitimately rejected here.
+warn_check "spctl accepts the bundle (Gatekeeper / Notarized Developer ID)" \
+  bash -c "spctl --assess --type execute '$APP' 2>&1 | grep -qi 'accepted'"
+
+# ── The auto-updater xattr trap (root cause of the TCC failure) ──────────
+# Tauri's externalBin lands in Contents/MacOS/ as a nested code object. For a
+# non-Mach-O (a bash script, .mjs, .py) codesign cannot embed the signature and
+# stores it in extended attributes instead. The auto-updater extracts
+# HQ_x.y.z_universal.app.tar.gz with a tar that does NOT preserve xattrs, so the
+# file arrives byte-identical but UNSIGNED, the whole bundle signature goes
+# invalid, and macOS stops persisting TCC privacy grants — Accessibility and
+# Screen Recording never stick and meeting detection can never start.
+#
+# The published artifact looks perfect; only the auto-updated copy is broken.
+# So this check is worth running against BOTH.
+echo ""
+echo "Nested code objects (the auto-update signature trap):"
+
+NON_MACHO=$(find "$APP/Contents/MacOS" -type f -print0 2>/dev/null \
+  | xargs -0 -I{} bash -c 'file -b "{}" | grep -qi "Mach-O" || echo "{}"' 2>/dev/null || true)
+if [ -n "$NON_MACHO" ]; then
+  FAIL+=("non-Mach-O file(s) in Contents/MacOS")
+  red "  ✗ non-Mach-O file(s) in Contents/MacOS — signature lives in xattrs and"
+  red "    will be stripped by the auto-updater's tar extraction:"
+  while IFS= read -r f; do [ -n "$f" ] && red "      - $f"; done <<< "$NON_MACHO"
+else
+  PASS+=("Contents/MacOS contains only Mach-O executables")
+  green "  ✓ Contents/MacOS contains only Mach-O executables"
+fi
+
+check "bridge.mjs is a plain Resources file (not a Contents/MacOS sidecar)" \
+  bash -c "test ! -e '$APP/Contents/MacOS/recall-desktop-sdk'"
+
+# Belt-and-suspenders: the bridge must actually be SEALED into CodeResources.
+# A resource that codesign skipped (e.g. via a rules exclusion) would not be
+# covered by the bundle signature at all.
+check "bridge.mjs is sealed in _CodeSignature/CodeResources" \
+  bash -c "grep -q 'recall-sdk-bridge/bridge.mjs' '$APP/Contents/_CodeSignature/CodeResources'"
 
 # Warn-only: hardened runtime tells us whether the build will pass
 # notarization. Local dev-cert builds skip it on purpose.

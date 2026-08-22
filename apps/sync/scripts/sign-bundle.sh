@@ -216,18 +216,54 @@ else
   exit 1
 fi
 
-# ─── 6. Sign sidecar bash wrapper(s) ────────────────────────────────────────
-# Tauri's bundle.externalBin places the bash wrapper(s) into Contents/MacOS/
-# as `recall-desktop-sdk`. Bash scripts aren't strictly required to be
-# signed, but codesign --strict --deep complains if they aren't when the
-# parent .app is sealed — so do it anyway.
-echo "  Phase 6: Contents/MacOS sidecars"
-for sidecar in "$APP/Contents/MacOS/recall-desktop-sdk"*; do
-  [ -e "$sidecar" ] || continue
-  # Skip the main binary — that's the app exe, signed in Phase 7.
-  [ "$(basename "$sidecar")" = "hq-sync-menubar" ] && continue
-  sign_file "$sidecar"
-done
+# ─── 6. Assert Contents/MacOS holds ONLY Mach-O executables ─────────────────
+# THE INVARIANT THIS WHOLE FIX EXISTS TO PROTECT.
+#
+# Tauri's bundle.externalBin places its entries into Contents/MacOS/, where
+# they become NESTED CODE OBJECTS. codesign can only embed a signature inside a
+# Mach-O; for anything else (a bash script, a .mjs, a python file) it falls back
+# to storing the signature in extended attributes — com.apple.cs.CodeDirectory,
+# com.apple.cs.CodeSignature, com.apple.cs.CodeRequirements(-1), com.apple.cs.
+# CodeSignature.
+#
+# The Tauri auto-updater downloads HQ_x.y.z_universal.app.tar.gz and extracts it
+# with a tar implementation that does NOT preserve extended attributes. So a
+# script here signs fine, notarizes fine, and passes every check on the
+# published artifact — then arrives byte-identical but signature-less on every
+# auto-updated machine, where `codesign --verify --deep --strict` fails with
+#   "code object is not signed at all
+#    In subcomponent: …/Contents/MacOS/recall-desktop-sdk"
+# and spctl reports "rejected, no usable signature". macOS refuses to persist
+# TCC privacy grants against an invalid bundle, so Accessibility / Screen
+# Recording never stick and meeting detection can never start.
+#
+# We shipped exactly that from the sidecar restore in #482 until this check
+# existed. The Recall bridge now runs as `node Contents/Resources/
+# recall-sdk-bridge/bridge.mjs` — a plain resource sealed by content hash in
+# _CodeSignature/CodeResources, with no xattrs to lose.
+#
+# Mach-O nested objects are fine (their signatures live inside the file), which
+# is why the GStreamer dylibs and hq-tray-helper were never affected.
+echo "  Phase 6: assert no non-Mach-O executables in Contents/MacOS"
+non_macho=()
+while IFS= read -r -d '' f; do
+  desc=$(file -b "$f" 2>/dev/null) || true
+  case "$desc" in
+    *Mach-O*) ;;
+    *) non_macho+=("$f ($desc)") ;;
+  esac
+done < <(find "$APP/Contents/MacOS" -type f -print0)
+
+if [ "${#non_macho[@]}" -gt 0 ]; then
+  echo "ERROR: non-Mach-O file(s) in Contents/MacOS — their code signatures live in" >&2
+  echo "       extended attributes, which the auto-updater's tar extraction strips." >&2
+  echo "       Every auto-updated install would have an INVALID bundle signature and" >&2
+  echo "       would stop persisting TCC grants. Ship it as a plain file under" >&2
+  echo "       Contents/Resources/ and spawn it explicitly instead." >&2
+  for f in "${non_macho[@]}"; do echo "         - $f" >&2; done
+  exit 1
+fi
+echo "    (every file in Contents/MacOS is a Mach-O)"
 
 # ─── 7. Sign the main app binary ────────────────────────────────────────────
 echo "  Phase 7: main app binary"
