@@ -1171,3 +1171,138 @@ fn true_pnpm_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_
         ["hq-cli-update", "install-non-convergent"]
     );
 }
+
+/// The npm managed-shadow fixture: HQ delivered `latest` into
+/// `<root>/npm-prefix`, but the app still resolves `<root>/node/hq.cmd` inside the
+/// same managed root. `repair` is the outcome the app seam observed.
+fn managed_shadow_context<'a>(
+    hq_bin: &'a str,
+    prefix: &'a str,
+    roots: &'a [std::path::PathBuf],
+    repair: ManagedShadowRepairOutcome,
+    already_blocked: bool,
+) -> PostInstallContext<'a> {
+    PostInstallContext::npm_with_managed_shadow(
+        hq_bin,
+        hq_bin,
+        Some("5.77.14"),
+        Some("5.77.14"),
+        "5.84.0",
+        Some(prefix),
+        "/opt/homebrew/bin/npm",
+        already_blocked,
+        Some("5.84.0"),
+        ManagedShadowContext::after_repair(roots, repair),
+    )
+}
+
+/// HQ-DESKTOP-46: a residual managed shadow whose repair could not converge is
+/// captured through the real seam as `non_convergence_kind=managed-shadowed` with
+/// the closed `managed_shadow_repair` outcome tag, on the EXISTING fingerprint,
+/// and with `hq_bin`/`npm_prefix` home-redacted so no account path reaches Sentry.
+/// On base this input produces a `foreign-managed` envelope with no repair tag.
+#[test]
+fn a_managed_shadow_repair_failure_captures_a_home_redacted_tagged_event() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let root = home.join("AppData/Local/IndigoHQ/toolchain");
+    let roots = vec![root.clone()];
+    let prefix = root.join("npm-prefix").to_string_lossy().to_string();
+    let hq_bin = root.join("node/hq.cmd").to_string_lossy().to_string();
+
+    let (events, records, captures, record_failures) = composed_non_convergent_events(
+        &managed_shadow_context(
+            &hq_bin,
+            &prefix,
+            &roots,
+            ManagedShadowRepairOutcome::RepairFailed,
+            false,
+        ),
+        true,
+    );
+    assert_eq!(records, 1, "a repair-failed shadow writes the durable marker");
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"],
+        "a new tag must never split the existing Sentry group"
+    );
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("managed-shadowed")
+    );
+    assert_eq!(
+        event.tags.get("managed_shadow_repair").map(String::as_str),
+        Some("repair-failed")
+    );
+    let hq_extra = event
+        .extra
+        .get("hq_bin")
+        .and_then(Value::as_str)
+        .expect("hq_bin extra");
+    assert!(
+        hq_extra.starts_with('~') && !hq_extra.contains(&home_text),
+        "hq_bin must be home-redacted: {hq_extra}"
+    );
+    let prefix_extra = event
+        .extra
+        .get("npm_prefix")
+        .and_then(Value::as_str)
+        .expect("npm_prefix extra");
+    assert!(
+        prefix_extra.starts_with('~') && !prefix_extra.contains(&home_text),
+        "npm_prefix must be home-redacted: {prefix_extra}"
+    );
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(
+        !serialized.contains(&home_text),
+        "the raw home directory must never reach Sentry"
+    );
+}
+
+/// A managed-shadow repair that CONVERGED (the app now resolves the managed-prefix
+/// copy at `latest`) clears the durable marker and emits NO event at all — the
+/// slice going quiet is itself the success signal.
+#[test]
+fn a_converged_managed_shadow_repair_emits_no_event_and_clears_the_marker() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let root = home.join("AppData/Local/IndigoHQ/toolchain");
+    let roots = vec![root.clone()];
+    let prefix = root.join("npm-prefix").to_string_lossy().to_string();
+    let good_hq = root.join("npm-prefix/hq.cmd").to_string_lossy().to_string();
+    let ctx = PostInstallContext::npm_with_managed_shadow(
+        &good_hq,
+        &good_hq,
+        Some("5.77.14"),
+        Some("5.84.0"),
+        "5.84.0",
+        Some(&prefix),
+        "/opt/homebrew/bin/npm",
+        false,
+        Some("5.84.0"),
+        ManagedShadowContext::after_repair(&roots, ManagedShadowRepairOutcome::RepairFailed),
+    );
+    let clears = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(&ctx);
+        let record = |_v: String| panic!("a converged repair must not record a marker");
+        let clear = || clears.set(clears.get() + 1);
+        let capture = |_r: NonConvergentReport| panic!("a converged repair must not capture");
+        let record_failure = |_e: String| {};
+        let result = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+        assert!(result.is_ok(), "a converged repair reports success");
+    });
+    assert!(events.is_empty(), "a converged repair emits no event");
+    assert_eq!(clears.get(), 1, "a converged repair clears the marker");
+}

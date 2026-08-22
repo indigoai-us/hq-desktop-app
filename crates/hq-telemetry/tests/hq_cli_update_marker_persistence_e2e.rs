@@ -247,3 +247,56 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
         assert_eq!(captures, 1);
     }
 }
+
+/// HQ-DESKTOP-46 at the marker layer: the durable `cliUpdateNonConvergentVersion`
+/// marker for a managed shadow is gated on the REPAIR OUTCOME. A repairable
+/// shadow (the first convergence check, `NotAttempted`) persists NO marker — so
+/// `should_auto_install` stays true and the next check self-heals — while a
+/// repair-failed or provenance-refused shadow persists exactly one, so a machine
+/// HQ cannot repair stops re-paging. On base every one of these persisted the
+/// marker for this shape.
+#[test]
+fn a_managed_shadow_marker_is_gated_on_the_repair_outcome() {
+    let roots = vec![std::path::PathBuf::from(
+        "/u/AppData/Local/IndigoHQ/toolchain",
+    )];
+    let prefix = "/u/AppData/Local/IndigoHQ/toolchain/npm-prefix";
+    let shadow = "/u/AppData/Local/IndigoHQ/toolchain/node/hq.cmd";
+    let ctx = |repair| {
+        PostInstallContext::npm_with_managed_shadow(
+            shadow,
+            shadow,
+            Some("5.93.0"),
+            Some("5.93.0"),
+            "5.97.2",
+            Some(prefix),
+            "npm",
+            false,
+            Some("5.97.2"),
+            ManagedShadowContext::after_repair(&roots, repair),
+        )
+    };
+
+    // Repairable-but-not-yet-repaired: no durable marker, and nothing captured.
+    let (records, captures) = drive_success_path(&ctx(ManagedShadowRepairOutcome::NotAttempted));
+    assert_eq!(
+        records, 0,
+        "a repairable managed shadow must persist no durable marker"
+    );
+    assert_eq!(captures, 0);
+
+    // Repair failed: exactly one durable marker, captured once.
+    let (records, captures) = drive_success_path(&ctx(ManagedShadowRepairOutcome::RepairFailed));
+    assert_eq!(
+        records, 1,
+        "a repair-failed managed shadow persists exactly one durable marker"
+    );
+    assert_eq!(captures, 1);
+
+    // Provenance refused likewise blocks so HQ stops re-paging a machine it cannot
+    // repair.
+    let (records, captures) =
+        drive_success_path(&ctx(ManagedShadowRepairOutcome::ProvenanceRefused));
+    assert_eq!(records, 1);
+    assert_eq!(captures, 1);
+}

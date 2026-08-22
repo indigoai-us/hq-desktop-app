@@ -960,6 +960,13 @@ pub fn path_within_root_ci(path: &Path, root: &Path, case_insensitive: bool) -> 
     if root.as_os_str().is_empty() {
         return false;
     }
+    // A `..` component makes a prefix match unsound: `<root>\node\..\..\external`
+    // shares the root's leading components yet resolves OUTSIDE it. This predicate
+    // authorizes a DESTRUCTIVE repair, so any parent-traversal component in either
+    // path fails closed rather than being trusted as containment.
+    if has_parent_traversal(path) || has_parent_traversal(root) {
+        return false;
+    }
     let mut path_components = path.components();
     for root_component in root.components() {
         match path_components.next() {
@@ -973,6 +980,14 @@ pub fn path_within_root_ci(path: &Path, root: &Path, case_insensitive: bool) -> 
         }
     }
     true
+}
+
+/// Whether a path carries any `..` (parent-traversal) component. Used to fail a
+/// containment check closed rather than trust a prefix match that a later `..`
+/// would escape.
+fn has_parent_traversal(p: &Path) -> bool {
+    p.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 fn os_component_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr, case_insensitive: bool) -> bool {
@@ -1031,6 +1046,15 @@ fn same_managed_toolchain_root(
 /// is unit-testable and the app layer only performs the unlink. Nothing outside
 /// this set (node.exe, npm, npx, git, an unrelated global package) is ever named.
 pub fn managed_shadow_removal_targets(shadow_dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut targets = managed_shadow_shim_targets(shadow_dir);
+    targets.extend(managed_shadow_package_dirs(shadow_dir));
+    targets
+}
+
+/// The [`HQ_CLI_BIN_NAMES`] shim files inside `shadow_dir` (the bare name plus its
+/// Windows `.cmd`/`.ps1`/`.bat` wrapper forms). A shim is what sits on PATH, so
+/// the repair removes these FIRST and aborts if any fails.
+pub fn managed_shadow_shim_targets(shadow_dir: &Path) -> Vec<std::path::PathBuf> {
     let mut targets: Vec<std::path::PathBuf> = Vec::new();
     for name in HQ_CLI_BIN_NAMES {
         targets.push(shadow_dir.join(name));
@@ -1038,10 +1062,45 @@ pub fn managed_shadow_removal_targets(shadow_dir: &Path) -> Vec<std::path::PathB
             targets.push(shadow_dir.join(format!("{name}.{ext}")));
         }
     }
-    let scoped = Path::new("@indigoai-us").join("hq-cli");
-    targets.push(shadow_dir.join("node_modules").join(&scoped));
-    targets.push(shadow_dir.join("lib").join("node_modules").join(&scoped));
     targets
+}
+
+/// The scoped `@indigoai-us/hq-cli` package directories inside `shadow_dir` (the
+/// Windows `<dir>\node_modules\…` layout and the unix `<dir>/lib/node_modules/…`
+/// layout). Removed ONLY after every shim is gone, so a locked shim is never left
+/// pointing at a deleted package.
+pub fn managed_shadow_package_dirs(shadow_dir: &Path) -> Vec<std::path::PathBuf> {
+    let scoped = Path::new("@indigoai-us").join("hq-cli");
+    vec![
+        shadow_dir.join("node_modules").join(&scoped),
+        shadow_dir.join("lib").join("node_modules").join(&scoped),
+    ]
+}
+
+/// Two-phase removal with the ordering guarantee: every shim first, and the
+/// package directories ONLY if all shims removed cleanly. A shim removal failure
+/// (e.g. a Windows sharing violation while `hq` runs) aborts BEFORE any package
+/// removal, so a recoverable lock can never leave the surviving shim pointing at a
+/// deleted package (which would break the active CLI). Once every shim is gone the
+/// app resolves the managed-prefix copy, so a package-directory removal failure is
+/// harmless — nothing on PATH points at it — and does not downgrade the outcome.
+///
+/// Pure in its removal effect (the `remove` closure is injected), so the ordering
+/// guarantee is unit-testable without provoking real filesystem errors.
+pub fn phased_remove(
+    shim_targets: &[std::path::PathBuf],
+    package_dirs: &[std::path::PathBuf],
+    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> ManagedShadowRepairAttempt {
+    for target in shim_targets {
+        if remove(target).is_err() {
+            return ManagedShadowRepairAttempt::Failed;
+        }
+    }
+    for target in package_dirs {
+        let _ = remove(target);
+    }
+    ManagedShadowRepairAttempt::Removed
 }
 
 /// The result of one bounded managed-shadow repair attempt.
@@ -1114,18 +1173,14 @@ pub fn repair_managed_shadow(
         Some(version) if cmp_semver(&version, latest) != std::cmp::Ordering::Less => {}
         _ => return ManagedShadowRepairAttempt::ProvenanceRefused("prefix-below-latest"),
     }
-    // (d) Remove EXACTLY the enumerated shim + scoped-package targets, nothing else.
-    let mut failed = false;
-    for target in managed_shadow_removal_targets(shadow_dir) {
-        if remove_path_if_present(&target).is_err() {
-            failed = true;
-        }
-    }
-    if failed {
-        ManagedShadowRepairAttempt::Failed
-    } else {
-        ManagedShadowRepairAttempt::Removed
-    }
+    // (d) Remove EXACTLY the enumerated shim + scoped-package targets, nothing
+    // else — shims first, and the package directory only if every shim was removed
+    // cleanly (see [`phased_remove`]).
+    phased_remove(
+        &managed_shadow_shim_targets(shadow_dir),
+        &managed_shadow_package_dirs(shadow_dir),
+        remove_path_if_present,
+    )
 }
 
 /// Remove a file, symlink, or directory if it exists; a missing target is
@@ -1852,11 +1907,20 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         }
         // A managed shadow is HQ's own second copy, not a foreign layout: its copy
         // must NOT tell the user to "update it with the tool that installed it" or
-        // blame pnpm/Homebrew. HQ installed both copies and repairs the machine
-        // itself.
-        NonConvergenceKind::ManagedShadowed => {
-            managed_shadowed_detail(hq_display, after_version, latest)
-        }
+        // blame pnpm/Homebrew. A repairable shadow gets the reassuring "HQ removes
+        // it automatically" copy; a shadow the repair could not clear (the marker
+        // is now persisted, so no automatic retry runs) gets actionable
+        // failure-specific guidance instead.
+        NonConvergenceKind::ManagedShadowed => match managed_shadow.repair {
+            ManagedShadowRepairOutcome::RepairFailed
+            | ManagedShadowRepairOutcome::ProvenanceRefused => {
+                managed_shadow_repair_failed_detail(hq_display, after_version, latest)
+            }
+            ManagedShadowRepairOutcome::Converged
+            | ManagedShadowRepairOutcome::NotAttempted => {
+                managed_shadowed_detail(hq_display, after_version, latest)
+            }
+        },
         _ => non_convergent_detail(executor, hq_display, after_version, latest),
     };
     // A resolution shortfall stays observable but NEVER persists the blocking
@@ -2141,6 +2205,24 @@ pub fn managed_shadowed_detail(hq_bin: &str, local: Option<&str>, latest: &str) 
          app still resolves a second HQ-managed copy, hq {current}, at {hq_bin} inside that same \
          toolchain. HQ owns both copies and removes the stale one automatically; this will clear on \
          the next check. No action is needed."
+    )
+}
+
+/// The message when the managed-shadow repair could NOT clear the block — the app
+/// re-resolved the stale copy after the removal was refused or failed, so the
+/// durable marker is persisted and auto-update is paused for this exact version.
+/// Unlike [`managed_shadowed_detail`] it must NOT claim the copy is removed
+/// automatically or that no action is needed, because no automatic retry will run
+/// for this version until it is cleared. The Settings UI shows this text as the
+/// entire remedy, so it has to be actionable.
+pub fn managed_shadow_repair_failed_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
+    let current = local.unwrap_or("an unreadable version");
+    format!(
+        "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} installed into HQ's managed toolchain, but a \
+         second HQ-managed copy, hq {current}, at {hq_bin} still takes over, and HQ could not \
+         remove it automatically — most likely because it is in use. Automatic updates are paused \
+         for this version until it is cleared: quit any running HQ processes and click Update \
+         again, or remove that copy so the new one takes over."
     )
 }
 
@@ -5331,6 +5413,14 @@ mod tests {
             report.managed_shadow_repair,
             Some(ManagedShadowRepairOutcome::RepairFailed)
         );
+        // A repair-failed shadow persists the marker, so its user-facing copy must
+        // be actionable — never the reassuring "no action is needed" text.
+        let detail = first.result.expect_err("a repair-failed shadow is non-convergent");
+        assert!(
+            detail.contains("paused") && detail.to_lowercase().contains("update again"),
+            "repair-failed detail must be actionable: {detail}"
+        );
+        assert!(!detail.contains("No action is needed"));
 
         let repeat = decide_post_install(&ctx(true));
         assert!(
@@ -5772,6 +5862,108 @@ mod tests {
             attempt_self,
             ManagedShadowRepairAttempt::ProvenanceRefused("shadow-is-installed-prefix")
         );
+    }
+
+    /// A `..` traversal after the root prefix is NOT containment: the destructive
+    /// gate fails closed, so a valid hq-cli reached through `<root>\node\..\..\x`
+    /// is never treated as HQ-owned or classified as a managed shadow.
+    #[test]
+    fn managed_root_containment_rejects_parent_traversal() {
+        let root = Path::new(MS_ROOT);
+        assert!(
+            !path_within_root_ci(
+                Path::new("/u/AppData/Local/IndigoHQ/toolchain/node/../../external/hq.cmd"),
+                root,
+                false,
+            ),
+            "a `..` escape must not count as containment"
+        );
+        // The classifier declines the shadow verdict for a traversal-bearing shape.
+        let roots = ms_roots();
+        assert_eq!(
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some("/u/AppData/Local/IndigoHQ/toolchain/node/../../external/npm-prefix"),
+                false,
+                "/u/AppData/Local/IndigoHQ/toolchain/node/../hq.cmd",
+                true,
+                &roots,
+            ),
+            NonConvergenceKind::ForeignManaged
+        );
+    }
+
+    /// `phased_remove` removes every shim first and the package directory ONLY if
+    /// all shims removed cleanly. A shim-removal failure aborts BEFORE any package
+    /// removal, so a locked shim is never left pointing at a deleted package.
+    #[test]
+    fn phased_remove_aborts_before_package_removal_on_a_shim_failure() {
+        use std::cell::RefCell;
+        let shims = vec![
+            std::path::PathBuf::from("a/hq"),
+            std::path::PathBuf::from("a/hq.cmd"),
+            std::path::PathBuf::from("a/hq-auth-refresh"),
+        ];
+        let packages = vec![std::path::PathBuf::from("a/node_modules/@indigoai-us/hq-cli")];
+        let attempted = RefCell::new(Vec::<String>::new());
+        let attempt = phased_remove(&shims, &packages, |p| {
+            attempted.borrow_mut().push(p.to_string_lossy().to_string());
+            if p.ends_with("hq.cmd") {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "locked",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(attempt, ManagedShadowRepairAttempt::Failed);
+        let seen = attempted.borrow();
+        assert!(seen.iter().any(|p| p.ends_with("hq.cmd")));
+        assert!(
+            !seen.iter().any(|p| p.contains("node_modules")),
+            "no package directory is removed after a shim failure"
+        );
+    }
+
+    /// Once every shim is gone the app resolves the managed-prefix copy, so a
+    /// package-directory removal FAILURE is harmless and still reports Removed.
+    #[test]
+    fn phased_remove_tolerates_a_package_dir_failure_once_shims_are_gone() {
+        let shims = vec![
+            std::path::PathBuf::from("a/hq"),
+            std::path::PathBuf::from("a/hq.cmd"),
+        ];
+        let packages = vec![std::path::PathBuf::from("a/node_modules/@indigoai-us/hq-cli")];
+        let attempt = phased_remove(&shims, &packages, |p| {
+            if p.to_string_lossy().contains("node_modules") {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "orphan lock",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            attempt,
+            ManagedShadowRepairAttempt::Removed,
+            "an orphaned package-dir lock does not downgrade the outcome"
+        );
+    }
+
+    /// The repair-failed detail is actionable and distinct from the reassuring
+    /// repairable copy — it never claims no action is needed.
+    #[test]
+    fn managed_shadow_repair_failed_detail_is_actionable() {
+        let failed = managed_shadow_repair_failed_detail("PATH", Some("5.101.0"), "5.101.7");
+        assert!(failed.starts_with(NON_CONVERGENT_ERROR_PREFIX));
+        assert!(failed.contains("5.101.0") && failed.contains("5.101.7"));
+        assert!(failed.contains("paused"));
+        assert!(!failed.contains("No action is needed"));
+        assert!(!failed.contains("managed outside npm's global prefix"));
+        let repairable = managed_shadowed_detail("PATH", Some("5.101.0"), "5.101.7");
+        assert_ne!(failed, repairable);
     }
 
     /// The npm remedy ("update it with the tool that installed it") is a dead

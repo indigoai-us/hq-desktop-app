@@ -1733,7 +1733,12 @@ async fn finalize_convergence(
     prefix: Option<&str>,
     already_blocked: bool,
 ) -> Result<HqCliUpdateInfo, String> {
-    let managed_roots = paths::managed_toolchain_roots();
+    // Use the CHECKED discovery for the destructive repair path: an unresolved,
+    // empty, or relative base yields NO roots, so a relative `IndigoHQ\toolchain`
+    // that a resolver could find under the process working directory is never
+    // trusted as owned provenance for removal. Empty roots simply fall back to the
+    // pre-existing foreign-managed classification (no repair).
+    let managed_roots = paths::managed_toolchain_roots_checked().unwrap_or_default();
     let outcome = decide_convergence_outcome(
         before_bin,
         installer_npm,
@@ -2102,7 +2107,15 @@ async fn managed_retry_converged(
     );
     let after_version =
         managed_retry_after_version(resolves_in_managed_prefix, executed_version.as_deref());
-    let outcome = decide_post_install(&PostInstallContext::npm(
+    // The managed retry can land the exact managed-shadow shape too: npm delivers
+    // `latest` into the managed prefix while the stale `<toolchain>\node\hq.cmd`
+    // still wins resolution (so `resolves_in_managed_prefix` is false and the
+    // executed version is forced to `None`). Classify with the managed roots so
+    // that shape is recognized as a repairable shadow rather than a durable
+    // foreign-managed block, and route it through the same repair-and-refinalize
+    // path the ordinary install uses.
+    let managed_roots = paths::managed_toolchain_roots_checked().unwrap_or_default();
+    let outcome = decide_post_install(&PostInstallContext::npm_with_managed_shadow(
         before_bin,
         &post_install_hq,
         before_version,
@@ -2112,7 +2125,21 @@ async fn managed_retry_converged(
         installer_npm,
         already_blocked,
         delivered_version.as_deref(),
+        ManagedShadowContext::detecting(&managed_roots),
     ));
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ManagedShadowed) {
+        return repair_managed_shadow_and_finalize(
+            app,
+            before_bin,
+            installer_npm,
+            before_version,
+            latest,
+            Some(managed_prefix),
+            already_blocked,
+            &managed_roots,
+        )
+        .await;
+    }
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
 }
