@@ -2388,6 +2388,49 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     }
 }
 
+/// Whether an already-backslash-normalised path is absolute. Unix absolute
+/// paths start with `/`; a Windows path (after `npm_path_value` rewrote `\` to
+/// `/`) starts with a drive letter followed by `:/`, e.g. `C:/Users/...`. A
+/// relative path fails both, so it can never seed a cleanup scope.
+fn is_absolute_normalized_path(path: &str) -> bool {
+    if path.starts_with('/') {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+}
+
+/// Derive the strictly-scoped `@indigoai-us` cleanup target from the path npm
+/// itself named in a failing install's stderr. This is the fallback the
+/// ENOTEMPTY partial-install remedy uses when no install prefix resolved
+/// (HQ-DESKTOP-5B: user-path installs whose npm prefix is unknown in 100% of the
+/// recorded events, so the prefix-gated remedy is otherwise unreachable).
+///
+/// Reuses [`npm_path_value`], which is case-preserving and already normalises
+/// `\` to `/`. Returns `Some(scope)` — the reported path truncated at and
+/// INCLUDING the `@indigoai-us` component — ONLY when the path is ABSOLUTE and
+/// contains `node_modules` immediately followed by `@indigoai-us` as EXACT path
+/// COMPONENTS. Everything else fails closed to `None`: a relative path, a path
+/// with no `node_modules` component, a mere substring such as
+/// `.../node_modules/@indigoai-usx`, a bare filesystem root, or an
+/// `@indigoai-us` that is not the component right after `node_modules`. Failing
+/// closed by construction keeps the deletion blast radius bounded to HQ's own
+/// package scope even when npm reports an unexpected path shape.
+pub fn partial_install_scope_from_npm_path(detail: &str) -> Option<String> {
+    let path = npm_path_value(detail)?;
+    if !is_absolute_normalized_path(&path) {
+        return None;
+    }
+    let components: Vec<&str> = path.split('/').collect();
+    // Index of the `node_modules` component that is immediately followed by the
+    // `@indigoai-us` scope component; the scope directory is that `@indigoai-us`
+    // component at `node_modules_idx + 1`.
+    let node_modules_idx = components
+        .windows(2)
+        .position(|pair| pair[0] == "node_modules" && pair[1] == "@indigoai-us")?;
+    Some(components[..=node_modules_idx + 1].join("/"))
+}
+
 /// The `@indigoai-us/hq-cli` shim a bin-collision or prefix-permission event
 /// names, reduced to a CLOSED enumeration: one of [`HQ_CLI_BIN_NAMES`] when the
 /// reported path's basename is that shim (with or without a Windows `.cmd` /
@@ -2447,7 +2490,19 @@ fn npm_error_code(detail: &str) -> String {
 fn is_expected_transient_registry_failure(detail: &str) -> bool {
     matches!(
         npm_error_code(detail).as_str(),
-        "ETARGET" | "ECONNRESET" | "ETIMEDOUT" | "ENOTFOUND" | "EAI_AGAIN" | "ERR_SOCKET_TIMEOUT"
+        "ETARGET"
+            | "ECONNRESET"
+            | "ETIMEDOUT"
+            | "ENOTFOUND"
+            | "EAI_AGAIN"
+            | "ERR_SOCKET_TIMEOUT"
+            // npm's registry fetcher emits EIDLETIMEOUT when a keep-alive socket
+            // sits idle past the configured timeout — the same transient-network
+            // class as the ETIMEDOUT / ERR_SOCKET_TIMEOUT entries above, and the
+            // next scheduled check retries it away. Without this arm a plain
+            // network flake was classified Unexpected and paged at Error while its
+            // five siblings were silently absorbed (evidence: HQ-DESKTOP-5C).
+            | "EIDLETIMEOUT"
     )
 }
 
@@ -3758,6 +3813,29 @@ pub fn install_failure_episode_key_with_environment(
     if kind == InstallFailureKind::UnsupportedNode {
         let major = probed_node_major(env)?;
         let key = format!("{latest}|unsupported-node|{major}");
+        return Some(if env.managed_toolchain_retry {
+            format!("{key}|managed")
+        } else {
+            key
+        });
+    }
+    // A non-lifecycle Unexpected failure (the HQ-DESKTOP-5B ENOTEMPTY shape whose
+    // debris genuinely cannot be removed, and every other bare updater defect) has
+    // no third-party package to key on, so the base episode key never minted one
+    // and each 6-hourly check re-paged forever — one machine produced 20 events in
+    // three days. Mint a key from the same CLOSED enumerations the event already
+    // tags: the pinned CLI version, npm's error code, its syscall, and the reported
+    // path shape. Every component is persist- and log-safe, so a permanent
+    // per-machine Unexpected failure pages once per published CLI version instead
+    // of on every check, while a first occurrence under each new `latest` — or any
+    // change in code, syscall, or path shape — still mints a fresh key and pages.
+    if kind == InstallFailureKind::Unexpected {
+        let key = format!(
+            "{latest}|unexpected|{}|{}|{}",
+            npm_error_code(detail),
+            npm_syscall(detail),
+            npm_path_shape(detail, prefix).tag_value(),
+        );
         return Some(if env.managed_toolchain_retry {
             format!("{key}|managed")
         } else {
@@ -9875,8 +9953,11 @@ mod tests {
             &managed_env,
         );
         assert_eq!(managed.as_deref(), Some("5.101.7|unsupported-node|6|managed"));
-        // The env-blind shape (no probed Node) is a non-lifecycle failure, so it
-        // mints NO key and keeps paging exactly as before.
+        // The env-blind shape (no probed Node) stays a non-lifecycle Unexpected
+        // failure, but now mints a bounded repeat-guard key from its closed
+        // enumerations, so a permanent per-machine defect pages once per target
+        // version instead of on every scheduled check. node_six_stderr carries no
+        // npm structured markers, so its shape is none:unknown:none.
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
@@ -9885,8 +9966,188 @@ mod tests {
                 false,
                 latest,
                 &InstallEnvironment::default(),
-            ),
-            None
+            )
+            .as_deref(),
+            Some("5.101.7|unexpected|none|unknown|none")
         );
+    }
+
+    #[test]
+    fn unexpected_install_failure_pages_once_per_target_version() {
+        // HQ-DESKTOP-5B: an ENOTEMPTY partial-install failure whose debris cannot
+        // be removed classifies as a non-lifecycle Unexpected failure. It carries
+        // no third-party package, so the base episode key never minted one and it
+        // re-paged on every 6-hourly check. The environment-aware key mints a
+        // bounded key from the closed enumerations the event already tags.
+        let stderr = "npm error code ENOTEMPTY\n\
+            npm error syscall rename\n\
+            npm error path /Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us/hq-cli";
+        let latest = "5.103.17";
+        let env = InstallEnvironment {
+            node_version: Some("22.23.1".to_string()),
+            node_abi: Some("127".to_string()),
+            npm_version: Some("10.9.8".to_string()),
+            toolchain_source: NpmToolchainSource::UserPath,
+            managed_toolchain_retry: false,
+        };
+        let key = install_failure_episode_key_with_environment(
+            Some(190),
+            stderr,
+            None,
+            false,
+            latest,
+            &env,
+        )
+        .expect("the ENOTEMPTY Unexpected shape mints an episode key");
+        assert_eq!(
+            key,
+            "5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules"
+        );
+        // A second identical failure for the same target version is a suppressed
+        // repeat, so the wedge stops re-paging every check.
+        assert!(install_failure_episode_blocked(&[key.clone()], &key));
+        // A newer published CLI version mints a DISTINCT key, so a fresh occurrence
+        // still pages — the guard bounds repetition, it never silences a first hit.
+        let new_latest = install_failure_episode_key_with_environment(
+            Some(190),
+            stderr,
+            None,
+            false,
+            "5.104.0",
+            &env,
+        );
+        assert_eq!(
+            new_latest.as_deref(),
+            Some("5.104.0|unexpected|ENOTEMPTY|rename|global-lib-node-modules")
+        );
+        // A change in the failure signature (here a different syscall) also mints a
+        // new key and pages, so a genuinely different defect is never suppressed.
+        let different_shape = "npm error code ENOTEMPTY\n\
+            npm error syscall unlink\n\
+            npm error path /Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us/hq-cli";
+        let different = install_failure_episode_key_with_environment(
+            Some(190),
+            different_shape,
+            None,
+            false,
+            latest,
+            &env,
+        );
+        assert_eq!(
+            different.as_deref(),
+            Some("5.103.17|unexpected|ENOTEMPTY|unlink|global-lib-node-modules")
+        );
+        assert!(!install_failure_episode_blocked(
+            &[key],
+            different.as_deref().unwrap()
+        ));
+        // The managed-provenance discriminator stays distinct from the user-path key.
+        let mut managed_env = env.clone();
+        managed_env.managed_toolchain_retry = true;
+        let managed = install_failure_episode_key_with_environment(
+            Some(190),
+            stderr,
+            None,
+            false,
+            latest,
+            &managed_env,
+        );
+        assert_eq!(
+            managed.as_deref(),
+            Some("5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules|managed")
+        );
+        // The env-blind base key still mints NOTHING for a non-lifecycle failure —
+        // only the environment-aware path gained the Unexpected key.
+        assert_eq!(install_failure_episode_key(latest, stderr), None);
+    }
+
+    #[test]
+    fn eidletimeout_is_an_expected_transient_registry_failure() {
+        // HQ-DESKTOP-5C: npm's registry fetcher emits EIDLETIMEOUT when a socket
+        // sits idle past the configured timeout — a transient network flake the
+        // next scheduled check retries away, exactly like its five siblings.
+        let eidletimeout = "npm error code EIDLETIMEOUT\n\
+            npm error idle timeout waiting for response from https://registry.npmjs.org";
+        assert_eq!(
+            classify_install_failure(Some(1), eidletimeout, None),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                eidletimeout,
+                None,
+                false,
+                &InstallEnvironment {
+                    node_version: Some("20.19.4".to_string()),
+                    node_abi: Some("115".to_string()),
+                    npm_version: Some("11.16.0".to_string()),
+                    toolchain_source: NpmToolchainSource::UserPath,
+                    managed_toolchain_retry: false,
+                },
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        // But an EIDLETIMEOUT TOKEN inside a third-party lifecycle failure must
+        // stay UnexpectedLifecycle — the transient arm is gated on npm's own
+        // `code` line, not a substring, so a build script that merely logged the
+        // word is never silently absorbed (mirrors the existing
+        // lifecycle_output_with_transient_tokens_remains_captured guard).
+        let lifecycle_with_token = "npm error code 1\n\
+            npm error command failed\n\
+            npm error command sh -c node build.js\n\
+            npm error path /usr/local/lib/node_modules/better-sqlite3\n\
+            build log: EIDLETIMEOUT while fetching a prebuild";
+        assert_eq!(
+            classify_install_failure(Some(1), lifecycle_with_token, None),
+            InstallFailureKind::UnexpectedLifecycle
+        );
+    }
+
+    #[test]
+    fn partial_install_scope_from_npm_path_is_derived_only_from_a_safe_absolute_scope() {
+        // The scope-dir path npm names, and the `<scope>/hq-cli` package path,
+        // both truncate to the same `@indigoai-us` scope.
+        let scope_path = "npm error path /Users/mike/npm-global/lib/node_modules/@indigoai-us";
+        assert_eq!(
+            partial_install_scope_from_npm_path(scope_path).as_deref(),
+            Some("/Users/mike/npm-global/lib/node_modules/@indigoai-us")
+        );
+        let pkg_path = "npm error code ENOTEMPTY\n\
+            npm error syscall rename\n\
+            npm error path /Users/mike/npm-global/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            partial_install_scope_from_npm_path(pkg_path).as_deref(),
+            Some("/Users/mike/npm-global/lib/node_modules/@indigoai-us")
+        );
+        // The Windows global layout (no `lib` segment) after backslash-normalisation.
+        let windows_path =
+            "npm error path C:\\Users\\mike\\AppData\\npm-prefix\\node_modules\\@indigoai-us\\hq-cli";
+        assert_eq!(
+            partial_install_scope_from_npm_path(windows_path).as_deref(),
+            Some("C:/Users/mike/AppData/npm-prefix/node_modules/@indigoai-us")
+        );
+        // Adversarial inputs all fail closed to None — no scope, no deletion.
+        for adversarial in [
+            // A relative path could resolve against CWD.
+            "npm error path node_modules/@indigoai-us/hq-cli",
+            // No node_modules component at all.
+            "npm error path /Users/mike/@indigoai-us/hq-cli",
+            // A mere substring, not an exact component.
+            "npm error path /Users/mike/lib/node_modules/@indigoai-usx/hq-cli",
+            // @indigoai-us present but not immediately after node_modules.
+            "npm error path /Users/mike/node_modules/other/@indigoai-us",
+            // A bare filesystem root.
+            "npm error path /",
+            // No npm error path line at all.
+            "npm error code ENOTEMPTY\nnpm error syscall rename",
+            "",
+        ] {
+            assert_eq!(
+                partial_install_scope_from_npm_path(adversarial),
+                None,
+                "adversarial input must not yield a cleanup scope: {adversarial:?}"
+            );
+        }
     }
 }

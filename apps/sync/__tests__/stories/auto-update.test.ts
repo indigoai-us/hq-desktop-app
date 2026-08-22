@@ -442,6 +442,42 @@ describe('master automatic-updates switch', () => {
     );
   });
 
+  it('recovers a partial ENOTEMPTY install even when no prefix resolved (HQ-DESKTOP-5B)', () => {
+    const core = normalize(cliUpdateCore);
+    // Core exposes a pure, fail-closed derivation of the @indigoai-us cleanup
+    // scope from the absolute path npm named in its own stderr — an absolute path
+    // with node_modules/@indigoai-us as EXACT components, or nothing.
+    expect(cliUpdateCore).toContain(
+      'pub fn partial_install_scope_from_npm_path(',
+    );
+    expect(core).toContain(
+      'pair[0] == "node_modules" && pair[1] == "@indigoai-us"',
+    );
+    // The ENOTEMPTY rung prefers the prefix-derived scope and falls back to that
+    // npm-path scope only when no prefix resolved, recording a provenance-distinct
+    // rung so the attempt ledger stays honest.
+    expect(cliUpdate).toContain('partial_install_scope_from_npm_path(&detail)');
+    expect(cliUpdate).toContain('"cleanup-plain-npm-path"');
+    expect(cliUpdate).toContain('"cleanup-plain"');
+    // Both paths share ONE cleaner whose deletion set is unchanged: only the
+    // hq-cli package dir and any .hq-cli-* staging dir under the scope.
+    expect(cliUpdate).toContain(
+      'fn clean_partial_hq_cli_install_scope(scope: &Path)',
+    );
+    expect(cliUpdate).toContain('clean_partial_hq_cli_install_scope(&scope)');
+    expect(cliUpdate).toContain('scope.join("hq-cli")');
+    expect(cliUpdate).toContain('.starts_with(".hq-cli-")');
+  });
+
+  it('absorbs an EIDLETIMEOUT registry idle-timeout as transient (HQ-DESKTOP-5C)', () => {
+    // The idle-timeout code npm's registry fetcher emits joins the closed
+    // transient-registry allow-list, so a plain network flake is no longer paged.
+    expect(cliUpdateCore).toContain(
+      'fn is_expected_transient_registry_failure(',
+    );
+    expect(cliUpdateCore).toContain('"EIDLETIMEOUT"');
+  });
+
   it('classifies an unsupported user Node and self-heals it before reporting (HQ-DESKTOP-56)', () => {
     const core = normalize(cliUpdateCore);
     // Core publishes the floor as the single source of truth and a new kind for

@@ -126,6 +126,23 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(cli).toContain('apply_post_install_with_app(app, &outcome)');
   });
 
+  it('recovers a partial ENOTEMPTY install with no resolved prefix (HQ-DESKTOP-5B)', () => {
+    // On the reported user-path installs the npm prefix is unknown in 100% of
+    // events, so the prefix-gated ENOTEMPTY cleanup could never run and the
+    // install wedged on the same on-disk debris on every 6-hourly check. The rung
+    // now falls back to the absolute @indigoai-us scope npm named in its own
+    // stderr — only when the prefix is None — via a pure, fail-closed helper.
+    expect(cli).toContain('None => partial_install_scope_from_npm_path(&detail)');
+    expect(cli).toContain('"cleanup-plain-npm-path"');
+    // Both the prefix path and the npm-path fallback share ONE cleaner whose
+    // deletion set stays exactly the hq-cli package dir and any .hq-cli-* staging
+    // dir under the scope — the scope dir and siblings survive.
+    expect(cli).toContain('fn clean_partial_hq_cli_install_scope(scope: &Path)');
+    expect(cli).toContain('clean_partial_hq_cli_install_scope(&scope)');
+    expect(cli).toContain('scope.join("hq-cli")');
+    expect(cli).toContain('.starts_with(".hq-cli-")');
+  });
+
   it('defers the persistent PATH change until the retry has converged', () => {
     // The raw shell-profile / Windows-PATH mutation lives in a dedicated helper...
     expect(cli).toContain('fn configure_managed_shell_path(');
