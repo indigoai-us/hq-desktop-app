@@ -4,8 +4,8 @@ use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_install_failure_episode,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
-    InstallExecutor, InstallFailureEpisode, NonConvergenceKind, NonConvergentReport,
-    NpmToolchainSource,
+    InstallExecutor, InstallFailureEpisode, ManagedShadowRepairOutcome, NonConvergenceKind,
+    NonConvergentReport, NpmToolchainSource,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -625,6 +625,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             hq_bin_changed: true,
             delivered_version: None,
             pnpm: None,
+            managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
         })
     });
     assert_eq!(events.len(), 1);

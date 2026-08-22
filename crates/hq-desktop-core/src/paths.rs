@@ -230,6 +230,47 @@ pub fn managed_npm_bin_in(root: &Path) -> PathBuf {
     }
 }
 
+/// Whether `path` is `root` itself or lives inside it, compared by path
+/// COMPONENTS rather than raw strings so a trailing separator, a `.` segment,
+/// or a mixed separator style cannot change the answer. Case-insensitive on
+/// Windows (its filesystem is), case-sensitive elsewhere. An empty `root` is
+/// never a container — it must not vacuously match every path.
+pub fn path_is_within(path: &Path, root: &Path) -> bool {
+    if root.as_os_str().is_empty() {
+        return false;
+    }
+    let mut components = path.components();
+    for expected in root.components() {
+        match components.next() {
+            Some(actual) if os_component_eq(actual.as_os_str(), expected.as_os_str()) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn os_component_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn os_component_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
+    a == b
+}
+
+/// Whether two paths both live inside the SAME managed toolchain root. This is
+/// what distinguishes an HQ-owned shadow — two HQ-managed CLI copies under one
+/// toolchain root, which HQ can repair — from a genuinely foreign layout (a
+/// copy under Homebrew, `%APPDATA%\npm`, or a pnpm home HQ does not own) or a
+/// cross-root split (the current `IndigoHQ` root vs the legacy `Indigo HQ`
+/// root), neither of which is a single repairable shadow.
+pub fn both_within_same_managed_root(a: &Path, b: &Path, roots: &[PathBuf]) -> bool {
+    roots
+        .iter()
+        .any(|root| path_is_within(a, root) && path_is_within(b, root))
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
@@ -1981,5 +2022,75 @@ mod tests {
         // Either we resolved to an absolute path, or we fell back to the
         // bare name — both are valid.
         assert!(result == "ls" || std::path::Path::new(&result).exists());
+    }
+
+    #[test]
+    fn path_is_within_matches_by_component_and_tolerates_trailing_separators() {
+        assert!(path_is_within(
+            Path::new("/opt/IndigoHQ/toolchain/node/hq.cmd"),
+            Path::new("/opt/IndigoHQ/toolchain"),
+        ));
+        assert!(path_is_within(
+            Path::new("/opt/IndigoHQ/toolchain/node"),
+            Path::new("/opt/IndigoHQ/toolchain/"),
+        ));
+        // A directory whose NAME merely shares a prefix is not "inside" it: the
+        // comparison is component-wise, not a substring test.
+        assert!(!path_is_within(
+            Path::new("/opt/IndigoHQ/toolchain-backup/node"),
+            Path::new("/opt/IndigoHQ/toolchain"),
+        ));
+        // An empty root never vacuously contains a path.
+        assert!(!path_is_within(Path::new("/opt/x"), Path::new("")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn path_is_within_is_case_insensitive_on_windows() {
+        assert!(path_is_within(
+            Path::new(r"C:\Users\Me\AppData\Local\IndigoHQ\toolchain\node\hq.cmd"),
+            Path::new(r"c:\users\me\appdata\local\indigohq\toolchain"),
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn path_is_within_is_case_sensitive_off_windows() {
+        assert!(!path_is_within(
+            Path::new("/opt/IndigoHQ/toolchain/node"),
+            Path::new("/opt/indigohq/toolchain"),
+        ));
+    }
+
+    #[test]
+    fn both_within_same_managed_root_requires_one_root_to_contain_both() {
+        let roots = vec![
+            PathBuf::from("/opt/IndigoHQ/toolchain"),
+            PathBuf::from("/opt/Indigo HQ/toolchain"),
+        ];
+        // Both under the SAME (IndigoHQ) root: an HQ-owned shadow.
+        assert!(both_within_same_managed_root(
+            Path::new("/opt/IndigoHQ/toolchain/npm-prefix"),
+            Path::new("/opt/IndigoHQ/toolchain/node"),
+            &roots,
+        ));
+        // Split across the current and the legacy root: NOT a single shadow.
+        assert!(!both_within_same_managed_root(
+            Path::new("/opt/IndigoHQ/toolchain/npm-prefix"),
+            Path::new("/opt/Indigo HQ/toolchain/node"),
+            &roots,
+        ));
+        // One path outside every managed root: foreign, not a shadow.
+        assert!(!both_within_same_managed_root(
+            Path::new("/opt/IndigoHQ/toolchain/npm-prefix"),
+            Path::new("/opt/homebrew"),
+            &roots,
+        ));
+        // No roots at all reproduces the prior behaviour: never a shadow.
+        assert!(!both_within_same_managed_root(
+            Path::new("/opt/IndigoHQ/toolchain/npm-prefix"),
+            Path::new("/opt/IndigoHQ/toolchain/node"),
+            &[],
+        ));
     }
 }
