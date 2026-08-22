@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop-alt-capability",
-  "description": "Capability set for the expanded desktop window. App-registered commands remain behind their native feature, path, membership, and tenant checks. Projects reads through get_local_projects and persists status through set_local_project_status and set_local_story_passes; native wrappers authorize the canonical company scope before reads or writes. Files and Knowledge accept HQ-relative paths only: native commands canonicalize them, reject cross-company resolution, refresh live membership, cap preview bytes, and retain absolute paths inside Rust for preview, reveal, and file-scoped Claude dispatch. Wildcard asset-protocol access and renderer Image.fromPath are intentionally unavailable.",
+  "description": "Capability set for the expanded desktop window. App-registered commands remain behind their native feature, path, membership, and tenant checks. Projects reads through get_local_projects, resolves the caller through get_signed_in_project_person, discovers other company people through list_company_members, and persists status through set_local_project_status and set_local_story_passes; native wrappers authorize the canonical company scope before reads or writes. Files and Knowledge accept HQ-relative paths only: native commands canonicalize them, reject cross-company resolution, refresh live membership, cap preview bytes, and retain absolute paths inside Rust for preview, reveal, and file-scoped Claude dispatch. Wildcard asset-protocol access and renderer Image.fromPath are intentionally unavailable.",
   "windows": ["desktop-alt"],
   "permissions": [
     "core:default",

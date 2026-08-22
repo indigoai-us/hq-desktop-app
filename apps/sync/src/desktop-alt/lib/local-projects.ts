@@ -135,13 +135,20 @@ function withOriginFallback(
   return origin ? { ...provenance, origin } : provenance;
 }
 
+function projectBoardPath(company: string | null | undefined): string | null {
+  const workspace = (company ?? '').trim();
+  if (!workspace) return null;
+  return workspace === 'personal'
+    ? 'personal/board.json'
+    : `companies/${workspace}/board.json`;
+}
+
 function projectSourceFallback(
   wire: Pick<LocalProjectWire, 'company' | 'prdPath'>,
 ): string | null {
   const prdPath = normalizeProjectPath(wire.prdPath);
   if (prdPath) return prdPath;
-  const company = wire.company.trim();
-  return company ? `companies/${company}/board.json` : null;
+  return projectBoardPath(wire.company);
 }
 
 /**
@@ -386,9 +393,7 @@ export function applyProjectProvenance(
       ? { ...local, creator: null }
       : local;
   const normalizedLocalOrigin = normalizeProjectPath(localWithoutHistory.origin);
-  const boardFallback = project.company.trim()
-    ? `companies/${project.company.trim()}/board.json`
-    : '';
+  const boardFallback = projectBoardPath(project.company) ?? '';
   const derivedOrigins = new Set(
     [normalizeProjectPath(project.prdPath), boardFallback].filter(Boolean),
   );

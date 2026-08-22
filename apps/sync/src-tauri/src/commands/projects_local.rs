@@ -6,6 +6,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
+use hq_desktop_core::cognito::IdTokenClaims;
 use hq_desktop_core::desktop_alt::{
     canonical_hq_relative_path, company_slug_for_hq_path, validate_hq_relative_path,
     workspace_grants_company_file_access,
@@ -21,6 +24,52 @@ pub use hq_desktop_core::projects_local::{
     ResolvedProjectPath, WorkProvenance,
 };
 use hq_desktop_core::workspaces::Workspace;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedInProjectPerson {
+    pub person_uid: String,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+}
+
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn signed_in_project_person_from_claims(
+    claims: &IdTokenClaims,
+) -> Result<SignedInProjectPerson, String> {
+    let email = nonempty(claims.email.as_deref());
+    let display_name_value = claims.display_name();
+    let display_name = nonempty(Some(&display_name_value));
+    let person_uid = nonempty(claims.sub.as_deref())
+        .or_else(|| email.clone())
+        .ok_or_else(|| "signed-in identity has no stable identifier".to_string())?;
+
+    Ok(SignedInProjectPerson {
+        person_uid,
+        email,
+        display_name,
+    })
+}
+
+/// Return the signed-in person's canonical aliases for local project
+/// attribution. Company DM contacts deliberately exclude the caller, so they
+/// cannot coalesce the caller's legacy Git name with their cloud email.
+#[tauri::command]
+pub async fn get_signed_in_project_person() -> Result<SignedInProjectPerson, String> {
+    let tokens = crate::commands::cognito::get_valid_tokens().await?;
+    let id_token = tokens
+        .id_token
+        .as_deref()
+        .ok_or_else(|| "signed-in identity is missing an ID token".to_string())?;
+    let claims = crate::commands::cognito::decode_id_token_claims(id_token)?;
+    signed_in_project_person_from_claims(&claims)
+}
 
 fn authorized_company_slugs(workspaces: &[Workspace]) -> HashSet<String> {
     workspaces
@@ -214,7 +263,23 @@ pub async fn set_local_story_passes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hq_desktop_core::cognito::IdTokenClaims;
     use hq_desktop_core::workspaces::{WorkspaceKind, WorkspaceState};
+
+    #[test]
+    fn signed_in_project_person_uses_cognito_identity_aliases() {
+        let person = signed_in_project_person_from_claims(&IdTokenClaims {
+            sub: Some("cognito_scott".to_string()),
+            email: Some("scott@mlstrategies.us".to_string()),
+            name: Some("Scott Thielmann".to_string()),
+            ..IdTokenClaims::default()
+        })
+        .unwrap();
+
+        assert_eq!(person.person_uid, "cognito_scott");
+        assert_eq!(person.email.as_deref(), Some("scott@mlstrategies.us"));
+        assert_eq!(person.display_name.as_deref(), Some("Scott Thielmann"));
+    }
 
     fn project_workspace(
         slug: &str,

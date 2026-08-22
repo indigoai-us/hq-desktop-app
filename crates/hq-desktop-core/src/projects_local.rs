@@ -1,11 +1,15 @@
 //! Local-PRD reader commands for the Projects surface (US-003).
 //!
 //! The Projects surface needs to list projects + read stories straight from the
-//! local HQ tree — fast, offline, and cross-company — instead of round-tripping
-//! to the vault for every render. These two commands scan the resolved HQ folder
-//! and parse the on-disk `board.json` + `prd.json` files directly.
+//! local HQ tree — fast, offline, and across Personal plus company workspaces —
+//! instead of round-tripping to the vault for every render. These two commands
+//! scan the resolved HQ folder and parse the on-disk `board.json` + `prd.json`
+//! files directly.
 //!
 //! Data shapes (modeled from real files):
+//!   * `personal/board.json` and `personal/projects/<name>/prd.json` — the
+//!     user-owned local project workspace. Board rows without a PRD remain
+//!     visible; linked PRDs must stay inside `personal/projects/`.
 //!   * `companies/<slug>/board.json` — `{ company, objectives[], initiatives[],
 //!     projects[] }`. Each project: `id, title, description, status, scope, app,
 //!     initiative_id, objective_id, prd_path, created_at, updated_at`.
@@ -22,8 +26,8 @@
 //! ## Empty local state
 //!
 //! These commands are the *local* fast path. When the HQ folder cannot be
-//! resolved to a real directory on disk, or no `companies/*/projects/*/prd.json`
-//! exist, `get_local_projects` returns an **empty list** rather than erroring.
+//! resolved to a real directory on disk, or no Personal/company projects exist,
+//! `get_local_projects` returns an **empty list** rather than erroring.
 //! This module deliberately has no vault/network fallback: keeping the local
 //! reader pure (filesystem only, no network, no auth) makes it testable and
 //! leaves any alternate data source to the caller. A malformed unlinked
@@ -77,7 +81,7 @@ pub struct LocalProject {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Company slug the project belongs to (the `companies/<slug>/` dir).
+    /// Workspace slug: `personal` or the owning `companies/<slug>/` directory.
     pub company: String,
     #[serde(default)]
     pub status: String,
@@ -1051,6 +1055,11 @@ fn project_history_scopes(paths: &[String]) -> Vec<String> {
             let normalized = normalize_rel(path);
             let mut parts = normalized.split('/');
             match (parts.next(), parts.next(), parts.next()) {
+                (Some("personal"), Some("projects"), Some(project))
+                    if !project.is_empty() && project != "." && project != ".." =>
+                {
+                    Some("personal/projects".to_string())
+                }
                 (Some("companies"), Some(company), Some("projects"))
                     if !company.is_empty() && company != "." && company != ".." =>
                 {
@@ -1151,6 +1160,11 @@ fn first_add_creators_for_paths(hq_root: &Path, paths: &[String]) -> HashMap<Str
 
 fn project_creator_fallback_path(project: &LocalProject) -> Option<String> {
     let path = normalize_rel(project.prd_path.as_deref()?);
+    if project.company == "personal" {
+        let project_relative = path.strip_prefix("personal/projects/")?;
+        return (project_relative != "prd.json" && project_relative.ends_with("/prd.json"))
+            .then_some(path);
+    }
     let path_company = company_slug_for_hq_path(&path).ok().flatten()?;
     if path_company != project.company {
         return None;
@@ -1193,6 +1207,51 @@ fn validated_board_prd_path(hq_root: &Path, company: &str, raw_path: &str) -> Op
     (target.company_slug.as_deref() == Some(company)).then_some(target.relative_path)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PersonalBoardPrdPath {
+    Resolved(String),
+    Missing(String),
+    Invalid,
+}
+
+/// Classify a Personal board PRD identity. A safe path below
+/// `personal/projects/` may be missing without invalidating the board row; an
+/// unsafe, malformed, or cross-scope path still fails closed.
+fn validated_personal_board_prd_path(hq_root: &Path, raw_path: &str) -> PersonalBoardPrdPath {
+    let Ok(normalized) = validate_hq_relative_path(raw_path, false) else {
+        return PersonalBoardPrdPath::Invalid;
+    };
+    if Path::new(&normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("prd.json")
+    {
+        return PersonalBoardPrdPath::Invalid;
+    }
+    let Some(project_relative) = normalized.strip_prefix("personal/projects/") else {
+        return PersonalBoardPrdPath::Invalid;
+    };
+    if project_relative == "prd.json" || !project_relative.ends_with("/prd.json") {
+        return PersonalBoardPrdPath::Invalid;
+    }
+
+    let candidate = hq_root.join(&normalized);
+    if !candidate.exists() {
+        return PersonalBoardPrdPath::Missing(normalized);
+    }
+    let Ok(target) = resolve_project_path(hq_root, &normalized, "prd.json") else {
+        return PersonalBoardPrdPath::Invalid;
+    };
+    if target.company_slug.is_none()
+        && target.relative_path.starts_with("personal/projects/")
+        && target.relative_path.ends_with("/prd.json")
+    {
+        PersonalBoardPrdPath::Resolved(target.relative_path)
+    } else {
+        PersonalBoardPrdPath::Invalid
+    }
+}
+
 fn apply_creator_fallback_map(projects: &mut [LocalProject], creators: &HashMap<String, String>) {
     for project in projects {
         if !project_needs_creator_fallback(project) {
@@ -1218,15 +1277,15 @@ fn apply_git_creator_fallbacks(hq_root: &Path, projects: &mut [LocalProject]) {
     apply_creator_fallback_map(projects, &creators);
 }
 
-/// List projects across every company by scanning the local HQ tree.
+/// List projects across Personal and every company by scanning the local HQ tree.
 ///
-/// Reads `companies/<slug>/board.json` for project metadata and
-/// `companies/<slug>/projects/<name>/prd.json` for story data, merging the two
-/// where a board project's `prd_path` points at a real prd. Projects that exist
-/// only as a `prd.json` (no board entry) are still listed.
+/// Reads `personal/board.json` plus `personal/projects/<name>/prd.json`, then
+/// each `companies/<slug>/board.json` and company project PRD. Personal board
+/// rows without a PRD are still real projects and remain visible; company rows
+/// retain the stricter file-backed identity requirement.
 ///
 /// Returns an **empty list** (not an error) when the HQ folder doesn't resolve
-/// to a directory or has no companies. Individual malformed `board.json` files
+/// to a directory or has no projects. Individual malformed `board.json` files
 /// and unlinked malformed `prd.json` files are skipped, never fatal. A board
 /// row with an existing but malformed PRD remains visible with 0/0 counts so
 /// diagnostics can still identify the damaged project file.
@@ -1236,11 +1295,12 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
     scan_local_projects_scoped(hq_root, None)
 }
 
-/// Scan only the explicitly authorized canonical company slugs.
+/// Scan Personal plus only the explicitly authorized canonical company slugs.
 ///
-/// Filtering happens before board/PRD content is opened, so an unauthorized
-/// local folder is never parsed and a symlinked company alias cannot borrow a
-/// different tenant's canonical identity.
+/// Personal is user-owned and is not company-membership gated. Company filtering
+/// happens before board/PRD content is opened, so an unauthorized local company
+/// folder is never parsed and a symlinked company alias cannot borrow a different
+/// tenant's canonical identity.
 pub fn scan_local_projects_for_companies(
     hq_root: &Path,
     authorized_companies: &HashSet<String>,
@@ -1248,18 +1308,170 @@ pub fn scan_local_projects_for_companies(
     scan_local_projects_scoped(hq_root, Some(authorized_companies))
 }
 
+fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
+    let personal_path = hq_root.join("personal");
+    let personal_is_canonical =
+        canonical_hq_relative_path(hq_root, "personal", false).as_deref() == Ok("personal");
+    let personal_is_directory = std::fs::symlink_metadata(&personal_path)
+        .map(|metadata| metadata.file_type().is_dir())
+        .unwrap_or(false);
+    if !personal_is_canonical || !personal_is_directory {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut linked_prds = HashSet::new();
+    let board_rel = "personal/board.json";
+    let board = resolve_project_path(hq_root, board_rel, "board.json")
+        .ok()
+        .filter(|target| target.company_slug.is_none())
+        .and_then(|target| read_project_target_json::<BoardFile>(&target));
+
+    if let Some(board) = board {
+        for project in board.projects {
+            let BoardProject {
+                id,
+                title,
+                description,
+                status,
+                prd_path,
+                created_at,
+                updated_at,
+                attribution,
+                provenance,
+            } = project;
+            let declared_prd = prd_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty());
+            let validated_prd = match declared_prd {
+                None => None,
+                Some(path) => match validated_personal_board_prd_path(hq_root, path) {
+                    PersonalBoardPrdPath::Resolved(path) => Some(path),
+                    PersonalBoardPrdPath::Missing(path) => Some(path),
+                    PersonalBoardPrdPath::Invalid => continue,
+                },
+            };
+            let prd_details = validated_prd.as_deref().and_then(|path| {
+                resolve_project_path(hq_root, path, "prd.json")
+                    .ok()
+                    .filter(|target| {
+                        target.company_slug.is_none()
+                            && target.relative_path.starts_with("personal/projects/")
+                    })
+                    .and_then(|target| {
+                        read_project_target_json::<PrdFile>(&target).map(|prd| {
+                            let (story_count, stories_complete) = story_counts(&prd);
+                            (
+                                story_count,
+                                stories_complete,
+                                prd_created_at(&prd),
+                                prd_updated_at(&prd),
+                                prd_provenance(&prd),
+                            )
+                        })
+                    })
+            });
+            if let Some(path) = validated_prd.as_ref() {
+                linked_prds.insert(path.clone());
+            }
+            let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
+                prd_details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
+            let board_provenance = normalize_work_provenance(&[(&attribution, &provenance)]);
+            let project_id = if id.trim().is_empty() {
+                title.clone()
+            } else {
+                id
+            };
+            let project_title = if title.trim().is_empty() {
+                validated_prd.clone().unwrap_or_else(|| project_id.clone())
+            } else {
+                title
+            };
+            out.push(LocalProject {
+                id: project_id,
+                title: project_title,
+                description,
+                company: "personal".to_string(),
+                status,
+                prd_path: validated_prd,
+                created_at: created_at.or(prd_created),
+                updated_at: updated_at.or(prd_updated),
+                story_count,
+                stories_complete,
+                provenance: with_origin_fallback(
+                    merge_work_provenance(board_provenance, prd_provenance),
+                    board_rel,
+                ),
+                creator_fallback: None,
+            });
+        }
+    }
+
+    let projects_dir = personal_path.join("projects");
+    for prd_path in find_prd_files(&projects_dir) {
+        let rel = match prd_path.strip_prefix(hq_root) {
+            Ok(path) => path.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        if linked_prds.contains(&normalize_rel(&rel)) {
+            continue;
+        }
+        let Ok(target) = resolve_project_path(hq_root, &rel, "prd.json") else {
+            continue;
+        };
+        if target.company_slug.is_some() || !target.relative_path.starts_with("personal/projects/")
+        {
+            continue;
+        }
+        let Some(prd) = read_project_target_json::<PrdFile>(&target) else {
+            continue;
+        };
+        let (story_count, stories_complete) = story_counts(&prd);
+        let created_at = prd_created_at(&prd);
+        let updated_at = prd_updated_at(&prd);
+        let provenance = with_origin_fallback(prd_provenance(&prd), &rel);
+        let dir_name = prd_path
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
+        let title = if prd.name.trim().is_empty() {
+            dir_name.clone()
+        } else {
+            prd.name.clone()
+        };
+        out.push(LocalProject {
+            id: dir_name,
+            title,
+            description: prd.description,
+            company: "personal".to_string(),
+            status: String::new(),
+            prd_path: Some(rel.clone()),
+            created_at,
+            updated_at,
+            story_count,
+            stories_complete,
+            provenance,
+            creator_fallback: None,
+        });
+    }
+
+    out
+}
+
 fn scan_local_projects_scoped(
     hq_root: &Path,
     authorized_companies: Option<&HashSet<String>>,
 ) -> Vec<LocalProject> {
+    let mut out = scan_personal_projects(hq_root);
     let companies_dir = hq_root.join("companies");
     let entries = match std::fs::read_dir(&companies_dir) {
         Ok(e) => e,
-        // No companies dir (HQ folder unresolved or empty) → empty local list.
-        Err(_) => return Vec::new(),
+        // Personal remains useful even when the user belongs to no companies.
+        Err(_) => return out,
     };
-
-    let mut out: Vec<LocalProject> = Vec::new();
 
     for entry in entries.flatten() {
         let company_path = entry.path();
@@ -2640,6 +2852,119 @@ mod tests {
     }
 
     #[test]
+    fn scan_includes_personal_board_rows_and_unlinked_prds_without_company_membership() {
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-personal-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+        ));
+        let personal = root.join("personal");
+        let maintenance = personal
+            .join("projects")
+            .join("hq-checkpoint-sibling-background-maintenance");
+        fs::create_dir_all(&maintenance).unwrap();
+        fs::write(
+            personal.join("board.json"),
+            r#"{
+                "projects":[
+                    {
+                        "id":"per-proj-1",
+                        "title":"Ode by Anthropic Opportunity",
+                        "description":"Personal opportunity",
+                        "status":"in_progress",
+                        "prd_path":null,
+                        "created_at":"2026-07-24T00:00:00Z",
+                        "updated_at":"2026-08-04T19:25:00Z"
+                    },
+                    {
+                        "id":"per-proj-2",
+                        "title":"Moved personal project",
+                        "status":"planned",
+                        "prd_path":"personal/projects/moved-project/prd.json"
+                    },
+                    {
+                        "id":"per-escape",
+                        "title":"Unsafe project",
+                        "status":"planned",
+                        "prd_path":"../outside/prd.json"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            maintenance.join("prd.json"),
+            r#"{
+                "name":"HQ checkpoint sibling background maintenance",
+                "description":"Keep checkpoint work healthy",
+                "userStories":[
+                    {"id":"US-001","passes":true},
+                    {"id":"US-002","passes":false}
+                ],
+                "metadata":{"updatedAt":"2026-08-04T20:00:00Z"}
+            }"#,
+        )
+        .unwrap();
+
+        let projects = scan_local_projects_for_companies(&root, &HashSet::new());
+
+        assert_eq!(
+            projects.len(),
+            3,
+            "Personal is user-owned, not company-gated"
+        );
+        assert!(projects.iter().all(|project| project.company == "personal"));
+
+        let ode = projects
+            .iter()
+            .find(|project| project.id == "per-proj-1")
+            .expect("board-only Personal project is visible");
+        assert_eq!(ode.title, "Ode by Anthropic Opportunity");
+        assert_eq!(ode.status, "in_progress");
+        assert!(ode.prd_path.is_none());
+        assert_eq!(
+            ode.provenance.origin.as_deref(),
+            Some("personal/board.json")
+        );
+
+        let moved = projects
+            .iter()
+            .find(|project| project.id == "per-proj-2")
+            .expect("a safe dangling Personal PRD keeps its board row visible");
+        assert_eq!(
+            moved.prd_path.as_deref(),
+            Some("personal/projects/moved-project/prd.json"),
+            "the safe dangling identity is retained so status writes match the board row",
+        );
+        assert_eq!(
+            moved.provenance.origin.as_deref(),
+            Some("personal/board.json")
+        );
+        assert!(
+            projects.iter().all(|project| project.id != "per-escape"),
+            "an unsafe Personal PRD identity still fails closed",
+        );
+
+        let checkpoint = projects
+            .iter()
+            .find(|project| project.id == "hq-checkpoint-sibling-background-maintenance")
+            .expect("unlinked Personal PRD is visible");
+        assert_eq!(
+            (checkpoint.story_count, checkpoint.stories_complete),
+            (2, 1)
+        );
+        assert_eq!(
+            checkpoint.prd_path.as_deref(),
+            Some("personal/projects/hq-checkpoint-sibling-background-maintenance/prd.json")
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn scan_drops_cross_company_board_prd_identity_before_it_reaches_the_ui() {
         let root = std::env::temp_dir().join(format!(
             "hq-projects-cross-company-board-path-{}-{}",
@@ -2823,6 +3148,8 @@ mod tests {
             "A\tcompanies/indigo/projects/alpha/prd.json\n",
             "\u{001e}e5\u{001f}Other Tenant Author\u{001f}other@example.com\n\n",
             "A\tcompanies/other/projects/secret/prd.json\n",
+            "\u{001e}f6\u{001f}Personal Author\u{001f}personal@example.com\n\n",
+            "A\tpersonal/projects/private-notes/prd.json\n",
         );
         let creators = parse_git_first_add_creators(log);
         assert_eq!(
@@ -2830,13 +3157,15 @@ mod tests {
                 "companies/indigo/projects/alpha/prd.json".to_string(),
                 "companies/indigo/projects/beta/prd.json".to_string(),
                 "companies/other/projects/gamma/prd.json".to_string(),
+                "personal/projects/private-notes/prd.json".to_string(),
                 "../companies/escape/projects/nope/prd.json".to_string(),
             ]),
             vec![
                 "companies/indigo/projects".to_string(),
                 "companies/other/projects".to_string(),
+                "personal/projects".to_string(),
             ],
-            "history scans collapse exact PRDs to authorized company scopes",
+            "history scans collapse exact PRDs to authorized project scopes",
         );
         assert_eq!(
             creators
@@ -2860,28 +3189,31 @@ mod tests {
             "an exact rename carries the original creator instead of the mover",
         );
 
-        let project = |id: &str, path: &str, provenance: WorkProvenance| LocalProject {
-            id: id.to_string(),
-            title: id.to_string(),
-            description: String::new(),
-            company: "indigo".to_string(),
-            status: "active".to_string(),
-            prd_path: Some(path.to_string()),
-            created_at: None,
-            updated_at: None,
-            story_count: 0,
-            stories_complete: 0,
-            provenance,
-            creator_fallback: None,
-        };
+        let project =
+            |id: &str, company: &str, path: &str, provenance: WorkProvenance| LocalProject {
+                id: id.to_string(),
+                title: id.to_string(),
+                description: String::new(),
+                company: company.to_string(),
+                status: "active".to_string(),
+                prd_path: Some(path.to_string()),
+                created_at: None,
+                updated_at: None,
+                story_count: 0,
+                stories_complete: 0,
+                provenance,
+                creator_fallback: None,
+            };
         let mut projects = vec![
             project(
                 "alpha",
+                "indigo",
                 "companies/indigo/projects/alpha/prd.json",
                 WorkProvenance::default(),
             ),
             project(
                 "beta",
+                "indigo",
                 "companies/indigo/projects/beta/prd.json",
                 WorkProvenance {
                     owner: Some("Explicit owner".to_string()),
@@ -2890,7 +3222,14 @@ mod tests {
             ),
             project(
                 "cross-tenant",
+                "indigo",
                 "companies/other/projects/secret/prd.json",
+                WorkProvenance::default(),
+            ),
+            project(
+                "private-notes",
+                "personal",
+                "personal/projects/private-notes/prd.json",
                 WorkProvenance::default(),
             ),
         ];
@@ -2909,6 +3248,11 @@ mod tests {
         assert!(
             projects[2].creator_fallback.is_none(),
             "an Indigo project must never expose another tenant's Git author even if its board retains a cross-company path",
+        );
+        assert_eq!(
+            projects[3].creator_fallback.as_deref(),
+            Some("Personal Author"),
+            "Personal project history supplies the same creator-only fallback",
         );
     }
 

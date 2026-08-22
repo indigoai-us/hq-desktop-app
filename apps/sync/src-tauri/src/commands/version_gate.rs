@@ -248,10 +248,19 @@ pub async fn check_once(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-/// Spawn the background loop. First check fires 5s after launch (before the
-/// soft updater's 10s), then every 6h. Errors are logged but never propagate
-/// — a flaky network must not break the loop.
+/// Spawn the production background loop. Debug builds deliberately skip this
+/// automatic compatibility/install path so a local branch can remain running;
+/// production first checks 5s after launch, then every 6h. Errors are logged
+/// but never propagate — a flaky network must not break the loop.
 pub fn setup_version_gate(app: &AppHandle) {
+    if !crate::updater::background_app_updates_enabled(cfg!(debug_assertions)) {
+        log(
+            "version-gate",
+            "debug bundle — automatic version gate disabled",
+        );
+        return;
+    }
+
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;

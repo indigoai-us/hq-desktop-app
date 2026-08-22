@@ -43,7 +43,8 @@ describe('desktop-alt project status write — store contract (US-010)', () => {
     expect(store).toContain('statusPending(project');
     expect(store).toContain('let statusStateVersion = $state(0)');
     expect(store).toContain('void statusStateVersion');
-    // Board path is derived from companies/<company>/board.json.
+    // Board path is derived from the actual Personal/company scanner roots.
+    expect(store).toContain("if (company === 'personal') return 'personal/board.json'");
     expect(store).toContain('companies/${company}/board.json');
   });
 
@@ -117,6 +118,8 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
     const cap = readRepoFile('src-tauri/capabilities/desktop-alt.json');
     expect(cap).toContain('set_local_project_status');
     expect(cap).toContain('set_local_story_passes');
+    expect(cap).toContain('get_signed_in_project_person');
+    expect(cap).toContain('list_company_members');
   });
 
   it('the Rust write command guards membership + canonical path + atomic write', () => {

@@ -45,14 +45,14 @@ function storyKey(prdPath: string, storyId: string): string {
 }
 
 /**
- * Derive a project's company `board.json` HQ-relative path. The board lives at
- * `companies/<company>/board.json` — the same tree the readers scan. Returns
- * null when the project has no company (an unlinked prd-only project), in which
- * case there is nothing to persist a board status to.
+ * Derive the HQ-relative board path read by the project scanner. Personal owns
+ * `personal/board.json`; company workspaces own
+ * `companies/<company>/board.json`. Returns null when no workspace is known.
  */
 export function boardPathFor(project: Pick<Project, 'company'>): string | null {
   const company = (project.company ?? '').trim();
   if (!company) return null;
+  if (company === 'personal') return 'personal/board.json';
   return `companies/${company}/board.json`;
 }
 
@@ -82,7 +82,7 @@ export async function setProjectStatus(
     return {
       ok: false,
       status: previous,
-      error: 'This project has no company board to save to.',
+      error: 'This project has no workspace board to save to.',
     };
   }
 

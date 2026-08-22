@@ -170,13 +170,21 @@
     newProjectBusy = true;
     onopenprojects?.();
 
-    const prompt = [
-      `/plan ${company.slug} new project`,
-      '',
-      `Start a new HQ project for ${company.displayName}.`,
-      `Use company slug: ${company.slug}.`,
-      'Interview me only for the missing product decisions, then create the project PRD under this company and make sure it appears in the HQ desktop Projects screen.',
-    ].join('\n');
+    const personalWorkspace = company.slug === 'personal';
+    const prompt = personalWorkspace
+      ? [
+          '/plan personal new project',
+          '',
+          'Start a new Personal HQ project.',
+          'Interview me only for the missing product decisions, create the PRD under personal/projects/<project>/prd.json, and update personal/board.json so it appears in the HQ desktop Projects screen.',
+        ].join('\n')
+      : [
+          `/plan ${company.slug} new project`,
+          '',
+          `Start a new HQ project for ${company.displayName}.`,
+          `Use company slug: ${company.slug}.`,
+          'Interview me only for the missing product decisions, then create the project PRD under this company and make sure it appears in the HQ desktop Projects screen.',
+        ].join('\n');
 
     try {
       const settings = await invoke<SettingsWire>('get_settings').catch(() => ({ hqPath: null }));
@@ -313,7 +321,7 @@
         {:else if tab === 'goals'}
           <CompanyGoalsPage slug={company.slug} />
         {:else if tab === 'projects'}
-          <CompanyProjectsPage slug={company.slug} />
+          <CompanyProjectsPage slug={company.slug} companyUid={company.cloudUid} />
         {:else if tab === 'skills'}
           <CompanyLibraryPanel slug={company.slug} forcedFilter="skills" />
         {:else if tab === 'workers'}

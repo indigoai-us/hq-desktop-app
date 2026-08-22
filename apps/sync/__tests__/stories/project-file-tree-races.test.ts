@@ -50,6 +50,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import CompanyFileTree from '../../src/desktop-alt/components/CompanyFileTree.svelte';
+import CompanyGoalsPage from '../../src/desktop-alt/pages/CompanyGoalsPage.svelte';
 import CompanyProjectsPage from '../../src/desktop-alt/pages/CompanyProjectsPage.svelte';
 import type { DirEntry } from '../../src/desktop-alt/lib/file-tree';
 import type { ProjectProvenanceRecord } from '../../src/desktop-alt/lib/local-projects';
@@ -122,6 +123,56 @@ afterEach(async () => {
 });
 
 describe('project story selection races', () => {
+  it('renders the Personal portfolio without company-only provenance or goals loaders', async () => {
+    localProjects.loadLocalProjects.mockResolvedValue([
+      {
+        ...project('personal-alpha'),
+        company: 'personal',
+        prdPath: 'personal/projects/personal-alpha/prd.json',
+      },
+    ]);
+
+    component = mount(CompanyProjectsPage, {
+      target: host,
+      props: { slug: 'personal', companyUid: 'must-not-be-used' },
+    });
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[aria-label="Project Project personal-alpha"]')).toBeTruthy();
+    });
+    expect(localProjects.loadCompanyProjectProvenance).not.toHaveBeenCalled();
+    expect(localProjects.loadCompanyGoals).not.toHaveBeenCalled();
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'list_company_members',
+      expect.anything(),
+    );
+  });
+
+  it('renders an honest Personal goals empty state without company-only loaders', async () => {
+    localProjects.loadLocalProjects.mockResolvedValue([
+      {
+        ...project('personal-alpha'),
+        company: 'personal',
+        prdPath: 'personal/projects/personal-alpha/prd.json',
+      },
+    ]);
+
+    component = mount(CompanyGoalsPage, {
+      target: host,
+      props: { slug: 'personal' },
+    });
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="empty-goals-state"]')).toBeTruthy();
+      expect(host.querySelector('[data-testid="goals-error"]')).toBeNull();
+    });
+    expect(localProjects.loadLocalProjects).toHaveBeenCalledOnce();
+    expect(localProjects.loadCompanyProjectProvenance).not.toHaveBeenCalled();
+    expect(localProjects.loadCompanyGoals).not.toHaveBeenCalled();
+  });
+
   it('never commits an older project story load into the newly selected project', async () => {
     const alpha = deferred<Story[]>();
     const bravo = deferred<Story[]>();

@@ -13,9 +13,9 @@ describe('company Overview recent-activity digest (DESKTOP-003)', () => {
   it('is rendered on the company Overview (CompanyBoardPanel)', () => {
     const panel = read('src/desktop-alt/panels/CompanyBoardPanel.svelte');
     expect(panel).toContain("import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte'");
-    // Rendered with slug, cloud-backed flag, and inbox handoff.
+    // Rendered with slug, Personal-workspace guard, cloud-backed flag, and inbox handoff.
     expect(panel).toMatch(
-      /<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s+\{syncEnabled\}\s+\{onopeninbox\}\s*\/>/,
+      /<OverviewActivityDigest\s+\{slug\}\s+\{cloudBacked\}\s+\{personalWorkspace\}\s+\{syncEnabled\}\s+\{onopeninbox\}\s*\/>/,
     );
   });
 

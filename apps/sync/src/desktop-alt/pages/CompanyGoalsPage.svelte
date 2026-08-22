@@ -47,6 +47,7 @@
   }
 
   let { slug }: Props = $props();
+  const personalWorkspace = $derived(slug === 'personal');
 
   let objectives = $state<Objective[]>([]);
   let projects = $state<Project[]>([]);
@@ -179,26 +180,30 @@
     loading = true;
     let cancelled = false;
 
-    void loadCompanyProjectProvenance(activeSlug)
-      .then((records) => {
-        if (cancelled) return;
-        cloudProvenance = indexProjectProvenance(records);
-        provenanceUnavailable = false;
-        if (selected) {
-          const refreshed = applyProjectProvenance(selected, cloudProvenance);
-          selected = refreshed;
-          void refreshSelectedStoriesForProvenance(refreshed);
-        }
-      })
-      .catch((err) => {
-        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
-        if (!cancelled) provenanceUnavailable = true;
-      });
+    if (!personalWorkspace) {
+      void loadCompanyProjectProvenance(activeSlug)
+        .then((records) => {
+          if (cancelled) return;
+          cloudProvenance = indexProjectProvenance(records);
+          provenanceUnavailable = false;
+          if (selected) {
+            const refreshed = applyProjectProvenance(selected, cloudProvenance);
+            selected = refreshed;
+            void refreshSelectedStoriesForProvenance(refreshed);
+          }
+        })
+        .catch((err) => {
+          console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+          if (!cancelled) provenanceUnavailable = true;
+        });
+    }
 
     void (async () => {
       try {
         const [goals, allProjects] = await Promise.all([
-          loadCompanyGoals(activeSlug),
+          personalWorkspace
+            ? Promise.resolve({ objectives: [], initiatives: [] })
+            : loadCompanyGoals(activeSlug),
           loadLocalProjects(),
         ]);
         if (cancelled) return;
@@ -619,7 +624,11 @@
     {:else if objectives.length === 0}
       <div class="empty-state" data-testid="empty-goals-state">
         <span>No goals yet</span>
-        <p>Company goals will appear here after goals sync into the local workspace.</p>
+        {#if personalWorkspace}
+          <p>Personal goals are not loaded in this view yet.</p>
+        {:else}
+          <p>Company goals will appear here after goals sync into the local workspace.</p>
+        {/if}
       </div>
     {:else}
       <!-- DESKTOP-007: scan-friendly list + stable selected-goal detail (no card grid, no modal). -->
