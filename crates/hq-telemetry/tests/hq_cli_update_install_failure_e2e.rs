@@ -625,6 +625,7 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             hq_bin_changed: true,
             delivered_version: None,
             pnpm: None,
+            managed_shadow_repair: None,
         })
     });
     assert_eq!(events.len(), 1);

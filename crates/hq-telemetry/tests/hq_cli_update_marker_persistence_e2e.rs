@@ -3,7 +3,8 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
+    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor,
+    ManagedShadowContext, ManagedShadowRepairOutcome, PnpmHomeSource,
     PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
     NON_CONVERGENT_ERROR_PREFIX,
 };
@@ -139,6 +140,7 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 exit_status: "0".to_string(),
                 output_len: 64,
             }),
+            managed_shadow: ManagedShadowContext::default(),
         },
         5,
     );
@@ -179,6 +181,7 @@ fn pnpm_marker_ctx(
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_shadow: ManagedShadowContext::default(),
     }
 }
 

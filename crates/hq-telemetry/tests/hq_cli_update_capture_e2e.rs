@@ -5,9 +5,9 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     BinaryAnchorShape, ConvergenceVerdict, InstallExecutor, LocalVersionProbeDiagnostics,
-    NonConvergenceKind, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
-    PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind, VersionProbeOutcome,
-    NON_CONVERGENT_ERROR_PREFIX,
+    ManagedShadowContext, ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    ResolvedProgramKind, VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -101,6 +101,7 @@ fn pnpm_context<'a>(
             exit_status: "0".to_string(),
             output_len: 128,
         }),
+        managed_shadow: ManagedShadowContext::default(),
     }
 }
 
@@ -975,6 +976,7 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_shadow: ManagedShadowContext::default(),
     };
 
     let clears = Cell::new(0usize);
