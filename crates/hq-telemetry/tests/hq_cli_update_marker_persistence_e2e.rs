@@ -3,10 +3,11 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
-    NON_CONVERGENT_ERROR_PREFIX,
+    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor,
+    ManagedShadowRepairOutcome, NonConvergenceKind, PnpmHomeSource, PnpmRunDiagnostics,
+    PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, NON_CONVERGENT_ERROR_PREFIX,
 };
+use std::path::PathBuf;
 use sentry::test::with_captured_events_options;
 
 fn captured_events(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
@@ -126,6 +127,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
             installer_bin: "/opt/homebrew/bin/pnpm",
             already_blocked: false,
             nonblocking_episode_keys: &[],
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
             pnpm: Some(PnpmRunDiagnostics {
                 // Underivable home => foreign-managed => capture is gated on a
                 // durable marker, exactly as for the npm path.
@@ -169,6 +172,8 @@ fn pnpm_marker_ctx(
         installer_bin: "/opt/homebrew/bin/pnpm",
         already_blocked: false,
         nonblocking_episode_keys: &[],
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
@@ -243,4 +248,78 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
         );
         assert_eq!(captures, 1);
     }
+}
+
+/// The managed-shadow marker contract (HQ-DESKTOP-46): a repairable first episode
+/// (the pre-repair decision, or a caller that does not repair) persists NO durable
+/// non-convergent marker — so `should_auto_install` stays true for that version and
+/// the next check self-heals — while a repair that could not converge persists
+/// exactly one, bounded like a foreign layout. On the base commit this same
+/// same-root shape is classified foreign-managed and ALWAYS persists the marker.
+#[test]
+fn a_repairable_managed_shadow_persists_no_marker_but_a_failed_repair_persists_one() {
+    let roots = [PathBuf::from("/opt/IndigoHQ/toolchain")];
+    let npm_prefix = "/opt/IndigoHQ/toolchain/npm-prefix";
+    let node_shim = "/opt/IndigoHQ/toolchain/node/hq.cmd";
+    let base = PostInstallContext::npm(
+        node_shim,
+        node_shim,
+        Some("5.101.0"),
+        Some("5.101.0"),
+        "5.101.7",
+        Some(npm_prefix),
+        node_shim,
+        false,
+        Some("5.101.7"),
+    );
+
+    // Not-attempted: classified managed-shadowed, captured once, but NO marker.
+    let (records, captures) = drive_success_path(
+        &base
+            .clone()
+            .with_managed_roots(&roots)
+            .with_managed_shadow_repair(ManagedShadowRepairOutcome::NotAttempted),
+    );
+    assert_eq!(
+        records, 0,
+        "a repairable first episode must write no durable marker"
+    );
+    assert_eq!(captures, 1);
+
+    // Repair-failed: still shadowed, so it persists exactly one durable marker.
+    let (records, captures) = drive_success_path(
+        &base
+            .with_managed_roots(&roots)
+            .with_managed_shadow_repair(ManagedShadowRepairOutcome::RepairFailed),
+    );
+    assert_eq!(
+        records, 1,
+        "a repair that did not converge persists exactly one marker"
+    );
+    assert_eq!(captures, 1);
+}
+
+/// The classification underneath the marker contract, pinned directly: the same
+/// same-root shape decides `ManagedShadowed`, never `ForeignManaged`.
+#[test]
+fn the_same_root_shape_classifies_managed_shadowed_not_foreign_managed() {
+    let roots = [PathBuf::from("/opt/IndigoHQ/toolchain")];
+    let outcome = decide_post_install(
+        &PostInstallContext::npm(
+            "/opt/IndigoHQ/toolchain/node/hq.cmd",
+            "/opt/IndigoHQ/toolchain/node/hq.cmd",
+            Some("5.101.0"),
+            Some("5.101.0"),
+            "5.101.7",
+            Some("/opt/IndigoHQ/toolchain/npm-prefix"),
+            "/opt/IndigoHQ/toolchain/node/hq.cmd",
+            false,
+            Some("5.101.7"),
+        )
+        .with_managed_roots(&roots),
+    );
+    assert_eq!(
+        outcome.non_convergence_kind,
+        Some(NonConvergenceKind::ManagedShadowed)
+    );
 }

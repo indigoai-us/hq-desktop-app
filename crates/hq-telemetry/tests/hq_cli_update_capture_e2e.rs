@@ -5,9 +5,9 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     BinaryAnchorShape, ConvergenceVerdict, InstallExecutor, LocalVersionProbeDiagnostics,
-    NonConvergenceKind, NonConvergentReport, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
-    PostInstallContext, PostInstallCoreEffects, ResolvedProgramKind, VersionProbeOutcome,
-    NON_CONVERGENT_ERROR_PREFIX,
+    ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    ResolvedProgramKind, VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -91,6 +91,8 @@ fn pnpm_context<'a>(
         // Default fixtures are first-occurrence (empty episode set); tests that
         // exercise the non-blocking episode bound pass their own set.
         nonblocking_episode_keys: &[],
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present: false,
@@ -963,6 +965,8 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
         installer_bin: "/opt/homebrew/bin/pnpm",
         already_blocked: false,
         nonblocking_episode_keys: &[],
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
@@ -1167,5 +1171,159 @@ fn true_pnpm_shadowing_still_captures_loudly_on_every_occurrence_with_a_durable_
     assert_eq!(
         fingerprint(event),
         ["hq-cli-update", "install-non-convergent"]
+    );
+}
+
+/// The managed-shadow artifact contract (HQ-DESKTOP-46): a run whose self-repair
+/// CONVERGES emits NO event, while a run whose repair could not converge emits
+/// exactly one event tagged `non_convergence_kind=managed-shadowed` plus the
+/// closed `managed_shadow_repair` outcome, with `hq_bin` and `npm_prefix`
+/// home-redacted. Production discards the pre-repair decision and applies only
+/// the re-decide, so this mirrors that: only the second decision's effects run.
+/// On the base commit this same input is tagged `foreign-managed`, always writes
+/// the marker, and carries no repair tag.
+#[test]
+fn managed_shadow_repair_outcomes_drive_the_captured_envelope() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let root = home
+        .join("AppData")
+        .join("Local")
+        .join("IndigoHQ")
+        .join("toolchain");
+    let roots = [root.clone()];
+    let npm_prefix = root.join("npm-prefix").to_string_lossy().to_string();
+    let node_shim = root
+        .join("node")
+        .join("hq.cmd")
+        .to_string_lossy()
+        .to_string();
+    let prefix_shim = root
+        .join("npm-prefix")
+        .join("hq.cmd")
+        .to_string_lossy()
+        .to_string();
+    let latest = "5.101.7";
+
+    // A converged repair: the app now resolves the prefix copy at latest, so the
+    // re-decide is a plain success — no event, marker cleared.
+    let clears = Cell::new(0usize);
+    let converged_events = captured_events(|| {
+        let ctx = PostInstallContext::npm(
+            &node_shim,
+            &prefix_shim,
+            Some("5.101.0"),
+            Some(latest),
+            latest,
+            Some(&npm_prefix),
+            &node_shim,
+            false,
+            Some(latest),
+        )
+        .with_managed_roots(&roots)
+        .with_managed_shadow_repair(ManagedShadowRepairOutcome::Converged);
+        let outcome = decide_post_install(&ctx);
+        assert!(outcome.capture.is_none());
+        assert!(outcome.non_convergence_kind.is_none());
+        let record = |_v: String| panic!("a converged repair must not record a marker");
+        let clear = || clears.set(clears.get() + 1);
+        let capture = |_r: NonConvergentReport| panic!("a converged repair must not capture");
+        let record_failure = |_e: String| panic!("no marker failure on a converged repair");
+        let _ = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+    });
+    assert!(
+        converged_events.is_empty(),
+        "a converged repair emits no event"
+    );
+    assert_eq!(clears.get(), 1);
+
+    // A repair that could not converge: still shadowed, so it falls back to the
+    // foreign-managed policy — one event, tagged managed-shadowed + repair-failed.
+    let events = captured_events(|| {
+        let ctx = PostInstallContext::npm(
+            &node_shim,
+            &node_shim,
+            Some("5.101.0"),
+            Some("5.101.0"),
+            latest,
+            Some(&npm_prefix),
+            &node_shim,
+            false,
+            Some(latest),
+        )
+        .with_managed_roots(&roots)
+        .with_managed_shadow_repair(ManagedShadowRepairOutcome::RepairFailed);
+        let outcome = decide_post_install(&ctx);
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ManagedShadowed)
+        );
+        let record = |_v: String| Ok(());
+        let clear = || panic!("a non-convergent repair must not clear the marker");
+        let capture = |report: NonConvergentReport| report_non_convergent_install(&report);
+        let record_failure = |_e: String| panic!("the marker write succeeds on this path");
+        let _ = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+    });
+    assert_eq!(
+        events.len(),
+        1,
+        "a repair that did not converge captures once"
+    );
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("install_executor").map(String::as_str),
+        Some("npm")
+    );
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("managed-shadowed")
+    );
+    assert_eq!(
+        event.tags.get("managed_shadow_repair").map(String::as_str),
+        Some("repair-failed")
+    );
+    // Home-redacted: neither the hq_bin nor the npm_prefix extra leaks the home
+    // directory, exactly like every other non-convergent event.
+    let hq_bin_extra = event
+        .extra
+        .get("hq_bin")
+        .and_then(Value::as_str)
+        .expect("hq_bin extra");
+    assert!(hq_bin_extra.starts_with('~'), "hq_bin is home-redacted");
+    assert!(hq_bin_extra.contains("hq.cmd"));
+    let npm_prefix_extra = event
+        .extra
+        .get("npm_prefix")
+        .and_then(Value::as_str)
+        .expect("npm_prefix extra");
+    assert!(
+        npm_prefix_extra.starts_with('~'),
+        "npm_prefix is home-redacted"
+    );
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(
+        !serialized.contains(&home_text),
+        "the managed-shadow event leaked the home directory"
+    );
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"],
+        "the managed-shadow event never splits the existing Sentry group"
     );
 }
