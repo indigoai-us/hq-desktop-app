@@ -2107,7 +2107,11 @@ impl NpmPathShape {
     }
 }
 
-fn npm_path_value(detail: &str) -> Option<String> {
+/// npm's reported path with surrounding quotes trimmed and separators LEFT AS
+/// REPORTED. Use this when the value becomes a filesystem target on the current
+/// platform (a POSIX backslash is a legal filename character and must survive);
+/// use [`npm_path_value`] for a classification tag or cross-platform comparison.
+fn npm_path_value_raw(detail: &str) -> Option<String> {
     detail.lines().find_map(|line| {
         let line = line.trim();
         let lower = line.to_ascii_lowercase();
@@ -2122,9 +2126,15 @@ fn npm_path_value(detail: &str) -> Option<String> {
             line[marker.len()..]
                 .trim()
                 .trim_matches(['\'', '\"', '`'])
-                .replace('\\', "/"),
+                .to_string(),
         )
     })
+}
+
+/// npm's reported path with `\` normalized to `/` for cross-platform comparison
+/// and tagging. NOT for use as a POSIX deletion target — see [`npm_path_value_raw`].
+fn npm_path_value(detail: &str) -> Option<String> {
+    npm_path_value_raw(detail).map(|path| path.replace('\\', "/"))
 }
 
 fn normalized_npm_path(detail: &str) -> Option<String> {
@@ -2231,8 +2241,16 @@ fn is_absolute_normalized_path(path: &str) -> bool {
 /// it does today. This is the load-bearing guard that keeps the deletion blast
 /// radius confined to HQ's own scope directory.
 pub fn partial_install_scope_from_npm_path(detail: &str) -> Option<String> {
-    // Case-preserving and already `\`->`/` normalised.
-    let path = npm_path_value(detail)?;
+    // npm's path becomes a filesystem DELETION target, so use its separators AS
+    // REPORTED and normalize `\`->`/` ONLY on Windows (npm reports backslash
+    // separators there). On POSIX a backslash is a legal filename character;
+    // rewriting it would target a different directory than npm actually named.
+    let raw = npm_path_value_raw(detail)?;
+    let path = if cfg!(windows) {
+        raw.replace('\\', "/")
+    } else {
+        raw
+    };
     if !is_absolute_normalized_path(&path) {
         return None;
     }
@@ -2279,7 +2297,7 @@ fn npm_bin_target(detail: &str) -> &'static str {
     "other"
 }
 
-fn npm_error_code(detail: &str) -> String {
+pub fn npm_error_code(detail: &str) -> String {
     let code = detail.lines().find_map(|raw_line| {
         let line = raw_line.trim();
         let lower = line.to_ascii_lowercase();
@@ -3657,17 +3675,27 @@ pub fn install_failure_episode_key_with_environment(
     // `latest`, still pages. `Unexpected` only: a lifecycle or unsupported-node
     // shape keeps its own key path.
     if kind == InstallFailureKind::Unexpected {
-        let key = format!(
-            "{latest}|unexpected|{}|{}|{}",
-            npm_error_code(detail),
-            npm_syscall(detail),
-            npm_path_shape(detail, prefix).tag_value(),
-        );
-        return Some(if env.managed_toolchain_retry {
-            format!("{key}|managed")
-        } else {
-            key
-        });
+        // Only a STRUCTURED unexpected failure -- one npm gave a real symbolic
+        // error code for -- is repeat-guarded. Two unrelated UNSTRUCTURED failures
+        // (a killed process, an npm-internal error) both collapse to
+        // `unexpected|none|unknown|none`, so guarding that bucket would let the
+        // first suppress a later, genuinely different defect. The `none` /
+        // `unrecognized` catch-all keeps paging every check; a real code
+        // (ENOTEMPTY and friends) with its syscall and path shape is a meaningful
+        // signature whose repeats ARE the same failure mode.
+        let code = npm_error_code(detail);
+        if code != "none" && code != "unrecognized" {
+            let key = format!(
+                "{latest}|unexpected|{code}|{}|{}",
+                npm_syscall(detail),
+                npm_path_shape(detail, prefix).tag_value(),
+            );
+            return Some(if env.managed_toolchain_retry {
+                format!("{key}|managed")
+            } else {
+                key
+            });
+        }
     }
     install_failure_episode_key_with_provenance(latest, detail, env.managed_toolchain_retry)
 }
@@ -9256,12 +9284,11 @@ mod tests {
             &managed_env,
         );
         assert_eq!(managed.as_deref(), Some("5.101.7|unsupported-node|6|managed"));
-        // The env-blind shape (no probed Node) is now a repeat-guarded
-        // `Unexpected` episode too (HQ-DESKTOP-5B): it mints a
-        // `{latest}|unexpected|{code}|{syscall}|{path_shape}` key so a permanent
-        // per-machine unexpected condition pages once per target version instead
-        // of on every scheduled check. node_six_stderr carries no npm markers, so
-        // the shape is `none|unknown|none`.
+        // The env-blind shape (no probed Node) is a non-lifecycle failure with NO
+        // structured npm code -- node_six_stderr carries none -- so it mints NO
+        // repeat-guard key and keeps paging every check. The unstructured
+        // `none|unknown|none` bucket must never let one failure suppress an
+        // unrelated later one; only structured codes are repeat-guarded.
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
@@ -9270,9 +9297,8 @@ mod tests {
                 false,
                 latest,
                 &InstallEnvironment::default(),
-            )
-            .as_deref(),
-            Some("5.101.7|unexpected|none|unknown|none")
+            ),
+            None
         );
     }
 
@@ -9294,13 +9320,32 @@ mod tests {
             partial_install_scope_from_npm_path(child).as_deref(),
             Some("/Users/mike/.npm-global/lib/node_modules/@indigoai-us")
         );
-        // A Windows drive-absolute path (npm_path_value normalises `\`->`/`).
-        let windows = "npm error code ENOTEMPTY\n\
-            npm error path C:\\Users\\mike\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
-        assert_eq!(
-            partial_install_scope_from_npm_path(windows).as_deref(),
-            Some("C:/Users/mike/AppData/Roaming/npm/node_modules/@indigoai-us")
-        );
+        // Separator handling is platform-specific because the derived scope is a
+        // filesystem DELETION target. On POSIX a backslash is a legal filename
+        // character and survives verbatim; a Windows-style path (backslash
+        // separators, no `/`) is not a POSIX target and derives no scope.
+        #[cfg(not(windows))]
+        {
+            let posix_backslash = "npm error code ENOTEMPTY\n\
+                npm error path /Users/mike/od\\d/lib/node_modules/@indigoai-us/hq-cli";
+            assert_eq!(
+                partial_install_scope_from_npm_path(posix_backslash).as_deref(),
+                Some("/Users/mike/od\\d/lib/node_modules/@indigoai-us")
+            );
+            let windows_on_posix = "npm error code ENOTEMPTY\n\
+                npm error path C:\\Users\\mike\\node_modules\\@indigoai-us\\hq-cli";
+            assert_eq!(partial_install_scope_from_npm_path(windows_on_posix), None);
+        }
+        // On Windows npm reports backslash separators, which ARE normalized here.
+        #[cfg(windows)]
+        {
+            let windows = "npm error code ENOTEMPTY\n\
+                npm error path C:\\Users\\mike\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+            assert_eq!(
+                partial_install_scope_from_npm_path(windows).as_deref(),
+                Some("C:/Users/mike/AppData/Roaming/npm/node_modules/@indigoai-us")
+            );
+        }
 
         // Fail closed for every adversarial shape: no deletion scope is derived.
         for detail in [
@@ -9411,6 +9456,21 @@ mod tests {
             )
             .as_deref(),
             Some("5.103.17|unexpected|ENOTDIR|mkdir|global-lib-node-modules")
+        );
+        // An UNSTRUCTURED unexpected failure (no npm error code -> the
+        // `none|unknown|none` catch-all) is NOT repeat-guarded: two unrelated
+        // defects there are indistinguishable, so it must keep paging every check.
+        let unstructured = "Killed\nnode: internal error, exiting";
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(137),
+                unstructured,
+                None,
+                false,
+                latest,
+                &env,
+            ),
+            None
         );
         // The base (2-arg) key stays third-party-lifecycle only — unchanged.
         assert_eq!(install_failure_episode_key(latest, enotempty), None);

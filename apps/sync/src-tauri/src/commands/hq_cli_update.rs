@@ -88,7 +88,7 @@ pub use hq_desktop_core::hq_cli_update::{
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
     non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
-    non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
+    non_convergent_episode_reported, npm_error_code, npm_install_attempt_summary, npm_lifecycle_cause,
     npm_prefix_from_hq_bin, partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path,
     pnpm_global_env,
     pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
@@ -293,11 +293,17 @@ fn is_bin_exists_failure(detail: &str, prefix: Option<&str>) -> bool {
 /// `<prefix>/lib/node_modules/@indigoai-us`, so that rename fails
 /// `ENOTEMPTY: directory not empty`. Unlike the `EEXIST` bin collision, `--force`
 /// does NOT clear this — the leftover partial state must be removed first (see
-/// `clean_partial_hq_cli_install`). Left unhandled, every 6-hourly auto-update
-/// wedges on the same error and the user's `hq` stays broken (ENOENT) until a
-/// human runs `hq-heal` (field report feedback_44061f91).
+/// `clean_partial_hq_cli_install_in_scope`). Left unhandled, every 6-hourly
+/// auto-update wedges on the same error and the user's `hq` stays broken (ENOENT)
+/// until a human runs `hq-heal` (field report feedback_44061f91).
+///
+/// Gated on npm's PARSED error code being exactly `ENOTEMPTY`, never a substring
+/// match: a third-party lifecycle/postinstall failure (whose real npm code is a
+/// numeric status) can print `ENOTEMPTY` in its own build output while naming the
+/// `hq-cli` path, and treating that as a partial install would wrongly delete a
+/// working CLI and retry the permanently-failing lifecycle.
 fn is_partial_install_failure(detail: &str) -> bool {
-    detail.contains("ENOTEMPTY")
+    npm_error_code(detail) == "ENOTEMPTY"
 }
 
 /// The npm global scope dir that holds the `@indigoai-us/hq-cli` package for a
@@ -3306,6 +3312,16 @@ exit 0
         ));
         assert!(!is_partial_install_failure("npm ERR! network timeout"));
         assert!(!is_partial_install_failure(""));
+        // A third-party lifecycle failure (npm's real code is a numeric status)
+        // whose own build output merely MENTIONS ENOTEMPTY while naming the hq-cli
+        // path must NOT arm the destructive cleanup: the gate is npm's PARSED code,
+        // not a substring.
+        assert!(!is_partial_install_failure(
+            "npm error code 1\n\
+             npm error command failed\n\
+             npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli\n\
+             build.js: Error: ENOTEMPTY: directory not empty"
+        ));
     }
 
     // HQ-DESKTOP-3N: a Windows EPERM locked-binary failure (exit -4048, or the
