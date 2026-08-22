@@ -2644,7 +2644,12 @@ fn download_bytes_checked(url: &str, label: &str) -> Result<Vec<u8>, String> {
             .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
             .timeout(DOWNLOAD_ATTEMPT_TIMEOUT)
             .build()
-            .map_err(|e| format!("Failed to build {label} download client: {}", error_chain(&e)))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to build {label} download client: {}",
+                    error_chain(&e)
+                )
+            })?;
         // No error_for_status(): a non-2xx flows through as DownloadedAsset so
         // fetch_asset_with can decide retryability from the status itself.
         let response = client
@@ -2652,6 +2657,18 @@ fn download_bytes_checked(url: &str, label: &str) -> Result<Vec<u8>, String> {
             .send()
             .map_err(|e| format!("Failed to fetch {label}: {}", error_chain(&e)))?;
         let status = response.status().as_u16();
+        // Classify on status BEFORE consuming the body. A terminal (403/404) or
+        // retryable (5xx) response must reach fetch_asset_with as a status, not
+        // be recast as a generic retryable read error if a proxy's error body
+        // stalls mid-stream — that would retry a 404/403 for ~560s and break the
+        // "terminal statuses fail on the first attempt" invariant. Only a
+        // successful response has a body worth reading here.
+        if !(200..=299).contains(&status) {
+            return Ok(DownloadedAsset {
+                status,
+                bytes: Vec::new(),
+            });
+        }
         // Still fully in-memory (verify-then-activate is unchanged); the cause
         // chain distinguishes a slow-link timeout from a mid-stream reset where
         // the bare `{e}` printed only "error decoding response body".
@@ -5283,7 +5300,11 @@ mod windows_tests {
                 })
             }
         });
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "one blip should be retried");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one blip should be retried"
+        );
         assert_eq!(result.unwrap(), b"node".to_vec());
     }
 
@@ -5300,7 +5321,9 @@ mod windows_tests {
         .unwrap_err();
         assert_eq!(calls.load(Ordering::SeqCst), DOWNLOAD_ATTEMPTS as usize);
         assert!(
-            err.contains(&format!("attempt {DOWNLOAD_ATTEMPTS} of {DOWNLOAD_ATTEMPTS}")),
+            err.contains(&format!(
+                "attempt {DOWNLOAD_ATTEMPTS} of {DOWNLOAD_ATTEMPTS}"
+            )),
             "{err}"
         );
     }
@@ -5392,7 +5415,10 @@ mod windows_tests {
             })),
         };
         let rendered = error_chain(&err);
-        assert_eq!(rendered, "error decoding response body: operation timed out");
+        assert_eq!(
+            rendered,
+            "error decoding response body: operation timed out"
+        );
     }
 
     #[test]

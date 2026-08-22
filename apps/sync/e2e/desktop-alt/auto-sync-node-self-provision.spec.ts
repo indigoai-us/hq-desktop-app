@@ -224,6 +224,11 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
     expect(installDepsRs).toContain('fn error_chain(');
     expect(installDepsRs).toContain('Failed to read {label} response: {}", error_chain(&e)');
 
+    // A non-2xx returns its status to the classifier WITHOUT reading the body,
+    // so a terminal 404/403 whose error body stalls behind a proxy cannot be
+    // recast as a retryable read error and retried for ~560s.
+    expect(installDepsRs).toContain('if !(200..=299).contains(&status)');
+
     // Checksum verify-then-activate on the Node zip is untouched.
     expect(installDepsRs).toContain('verify_sha256_bytes("Node zip", &bytes, expected_sha)');
 
