@@ -2363,18 +2363,35 @@ pub fn partial_install_scope_from_npm_path(detail: &str) -> Option<String> {
         return None;
     }
     let components: Vec<&str> = path.split('/').collect();
-    // The SHALLOWEST `@indigoai-us` whose immediate parent component is exactly
-    // `node_modules`. Shallowest so a global install always resolves to the
-    // outermost scope dir. Exact component equality (never a substring) rejects
-    // `@indigoai-usx`; the parent check rejects `@indigoai-us` as a plain file
-    // basename outside a `node_modules` directory.
-    let scope_index = components
+    // A QUALIFYING `@indigoai-us` scope is an exact `@indigoai-us` component whose
+    // immediate parent is exactly `node_modules` AND which leads directly to the
+    // hq-cli debris — either it IS the reported directory (the last component, the
+    // scope dir itself) or its next component is `hq-cli` or a `.hq-cli-*` staging
+    // dir. Exact component equality (never a substring) rejects `@indigoai-usx`;
+    // the parent check rejects `@indigoai-us` as a plain file basename; the
+    // debris-leader check rejects an unrelated OUTER `node_modules/@indigoai-us`
+    // when the failing package lives under a DEEPER one (a nested path such as
+    // `.../@indigoai-us/toolchain/lib/node_modules/@indigoai-us/hq-cli` must
+    // resolve to the inner scope, never delete the outer scope's `hq-cli`).
+    let qualifying: Vec<usize> = components
         .iter()
         .enumerate()
-        .find_map(|(index, component)| {
-            (*component == "@indigoai-us" && index > 0 && components[index - 1] == "node_modules")
-                .then_some(index)
-        })?;
+        .filter(|&(index, component)| {
+            *component == "@indigoai-us"
+                && index > 0
+                && components[index - 1] == "node_modules"
+                && match components.get(index + 1) {
+                    None => true,
+                    Some(&next) => next == "hq-cli" || next.starts_with(".hq-cli-"),
+                }
+        })
+        .map(|(index, _)| index)
+        .collect();
+    // Fail closed on ambiguity: exactly one qualifying scope, or nothing — an
+    // ambiguous path never widens the blast radius.
+    let [scope_index] = qualifying[..] else {
+        return None;
+    };
     Some(components[..=scope_index].join("/"))
 }
 
@@ -2962,9 +2979,17 @@ pub fn npm_errno_from_exit_status(exit_code: Option<i32>) -> &'static str {
 
 fn has_npm_lifecycle_failure_marker(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
+    // Recognise BOTH the modern (`npm error …`) and legacy (`npm err! …`)
+    // spellings, mirroring the lifecycle parser (npm_lifecycle_failure) which
+    // already supports `npm err!`. Without the legacy spelling an older npm's
+    // `npm ERR! command failed` carrying a transient code (e.g. EIDLETIMEOUT)
+    // would slip past this guard and be silently absorbed as a registry timeout,
+    // even though it is a real build/lifecycle failure that must stay loud.
     detail.contains("npm error command failed")
+        || detail.contains("npm err! command failed")
         || detail.contains("elifecycle")
         || detail.contains("npm error command sh -c")
+        || detail.contains("npm err! command sh -c")
 }
 
 /// Windows reports an aborting child as an NTSTATUS in `ExitStatus::code()`.
@@ -3831,14 +3856,14 @@ pub fn install_failure_episode_key_with_environment(
         });
     }
     if kind == InstallFailureKind::Unexpected {
-        // A genuinely unexpected install failure recurs identically on every
-        // 6-hourly check — the HQ-DESKTOP-5B ENOTEMPTY wedge is the archetype: its
-        // debris survives (root-owned or locked) so the same rename fails again,
-        // forever. Page it once per published CLI version, not on every check.
-        // Key on the SAME closed-enumeration signature the Sentry group already
-        // uses (`install_failure_signature`): symbolic error code × syscall ×
-        // path shape. Every component is a validated closed value already tagged
-        // today, so the key stays persist- and log-safe, and any change in
+        // A genuinely unexpected install failure with a DISCRIMINATING shape recurs
+        // identically on every 6-hourly check — the HQ-DESKTOP-5B ENOTEMPTY wedge is
+        // the archetype: its debris survives (root-owned or locked) so the same
+        // rename fails again, forever. Page it once per published CLI version, not
+        // on every check. Key on the SAME closed-enumeration signature the Sentry
+        // group already uses (`install_failure_signature`): symbolic error code ×
+        // syscall × path shape. Every component is a validated closed value already
+        // tagged today, so the key stays persist- and log-safe, and any change in
         // signature — or a newly published `latest` — mints a new key and pages a
         // first occurrence again. The `|managed` discriminator matches the other
         // shapes so a managed-retry event never collides with its user-path
@@ -3846,6 +3871,15 @@ pub fn install_failure_episode_key_with_environment(
         let code = symbolic_npm_error_code(detail);
         let syscall = npm_syscall(detail);
         let path_shape = npm_path_shape(detail, prefix).tag_value();
+        // A fully SHAPELESS failure (`none:unknown:none` — npm structured nothing)
+        // must NOT be repeat-suppressed: two entirely different root causes collapse
+        // into that single empty signature, so bounding it would hide a newly
+        // introduced updater failure behind an unrelated earlier one until the next
+        // CLI version publishes. Such failures keep paging every time, exactly as
+        // today; only a shape npm actually characterised earns the bound.
+        if code == "none" && syscall == "unknown" && path_shape == "none" {
+            return None;
+        }
         let key = format!("{latest}|unexpected|{code}|{syscall}|{path_shape}");
         return Some(if env.managed_toolchain_retry {
             format!("{key}|managed")
@@ -7009,6 +7043,21 @@ mod tests {
         let lifecycle_kind = classify_install_failure(Some(1), lifecycle_with_eidletimeout, None);
         assert_ne!(lifecycle_kind, InstallFailureKind::ExpectedTransientRegistry);
         assert_eq!(lifecycle_kind, InstallFailureKind::Unexpected);
+
+        // The LEGACY `npm ERR!` spelling of a lifecycle failure carrying EIDLETIMEOUT
+        // must also stay loud: has_npm_lifecycle_failure_marker now recognises the
+        // legacy marker, so an old npm's real build failure is NOT silently absorbed
+        // as a registry timeout. It lands at Error as `Unexpected` (loud) — exactly
+        // its pre-EIDLETIMEOUT-allow-list behaviour, so nothing is silenced.
+        let legacy_lifecycle_with_eidletimeout = "npm ERR! code EIDLETIMEOUT\n\
+            npm ERR! command failed\n\
+            npm ERR! command sh -c prebuild-install || node-gyp rebuild\n\
+            npm ERR! path /usr/local/lib/node_modules/better-sqlite3";
+        let legacy_kind = classify_install_failure(Some(1), legacy_lifecycle_with_eidletimeout, None);
+        assert_ne!(legacy_kind, InstallFailureKind::ExpectedTransientRegistry);
+        assert_eq!(legacy_kind, InstallFailureKind::Unexpected);
+        // And it is still reported (captured at Error), never dropped.
+        assert!(install_failure_report(Some(1), legacy_lifecycle_with_eidletimeout, None).is_some());
     }
 
     #[test]
@@ -8387,6 +8436,9 @@ mod tests {
             "/Users/mike/@indigoai-us",
             // The marker is present but the parent component is wrong.
             "/usr/local/node_modules_backup/@indigoai-us/hq-cli",
+            // A valid scope pair, but it leads to an UNRELATED package, not hq-cli
+            // or its staging dir — never our debris, so no scope.
+            "/usr/local/lib/node_modules/@indigoai-us/some-other-pkg",
         ] {
             assert_eq!(
                 partial_install_scope_from_npm_path(&path_detail(adversarial)),
@@ -8394,6 +8446,25 @@ mod tests {
                 "adversarial: {adversarial}"
             );
         }
+
+        // A NESTED path with two `node_modules/@indigoai-us` pairs resolves to the
+        // INNER one that actually leads to hq-cli — never the unrelated outer scope.
+        assert_eq!(
+            partial_install_scope_from_npm_path(&path_detail(
+                "/work/node_modules/@indigoai-us/toolchain/lib/node_modules/@indigoai-us/hq-cli"
+            ))
+            .as_deref(),
+            Some("/work/node_modules/@indigoai-us/toolchain/lib/node_modules/@indigoai-us")
+        );
+
+        // Genuinely AMBIGUOUS — two pairs each lead to hq-cli — fails closed to None
+        // so an ambiguous path never widens the blast radius.
+        assert_eq!(
+            partial_install_scope_from_npm_path(&path_detail(
+                "/a/node_modules/@indigoai-us/hq-cli/x/node_modules/@indigoai-us/hq-cli"
+            )),
+            None
+        );
 
         // No `npm error path` line at all yields nothing.
         assert_eq!(
@@ -8503,6 +8574,22 @@ mod tests {
             install_failure_episode_key_with_environment(
                 Some(1),
                 "npm error code EIDLETIMEOUT",
+                None,
+                false,
+                latest,
+                &InstallEnvironment::default(),
+            ),
+            None
+        );
+
+        // A fully SHAPELESS unexpected failure (no npm code / syscall / path — the
+        // `none:unknown:none` signature) is deliberately NOT bounded: it mints no
+        // key and keeps paging every check, so a different newly introduced failure
+        // sharing that empty signature is never hidden behind an earlier one.
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                "SyntaxError: Unexpected token export",
                 None,
                 false,
                 latest,
@@ -10177,11 +10264,11 @@ mod tests {
             &managed_env,
         );
         assert_eq!(managed.as_deref(), Some("5.101.7|unsupported-node|6|managed"));
-        // The env-blind shape (no probed Node) is a plain `Unexpected` failure. It
-        // now mints the bounded unexpected repeat-guard key — `none:unknown:none`
-        // for this bare-SyntaxError shape — so a permanent per-machine wedge pages
-        // once per target version instead of on every 6-hourly check, while a
-        // newer `latest` still pages a first occurrence.
+        // The env-blind shape (no probed Node) is a plain `Unexpected` failure whose
+        // signature is fully shapeless (`none:unknown:none`) — npm structured
+        // nothing — so it is deliberately NOT repeat-suppressed and mints no key: it
+        // keeps paging every check, exactly as before this change, so an unrelated
+        // new failure sharing the empty signature is never hidden behind it.
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
@@ -10190,9 +10277,8 @@ mod tests {
                 false,
                 latest,
                 &InstallEnvironment::default(),
-            )
-            .as_deref(),
-            Some("5.101.7|unexpected|none|unknown|none")
+            ),
+            None
         );
     }
 }
