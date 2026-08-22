@@ -132,6 +132,22 @@ const boundaryContracts: BoundaryContract[] = [
     endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
   },
   {
+    // HQ-DESKTOP-4N (r2). The read-only teardown-probe diagnostic command must
+    // stay registered in the invoke handler: the live Windows E2E
+    // (live-preauth.spec.ts) invokes `session_end_teardown_probe_status` against
+    // the real built binary to prove the pull-based probe answers to the OS
+    // shutdown flag rather than to any window message. Dropping the registration
+    // would make that command vanish at runtime and silently retire the live
+    // artifact proof, so the wiring is pinned against deletion, same-file
+    // relocation, and reordering ahead of the session-end observer command.
+    label: "session-end teardown probe command registration",
+    file: "main",
+    hook: "commands::windows_teardown_probe::session_end_teardown_probe_status,",
+    startMarker: ".invoke_handler(tauri::generate_handler![",
+    endMarker: "])",
+    afterMarkers: ["commands::session_end_observer::session_end_observer_status,"],
+  },
+  {
     // HQ-DESKTOP-4N. A watcher capture held back by the session-end grace is
     // resolved deliberately at BOTH exits, and the two arms do opposite
     // things. An app-initiated quit is not a session end, so it must SEND —

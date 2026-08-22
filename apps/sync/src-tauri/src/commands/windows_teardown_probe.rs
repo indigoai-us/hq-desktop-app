@@ -228,6 +228,7 @@ fn query_system_teardown_xml(
     budget: std::time::Duration,
 ) -> Option<Vec<String>> {
     use std::time::Instant;
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_ITEMS};
     use windows_sys::Win32::System::EventLog::{
         EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryReverseDirection,
     };
@@ -265,7 +266,22 @@ fn query_system_teardown_xml(
             let mut event: isize = 0;
             let mut returned: u32 = 0;
             let ok = EvtNext(results, 1, &mut event as *mut isize, 250, 0, &mut returned);
-            if ok == 0 || returned == 0 || event == 0 {
+            if ok == 0 {
+                // Distinguish a clean end-of-results from a genuine read error.
+                // `ERROR_NO_MORE_ITEMS` is an empty-but-successful query; any
+                // other failure (a stalled or throttled channel mid-read, e.g.
+                // while services stop during a teardown) must degrade to `None`
+                // (unavailable) so a teardown record we could not read is never
+                // reported as "verifiably absent". Mirrors the shipped WER reader.
+                let last_error = GetLastError();
+                EvtClose(results);
+                return if last_error == ERROR_NO_MORE_ITEMS {
+                    Some(out)
+                } else {
+                    None
+                };
+            }
+            if returned == 0 || event == 0 {
                 break;
             }
             if let Some(xml) = render_event_xml(event) {
