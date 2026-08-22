@@ -1,4 +1,6 @@
+import { existsSync, openSync, readSync, closeSync, readdirSync, statSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -61,5 +63,142 @@ describe('recall-sdk-bridge bundle resources', () => {
       src.endsWith('sidecar/recall-sdk-bridge/recording-tracker.mjs'),
     );
     expect(bundled).toBe(true);
+  });
+});
+
+/**
+ * Signature-survives-auto-update guard.
+ *
+ * Tauri's `bundle.externalBin` places its entries in `HQ.app/Contents/MacOS/`,
+ * which makes them NESTED CODE OBJECTS. `codesign` can only embed a signature
+ * inside a Mach-O; for anything else (a bash script, a `.mjs`, a `.py`) it
+ * stores the signature in extended attributes instead — `com.apple.cs.
+ * CodeDirectory`, `com.apple.cs.CodeSignature`, `com.apple.cs.CodeRequirements`,
+ * …
+ *
+ * The Tauri auto-updater downloads `HQ_x.y.z_universal.app.tar.gz` and extracts
+ * it with a tar implementation that does NOT preserve extended attributes. So a
+ * script sidecar signs, notarizes, and verifies perfectly on the *published*
+ * artifact, then arrives byte-identical but signature-less on every
+ * auto-updated machine. There, `codesign --verify --deep --strict` fails with
+ * "code object is not signed at all / In subcomponent: …/Contents/MacOS/
+ * recall-desktop-sdk" and `spctl` reports "rejected, no usable signature".
+ * macOS will not persist TCC privacy grants against an invalid bundle, so
+ * Accessibility / Screen Recording never stick, `meetings_permissions_state`
+ * stays `all_required=false`, and meeting detection can never start.
+ *
+ * We shipped exactly that from the sidecar restore in #482. The bridge now runs
+ * as `node Contents/Resources/recall-sdk-bridge/bridge.mjs` — a plain resource
+ * sealed by content hash in `_CodeSignature/CodeResources`, with no xattrs to
+ * lose. Windows is unaffected: its launcher is a real compiled PE.
+ *
+ * This is checkable in CI without signing keys, which is the point.
+ */
+
+/** macOS-applicable Tauri config overlays (base + the macOS overlay). */
+const MACOS_CONFS = ['src-tauri/tauri.conf.json', 'src-tauri/tauri.macos.conf.json'];
+
+/** `externalBin` stems declared by the macOS-applicable configs. */
+function macosExternalBins(): string[] {
+  const out: string[] = [];
+  for (const rel of MACOS_CONFS) {
+    const c = JSON.parse(readFileSync(repoUrl(rel), 'utf8'));
+    out.push(...(c.bundle?.externalBin ?? []));
+  }
+  return out;
+}
+
+/** True when `path` starts with one of the four Mach-O / fat-binary magics. */
+function isMachO(path: string): boolean {
+  const buf = Buffer.alloc(4);
+  const fd = openSync(path, 'r');
+  try {
+    if (readSync(fd, buf, 0, 4, 0) < 4) return false;
+  } finally {
+    closeSync(fd);
+  }
+  const be = buf.readUInt32BE(0);
+  return (
+    be === 0xfeedface || // Mach-O 32
+    be === 0xfeedfacf || // Mach-O 64
+    be === 0xcefaedfe || // Mach-O 32, byte-swapped
+    be === 0xcffaedfe || // Mach-O 64, byte-swapped
+    be === 0xcafebabe || // fat / universal
+    be === 0xbebafeca // fat, byte-swapped
+  );
+}
+
+describe('macOS bundle ships no non-Mach-O nested code object', () => {
+  it('declares no externalBin for macOS', () => {
+    // Every externalBin entry lands in Contents/MacOS. Since the only sidecar
+    // we ever needed there was a script, the safe steady state is zero.
+    expect(
+      macosExternalBins(),
+      'A macOS bundle.externalBin entry lands in HQ.app/Contents/MacOS as a nested ' +
+        'code object. If it is not a Mach-O its signature is stored in extended ' +
+        'attributes, which the auto-updater\'s tar extraction strips — every ' +
+        'auto-updated install then has an INVALID bundle signature and macOS stops ' +
+        'persisting TCC grants (Accessibility / Screen Recording), so meeting ' +
+        'detection can never start. Ship it under Contents/Resources/ and spawn it ' +
+        'explicitly from Rust instead (see recall_sdk::resolve_sdk_command).',
+    ).toEqual([]);
+  });
+
+  it('keeps no macOS sidecar scripts staged in src-tauri/binaries', () => {
+    // The three `recall-desktop-sdk-*-apple-darwin` bash wrappers used to live
+    // here. Anything darwin-triple-named that is not a Mach-O would be picked
+    // up by a re-added externalBin and reintroduce the bug.
+    const dir = repoUrl('src-tauri/binaries');
+    if (!existsSync(dir)) return;
+    const offenders = readdirSync(dir).filter(
+      (name) =>
+        name.includes('apple-darwin') &&
+        statSync(join(dir, name)).isFile() &&
+        !isMachO(join(dir, name)),
+    );
+    expect(
+      offenders,
+      `src-tauri/binaries contains non-Mach-O darwin sidecar file(s): ${offenders.join(', ')}. ` +
+        'These can only carry an xattr-based signature, which the auto-updater strips.',
+    ).toEqual([]);
+  });
+
+  it('resolves the bridge from Resources, never from Contents/MacOS', () => {
+    // The Rust resolver is the other half of the contract: bridge.mjs must be
+    // reached via ../Resources, and nothing may look in Contents/MacOS.
+    const rs = readFileSync(repoUrl('../../crates/hq-desktop-core/src/recall_sdk.rs'), 'utf8');
+    expect(rs).toContain('"..", "Resources"');
+    expect(rs).toContain('BRIDGE_PATH_ENV');
+    // bridge.mjs must still be a bundled resource for that path to exist.
+    expect(
+      resourceSources.some((src) => src.endsWith('sidecar/recall-sdk-bridge/bridge.mjs')),
+    ).toBe(true);
+  });
+
+  it('a built .app has only Mach-O files in Contents/MacOS', () => {
+    // Opportunistic: only runs when a bundle happens to be present locally
+    // (CI lint/test legs do not build one). The authoritative gate for release
+    // builds is the same assertion in scripts/sign-bundle.sh Phase 6.
+    const candidates = [
+      'src-tauri/target/release/bundle/macos/HQ.app',
+      'src-tauri/target/debug/bundle/macos/HQ.app',
+      'src-tauri/target/universal-apple-darwin/release/bundle/macos/HQ.app',
+    ]
+      .map(repoUrl)
+      .filter(existsSync);
+
+    for (const app of candidates) {
+      const macosDir = join(app, 'Contents', 'MacOS');
+      if (!existsSync(macosDir)) continue;
+      const offenders = readdirSync(macosDir).filter(
+        (name) => statSync(join(macosDir, name)).isFile() && !isMachO(join(macosDir, name)),
+      );
+      expect(
+        offenders,
+        `${app}/Contents/MacOS contains non-Mach-O file(s): ${offenders.join(', ')} — ` +
+          'their signatures live in extended attributes and will not survive the ' +
+          'auto-updater\'s tar extraction.',
+      ).toEqual([]);
+    }
   });
 });

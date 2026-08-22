@@ -158,15 +158,48 @@ pub fn is_meeting_detect_allowed_email(email: Option<&str>) -> bool {
     crate::feature_gate::email_present(email)
 }
 
-/// Tauri sidecar target triples for the current OS (arch-tagged bundle names).
+/// Filename of the SDK bridge entrypoint (an ES module run under node).
+pub const BRIDGE_ENTRY: &str = "bridge.mjs";
+
+/// Directory name the bridge is installed into (bundle resources + repo sidecar).
+pub const BRIDGE_DIR: &str = "recall-sdk-bridge";
+
+/// Ad-hoc override for the bridge entrypoint, honoured on every non-Windows
+/// platform. Preserves the dev ergonomics the retired bash wrapper offered.
+pub const BRIDGE_PATH_ENV: &str = "RECALL_BRIDGE_PATH";
+
+/// The flag that puts the bridge into ndjson-on-stdout mode (Recall SDK CLI
+/// convention; mirrors how hq-sync-runner is invoked).
+pub const SDK_JSON_FLAG: &str = "--json";
+
+/// A resolved, ready-to-spawn Recall SDK invocation.
+///
+/// Windows spawns the compiled PE launcher directly. macOS/Linux spawn
+/// `node <…>/recall-sdk-bridge/bridge.mjs` — see [`resolve_sdk_command`] for
+/// why the macOS bundle deliberately has no `Contents/MacOS` sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SdkCommand {
+    /// Program to exec.
+    pub program: String,
+    /// Full argv tail, `--json` included.
+    pub args: Vec<String>,
+}
+
+// ── Windows: the compiled externalBin launcher ───────────────────────────────
+//
+// Windows ships a real PE32+ Node SEA (see sidecar/recall-sdk-bridge/build.mjs)
+// as `bundle.externalBin`, so it is spawned by path exactly as before. Its
+// signature is embedded in the PE itself and is unaffected by the macOS
+// xattr/tar problem that motivated the macOS change below.
+
+/// Tauri sidecar target triples for the Windows bundle (arch-tagged names).
 /// Windows binaries also carry an `.exe` suffix (`std::env::consts::EXE_SUFFIX`).
 #[cfg(target_os = "windows")]
 const SDK_ARCH_TRIPLES: &[&str] = &["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"];
-#[cfg(not(target_os = "windows"))]
-const SDK_ARCH_TRIPLES: &[&str] = &["aarch64-apple-darwin", "x86_64-apple-darwin"];
 
+#[cfg(target_os = "windows")]
 fn sdk_binary_candidate_names() -> Vec<String> {
-    let exe_suffix = std::env::consts::EXE_SUFFIX; // "" on unix, ".exe" on windows
+    let exe_suffix = std::env::consts::EXE_SUFFIX; // ".exe" on windows
     std::iter::once(format!("{SDK_BIN}{exe_suffix}"))
         .chain(
             SDK_ARCH_TRIPLES
@@ -176,7 +209,8 @@ fn sdk_binary_candidate_names() -> Vec<String> {
         .collect()
 }
 
-/// Try to find the Recall Desktop SDK binary.
+/// Try to find the Recall Desktop SDK launcher binary (Windows only).
+#[cfg(target_os = "windows")]
 pub fn find_sdk_binary() -> Option<String> {
     // 1. Check next to the running executable (release bundle).
     if let Ok(exe) = std::env::current_exe() {
@@ -199,6 +233,146 @@ pub fn find_sdk_binary() -> Option<String> {
     None
 }
 
+/// Resolve the Recall SDK invocation for this platform.
+#[cfg(target_os = "windows")]
+pub fn resolve_sdk_command() -> Result<SdkCommand, String> {
+    let program = find_sdk_binary()
+        .ok_or_else(|| format!("binary {SDK_BIN} not found next to the app or on PATH"))?;
+    Ok(SdkCommand {
+        program,
+        args: vec![SDK_JSON_FLAG.to_string()],
+    })
+}
+
+// ── macOS / Linux: node + a plain-resource bridge.mjs ────────────────────────
+//
+// The macOS bundle used to ship a *bash script* as `bundle.externalBin`, which
+// Tauri places at `HQ.app/Contents/MacOS/recall-desktop-sdk` — i.e. as a NESTED
+// CODE OBJECT. Because a script is not a Mach-O, `codesign` has nowhere inside
+// the file to embed the signature, so it stores it in extended attributes
+// (`com.apple.cs.CodeDirectory`, `com.apple.cs.CodeSignature`, …).
+//
+// The Tauri auto-updater downloads `HQ_x.y.z_universal.app.tar.gz` and extracts
+// it with a tar implementation that does NOT preserve extended attributes. The
+// launcher therefore arrived byte-identical but signature-less on every
+// auto-updated install: `codesign --verify --deep --strict` failed with "code
+// object is not signed at all / In subcomponent: …/Contents/MacOS/
+// recall-desktop-sdk" and `spctl` reported "rejected, no usable signature".
+// macOS will not persist TCC privacy grants against an invalid bundle, so
+// Accessibility/Screen Recording never stuck and meeting detection could never
+// start. (The GStreamer dylibs were unaffected — Mach-O signatures are embedded
+// in the file and survive the round trip.)
+//
+// The fix removes the nested code object entirely: `bridge.mjs` ships as a
+// plain file under `Contents/Resources/`, which is sealed by content hash in
+// `_CodeSignature/CodeResources` rather than by its own per-file signature, and
+// Rust spawns `node <bridge.mjs>` directly. Plain resources carry no xattrs to
+// lose, so the bundle signature survives an xattr-stripping extraction.
+
+/// Candidate `bridge.mjs` locations relative to the running executable's
+/// directory, most specific first.
+///
+/// * `../Resources/recall-sdk-bridge/bridge.mjs` — the shipped `.app`
+///   (`Contents/MacOS/hq-sync-menubar` → `Contents/Resources/…`).
+/// * `recall-sdk-bridge/bridge.mjs` — flat layouts that drop resources next to
+///   the executable (Linux/portable builds).
+/// * `../../../sidecar/…` — `cargo run` / `tauri dev`
+///   (`apps/sync/src-tauri/target/{debug,release}/`).
+/// * `../../../../sidecar/…` — cross-compiled target dirs
+///   (`apps/sync/src-tauri/target/universal-apple-darwin/release/`).
+#[cfg(not(target_os = "windows"))]
+const BRIDGE_RELATIVE_CANDIDATES: &[&[&str]] = &[
+    &["..", "Resources"],
+    &["."],
+    &["..", "..", "..", "sidecar"],
+    &["..", "..", "..", "..", "sidecar"],
+];
+
+/// Pure resolution of the bridge entrypoint: `override_path` wins outright when
+/// it points at an existing file, otherwise the layout candidates relative to
+/// `exe_dir` are probed in order.
+///
+/// Split out from [`resolve_sdk_command`] so bundle / dev / override / missing
+/// layouts are unit-testable without a real `.app`.
+#[cfg(not(target_os = "windows"))]
+pub fn resolve_bridge_entry_in(
+    exe_dir: &std::path::Path,
+    override_path: Option<&str>,
+) -> Result<std::path::PathBuf, Vec<std::path::PathBuf>> {
+    // Candidates are built with `..` segments (e.g. Contents/MacOS/../Resources).
+    // Canonicalize the winner so the spawned argv and the log line read cleanly;
+    // fall back to the raw path if canonicalization fails.
+    fn normalize(p: std::path::PathBuf) -> std::path::PathBuf {
+        std::fs::canonicalize(&p).unwrap_or(p)
+    }
+
+    let mut checked = Vec::new();
+
+    if let Some(raw) = override_path.map(str::trim).filter(|s| !s.is_empty()) {
+        let candidate = std::path::PathBuf::from(raw);
+        if candidate.is_file() {
+            return Ok(normalize(candidate));
+        }
+        checked.push(candidate);
+    }
+
+    for rel in BRIDGE_RELATIVE_CANDIDATES {
+        let mut candidate = exe_dir.to_path_buf();
+        for part in *rel {
+            if *part != "." {
+                candidate.push(part);
+            }
+        }
+        candidate.push(BRIDGE_DIR);
+        candidate.push(BRIDGE_ENTRY);
+        if candidate.is_file() {
+            return Ok(normalize(candidate));
+        }
+        checked.push(candidate);
+    }
+
+    Err(checked)
+}
+
+/// Build the `node <bridge.mjs> --json` invocation for a given executable
+/// directory and override. Pure — [`resolve_sdk_command`] is the thin
+/// env/`current_exe` wrapper around it.
+#[cfg(not(target_os = "windows"))]
+pub fn sdk_command_in(
+    exe_dir: &std::path::Path,
+    override_path: Option<&str>,
+) -> Result<SdkCommand, String> {
+    let bridge = resolve_bridge_entry_in(exe_dir, override_path).map_err(|checked| {
+        let list = checked
+            .iter()
+            .map(|p| format!("\n  {}", p.display()))
+            .collect::<String>();
+        format!("{BRIDGE_ENTRY} not found (set {BRIDGE_PATH_ENV} to override); checked:{list}")
+    })?;
+
+    // node is resolved the same way every other HQ child process resolves it
+    // (`paths::resolve_bin`, matching the PATH `build_sdk_spawn_env` hands the
+    // child) — this is exactly what the retired bash wrapper's `exec node` did.
+    Ok(SdkCommand {
+        program: crate::paths::resolve_bin("node"),
+        args: vec![
+            bridge.to_string_lossy().into_owned(),
+            SDK_JSON_FLAG.to_string(),
+        ],
+    })
+}
+
+/// Resolve the Recall SDK invocation for this platform.
+#[cfg(not(target_os = "windows"))]
+pub fn resolve_sdk_command() -> Result<SdkCommand, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe() failed: {e}"))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| format!("executable has no parent directory: {}", exe.display()))?;
+    let override_path = std::env::var(BRIDGE_PATH_ENV).ok();
+    sdk_command_in(exe_dir, override_path.as_deref())
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
     use super::sdk_binary_candidate_names;
@@ -213,6 +387,183 @@ mod windows_tests {
                 "recall-desktop-sdk-aarch64-pc-windows-msvc.exe",
             ]
         );
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod bridge_resolution_tests {
+    use super::{resolve_bridge_entry_in, sdk_command_in, BRIDGE_DIR, BRIDGE_ENTRY, SDK_JSON_FLAG};
+    use std::fs;
+    use std::path::Path;
+
+    /// Create `<root>/<rel…>/recall-sdk-bridge/bridge.mjs` and return its path.
+    fn plant_bridge(root: &Path, rel: &[&str]) -> std::path::PathBuf {
+        let mut dir = root.to_path_buf();
+        for part in rel {
+            dir.push(part);
+        }
+        dir.push(BRIDGE_DIR);
+        fs::create_dir_all(&dir).expect("create bridge dir");
+        let entry = dir.join(BRIDGE_ENTRY);
+        fs::write(&entry, "// test bridge\n").expect("write bridge");
+        entry
+    }
+
+    #[test]
+    fn resolve_bridge_entry_finds_the_macos_bundle_resources_layout() {
+        // The shipped layout: HQ.app/Contents/MacOS/hq-sync-menubar resolves
+        // ../Resources/recall-sdk-bridge/bridge.mjs. This is the plain-resource
+        // path that survives the updater's xattr-stripping tar extraction.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let contents = tmp.path().join("HQ.app").join("Contents");
+        let macos_dir = contents.join("MacOS");
+        fs::create_dir_all(&macos_dir).expect("create MacOS dir");
+        let expected = plant_bridge(&contents, &["Resources"]);
+
+        let resolved = resolve_bridge_entry_in(&macos_dir, None).expect("bundle bridge resolves");
+        assert_eq!(
+            fs::canonicalize(&resolved).unwrap(),
+            fs::canonicalize(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_bridge_entry_finds_the_cargo_dev_layout() {
+        // `cargo run` / `tauri dev`: apps/sync/src-tauri/target/debug/<exe>
+        // resolves ../../../sidecar/recall-sdk-bridge/bridge.mjs.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_root = tmp.path().join("apps").join("sync");
+        let exe_dir = app_root.join("src-tauri").join("target").join("debug");
+        fs::create_dir_all(&exe_dir).expect("create target dir");
+        let expected = plant_bridge(&app_root, &["sidecar"]);
+
+        let resolved = resolve_bridge_entry_in(&exe_dir, None).expect("dev bridge resolves");
+        assert_eq!(
+            fs::canonicalize(&resolved).unwrap(),
+            fs::canonicalize(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_bridge_entry_finds_the_cross_compiled_target_layout() {
+        // Release builds land in target/universal-apple-darwin/release/, one
+        // directory deeper than the plain dev layout.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_root = tmp.path().join("apps").join("sync");
+        let exe_dir = app_root
+            .join("src-tauri")
+            .join("target")
+            .join("universal-apple-darwin")
+            .join("release");
+        fs::create_dir_all(&exe_dir).expect("create target dir");
+        let expected = plant_bridge(&app_root, &["sidecar"]);
+
+        let resolved =
+            resolve_bridge_entry_in(&exe_dir, None).expect("cross-compiled bridge resolves");
+        assert_eq!(
+            fs::canonicalize(&resolved).unwrap(),
+            fs::canonicalize(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_bridge_entry_prefers_the_env_override() {
+        // RECALL_BRIDGE_PATH kept the dev ergonomics the bash wrapper had. It
+        // must WIN over a co-located bundle bridge, otherwise it is useless for
+        // the "point the shipped app at my checkout" case it exists for.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let contents = tmp.path().join("HQ.app").join("Contents");
+        let macos_dir = contents.join("MacOS");
+        fs::create_dir_all(&macos_dir).expect("create MacOS dir");
+        plant_bridge(&contents, &["Resources"]);
+        let override_entry = plant_bridge(tmp.path(), &["elsewhere"]);
+
+        let resolved =
+            resolve_bridge_entry_in(&macos_dir, Some(override_entry.to_str().unwrap()))
+                .expect("override resolves");
+        assert_eq!(
+            fs::canonicalize(&resolved).unwrap(),
+            fs::canonicalize(&override_entry).unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_bridge_entry_ignores_a_blank_or_dangling_override() {
+        // A blank or stale RECALL_BRIDGE_PATH must fall through to the bundle
+        // rather than hard-failing the spawn.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let contents = tmp.path().join("HQ.app").join("Contents");
+        let macos_dir = contents.join("MacOS");
+        fs::create_dir_all(&macos_dir).expect("create MacOS dir");
+        let expected = plant_bridge(&contents, &["Resources"]);
+
+        for override_path in ["", "   ", "/nonexistent/hq/bridge.mjs"] {
+            let resolved = resolve_bridge_entry_in(&macos_dir, Some(override_path))
+                .unwrap_or_else(|_| panic!("bundle fallback for override {override_path:?}"));
+            assert_eq!(
+                fs::canonicalize(&resolved).unwrap(),
+                fs::canonicalize(&expected).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_bridge_entry_reports_every_checked_path_when_missing() {
+        // The RECALL_SDK_UNAVAILABLE path: no bridge anywhere. Must return the
+        // probed list (for the log line) rather than panic.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let exe_dir = tmp.path().join("empty");
+        fs::create_dir_all(&exe_dir).expect("create dir");
+
+        let checked = resolve_bridge_entry_in(&exe_dir, Some("/nonexistent/bridge.mjs"))
+            .expect_err("must not resolve");
+        assert_eq!(checked.len(), 5, "1 override + 4 layout candidates");
+        assert!(checked
+            .iter()
+            .all(|p| p.ends_with(format!("{BRIDGE_DIR}/{BRIDGE_ENTRY}"))
+                || p == Path::new("/nonexistent/bridge.mjs")));
+    }
+
+    #[test]
+    fn sdk_command_runs_the_bundle_bridge_under_node_with_json() {
+        // End-to-end shape of the spawn: node <Resources>/…/bridge.mjs --json.
+        // Nothing inside Contents/MacOS is referenced any more — that is the
+        // whole point of the fix.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let contents = tmp.path().join("HQ.app").join("Contents");
+        let macos_dir = contents.join("MacOS");
+        fs::create_dir_all(&macos_dir).expect("create MacOS dir");
+        let expected = plant_bridge(&contents, &["Resources"]);
+
+        let cmd = sdk_command_in(&macos_dir, None).expect("bundle command resolves");
+        assert!(
+            cmd.program == "node" || cmd.program.ends_with("/node"),
+            "bridge must be spawned under node, got {}",
+            cmd.program
+        );
+        assert_eq!(cmd.args.len(), 2);
+        assert_eq!(
+            fs::canonicalize(&cmd.args[0]).unwrap(),
+            fs::canonicalize(&expected).unwrap()
+        );
+        assert_eq!(cmd.args[1], SDK_JSON_FLAG);
+        assert!(
+            !cmd.args[0].contains("/MacOS/"),
+            "the bridge must live under Contents/Resources, not Contents/MacOS: {}",
+            cmd.args[0]
+        );
+    }
+
+    #[test]
+    fn sdk_command_errors_with_the_checked_paths_when_the_bridge_is_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let exe_dir = tmp.path().join("empty");
+        fs::create_dir_all(&exe_dir).expect("create dir");
+
+        let err = sdk_command_in(&exe_dir, None).expect_err("must not resolve");
+        assert!(err.contains(BRIDGE_ENTRY), "{err}");
+        assert!(err.contains(super::BRIDGE_PATH_ENV), "{err}");
+        assert!(err.contains(BRIDGE_DIR), "{err}");
     }
 }
 
@@ -405,30 +756,31 @@ mod tests {
     }
 
     #[test]
-    fn find_sdk_binary_returns_none_when_not_installed() {
+    fn resolve_sdk_command_never_panics_when_the_sdk_is_absent() {
         // In CI / dev environments without the Recall Desktop SDK installed,
-        // find_sdk_binary() must return None (not panic). This is the
+        // resolution must return Err (not panic). This is the
         // RECALL_SDK_UNAVAILABLE path exercised by the E2E test "binary missing".
         //
-        // We can't assert None always (a dev may have installed the SDK), but we
-        // can assert the function doesn't panic.
-        let _ = find_sdk_binary(); // must not panic
+        // We can't assert Err always (a dev may have the sidecar in place), but
+        // we can assert the function doesn't panic.
+        let _ = resolve_sdk_command(); // must not panic
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn sdk_arch_triples_and_suffix_match_platform() {
         // Regression: the Windows bundle's sidecar is arch-tagged with the
         // windows-msvc triples and carries a .exe suffix. A macOS-only triple
         // list (the fork's bug) means find_sdk_binary never resolves it.
-        if cfg!(target_os = "windows") {
-            assert!(SDK_ARCH_TRIPLES
-                .iter()
-                .all(|t| t.contains("pc-windows-msvc")));
-            assert_eq!(std::env::consts::EXE_SUFFIX, ".exe");
-        } else {
-            assert!(SDK_ARCH_TRIPLES.iter().all(|t| t.contains("apple-darwin")));
-            assert_eq!(std::env::consts::EXE_SUFFIX, "");
-        }
+        //
+        // Windows-only since the macOS bash-wrapper externalBin was removed:
+        // a script in Contents/MacOS can only carry its signature in extended
+        // attributes, which the updater's tar extraction strips (see the module
+        // comment above `BRIDGE_RELATIVE_CANDIDATES`).
+        assert!(SDK_ARCH_TRIPLES
+            .iter()
+            .all(|t| t.contains("pc-windows-msvc")));
+        assert_eq!(std::env::consts::EXE_SUFFIX, ".exe");
     }
 
     #[test]

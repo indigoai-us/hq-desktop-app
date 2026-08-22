@@ -6,15 +6,25 @@
 //!
 //! ## Binary discovery
 //!
-//! The SDK binary (`recall-desktop-sdk`) is resolved in order:
-//!   1. Next to the running executable — the Tauri `bundle.externalBin`
-//!      placement for release builds. The binary is named
-//!      `recall-desktop-sdk` (or `recall-desktop-sdk-aarch64-apple-darwin`
-//!      in the Tauri arch-tagged form).
-//!   2. `recall-desktop-sdk` on PATH — used during local dev or when the SDK
-//!      is installed globally (e.g. `npm install -g @recall-ai/desktop-sdk`).
+//! Platform-split, via `hq_desktop_core::recall_sdk::resolve_sdk_command`:
 //!
-//! If the binary cannot be found, `start_recall_sdk` logs
+//! * **Windows** spawns the arch-tagged `bundle.externalBin` launcher
+//!   (`recall-desktop-sdk-<triple>.exe`) — a real compiled PE32+ Node SEA —
+//!   found next to the running executable or on PATH.
+//! * **macOS / Linux** spawn `node <Resources>/recall-sdk-bridge/bridge.mjs`
+//!   directly. There is deliberately **no** macOS `externalBin`: Tauri places
+//!   `externalBin` entries in `HQ.app/Contents/MacOS/`, where they become
+//!   nested code objects. The old entry was a bash script, and because a script
+//!   is not a Mach-O `codesign` can only store its signature in extended
+//!   attributes — which the auto-updater's tar extraction of
+//!   `HQ_x.y.z_universal.app.tar.gz` strips. Every auto-updated install
+//!   therefore had an invalid bundle signature, so macOS refused to persist TCC
+//!   grants and meeting detection could never start. `bridge.mjs` under
+//!   `Contents/Resources/` is sealed by content hash in
+//!   `_CodeSignature/CodeResources` instead, and survives the round trip.
+//!   `RECALL_BRIDGE_PATH` overrides the entrypoint for dev/ad-hoc runs.
+//!
+//! If the bridge/launcher cannot be found, `start_recall_sdk` logs
 //! `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the app continues
 //! normally. The rest of the MeetingsWindow is unaffected.
 //!
@@ -77,7 +87,7 @@ use crate::util::recordings_ledger::{self, ReconcileOutcome, RecordingStatus};
 pub use hq_desktop_core::recall_sdk::{
     active_detections_cell, active_detections_snapshot, active_recordings_from_ledger,
     bridge_stdin_cell, build_sdk_spawn_env, detection_key, detection_url_and_event,
-    find_sdk_binary, is_meeting_detect_allowed_email, mark_recorded_for_window, parse_sdk_line,
+    is_meeting_detect_allowed_email, mark_recorded_for_window, parse_sdk_line, resolve_sdk_command,
     pick_recording_handle, record_active_detection, remove_active_detection,
     synthesize_bridge_exit_errors, write_bridge_command, ActiveRecording, BotStatusResponse,
     RecallSdkEvent, SdkUploadTokenResponse, BRIDGE_EXIT_CMD, BRIDGE_EXIT_ERROR_MESSAGE,
@@ -275,16 +285,25 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    // ── 2. Find the SDK binary ───────────────────────────────────────────────
-    let bin_path = match find_sdk_binary() {
-        Some(p) => {
-            log(LOG_TAG, &format!("start_recall_sdk: binary found at {p}"));
-            p
-        }
-        None => {
+    // ── 2. Resolve the SDK invocation ────────────────────────────────────────
+    // Windows: the compiled externalBin PE launcher. macOS/Linux:
+    // `node <Resources>/recall-sdk-bridge/bridge.mjs` (see "Binary discovery").
+    let sdk_command = match resolve_sdk_command() {
+        Ok(cmd) => {
             log(
                 LOG_TAG,
-                "RECALL_SDK_UNAVAILABLE: binary recall-desktop-sdk not found",
+                &format!(
+                    "start_recall_sdk: resolved {} {}",
+                    cmd.program,
+                    cmd.args.join(" ")
+                ),
+            );
+            cmd
+        }
+        Err(reason) => {
+            log(
+                LOG_TAG,
+                &format!("RECALL_SDK_UNAVAILABLE: {SDK_BIN} could not be resolved: {reason}"),
             );
             // Deregister so a future attempt (e.g. user installs the SDK and
             // restarts the app) is not blocked by the stale handle.
@@ -299,11 +318,12 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     // the region apiUrl, and recording is authorized per-recording by the
     // upload token (`fetch_sdk_upload_token`). `build_sdk_spawn_env` is the
     // single, regression-tested place the spawn env is assembled.
+    // `resolve_sdk_command` already appended `--json`, which tells the SDK to
+    // emit ndjson on stdout (Recall SDK CLI convention; the flag name mirrors
+    // how hq-sync-runner works).
     let spawn_args = SpawnArgs {
-        cmd: bin_path,
-        // `--json` tells the SDK to emit ndjson on stdout (Recall SDK CLI
-        // convention; the flag name mirrors how hq-sync-runner works).
-        args: vec!["--json".to_string()],
+        cmd: sdk_command.program,
+        args: sdk_command.args,
         cwd: None,
         env: Some(build_sdk_spawn_env()),
     };

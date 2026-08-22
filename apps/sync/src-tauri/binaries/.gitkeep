@@ -1,0 +1,28 @@
+Tauri `bundle.externalBin` staging directory — WINDOWS ONLY.
+
+The Recall SDK sidecar launcher `recall-desktop-sdk-<target-triple>.exe` is
+built into this directory by `sidecar/recall-sdk-bridge/build.mjs` (a Node
+Single Executable Application — a real compiled PE32+) and referenced by
+`tauri.windows.release.conf.json`'s `bundle.externalBin`. It is a build
+artifact and is not committed.
+
+macOS deliberately ships NO externalBin. Tauri places externalBin entries in
+`HQ.app/Contents/MacOS/`, which makes them nested code objects. This directory
+used to hold three *bash script* wrappers (`recall-desktop-sdk-*-apple-darwin`)
+for exactly that purpose. Because a script is not a Mach-O, `codesign` cannot
+embed its signature and stores it in extended attributes instead
+(`com.apple.cs.CodeDirectory`, `com.apple.cs.CodeSignature`, …). The Tauri
+auto-updater extracts `HQ_x.y.z_universal.app.tar.gz` with a tar that does not
+preserve xattrs, so every auto-updated install lost those signatures and failed
+`codesign --verify --deep --strict` ("code object is not signed at all"). macOS
+will not persist TCC privacy grants against an invalid bundle, so Accessibility
+and Screen Recording never stuck and meeting detection could never start.
+
+macOS/Linux now spawn `node <Resources>/recall-sdk-bridge/bridge.mjs` directly
+(`hq_desktop_core::recall_sdk::resolve_sdk_command`). Plain files under
+`Contents/Resources/` are sealed by content hash in
+`_CodeSignature/CodeResources`, carry no xattrs to lose, and survive the
+updater's extraction intact.
+
+DO NOT add a non-Mach-O executable here for a macOS target. The
+`recall-sidecar-bundle` e2e spec fails the build if you do.
