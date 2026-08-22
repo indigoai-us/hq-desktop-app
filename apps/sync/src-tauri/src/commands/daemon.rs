@@ -42,17 +42,18 @@ use hq_desktop_core::watcher_fault::{
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
-    normalized_abort_description, runner_phase_elapsed_bucket, runner_phase_from_event,
-    runner_stack_shape, runner_stack_shape_for_exit, session_end_grace_waited_bucket,
-    should_capture_watcher_exit,
+    normalized_abort_description, resolved_deferred_attribution, runner_phase_elapsed_bucket,
+    runner_phase_from_event, runner_stack_shape, runner_stack_shape_for_exit,
+    session_end_grace_waited_bucket, should_capture_watcher_exit,
     spawn_failure_capture_policy, spawn_failure_fingerprint_token, termination_fingerprint_token,
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
-    windows_exit_status_hex, windows_fault_symbol, DeferredSessionEndOutcome,
+    windows_exit_status_hex, windows_fault_symbol, DeferredSessionEndOutcome, TeardownVerdict,
     SpawnFailureCapturePolicy, SyncCancelCause, TerminationHost, WatcherExitCapturePolicy,
     WindowsTermination, WindowsTerminatorAttribution, SESSION_END_GRACE_MS,
     WINDOWS_SESSION_TERMINATE_EXIT,
 };
+use crate::commands::windows_teardown_probe::{self, TeardownReading};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::CloseHandle;
@@ -1706,6 +1707,11 @@ fn current_windows_terminator_attribution<R: tauri::Runtime>(
     // is the one function that both owns an `AppHandle` and runs before any
     // deferral can exist, so the probe can never be missing when one is.
     install_session_end_attribution_probe(app);
+    // Install the pull-based teardown probe from the same site, so a deferral
+    // created downstream can also ask the OS directly (SM_SHUTTINGDOWN + a
+    // bounded System-channel read) once its grace has elapsed. It can never be
+    // missing when a deferral exists, exactly like the attribution probe above.
+    install_teardown_probe();
     Some(read_session_end_attribution(app).attribution)
 }
 
@@ -1744,6 +1750,37 @@ fn current_session_end_reading() -> Option<SessionEndReading> {
     SESSION_END_ATTRIBUTION_PROBE
         .get()
         .and_then(|probe| probe())
+}
+
+/// Re-read the pull-based teardown probe after a grace, from wherever the
+/// deferral resolves. Mirrors [`SESSION_END_ATTRIBUTION_PROBE`] exactly: a
+/// process-global seam keeps the handle-free resolver out of the pure decision
+/// path while still asking the real OS, and lets a test inject a verdict.
+type TeardownProbe = Box<dyn Fn() -> TeardownReading + Send + Sync>;
+
+static TEARDOWN_PROBE: OnceLock<TeardownProbe> = OnceLock::new();
+
+/// Install the teardown probe. Idempotent; installed from the same
+/// `current_windows_terminator_attribution` site as the attribution probe so it
+/// can never be missing when a deferral exists. The probe itself is handle-free
+/// (it reads `SM_SHUTTINGDOWN` and the cached System-channel sweep), so no
+/// `AppHandle` is captured.
+#[cfg(target_os = "windows")]
+fn install_teardown_probe() {
+    if TEARDOWN_PROBE.get().is_some() {
+        return;
+    }
+    let _ = TEARDOWN_PROBE.set(Box::new(windows_teardown_probe::read_teardown_reading));
+}
+
+/// The teardown reading a deferral resolves against. When the probe was never
+/// installed (non-Windows, or no session-terminate exit ever occurred) this is
+/// `Unavailable` → `Unknown`, which fails closed to a capture.
+fn current_teardown_reading() -> TeardownReading {
+    TEARDOWN_PROBE
+        .get()
+        .map(|probe| probe())
+        .unwrap_or_else(TeardownReading::unavailable)
 }
 
 /// A watcher-exit capture held back while the session-end decision is re-read.
@@ -1833,10 +1870,18 @@ pub fn flush_pending_session_end_captures() -> usize {
             .elapsed()
             .as_millis()
             .min(u128::from(u64::MAX)) as u64;
-        // The observer is deliberately NOT consulted here. An app-initiated
-        // quit is not a session end, so there is nothing it could affirm, and
-        // reading it during teardown would only race its own shutdown.
-        send_deferred_session_end_capture(payload, None, waited_ms, "not_read", "app_quit_flush");
+        // Neither the observer nor the teardown probe is consulted here. An
+        // app-initiated quit is not a session end, so there is nothing to
+        // affirm, and reading either during teardown would only race its own
+        // shutdown. The probe extras are stamped `not_read`.
+        send_deferred_session_end_capture(
+            payload,
+            None,
+            None,
+            waited_ms,
+            "not_read",
+            "app_quit_flush",
+        );
     });
     if flushed > 0 {
         log(
@@ -1893,6 +1938,12 @@ pub fn drop_pending_session_end_captures() -> usize {
 /// the exit callback.
 fn spawn_deferred_session_end_capture(payload: DeferredSessionEndCapture) {
     let id = register_pending_session_end_capture(payload);
+    // Kick the bounded System-channel teardown sweep off the exit path so it
+    // runs concurrently INSIDE the grace below and its verdict is cached by the
+    // time the deferral resolves. The free SM_SHUTTINGDOWN flag is read at
+    // resolution; nothing here runs on the watcher exit callback. A no-op on
+    // non-Windows.
+    windows_teardown_probe::kick_teardown_log_sweep();
     tauri::async_runtime::spawn(async move {
         // A fixed compile-time grace, not a poll loop and not an unbounded
         // wait: it elapses once and the decision is made.
@@ -1916,30 +1967,46 @@ fn resolve_deferred_session_end_capture(id: u64) {
         .as_millis()
         .min(u128::from(u64::MAX)) as u64;
     let reading = current_session_end_reading();
+    // Ask the OS directly (SM_SHUTTINGDOWN + the cached System-channel sweep).
+    // When the observer never affirmed, this is the only evidence that can still
+    // suppress a forced teardown Windows chose not to announce.
+    let teardown = current_teardown_reading();
     let outcome = reading
-        .map(|reading| deferred_session_end_outcome(reading.attribution))
+        .map(|reading| deferred_session_end_outcome(reading.attribution, teardown.verdict))
         // Fail closed: an observer that cannot be consulted never suppresses.
         .unwrap_or(DeferredSessionEndOutcome::Capture);
     let readiness = reading
         .map(|reading| reading.readiness)
         .unwrap_or("unknown");
+    // The authoritative post-grace attribution, upgraded by the probe verdict:
+    // `session_end_probed` when the OS confirmed the teardown, or
+    // `unattributed_no_teardown` when it was verifiably not tearing down.
+    let final_attribution = reading
+        .map(|reading| resolved_deferred_attribution(reading.attribution, teardown.verdict));
 
     match outcome {
         DeferredSessionEndOutcome::Drop => {
             let waited = session_end_grace_waited_bucket(waited_ms);
+            // Name which positive evidence dropped it: the observer's own
+            // affirmation, or the pull-based probe confirming the teardown.
+            let terminator = final_attribution
+                .map(|attribution| attribution.class_name())
+                .unwrap_or("session_end_observed");
             log(
                 "daemon",
                 &format!(
-                    "session-end-observed watcher exit — capture skipped after the grace \
-                     (observer_readiness={readiness} grace_waited={waited})"
+                    "session-end watcher exit — capture skipped after the grace \
+                     (windows_terminator={terminator} observer_readiness={readiness} \
+                     teardown_probe={verdict} grace_waited={waited})",
+                    verdict = teardown.verdict.class_name()
                 ),
             );
             sentry::add_breadcrumb(sentry::Breadcrumb {
                 category: Some("daemon.exit".into()),
                 level: sentry::Level::Info,
                 message: Some(format!(
-                    "session-end-observed auto-sync watcher exit: \
-                     windows_terminator=session_end_observed grace_waited={waited}"
+                    "session-end auto-sync watcher exit: \
+                     windows_terminator={terminator} grace_waited={waited}"
                 )),
                 ..Default::default()
             });
@@ -1947,7 +2014,8 @@ fn resolve_deferred_session_end_capture(id: u64) {
         DeferredSessionEndOutcome::Capture => {
             send_deferred_session_end_capture(
                 payload,
-                reading.map(|reading| reading.attribution),
+                final_attribution,
+                Some(teardown),
                 waited_ms,
                 readiness,
                 "grace_elapsed",
@@ -1966,6 +2034,7 @@ fn resolve_deferred_session_end_capture(id: u64) {
 fn finalize_deferred_session_end_payload(
     mut payload: DeferredSessionEndCapture,
     final_attribution: Option<WindowsTerminatorAttribution>,
+    teardown: Option<TeardownReading>,
     waited_ms: u64,
     readiness: &str,
     resolution: &str,
@@ -1993,6 +2062,22 @@ fn finalize_deferred_session_end_payload(
         }
     }
 
+    // The pull-based teardown probe, always present so absence never renders as
+    // evidence: `not_read` is the app-quit-flush case that deliberately never
+    // consults the OS, distinct from a probe that ran and returned `unavailable`.
+    let (verdict, shuttingdown, log) = match teardown {
+        Some(teardown) => (
+            teardown.verdict.class_name().to_string(),
+            teardown.shutting_down.class_name().to_string(),
+            teardown.log.class_name().to_string(),
+        ),
+        None => (
+            "not_read".to_string(),
+            "not_read".to_string(),
+            "not_read".to_string(),
+        ),
+    };
+
     for (key, value) in [
         ("session_end_decision", resolution.to_string()),
         ("session_end_attribution_at_exit", at_exit),
@@ -2001,6 +2086,9 @@ fn finalize_deferred_session_end_payload(
             session_end_grace_waited_bucket(waited_ms).to_string(),
         ),
         ("session_end_observer_readiness", readiness.to_string()),
+        ("windows_teardown_probe_verdict", verdict),
+        ("windows_teardown_probe_shuttingdown", shuttingdown),
+        ("windows_teardown_probe_log", log),
     ] {
         payload
             .extras
@@ -2012,6 +2100,7 @@ fn finalize_deferred_session_end_payload(
 fn send_deferred_session_end_capture(
     payload: DeferredSessionEndCapture,
     final_attribution: Option<WindowsTerminatorAttribution>,
+    teardown: Option<TeardownReading>,
     waited_ms: u64,
     readiness: &str,
     resolution: &str,
@@ -2019,6 +2108,7 @@ fn send_deferred_session_end_capture(
     let payload = finalize_deferred_session_end_payload(
         payload,
         final_attribution,
+        teardown,
         waited_ms,
         readiness,
         resolution,
@@ -7216,6 +7306,8 @@ mod tests {
             &[],
         );
 
+        // With no affirmation AND no positive teardown probe, every reading
+        // still captures — the probe never manufactures a suppression.
         for attribution in [
             WindowsTerminatorAttribution::UnattributedNoSignal,
             WindowsTerminatorAttribution::UnattributedQueryOnly,
@@ -7223,22 +7315,38 @@ mod tests {
             WindowsTerminatorAttribution::ObserverFailed,
             WindowsTerminatorAttribution::ObserverUnavailable,
         ] {
-            assert_eq!(
-                deferred_session_end_outcome(attribution),
-                DeferredSessionEndOutcome::Capture,
-                "{attribution:?} must still reach Sentry after the grace"
-            );
+            for verdict in [TeardownVerdict::Unknown, TeardownVerdict::Absent] {
+                assert_eq!(
+                    deferred_session_end_outcome(attribution, verdict),
+                    DeferredSessionEndOutcome::Capture,
+                    "{attribution:?}/{verdict:?} must still reach Sentry after the grace"
+                );
+            }
         }
-        // Only an affirmation drops it.
+        // Only positive evidence drops it: the observer affirming, or the probe
+        // confirming a teardown for an otherwise-unattributed reading.
         assert_eq!(
-            deferred_session_end_outcome(WindowsTerminatorAttribution::SessionEndObserved),
+            deferred_session_end_outcome(
+                WindowsTerminatorAttribution::SessionEndObserved,
+                TeardownVerdict::Unknown
+            ),
+            DeferredSessionEndOutcome::Drop
+        );
+        assert_eq!(
+            deferred_session_end_outcome(
+                WindowsTerminatorAttribution::UnattributedNoSignal,
+                TeardownVerdict::Confirmed
+            ),
             DeferredSessionEndOutcome::Drop
         );
 
-        // What actually goes on the wire when it is sent.
+        // What actually goes on the wire when it is sent: the probe was
+        // unavailable, so the terminator stays `unattributed_no_signal` and the
+        // probe extras report `unknown`/`unavailable` — fail-closed and honest.
         let sent = finalize_deferred_session_end_payload(
             payload,
             Some(WindowsTerminatorAttribution::UnattributedNoSignal),
+            Some(TeardownReading::unavailable()),
             SESSION_END_GRACE_MS,
             "registered",
             "grace_elapsed",
@@ -7269,7 +7377,95 @@ mod tests {
                     "session_end_observer_readiness".to_string(),
                     sentry::protocol::Value::String("registered".to_string())
                 ),
+                (
+                    "windows_teardown_probe_verdict".to_string(),
+                    sentry::protocol::Value::String("unknown".to_string())
+                ),
+                (
+                    "windows_teardown_probe_shuttingdown".to_string(),
+                    sentry::protocol::Value::String("unavailable".to_string())
+                ),
+                (
+                    "windows_teardown_probe_log".to_string(),
+                    sentry::protocol::Value::String("unavailable".to_string())
+                ),
             ]
+        );
+    }
+
+    /// HQ-DESKTOP-4N r2. The new evidence dimension: a no-signal deferral whose
+    /// OS teardown probe CONFIRMS drops and sends nothing; the same deferral with
+    /// an ABSENT or UNKNOWN verdict sends, carrying the discriminated terminator
+    /// and the probe extras. This is the exact pair the base could not express,
+    /// because at base the resolver had no teardown input at all.
+    #[test]
+    fn the_teardown_probe_drops_a_confirmed_teardown_and_sends_otherwise() {
+        use hq_desktop_core::sync_outcome::{ShuttingDownReading, TeardownLogClass};
+        let attribution = WindowsTerminatorAttribution::UnattributedNoSignal;
+        let payload = || {
+            DeferredSessionEndCapture::new(
+                "auto-sync watcher exited unexpectedly",
+                &["sync", "auto-sync-watcher-termination"],
+                &[("windows_terminator", attribution.class_name().to_string())],
+                &[],
+            )
+        };
+
+        // Confirmed → Drop, and the resolved tag names the probe.
+        assert_eq!(
+            deferred_session_end_outcome(attribution, TeardownVerdict::Confirmed),
+            DeferredSessionEndOutcome::Drop
+        );
+        assert_eq!(
+            resolved_deferred_attribution(attribution, TeardownVerdict::Confirmed),
+            WindowsTerminatorAttribution::SessionEndProbed
+        );
+
+        // Absent → Capture, tag = unattributed_no_teardown, probe extras present.
+        assert_eq!(
+            deferred_session_end_outcome(attribution, TeardownVerdict::Absent),
+            DeferredSessionEndOutcome::Capture
+        );
+        let absent = finalize_deferred_session_end_payload(
+            payload(),
+            Some(resolved_deferred_attribution(
+                attribution,
+                TeardownVerdict::Absent,
+            )),
+            Some(TeardownReading {
+                verdict: TeardownVerdict::Absent,
+                shutting_down: ShuttingDownReading::No,
+                log: TeardownLogClass::None,
+            }),
+            SESSION_END_GRACE_MS,
+            "registered",
+            "grace_elapsed",
+        );
+        assert_eq!(
+            recorded_string_tag(&absent, "windows_terminator"),
+            "unattributed_no_teardown"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&absent, "windows_teardown_probe_verdict"),
+            "absent"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&absent, "windows_teardown_probe_shuttingdown"),
+            "no"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&absent, "windows_teardown_probe_log"),
+            "none"
+        );
+
+        // Unknown → Capture, tag stays unattributed_no_signal (fail-closed).
+        assert_eq!(
+            deferred_session_end_outcome(attribution, TeardownVerdict::Unknown),
+            DeferredSessionEndOutcome::Capture
+        );
+        assert_eq!(
+            resolved_deferred_attribution(attribution, TeardownVerdict::Unknown),
+            WindowsTerminatorAttribution::UnattributedNoSignal
         );
     }
 
@@ -7360,6 +7556,7 @@ mod tests {
         let sent = finalize_deferred_session_end_payload(
             payload,
             Some(WindowsTerminatorAttribution::UnattributedQueryOnly),
+            Some(TeardownReading::unavailable()),
             1_500,
             "registered",
             "grace_elapsed",
@@ -7409,6 +7606,7 @@ mod tests {
         let sent = finalize_deferred_session_end_payload(
             payload.clone(),
             Some(WindowsTerminatorAttribution::UnattributedQueryOnly),
+            Some(TeardownReading::unavailable()),
             5_000,
             "recovering",
             "grace_elapsed",
@@ -7416,6 +7614,19 @@ mod tests {
 
         assert_eq!(sent.message, payload.message);
         assert_eq!(sent.fingerprint, payload.fingerprint);
+        // The probe extras ride alongside the r1 four, fail-closed here.
+        assert_eq!(
+            recorded_deferred_extra(&sent, "windows_teardown_probe_verdict"),
+            "unknown"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&sent, "windows_teardown_probe_shuttingdown"),
+            "unavailable"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&sent, "windows_teardown_probe_log"),
+            "unavailable"
+        );
         assert_eq!(
             recorded_string_tag(&sent, "windows_terminator"),
             "unattributed_query_only",
@@ -7443,11 +7654,26 @@ mod tests {
         // An observer that could not be consulted at all leaves the exit-time
         // tag in place rather than inventing a reading — and the app-quit flush
         // says so, instead of claiming a grace it never waited out.
-        let unread =
-            finalize_deferred_session_end_payload(payload, None, 0, "not_read", "app_quit_flush");
+        let unread = finalize_deferred_session_end_payload(
+            payload,
+            None,
+            None,
+            0,
+            "not_read",
+            "app_quit_flush",
+        );
         assert_eq!(
             recorded_string_tag(&unread, "windows_terminator"),
             "unattributed_no_signal"
+        );
+        // The app-quit flush deliberately never consults the probe.
+        assert_eq!(
+            recorded_deferred_extra(&unread, "windows_teardown_probe_verdict"),
+            "not_read"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&unread, "windows_teardown_probe_log"),
+            "not_read"
         );
         assert_eq!(
             recorded_deferred_extra(&unread, "session_end_grace_waited"),

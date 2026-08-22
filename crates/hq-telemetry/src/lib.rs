@@ -569,6 +569,24 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // Emitted as a bare integer (reaches this check as `""` for a numeric
         // Value); a string value must parse as an unsigned integer.
         "exec_not_runnable_streak" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
+        // Windows pull-based teardown probe (HQ-DESKTOP-4N r2). The producer
+        // emits fixed-vocabulary class tokens derived from
+        // `GetSystemMetrics(SM_SHUTTINGDOWN)` and a content-safe classification
+        // of a System-channel event record; these independent egress checks
+        // degrade a producer bug that shipped raw event-log XML, an initiating
+        // user name, a process path, a machine name, or a timestamp to
+        // `[Filtered]` instead. `not_read` is the app-quit-flush value, where an
+        // app-initiated quit deliberately never consults the probe.
+        "windows_teardown_probe_verdict" => {
+            Some(matches!(value, "confirmed" | "absent" | "unknown" | "not_read"))
+        }
+        "windows_teardown_probe_shuttingdown" => {
+            Some(matches!(value, "yes" | "no" | "unavailable" | "not_read"))
+        }
+        "windows_teardown_probe_log" => Some(matches!(
+            value,
+            "shutdown_initiated" | "power_transition" | "none" | "unavailable" | "not_read"
+        )),
         _ => None,
     }
 }
@@ -2086,6 +2104,57 @@ mod tests {
             assert_eq!(
                 result.tags[key], value,
                 "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_teardown_probe_fields_survive_only_as_fixed_vocabulary() {
+        // The producer's exact fixed vocabulary passes egress unchanged.
+        for (key, value) in [
+            ("windows_teardown_probe_verdict", "confirmed"),
+            ("windows_teardown_probe_verdict", "absent"),
+            ("windows_teardown_probe_verdict", "unknown"),
+            ("windows_teardown_probe_verdict", "not_read"),
+            ("windows_teardown_probe_shuttingdown", "yes"),
+            ("windows_teardown_probe_shuttingdown", "no"),
+            ("windows_teardown_probe_shuttingdown", "unavailable"),
+            ("windows_teardown_probe_shuttingdown", "not_read"),
+            ("windows_teardown_probe_log", "shutdown_initiated"),
+            ("windows_teardown_probe_log", "power_transition"),
+            ("windows_teardown_probe_log", "none"),
+            ("windows_teardown_probe_log", "unavailable"),
+            ("windows_teardown_probe_log", "not_read"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(true),
+                "valid {key}={value} must pass egress"
+            );
+        }
+
+        // A producer bug that shipped raw event-log XML, a machine name, a user
+        // name, a process path, or a timestamp must degrade to `[Filtered]`.
+        for (key, value) in [
+            ("windows_teardown_probe_verdict", "confirmed by DESKTOP-QOH7J4N\\Ada"),
+            ("windows_teardown_probe_shuttingdown", "yes /Users/Ada"),
+            (
+                "windows_teardown_probe_log",
+                "<Event><Provider Name='User32'/></Event>",
+            ),
+            ("windows_teardown_probe_log", "shutdown_initiated 2026-08-20T05:11:59Z"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag {key}={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra {key}={value}"
             );
         }
     }

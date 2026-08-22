@@ -1637,6 +1637,16 @@ pub const WINDOWS_SESSION_TERMINATE_EXIT: i32 = 0x4001_0004;
 /// existed but had expired" into one undiagnosable token, which is what made
 /// the first recurrence of this defect cost a blind investigation round. Each
 /// value now names which link of the chain failed.
+///
+/// The two `*Probed`/`*NoTeardown` values (HQ-DESKTOP-4N r2) are produced only
+/// at deferral *resolution*, never at exit. The push-only observer can only
+/// ever emit the six values above; the pull-based Windows teardown probe
+/// (`GetSystemMetrics(SM_SHUTTINGDOWN)` plus a bounded System-channel event-log
+/// read) upgrades a still-unattributed reading to one of these two after the
+/// grace: `SessionEndProbed` when the OS confirmed the teardown even though it
+/// announced nothing (suppresses), and `UnattributedNoTeardown` when the OS was
+/// verifiably NOT tearing down (captures — the genuinely alertable case that
+/// tells the next round the killer is not a Windows session teardown).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsTerminatorAttribution {
     SessionEndObserved,
@@ -1645,6 +1655,8 @@ pub enum WindowsTerminatorAttribution {
     UnattributedStaleAffirmation,
     ObserverUnavailable,
     ObserverFailed,
+    SessionEndProbed,
+    UnattributedNoTeardown,
 }
 
 impl WindowsTerminatorAttribution {
@@ -1657,6 +1669,8 @@ impl WindowsTerminatorAttribution {
             Self::UnattributedStaleAffirmation => "unattributed_stale_affirmation",
             Self::ObserverUnavailable => "observer_unavailable",
             Self::ObserverFailed => "observer_failed",
+            Self::SessionEndProbed => "session_end_probed",
+            Self::UnattributedNoTeardown => "unattributed_no_teardown",
         }
     }
 
@@ -1666,6 +1680,12 @@ impl WindowsTerminatorAttribution {
     /// This is the only family whose decision is worth re-reading after a
     /// grace: an unavailable or failed observer cannot start affirming, so it
     /// keeps delegating to the established capture policy verbatim.
+    ///
+    /// The two resolution-only values return `false`: they are terminal answers
+    /// the probe already produced, so they must never be re-deferred or
+    /// re-probed. `UnattributedNoTeardown` captures despite its name — it means
+    /// the probe ran and the OS was NOT tearing down, not that the observer had
+    /// nothing to offer.
     pub fn is_unattributed(self) -> bool {
         matches!(
             self,
@@ -1996,23 +2016,239 @@ pub fn watcher_exit_capture_policy_with_attribution(
 /// What a deferred session-end capture must do once its grace has elapsed and
 /// the attribution has been read a second time.
 ///
-/// Deliberately fail-closed and deliberately narrow: only an OS affirmation
-/// drops the event. A still-unattributed reading, a failed observer, or an
-/// observer that vanished all send the alert that was held back.
+/// Deliberately fail-closed and deliberately narrow: only positive OS evidence
+/// drops the event. A still-unattributed reading with no teardown confirmation,
+/// a failed observer, or an observer that vanished all send the alert that was
+/// held back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferredSessionEndOutcome {
     Drop,
     Capture,
 }
 
-/// Resolve a deferred session-end capture against the re-read attribution.
+/// Whether Windows reports the interactive session as shutting down, read from
+/// the pull-based `GetSystemMetrics(SM_SHUTTINGDOWN)` flag. This is the free,
+/// message-independent half of the teardown probe: it answers "is this session
+/// ending" even when Windows delivered the app no session-end window message.
+///
+/// `Unavailable` is reserved for the platforms/paths that cannot read the flag
+/// at all (non-Windows, or a probe that was never installed); it never means
+/// "the read returned false".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShuttingDownReading {
+    Yes,
+    No,
+    Unavailable,
+}
+
+impl ShuttingDownReading {
+    /// Fixed, content-safe token for the `windows_teardown_probe_shuttingdown`
+    /// extra. Carries no host, user, path, or timing information.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::Yes => "yes",
+            Self::No => "no",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// A content-safe classification of the newest relevant System-channel teardown
+/// record, if any. The impure reader extracts ONLY the provider/event-id class
+/// token from the rendered event XML — never the raw XML, the initiating user
+/// name, the initiating process path, the machine name, the session id, or any
+/// timestamp.
+///
+/// `ShutdownInitiated` and `PowerTransition` are the two "bracketing" classes: a
+/// fresh record of either means the OS itself recorded that the session was
+/// being torn down. `None` means the channel was readable but held no such
+/// record; `Unavailable` means the channel could not be opened at all — the two
+/// are kept distinct so "unreadable" can never masquerade as "verifiably not
+/// tearing down".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeardownLogClass {
+    ShutdownInitiated,
+    PowerTransition,
+    None,
+    Unavailable,
+}
+
+impl TeardownLogClass {
+    /// Fixed, content-safe token for the `windows_teardown_probe_log` extra.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::ShutdownInitiated => "shutdown_initiated",
+            Self::PowerTransition => "power_transition",
+            Self::None => "none",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    /// True for a record class that positively brackets an OS teardown.
+    pub fn is_bracketing(self) -> bool {
+        matches!(self, Self::ShutdownInitiated | Self::PowerTransition)
+    }
+}
+
+/// The pull-based teardown verdict: what the OS itself says about whether the
+/// session was ending at the instant the watcher child was terminated.
+///
+/// Fixed three-state vocabulary. `Confirmed` requires positive OS evidence from
+/// at least one source; `Absent` requires BOTH sources to be readable AND
+/// negative; anything else — a partially or wholly unreadable probe — is
+/// `Unknown`, which fails closed to a capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeardownVerdict {
+    Confirmed,
+    Absent,
+    Unknown,
+}
+
+impl TeardownVerdict {
+    /// Fixed, content-safe token for the `windows_teardown_probe_verdict` extra.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Absent => "absent",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Derive the teardown verdict from the two probe inputs. Pure, clock-free, and
+/// `target_os`-agnostic so every platform's test job pins it.
+///
+/// The rule is fail-closed by construction:
+/// - positive from EITHER source (`SM_SHUTTINGDOWN` set, or a bracketing
+///   System-channel record) confirms;
+/// - only a reading that is negative from BOTH sources (`SM_SHUTTINGDOWN`
+///   verifiably clear AND the channel readable with no bracketing record) is
+///   `Absent`;
+/// - every remaining combination — any unavailability without a positive — is
+///   `Unknown`, which captures.
+pub fn teardown_verdict(
+    shutting_down: ShuttingDownReading,
+    log: TeardownLogClass,
+) -> TeardownVerdict {
+    if shutting_down == ShuttingDownReading::Yes || log.is_bracketing() {
+        return TeardownVerdict::Confirmed;
+    }
+    if shutting_down == ShuttingDownReading::No && log == TeardownLogClass::None {
+        return TeardownVerdict::Absent;
+    }
+    TeardownVerdict::Unknown
+}
+
+/// The final attribution stamped on a deferral once its grace has elapsed and
+/// the teardown probe has been read.
+///
+/// The six observer-produced values pass through unchanged. Only the
+/// *unattributed* family — the observer was alive but had nothing to offer — is
+/// upgraded by the probe:
+/// - `Confirmed` → [`WindowsTerminatorAttribution::SessionEndProbed`] (the OS
+///   confirmed the teardown even though it announced nothing);
+/// - `Absent` → [`WindowsTerminatorAttribution::UnattributedNoTeardown`] (the OS
+///   was verifiably not tearing down — the honestly alertable case);
+/// - `Unknown` → the original unattributed token is kept, so the probes-
+///   unavailable case still reads exactly as it did before (e.g.
+///   `unattributed_no_signal`).
+pub fn resolved_deferred_attribution(
+    attribution: WindowsTerminatorAttribution,
+    verdict: TeardownVerdict,
+) -> WindowsTerminatorAttribution {
+    if !attribution.is_unattributed() {
+        return attribution;
+    }
+    match verdict {
+        TeardownVerdict::Confirmed => WindowsTerminatorAttribution::SessionEndProbed,
+        TeardownVerdict::Absent => WindowsTerminatorAttribution::UnattributedNoTeardown,
+        TeardownVerdict::Unknown => attribution,
+    }
+}
+
+/// Resolve a deferred session-end capture against the re-read attribution and
+/// the pull-based teardown verdict.
+///
+/// Fail-closed and narrow: only positive evidence drops the held-back event.
+/// The observer affirming (`SessionEndObserved`) drops exactly as before, and
+/// an otherwise-unattributed reading drops ONLY when the OS teardown probe
+/// returns [`TeardownVerdict::Confirmed`]. Every other case — `Absent`,
+/// `Unknown`, a failed or unavailable observer — captures.
 pub fn deferred_session_end_outcome(
     attribution: WindowsTerminatorAttribution,
+    verdict: TeardownVerdict,
 ) -> DeferredSessionEndOutcome {
-    match attribution {
-        WindowsTerminatorAttribution::SessionEndObserved => DeferredSessionEndOutcome::Drop,
+    match resolved_deferred_attribution(attribution, verdict) {
+        WindowsTerminatorAttribution::SessionEndObserved
+        | WindowsTerminatorAttribution::SessionEndProbed => DeferredSessionEndOutcome::Drop,
         _ => DeferredSessionEndOutcome::Capture,
     }
+}
+
+/// Classify a single rendered System-channel event to a content-safe teardown
+/// class, reading ONLY its provider name and numeric event id. It never
+/// returns — and by construction cannot return — the raw XML, the initiating
+/// user name or process path, the machine name, the session id, or any
+/// timestamp: its entire output is one fixed [`TeardownLogClass`] token.
+///
+/// The three bracketing records are the documented shutdown/logoff-initiation
+/// records: User32 event 1074, Microsoft-Windows-Kernel-General event 13, and
+/// Microsoft-Windows-Kernel-Power event 109. Any unknown or unrelated record
+/// maps to [`TeardownLogClass::None`]. A parser miss therefore only costs
+/// corroboration; it can never manufacture a confirmation, so suppression stays
+/// gated on positive evidence alone.
+pub fn classify_teardown_log_record(event_xml: &str) -> TeardownLogClass {
+    let (Some(provider), Some(event_id)) =
+        (xml_provider_name(event_xml), xml_event_id(event_xml))
+    else {
+        return TeardownLogClass::None;
+    };
+    let from = |expected| provider_matches(provider, expected);
+    if event_id == 1074 && from("User32") {
+        TeardownLogClass::ShutdownInitiated
+    } else if event_id == 13 && from("Microsoft-Windows-Kernel-General") {
+        TeardownLogClass::ShutdownInitiated
+    } else if event_id == 109 && from("Microsoft-Windows-Kernel-Power") {
+        TeardownLogClass::PowerTransition
+    } else {
+        TeardownLogClass::None
+    }
+}
+
+/// Extract the `<Provider Name='…'/>` attribute value from rendered event XML.
+/// Returns a borrowed slice; the caller only ever compares it against a fixed
+/// expected provider and discards it, so nothing untrusted is retained.
+fn xml_provider_name(xml: &str) -> Option<&str> {
+    let provider = xml.find("<Provider")?;
+    let rest = &xml[provider..];
+    let name = rest.find("Name=")?;
+    let after = &rest[name + "Name=".len()..];
+    let quote = after.as_bytes().first().copied()?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let value = &after[1..];
+    let end = value.find(quote as char)?;
+    Some(&value[..end])
+}
+
+/// Extract the numeric text content of the first `<EventID …>N</EventID>`
+/// element. Tolerates the optional `Qualifiers` attribute Windows sometimes
+/// adds. Returns only the parsed integer.
+fn xml_event_id(xml: &str) -> Option<u32> {
+    let start = xml.find("<EventID")?;
+    let rest = &xml[start..];
+    let close = rest.find('>')?;
+    let after = &rest[close + 1..];
+    let end = after.find('<')?;
+    after[..end].trim().parse::<u32>().ok()
+}
+
+/// Whether a rendered provider name identifies the expected teardown provider.
+/// Case-insensitive exact match: an unexpected rename loses corroboration
+/// (fail-closed) rather than mis-classifying.
+fn provider_matches(name: &str, expected: &str) -> bool {
+    name.eq_ignore_ascii_case(expected)
 }
 
 /// Content-safe bucket for how long a deferred session-end capture actually
@@ -4817,18 +5053,241 @@ mod tests {
         }
     }
 
+    const ALL_TEARDOWN_VERDICTS: [TeardownVerdict; 3] = [
+        TeardownVerdict::Confirmed,
+        TeardownVerdict::Absent,
+        TeardownVerdict::Unknown,
+    ];
+
     #[test]
-    fn a_deferral_only_drops_its_event_for_an_affirmed_session_end() {
+    fn a_deferral_drops_only_on_positive_evidence_across_every_verdict() {
         for attribution in ALL_TERMINATOR_ATTRIBUTIONS {
-            let expected = if attribution == WindowsTerminatorAttribution::SessionEndObserved {
-                DeferredSessionEndOutcome::Drop
-            } else {
-                DeferredSessionEndOutcome::Capture
-            };
+            for verdict in ALL_TEARDOWN_VERDICTS {
+                let expected = match attribution {
+                    // The observer affirming drops for every verdict, byte-for-
+                    // byte the r1 behaviour — the probe cannot override it.
+                    WindowsTerminatorAttribution::SessionEndObserved => {
+                        DeferredSessionEndOutcome::Drop
+                    }
+                    // An otherwise-unattributed reading drops ONLY when the OS
+                    // teardown probe positively confirmed the teardown.
+                    other if other.is_unattributed() => {
+                        if verdict == TeardownVerdict::Confirmed {
+                            DeferredSessionEndOutcome::Drop
+                        } else {
+                            DeferredSessionEndOutcome::Capture
+                        }
+                    }
+                    // A failed or unavailable observer never consults the probe:
+                    // it keeps capturing regardless of the verdict.
+                    _ => DeferredSessionEndOutcome::Capture,
+                };
+                assert_eq!(
+                    deferred_session_end_outcome(attribution, verdict),
+                    expected,
+                    "attribution={attribution:?} verdict={verdict:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_teardown_verdict_confirms_only_on_positive_os_evidence() {
+        use ShuttingDownReading as S;
+        use TeardownLogClass as L;
+        // Positive from EITHER source confirms.
+        for log in [L::ShutdownInitiated, L::PowerTransition, L::None, L::Unavailable] {
             assert_eq!(
-                deferred_session_end_outcome(attribution),
-                expected,
-                "{attribution:?}"
+                teardown_verdict(S::Yes, log),
+                TeardownVerdict::Confirmed,
+                "SM_SHUTTINGDOWN set must confirm regardless of the log ({log:?})"
+            );
+        }
+        for shutting in [S::No, S::Unavailable] {
+            for log in [L::ShutdownInitiated, L::PowerTransition] {
+                assert_eq!(
+                    teardown_verdict(shutting, log),
+                    TeardownVerdict::Confirmed,
+                    "a bracketing record must confirm ({shutting:?}, {log:?})"
+                );
+            }
+        }
+        // Absent requires BOTH sources readable AND negative.
+        assert_eq!(teardown_verdict(S::No, L::None), TeardownVerdict::Absent);
+        // Every remaining combination — any unavailability without a positive —
+        // is Unknown, which fails closed to a capture.
+        assert_eq!(teardown_verdict(S::No, L::Unavailable), TeardownVerdict::Unknown);
+        assert_eq!(teardown_verdict(S::Unavailable, L::None), TeardownVerdict::Unknown);
+        assert_eq!(
+            teardown_verdict(S::Unavailable, L::Unavailable),
+            TeardownVerdict::Unknown
+        );
+    }
+
+    #[test]
+    fn the_probe_upgrades_only_the_unattributed_family() {
+        // The six observer values that are not unattributed pass through
+        // untouched for every verdict.
+        for attribution in ALL_TERMINATOR_ATTRIBUTIONS {
+            if attribution.is_unattributed() {
+                continue;
+            }
+            for verdict in ALL_TEARDOWN_VERDICTS {
+                assert_eq!(
+                    resolved_deferred_attribution(attribution, verdict),
+                    attribution,
+                    "{attribution:?} must be untouched by the probe"
+                );
+            }
+        }
+        // The unattributed family is upgraded by the verdict.
+        for attribution in [
+            WindowsTerminatorAttribution::UnattributedNoSignal,
+            WindowsTerminatorAttribution::UnattributedQueryOnly,
+            WindowsTerminatorAttribution::UnattributedStaleAffirmation,
+        ] {
+            assert_eq!(
+                resolved_deferred_attribution(attribution, TeardownVerdict::Confirmed),
+                WindowsTerminatorAttribution::SessionEndProbed
+            );
+            assert_eq!(
+                resolved_deferred_attribution(attribution, TeardownVerdict::Absent),
+                WindowsTerminatorAttribution::UnattributedNoTeardown
+            );
+            // Unknown keeps the original token, so the probes-unavailable case
+            // reads exactly as it did before the probe existed.
+            assert_eq!(
+                resolved_deferred_attribution(attribution, TeardownVerdict::Unknown),
+                attribution
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_probe_attributions_are_distinct_content_safe_tokens() {
+        let all = [
+            WindowsTerminatorAttribution::SessionEndObserved,
+            WindowsTerminatorAttribution::UnattributedNoSignal,
+            WindowsTerminatorAttribution::UnattributedQueryOnly,
+            WindowsTerminatorAttribution::UnattributedStaleAffirmation,
+            WindowsTerminatorAttribution::ObserverUnavailable,
+            WindowsTerminatorAttribution::ObserverFailed,
+            WindowsTerminatorAttribution::SessionEndProbed,
+            WindowsTerminatorAttribution::UnattributedNoTeardown,
+        ];
+        let names: Vec<&str> = all.iter().map(|a| a.class_name()).collect();
+        // The six existing values keep their exact wire strings.
+        let expected_six: Vec<&str> = ALL_TERMINATOR_ATTRIBUTIONS
+            .iter()
+            .map(|a| a.class_name())
+            .collect();
+        assert_eq!(names[..6].to_vec(), expected_six);
+        // The two new values are distinct from all of them and from each other.
+        assert_eq!(names[6], "session_end_probed");
+        assert_eq!(names[7], "unattributed_no_teardown");
+        let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "attribution tokens must be distinct");
+        for name in &names {
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{name} is not a fixed-vocabulary tag token"
+            );
+        }
+        // SessionEndProbed suppresses; UnattributedNoTeardown does not — the
+        // latter is the honestly alertable "not a Windows teardown" case.
+        assert!(!WindowsTerminatorAttribution::SessionEndProbed.is_unattributed());
+        assert!(!WindowsTerminatorAttribution::UnattributedNoTeardown.is_unattributed());
+    }
+
+    #[test]
+    fn the_teardown_probe_wire_tokens_are_fixed_and_content_safe() {
+        for (verdict, token) in [
+            (TeardownVerdict::Confirmed, "confirmed"),
+            (TeardownVerdict::Absent, "absent"),
+            (TeardownVerdict::Unknown, "unknown"),
+        ] {
+            assert_eq!(verdict.class_name(), token);
+        }
+        for (reading, token) in [
+            (ShuttingDownReading::Yes, "yes"),
+            (ShuttingDownReading::No, "no"),
+            (ShuttingDownReading::Unavailable, "unavailable"),
+        ] {
+            assert_eq!(reading.class_name(), token);
+        }
+        for (log, token) in [
+            (TeardownLogClass::ShutdownInitiated, "shutdown_initiated"),
+            (TeardownLogClass::PowerTransition, "power_transition"),
+            (TeardownLogClass::None, "none"),
+            (TeardownLogClass::Unavailable, "unavailable"),
+        ] {
+            assert_eq!(log.class_name(), token);
+            let expect_bracketing = matches!(
+                log,
+                TeardownLogClass::ShutdownInitiated | TeardownLogClass::PowerTransition
+            );
+            assert_eq!(log.is_bracketing(), expect_bracketing);
+        }
+        for token in [
+            TeardownVerdict::Confirmed.class_name(),
+            ShuttingDownReading::Yes.class_name(),
+            TeardownLogClass::ShutdownInitiated.class_name(),
+        ] {
+            assert!(token
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'));
+        }
+    }
+
+    #[test]
+    fn the_log_classifier_extracts_only_a_class_token_and_never_leaks_content() {
+        // Realistic Event 1074 XML carrying an initiating user, process path,
+        // machine name, session id and timestamp — none of which may survive.
+        let event_1074 = r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='User32' Guid='{b0aa8734-56f7-41cc-b2f4-de228e98b946}'/><EventID Qualifiers='32768'>1074</EventID><Level>4</Level><Task>0</Task><Keywords>0x80000000000000</Keywords><TimeCreated SystemTime='2026-08-20T05:11:59.1234567Z'/><EventRecordID>99123</EventRecordID><Channel>System</Channel><Computer>DESKTOP-QOH7J4N</Computer><Security UserID='S-1-5-21-1111-2222-3333-1001'/></System><EventData><Data Name='param1'>C:\Windows\System32\shutdown.exe (DESKTOP-QOH7J4N)</Data><Data Name='param5'>DESKTOP-QOH7J4N\Ada</Data><Data Name='param6'>0x500ff</Data></EventData></Event>"#;
+        assert_eq!(
+            classify_teardown_log_record(event_1074),
+            TeardownLogClass::ShutdownInitiated
+        );
+
+        let event_13 = r#"<Event><System><Provider Name='Microsoft-Windows-Kernel-General'/><EventID>13</EventID><TimeCreated SystemTime='2026-08-20T05:11:59Z'/><Computer>DESKTOP-QOH7J4N</Computer></System></Event>"#;
+        assert_eq!(
+            classify_teardown_log_record(event_13),
+            TeardownLogClass::ShutdownInitiated
+        );
+
+        let event_109 = r#"<Event><System><Provider Name='Microsoft-Windows-Kernel-Power' Guid='{331c3b3a-2005-44c2-ac5e-77220c37d6b4}'/><EventID>109</EventID></System></Event>"#;
+        assert_eq!(
+            classify_teardown_log_record(event_109),
+            TeardownLogClass::PowerTransition
+        );
+
+        // Unrelated / non-bracketing records classify as None, never Confirmed.
+        let unrelated = r#"<Event><System><Provider Name='Microsoft-Windows-Kernel-Power'/><EventID>105</EventID></System></Event>"#;
+        assert_eq!(classify_teardown_log_record(unrelated), TeardownLogClass::None);
+        let wrong_provider = r#"<Event><System><Provider Name='Application Error'/><EventID>1074</EventID></System></Event>"#;
+        assert_eq!(
+            classify_teardown_log_record(wrong_provider),
+            TeardownLogClass::None
+        );
+        assert_eq!(classify_teardown_log_record("not xml at all"), TeardownLogClass::None);
+        assert_eq!(classify_teardown_log_record(""), TeardownLogClass::None);
+
+        // The output is an enum, so it CANNOT carry raw content; assert the
+        // rendered token contains none of the sensitive fields from the input.
+        let token = classify_teardown_log_record(event_1074).class_name();
+        for forbidden in [
+            "DESKTOP-QOH7J4N",
+            "Ada",
+            "shutdown.exe",
+            "C:\\",
+            "S-1-5-21",
+            "2026-08-20",
+            "param",
+        ] {
+            assert!(
+                !token.contains(forbidden),
+                "class token leaked {forbidden}"
             );
         }
     }
