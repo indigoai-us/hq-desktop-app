@@ -509,6 +509,7 @@ fn main() {
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_setup_status,
             commands::session_end_observer::session_end_observer_status,
+            commands::windows_teardown_probe::session_end_teardown_probe_status,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
             commands::workspaces::claim_pending_company_invite,
