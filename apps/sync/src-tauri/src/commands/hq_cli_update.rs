@@ -2127,6 +2127,24 @@ async fn managed_retry_converged(
         )
         .with_managed_roots(&managed_roots),
     );
+    // A managed shadow reached from the retry is repairable exactly as it is from
+    // the ordinary path: remove HQ's own stale copy and re-decide, so a successful
+    // retry is not returned to the user as an error until a later install, and the
+    // pre-repair event is never captured unbounded across manual retries.
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ManagedShadowed) {
+        return repair_managed_shadow_and_refinalize(
+            app,
+            before_bin,
+            installer_npm,
+            before_version,
+            latest,
+            managed_prefix,
+            already_blocked,
+            &managed_roots,
+            &post_install_hq,
+        )
+        .await;
+    }
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
 }
@@ -2390,6 +2408,68 @@ fn clear_non_convergent_version() {
 /// `hq-cli-update:cleared`; any failure leaves the clickable banner that
 /// `check_once` already emitted and Sentry-captures for triage. No fragile
 /// prefix-guessing heuristic.
+/// Heal a machine already wedged by HQ-DESKTOP-46: it carries the durable marker
+/// `nonConvergentCliVersion == latest` written by the OLD foreign-managed
+/// classification, so `should_auto_install` blocks the install and the
+/// install-time repair can never run — auto-update stays disabled until the next
+/// CLI publish or a manual click. This runs the filesystem-only shadow removal
+/// DIRECTLY (no install), and ONLY when the resolved `hq` is a provable same-root
+/// managed shadow and the managed prefix already holds `>= latest`. On convergence
+/// it clears the marker and returns the healed info; otherwise it touches nothing.
+/// Sync so the caller runs it off the async runtime.
+/// The managed npm prefix for the root that owns a resolved shadow: the SAME
+/// managed root must contain both the shadow's prefix and the npm prefix, and
+/// they must differ. Pure so the same-root selection is unit-testable without
+/// touching the machine's real toolchain. `None` when the resolved copy is not a
+/// same-root managed shadow (a foreign layout, or already the prefix copy).
+fn managed_prefix_for_shadow(active_prefix: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    let active = Path::new(active_prefix);
+    roots.iter().find_map(|root| {
+        let prefix = paths::managed_npm_prefix_in(root);
+        // "Same directory" is compared by components (case-insensitive on Windows)
+        // via mutual containment, so a case-only difference cannot masquerade as a
+        // distinct shadow.
+        let same_dir =
+            paths::path_is_within(active, &prefix) && paths::path_is_within(&prefix, active);
+        (paths::path_is_within(active, root)
+            && paths::path_is_within(&prefix, root)
+            && !same_dir)
+            .then_some(prefix)
+    })
+}
+
+fn heal_blocked_managed_shadow(latest: &str) -> Option<HqCliUpdateInfo> {
+    let resolved = paths::resolve_bin("hq");
+    let active_prefix = npm_prefix_from_hq_bin(&resolved)?;
+    // The managed prefix for the root that owns the resolved shadow — the same
+    // same-root containment the install-time classifier uses.
+    let managed_prefix =
+        managed_prefix_for_shadow(&active_prefix, &paths::managed_toolchain_roots())?;
+    // The managed prefix must already hold >= latest — the same delivery evidence
+    // the classifier requires before treating this as a repairable shadow.
+    let delivered =
+        installed_hq_cli_version_in_prefix(&managed_prefix.to_string_lossy(), &resolved)?;
+    if cmp_semver(&delivered, latest) == std::cmp::Ordering::Less {
+        return None;
+    }
+    if repair_managed_shadow(Path::new(&resolved), &managed_prefix, latest)
+        != ManagedShadowRepairAction::Removed
+    {
+        return None;
+    }
+    // Re-resolve and clear the marker ONLY when the app now executes >= latest.
+    let after = paths::resolve_bin("hq");
+    let after_version = resolved_hq_version(&after);
+    if !install_converged(after_version.as_deref(), latest) {
+        return None;
+    }
+    clear_non_convergent_version();
+    Some(HqCliUpdateInfo {
+        local: after_version,
+        latest: latest.to_string(),
+    })
+}
+
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -2432,19 +2512,44 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                                 ),
                             }
                         } else {
-                            // This exact version already installed cleanly
-                            // without moving the detected CLI, so repeating it
-                            // cannot help. Stop here instead of reinstalling on
-                            // every launch and every 6h; the banner stays up for
-                            // the manual fix.
-                            log(
-                                "hq-cli-update",
-                                &format!(
-                                    "auto-update skipped for {}: an earlier install completed \
-                                     without changing the detected version",
-                                    info.latest
-                                ),
-                            );
+                            // The durable marker blocks the install. A machine
+                            // already wedged by HQ-DESKTOP-46 carries that marker
+                            // from the OLD foreign-managed classification, so the
+                            // install-time repair can never run. Attempt the
+                            // filesystem-only shadow heal directly; on success it
+                            // clears the marker and re-enables auto-update without
+                            // waiting for the next CLI publish. Anything that is
+                            // not a provable same-root shadow is left untouched and
+                            // the banner stays up for the manual fix.
+                            let latest = info.latest.clone();
+                            let healed = tauri::async_runtime::spawn_blocking(move || {
+                                heal_blocked_managed_shadow(&latest)
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some(healed) = healed {
+                                let _ = handle.emit("hq-cli-update:cleared", &healed);
+                                log(
+                                    "hq-cli-update",
+                                    "healed a wedged managed-toolchain CLI shadow; \
+                                     auto-update re-enabled",
+                                );
+                            } else {
+                                // This exact version already installed cleanly
+                                // without moving the detected CLI, so repeating it
+                                // cannot help. Stop here instead of reinstalling on
+                                // every launch and every 6h; the banner stays up
+                                // for the manual fix.
+                                log(
+                                    "hq-cli-update",
+                                    &format!(
+                                        "auto-update skipped for {}: an earlier install completed \
+                                         without changing the detected version",
+                                        info.latest
+                                    ),
+                                );
+                            }
                         }
                     }
                 }
@@ -3449,6 +3554,11 @@ exit 0
         .unwrap();
     }
 
+    /// An npm-generated shim body that names the scoped package path, so the
+    /// repair's per-shim ownership check recognizes it as HQ's own.
+    const HQ_CLI_SHIM_FIXTURE: &str =
+        "@ECHO off\r\n\"%~dp0\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js\" %*\r\n";
+
     /// The non-fatal mapping the orchestration relies on: only a removal that
     /// converges is a success; a removal that did not converge, an unlink error,
     /// or a provenance refusal all degrade to the bounded, marker-writing outcome
@@ -3496,7 +3606,7 @@ exit 0
             "hq-auth-refresh",
             "hq-auth-refresh.cmd",
         ] {
-            std::fs::write(node.join(shim), "stale").unwrap();
+            std::fs::write(node.join(shim), HQ_CLI_SHIM_FIXTURE).unwrap();
         }
         write_hq_cli_manifest(&node, "5.101.0");
         write_hq_cli_manifest(&prefix, "5.101.7");
@@ -3581,5 +3691,36 @@ exit 0
             ManagedShadowRepairAction::ProvenanceRefused
         );
         assert!(node2.join("hq.cmd").exists(), "an unowned shim survives");
+    }
+
+    /// The same-root prefix selection that lets a wedged machine heal itself: it
+    /// resolves the managed npm prefix for the root that owns the shadow, and
+    /// refuses a foreign layout or the prefix copy itself.
+    #[test]
+    fn managed_prefix_for_shadow_finds_the_same_root_prefix_only() {
+        let root = PathBuf::from("/opt/IndigoHQ/toolchain");
+        let roots = [root.clone()];
+        let node = root.join("node");
+        let expected = paths::managed_npm_prefix_in(&root);
+        // A shadow under <root>/node resolves the same-root managed prefix.
+        assert_eq!(
+            managed_prefix_for_shadow(&node.to_string_lossy(), &roots),
+            Some(expected.clone())
+        );
+        // The prefix copy itself is not a shadow (active == prefix).
+        assert_eq!(
+            managed_prefix_for_shadow(&expected.to_string_lossy(), &roots),
+            None
+        );
+        // A foreign layout outside every managed root is not a shadow.
+        assert_eq!(managed_prefix_for_shadow("/opt/homebrew", &roots), None);
+        // A cross-root split resolves the prefix of the root that actually owns the
+        // shadow (the legacy root), never the current root's.
+        let legacy = PathBuf::from("/opt/Indigo HQ/toolchain");
+        let both = [root, legacy.clone()];
+        assert_eq!(
+            managed_prefix_for_shadow(&legacy.join("node").to_string_lossy(), &both),
+            Some(paths::managed_npm_prefix_in(&legacy))
+        );
     }
 }
