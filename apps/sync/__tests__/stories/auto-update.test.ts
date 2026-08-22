@@ -463,6 +463,11 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('"cleanup-plain-npm-path"');
     expect(cliUpdate).toContain('"cleanup-plain"');
 
+    // The rung's entry gate is npm's PARSED error code, not a substring, so a
+    // lifecycle failure that merely prints ENOTEMPTY never arms the destructive
+    // cleanup (HQ-DESKTOP-5B review, P1).
+    expect(cliUpdate).toContain('npm_error_code(detail) == "ENOTEMPTY"');
+
     // Both scopes feed ONE shared cleaner whose deletion set is unchanged: the
     // `hq-cli` package dir and any `.hq-cli-*` staging dir, and nothing else.
     expect(cliUpdate).toContain('clean_partial_hq_cli_install_in_scope(&cleanup_scope)');
@@ -488,6 +493,10 @@ describe('master automatic-updates switch', () => {
     );
     expect(core).toContain('{latest}|unexpected|');
     expect(cliUpdateCore).toContain('kind == InstallFailureKind::Unexpected');
+    // The guard is restricted to STRUCTURED codes: the unstructured
+    // `none|unknown|none` catch-all keeps paging so one failure never suppresses
+    // an unrelated later one (review, P2).
+    expect(core).toContain('code != "none" && code != "unrecognized"');
   });
 
   it('classifies an unsupported user Node and self-heals it before reporting (HQ-DESKTOP-56)', () => {
