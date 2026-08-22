@@ -86,9 +86,9 @@ pub use hq_desktop_core::hq_cli_update::{
     installed_hq_cli_version_in_bun_global,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
-    managed_shadow_removal_targets, non_convergent_cli_contract, non_convergent_cli_version,
-    non_convergent_detail,
+    is_managed_shadow_shape, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    legacy_marker_needs_recovery, managed_shadow_removal_targets, non_convergent_cli_contract,
+    non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
     non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
     npm_prefix_from_hq_bin, path_contains_dir, path_within_root, pnpm_child_path, pnpm_global_env,
@@ -1874,6 +1874,11 @@ async fn finalize_managed_shadow(
         ),
     );
 
+    // A managed shadow that could not be repaired stays observable but writes NO
+    // durable marker, so it is bounded by the non-blocking episode key exactly as
+    // a resolution shortfall is — pass the persisted set so a persistent shape is
+    // captured once per `latest`, not on every check.
+    let nonblocking_keys = non_convergent_episode_markers();
     let outcome = decide_post_install(&PostInstallContext {
         executor: InstallExecutor::Npm,
         before_bin,
@@ -1885,13 +1890,27 @@ async fn finalize_managed_shadow(
         delivered_version: delivered_version.as_deref(),
         installer_bin: installer_npm,
         already_blocked,
-        nonblocking_episode_keys: &[],
+        nonblocking_episode_keys: &nonblocking_keys,
         pnpm: None,
         managed_roots,
         managed_shadow_repair: repair_outcome,
     });
     log("hq-cli-update", &outcome.log_line);
-    apply_post_install_with_app(app, &outcome)
+    let result = apply_post_install_with_app(app, &outcome);
+    // Persist the non-blocking episode key AFTER the capture, mirroring the pnpm
+    // shortfall path, so a persistently unrepairable shadow reports once per
+    // `latest` instead of on every check. Best-effort; never gates the capture.
+    if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(e) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {e}"),
+            );
+        }
+    }
+    result
 }
 
 // The bounded, provenance-gated removal itself (`attempt_managed_shadow_repair`)
@@ -2382,6 +2401,22 @@ fn clear_non_convergent_version() {
 /// `hq-cli-update:cleared`; any failure leaves the clickable banner that
 /// `check_once` already emitted and Sentry-captures for triage. No fragile
 /// prefix-guessing heuristic.
+/// Whether the `hq` the app currently resolves is an HQ-owned shadow inside a
+/// managed toolchain root (a copy in a DIFFERENT directory than the managed npm
+/// prefix under the SAME root). Filesystem/path-only — `resolve_bin` and the pure
+/// [`is_managed_shadow_shape`] check, no subprocess — so it is safe on the
+/// periodic check path. Lets the checker re-attempt the install (and thus the
+/// repair) even when an older build's durable marker would skip it.
+fn resolved_hq_is_managed_shadow() -> bool {
+    let hq = paths::resolve_bin("hq");
+    paths::managed_toolchain_roots().into_iter().any(|root| {
+        let prefix = paths::managed_npm_prefix_in(&root)
+            .to_string_lossy()
+            .to_string();
+        is_managed_shadow_shape(&hq, std::slice::from_ref(&root), &prefix)
+    })
+}
+
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -2411,10 +2446,18 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                     // legacy `cliAutoUpdate` key is superseded — one toggle now
                     // governs the app, CLI, and core auto-installers.
                     if auto_update_enabled() {
+                        // Also attempt when the machine still presents the
+                        // managed-shadow shape: a durable marker written by an
+                        // OLDER build (which classified this HQ-owned layout as
+                        // foreign-managed) would otherwise skip the install, so the
+                        // new repair branch would never run until the next CLI
+                        // publishes. The install+repair converges and self-clears;
+                        // a healthy or foreign machine never matches the shape.
                         if should_auto_install(
                             &info.latest,
                             non_convergent_cli_version().as_deref(),
-                        ) {
+                        ) || resolved_hq_is_managed_shadow()
+                        {
                             log("hq-cli-update", "auto-update enabled — installing");
                             match install_hq_cli_update(handle.clone()).await {
                                 Ok(_) => log("hq-cli-update", "auto-update succeeded"),

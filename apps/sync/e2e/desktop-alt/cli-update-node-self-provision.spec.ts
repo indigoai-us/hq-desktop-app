@@ -239,5 +239,13 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(repair).not.toContain('Command::new');
     // Exactly one repair attempt in the helper — no loop.
     expect(occurrences(repair, 'attempt_managed_shadow_repair(')).toBe(1);
+
+    // A shadow that could not be repaired stays observable but writes NO durable
+    // marker (bounded by the non-blocking episode key), so a transient lock does
+    // not wedge auto-update.
+    expect(repair).toContain('non_convergent_episode_markers()');
+    // The checker re-attempts the install on the shadow shape, so a durable
+    // marker written by an OLDER build cannot lock out the new repair.
+    expect(cli).toContain('|| resolved_hq_is_managed_shadow()');
   });
 });

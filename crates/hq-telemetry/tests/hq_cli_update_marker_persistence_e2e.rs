@@ -250,16 +250,18 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
     }
 }
 
-/// HQ-DESKTOP-46 (Windows managed toolchain shadow): the durable marker is
-/// written ONLY when the repair genuinely fails. A repairable first episode (the
-/// pre-repair classification pass, or a converged repair) persists NO marker, so
-/// `should_auto_install` stays true and the next check self-heals; a repair that
-/// ran and could not heal the machine persists exactly ONE marker, exactly like a
-/// foreign layout. On base this exact npm shape (`<root>/npm-prefix` passed,
-/// `<root>/node/hq.cmd` resolved, delivered == latest, same managed root) is
-/// classified foreign-managed and ALWAYS persists the marker.
+/// HQ-DESKTOP-46 (Windows managed toolchain shadow): a managed shadow NEVER
+/// persists the durable blocking marker — that marker would gate the very install
+/// the repair runs on, so a transient Windows lock would permanently wedge
+/// auto-update. The pre-repair pass records nothing and captures nothing (the
+/// re-run reports); a repair that ran and could not heal the machine still
+/// records NO marker (so `should_auto_install` stays true and the next check
+/// retries the repair) but stays observable through one bounded capture. On base
+/// this exact npm shape (`<root>/npm-prefix` passed, `<root>/node/hq.cmd`
+/// resolved, delivered == latest, same managed root) is classified foreign-managed
+/// and ALWAYS persists the marker.
 #[test]
-fn a_managed_shadow_marker_is_written_only_when_the_repair_fails() {
+fn a_managed_shadow_never_writes_the_durable_marker() {
     let roots = [PathBuf::from("/local/IndigoHQ/toolchain")];
     let ctx = |repair| PostInstallContext {
         executor: InstallExecutor::Npm,
@@ -278,8 +280,8 @@ fn a_managed_shadow_marker_is_written_only_when_the_repair_fails() {
         managed_shadow_repair: repair,
     };
 
-    // Repairable first pass: no durable marker and no capture — the caller repairs
-    // and re-runs, and `should_auto_install` stays true for this version.
+    // Pre-repair pass: no durable marker and no capture — the caller repairs and
+    // re-runs, and `should_auto_install` stays true for this version.
     let (records, captures) = drive_success_path(&ctx(ManagedShadowRepair::NotAttempted));
     assert_eq!(
         records, 0,
@@ -287,11 +289,12 @@ fn a_managed_shadow_marker_is_written_only_when_the_repair_fails() {
     );
     assert_eq!(captures, 0, "the re-run reports, not the pre-repair pass");
 
-    // Repair ran and the machine is still shadowed: persist exactly one marker.
+    // Repair ran and the machine is still shadowed: STILL no durable marker (so the
+    // next check retries the repair), but one bounded capture keeps it observable.
     let (records, captures) = drive_success_path(&ctx(ManagedShadowRepair::RepairFailed));
     assert_eq!(
-        records, 1,
-        "an unrepairable managed shadow persists exactly one durable marker"
+        records, 0,
+        "a managed shadow must never persist the durable marker, even on repair failure"
     );
-    assert_eq!(captures, 1);
+    assert_eq!(captures, 1, "an unrepaired shadow stays observable once");
 }

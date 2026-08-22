@@ -301,7 +301,11 @@ describe('master automatic-updates switch', () => {
     // delivery evidence plus the executed reading alone.
     expect(cliUpdateCore).not.toContain('PnpmMisdirected');
     expect(cliUpdateCore).not.toContain('"pnpm-misdirected"');
-    expect(normalize(cliUpdateCore)).toContain('!matches!(self, Self::ResolutionShortfall)');
+    // A resolution shortfall never blocks; a managed shadow does not either (it
+    // is healed by the repair, and blocking would wedge that repair).
+    expect(normalize(cliUpdateCore)).toContain(
+      '!matches!(self, Self::ResolutionShortfall | Self::ManagedShadowed)',
+    );
 
     const pnpmBranch = cliUpdate.slice(
       cliUpdate.indexOf('async fn install_hq_cli_update_via_pnpm('),
@@ -638,5 +642,18 @@ describe('installs the CLI when the machine has none', () => {
     expect(repairBody).toContain('decide_post_install(&PostInstallContext {');
     expect(repairBody).toContain('managed_shadow_repair: repair_outcome,');
     expect(repairBody).toContain('apply_post_install_with_app(app, &outcome)');
+
+    // A managed shadow NEVER durably blocks (that would wedge the repair on a
+    // transient Windows lock): core excludes it from may_block_auto_update, and
+    // the repair-failure path is bounded by the non-blocking episode key instead.
+    expect(cliUpdateCore).toContain('Self::ResolutionShortfall | Self::ManagedShadowed');
+    expect(repairBody).toContain('non_convergent_episode_markers()');
+    expect(repairBody).toContain('record_nonblocking_episode');
+
+    // The checker re-attempts the install on the shadow shape, so a durable
+    // marker written by an OLDER build cannot lock out the new repair.
+    expect(cliUpdate).toContain('|| resolved_hq_is_managed_shadow()');
+    expect(cliUpdate).toContain('is_managed_shadow_shape(');
+    expect(cliUpdateCore).toContain('pub fn is_managed_shadow_shape(');
   });
 });
