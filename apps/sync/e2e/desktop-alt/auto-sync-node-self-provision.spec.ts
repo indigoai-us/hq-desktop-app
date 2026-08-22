@@ -197,4 +197,55 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
     );
     expect(installDepsRs).toContain('[node] checksum verification failed');
   });
+
+  it('retries the managed-Node download with bounded, explicit timeouts (HQ-DESKTOP-5A)', () => {
+    // The reported outage: the Windows managed-Node zip was fetched with a single
+    // `reqwest::blocking::get`, whose default overall timeout is 30s and which is
+    // tried exactly once. One transient blip — or a link that can't sustain
+    // ~9.3 Mbit/s for the whole 33 MiB request — became a terminal
+    // NodeUnprovisioned bail that parked auto-sync for a 15-minute repair
+    // cooldown and paged #hq-alerts. The fix is a bounded retry over an
+    // explicitly time-boxed client.
+
+    // The one-shot, unbounded fetch is gone.
+    expect(installDepsRs).not.toContain('reqwest::blocking::get(');
+
+    // Replaced by a client that bounds both the connect phase and the whole
+    // request, well under the 15-minute slot.
+    expect(installDepsRs).toContain('reqwest::blocking::Client::builder()');
+    expect(installDepsRs).toContain('.connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)');
+    expect(installDepsRs).toContain('.timeout(DOWNLOAD_ATTEMPT_TIMEOUT)');
+    expect(installDepsRs).toContain('const DOWNLOAD_ATTEMPTS');
+    expect(installDepsRs).toContain('const DOWNLOAD_CONNECT_TIMEOUT');
+    expect(installDepsRs).toContain('const DOWNLOAD_ATTEMPT_TIMEOUT');
+    expect(installDepsRs).toContain('const DOWNLOAD_BACKOFFS');
+
+    // The download budget is bounded against the repair cooldown, which is now
+    // crate-visible precisely so the invariant can be asserted in Rust.
+    expect(syncRs).toContain('pub(crate) const TOOLCHAIN_REPAIR_COOLDOWN');
+
+    // The causeless `{e}` Display is replaced by a cause-chain walker, wired into
+    // the Node-zip read path along with how far the transfer got.
+    expect(installDepsRs).toContain('fn describe_error_chain');
+    expect(installDepsRs).toContain('describe_error_chain(&e)');
+    expect(installDepsRs).toContain('({} received)');
+
+    // Checksum verify-then-activate on the downloaded bytes is untouched.
+    expect(installDepsRs).toContain('verify_sha256_bytes("Node zip", &bytes, expected_sha)');
+
+    // The Rust regression proof of this contract lives in these Windows-gated
+    // unit tests (run by windows-check.yml's `cargo test ... --bins`).
+    expect(installDepsRs).toContain(
+      'fn a_transient_download_failure_is_retried_and_can_succeed',
+    );
+    expect(installDepsRs).toContain(
+      'fn download_retries_are_bounded_and_report_the_attempt_count',
+    );
+    expect(installDepsRs).toContain('fn a_terminal_http_status_is_not_retried');
+    expect(installDepsRs).toContain('fn the_download_client_bounds_every_wait');
+    expect(installDepsRs).toContain(
+      'fn the_total_download_budget_stays_inside_the_repair_slot',
+    );
+    expect(installDepsRs).toContain('fn a_download_failure_reports_its_cause_chain');
+  });
 });

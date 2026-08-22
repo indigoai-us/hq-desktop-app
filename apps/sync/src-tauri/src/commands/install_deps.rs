@@ -2516,28 +2516,179 @@ fn require_http_success(status: u16, label: &str) -> Result<(), String> {
     }
 }
 
+// ── Bounded, retrying asset download ──────────────────────────────────────────
+// The managed-Node zip is ~33 MiB. The shipped code fetched it with a single
+// `reqwest::blocking::get`, whose default overall request timeout is 30s and
+// which is tried exactly once — so any transient transport blip, or a link that
+// cannot sustain ~9.3 Mbit/s for the whole request, turned into a terminal
+// NodeUnprovisioned bail that parked auto-sync for a full 15-minute repair
+// cooldown and paged #hq-alerts (HQ-DESKTOP-5A). These constants give the
+// download an explicit per-attempt budget and a small bounded retry so one blip
+// no longer costs a repair slot. The worst case
+// (DOWNLOAD_ATTEMPTS * DOWNLOAD_ATTEMPT_TIMEOUT + Σ DOWNLOAD_BACKOFFS) must stay
+// strictly under TOOLCHAIN_REPAIR_COOLDOWN so a repair never outlives its slot;
+// the_total_download_budget_stays_inside_the_repair_slot pins that.
+#[cfg(windows)]
+const DOWNLOAD_ATTEMPTS: usize = 3;
+#[cfg(windows)]
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+#[cfg(windows)]
+const DOWNLOAD_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+// One entry per gap between attempts (len == DOWNLOAD_ATTEMPTS - 1); no sleep
+// follows the final attempt.
+#[cfg(windows)]
+const DOWNLOAD_BACKOFFS: [std::time::Duration; 2] = [
+    std::time::Duration::from_secs(5),
+    std::time::Duration::from_secs(15),
+];
+
+// A response we should try again rather than surface: request timeout, "too many
+// requests", or any 5xx. Every other non-2xx (404, 403, 410, an unfollowed 3xx)
+// is terminal and fails on the first attempt.
+#[cfg(windows)]
+fn is_retryable_status(status: u16) -> bool {
+    status == 408 || status == 429 || (500..=599).contains(&status)
+}
+
+// Render an error together with its `source()` chain. reqwest collapses both a
+// blocking-client timeout and a mid-stream body error into `Kind::Decode`, whose
+// Display is the causeless string "error decoding response body"; the real cause
+// (timeout vs reset) lives only in `source()`. The shipped code formatted the
+// error with `{e}`, which prints only the top level, so every occurrence was
+// indistinguishable. Walking the chain here makes the next failure self-naming.
+#[cfg(windows)]
+fn describe_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut rendered = err.to_string();
+    let mut current = err.source();
+    while let Some(cause) = current {
+        let text = cause.to_string();
+        if !text.is_empty() && !rendered.contains(&text) {
+            rendered.push_str(": ");
+            rendered.push_str(&text);
+        }
+        current = cause.source();
+    }
+    rendered
+}
+
+#[cfg(windows)]
+fn human_bytes(n: usize) -> String {
+    const MB: f64 = 1_048_576.0;
+    const KB: f64 = 1024.0;
+    let value = n as f64;
+    if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else if value >= KB {
+        format!("{:.1} KB", value / KB)
+    } else {
+        format!("{n} B")
+    }
+}
+
 #[cfg(windows)]
 fn fetch_asset_with<F>(url: &str, label: &str, fetch: F) -> Result<Vec<u8>, String>
 where
-    F: FnOnce(&str) -> Result<DownloadedAsset, String>,
+    F: FnMut(&str) -> Result<DownloadedAsset, String>,
 {
-    let asset = fetch(url)?;
-    require_http_success(asset.status, label)?;
-    Ok(asset.bytes)
+    fetch_asset_with_backoffs(url, label, &DOWNLOAD_BACKOFFS, fetch)
+}
+
+// The retry engine, shared by every Windows asset download. The `fetch` closure
+// is injected (and bound `FnMut` so it can run more than once), which keeps this
+// seam pure and hermetic: the unit tests drive it with in-memory closures and no
+// network. `backoffs` is parameterised only so those tests can pass `&[]` and not
+// sleep; production always enters through `fetch_asset_with` with the real
+// schedule.
+#[cfg(windows)]
+fn fetch_asset_with_backoffs<F>(
+    url: &str,
+    label: &str,
+    backoffs: &[std::time::Duration],
+    mut fetch: F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(&str) -> Result<DownloadedAsset, String>,
+{
+    let started = std::time::Instant::now();
+    let mut last_err = format!("{label} download failed");
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        match fetch(url) {
+            Ok(asset) => {
+                let status = asset.status;
+                if (200..=299).contains(&status) {
+                    return Ok(asset.bytes);
+                }
+                if !is_retryable_status(status) {
+                    // Terminal status: fail on the first sight with the exact,
+                    // unchanged message require_http_success has always produced.
+                    require_http_success(status, label)?;
+                    return Ok(asset.bytes); // unreachable — status is non-2xx here
+                }
+                last_err = format!("{label} download returned HTTP status {status}");
+            }
+            // Any closure error (connect / TLS / read / decode) is retryable.
+            Err(e) => last_err = e,
+        }
+        if attempt < DOWNLOAD_ATTEMPTS {
+            debug_log(&format!(
+                "{label} download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed: {last_err}; retrying"
+            ));
+            if let Some(backoff) = backoffs.get(attempt - 1) {
+                std::thread::sleep(*backoff);
+            }
+        }
+    }
+    let elapsed = started.elapsed().as_secs();
+    Err(format!(
+        "{last_err} (attempt {DOWNLOAD_ATTEMPTS} of {DOWNLOAD_ATTEMPTS}, {elapsed}s)"
+    ))
 }
 
 #[cfg(windows)]
 fn download_bytes_checked(url: &str, label: &str) -> Result<Vec<u8>, String> {
-    fetch_asset_with(url, label, |url| {
-        let response = reqwest::blocking::get(url)
-            .map_err(|e| format!("Failed to fetch {label}: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("{label} download returned error: {e}"))?;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .timeout(DOWNLOAD_ATTEMPT_TIMEOUT)
+        .build()
+        .map_err(|e| {
+            format!(
+                "Failed to build {label} download client: {}",
+                describe_error_chain(&e)
+            )
+        })?;
+    fetch_asset_with(url, label, move |url| {
+        use std::io::Read as _;
+        // `.send()` returns once the status line is in, before the body is read.
+        let mut response = client
+            .get(url)
+            .send()
+            .map_err(|e| format!("Failed to fetch {label}: {}", describe_error_chain(&e)))?;
         let status = response.status().as_u16();
-        let bytes = response
-            .bytes()
-            .map_err(|e| format!("Failed to read {label} response: {e}"))?
-            .to_vec();
+        // Only a success response carries the asset worth buffering. Classify on
+        // the status BEFORE touching the body: for any non-2xx —
+        // fetch_asset_with_backoffs decides retryability from the status alone —
+        // reading the body would needlessly allocate a possibly huge or slow
+        // error page, burn the per-attempt timeout, and (worse) turn a terminal
+        // 404/403 whose body read stalls into a retryable read error that gets
+        // retried instead of failing on the first attempt.
+        if !(200..=299).contains(&status) {
+            return Ok(DownloadedAsset {
+                status,
+                bytes: Vec::new(),
+            });
+        }
+        // Stream into a buffer rather than `.bytes()` so a mid-stream failure can
+        // still report how far it got. The full zip is buffered in memory exactly
+        // as before; the pinned SHA-256 is verified by the caller on these bytes
+        // before anything is extracted or activated.
+        let mut bytes = Vec::new();
+        response.read_to_end(&mut bytes).map_err(|e| {
+            format!(
+                "Failed to read {label} response: {} ({} received)",
+                describe_error_chain(&e),
+                human_bytes(bytes.len())
+            )
+        })?;
         Ok(DownloadedAsset { status, bytes })
     })
 }
@@ -5140,6 +5291,184 @@ mod windows_tests {
             install_yq_windows_from_bytes(b"tampered", &sha, &target, |_| Ok(())).unwrap_err();
         assert!(err.contains("checksum mismatch"), "{err}");
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_transient_download_failure_is_retried_and_can_succeed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Base-failure pin (HQ-DESKTOP-5A). This source compiles unchanged at
+        // 34d67584 — where fetch_asset_with bound the closure FnOnce and ran it
+        // exactly once — and FAILS there: the transient first error propagates
+        // and provisioning ends, which is precisely the defect that turned one
+        // blip into a 15-minute NodeUnprovisioned outage. At the candidate the
+        // bounded retry runs the closure again and the download succeeds.
+        let calls = AtomicUsize::new(0);
+        let result = fetch_asset_with("https://example.invalid/node.zip", "Node zip", |_| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                // The exact causeless reqwest string the shipped code surfaced.
+                Err("Failed to read Node zip response: error decoding response body".to_string())
+            } else {
+                Ok(DownloadedAsset {
+                    status: 200,
+                    bytes: b"node".to_vec(),
+                })
+            }
+        });
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one retry after a transient failure"
+        );
+        assert_eq!(result.unwrap(), b"node".to_vec());
+    }
+
+    #[test]
+    fn download_retries_are_bounded_and_report_the_attempt_count() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Always-failing transient error. Uses the zero-backoff inner entry so
+        // the bound is proven without waiting; fetch_asset_with wires the real
+        // schedule (asserted separately by the budget test).
+        let calls = AtomicUsize::new(0);
+        let err =
+            fetch_asset_with_backoffs("https://example.invalid/node.zip", "Node zip", &[], |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("error decoding response body".to_string())
+            })
+            .unwrap_err();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DOWNLOAD_ATTEMPTS,
+            "retries are capped at DOWNLOAD_ATTEMPTS — no unbounded loop"
+        );
+        assert!(
+            err.contains(&format!(
+                "attempt {DOWNLOAD_ATTEMPTS} of {DOWNLOAD_ATTEMPTS}"
+            )),
+            "final error names the attempt count: {err}"
+        );
+        // The underlying causeless reason is preserved, not swallowed.
+        assert!(err.contains("error decoding response body"), "{err}");
+    }
+
+    #[test]
+    fn a_terminal_http_status_is_not_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // A 404 is terminal: attempted exactly once, with the unchanged message
+        // the existing yq test also pins.
+        let calls = AtomicUsize::new(0);
+        let err = fetch_asset_with("https://example.invalid/node.zip", "Node zip", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(DownloadedAsset {
+                status: 404,
+                bytes: b"nope".to_vec(),
+            })
+        })
+        .unwrap_err();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "terminal status is not retried"
+        );
+        assert!(err.contains("HTTP status 404"), "{err}");
+        assert!(
+            !err.contains("attempt"),
+            "terminal message stays unchanged: {err}"
+        );
+
+        // A retryable 503, by contrast, is attempted DOWNLOAD_ATTEMPTS times.
+        // Zero backoff so the assertion doesn't wait.
+        let calls = AtomicUsize::new(0);
+        let err =
+            fetch_asset_with_backoffs("https://example.invalid/node.zip", "Node zip", &[], |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(DownloadedAsset {
+                    status: 503,
+                    bytes: Vec::new(),
+                })
+            })
+            .unwrap_err();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DOWNLOAD_ATTEMPTS,
+            "a 5xx is retried"
+        );
+        assert!(err.contains("HTTP status 503"), "{err}");
+    }
+
+    #[test]
+    fn the_download_client_bounds_every_wait() {
+        use std::time::Duration;
+        // Both waits are explicit — the shipped code left the connect phase
+        // unbounded and capped the whole request at reqwest's 30s default. A 180s
+        // per-attempt budget lowers the sustained-rate floor for the ~33 MiB zip
+        // from ~9.3 Mbit/s to ~1.6 Mbit/s; a dead connection still fails fast on
+        // the 20s connect cap.
+        assert_eq!(DOWNLOAD_CONNECT_TIMEOUT, Duration::from_secs(20));
+        assert_eq!(DOWNLOAD_ATTEMPT_TIMEOUT, Duration::from_secs(180));
+        assert!(DOWNLOAD_CONNECT_TIMEOUT < DOWNLOAD_ATTEMPT_TIMEOUT);
+        assert_eq!(DOWNLOAD_BACKOFFS.len(), DOWNLOAD_ATTEMPTS - 1);
+    }
+
+    #[test]
+    fn the_total_download_budget_stays_inside_the_repair_slot() {
+        use std::time::Duration;
+        // A repair holds TOOLCHAIN_REPAIR_COOLDOWN's shared slot. If the
+        // worst-case download could exceed it, a retry would still be running
+        // when the next slot opened — so the ceiling must be strictly below the
+        // cooldown. This is the invariant made mechanical.
+        let backoff_total: Duration = DOWNLOAD_BACKOFFS.iter().sum();
+        let worst_case = DOWNLOAD_ATTEMPT_TIMEOUT * (DOWNLOAD_ATTEMPTS as u32) + backoff_total;
+        assert!(
+            worst_case < crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN,
+            "worst-case download {worst_case:?} must stay under the repair cooldown {:?}",
+            crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN
+        );
+    }
+
+    #[test]
+    fn a_download_failure_reports_its_cause_chain() {
+        // Guards against a regression to the causeless `{e}` Display: a reqwest
+        // Kind::Decode shows only "error decoding response body" at the top and
+        // hides the timeout/reset in source(). describe_error_chain must surface
+        // both layers.
+        #[derive(Debug)]
+        struct Layer {
+            msg: &'static str,
+            source: Option<Box<Layer>>,
+        }
+        impl std::fmt::Display for Layer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.msg)
+            }
+        }
+        impl std::error::Error for Layer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.source
+                    .as_deref()
+                    .map(|s| s as &(dyn std::error::Error + 'static))
+            }
+        }
+
+        let err = Layer {
+            msg: "error decoding response body",
+            source: Some(Box::new(Layer {
+                msg: "operation timed out",
+                source: None,
+            })),
+        };
+        let rendered = describe_error_chain(&err);
+        assert!(
+            rendered.contains("error decoding response body"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("operation timed out"), "{rendered}");
+
+        // A single-layer error renders once, with no trailing separator.
+        let flat = Layer {
+            msg: "plain failure",
+            source: None,
+        };
+        assert_eq!(describe_error_chain(&flat), "plain failure");
     }
 
     #[test]

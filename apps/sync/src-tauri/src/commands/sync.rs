@@ -1365,7 +1365,12 @@ const MIN_NODE_MAJOR: u32 = hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR;
 /// Minimum gap between managed-Node repair attempts. A machine that cannot
 /// install (offline, locked down, out of disk) must not re-download the
 /// runtime on every click of Sync Now.
-const TOOLCHAIN_REPAIR_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+///
+/// `pub(crate)` so the managed-download budget invariant can be asserted against
+/// it in a unit test: one repair's worst-case download time must stay strictly
+/// under this slot so a retry can never outlive the cooldown it holds
+/// (install_deps::windows_tests::the_total_download_budget_stays_inside_the_repair_slot).
+pub(crate) const TOOLCHAIN_REPAIR_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 
 /// Parse the major from `node --version` output (`v20.11.1` → `20`).
 fn parse_node_major(version_output: &str) -> Option<u32> {
