@@ -1,0 +1,122 @@
+name: Nag unreleased commits on main
+
+# Weekly reminder that `main` is carrying work nobody has released.
+#
+# A commit counts as UNRELEASED when it is reachable from `main` but not from
+# any STABLE tag. Stable means `vMAJOR.MINOR.PATCH` with no prerelease suffix —
+# `-rc.N`, `-beta.N` and `-alpha.N` tags deliberately do NOT silence the nag,
+# because a prerelease is not a release.
+#
+# Release sync-back commits (`chore(release): …`) are ignored. The publish
+# workflow pushes them to `main` *after* cutting the tag, so they are
+# unreachable from that tag by construction and would nag forever otherwise.
+#
+# Releasing this repo is one command — `git push origin v<next>` — so the fix
+# for a nag is always to cut the tag (or to say out loud why you are holding).
+#
+# Requires repo secret SLACK_BOT_TOKEN_RELEASE_MANAGER (the same release-manager
+# bot hq-core's `release-pr-nag.yml` uses). The bot MUST be a member of #hq-dev.
+# Without the secret the job logs a warning and exits 0 rather than failing.
+
+on:
+  schedule:
+    # Mondays 15:00 UTC (~08:00 PT). Staggered against the sibling repos'
+    # nags so all four do not land in #hq-dev in the same second.
+    - cron: '30 15 * * 1'
+  workflow_dispatch:
+    inputs:
+      threshold_hours:
+        description: 'Age of the OLDEST unreleased commit, in hours, before nagging (default 24)'
+        required: false
+        default: '24'
+
+permissions:
+  contents: read
+
+jobs:
+  nag:
+    name: Nag when main has unreleased commits
+    if: github.repository == 'indigoai-us/hq-desktop-app'
+    runs-on: ubuntu-latest
+    env:
+      SLACK_TOKEN: ${{ secrets.SLACK_BOT_TOKEN_RELEASE_MANAGER }}
+      SLACK_CHANNEL: '#hq-dev'
+      THRESHOLD: ${{ github.event.inputs.threshold_hours || '24' }}
+    steps:
+      - name: Check out full history and tags
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Find unreleased commits on main and nag
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SLACK_TOKEN:-}" ]; then
+            echo "::warning::SLACK_BOT_TOKEN_RELEASE_MANAGER is not set on this repository; cannot post the nag."
+            exit 0
+          fi
+
+          git fetch --force --tags --quiet origin main
+
+          # Newest stable tag reachable from main — display only.
+          LAST_TAG="$(git tag --list 'v*' --merged origin/main --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+
+          # Commits on main not reachable from ANY stable tag. `--exclude` applies
+          # to the `--tags` glob that follows it, so `v*-*` drops every prerelease.
+          git log origin/main --format='%H%x09%ct%x09%s' \
+            --not --exclude='v*-*' --tags='v*' > /tmp/unreleased_all.tsv
+
+          # Drop the post-tag release sync-back commits.
+          awk -F'\t' '$3 !~ /^chore\(release\)/' /tmp/unreleased_all.tsv > /tmp/unreleased.tsv
+
+          COUNT="$(wc -l < /tmp/unreleased.tsv | tr -d ' ')"
+          echo "Last stable tag: ${LAST_TAG:-<none>}"
+          echo "Unreleased commits on main: ${COUNT}"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "main is fully released. Nothing to nag about."
+            exit 0
+          fi
+
+          OLDEST_TS="$(tail -1 /tmp/unreleased.tsv | cut -f2)"
+          NOW="$(date -u +%s)"
+          AGE_H=$(( (NOW - OLDEST_TS) / 3600 ))
+          echo "Oldest unreleased commit age: ${AGE_H}h (threshold ${THRESHOLD}h)"
+
+          if [ "$AGE_H" -lt "$THRESHOLD" ]; then
+            echo "Under threshold. Skipping."
+            exit 0
+          fi
+
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          DAYS=$(( AGE_H / 24 ))
+          if [ -n "$LAST_TAG" ]; then
+            LINK="https://github.com/${GITHUB_REPOSITORY}/compare/${LAST_TAG}...main"
+            TAG_LABEL="\`${LAST_TAG}\`"
+          else
+            LINK="https://github.com/${GITHUB_REPOSITORY}/commits/main"
+            TAG_LABEL="_never released_"
+          fi
+
+          # Oldest-first sample of what is waiting, capped at 5 lines.
+          SAMPLE="$(tail -5 /tmp/unreleased.tsv | tac | cut -f3 | sed 's/^/• /')"
+          if [ "$COUNT" -gt 5 ]; then
+            SAMPLE="${SAMPLE}"$'\n'"• …and $(( COUNT - 5 )) more"
+          fi
+
+          TEXT=":package: *\`${REPO_NAME}\`: ${COUNT} commit(s) have been sitting unreleased on \`main\` for ~${AGE_H}h (${DAYS}d).* Last stable release: ${TAG_LABEL} — prereleases don't count. Shipping is one command: \`git push origin v<next>\`. <${LINK}|See what's waiting>."$'\n'"${SAMPLE}"
+
+          RESP="$(curl -s -X POST \
+            -H "Authorization: Bearer ${SLACK_TOKEN}" \
+            -H 'Content-type: application/json; charset=utf-8' \
+            --data "$(jq -nc --arg c "$SLACK_CHANNEL" --arg t "$TEXT" '{channel:$c,text:$t,unfurl_links:false}')" \
+            https://slack.com/api/chat.postMessage)"
+          OK="$(echo "$RESP" | jq -r '.ok')"
+          echo "Slack post ok=${OK} err=$(echo "$RESP" | jq -r '.error // "-"')"
+          if [ "$OK" != "true" ]; then
+            echo "::error::Slack rejected the nag: $(echo "$RESP" | jq -r '.error // "unknown"')"
+            exit 1
+          fi
