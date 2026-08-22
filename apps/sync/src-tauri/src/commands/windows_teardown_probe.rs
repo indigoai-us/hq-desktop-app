@@ -31,10 +31,13 @@
 //! the existing 6s grace, and the free `SM_SHUTTINGDOWN` flag is read at
 //! resolution — so supervisor recovery and process teardown are never delayed.
 
-use hq_desktop_core::sync_outcome::{
-    teardown_verdict, ShuttingDownReading, TeardownLogClass, TeardownVerdict,
-};
+// These three pure types back `TeardownReading` on every platform; the
+// `teardown_verdict` combinator is only reachable on Windows, so it is imported
+// under the Windows cfg to keep the macOS/Linux clippy `-D warnings` build clean.
+use hq_desktop_core::sync_outcome::{ShuttingDownReading, TeardownLogClass, TeardownVerdict};
 
+#[cfg(target_os = "windows")]
+use hq_desktop_core::sync_outcome::teardown_verdict;
 #[cfg(target_os = "windows")]
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "windows")]
@@ -82,11 +85,16 @@ const TEARDOWN_PER_QUERY_BUDGET: Duration = Duration::from_millis(500);
 #[cfg(target_os = "windows")]
 const TEARDOWN_RETRY_INTERVAL: Duration = Duration::from_millis(300);
 
-/// Only records within this window of the sweep are considered, so a stale
-/// shutdown record from an earlier session can never confirm an unrelated kill.
-/// Applied in the query itself via `timediff(@SystemTime)`.
+/// How far BEFORE the watcher exit a teardown-initiation record may have been
+/// logged and still count. A forced end-session logs its User32 1074 /
+/// Kernel-General 13 / Kernel-Power 109 record moments before it terminates the
+/// windowless child, so a small pre-exit margin catches the real record. The
+/// query window is anchored to the deferral instant, not to wall-clock "now":
+/// `now - (elapsed_since_deferral + this_margin)`. That lower bound is what
+/// stops a persisted shutdown record from a PREVIOUS boot — still young in
+/// absolute terms right after a reboot — from confirming an unrelated kill.
 #[cfg(target_os = "windows")]
-const TEARDOWN_RECORD_MAX_AGE_MS: u64 = 180_000;
+const TEARDOWN_PRE_EXIT_MARGIN_MS: u64 = 15_000;
 
 /// The cached result of the concurrent log sweep. `None` = sweep not completed
 /// yet; `Some(class)` = completed with that class (which may itself be
@@ -105,14 +113,19 @@ fn teardown_log_sweep_slot() -> &'static Mutex<Option<TeardownLogClass>> {
 /// the cache to "not yet swept" and repopulates it. A no-op on non-Windows.
 #[cfg(target_os = "windows")]
 pub fn kick_teardown_log_sweep() {
+    // Anchor the query window to THIS deferral: the record we accept must be no
+    // older than `elapsed_since_here + TEARDOWN_PRE_EXIT_MARGIN_MS`, which a boot
+    // record from an earlier session cannot satisfy once the app has been up
+    // longer than the margin.
+    let deferred_at = std::time::Instant::now();
     {
         let mut slot = teardown_log_sweep_slot()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *slot = None;
     }
-    std::thread::spawn(|| {
-        let class = read_system_teardown_log_class();
+    std::thread::spawn(move || {
+        let class = read_system_teardown_log_class(deferred_at);
         let mut slot = teardown_log_sweep_slot()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -128,10 +141,12 @@ pub fn read_teardown_reading() -> TeardownReading {
     let shutting_down = read_shutting_down_now();
     // If the sweep has not completed, treat the log half as unreadable — which
     // contributes `Unknown` unless `SM_SHUTTINGDOWN` alone already confirms.
-    let log = teardown_log_sweep_slot()
+    // Copy the cached `Option` out of the guard (both it and `TeardownLogClass`
+    // are `Copy`) so nothing is moved out of the lock.
+    let cached: Option<TeardownLogClass> = *teardown_log_sweep_slot()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .unwrap_or(TeardownLogClass::Unavailable);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let log = cached.unwrap_or(TeardownLogClass::Unavailable);
     let verdict = teardown_verdict(shutting_down, log);
     TeardownReading {
         verdict,
@@ -162,13 +177,18 @@ fn read_shutting_down_now() -> ShuttingDownReading {
 /// verdict cannot mistake "unreadable" for "verifiably not tearing down"),
 /// `None` when the channel is readable but holds no bracketing record.
 #[cfg(target_os = "windows")]
-fn read_system_teardown_log_class() -> TeardownLogClass {
+fn read_system_teardown_log_class(deferred_at: std::time::Instant) -> TeardownLogClass {
     use hq_desktop_core::sync_outcome::classify_teardown_log_record;
     let deadline = std::time::Instant::now() + TEARDOWN_READ_BUDGET;
     let mut query_ever_ran = false;
     loop {
+        // Records no older than "time since the deferral began" plus the pre-exit
+        // margin. Recomputed each pass so the lower bound stays pinned to the
+        // deferral instant even as the bounded poll advances.
+        let max_age_ms = (deferred_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+            .saturating_add(TEARDOWN_PRE_EXIT_MARGIN_MS);
         if let Some(xmls) =
-            query_system_teardown_xml(TEARDOWN_MAX_RECORDS, TEARDOWN_PER_QUERY_BUDGET)
+            query_system_teardown_xml(TEARDOWN_MAX_RECORDS, TEARDOWN_PER_QUERY_BUDGET, max_age_ms)
         {
             query_ever_ran = true;
             // Newest-first: the first bracketing record wins.
@@ -191,13 +211,20 @@ fn read_system_teardown_log_class() -> TeardownLogClass {
 }
 
 /// Query the System channel for the documented shutdown/logoff-initiation
-/// records within `TEARDOWN_RECORD_MAX_AGE_MS`, newest-first, capped and
-/// budgeted, rendering each to event XML for the pure classifier. Mirrors
-/// `process::query_wer_application_error_xml` exactly. `None` means the channel
-/// itself could not be opened (distinct from an empty-but-successful query).
+/// records no older than `max_age_ms`, newest-first, capped and budgeted,
+/// rendering each to event XML for the pure classifier. Mirrors
+/// `process::query_wer_application_error_xml`. `None` means the channel could
+/// not be opened OR a genuine read error interrupted enumeration — both are
+/// "unreadable", kept distinct from an empty-but-successful query so a teardown
+/// record we could not read is never reported as "verifiably absent".
 #[cfg(target_os = "windows")]
-fn query_system_teardown_xml(max_records: usize, budget: Duration) -> Option<Vec<String>> {
+fn query_system_teardown_xml(
+    max_records: usize,
+    budget: Duration,
+    max_age_ms: u64,
+) -> Option<Vec<String>> {
     use std::time::Instant;
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_ITEMS};
     use windows_sys::Win32::System::EventLog::{
         EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryReverseDirection,
     };
@@ -207,7 +234,7 @@ fn query_system_teardown_xml(max_records: usize, budget: Duration) -> Option<Vec
         "*[System[((Provider[@Name='User32'] and (EventID=1074)) \
          or (Provider[@Name='Microsoft-Windows-Kernel-General'] and (EventID=13)) \
          or (Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=109))) \
-         and TimeCreated[timediff(@SystemTime) <= {TEARDOWN_RECORD_MAX_AGE_MS}]]]"
+         and TimeCreated[timediff(@SystemTime) <= {max_age_ms}]]]"
     ));
     let deadline = Instant::now() + budget;
     let mut out: Vec<String> = Vec::new();
@@ -231,7 +258,20 @@ fn query_system_teardown_xml(max_records: usize, budget: Duration) -> Option<Vec
             let mut event: isize = 0;
             let mut returned: u32 = 0;
             let ok = EvtNext(results, 1, &mut event as *mut isize, 250, 0, &mut returned);
-            if ok == 0 || returned == 0 || event == 0 {
+            if ok == 0 {
+                // Distinguish a clean end-of-results from a genuine read error.
+                // The former is an empty-but-successful query; the latter must
+                // degrade to `None` (unavailable) so a teardown record we could
+                // not read is never reported as "verifiably absent".
+                let last_error = GetLastError();
+                EvtClose(results);
+                return if last_error == ERROR_NO_MORE_ITEMS {
+                    Some(out)
+                } else {
+                    None
+                };
+            }
+            if returned == 0 || event == 0 {
                 break;
             }
             if let Some(xml) = render_event_xml(event) {
@@ -334,14 +374,16 @@ mod windows_tests {
     /// and that an unreadable channel would fail closed to `Unavailable`.
     #[test]
     fn the_system_channel_opens_unelevated_and_closes_its_handles() {
-        let xmls = query_system_teardown_xml(TEARDOWN_MAX_RECORDS, TEARDOWN_PER_QUERY_BUDGET);
+        let xmls =
+            query_system_teardown_xml(TEARDOWN_MAX_RECORDS, TEARDOWN_PER_QUERY_BUDGET, 60_000);
         assert!(
             xmls.is_some(),
             "the System channel must open unelevated on a stock runner"
         );
-        // A stock runner has not been forced-shut-down mid-test, so the recent
-        // window holds no bracketing record; the class is None, never bracketing.
-        let class = read_system_teardown_log_class();
+        // A stock runner has not been forced-shut-down mid-test, so the
+        // deferral-anchored window holds no bracketing record; the class is
+        // None, never bracketing.
+        let class = read_system_teardown_log_class(std::time::Instant::now());
         assert!(
             !class.is_bracketing(),
             "a healthy runner must not surface a bracketing teardown record"
