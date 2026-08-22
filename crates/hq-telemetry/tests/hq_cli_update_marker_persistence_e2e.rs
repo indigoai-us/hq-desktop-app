@@ -1,10 +1,11 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor, ManagedShadowRepair,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
     NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::test::with_captured_events_options;
@@ -139,6 +140,8 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
                 exit_status: "0".to_string(),
                 output_len: 64,
             }),
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepair::NotAttempted,
         },
         5,
     );
@@ -179,6 +182,8 @@ fn pnpm_marker_ctx(
             exit_status: "0".to_string(),
             output_len: 96,
         }),
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
     }
 }
 
@@ -243,4 +248,53 @@ fn the_durable_marker_is_gated_on_delivery_evidence_not_the_direction_probe() {
         );
         assert_eq!(captures, 1);
     }
+}
+
+/// HQ-DESKTOP-46 (Windows managed toolchain shadow): a managed shadow NEVER
+/// persists the durable blocking marker — that marker would gate the very install
+/// the repair runs on, so a transient Windows lock would permanently wedge
+/// auto-update. The pre-repair pass records nothing and captures nothing (the
+/// re-run reports); a repair that ran and could not heal the machine still
+/// records NO marker (so `should_auto_install` stays true and the next check
+/// retries the repair) but stays observable through one bounded capture. On base
+/// this exact npm shape (`<root>/npm-prefix` passed, `<root>/node/hq.cmd`
+/// resolved, delivered == latest, same managed root) is classified foreign-managed
+/// and ALWAYS persists the marker.
+#[test]
+fn a_managed_shadow_never_writes_the_durable_marker() {
+    let roots = [PathBuf::from("/local/IndigoHQ/toolchain")];
+    let ctx = |repair| PostInstallContext {
+        executor: InstallExecutor::Npm,
+        before_bin: "/local/IndigoHQ/toolchain/node/hq.cmd",
+        after_bin: "/local/IndigoHQ/toolchain/node/hq.cmd",
+        before_version: Some("5.101.0"),
+        after_version: Some("5.101.0"),
+        latest: "5.101.7",
+        npm_prefix_passed: Some("/local/IndigoHQ/toolchain/npm-prefix"),
+        delivered_version: Some("5.101.7"),
+        installer_bin: "/local/IndigoHQ/toolchain/node/npm.cmd",
+        already_blocked: false,
+        nonblocking_episode_keys: &[],
+        pnpm: None,
+        managed_roots: &roots,
+        managed_shadow_repair: repair,
+    };
+
+    // Pre-repair pass: no durable marker and no capture — the caller repairs and
+    // re-runs, and `should_auto_install` stays true for this version.
+    let (records, captures) = drive_success_path(&ctx(ManagedShadowRepair::NotAttempted));
+    assert_eq!(
+        records, 0,
+        "a repairable managed shadow must not wedge auto-update"
+    );
+    assert_eq!(captures, 0, "the re-run reports, not the pre-repair pass");
+
+    // Repair ran and the machine is still shadowed: STILL no durable marker (so the
+    // next check retries the repair), but one bounded capture keeps it observable.
+    let (records, captures) = drive_success_path(&ctx(ManagedShadowRepair::RepairFailed));
+    assert_eq!(
+        records, 0,
+        "a managed shadow must never persist the durable marker, even on repair failure"
+    );
+    assert_eq!(captures, 1, "an unrepaired shadow stays observable once");
 }
