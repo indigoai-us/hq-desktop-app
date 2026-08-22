@@ -210,3 +210,52 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(syncRs).toContain('hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR');
   });
 });
+
+/**
+ * HQ-DESKTOP-5B / HQ-DESKTOP-5C — the same auto-updater path, two failure legs
+ * that this cluster's telemetry showed re-paging on every 6-hourly check:
+ *
+ *   5B (ENOTEMPTY:rename:global-lib-node-modules): an interrupted global install
+ *   left `hq-cli`/`.hq-cli-*` debris under `<...>/node_modules/@indigoai-us`, so
+ *   every later install's rename-aside failed ENOTEMPTY. The app already owned
+ *   the remedy, but it was gated behind a resolved prefix — None in 61/61 events
+ *   — so the else arm skipped it forever. The rung now recovers the scope from
+ *   the absolute path npm itself named when no prefix resolves, with the deletion
+ *   still confined to the `hq-cli` + `.hq-cli-*` children.
+ *
+ *   5C (EIDLETIMEOUT:unknown:none): a registry socket idle timeout — a transient
+ *   network flake — was paged at Error only because its code was missing from the
+ *   transient allow-list beside its five siblings.
+ *
+ * Source-contract harness, same style as the self-provision spec above.
+ */
+describe('hq-CLI updater recovers a prefix-less ENOTEMPTY wedge and absorbs a registry idle timeout (HQ-DESKTOP-5B/5C)', () => {
+  const cli = readRepoFile('src-tauri/src/commands/hq_cli_update.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+
+  it('resolves the ENOTEMPTY cleanup scope from the npm-reported path when no prefix resolved', () => {
+    // Prefix-derived scope first; npm-path-derived scope only when none resolved.
+    expect(cli).toContain('partial_install_scope_dir(cleanup_prefix)');
+    expect(cli).toContain('partial_install_scope_from_npm_path(&detail)');
+    expect(cli).toContain('"cleanup-plain-npm-path"');
+    // The npm-path derivation is a pure, fail-closed core helper that requires an
+    // exact `node_modules/@indigoai-us` component pair.
+    expect(core).toContain('pub fn partial_install_scope_from_npm_path(');
+    expect(core).toContain('components[index - 1] == "node_modules"');
+  });
+
+  it('keeps the deletion set confined to `hq-cli` and `.hq-cli-*` via one shared cleaner', () => {
+    // Both scope sources delete through the ONE scope-taking cleaner, whose set is
+    // exactly the `hq-cli` package dir and any `.hq-cli-*` staging dir — never the
+    // scope directory itself, never a sibling package.
+    expect(cli).toContain('fn clean_partial_hq_cli_install_scope(scope: &Path)');
+    expect(cli).toContain('clean_partial_hq_cli_install_scope(&scope)');
+    expect(cli).toContain('scope.join("hq-cli")');
+    expect(cli).toContain('.starts_with(".hq-cli-")');
+  });
+
+  it('absorbs an EIDLETIMEOUT registry idle timeout like its transient siblings (HQ-DESKTOP-5C)', () => {
+    expect(core).toContain('fn is_expected_transient_registry_failure(');
+    expect(core).toContain('"EIDLETIMEOUT"');
+  });
+});

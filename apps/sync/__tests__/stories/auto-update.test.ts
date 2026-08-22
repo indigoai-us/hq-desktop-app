@@ -442,6 +442,34 @@ describe('master automatic-updates switch', () => {
     );
   });
 
+  it('recovers a prefix-less ENOTEMPTY wedge from the npm-reported scope and absorbs EIDLETIMEOUT (HQ-DESKTOP-5B/5C)', () => {
+    const core = normalize(cliUpdateCore);
+    // 5B: the ENOTEMPTY rung resolves its cleanup scope from the resolved prefix
+    // first and, when none resolved (npm_prefix_known=false in 61/61 events),
+    // from the absolute @indigoai-us path npm itself named — so the prefix-less
+    // wedge is finally remediated instead of skipped by the old else arm.
+    expect(cliUpdate).toContain('partial_install_scope_dir(cleanup_prefix)');
+    expect(cliUpdate).toContain('partial_install_scope_from_npm_path(&detail)');
+    expect(cliUpdate).toContain('"cleanup-plain-npm-path"');
+    // The scope derivation is a pure, fail-closed helper: it only accepts an
+    // absolute path whose `@indigoai-us` component sits directly under an exact
+    // `node_modules` component.
+    expect(cliUpdateCore).toContain('pub fn partial_install_scope_from_npm_path(');
+    expect(core).toContain('components[index - 1] == "node_modules"');
+    // The deletion set stays exactly `hq-cli` + `.hq-cli-*`, shared by BOTH scope
+    // sources through the one scope-taking cleaner.
+    expect(cliUpdate).toContain('fn clean_partial_hq_cli_install_scope(scope: &Path)');
+    expect(cliUpdate).toContain('clean_partial_hq_cli_install_scope(&scope)');
+    expect(cliUpdate).toContain('scope.join("hq-cli")');
+    expect(cliUpdate).toContain('.starts_with(".hq-cli-")');
+    // 5C: EIDLETIMEOUT joins the transient-registry allow-list so a registry idle
+    // timeout is absorbed like its siblings instead of paging at Error.
+    expect(cliUpdateCore).toContain('"EIDLETIMEOUT"');
+    // A genuinely unremovable wedge now mints a per-version repeat-guard key, so
+    // it pages once per published CLI version instead of every 6-hourly check.
+    expect(core).toContain('unexpected|{code}|{syscall}|{path_shape}');
+  });
+
   it('classifies an unsupported user Node and self-heals it before reporting (HQ-DESKTOP-56)', () => {
     const core = normalize(cliUpdateCore);
     // Core publishes the floor as the single source of truth and a new kind for

@@ -426,6 +426,138 @@ fn transient_registry_failures_do_not_capture() {
     }
 }
 
+/// HQ-DESKTOP-5C: `npm i -g @indigoai-us/hq-cli` hit a registry socket idle
+/// timeout (EIDLETIMEOUT) under the user's own Node 20 — a transient network
+/// flake the next scheduled check retries away. The pre-fix tree emitted exactly
+/// one Error event titled `[hq-cli-update] install failed (EIDLETIMEOUT:unknown:none)`,
+/// byte-identical to the live issue title. With EIDLETIMEOUT added to the
+/// transient allow-list, driving the real reporter through the real `before_send`
+/// scrubber with the recorded environment captures ZERO events, exactly like its
+/// five network siblings.
+#[test]
+fn eidletimeout_registry_idle_timeout_captures_no_event() {
+    let eidletimeout = "npm error code EIDLETIMEOUT\n\
+        npm error idle timeout";
+    let env = InstallEnvironment {
+        node_version: Some("20.19.4".to_string()),
+        node_abi: Some("115".to_string()),
+        npm_version: Some("11.16.0".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let events = captured_events(|| {
+        report_install_failure_with_environment(Some(1), eidletimeout, None, false, &env)
+    });
+    assert!(
+        events.is_empty(),
+        "an EIDLETIMEOUT registry idle timeout must not page: {events:?}"
+    );
+}
+
+/// HQ-DESKTOP-5B: after the remedy runs but the debris genuinely cannot be
+/// removed (root-owned or locked), the install still fails ENOTEMPTY — and that
+/// must stay visible at Error, proving the fix REMEDIATES rather than silences.
+/// The single event keeps the live issue's exact title and closed-enumeration
+/// tags, and the scrubber lets no path, home dir, or raw stderr through.
+#[test]
+fn a_post_remedy_enotempty_still_captures_a_path_safe_error() {
+    let enotempty = "npm error code ENOTEMPTY\n\
+        npm error syscall rename\n\
+        npm error path /Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us/hq-cli\n\
+        npm error dest /Users/mike/Library/Application Support/Indigo HQ/toolchain/npm-global/lib/node_modules/@indigoai-us/.hq-cli-0DY3ww6z\n\
+        npm error ENOTEMPTY: directory not empty, rename";
+    let env = InstallEnvironment {
+        node_version: Some("22.23.1".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.8".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    // Exit 190, prefix None — the recorded latest-event environment.
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(190), enotempty, None, false, &env)
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (ENOTEMPTY:rename:global-lib-node-modules)")
+    );
+    for (key, value) in [
+        ("install_failure_kind", "unexpected"),
+        ("npm_error_code", "ENOTEMPTY"),
+        ("npm_syscall", "rename"),
+        ("npm_path_shape", "global-lib-node-modules"),
+        ("npm_prefix_known", "false"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    assert_path_safe(
+        &event,
+        &["/Users/", "mike", "Indigo HQ", "npm error", ".hq-cli-"],
+    );
+}
+
+/// The extended repeat guard bounds the ENOTEMPTY wedge to once per published CLI
+/// version: a first occurrence pages, an identical repeat under the same `latest`
+/// is suppressed by the new episode key, and a newer `latest` pages again — so
+/// the noise bound never hides a fresh occurrence.
+#[test]
+fn enotempty_wedge_pages_once_per_published_version() {
+    let enotempty = "npm error code ENOTEMPTY\n\
+        npm error syscall rename\n\
+        npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli\n\
+        npm error dest /usr/local/lib/node_modules/@indigoai-us/.hq-cli-0DY3ww6z";
+    let env = InstallEnvironment {
+        node_version: Some("22.23.1".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.8".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let run = |reported: &[String], latest: &str| -> (usize, Vec<String>) {
+        let mut updated = reported.to_vec();
+        let events = captured_events(|| {
+            match report_install_failure_episode(
+                Some(190),
+                enotempty,
+                None,
+                false,
+                &env,
+                latest,
+                reported,
+            ) {
+                InstallFailureEpisode::Reported {
+                    persist_keys: Some(set),
+                } => updated = set,
+                InstallFailureEpisode::SuppressedRepeat => {}
+                other => panic!("unexpected outcome {other:?}"),
+            }
+        });
+        (events.len(), updated)
+    };
+
+    // First occurrence under 5.103.17 pages and persists the key.
+    let (n, persisted) = run(&[], "5.103.17");
+    assert_eq!(n, 1, "first ENOTEMPTY wedge must page");
+    assert_eq!(
+        persisted,
+        vec!["5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules".to_string()]
+    );
+    // An identical repeat under the same version is suppressed.
+    let (n, persisted) = run(&persisted, "5.103.17");
+    assert_eq!(
+        n, 0,
+        "an identical ENOTEMPTY wedge under the same version is suppressed"
+    );
+    // A newer published version resets the set and pages a fresh occurrence.
+    let (n, persisted) = run(&persisted, "5.103.18");
+    assert_eq!(n, 1, "a newer published version must page again");
+    assert_eq!(
+        persisted,
+        vec!["5.103.18|unexpected|ENOTEMPTY|rename|global-lib-node-modules".to_string()]
+    );
+}
+
 /// Pinning the exact version can turn a previously-silent stale-tag install into
 /// a visible ETARGET during the post-publish propagation window: npm finds no
 /// matching version for the pinned spec and exits non-zero. That is already an
