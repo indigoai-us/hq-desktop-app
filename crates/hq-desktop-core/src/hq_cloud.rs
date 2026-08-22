@@ -400,7 +400,12 @@
 /// cloud already contain the same bytes. Raising the floor also changes the npx
 /// cache key so existing installs cannot keep serving the older two-pass
 /// behavior.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.27";
+///
+/// `~6.15.27` -> `~6.15.29`: retry expired temporary cloud credentials.
+/// Long sync passes can outlive their 15-minute STS session; 6.15.29 forces a
+/// credential refresh and retries the rejected S3 operation exactly once.
+/// Moving the floor changes the npx cache key so existing desktops adopt it.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.29";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -467,7 +472,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.27");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.29");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
@@ -494,6 +499,14 @@ mod tests {
     #[test]
     fn version_floor_delivers_mid_pass_credential_refresh() {
         assert!(pin_lower_bound() >= semver::Version::new(6, 15, 18));
+    }
+
+    /// Proactive refresh alone cannot recover an S3 operation the service has
+    /// already rejected. hq-cloud 6.15.29 adds one forced refresh and retry for
+    /// expired-token and request-time-skew responses.
+    #[test]
+    fn version_floor_delivers_reactive_credential_retry() {
+        assert!(pin_lower_bound() >= semver::Version::new(6, 15, 29));
     }
 
     /// A pass the five-minute watchdog terminates must leave durable progress
