@@ -209,4 +209,35 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // sourced from hq-desktop-core, so they can never drift apart.
     expect(syncRs).toContain('hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR');
   });
+
+  it('repairs an HQ-owned managed-toolchain shadow instead of wedging auto-update (HQ-DESKTOP-46)', () => {
+    // On Windows the updater installs into <toolchain>\npm-prefix but the app
+    // resolves a stale <toolchain>\node\hq.cmd; the old contract mislabelled HQ's
+    // OWN layout foreign-managed and wrote the durable marker that disables
+    // auto-update for that release. finalize_convergence now classifies the
+    // HQ-owned shadow (with the managed roots) and hands off to a repair that
+    // removes HQ's own stale copy, then RE-RESOLVES the executed binary.
+    expect(cli).toContain('let managed_roots = paths::managed_toolchain_roots();');
+    expect(cli).toContain('Some(NonConvergenceKind::ManagedShadowed)');
+    expect(cli).toContain('finalize_managed_shadow(');
+    expect(cli).toContain('attempt_managed_shadow_repair(');
+
+    const repair = cli.slice(
+      cli.indexOf('async fn finalize_managed_shadow('),
+      cli.indexOf('// The bounded, provenance-gated removal itself'),
+    );
+    // Convergence is judged on the binary the app EXECUTES after the repair,
+    // never on delivery evidence alone.
+    expect(repair).toContain('let repaired_hq = paths::resolve_bin("hq");');
+    expect(repair).toContain('resolved_hq_version(&hq)');
+    expect(repair).toContain('decide_post_install(&PostInstallContext {');
+    // A converged re-resolution clears the marker via the shared decision; a
+    // still-stale one carries the repair outcome so the capture stays bounded.
+    expect(repair).toContain('managed_shadow_repair: repair_outcome,');
+    expect(repair).toContain('apply_post_install_with_app(app, &outcome)');
+    // Filesystem-only: the repair adds no second subprocess to the install path.
+    expect(repair).not.toContain('Command::new');
+    // Exactly one repair attempt in the helper — no loop.
+    expect(occurrences(repair, 'attempt_managed_shadow_repair(')).toBe(1);
+  });
 });

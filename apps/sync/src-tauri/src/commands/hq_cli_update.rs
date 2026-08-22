@@ -73,7 +73,8 @@ use hq_desktop_core::cli_update_lock::{
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, auto_update_enabled, classify_install_failure,
+    apply_post_install_effects, attempt_managed_shadow_repair, auto_update_enabled,
+    classify_install_failure,
     bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_environment,
     classify_install_failure_with_final_attempt,
     cli_auto_update_enabled, cli_install_needed, cmp_semver,
@@ -86,10 +87,11 @@ pub use hq_desktop_core::hq_cli_update::{
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
-    non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
+    managed_shadow_removal_targets, non_convergent_cli_contract, non_convergent_cli_version,
+    non_convergent_detail,
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
     non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
-    npm_prefix_from_hq_bin, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    npm_prefix_from_hq_bin, path_contains_dir, path_within_root, pnpm_child_path, pnpm_global_env,
     pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
     read_installed_version, redact_home, redact_home_in, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
@@ -99,7 +101,8 @@ pub use hq_desktop_core::hq_cli_update::{
     should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     InstallFailureEpisode, InstallFailureKind, LocalVersionProbeDiagnostics,
-    LocalVersionProbeResult, NonConvergenceKind, NonConvergentReport, NpmLatest,
+    LocalVersionProbeResult, ManagedShadowRepair, ManagedShadowRepairAttempt, NonConvergenceKind,
+    NonConvergentReport, NpmLatest,
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
@@ -1137,6 +1140,10 @@ async fn install_hq_cli_update_via_pnpm(
             exit_status: pnpm_exit_status,
             output_len: pnpm_output_len,
         }),
+        // Managed-shadow classification is npm-only; pnpm passes no roots and
+        // never runs the repair.
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
     });
     log("hq-cli-update", &outcome.log_line);
     let result = apply_post_install_with_app(app, &outcome);
@@ -1263,6 +1270,9 @@ async fn install_hq_cli_update_via_bun(
         already_blocked,
         nonblocking_episode_keys: &nonblocking_episode_keys,
         pnpm: None,
+        // Managed-shadow classification is npm-only; Bun passes no roots.
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
     });
     log("hq-cli-update", &outcome.log_line);
     let result = apply_post_install_with_app(app, &outcome);
@@ -1727,6 +1737,10 @@ async fn finalize_convergence(
     prefix: Option<&str>,
     already_blocked: bool,
 ) -> Result<HqCliUpdateInfo, String> {
+    // The managed toolchain roots let the classifier tell an HQ-owned shadow (a
+    // stale HQ copy in another directory under the SAME toolchain root) apart
+    // from a genuinely foreign layout. Only the npm arm consults them.
+    let managed_roots = paths::managed_toolchain_roots();
     let post_install_hq = paths::resolve_bin("hq");
     let resolved = {
         let hq = post_install_hq.clone();
@@ -1738,10 +1752,57 @@ async fn finalize_convergence(
     // Delivery evidence for the classifier: the version the install actually wrote
     // INTO the prefix we aimed at, read straight from the manifest. A
     // foreign-managed layout passes no prefix and never reaches the targeted arm.
-    let delivered_version = match prefix {
+    let delivered_version = read_delivered_version(prefix, &post_install_hq).await;
+    let outcome = decide_post_install(&PostInstallContext {
+        executor: InstallExecutor::Npm,
+        before_bin,
+        after_bin: &post_install_hq,
+        before_version,
+        after_version: resolved.as_deref(),
+        latest,
+        npm_prefix_passed: prefix,
+        delivered_version: delivered_version.as_deref(),
+        installer_bin: installer_npm,
+        already_blocked,
+        nonblocking_episode_keys: &[],
+        pnpm: None,
+        managed_roots: &managed_roots,
+        // First pass: classify only. If it is an HQ-owned shadow the caller
+        // repairs the machine and re-runs the decision with the real outcome.
+        managed_shadow_repair: ManagedShadowRepair::NotAttempted,
+    });
+
+    // An HQ-owned shadow: HQ installed BOTH copies, so `npm install` cannot
+    // displace the stale one, but HQ can — it owns the directory the stale copy
+    // sits in. Remove HQ's own shadow (bounded, provenance-gated), then re-resolve
+    // and re-decide. Every other shape keeps today's behaviour exactly.
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ManagedShadowed) {
+        return finalize_managed_shadow(
+            app,
+            before_bin,
+            installer_npm,
+            before_version,
+            latest,
+            prefix,
+            already_blocked,
+            &managed_roots,
+            &post_install_hq,
+        )
+        .await;
+    }
+
+    log("hq-cli-update", &outcome.log_line);
+    apply_post_install_with_app(app, &outcome)
+}
+
+/// The version the installer wrote INTO `prefix`, read off the manifest with no
+/// subprocess. Shared by the first convergence check and the managed-shadow
+/// re-check so both read delivery evidence the same way.
+async fn read_delivered_version(prefix: Option<&str>, hq_bin: &str) -> Option<String> {
+    match prefix {
         Some(prefix) => {
             let prefix = prefix.to_string();
-            let hq = post_install_hq.clone();
+            let hq = hq_bin.to_string();
             tauri::async_runtime::spawn_blocking(move || {
                 installed_hq_cli_version_in_prefix(&prefix, &hq)
             })
@@ -1750,21 +1811,93 @@ async fn finalize_convergence(
             .flatten()
         }
         None => None,
+    }
+}
+
+/// Repair an HQ-owned shadow, then re-resolve the binary the app executes and
+/// route the fresh reading back through `decide_post_install`. A converged
+/// re-resolution takes the success branch (clears the marker, emits nothing); a
+/// still-stale one degrades to the foreign-managed bounded capture plus durable
+/// marker, tagged with the repair outcome, so an unrepairable machine still
+/// stops re-paging. The repair is filesystem-only and runs exactly once.
+#[allow(clippy::too_many_arguments)]
+async fn finalize_managed_shadow(
+    app: &AppHandle,
+    before_bin: &str,
+    installer_npm: &str,
+    before_version: Option<&str>,
+    latest: &str,
+    prefix: Option<&str>,
+    already_blocked: bool,
+    managed_roots: &[PathBuf],
+    stale_hq: &str,
+) -> Result<HqCliUpdateInfo, String> {
+    let repair_attempt = {
+        let stale_hq = stale_hq.to_string();
+        let prefix = prefix.map(str::to_string);
+        let roots = managed_roots.to_vec();
+        let latest = latest.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            attempt_managed_shadow_repair(&stale_hq, prefix.as_deref(), &latest, &roots)
+        })
+        .await
+        .unwrap_or(ManagedShadowRepairAttempt::Error)
     };
-    let outcome = decide_post_install(&PostInstallContext::npm(
+
+    // Re-resolve the binary the app now EXECUTES (the convergence gate never
+    // trusts delivery evidence alone) and re-read delivery evidence.
+    let repaired_hq = paths::resolve_bin("hq");
+    let repaired_version = {
+        let hq = repaired_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let delivered_version = read_delivered_version(prefix, &repaired_hq).await;
+
+    // Map the removal attempt to the outcome the decision consumes. A converged
+    // re-resolution takes the success branch regardless of this value; only a
+    // still non-convergent re-resolution surfaces it as the repair-outcome tag.
+    let repair_outcome = match repair_attempt {
+        ManagedShadowRepairAttempt::Refused => ManagedShadowRepair::ProvenanceRefused,
+        ManagedShadowRepairAttempt::Removed | ManagedShadowRepairAttempt::Error => {
+            ManagedShadowRepair::RepairFailed
+        }
+    };
+    log(
+        "hq-cli-update",
+        &format!(
+            "managed-shadow repair: attempt={repair_attempt:?} hq_moved={} version_present={}",
+            repaired_hq != stale_hq,
+            repaired_version.is_some(),
+        ),
+    );
+
+    let outcome = decide_post_install(&PostInstallContext {
+        executor: InstallExecutor::Npm,
         before_bin,
-        &post_install_hq,
+        after_bin: &repaired_hq,
         before_version,
-        resolved.as_deref(),
+        after_version: repaired_version.as_deref(),
         latest,
-        prefix,
-        installer_npm,
+        npm_prefix_passed: prefix,
+        delivered_version: delivered_version.as_deref(),
+        installer_bin: installer_npm,
         already_blocked,
-        delivered_version.as_deref(),
-    ));
+        nonblocking_episode_keys: &[],
+        pnpm: None,
+        managed_roots,
+        managed_shadow_repair: repair_outcome,
+    });
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
 }
+
+// The bounded, provenance-gated removal itself (`attempt_managed_shadow_repair`)
+// and its `ManagedShadowRepairAttempt` result live in `hq-desktop-core` so the
+// deletion narrowness and the four gates are unit-tested against a fabricated
+// temp toolchain in a crate that builds without the Tauri/webkit toolchain.
 
 /// Apply the caller-side persistence half of a repeat-guarded install-failure
 /// report. Extracted so the first attempt and the managed retry share one

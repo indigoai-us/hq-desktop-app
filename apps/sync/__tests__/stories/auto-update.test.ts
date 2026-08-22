@@ -596,4 +596,47 @@ describe('installs the CLI when the machine has none', () => {
     // unresolved npm and surface the ordinary spawn error, as before.
     expect(normalize(cliUpdate)).toContain('.unwrap_or((npm, path))');
   });
+
+  it('an HQ-owned Windows shadow is classified, repaired, and re-verified — not wedged', () => {
+    // HQ-DESKTOP-46: on Windows the updater installs into
+    // <toolchain>\npm-prefix but the app resolves a stale <toolchain>\node\hq.cmd,
+    // so the old contract mislabelled HQ's OWN layout foreign-managed and wrote
+    // the durable marker that disables auto-update for that release. The
+    // classifier now names the HQ-owned shadow, and the install path repairs the
+    // machine and re-checks the binary it actually executes.
+
+    // Core owns the new kind, its closed telemetry token, the pure classifier
+    // gate, the enumerated removal, and the provenance-gated repair.
+    expect(cliUpdateCore).toContain('ManagedShadowed');
+    expect(cliUpdateCore).toContain('"managed-shadowed"');
+    expect(cliUpdateCore).toContain('pub enum ManagedShadowRepair {');
+    expect(cliUpdateCore).toContain('pub fn managed_shadow_removal_targets(');
+    expect(cliUpdateCore).toContain('pub fn attempt_managed_shadow_repair(');
+    // Classification requires delivery evidence AND same-root containment, so a
+    // genuinely foreign layout is never treated as an HQ shadow.
+    expect(cliUpdateCore).toContain('same_managed_root(');
+
+    // The install path resolves the managed roots and, on a shadow, hands off to
+    // the repair-then-re-verify helper.
+    expect(cliUpdate).toContain('let managed_roots = paths::managed_toolchain_roots();');
+    expect(cliUpdate).toContain('Some(NonConvergenceKind::ManagedShadowed)');
+    expect(cliUpdate).toContain('finalize_managed_shadow(');
+
+    // The repair helper RE-RESOLVES the executed binary after removing HQ's own
+    // shadow and routes the fresh reading back through the shared decision — never
+    // a success from delivery evidence alone. A converged re-resolution clears the
+    // marker via `decide_post_install`; a still-stale one carries the repair
+    // outcome the decision uses to bound the capture.
+    const repairStart = cliUpdate.indexOf('async fn finalize_managed_shadow(');
+    expect(repairStart).toBeGreaterThan(-1);
+    const repairBody = cliUpdate.slice(
+      repairStart,
+      cliUpdate.indexOf('// The bounded, provenance-gated removal itself'),
+    );
+    expect(repairBody).toContain('attempt_managed_shadow_repair(');
+    expect(repairBody).toContain('let repaired_hq = paths::resolve_bin("hq");');
+    expect(repairBody).toContain('decide_post_install(&PostInstallContext {');
+    expect(repairBody).toContain('managed_shadow_repair: repair_outcome,');
+    expect(repairBody).toContain('apply_post_install_with_app(app, &outcome)');
+  });
 });
