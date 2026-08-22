@@ -2658,11 +2658,25 @@ fn download_bytes_checked(url: &str, label: &str) -> Result<Vec<u8>, String> {
         })?;
     fetch_asset_with(url, label, move |url| {
         use std::io::Read as _;
+        // `.send()` returns once the status line is in, before the body is read.
         let mut response = client
             .get(url)
             .send()
             .map_err(|e| format!("Failed to fetch {label}: {}", describe_error_chain(&e)))?;
         let status = response.status().as_u16();
+        // Only a success response carries the asset worth buffering. Classify on
+        // the status BEFORE touching the body: for any non-2xx —
+        // fetch_asset_with_backoffs decides retryability from the status alone —
+        // reading the body would needlessly allocate a possibly huge or slow
+        // error page, burn the per-attempt timeout, and (worse) turn a terminal
+        // 404/403 whose body read stalls into a retryable read error that gets
+        // retried instead of failing on the first attempt.
+        if !(200..=299).contains(&status) {
+            return Ok(DownloadedAsset {
+                status,
+                bytes: Vec::new(),
+            });
+        }
         // Stream into a buffer rather than `.bytes()` so a mid-stream failure can
         // still report how far it got. The full zip is buffered in memory exactly
         // as before; the pinned SHA-256 is verified by the caller on these bytes
