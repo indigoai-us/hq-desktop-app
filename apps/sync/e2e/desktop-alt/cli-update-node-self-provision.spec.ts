@@ -209,4 +209,24 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // sourced from hq-desktop-core, so they can never drift apart.
     expect(syncRs).toContain('hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR');
   });
+
+  it('recovers a prefix-less ENOTEMPTY from npm`s own path, scoped to hq-cli debris (HQ-DESKTOP-5B)', () => {
+    // On a user-path install no prefix resolves, so the prefix-gated ENOTEMPTY
+    // remedy never ran. The rung now falls back to the absolute scope npm itself
+    // named in its error, recorded under its own ledger rung.
+    expect(cli).toContain('partial_install_scope_from_npm_path(&detail)');
+    expect(cli).toContain('"cleanup-plain-npm-path"');
+    // The prefix-derived path stays the preferred source and its rung is unchanged.
+    expect(cli).toContain('partial_install_scope_dir(cleanup_prefix)');
+    expect(cli).toContain('"cleanup-plain"');
+    // Both scopes feed ONE shared cleaner whose deletion set is unchanged: the
+    // `hq-cli` package dir and any `.hq-cli-*` staging dir, and nothing else — the
+    // scope dir itself and every sibling package survive.
+    expect(cli).toContain('clean_partial_hq_cli_install_in_scope(&cleanup_scope)');
+    expect(cli).toContain('fn clean_partial_hq_cli_install_in_scope(scope: &Path)');
+    expect(cli).toContain('scope.join("hq-cli")');
+    expect(cli).toContain('.starts_with(".hq-cli-")');
+    // The ladder stays bounded — no new loop, same hard cap.
+    expect(cli).toContain('const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;');
+  });
 });

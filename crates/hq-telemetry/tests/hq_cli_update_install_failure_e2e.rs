@@ -415,8 +415,14 @@ fn transient_registry_failures_do_not_capture() {
         npm error notarget No matching version found for @aws-sdk/core@^3.977.4";
     let econnreset = "npm error code ECONNRESET\n\
         npm error network request to https://registry.npmjs.org failed";
+    // HQ-DESKTOP-5C: npm's registry idle-socket timeout — a plain network flake
+    // the next scheduled check retries away. It must be absorbed like its five
+    // siblings instead of paging at Error under the live title
+    // `[hq-cli-update] install failed (EIDLETIMEOUT:unknown:none)`.
+    let eidletimeout = "npm error code EIDLETIMEOUT\n\
+        npm error Idle timeout reached for host registry.npmjs.org:443";
 
-    for detail in [etarget, econnreset] {
+    for detail in [etarget, econnreset, eidletimeout] {
         let events =
             captured_events(|| report_install_failure(Some(1), detail, Some("/usr/local")));
         assert!(
@@ -424,6 +430,137 @@ fn transient_registry_failures_do_not_capture() {
             "transient registry failure captured: {detail}"
         );
     }
+
+    // The 5C event's exact recorded environment (node 20.19.4, npm 11.16.0,
+    // user-path, no managed retry), driven through the environment-aware reporter
+    // and the real before_send scrubber: still zero captures, where the pre-fix
+    // tree emitted exactly one Error event.
+    let env_5c = InstallEnvironment {
+        node_version: Some("v20.19.4".to_string()),
+        node_abi: Some("115".to_string()),
+        npm_version: Some("11.16.0".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let events = captured_events(|| {
+        report_install_failure_with_environment(Some(1), eidletimeout, None, false, &env_5c)
+    });
+    assert!(
+        events.is_empty(),
+        "the 5C EIDLETIMEOUT environment-aware report must not page: {events:?}"
+    );
+}
+
+/// HQ-DESKTOP-5B: an `ENOTEMPTY` rename failure stays a real, visible defect.
+/// Once the retry ladder's remedy exists, an ENOTEMPTY that survives it is an
+/// unresolved condition and must keep paging at Error — the fix REMEDIATES, it
+/// does not silence. The event carries the exact live-issue title and its closed
+/// diagnostic tags, and nothing path-unsafe reaches Sentry.
+#[test]
+fn enotempty_partial_install_failure_still_pages_after_the_remedy() {
+    // The 5B shape: npm renames the live package aside and hits leftover debris.
+    // prefix is None on every user-path machine; npm named the scope in its path.
+    let enotempty = "npm error code ENOTEMPTY\n\
+        npm error syscall rename\n\
+        npm error path /Users/mike/.npm-global/lib/node_modules/@indigoai-us/hq-cli\n\
+        npm error dest /Users/mike/.npm-global/lib/node_modules/@indigoai-us/.hq-cli-0DY3ww6z\n\
+        npm error ENOTEMPTY: directory not empty, rename";
+    let env = InstallEnvironment {
+        node_version: Some("v22.23.1".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.8".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(190), enotempty, None, false, &env)
+    }));
+
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (ENOTEMPTY:rename:global-lib-node-modules)")
+    );
+    for (key, value) in [
+        ("install_failure_kind", "unexpected"),
+        ("npm_error_code", "ENOTEMPTY"),
+        ("npm_syscall", "rename"),
+        ("npm_path_shape", "global-lib-node-modules"),
+        ("npm_prefix_known", "false"),
+        ("npm_toolchain_source", "user-path"),
+        ("node_version", "22.23.1"),
+        ("npm_version", "10.9.8"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    // No path, home dir, staging-dir name, or raw stderr may reach the event.
+    assert_path_safe(
+        &event,
+        &[
+            "/Users/",
+            "mike",
+            ".npm-global",
+            "@indigoai-us",
+            "npm error",
+            ".hq-cli-",
+        ],
+    );
+}
+
+/// HQ-DESKTOP-5B repeat guard: a debris that a cleanup cannot remove pages once
+/// per published CLI version, not on every 6-hourly check — while a first
+/// occurrence and any newer `latest` still page, so the noise bound never hides a
+/// fresh occurrence.
+#[test]
+fn enotempty_partial_install_failure_pages_once_per_target_version() {
+    let enotempty = "npm error code ENOTEMPTY\n\
+        npm error syscall rename\n\
+        npm error path /Users/mike/.npm-global/lib/node_modules/@indigoai-us/hq-cli";
+    let env = InstallEnvironment {
+        node_version: Some("v22.23.1".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.8".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+    };
+    let report = |reported: &[String], latest: &str| -> (usize, Vec<String>) {
+        let mut updated = reported.to_vec();
+        let events = captured_events(|| {
+            match report_install_failure_episode(
+                Some(190),
+                enotempty,
+                None,
+                false,
+                &env,
+                latest,
+                reported,
+            ) {
+                InstallFailureEpisode::Reported {
+                    persist_keys: Some(set),
+                } => updated = set,
+                InstallFailureEpisode::Reported { persist_keys: None } => {
+                    panic!("the ENOTEMPTY unexpected shape must mint a persistable key")
+                }
+                InstallFailureEpisode::SuppressedRepeat => {}
+                InstallFailureEpisode::NotReportable => {
+                    panic!("an ENOTEMPTY defect must stay reportable")
+                }
+            }
+        });
+        (events.len(), updated)
+    };
+
+    // First occurrence pages and records its key.
+    let (n, persisted) = report(&[], "5.103.17");
+    assert_eq!(n, 1, "the first ENOTEMPTY must page");
+    assert!(persisted
+        .contains(&"5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules".to_string()));
+    // An identical repeat under the same target version is suppressed.
+    let (n, _persisted) = report(&persisted, "5.103.17");
+    assert_eq!(n, 0, "an identical ENOTEMPTY repeat must be suppressed");
+    // A newer target version pages again — the bound never hides a fresh version.
+    let (n, _persisted) = report(&persisted, "5.104.0");
+    assert_eq!(n, 1, "a newer target version must page again");
 }
 
 /// Pinning the exact version can turn a previously-silent stale-tag install into

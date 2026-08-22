@@ -442,6 +442,54 @@ describe('master automatic-updates switch', () => {
     );
   });
 
+  it('recovers a prefix-less ENOTEMPTY from npm`s own path, scoped to hq-cli debris (HQ-DESKTOP-5B)', () => {
+    const core = normalize(cliUpdateCore);
+    // Core exposes a pure, fail-closed scope deriver: it only accepts an absolute
+    // path whose `@indigoai-us` component is an EXACT child of `node_modules`, and
+    // returns that path truncated at `@indigoai-us` — never a substring match.
+    expect(cliUpdateCore).toContain(
+      'pub fn partial_install_scope_from_npm_path(detail: &str) -> Option<String>',
+    );
+    expect(core).toContain(
+      'pair[0] == "node_modules" && pair[1] == "@indigoai-us"',
+    );
+    expect(cliUpdateCore).toContain('.ends_with("/node_modules/@indigoai-us")');
+    expect(cliUpdateCore).toContain('is_absolute_normalized_path');
+
+    // The ENOTEMPTY rung derives its scope from the prefix first and, only when
+    // no prefix resolved, falls back to the npm-path scope — recorded under its
+    // own `cleanup-plain-npm-path` rung so the attempt ledger keeps provenance.
+    expect(cliUpdate).toContain('partial_install_scope_from_npm_path(&detail)');
+    expect(cliUpdate).toContain('"cleanup-plain-npm-path"');
+    expect(cliUpdate).toContain('"cleanup-plain"');
+
+    // Both scopes feed ONE shared cleaner whose deletion set is unchanged: the
+    // `hq-cli` package dir and any `.hq-cli-*` staging dir, and nothing else.
+    expect(cliUpdate).toContain('clean_partial_hq_cli_install_in_scope(&cleanup_scope)');
+    expect(cliUpdate).toContain('fn clean_partial_hq_cli_install_in_scope(scope: &Path)');
+    expect(cliUpdate).toContain('scope.join("hq-cli")');
+    expect(cliUpdate).toContain('.starts_with(".hq-cli-")');
+    // The retry ladder stays bounded — no new loop, same hard cap.
+    expect(cliUpdate).toContain('const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;');
+  });
+
+  it('absorbs an EIDLETIMEOUT registry idle timeout like its siblings (HQ-DESKTOP-5C)', () => {
+    const core = normalize(cliUpdateCore);
+    // EIDLETIMEOUT joins the transient-registry allow-list (npm`s idle-socket
+    // timeout), so a plain network flake no longer pages at Error.
+    expect(cliUpdateCore).toContain('"EIDLETIMEOUT"');
+    expect(core).toContain('fn is_expected_transient_registry_failure(detail: &str) -> bool');
+
+    // A non-lifecycle `Unexpected` failure now mints a repeat-guard key so a
+    // permanent per-machine condition (an ENOTEMPTY debris a cleanup cannot
+    // remove) pages once per published CLI version, not on every 6-hourly check.
+    expect(cliUpdateCore).toContain(
+      'pub fn install_failure_episode_key_with_environment(',
+    );
+    expect(core).toContain('{latest}|unexpected|');
+    expect(cliUpdateCore).toContain('kind == InstallFailureKind::Unexpected');
+  });
+
   it('classifies an unsupported user Node and self-heals it before reporting (HQ-DESKTOP-56)', () => {
     const core = normalize(cliUpdateCore);
     // Core publishes the floor as the single source of truth and a new kind for
