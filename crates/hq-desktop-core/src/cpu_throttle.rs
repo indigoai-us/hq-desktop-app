@@ -1505,9 +1505,26 @@ mod tests {
         pacer.charge(PACER_SLICE);
         let shared = started.elapsed();
 
+        // Assert what each call OWES, not which of two jittery measurements is
+        // larger. `shared > alone` compares two independent wall-clock samples, and
+        // a scheduler preemption inside the first charge inflates `alone` past
+        // `shared` and fails a correct implementation — observed on macOS CI
+        // 2026-08-23, never reproducible on Linux (50/50 green, idle and loaded).
+        //
+        // Sleeping only ever overshoots, so a lower bound cannot be broken by
+        // jitter. It is also the stronger claim: it pins the actual magnitudes
+        // rather than their order, and `shared` owing three slices instead of one
+        // is precisely the mid-walk re-read this test exists to prove — a pacer
+        // that fixed its duty at construction would owe one. Mutation-checked:
+        // pinning the callback to a constant makes this fail.
         assert!(
-            shared > alone,
-            "sharing the ceiling must slow in-process work further: {alone:?} then {shared:?}"
+            alone >= pacer_sleep_for(PACER_SLICE, 0.5),
+            "ungoverned in-process work at a 50% duty owes one slice: {alone:?}"
+        );
+        assert!(
+            shared >= pacer_sleep_for(PACER_SLICE, 0.25),
+            "a group registering mid-walk halves the share, so the same slice now \
+             owes three: {alone:?} then {shared:?}"
         );
     }
 

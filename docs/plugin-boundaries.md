@@ -64,6 +64,23 @@ Until it is, keep the tags aligned: every consumer in one build must pin the sam
 `hq-desktop-core` tag, because cargo unifies git dependencies by source URL *and*
 resolved commit.
 
+### `hq-desktop-core` currently exists in two places — keep them identical
+
+Because this repo has not switched to the tag, the foundation crate lives both here
+(`crates/hq-desktop-core/`, the copy that actually ships, since the `[patch]` points
+builds at it) and in its own repo (the copy `hq-plugin-meetings` builds against in its
+CI). They are byte-identical today and must stay that way.
+
+**Any change to `crates/hq-desktop-core/` here must be mirrored to
+`indigoai-us/hq-desktop-core`, and vice versa.** Nothing enforces this yet — no CI
+check compares them — so it is a discipline, which is the weakest kind of guarantee.
+Silent drift would mean the plugin is tested against one version of the foundation and
+shipped against another.
+
+This duplication is the direct cost of the 26 source-grep tests above. It ends when
+they migrate and this repo depends on the tag like every other consumer, at which
+point there is one copy again.
+
 ### Cross-repo contracts have no CI owner
 
 Splitting repos split some contracts in half, and neither side's CI checks the other.
