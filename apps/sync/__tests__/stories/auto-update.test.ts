@@ -301,7 +301,12 @@ describe('master automatic-updates switch', () => {
     // delivery evidence plus the executed reading alone.
     expect(cliUpdateCore).not.toContain('PnpmMisdirected');
     expect(cliUpdateCore).not.toContain('"pnpm-misdirected"');
-    expect(normalize(cliUpdateCore)).toContain('!matches!(self, Self::ResolutionShortfall)');
+    // A resolution shortfall never blocks; the installer-unaimed shape (an
+    // npx-cache copy, or an unaimed pnpm/Bun run) was never aimed at the executed
+    // copy, so it must not block either.
+    expect(normalize(cliUpdateCore)).toContain(
+      '!matches!(self, Self::ResolutionShortfall | Self::InstallerUnaimed)',
+    );
 
     const pnpmBranch = cliUpdate.slice(
       cliUpdate.indexOf('async fn install_hq_cli_update_via_pnpm('),

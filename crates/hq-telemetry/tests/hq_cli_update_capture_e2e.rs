@@ -64,9 +64,9 @@ fn npm_context<'a>(
 
 /// The pnpm-executor fixture context. `home_source`/`path_has_shim_dir` decide
 /// whether pnpm was aimed at the shim we resolved; `matches`/`delivered` are the
-/// installer-output evidence that now decides the pnpm class (matched dir +
-/// delivered => shadowing/blocking; mismatched dir => misdirected; undelivered =>
-/// shortfall; neither, whichever is None, stays foreign-managed when unaimed).
+/// installer-output evidence that now decides the pnpm class (aimed + delivered
+/// => shadowing/blocking; aimed + undelivered => shortfall; unaimed => the
+/// non-blocking `installer-unaimed` shape, bounded per episode).
 #[allow(clippy::too_many_arguments)]
 fn pnpm_context<'a>(
     hq_bin: &'a str,
@@ -427,10 +427,14 @@ fn pnpm_non_convergence_names_its_executor_and_drops_the_npm_prefix_placeholder(
 }
 
 /// A pnpm run we could NOT aim (no derivable home, or a child PATH without the
-/// shim's directory) is a foreign layout: bounded to one capture per episode,
-/// and it says so rather than claiming pnpm was targeted.
+/// shim's directory) is the non-blocking `installer-unaimed` shape: it writes NO
+/// durable marker, stays observable, and is bounded to one capture per episode.
+/// On the base commit this was `foreign-managed` — it wrote the pinned marker
+/// and wedged auto-update. The episode is keyed on `(latest, executor, kind,
+/// home_source)`, so the second occurrence (with that key already recorded) is
+/// suppressed.
 #[test]
-fn undetermined_pnpm_home_is_reported_as_foreign_managed_and_stays_bounded() {
+fn undetermined_pnpm_home_is_reported_as_installer_unaimed_and_stays_bounded() {
     let home = hq_desktop_core::paths::home_dir().expect("test home directory");
     let hq_bin = home.join(".asdf/shims/hq").to_string_lossy().to_string();
     let expected_hq_source = if cfg!(target_os = "windows") {
@@ -452,14 +456,14 @@ fn undetermined_pnpm_home_is_reported_as_foreign_managed_and_stays_bounded() {
         ),
         true,
     );
-    assert_eq!(records, 1);
+    assert_eq!(records, 0, "an unaimed run writes no durable marker");
     assert_eq!(captures, 1);
     assert_eq!(record_failures, 0);
     assert_eq!(events.len(), 1);
     assert_non_convergent_shape(
         &events[0],
         "pnpm",
-        "foreign-managed",
+        "installer-unaimed",
         expected_hq_source,
         "~/.asdf/shims/hq",
     );
@@ -468,7 +472,14 @@ fn undetermined_pnpm_home_is_reported_as_foreign_managed_and_stays_bounded() {
         Some("undetermined")
     );
 
-    // Repeat episode: suppressed, exactly like the npm foreign-managed path.
+    // Repeat episode: the non-blocking bound suppresses it once its key is known.
+    let key = non_convergent_episode_key(
+        "5.84.0",
+        InstallExecutor::Pnpm,
+        NonConvergenceKind::InstallerUnaimed,
+        Some(PnpmHomeSource::Undetermined),
+    );
+    let seen = [key];
     let (events, records, captures, record_failures) = composed_non_convergent_events(
         &pnpm_context(
             &hq_bin,
@@ -477,14 +488,122 @@ fn undetermined_pnpm_home_is_reported_as_foreign_managed_and_stays_bounded() {
             false,
             None,
             None,
-            true,
-        ),
+            false,
+        )
+        .with_nonblocking_episode_keys(&seen),
         true,
     );
     assert!(events.is_empty());
     assert_eq!(records, 0);
     assert_eq!(captures, 0);
     assert_eq!(record_failures, 0);
+}
+
+/// The live Zekes envelope: the app resolves an npx-cache `hq` npm can never
+/// move. The captured event names its own mechanism — `installer-unaimed` +
+/// `hq_bin_source=npx-cache` + `managed_shadow_repair=not-attempted` — carries
+/// the requested/delivered/local versions, keeps the existing Sentry group, and
+/// ships NO raw home path (the hq_bin extra is home-redacted).
+#[test]
+fn the_npx_cache_shape_captures_installer_unaimed_with_no_raw_home_path() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let hq_bin = home
+        .join(".npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let ctx = PostInstallContext::npm(
+        &hq_bin,
+        &hq_bin,
+        Some("5.103.1"),
+        Some("5.103.1"),
+        "5.103.18",
+        Some(&managed_prefix),
+        "/opt/homebrew/bin/npm",
+        false,
+        Some("5.103.18"),
+    );
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(records, 0, "an npx-cache copy writes no durable marker");
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    // The group must not split — new tags/values ride the existing fingerprint.
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    for (tag, expected) in [
+        ("install_executor", "npm"),
+        ("non_convergence_kind", "installer-unaimed"),
+        ("managed_shadow_repair", "not-attempted"),
+        ("hq_bin_source", "npx-cache"),
+        ("latest", "5.103.18"),
+        ("requested_version", "5.103.18"),
+        ("delivered_version", "5.103.18"),
+        ("local", "5.103.1"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    assert_eq!(
+        event.extra.get("hq_bin").and_then(Value::as_str),
+        Some("~/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq")
+    );
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(
+        !serialized.contains(&home_text),
+        "npx-cache event leaked a raw home path"
+    );
+}
+
+/// The volume guarantee: two consecutive runs of the SAME npx-cache episode emit
+/// exactly ONE envelope. The second run already sees the episode key, so it
+/// captures nothing — the fix cannot increase Sentry volume over the base.
+#[test]
+fn the_npx_cache_episode_emits_exactly_one_envelope_across_two_runs() {
+    let hq_bin = "/Users/z/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq";
+    let managed_prefix = "/Users/z/Library/Application Support/Indigo HQ/toolchain/npm-global";
+    let base = || {
+        PostInstallContext::npm(
+            hq_bin,
+            hq_bin,
+            Some("5.103.1"),
+            Some("5.103.1"),
+            "5.103.18",
+            Some(managed_prefix),
+            "/opt/homebrew/bin/npm",
+            false,
+            Some("5.103.18"),
+        )
+    };
+
+    // First run: empty episode set => captures once.
+    let (events, _records, captures, _rf) = composed_non_convergent_events(&base(), true);
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+
+    // Second run with the recorded key => suppressed. `install_executor=npm`, so
+    // the episode home_source is `None` (no pnpm diagnostics).
+    let key = non_convergent_episode_key(
+        "5.103.18",
+        InstallExecutor::Npm,
+        NonConvergenceKind::InstallerUnaimed,
+        None,
+    );
+    let seen = [key];
+    let (events, _records, captures, _rf) =
+        composed_non_convergent_events(&base().with_nonblocking_episode_keys(&seen), true);
+    assert!(events.is_empty(), "a repeat episode must emit nothing");
+    assert_eq!(captures, 0);
 }
 
 #[test]

@@ -279,13 +279,20 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     // active install (pnpm points the shim at its newest global install). Done
     // before the npm-prefix fallback below so the read is anchored to the store,
     // not an arbitrary hash child in filesystem enumeration order.
-    if is_pnpm_global_shim(&hq_bin_str) {
-        if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
-            if let Some(version) =
-                installed_hq_cli_version_in_pnpm_store(&home.to_string_lossy())
-            {
-                return (Some(version), VersionProbeOutcome::Succeeded);
-            }
+    //
+    // Version READING is deliberately decoupled from executor ROUTING: this tries
+    // the pnpm store for ANY derivable home, not only one `is_pnpm_global_shim`
+    // still routes to pnpm. A flat custom PNPM_HOME whose last component is
+    // literally `bin` (store at `<home>/global` beside the shim) is a real
+    // hq-cli that the collapsed router (correctly) drives with npm — but if we
+    // could not read its version here, the provenance gate in
+    // `install_executor_for_hq_bin` would refuse it as unidentifiable and disable
+    // its update. `installed_hq_cli_version_in_pnpm_store` returns `None` when
+    // there is no pnpm store beside the derived home, so npm and Bun layouts are
+    // unaffected and fall through to their own reads below.
+    if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
+        if let Some(version) = installed_hq_cli_version_in_pnpm_store(&home.to_string_lossy()) {
+            return (Some(version), VersionProbeOutcome::Succeeded);
         }
     }
     // Bun's global shim is also a plain script. Its package manifest lives in
@@ -825,6 +832,19 @@ pub enum NonConvergenceKind {
     /// cache lagged the publish. It must NOT wedge auto-update — the next
     /// scheduled check simply retries.
     ResolutionShortfall,
+    /// HQ never aimed the installer at the copy the app executes, so the install
+    /// could not converge and HQ cannot prove a layout defect. Two shapes reach
+    /// here: (1) the resolved `hq` is an npm **npx-cache** copy
+    /// (`…/_npx/…/node_modules/.bin/hq`) — ephemeral and un-updatable by any
+    /// global install, so no executor could ever move it; and (2) a pnpm/Bun run
+    /// whose global home could not be derived from the resolved shim, so the
+    /// child was spawned into the ambient environment and may have written a
+    /// directory the app never reads. Unlike [`Self::ForeignManaged`] — a layout
+    /// HQ provably aimed at and provably could not move — this is a shape HQ
+    /// never aimed correctly, so it must stay observable but NEVER wedge
+    /// auto-update: it writes no durable marker and is bounded to one capture per
+    /// episode, exactly like [`Self::ResolutionShortfall`].
+    InstallerUnaimed,
 }
 
 impl NonConvergenceKind {
@@ -836,6 +856,7 @@ impl NonConvergenceKind {
             Self::ForeignManaged => "foreign-managed",
             Self::ManagedShadowed => "managed-shadowed",
             Self::ResolutionShortfall => "resolution-shortfall",
+            Self::InstallerUnaimed => "installer-unaimed",
         }
     }
 
@@ -855,11 +876,13 @@ impl NonConvergenceKind {
     /// May a non-convergence of this kind persist the durable marker that stops
     /// the background auto-installer? Only a defect backed by evidence that the
     /// installer actually delivered the target INTO the store the app executes
-    /// from may block. A resolution shortfall never delivered the target, so it
-    /// stays loud but must never block, or a transient registry lag would
-    /// permanently disable auto-update.
+    /// from may block. A resolution shortfall never delivered the target, and an
+    /// installer-unaimed shape was never aimed at the executed copy at all, so
+    /// both stay loud (bounded per episode) but must never block — otherwise a
+    /// transient registry lag, or an un-updatable npx copy, would permanently
+    /// disable auto-update.
     pub fn may_block_auto_update(self) -> bool {
-        !matches!(self, Self::ResolutionShortfall)
+        !matches!(self, Self::ResolutionShortfall | Self::InstallerUnaimed)
     }
 }
 
@@ -951,13 +974,25 @@ pub fn non_convergence_kind(
     target_delivered: bool,
     managed_roots: &[PathBuf],
 ) -> NonConvergenceKind {
+    // An npx-cache copy can never be updated by ANY executor: npm materialises it
+    // per `npx` invocation, keyed by the invocation's package specs, not by any
+    // global prefix. So whichever executor ran, still resolving one after the
+    // install means HQ was never aimed at an updatable copy — classify it
+    // non-blocking (installer-unaimed) rather than wedging auto-update on a
+    // version no install can move. In production the `hq` resolver already skips
+    // npx paths, so this is defence-in-depth plus the exact classification the
+    // live macOS event carries.
+    if paths::is_npx_cache_path(Path::new(post_install_hq_bin)) {
+        return NonConvergenceKind::InstallerUnaimed;
+    }
     match executor {
         InstallExecutor::Pnpm => {
             if !pnpm_targeted {
                 // Underivable layout, or a child PATH that never saw the shim
-                // dir: we could not aim pnpm, so this is the ambient-spawn
-                // foreign-managed shape, bounded to one capture per episode.
-                NonConvergenceKind::ForeignManaged
+                // dir: we could not aim pnpm at the executed copy, so this is the
+                // ambient-spawn unaimed shape. It stays observable but must never
+                // wedge auto-update — HQ never proved it aimed at this copy.
+                NonConvergenceKind::InstallerUnaimed
             } else if target_delivered {
                 // pnpm delivered the target into its own global store, yet the
                 // executed shim still reports the old version: genuine shadowing,
@@ -972,7 +1007,9 @@ pub fn non_convergence_kind(
         }
         InstallExecutor::Bun => {
             if !pnpm_targeted {
-                NonConvergenceKind::ForeignManaged
+                // Same as the pnpm arm: an unaimed Bun run was never aimed at the
+                // executed copy, so it stays observable but never blocks.
+                NonConvergenceKind::InstallerUnaimed
             } else if target_delivered {
                 NonConvergenceKind::BunTargeted
             } else {
@@ -1507,6 +1544,14 @@ impl<'a> PostInstallContext<'a> {
         self.managed_shadow_repair = outcome;
         self
     }
+
+    /// Supply the already-reported non-blocking episode keys so a repeated
+    /// non-blocking non-convergence (a resolution shortfall or an
+    /// installer-unaimed shape) is suppressed after its first capture.
+    pub fn with_nonblocking_episode_keys(mut self, keys: &'a [String]) -> Self {
+        self.nonblocking_episode_keys = keys;
+        self
+    }
 }
 
 /// Decide the observable outcome of an install after re-resolving `hq`.
@@ -1618,6 +1663,12 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         // so it gets its own accurate wording.
         NonConvergenceKind::ManagedShadowed => {
             managed_shadow_detail(hq_display, after_version, latest)
+        }
+        // HQ was never aimed at the executed copy (an npx-cache copy, or an
+        // underivable pnpm/Bun home). The remedy is to install a real global
+        // copy, not to "update it with the tool that installed it".
+        NonConvergenceKind::InstallerUnaimed => {
+            installer_unaimed_detail(hq_display, after_version, latest)
         }
         _ => non_convergent_detail(executor, hq_display, after_version, latest),
     };
@@ -1912,6 +1963,24 @@ pub fn resolution_shortfall_detail(hq_bin: &str, local: Option<&str>, latest: &s
     )
 }
 
+/// The message when HQ was never aimed at the copy the app runs — an npx-cache
+/// copy (materialised per `npx` call and un-updatable by any global install), or
+/// a pnpm/Bun install whose global home could not be derived. Telling the user
+/// to "update it with the tool that installed it" is wrong here, so this names
+/// the real remedy: install a real global copy (HQ does this automatically on a
+/// machine with no other install). It keeps the shared marker prefix so the UI
+/// routes it through the non-convergent surface, not the generic retry copy.
+pub fn installer_unaimed_detail(hq_bin: &str, local: Option<&str>, latest: &str) -> String {
+    let current = local.unwrap_or("an unreadable version");
+    format!(
+        "{NON_CONVERGENT_ERROR_PREFIX}hq {latest} installed, but the app still resolves hq \
+         {current} at {hq_bin} — a temporary copy (an npx cache, or a location HQ could not aim \
+         the installer at) that no global install can replace. Install a real global copy with \
+         `npm install -g @indigoai-us/hq-cli@latest`, or remove that copy so a fresh install \
+         takes over. HQ keeps auto-update on and retries on the next check."
+    )
+}
+
 /// Capture the non-convergent-install signal. This is a distinct class from
 /// `install-failed`: npm exited 0 and nothing threw, so nothing else in the
 /// pipeline would ever notice. It is exactly the silent state that ran on a
@@ -2130,6 +2199,14 @@ pub fn bin_resolution_source(bin: &str) -> &'static str {
         .any(|root| path.starts_with(root))
     {
         return "managed-toolchain";
+    }
+
+    // Name the npx cache before the login-shell catch-all so the next occurrence
+    // identifies its own mechanism instead of masquerading as a login-shell
+    // install. Closed token, never a path — and platform-independent, since an
+    // npx-cache copy can be resolved on Windows too.
+    if paths::is_npx_cache_path(path) {
+        return "npx-cache";
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -4084,46 +4161,31 @@ pub fn npm_prefix_from_hq_bin(hq_bin: &str) -> Option<String> {
     }
 }
 
-/// Whether the resolved `hq` is a shim in pnpm's *flat* global bin directory
+/// Whether the resolved `hq` is a shim in one of pnpm's global bin directories
 /// (`~/Library/pnpm` on macOS, `~/.local/share/pnpm` on Linux,
-/// `%LOCALAPPDATA%\pnpm` on Windows, or a custom `PNPM_HOME`). npm cannot
-/// update such an install: `npm install -g` writes an unrelated prefix, exits
+/// `%LOCALAPPDATA%\pnpm` on Windows, the pnpm >=11 nested `<home>/bin`, or a
+/// custom `PNPM_HOME`). npm cannot update such an install: `npm install -g`
+/// writes an unrelated prefix, exits
 /// 0, and the shim on PATH stays stale — the exact non-convergent loop
 /// `install_converged` guards. pnpm-managed installs must be updated with
 /// pnpm itself (`pnpm add -g`), so the installer branches on this.
+///
+/// Defined as exactly `pnpm_global_env(hq_bin).is_some()` — ONE derivation, ONE
+/// source of truth — so DETECTION (does this route to the pnpm executor?) and
+/// TARGETING (can the child's pnpm home be derived from the shim?) can never
+/// disagree again. They previously diverged on the `<dir>/bin/hq` shape where
+/// `<dir>/bin/global` exists but the grandparent is neither literally named
+/// `pnpm` nor holds a `global/` store: [`pnpm_global_env`]'s `bin` arm returns
+/// early with `None`, while the old body fell through to a final
+/// `parent.join("global")` test (`<dir>/bin/global`) and returned `true`. The
+/// app then entered the pnpm branch with no derivable home, spawned `pnpm add
+/// -g` unaimed, and wedged auto-update. Collapsing the two reroutes exactly that
+/// one previously-broken class to the npm executor — where
+/// [`npm_prefix_from_hq_bin`] derives the correct `--prefix` — while every
+/// currently-derivable pnpm layout (flat, pnpm >=11 nested, custom PNPM_HOME)
+/// still routes to pnpm unchanged.
 pub fn is_pnpm_global_shim(hq_bin: &str) -> bool {
-    if hq_bin == "hq" {
-        return false;
-    }
-    let path = Path::new(hq_bin);
-    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
-        return false;
-    };
-    // Every default pnpm home is a directory literally named `pnpm` holding the
-    // shims flat (…/pnpm/hq). An npm layout never matches: its Unix shims live
-    // under a dir named `bin`, and its Windows shims sit directly in a prefix
-    // that is not named `pnpm`.
-    if parent.file_name().and_then(|n| n.to_str()) == Some("pnpm") {
-        return true;
-    }
-    // pnpm ≥11 nests shims one level deeper: `<pnpm-home>/bin/hq`. The parent
-    // is now literally named `bin`, which is exactly the shape
-    // `npm_prefix_from_hq_bin` reads as an npm prefix — so without this arm,
-    // npm would install into `<pnpm-home>/{bin,lib}` and never move the shim.
-    // The grandparent being the pnpm home (named `pnpm`, or holding pnpm's
-    // `global/` store) is what tells the two layouts apart.
-    if parent.file_name().and_then(|n| n.to_str()) == Some("bin") {
-        if let Some(grandparent) = parent.parent() {
-            if grandparent.file_name().and_then(|n| n.to_str()) == Some("pnpm")
-                || grandparent.join("global").is_dir()
-            {
-                return true;
-            }
-        }
-    }
-    // Custom PNPM_HOME: pnpm keeps its `global/` store beside the shims, which
-    // no npm prefix layout does.
-    parent.join("global").is_dir()
+    pnpm_global_env(hq_bin).is_some()
 }
 
 /// Whether the resolved `hq` is Bun's global shim at
@@ -5125,25 +5187,27 @@ mod tests {
         assert!(outcome.log_line.starts_with("pnpm completed,"));
     }
 
-    /// An underivable home, or a child PATH that never contained the shim's
-    /// directory, means we could not aim pnpm at all — the ambient-spawn
-    /// foreign-managed shape, bounded to one capture per episode.
+    /// The live Kurts recurrence: a pnpm run HQ could not aim at the executed
+    /// copy (underivable home, or a child PATH that never contained the shim
+    /// dir). It is `InstallerUnaimed` — observable but NON-BLOCKING: no durable
+    /// marker, capture NOT gated on a marker write, and bounded to one capture
+    /// per episode. On the base commit this was `ForeignManaged`, which wrote the
+    /// pinned marker and wedged auto-update on every publish.
     #[test]
-    fn untargeted_pnpm_non_convergence_is_foreign_managed_and_bounded() {
-        let hq_bin = "/Users/t/Library/pnpm/bin/hq";
-        for (home_source, path_has_shim_dir) in [
-            (PnpmHomeSource::Undetermined, false),
-            (PnpmHomeSource::NestedBinDir, false),
+    fn an_unaimed_pnpm_run_is_non_blocking_and_writes_no_marker() {
+        // The exact Kurts field values plus the NestedBinDir/unaimed variant.
+        for (hq_bin, home_source) in [
+            ("/opt/homebrew/bin/hq", PnpmHomeSource::Undetermined),
+            ("/Users/t/Library/pnpm/bin/hq", PnpmHomeSource::NestedBinDir),
         ] {
-            let outcome = decide_post_install(&PostInstallContext {
+            let ctx = PostInstallContext {
                 executor: InstallExecutor::Pnpm,
                 before_bin: hq_bin,
                 after_bin: hq_bin,
                 before_version: None,
-                after_version: Some("5.93.0"),
-                latest: "5.94.1",
+                after_version: Some("5.95.0"),
+                latest: "5.103.18",
                 npm_prefix_passed: None,
-                // npm-only; the untargeted pnpm arm never reaches the delivery gate.
                 delivered_version: None,
                 installer_bin: "/opt/homebrew/bin/pnpm",
                 already_blocked: false,
@@ -5153,22 +5217,274 @@ mod tests {
                 pnpm: Some(PnpmRunDiagnostics {
                     home_source,
                     home_env_present: false,
-                    path_has_shim_dir,
-                    // Not aimed => never probed.
+                    path_has_shim_dir: false,
                     global_bin_dir_matches_shim_dir: None,
                     store_family: PnpmStoreFamily::Unknown,
                     authoritative_query_ok: false,
                     exit_status: "0".to_string(),
                     output_len: 0,
                 }),
-            });
+            };
+            let outcome = decide_post_install(&ctx);
             assert_eq!(
                 outcome.non_convergence_kind,
-                Some(NonConvergenceKind::ForeignManaged),
-                "home_source={home_source:?} path_has_shim_dir={path_has_shim_dir}"
+                Some(NonConvergenceKind::InstallerUnaimed),
+                "home_source={home_source:?}"
             );
-            assert!(outcome.capture_requires_durable_record);
+            assert_eq!(
+                outcome.record_non_convergent, None,
+                "an unaimed run must write no durable marker"
+            );
+            assert!(!outcome.capture_requires_durable_record);
+            assert!(outcome.capture.is_some(), "it stays observable once");
+            let key = non_convergent_episode_key(
+                "5.103.18",
+                InstallExecutor::Pnpm,
+                NonConvergenceKind::InstallerUnaimed,
+                Some(home_source),
+            );
+            assert_eq!(
+                outcome.record_nonblocking_episode.as_deref(),
+                Some(key.as_str()),
+                "the first episode must return its non-blocking key to persist"
+            );
+
+            // A repeat with that key already present is suppressed — one capture
+            // per episode, so Sentry volume cannot grow.
+            let seen = [key];
+            let repeat = decide_post_install(&PostInstallContext {
+                nonblocking_episode_keys: &seen,
+                ..ctx
+            });
+            assert!(repeat.capture.is_none(), "a repeat episode is suppressed");
+            assert_eq!(repeat.record_nonblocking_episode, None);
         }
+    }
+
+    /// The live Zekes recurrence: npm delivered `latest` into HQ's managed
+    /// prefix, but the app still resolves an npx-cache copy npm can never move.
+    /// It is `InstallerUnaimed` — non-blocking, no durable marker, one capture
+    /// per episode. On the base commit `npm_prefix_from_hq_bin` returns `None`
+    /// for a `.bin` parent, so it fell through to `foreign-managed` and wedged.
+    #[test]
+    fn the_observed_macos_npx_cache_shape_is_non_blocking_and_writes_no_marker() {
+        let npx_hq = "/Users/z/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq";
+        let managed_prefix = "/Users/z/Library/Application Support/Indigo HQ/toolchain/npm-global";
+        let ctx = PostInstallContext::npm(
+            npx_hq,
+            npx_hq,
+            Some("5.103.1"),
+            Some("5.103.1"),
+            "5.103.18",
+            Some(managed_prefix),
+            "/opt/homebrew/bin/npm",
+            false,
+            Some("5.103.18"),
+        );
+        let outcome = decide_post_install(&ctx);
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::InstallerUnaimed)
+        );
+        assert_eq!(outcome.record_non_convergent, None, "npx copy must not block");
+        assert!(!outcome.capture_requires_durable_record);
+        let key = non_convergent_episode_key(
+            "5.103.18",
+            InstallExecutor::Npm,
+            NonConvergenceKind::InstallerUnaimed,
+            None,
+        );
+        assert_eq!(
+            outcome.record_nonblocking_episode.as_deref(),
+            Some(key.as_str())
+        );
+    }
+
+    /// The npx-cache non-convergence is bounded to one capture per episode, so
+    /// the fix cannot increase Sentry volume: a second run that already sees the
+    /// episode key captures nothing.
+    #[test]
+    fn the_new_kind_is_bounded_to_one_capture_per_episode() {
+        let npx_hq = "/Users/z/.npm/_npx/abc/node_modules/.bin/hq";
+        let key = non_convergent_episode_key(
+            "5.103.18",
+            InstallExecutor::Npm,
+            NonConvergenceKind::InstallerUnaimed,
+            None,
+        );
+        let seen = [key];
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            npx_hq,
+            npx_hq,
+            Some("5.103.1"),
+            Some("5.103.1"),
+            "5.103.18",
+            Some("/managed/npm-global"),
+            "/opt/homebrew/bin/npm",
+            false,
+            Some("5.103.18"),
+        ).with_nonblocking_episode_keys(&seen));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::InstallerUnaimed)
+        );
+        assert!(outcome.capture.is_none(), "a repeat episode captures nothing");
+        assert_eq!(outcome.record_nonblocking_episode, None);
+    }
+
+    /// The pnpm detection/targeting collapse: `is_pnpm_global_shim(x)` is now
+    /// exactly `pnpm_global_env(x).is_some()` for EVERY layout arm, so the two
+    /// can never disagree again — the invariant the doc comment promised.
+    #[test]
+    fn pnpm_detection_and_targeting_agree_on_every_layout_arm() {
+        // String-only arms (no filesystem needed).
+        for hq_bin in [
+            "hq",
+            "",
+            "/Users/t/Library/pnpm/hq",      // flat
+            "/home/t/.local/share/pnpm/hq",  // flat linux
+            "/Users/t/Library/pnpm/bin/hq",  // pnpm >=11 nested
+            "/opt/homebrew/bin/hq",          // npm/homebrew
+            "/Users/t/.npm-global/bin/hq",   // npm global
+            "/Users/t/.asdf/shims/hq",       // asdf
+        ] {
+            assert_eq!(
+                is_pnpm_global_shim(hq_bin),
+                pnpm_global_env(hq_bin).is_some(),
+                "detection/targeting disagree on {hq_bin}"
+            );
+        }
+        // Filesystem arms: custom PNPM_HOME (flat + nested) and the previously
+        // divergent `<dir>/bin/hq` where `<dir>/bin/global` exists but `<dir>`
+        // is not a pnpm home.
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Custom flat home with a `global/` store.
+        let flat = tmp.path().join("tools");
+        std::fs::create_dir_all(flat.join("global")).unwrap();
+        std::fs::write(flat.join("hq"), "#!/bin/sh\n").unwrap();
+        // Custom nested home with a `global/` store.
+        let nested = tmp.path().join("tools-v11");
+        std::fs::create_dir_all(nested.join("global")).unwrap();
+        std::fs::create_dir_all(nested.join("bin")).unwrap();
+        std::fs::write(nested.join("bin").join("hq"), "#!/bin/sh\n").unwrap();
+        // The divergent shape: `<x>/bin/global` exists, `<x>/global` does not,
+        // and `<x>` is not named `pnpm`.
+        let divergent = tmp.path().join("x");
+        std::fs::create_dir_all(divergent.join("bin").join("global")).unwrap();
+        std::fs::write(divergent.join("bin").join("hq"), "#!/bin/sh\n").unwrap();
+        for path in [
+            flat.join("hq"),
+            nested.join("bin").join("hq"),
+            divergent.join("bin").join("hq"),
+        ] {
+            let p = path.to_str().unwrap();
+            assert_eq!(
+                is_pnpm_global_shim(p),
+                pnpm_global_env(p).is_some(),
+                "detection/targeting disagree on {p}"
+            );
+        }
+    }
+
+    /// The divergent `<dir>/bin/hq` shape (the class that used to disagree) now
+    /// routes to the npm executor with the correct enclosing prefix, so npm
+    /// updates the copy the app runs instead of `pnpm add -g` firing unaimed.
+    #[test]
+    fn the_divergent_bin_global_shape_routes_to_npm_with_the_enclosing_prefix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let x = tmp.path().join("x");
+        std::fs::create_dir_all(x.join("bin").join("global")).unwrap();
+        let hq = x.join("bin").join("hq");
+        std::fs::write(&hq, "#!/bin/sh\n").unwrap();
+        let hq_str = hq.to_str().unwrap();
+        // Not pnpm — so install_executor_for_hq_bin takes the npm branch.
+        assert!(!is_pnpm_global_shim(hq_str));
+        assert_eq!(pnpm_global_env(hq_str), None);
+        // npm gets the enclosing prefix `<x>/bin`'s parent, `<x>`.
+        assert_eq!(
+            npm_prefix_from_hq_bin(hq_str),
+            Some(x.to_string_lossy().to_string())
+        );
+        // The canonical Homebrew case the crate already asserts elsewhere.
+        assert_eq!(
+            npm_prefix_from_hq_bin("/opt/homebrew/bin/hq"),
+            Some("/opt/homebrew".to_string())
+        );
+    }
+
+    /// Guard against over-broadening: a genuinely foreign npm layout (no prefix
+    /// to aim at) still classifies `ForeignManaged`, still blocks, and still
+    /// writes the durable marker on its first episode. The unaimed/npx changes
+    /// must not weaken this.
+    #[test]
+    fn a_genuinely_foreign_layout_still_blocks_and_still_writes_the_marker() {
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            "/Users/t/.asdf/shims/hq",
+            "/Users/t/.asdf/shims/hq",
+            Some("5.95.0"),
+            Some("5.95.0"),
+            "5.103.18",
+            None,
+            "/opt/homebrew/bin/npm",
+            false,
+            None,
+        ));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.103.18"));
+        assert!(outcome.capture_requires_durable_record);
+    }
+
+    /// Regression (PR #512 review): a real hq-cli whose pnpm store sits beside a
+    /// shim in a directory literally named `bin` (a flat custom PNPM_HOME) must
+    /// stay VERSION-READABLE even though the collapsed router now drives it with
+    /// npm. Version reading is decoupled from routing precisely so the provenance
+    /// gate in `install_executor_for_hq_bin` does not refuse it as unidentifiable
+    /// and disable its update.
+    #[test]
+    fn a_pnpm_store_beside_a_bin_named_shim_stays_version_readable_and_installable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Flat custom PNPM_HOME whose last component is literally `bin`.
+        let home = tmp.path().join("tools").join("bin");
+        let hq = home.join("hq");
+        let pkg = home
+            .join("global")
+            .join("5")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(&hq, "#!/bin/sh\n").unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.103.18"}"#,
+        )
+        .unwrap();
+
+        // The collapsed router sends this shape to npm (pnpm home not derivable
+        // from the shim), consistent with the primary fix.
+        assert!(!is_pnpm_global_shim(&hq.to_string_lossy()));
+        // But its version is still read from the pnpm store beside the shim, so
+        // the provenance gate passes and the executor is Npm — never a refusal.
+        assert_eq!(version_from_hq_binary(&hq).as_deref(), Some("5.103.18"));
+        assert_eq!(install_executor_for_hq_bin(&hq), Some(InstallExecutor::Npm));
+    }
+
+    /// The self-naming telemetry source: an npx-cache path reports `npx-cache`,
+    /// not the `login-shell` catch-all it masqueraded as before.
+    #[test]
+    fn bin_resolution_source_names_an_npx_cache_path() {
+        assert_eq!(
+            bin_resolution_source("/Users/z/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq"),
+            "npx-cache"
+        );
+        // A non-npx absolute path is never mislabeled as npx-cache. The exact
+        // source of `/opt/homebrew/bin/hq` is platform-specific (`homebrew` on
+        // Unix, `unknown` on Windows where that branch is cfg'd out), so assert
+        // the invariant that survives both.
+        assert_ne!(bin_resolution_source("/opt/homebrew/bin/hq"), "npx-cache");
     }
 
     /// Every foreign-managed layout in the 31-event history classifies the same
@@ -5208,10 +5524,11 @@ mod tests {
                 "pnpm-shortfall/{hq_bin}"
             );
             // Not aimed at all (underivable / PATH without the shim dir): the
-            // ambient-spawn foreign-managed shape.
+            // ambient-spawn unaimed shape — observable but non-blocking, never
+            // the foreign-managed durable block it used to be.
             assert_eq!(
                 non_convergence_kind(InstallExecutor::Pnpm, None, false, hq_bin, false, &[]),
-                NonConvergenceKind::ForeignManaged,
+                NonConvergenceKind::InstallerUnaimed,
                 "pnpm-untargeted/{hq_bin}"
             );
         }
