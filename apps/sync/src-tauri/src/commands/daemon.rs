@@ -2975,21 +2975,34 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         .map(classify_windows_exit_status)
         .filter(|termination| termination.is_windows_status());
     let normalized_abort = normalized_abort_description(code, signal, host);
+    // The episode number rendered in the event message. The exec-not-runnable
+    // class keeps the GLOBAL `consecutive` counter for cross-class episode
+    // correlation (its own class streak rides the `exec_not_runnable_streak`
+    // extra); every other captured class renders the capture streak that gated
+    // it. For the slow-death class that streak is the uptime-independent
+    // `slow_death_consecutive`, so a multi-minute death loop no longer reports
+    // "#1" on every one of its events (HQ-DESKTOP-4D). The fingerprint is built
+    // separately, so this text change never moves grouping.
+    let episode = if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        consecutive
+    } else {
+        policy_consecutive
+    };
     let message = if let Some(exit_description) = normalized_abort {
         format!(
             "auto-sync watcher exited unexpectedly ({exit_description}), \
-             consecutive failure #{consecutive}{diag}"
+             consecutive failure #{episode}{diag}"
         )
     } else if windows_termination.is_some() {
         let exit_description = describe_exit(code, signal);
         format!(
             "auto-sync watcher exited unexpectedly ({exit_description}), \
-             consecutive failure #{consecutive}{diag}"
+             consecutive failure #{episode}{diag}"
         )
     } else {
         format!(
             "auto-sync watcher exited unexpectedly (code={code:?} signal={signal:?}), \
-             consecutive failure #{consecutive}{diag}"
+             consecutive failure #{episode}{diag}"
         )
     };
 
@@ -3696,6 +3709,14 @@ const FAST_FAIL_WINDOW: Duration = Duration::from_secs(60);
 /// at most this between respawns instead of the 30s supervisor cadence).
 const RESPAWN_MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
+/// How long a live generation must survive before the slow-death capture streak
+/// (`slow_death_consecutive`) is considered recovered and cleared (HQ-DESKTOP-4D).
+/// Set equal to `RESPAWN_MAX_BACKOFF`: any generation that outlives the longest
+/// backoff the supervisor can impose has genuinely recovered. Deliberately much
+/// longer than `FAST_FAIL_WINDOW` so a multi-minute death loop cannot trivially
+/// clear the streak between deaths and reset its capture rate-limiting to "#1".
+const HEALTHY_RUN_WINDOW: Duration = Duration::from_secs(30 * 60);
+
 /// Exponential respawn backoff after `consecutive` consecutive fast failures.
 /// `0` → the base supervisor cadence; then ×2 per failure, capped at `cap`.
 fn respawn_backoff(consecutive: u32, base: Duration, cap: Duration) -> Duration {
@@ -3752,6 +3773,16 @@ struct WatcherCrashState {
     /// `consecutive`: unrelated fast exits must never turn one 126/127 blip
     /// into an escalated capture.
     exec_not_runnable_consecutive: u32,
+    /// Consecutive unexpected exits in the current UN-BROKEN failure episode,
+    /// counted regardless of uptime (HQ-DESKTOP-4D). Unlike `consecutive`, which a
+    /// slow death (uptime ≥ `FAST_FAIL_WINDOW`) resets to 1 — so a 5-minute death
+    /// loop is pinned at "#1" forever and its capture is never rate-limited — this
+    /// counter increments on EVERY unexpected exit and only clears once a
+    /// generation survives `HEALTHY_RUN_WINDOW`. It drives the Sentry capture gate
+    /// for the crash / session-end classes so a slow-death loop ships ~log2(N)
+    /// events instead of one per respawn. It is telemetry only: it never touches
+    /// `consecutive`, respawn backoff, or lifecycle.
+    slow_death_consecutive: u32,
     /// When the current watcher was spawned — drives the fast-failure decision
     /// and the "survived long enough to reset" check.
     spawn_at: Option<Instant>,
@@ -3804,17 +3835,33 @@ fn note_runner_preflight_failure() -> u32 {
 
 /// Update the crash-loop state on an unexpected watcher exit and return the
 /// consecutive-failure count so the caller can decide whether to capture.
-fn note_watcher_crashed() -> u32 {
-    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
-    let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
+/// Pure crash-state transition on an unexpected exit, given how long the dead
+/// generation `ran`. Advances the slow-death episode streak on EVERY exit and
+/// the fast-failure `consecutive` counter per the FAST_FAIL_WINDOW rule (fast →
+/// +1, slow → reset to 1, exactly as before). Returns the global consecutive
+/// count. Extracted so the counting is unit-testable without an `Instant`.
+fn apply_watcher_crash(st: &mut WatcherCrashState, ran: Duration) -> u32 {
+    // The slow-death episode counter advances regardless of uptime, so a death
+    // loop whose generations each outlive FAST_FAIL_WINDOW is no longer pinned at
+    // 1 (HQ-DESKTOP-4D). This is the only writer that increments it; it is cleared
+    // solely by a HEALTHY_RUN_WINDOW recovery, never on spawn.
+    st.slow_death_consecutive = st.slow_death_consecutive.saturating_add(1);
     if is_fast_failure(ran, FAST_FAIL_WINDOW) {
         st.consecutive = st.consecutive.saturating_add(1);
     } else {
         // Ran healthily, then died — not a tight loop. Treat as a fresh first
-        // failure: reset to 1 so it is captured and backs off lightly.
+        // failure: reset to 1 so it is captured and backs off lightly. Backoff
+        // and respawn cadence stay exactly as before; only the capture gate now
+        // consults the separate slow-death streak above.
         st.consecutive = 1;
     }
-    let consecutive = st.consecutive;
+    st.consecutive
+}
+
+fn note_watcher_crashed() -> u32 {
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
+    let consecutive = apply_watcher_crash(&mut st, ran);
     st.backoff_until = Some(
         Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
     );
@@ -3822,22 +3869,37 @@ fn note_watcher_crashed() -> u32 {
 }
 
 /// Return the streak relevant to the selected capture policy. The global
-/// crash-loop counter still owns backoff and ordinary crash milestones; only
-/// the 126/127 escalation needs its own failure-class streak.
+/// crash-loop counter (`global_consecutive`) still owns backoff and lifecycle;
+/// the capture GATE consults a failure-class streak. The 126/127 escalation uses
+/// its own `exec_not_runnable_consecutive`; every other capturing class uses the
+/// uptime-independent `slow_death_consecutive` so a slow-death loop is rate-
+/// limited to milestones instead of pinned at "#1" (HQ-DESKTOP-4D). The global
+/// counter is intentionally no longer the crash-class gate, but it is left as a
+/// parameter for the exec branch's contract and for callers/tests.
+/// Pure capture-gate streak selection. Always advances the exec-not-runnable
+/// streak per `next_exec_not_runnable_streak` (a non-126/127 exit resets it),
+/// then returns the streak the capture gate should use: the exec streak for the
+/// 126/127 class, else the uptime-independent slow-death streak. Extracted so it
+/// is unit-testable on a local state without the process-global lock.
+fn capture_policy_streak(st: &mut WatcherCrashState, policy: WatcherExitCapturePolicy) -> u32 {
+    st.exec_not_runnable_consecutive =
+        next_exec_not_runnable_streak(st.exec_not_runnable_consecutive, policy);
+    if policy == WatcherExitCapturePolicy::CaptureRateLimited {
+        st.exec_not_runnable_consecutive
+    } else {
+        st.slow_death_consecutive
+    }
+}
+
 fn note_watcher_capture_policy_streak(
     policy: WatcherExitCapturePolicy,
     global_consecutive: u32,
 ) -> u32 {
+    // The global crash-loop counter no longer gates the crash class; it is kept
+    // as a parameter for the trait contract and the exec branch's callers/tests.
+    let _ = global_consecutive;
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
-    if policy == WatcherExitCapturePolicy::CaptureRateLimited {
-        st.exec_not_runnable_consecutive =
-            next_exec_not_runnable_streak(st.exec_not_runnable_consecutive, policy);
-        st.exec_not_runnable_consecutive
-    } else {
-        st.exec_not_runnable_consecutive =
-            next_exec_not_runnable_streak(st.exec_not_runnable_consecutive, policy);
-        global_consecutive
-    }
+    capture_policy_streak(&mut st, policy)
 }
 
 fn next_exec_not_runnable_streak(previous: u32, policy: WatcherExitCapturePolicy) -> u32 {
@@ -3902,13 +3964,31 @@ fn within_respawn_backoff() -> bool {
 /// Supervisor helper: once a respawned watcher has survived `FAST_FAIL_WINDOW`,
 /// clear the crash-loop state so backoff + capture rate-limiting reset for the
 /// next failure episode.
-fn reset_crash_state_if_recovered() {
-    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
-    if should_reset_after_recovery(st.spawn_at.map(|t| t.elapsed()), FAST_FAIL_WINDOW) {
+/// Pure recovery-reset transition given the live generation's uptime. The 60s
+/// fast-fail reset (consecutive / exec_not_runnable / backoff) is byte-for-byte
+/// unchanged; the slow-death capture streak clears only after the much longer
+/// HEALTHY_RUN_WINDOW. Extracted so both boundaries are unit-testable without an
+/// `Instant`.
+fn apply_recovery_reset(st: &mut WatcherCrashState, spawn_elapsed: Option<Duration>) {
+    if should_reset_after_recovery(spawn_elapsed, FAST_FAIL_WINDOW) {
         st.consecutive = 0;
         st.exec_not_runnable_consecutive = 0;
         st.backoff_until = None;
     }
+    // The slow-death capture streak needs a much longer proof of recovery than
+    // the 60s fast-fail reset above: a 5-minute death loop clears FAST_FAIL_WINDOW
+    // on every generation, so tying its reset to that window would pin it at "#1"
+    // exactly as the bug did. Only a generation that outlives HEALTHY_RUN_WINDOW
+    // clears it, so the next failure episode alerts at #1 again (HQ-DESKTOP-4D).
+    if should_reset_after_recovery(spawn_elapsed, HEALTHY_RUN_WINDOW) {
+        st.slow_death_consecutive = 0;
+    }
+}
+
+fn reset_crash_state_if_recovered() {
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    let spawn_elapsed = st.spawn_at.map(|t| t.elapsed());
+    apply_recovery_reset(&mut st, spawn_elapsed);
 }
 
 /// Best-effort scoped RSS sample of the registered watcher (HQ-DESKTOP-55).
@@ -8804,6 +8884,166 @@ mod tests {
             1,
             "a healthy spawn must let the next episode alert again"
         );
+    }
+
+    // ── Slow-death alert cap (HQ-DESKTOP-4D) ─────────────────────────────
+
+    #[test]
+    fn slow_death_loop_caps_capture_at_exponential_milestones() {
+        // The exact base-red case. A watcher that dies every ~5 minutes outlives
+        // FAST_FAIL_WINDOW on every generation, so the global `consecutive`
+        // counter is pinned at 1 forever (its slow-death arm) and, before this
+        // fix, `is_capture_milestone(1)` shipped every single death — 1299 events,
+        // all "#1". The uptime-independent slow-death streak restores the log2
+        // limiter. Driven through the real crash-state transition helpers on a
+        // LOCAL state rather than the shared RecordingWatcherEffects fake: that
+        // fake models neither uptime nor the slow-death pin (the very bug under
+        // test), so a through-fake loop could not reproduce the base-red condition.
+        let mut st = WatcherCrashState::default();
+        let slow = Duration::from_secs(5 * 60); // ≥ FAST_FAIL_WINDOW → a slow death
+        let mut captures = 0;
+        for episode in 1..=10 {
+            let consecutive = apply_watcher_crash(&mut st, slow);
+            let policy_streak = capture_policy_streak(&mut st, WatcherExitCapturePolicy::Capture);
+            assert_eq!(consecutive, 1, "global consecutive stays pinned on a slow death");
+            assert_eq!(policy_streak, episode, "the slow-death streak advances every death");
+            if should_capture_watcher_exit(WatcherExitCapturePolicy::Capture, policy_streak) {
+                captures += 1;
+            }
+        }
+        assert_eq!(captures, 4, "ten slow deaths capture only at #1, #2, #4, #8");
+    }
+
+    #[test]
+    fn fast_crash_loop_advances_both_counters_so_backoff_cadence_is_untouched() {
+        // Guard that the fix did not touch the fast-crash class: a tight loop
+        // advances the global counter (which drives backoff) exactly as before,
+        // and the slow-death streak tracks it one-for-one. respawn_backoff is a
+        // pure function of the unchanged `consecutive`, so cadence is untouched.
+        let mut st = WatcherCrashState::default();
+        for expected in 1..=5 {
+            let consecutive = apply_watcher_crash(&mut st, Duration::from_secs(1)); // fast
+            assert_eq!(consecutive, expected, "fast crash advances global consecutive");
+            assert_eq!(st.slow_death_consecutive, expected);
+            assert_eq!(
+                respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
+                respawn_backoff(expected, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
+                "backoff still keyed on the unchanged global counter"
+            );
+        }
+    }
+
+    #[test]
+    fn slow_death_streak_clears_only_after_the_healthy_run_window() {
+        // The pure recovery boundary: 29m59s does NOT clear the slow-death streak;
+        // 30m0s does. The 60s fast-fail reset for consecutive / exec_not_runnable /
+        // backoff is unchanged either way.
+        assert!(!should_reset_after_recovery(
+            Some(HEALTHY_RUN_WINDOW - Duration::from_secs(1)),
+            HEALTHY_RUN_WINDOW
+        ));
+        assert!(should_reset_after_recovery(Some(HEALTHY_RUN_WINDOW), HEALTHY_RUN_WINDOW));
+
+        // Just past FAST_FAIL_WINDOW but far short of HEALTHY_RUN_WINDOW: the
+        // fast-fail state clears, the slow-death streak is retained.
+        let mut st = WatcherCrashState {
+            consecutive: 3,
+            exec_not_runnable_consecutive: 2,
+            slow_death_consecutive: 7,
+            backoff_until: Some(Instant::now()),
+            ..WatcherCrashState::default()
+        };
+        apply_recovery_reset(&mut st, Some(FAST_FAIL_WINDOW + Duration::from_secs(1)));
+        assert_eq!(st.consecutive, 0, "fast-fail reset still clears consecutive at 60s");
+        assert_eq!(st.exec_not_runnable_consecutive, 0);
+        assert!(st.backoff_until.is_none());
+        assert_eq!(st.slow_death_consecutive, 7, "slow-death streak survives a 60s recovery");
+
+        // A genuinely healthy generation clears the slow-death streak too, so the
+        // next failure episode alerts at #1 again.
+        apply_recovery_reset(&mut st, Some(HEALTHY_RUN_WINDOW));
+        assert_eq!(st.slow_death_consecutive, 0, "a HEALTHY_RUN_WINDOW recovery clears it");
+    }
+
+    #[test]
+    fn slow_death_message_states_the_true_episode_length_not_hash_one() {
+        // The message-honesty leg: on a slow death the global counter is 1 but the
+        // slow-death streak (policy_consecutive) is the real episode length, and the
+        // rendered message must state THAT — this is why 1299 events all read "#1".
+        let mut effects = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut effects,
+            None,
+            Some(SIGKILL),
+            1, // global consecutive, pinned on a slow death
+            8, // slow-death capture streak
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.captures.len(), 1, "a milestone slow death captures");
+        let message = &effects.captures[0].message;
+        assert!(message.contains("consecutive failure #8"), "{message}");
+        assert!(!message.contains("consecutive failure #1"), "{message}");
+    }
+
+    #[test]
+    fn non_milestone_slow_death_is_muted_but_a_fresh_first_still_alerts() {
+        // A non-milestone repeat (#3) is rate-limited; a fresh episode's #1 always
+        // ships, so muting only ever applies to repeats inside one episode.
+        let mut muted = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut muted,
+            None,
+            Some(SIGKILL),
+            1,
+            3,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        assert!(muted.captures.is_empty(), "a #3 slow death is rate-limited");
+
+        let mut fresh = RecordingWatcherEffects::default();
+        record_unexpected_watcher_exit(
+            &mut fresh,
+            None,
+            Some(SIGKILL),
+            1,
+            1,
+            WatcherExitCapturePolicy::Capture,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(fresh.captures.len(), 1, "occurrence #1 of an episode always captures");
+        assert!(fresh.captures[0].message.contains("consecutive failure #1"));
+    }
+
+    #[test]
+    fn exec_not_runnable_streak_is_isolated_from_the_slow_death_streak() {
+        // Failure-class isolation: an exec-not-runnable (126/127) exit advances its
+        // own streak and NOT the slow-death streak, and a non-126/127 exit resets
+        // the exec streak while the slow-death streak keeps climbing — so one class
+        // can never mute another class's first occurrence.
+        let mut st = WatcherCrashState::default();
+        // Three slow crash deaths build the slow-death streak.
+        for _ in 0..3 {
+            apply_watcher_crash(&mut st, Duration::from_secs(300));
+            capture_policy_streak(&mut st, WatcherExitCapturePolicy::Capture);
+        }
+        assert_eq!(st.slow_death_consecutive, 3);
+        assert_eq!(st.exec_not_runnable_consecutive, 0);
+        // An exec-not-runnable exit advances only the exec streak.
+        apply_watcher_crash(&mut st, Duration::from_secs(1));
+        let exec_streak = capture_policy_streak(&mut st, WatcherExitCapturePolicy::CaptureRateLimited);
+        assert_eq!(exec_streak, 1, "exec-not-runnable uses its own streak");
+        assert_eq!(st.slow_death_consecutive, 4, "slow-death streak still counts the exit");
     }
 
     // ── Exit diagnostics (HQ-SYNC-F) ─────────────────────────────────────
