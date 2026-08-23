@@ -243,7 +243,12 @@ hq-desktop-core = { path = "../../../crates/hq-desktop-core", features = ["test-
 sentry = { version = "^0.35", features = ["test"] }
 tempfile = "3"
 wiremock = "0.6"
+tauri = { version = "2", features = ["test"] }
 
+# KEEP THIS TABLE LAST IN THE FILE. A [patch] header inserted above an existing key
+# silently re-parents every key that follows it — putting this block mid-file once
+# swallowed the tauri dev-dependency above and broke `tauri::test` in the app tests.
+#
 # hq-plugin-meetings depends on hq-desktop-core over git, because that crate still
 # lives here and has no home of its own. Without this patch cargo resolves TWO
 # hq-desktop-core packages — ours by path, the plugin's by git — and they are
@@ -256,4 +261,3 @@ wiremock = "0.6"
 # depend on one shared copy.
 [patch."https://github.com/indigoai-us/hq-desktop-app"]
 hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
-tauri = { version = "2", features = ["test"] }

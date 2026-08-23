@@ -4,9 +4,12 @@
 //   - client_info: `set_client_version(env!("APP_VERSION"))`
 //   - feature_gate: `set_email_claim_fetcher(..)` wired to Cognito
 pub use hq_desktop_core::{
-    client_info, feature_gate, hq_resolver, ignore, logfile, meeting_ledger, paths,
-    recordings_ledger, release_channel,
+    client_info, feature_gate, hq_resolver, ignore, logfile, paths, release_channel,
 };
+
+// The meetings/recording ledgers moved out to the hq-plugin-meetings crate, but keep
+// their `crate::util::X` call sites working by re-exporting from their new home.
+pub use hq_plugin_meetings::{meeting_ledger, recordings_ledger};
 
 // Journal remains as an app-local facade; test_support stays app-local.
 pub mod journal;
