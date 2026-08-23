@@ -41,16 +41,36 @@ to a tag in `apps/sync/src-tauri/Cargo.toml`. Its git history came with it.
 
 ### The `[patch]` you will notice in the app manifest
 
-`hq-plugin-meetings` depends on `hq-desktop-core`, which is still here. From the
-plugin's side that is a git dependency on this repo, so a build of the app would
-resolve two `hq-desktop-core` packages — ours by path and the plugin's by git — which
-cargo treats as unrelated types. The `[patch]` in `apps/sync/src-tauri/Cargo.toml`
-collapses them onto this checkout.
+`hq-desktop-core` now has its own repo,
+[`indigoai-us/hq-desktop-core`](https://github.com/indigoai-us/hq-desktop-core), and
+the meetings plugin depends on a tag from it. That removed the repo cycle: the plugin
+no longer points back at this repo, so the graph is a line rather than a loop.
 
-That patch is a symptom, not a design. It disappears when `hq-desktop-core` gets its
-own home and both consumers depend on one copy, which is the natural next extraction.
-Until then, a foundation change meetings needs is a two-repo sequence: land it here,
-then bump the pin in the plugin repo, then bump the tag here.
+This repo has not switched over yet, and still carries `hq-desktop-core` as a path
+crate under `crates/`. So a build here resolves two copies — ours by path, the
+plugin's by git — which cargo treats as unrelated types. The `[patch]` in
+`apps/sync/src-tauri/Cargo.toml` collapses them onto this checkout.
+
+**Why this repo has not switched.** 26 test files here read `hq-desktop-core`'s Rust
+source directly off disk — `readFileSync('../../crates/hq-desktop-core/src/*.rs')` —
+and assert against its text. They cover 18 core modules across `__tests__/stories/`
+and `e2e/desktop-alt/`. That style of source-contract test structurally requires the
+crate to sit in this working tree, so depending on the tag instead would break all of
+them at once. Migrating them (most belong upstream as real Rust tests, which is
+strictly stronger than grepping source text) is its own piece of work and has not
+been done.
+
+Until it is, keep the tags aligned: every consumer in one build must pin the same
+`hq-desktop-core` tag, because cargo unifies git dependencies by source URL *and*
+resolved commit.
+
+### Cross-repo contracts have no CI owner
+
+Splitting repos split some contracts in half, and neither side's CI checks the other.
+The known one: this repo bundles `bridge.mjs` into `Contents/Resources/recall-sdk-bridge/`,
+and the plugin's resolver expects exactly that path. Change one without the other and
+both test suites stay green while recording breaks at runtime. See the comment in
+`apps/sync/e2e/desktop-alt/recall-sidecar-bundle.spec.ts`.
 
 ### Couplings still owned by this repo
 

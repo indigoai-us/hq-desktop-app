@@ -163,13 +163,24 @@ describe('macOS bundle ships no non-Mach-O nested code object', () => {
     ).toEqual([]);
   });
 
-  it('resolves the bridge from Resources, never from Contents/MacOS', () => {
-    // The Rust resolver is the other half of the contract: bridge.mjs must be
-    // reached via ../Resources, and nothing may look in Contents/MacOS.
-    const rs = readFileSync(repoUrl('../../crates/hq-desktop-core/src/recall_sdk.rs'), 'utf8');
-    expect(rs).toContain('"..", "Resources"');
-    expect(rs).toContain('BRIDGE_PATH_ENV');
-    // bridge.mjs must still be a bundled resource for that path to exist.
+  it('ships bridge.mjs as a bundled resource for the resolver to find', () => {
+    // This assertion owns the half of the contract that lives in THIS repo: the app
+    // must bundle bridge.mjs as a plain resource, so a shipped .app has it under
+    // Contents/Resources/recall-sdk-bridge/bridge.mjs.
+    //
+    // The other half — that the Rust resolver looks via ../Resources and honours the
+    // RECALL_BRIDGE_PATH override — moved to indigoai-us/hq-plugin-meetings with the
+    // resolver itself, and is covered there by behavioural tests that plant a bridge
+    // on disk and resolve it, rather than by the source-text greps this test used to
+    // do: recall_sdk::bridge_resolution_tests::{
+    //   resolve_bridge_entry_finds_the_macos_bundle_resources_layout,
+    //   resolve_bridge_entry_prefers_the_env_override,
+    //   resolve_bridge_entry_ignores_a_blank_or_dangling_override }.
+    //
+    // Careful: the two halves now live in different repos and neither CI checks the
+    // other. Changing this bundled path without changing the resolver's expectation
+    // leaves both test suites green and breaks recording at runtime. Treat the
+    // literal below as a cross-repo contract.
     expect(
       resourceSources.some((src) => src.endsWith('sidecar/recall-sdk-bridge/bridge.mjs')),
     ).toBe(true);

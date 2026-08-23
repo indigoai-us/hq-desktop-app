@@ -12,7 +12,7 @@ hq-telemetry = { path = "../../../crates/hq-telemetry" }
 hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
 # Meetings/recording now lives in its own repo, pinned to a release tag.
 # See docs/plugin-boundaries.md for why, and the [patch] below for the catch.
-hq-plugin-meetings = { git = "https://github.com/indigoai-us/hq-plugin-meetings", tag = "v0.1.0" }
+hq-plugin-meetings = { git = "https://github.com/indigoai-us/hq-plugin-meetings", tag = "v0.1.1" }
 hq-platform = { path = "../../../crates/hq-platform" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
@@ -249,15 +249,14 @@ tauri = { version = "2", features = ["test"] }
 # silently re-parents every key that follows it — putting this block mid-file once
 # swallowed the tauri dev-dependency above and broke `tauri::test` in the app tests.
 #
-# hq-plugin-meetings depends on hq-desktop-core over git, because that crate still
-# lives here and has no home of its own. Without this patch cargo resolves TWO
-# hq-desktop-core packages — ours by path, the plugin's by git — and they are
-# distinct types to the compiler, so passing a hq_desktop_core::events::* value into
-# a plugin function fails with "expected MeetingDetectedEvent, found
-# MeetingDetectedEvent". The patch collapses both onto this checkout, which also
-# means the revision the plugin pins does not affect this build.
+# hq-plugin-meetings depends on hq-desktop-core at a tag from its own repo. This repo
+# still carries hq-desktop-core as a path crate (26 test files read its Rust source
+# directly — see docs/plugin-boundaries.md), so without this patch cargo resolves two
+# copies of it: ours by path and the plugin's by git. They are distinct types, and
+# passing a hq_desktop_core::events::* value into the plugin fails with "expected
+# MeetingDetectedEvent, found a different MeetingDetectedEvent".
 #
-# Delete this once hq-desktop-core is extracted or published and both crates can
-# depend on one shared copy.
-[patch."https://github.com/indigoai-us/hq-desktop-app"]
+# The patch collapses both onto this checkout. Delete it when this repo stops
+# carrying hq-desktop-core by path and depends on the tag like everyone else.
+[patch."https://github.com/indigoai-us/hq-desktop-core"]
 hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
