@@ -1,67 +1,72 @@
 /**
- * macOS auto-sync watcher SIGKILL: uncapped alerting + attribution core
- * (HQ-DESKTOP-4D).
+ * macOS auto-sync watcher SIGKILL: uncapped alerting (HQ-DESKTOP-4D).
  *
  * On macOS the auto-sync watcher dies with `code=None signal=Some(9)` every
- * 1-7 minutes and is respawned on the supervisor cadence. Two independent
- * defects stack on that one exit:
+ * 1-7 minutes and is respawned on the supervisor cadence. Every generation in
+ * this cluster outlives FAST_FAIL_WINDOW (60s), so `note_watcher_crashed`'s
+ * slow-death arm pins the crash-loop counter `consecutive` at 1 forever. The
+ * capture gate `is_capture_milestone(1)` is unconditionally true, so the log2(N)
+ * limiter never engages and EVERY death is sent — the observed 1299 events, all
+ * titled "consecutive failure #1", from just a handful of Macs.
  *
- *  1. UNCAPPED ALERTING. Every generation outlives FAST_FAIL_WINDOW (60s), so
- *     `note_watcher_crashed`'s slow-death arm pins the crash-loop counter
- *     `consecutive` at 1 forever. The capture gate `is_capture_milestone(1)` is
- *     unconditionally true, so the log2(N) limiter never engages and EVERY death
- *     is sent — the observed 1299 events, all titled "consecutive failure #1".
- *  2. UNATTRIBUTED KILL. A signal=9 death carries no exception code and the
- *     Windows fault surface is `not_applicable`, so a jetsam (memory) kill is
- *     indistinguishable from an external `kill -9`.
+ * The Rust suites (the app crate on macOS CI) pin the seam from the inside. This
+ * spec pins the same properties at the *source-contract* and *artifact* levels —
+ * following the fixture-backed pattern of watcher-fault-deferred-attribution.spec.ts
+ * — so it proves the base-red / candidate-pass pair on Linux CI without a macOS
+ * host:
  *
- * The Rust suites (hq-desktop-core on Linux CI, the app crate on macOS CI) pin
- * the seam from the inside. This spec pins the same properties at the
- * *source-contract* and *artifact* levels — following the fixture-backed pattern
- * of watcher-fault-deferred-attribution.spec.ts — so it proves the base-red /
- * candidate-pass pair on Linux CI without a macOS host:
- *
- *  - Source contracts over the code that actually ships: the uptime-independent
- *    slow-death capture streak and its HEALTHY_RUN_WINDOW recovery bar, the
+ *  - Source contracts over the code that actually ships: the per-class,
+ *    uptime-independent slow-death capture streak, its HEALTHY_RUN_WINDOW recovery
+ *    bar (from both the live poll and a dead generation's own runtime), the
  *    unchanged respawn constants (so recovery cadence is provably untouched), and
- *    the pure, content-safe macOS kill-attribution vocabulary + JetsamEvent .ips
- *    binder in hq-desktop-core.
+ *    the honest-episode message.
  *  - A bidirectional envelope simulator: the pre-fix policy reproduces the
- *    observed flood (ten consecutive slow deaths → ten events, all "#1"); the
+ *    observed flood (ten consecutive slow deaths -> ten events, all "#1"); the
  *    post-fix policy on the SAME ten deaths mutes every non-milestone repeat
  *    (captures at #1, #2, #4, #8 only) and states the true episode length, with
  *    the fingerprint asserted byte-identical so grouping does not move.
  *
- * Content-safety: every modeled envelope and every new attribution axis carries
- * only fixed vocabulary and bucketed/bare integers — never argv, stderr, a path,
- * a hostname, or a company slug.
+ * The jetsam-vs-external-kill *attribution* half of HQ-DESKTOP-4D lands in a
+ * dedicated follow-up together with its macOS exit-path wiring, so this spec
+ * covers only the shipped flood cap.
  */
 
 import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
-// repoRoot is apps/sync, so the shared crate sources are read via '../../crates'.
 const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
-const coreSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
 
 describe('macOS SIGKILL alert cap — source contracts', () => {
-  it('gives the slow-death loop its own uptime-independent capture streak', () => {
-    // The new streak advances on EVERY unexpected exit, not just fast ones, so a
-    // multi-minute death loop is no longer pinned at "#1".
+  it('gives the crash class its own uptime-independent capture streak', () => {
+    // The new streak is separate from the pinned-at-1 crash-loop counter, so a
+    // multi-minute death loop is no longer stuck at "#1".
     expect(daemonSource).toContain('slow_death_consecutive');
     expect(daemonSource).toContain('fn apply_watcher_crash(');
-    // The crash / session-end capture gate now consults that streak.
+    // The crash / session-end capture gate consults (and advances) that streak.
     expect(daemonSource).toContain('fn capture_policy_streak(');
-    expect(daemonSource).toContain('st.slow_death_consecutive');
+    expect(daemonSource).toContain('st.slow_death_consecutive = st.slow_death_consecutive.saturating_add(1)');
   });
 
-  it('clears the streak only after a long HEALTHY_RUN_WINDOW recovery', () => {
+  it('isolates the streak to the class it gates so other classes cannot pollute it', () => {
+    // The exec-not-runnable (126/127) class keeps its own streak, and a
+    // local-only (disk-full/benign) exit never advances the crash-class streak.
+    expect(daemonSource).toContain('WatcherExitCapturePolicy::CaptureRateLimited => st.exec_not_runnable_consecutive');
+    expect(daemonSource).toContain(
+      'WatcherExitCapturePolicy::Capture | WatcherExitCapturePolicy::DeferSessionEndDecision =>',
+    );
+    expect(daemonSource).toContain('WatcherExitCapturePolicy::LocalLogOnly => st.slow_death_consecutive');
+  });
+
+  it('clears the streak only after a long HEALTHY_RUN_WINDOW recovery, from either seam', () => {
     expect(daemonSource).toContain(
       'const HEALTHY_RUN_WINDOW: Duration = Duration::from_secs(30 * 60);',
     );
     expect(daemonSource).toContain('fn apply_recovery_reset(');
-    // The recovery reset is keyed on HEALTHY_RUN_WINDOW for the slow-death streak.
+    // The live supervisor poll clears it once a generation survives the window...
     expect(daemonSource).toContain('should_reset_after_recovery(spawn_elapsed, HEALTHY_RUN_WINDOW)');
+    // ...and a dead generation that itself outlived the window ends the episode
+    // at the exit transition too (so a poll gap cannot extend a stale streak).
+    expect(daemonSource).toContain('if ran >= HEALTHY_RUN_WINDOW {');
   });
 
   it('leaves respawn behaviour byte-for-byte unchanged (recovery cadence untouched)', () => {
@@ -73,8 +78,7 @@ describe('macOS SIGKILL alert cap — source contracts', () => {
       'const RESPAWN_MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);',
     );
     expect(daemonSource).toContain('const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);');
-    // The fast-fail arm still resets consecutive to 1, and backoff is still keyed
-    // on the unchanged global counter.
+    // Backoff is still keyed on the unchanged global counter.
     expect(daemonSource).toContain('respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF)');
   });
 
@@ -82,55 +86,9 @@ describe('macOS SIGKILL alert cap — source contracts', () => {
     // The message number is the capture streak for the crash/session-end class,
     // while the exec-not-runnable class keeps the global counter for correlation.
     expect(daemonSource).toContain('consecutive failure #{episode}{diag}');
-    expect(daemonSource).toContain('let episode = if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {');
-  });
-});
-
-describe('macOS kill attribution core — source contracts', () => {
-  it('lands a resolved, content-safe kill-provenance vocabulary', () => {
-    expect(coreSource).toContain('enum WatcherKillProvenance');
-    for (const token of [
-      'jetsam_pid_matched',
-      'jetsam_window_matched',
-      'no_jetsam_record',
-      'pressure_only',
-      'external_kill_suspected',
-      'self_escalated',
-      'reader_unavailable',
-      'deadline_expired',
-      'deferred',
-      'not_applicable',
-    ]) {
-      expect(coreSource).toContain(`"${token}"`);
-    }
-  });
-
-  it('lands closed kill-reason and memory-pressure vocabularies', () => {
-    expect(coreSource).toContain('enum WatcherKillReason');
-    expect(coreSource).toContain('enum WatcherMemoryPressure');
-    for (const token of ['per_process_limit', 'highwater', 'vm_pageshortage', 'vm_thrashing']) {
-      expect(coreSource).toContain(`"${token}"`);
-    }
-    expect(coreSource).toContain('pub fn classify_jetsam_kill_reason(');
-    expect(coreSource).toContain('pub fn classify_vm_pressure_level(');
-  });
-
-  it('parses a JetsamEvent .ips and binds it to the generation, purely', () => {
-    expect(coreSource).toContain('pub fn parse_jetsam_report(');
-    expect(coreSource).toContain('pub fn bind_jetsam_record(');
-    expect(coreSource).toContain('pub fn decide_watcher_kill_provenance(');
-    // rpages are bucketed, never emitted raw.
-    expect(coreSource).toContain('pub fn jetsam_rpages_bucket(');
-  });
-
-  it('maps every victim name through the existing closed allow-list — never copied out', () => {
-    // The .ips parser maps a victim `comm` name through classify_watcher_fault_binary
-    // (extended with the macOS process basenames) so no raw name can be retained.
-    expect(coreSource).toContain('classify_watcher_fault_binary(');
-    expect(coreSource).toContain('"hq-sync-runner" => WatcherFaultBinary::NodeExe');
-    // A PID match is only claimed for a recognised watcher victim, so PID reuse by
-    // an unrelated victim cannot manufacture a false jetsam_pid_matched.
-    expect(coreSource).toContain('WatcherFaultBinary::Other.as_str()');
+    expect(daemonSource).toContain(
+      'let episode = if capture_policy == WatcherExitCapturePolicy::CaptureRateLimited {',
+    );
   });
 });
 
@@ -157,8 +115,8 @@ function isCaptureMilestone(consecutive: number): boolean {
  * FAST_FAIL_WINDOW, exactly the observed cluster) and return the events actually
  * SENT under the given policy. The ONLY difference between the two policies is
  * which streak the capture gate consults — the pinned global counter (pre-fix)
- * or the uptime-independent slow-death streak (post-fix). The fingerprint is
- * built independently of both, so it is identical across policies.
+ * or the per-class, uptime-independent slow-death streak (post-fix). The
+ * fingerprint is built independently of both, so it is identical across policies.
  */
 function simulateSlowDeathLoop(deaths: number, policy: Policy): SentryEnvelope[] {
   const sent: SentryEnvelope[] = [];
@@ -166,7 +124,7 @@ function simulateSlowDeathLoop(deaths: number, policy: Policy): SentryEnvelope[]
   let slowDeathStreak = 0;
   for (let i = 0; i < deaths; i += 1) {
     // A slow death: the global counter's slow-death arm pins it at 1; the new
-    // uptime-independent streak climbs.
+    // crash-class streak climbs.
     globalConsecutive = 1;
     slowDeathStreak += 1;
     const gate = policy === 'pre-fix' ? globalConsecutive : slowDeathStreak;
