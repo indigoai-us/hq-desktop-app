@@ -279,13 +279,20 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     // active install (pnpm points the shim at its newest global install). Done
     // before the npm-prefix fallback below so the read is anchored to the store,
     // not an arbitrary hash child in filesystem enumeration order.
-    if is_pnpm_global_shim(&hq_bin_str) {
-        if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
-            if let Some(version) =
-                installed_hq_cli_version_in_pnpm_store(&home.to_string_lossy())
-            {
-                return (Some(version), VersionProbeOutcome::Succeeded);
-            }
+    //
+    // Version READING is deliberately decoupled from executor ROUTING: this tries
+    // the pnpm store for ANY derivable home, not only one `is_pnpm_global_shim`
+    // still routes to pnpm. A flat custom PNPM_HOME whose last component is
+    // literally `bin` (store at `<home>/global` beside the shim) is a real
+    // hq-cli that the collapsed router (correctly) drives with npm — but if we
+    // could not read its version here, the provenance gate in
+    // `install_executor_for_hq_bin` would refuse it as unidentifiable and disable
+    // its update. `installed_hq_cli_version_in_pnpm_store` returns `None` when
+    // there is no pnpm store beside the derived home, so npm and Bun layouts are
+    // unaffected and fall through to their own reads below.
+    if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
+        if let Some(version) = installed_hq_cli_version_in_pnpm_store(&home.to_string_lossy()) {
+            return (Some(version), VersionProbeOutcome::Succeeded);
         }
     }
     // Bun's global shim is also a plain script. Its package manifest lives in
@@ -5428,6 +5435,41 @@ mod tests {
         );
         assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.103.18"));
         assert!(outcome.capture_requires_durable_record);
+    }
+
+    /// Regression (PR #512 review): a real hq-cli whose pnpm store sits beside a
+    /// shim in a directory literally named `bin` (a flat custom PNPM_HOME) must
+    /// stay VERSION-READABLE even though the collapsed router now drives it with
+    /// npm. Version reading is decoupled from routing precisely so the provenance
+    /// gate in `install_executor_for_hq_bin` does not refuse it as unidentifiable
+    /// and disable its update.
+    #[test]
+    fn a_pnpm_store_beside_a_bin_named_shim_stays_version_readable_and_installable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Flat custom PNPM_HOME whose last component is literally `bin`.
+        let home = tmp.path().join("tools").join("bin");
+        let hq = home.join("hq");
+        let pkg = home
+            .join("global")
+            .join("5")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(&hq, "#!/bin/sh\n").unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.103.18"}"#,
+        )
+        .unwrap();
+
+        // The collapsed router sends this shape to npm (pnpm home not derivable
+        // from the shim), consistent with the primary fix.
+        assert!(!is_pnpm_global_shim(&hq.to_string_lossy()));
+        // But its version is still read from the pnpm store beside the shim, so
+        // the provenance gate passes and the executor is Npm — never a refusal.
+        assert_eq!(version_from_hq_binary(&hq).as_deref(), Some("5.103.18"));
+        assert_eq!(install_executor_for_hq_bin(&hq), Some(InstallExecutor::Npm));
     }
 
     /// The self-naming telemetry source: an npx-cache path reports `npx-cache`,

@@ -408,29 +408,33 @@ pub(crate) fn settings_path_dirs() -> Vec<PathBuf> {
 /// doing so pins the machine on a version the updater can install "successfully"
 /// forever while the executed copy never changes.
 ///
-/// Matches a WHOLE path component literally named `_npx` (npm's reserved cache
-/// directory — see [`crate::runner_target::npx_cache_dir`]), never a substring,
-/// so a legitimate directory such as `my_npx` or `_npxtools` is untouched. The
-/// `_npx` component must be a DIRECTORY on the path (something follows it): the
-/// cache always holds a per-invocation `<hash>/node_modules/…` tree beneath it,
-/// whereas a leaf file merely named `_npx` is someone else's file, not the
-/// cache. Comparison is case-insensitive on Windows only (its filesystem is),
-/// and case-sensitive everywhere else.
+/// Matches npm's `npx` cache STRUCTURE: a whole path component literally named
+/// `_npx` (npm's reserved cache directory — see
+/// [`crate::runner_target::npx_cache_dir`]) followed later by a `node_modules`
+/// component. npm always materialises `_npx/<hash>/node_modules/.bin/<name>`, so
+/// requiring `node_modules` beneath the `_npx` dir is what distinguishes the
+/// real cache from an ordinary directory merely NAMED `_npx` (e.g. a home or
+/// prefix at `/Users/_npx/…/hq`, which has no cache tree under it and must stay
+/// resolvable). Whole-component match only, never a substring, so `my_npx` and
+/// `_npxtools` are untouched; case-insensitive on Windows only.
 pub fn is_npx_cache_path(path: &Path) -> bool {
-    let mut components = path.components().peekable();
-    while let Some(component) = components.next() {
-        if let std::path::Component::Normal(part) = component {
-            let is_npx = if cfg!(target_os = "windows") {
-                part.eq_ignore_ascii_case("_npx")
-            } else {
-                part == std::ffi::OsStr::new("_npx")
-            };
-            if is_npx && components.peek().is_some() {
-                return true;
-            }
+    let names: Vec<&str> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => part.to_str(),
+            _ => None,
+        })
+        .collect();
+    let is_npx = |name: &str| {
+        if cfg!(target_os = "windows") {
+            name.eq_ignore_ascii_case("_npx")
+        } else {
+            name == "_npx"
         }
-    }
-    false
+    };
+    names.iter().enumerate().any(|(i, name)| {
+        is_npx(name) && names[i + 1..].iter().any(|later| *later == "node_modules")
+    })
 }
 
 /// Whether the resolver must reject `candidate` for this `name`. Scoped to `hq`:
@@ -535,22 +539,33 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
 
         // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
         //    the user configured in .zshrc. `-l` makes zsh a login shell so it
-        //    sources the full startup chain. `command -v` prints the resolved
-        //    path on success, nothing on miss.
-        if let Ok(output) = Command::new("zsh")
-            .args(["-lc", &format!("command -v {}", name)])
-            .output()
-        {
+        //    sources the full startup chain.
+        //
+        //    For `hq` we must ENUMERATE every PATH match (`whence -pa`) rather
+        //    than take only the first (`command -v`): a login-shell PATH can list
+        //    an npx-cache `hq` ahead of a real custom install, and the updater
+        //    could never move the npx copy — so we skip it and keep looking for a
+        //    real one instead of reporting the CLI missing. For every other name
+        //    nothing is ever rejected, so `command -v`'s single first match is
+        //    authoritative exactly as before.
+        let shell_query = if name == "hq" {
+            format!("whence -pa {}", name)
+        } else {
+            format!("command -v {}", name)
+        };
+        if let Ok(output) = Command::new("zsh").args(["-lc", &shell_query]).output() {
             if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                // Skip an npx-cache answer for `hq` here too: the login shell can
-                // surface an ephemeral `…/_npx/…/hq` the updater could never move.
-                if !path.is_empty()
-                    && Path::new(&path).exists()
-                    && !hq_lookup_rejects_candidate(name, Path::new(&path))
-                {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let path = line.trim();
+                    if path.is_empty()
+                        || !Path::new(path).exists()
+                        || hq_lookup_rejects_candidate(name, Path::new(path))
+                    {
+                        continue;
+                    }
                     return ResolvedProgram {
-                        path,
+                        path: path.to_string(),
                         kind: ResolvedProgramKind::Exe,
                     };
                 }
@@ -1937,15 +1952,23 @@ mod tests {
     /// never a substring and never a leaf file merely named `_npx`.
     #[test]
     fn the_npx_cache_predicate_matches_whole_components_only() {
-        // The live shape: an ephemeral hq under npm's per-invocation cache.
+        // The live shape: an ephemeral hq under npm's per-invocation cache,
+        // which always carries the `_npx/<hash>/node_modules/…` tree.
         assert!(is_npx_cache_path(Path::new(
             "/Users/z/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq"
         )));
-        assert!(is_npx_cache_path(Path::new("/tmp/x/_npx/abc/hq")));
+        // An `_npx` dir WITHOUT the cache's node_modules tree is an ordinary
+        // directory (e.g. a home/prefix merely named `_npx`) and must resolve.
+        assert!(!is_npx_cache_path(Path::new("/Users/_npx/toolchain/bin/hq")));
+        assert!(!is_npx_cache_path(Path::new("/tmp/x/_npx/abc/hq")));
         // Substring matches must NOT trip it.
-        assert!(!is_npx_cache_path(Path::new("/Users/z/_npxtools/hq")));
-        assert!(!is_npx_cache_path(Path::new("/Users/z/my_npx/hq")));
-        // A leaf file literally named `_npx` is not the cache dir (nothing follows).
+        assert!(!is_npx_cache_path(Path::new(
+            "/Users/z/_npxtools/x/node_modules/.bin/hq"
+        )));
+        assert!(!is_npx_cache_path(Path::new(
+            "/Users/z/my_npx/x/node_modules/.bin/hq"
+        )));
+        // A leaf file literally named `_npx` is not the cache dir.
         assert!(!is_npx_cache_path(Path::new("/Users/z/bin/_npx")));
         // A real managed install is never an npx path.
         assert!(!is_npx_cache_path(Path::new(
@@ -1953,9 +1976,13 @@ mod tests {
         )));
         // Case sensitivity: exact on non-Windows, folded on Windows.
         #[cfg(not(target_os = "windows"))]
-        assert!(!is_npx_cache_path(Path::new("/tmp/_NPX/abc/hq")));
+        assert!(!is_npx_cache_path(Path::new(
+            "/tmp/_NPX/abc/node_modules/.bin/hq"
+        )));
         #[cfg(target_os = "windows")]
-        assert!(is_npx_cache_path(Path::new(r"C:\Users\z\_NPX\abc\hq")));
+        assert!(is_npx_cache_path(Path::new(
+            r"C:\Users\z\_NPX\abc\node_modules\.bin\hq"
+        )));
     }
 
     /// Only the `hq` lookup rejects an npx-cache copy; every other program
