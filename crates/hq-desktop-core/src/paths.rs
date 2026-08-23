@@ -398,6 +398,50 @@ pub(crate) fn settings_path_dirs() -> Vec<PathBuf> {
     settings_path_dirs_in(&resolved_hq_folder_for_path())
 }
 
+/// Whether `path` lives inside npm's `npx` cache (`…/_npx/…`).
+///
+/// npm materialises an `_npx/<hash>/node_modules/.bin/` tree per `npx`
+/// invocation to run a package without a global install. That copy is ephemeral
+/// and, crucially, **un-updatable**: no `npm install -g`/`pnpm add -g` can move
+/// it, because it is keyed by the invocation's package specs, not by any global
+/// prefix. So the `hq` resolver must never adopt one as the CLI it converges —
+/// doing so pins the machine on a version the updater can install "successfully"
+/// forever while the executed copy never changes.
+///
+/// Matches a WHOLE path component literally named `_npx` (npm's reserved cache
+/// directory — see [`crate::runner_target::npx_cache_dir`]), never a substring,
+/// so a legitimate directory such as `my_npx` or `_npxtools` is untouched. The
+/// `_npx` component must be a DIRECTORY on the path (something follows it): the
+/// cache always holds a per-invocation `<hash>/node_modules/…` tree beneath it,
+/// whereas a leaf file merely named `_npx` is someone else's file, not the
+/// cache. Comparison is case-insensitive on Windows only (its filesystem is),
+/// and case-sensitive everywhere else.
+pub fn is_npx_cache_path(path: &Path) -> bool {
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        if let std::path::Component::Normal(part) = component {
+            let is_npx = if cfg!(target_os = "windows") {
+                part.eq_ignore_ascii_case("_npx")
+            } else {
+                part == std::ffi::OsStr::new("_npx")
+            };
+            if is_npx && components.peek().is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether the resolver must reject `candidate` for this `name`. Scoped to `hq`:
+/// only the CLI the updater converges may never be an npx-cache copy. Every
+/// other program — `npm`, `node`, `npx`, `git`, `hq-sync-runner` — and every
+/// non-npx `hq` copy resolves exactly as before, so the runner's deliberate
+/// npx-cache execution path is untouched.
+fn hq_lookup_rejects_candidate(name: &str, candidate: &Path) -> bool {
+    name == "hq" && is_npx_cache_path(candidate)
+}
+
 pub fn resolve_bin(name: &str) -> String {
     resolve_bin_with_kind(name).path
 }
@@ -413,17 +457,24 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
     #[cfg(target_os = "windows")]
     {
         let candidates = candidate_filenames(name);
+        // For `hq`, skip an npx-cache copy at every candidate source; for every
+        // other program this is a no-op, so their resolution is unchanged.
+        let reject = |path: &Path| hq_lookup_rejects_candidate(name, path);
 
         // Strict session parity for `hq`: prefer the exact binary a Claude Code
         // session would resolve via `env.PATH` in .claude/settings.local.json,
         // ahead of the app's managed toolchain and every other search dir.
         if name == "hq" {
-            if let Some(found) = select_program_on_disk(&settings_path_dirs(), &candidates) {
+            if let Some(found) =
+                select_program_on_disk_rejecting(&settings_path_dirs(), &candidates, &reject)
+            {
                 return found;
             }
         }
 
-        if let Some(found) = select_program_on_disk(&extended_search_dirs(), &candidates) {
+        if let Some(found) =
+            select_program_on_disk_rejecting(&extended_search_dirs(), &candidates, &reject)
+        {
             return found;
         }
 
@@ -437,6 +488,8 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                     .lines()
                     .map(|l| l.trim())
                     .filter(|l| !l.is_empty() && Path::new(l).exists())
+                    // Drop an npx-cache `hq` from where.exe's list too.
+                    .filter(|l| !reject(Path::new(l)))
                     .collect();
                 if let Some(best) = pick_spawnable_program(&matches) {
                     return best;
@@ -457,8 +510,11 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                 let candidate = dir.join(name);
                 // Require an executable regular file: a shell skips a
                 // non-executable or a directory named `hq` and keeps searching,
-                // so we must too or we'd hand back an unspawnable path.
-                if is_executable_file(&candidate) {
+                // so we must too or we'd hand back an unspawnable path. Also skip
+                // an npx-cache copy: it can never be updated, so adopting it as
+                // the resolved CLI would pin the machine — keep searching for a
+                // real install instead.
+                if is_executable_file(&candidate) && !hq_lookup_rejects_candidate(name, &candidate) {
                     return ResolvedProgram {
                         path: candidate.to_string_lossy().to_string(),
                         kind: ResolvedProgramKind::Exe,
@@ -487,7 +543,12 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         {
             if output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() && Path::new(&path).exists() {
+                // Skip an npx-cache answer for `hq` here too: the login shell can
+                // surface an ephemeral `…/_npx/…/hq` the updater could never move.
+                if !path.is_empty()
+                    && Path::new(&path).exists()
+                    && !hq_lookup_rejects_candidate(name, Path::new(&path))
+                {
                     return ResolvedProgram {
                         path,
                         kind: ResolvedProgramKind::Exe,
@@ -629,7 +690,7 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
         let toolchain = managed_toolchain_dir(home);
         for subdir in ["npm-global/bin", "node/bin"] {
             let candidate = toolchain.join(subdir).join(name);
-            if candidate.exists() {
+            if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
                 return Some(candidate.to_string_lossy().to_string());
             }
         }
@@ -637,7 +698,7 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
         // User-level npm/pnpm prefixes after the managed toolchain.
         for dir in user_cli_dirs(home) {
             let candidate = dir.join(name);
-            if candidate.exists() {
+            if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
                 return Some(candidate.to_string_lossy().to_string());
             }
         }
@@ -646,7 +707,7 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     // Standard install locations.
     for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
         let candidate = Path::new(prefix).join(name);
-        if candidate.exists() {
+        if candidate.exists() && !hq_lookup_rejects_candidate(name, &candidate) {
             return Some(candidate.to_string_lossy().to_string());
         }
     }
@@ -836,6 +897,22 @@ pub fn select_program_in_dirs(
     candidates: &[String],
     exists: &dyn Fn(&Path) -> bool,
 ) -> Option<ResolvedProgram> {
+    select_program_in_dirs_rejecting(dirs, candidates, exists, &|_| false)
+}
+
+/// [`select_program_in_dirs`] with an extra `reject` predicate that skips any
+/// on-disk candidate the caller must not adopt. The `hq` lookup passes a reject
+/// that filters out npx-cache copies (see [`is_npx_cache_path`]); every other
+/// lookup passes a no-op, so their resolution is byte-for-byte unchanged. A
+/// rejected candidate is skipped exactly as a non-existent one — the sweep keeps
+/// looking in later directories and in the second (non-spawnable) pass — so a
+/// real install anywhere in the search order still wins over an npx copy.
+pub fn select_program_in_dirs_rejecting(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    exists: &dyn Fn(&Path) -> bool,
+    reject: &dyn Fn(&Path) -> bool,
+) -> Option<ResolvedProgram> {
     for spawnable_pass in [true, false] {
         for dir in dirs {
             for candidate in candidates {
@@ -843,7 +920,7 @@ pub fn select_program_in_dirs(
                     continue;
                 }
                 let full = dir.join(candidate);
-                if exists(&full) {
+                if exists(&full) && !reject(&full) {
                     return Some(ResolvedProgram {
                         path: full.to_string_lossy().to_string(),
                         kind: program_kind(candidate),
@@ -862,6 +939,16 @@ pub fn select_program_in_dirs(
 /// exercise it too instead of leaving the whole sweep provable only on Windows.
 pub fn select_program_on_disk(dirs: &[PathBuf], candidates: &[String]) -> Option<ResolvedProgram> {
     select_program_in_dirs(dirs, candidates, &|path: &Path| path.exists())
+}
+
+/// [`select_program_on_disk`] with the `reject` predicate threaded through, for
+/// the Windows `hq` lookup's npx-cache skip.
+pub fn select_program_on_disk_rejecting(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    reject: &dyn Fn(&Path) -> bool,
+) -> Option<ResolvedProgram> {
+    select_program_in_dirs_rejecting(dirs, candidates, &|path: &Path| path.exists(), reject)
 }
 
 /// Pick the best program out of an ordered `where.exe` match list.
@@ -1843,6 +1930,107 @@ mod tests {
         assert_eq!(
             resolve_bin_in_dirs(Some(tmp.path()), name),
             Some(expected.to_string_lossy().to_string())
+        );
+    }
+
+    /// The npx-cache predicate matches only a whole `_npx` DIRECTORY component,
+    /// never a substring and never a leaf file merely named `_npx`.
+    #[test]
+    fn the_npx_cache_predicate_matches_whole_components_only() {
+        // The live shape: an ephemeral hq under npm's per-invocation cache.
+        assert!(is_npx_cache_path(Path::new(
+            "/Users/z/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq"
+        )));
+        assert!(is_npx_cache_path(Path::new("/tmp/x/_npx/abc/hq")));
+        // Substring matches must NOT trip it.
+        assert!(!is_npx_cache_path(Path::new("/Users/z/_npxtools/hq")));
+        assert!(!is_npx_cache_path(Path::new("/Users/z/my_npx/hq")));
+        // A leaf file literally named `_npx` is not the cache dir (nothing follows).
+        assert!(!is_npx_cache_path(Path::new("/Users/z/bin/_npx")));
+        // A real managed install is never an npx path.
+        assert!(!is_npx_cache_path(Path::new(
+            "/Users/z/Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq"
+        )));
+        // Case sensitivity: exact on non-Windows, folded on Windows.
+        #[cfg(not(target_os = "windows"))]
+        assert!(!is_npx_cache_path(Path::new("/tmp/_NPX/abc/hq")));
+        #[cfg(target_os = "windows")]
+        assert!(is_npx_cache_path(Path::new(r"C:\Users\z\_NPX\abc\hq")));
+    }
+
+    /// Only the `hq` lookup rejects an npx-cache copy; every other program
+    /// resolves an identical path unchanged, so the runner's deliberate
+    /// npx-cache execution and `npm`/`node`/`npx` resolution are untouched.
+    #[test]
+    fn only_the_hq_lookup_is_filtered() {
+        let npx_hq = Path::new("/Users/z/.npm/_npx/abc/node_modules/.bin/hq");
+        assert!(hq_lookup_rejects_candidate("hq", npx_hq));
+        // An npx path for any OTHER name is not rejected here.
+        let npx_node = Path::new("/Users/z/.npm/_npx/abc/node_modules/.bin/node");
+        for name in ["npm", "node", "npx", "git", "hq-sync-runner"] {
+            assert!(
+                !hq_lookup_rejects_candidate(name, npx_node),
+                "{name} resolution must be unaffected by the npx filter"
+            );
+        }
+        // A non-npx `hq` is never rejected.
+        assert!(!hq_lookup_rejects_candidate(
+            "hq",
+            Path::new("/opt/homebrew/bin/hq")
+        ));
+    }
+
+    /// The `hq` sweep skips an npx-cache candidate that sits FIRST in the search
+    /// order and falls through to the real managed install. Without the reject
+    /// (the base defect) the same sweep adopts the ephemeral npx copy.
+    #[test]
+    fn the_hq_lookup_skips_an_npx_cache_candidate_and_falls_through_to_the_managed_install() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let npx_bin = tmp.path().join(".npm/_npx/91dc460cc0784cc8/node_modules/.bin");
+        let managed_bin = tmp.path().join("toolchain/npm-global/bin");
+        std::fs::create_dir_all(&npx_bin).unwrap();
+        std::fs::create_dir_all(&managed_bin).unwrap();
+        std::fs::write(npx_bin.join("hq"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(managed_bin.join("hq"), b"#!/bin/sh\n").unwrap();
+
+        let dirs = [npx_bin.clone(), managed_bin.clone()];
+        let candidates = ["hq".to_string()];
+        let exists = |p: &Path| p.exists();
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+
+        // Base defect: the plain sweep adopts the npx copy because it is first.
+        assert_eq!(
+            select_program_in_dirs(&dirs, &candidates, &exists)
+                .unwrap()
+                .path,
+            npx_bin.join("hq").to_string_lossy()
+        );
+        // Fix: the rejecting sweep skips it and resolves the managed install.
+        assert_eq!(
+            select_program_in_dirs_rejecting(&dirs, &candidates, &exists, &reject)
+                .unwrap()
+                .path,
+            managed_bin.join("hq").to_string_lossy()
+        );
+    }
+
+    /// A machine whose ONLY `hq` is the npx cache resolves to nothing, so
+    /// `install_executor_for_first_install` arms a real global install instead of
+    /// adopting the un-updatable copy.
+    #[test]
+    fn an_npx_only_machine_reports_not_resolved_so_the_first_install_path_arms() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let npx_bin = tmp.path().join(".npm/_npx/abc/node_modules/.bin");
+        std::fs::create_dir_all(&npx_bin).unwrap();
+        std::fs::write(npx_bin.join("hq"), b"#!/bin/sh\n").unwrap();
+
+        let dirs = [npx_bin];
+        let candidates = ["hq".to_string()];
+        let exists = |p: &Path| p.exists();
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+        assert!(
+            select_program_in_dirs_rejecting(&dirs, &candidates, &exists, &reject).is_none(),
+            "an npx-only machine must resolve nothing so a real install arms"
         );
     }
 

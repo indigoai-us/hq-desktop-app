@@ -83,10 +83,15 @@ fn assert_fails_closed_with_one_marker_event(events: &[sentry::protocol::Event<'
     }
 }
 
-/// Both executors are asserted in ONE test on purpose. The capture bound this
-/// file exercises is a process-lifetime `AtomicBool`, so two `#[test]` fns
-/// would run on parallel threads and race each other's reset — which is exactly
-/// how a green Linux run turned red on macOS. Phases run in sequence instead.
+/// The fail-closed ordering is a property of the DURABLE-marker path — a
+/// foreign-managed first episode captures only after the marker write succeeds.
+/// The npm executor still reaches it (a genuinely foreign npm layout with no
+/// prefix to aim at). The pnpm executor no longer has a foreign-managed path:
+/// an unaimed pnpm run is now the non-blocking `InstallerUnaimed` kind, which
+/// writes no marker at all (proved by `an_unaimed_pnpm_run_persists_no_marker`),
+/// so there is no marker write for it to fail closed on. Both marker-unpersisted
+/// phases run in ONE test because the capture bound is a process-lifetime
+/// `AtomicBool` that two parallel `#[test]` fns would race.
 #[test]
 fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
     // npm executor, foreign-managed layout.
@@ -107,50 +112,78 @@ fn failed_marker_persistence_is_reported_once_per_process_without_paths() {
     );
     assert_fails_closed_with_one_marker_event(&events);
 
-    // The pnpm executor now shares that fail-closed ordering. Before this, the
-    // pnpm branch called `record_non_convergent_version` and
-    // `report_non_convergent_install` unconditionally, so an unwritable config
-    // directory produced a capture with no durable marker behind it — and
-    // turned every six-hour retry into another apparent first episode.
-    reset_non_convergent_marker_unpersisted_capture_for_tests();
-    let hq_bin = "/Users/reviewer/.asdf/shims/hq";
-    let events = drive_failed_marker_writes(
-        &PostInstallContext {
-            executor: InstallExecutor::Pnpm,
-            before_bin: hq_bin,
-            after_bin: hq_bin,
-            before_version: None,
-            after_version: Some("5.77.14"),
-            latest: "5.84.0",
-            npm_prefix_passed: None,
-            delivered_version: None,
-            installer_bin: "/opt/homebrew/bin/pnpm",
-            already_blocked: false,
-            nonblocking_episode_keys: &[],
-            managed_roots: &[],
-            managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
-            pnpm: Some(PnpmRunDiagnostics {
-                // Underivable home => foreign-managed => capture is gated on a
-                // durable marker, exactly as for the npm path.
-                home_source: PnpmHomeSource::Undetermined,
-                home_env_present: false,
-                path_has_shim_dir: false,
-                // Not aimed => never probed.
-                global_bin_dir_matches_shim_dir: None,
-                store_family: PnpmStoreFamily::Unknown,
-                authoritative_query_ok: false,
-                exit_status: "0".to_string(),
-                output_len: 64,
-            }),
-        },
-        5,
-    );
-    assert_fails_closed_with_one_marker_event(&events);
-
     reset_non_convergent_marker_unpersisted_capture_for_tests();
     let after_reset = captured_events(report_non_convergent_marker_unpersisted);
     assert_eq!(after_reset.len(), 1, "the test-only reset must re-arm once");
     reset_non_convergent_marker_unpersisted_capture_for_tests();
+}
+
+/// The Kurts marker contract: an unaimed pnpm run (home_source=Undetermined,
+/// path_has_shim_dir=false) is `InstallerUnaimed` — it persists NO durable
+/// `cliUpdateNonConvergentVersion` marker (so `should_auto_install` stays true
+/// and the next check retries), and it never clears a pre-existing marker
+/// either (the injected `clear` panics if called). It stays observable once.
+#[test]
+fn an_unaimed_pnpm_run_persists_no_marker() {
+    let hq_bin = "/opt/homebrew/bin/hq";
+    let ctx = PostInstallContext {
+        executor: InstallExecutor::Pnpm,
+        before_bin: hq_bin,
+        after_bin: hq_bin,
+        before_version: None,
+        after_version: Some("5.95.0"),
+        latest: "5.103.18",
+        npm_prefix_passed: None,
+        delivered_version: None,
+        installer_bin: "/opt/homebrew/bin/pnpm",
+        already_blocked: false,
+        nonblocking_episode_keys: &[],
+        managed_roots: &[],
+        managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+        pnpm: Some(PnpmRunDiagnostics {
+            home_source: PnpmHomeSource::Undetermined,
+            home_env_present: false,
+            path_has_shim_dir: false,
+            global_bin_dir_matches_shim_dir: None,
+            store_family: PnpmStoreFamily::Unknown,
+            authoritative_query_ok: false,
+            exit_status: "0".to_string(),
+            output_len: 64,
+        }),
+    };
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::InstallerUnaimed)
+    );
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(records, 0, "an unaimed pnpm run must write no durable marker");
+    assert_eq!(captures, 1, "it stays observable once");
+}
+
+/// The Zekes marker contract: the app resolves an npx-cache copy npm can never
+/// move. It is `InstallerUnaimed`, persists NO durable marker, and stays
+/// observable once — so auto-update is never wedged on an un-updatable copy.
+#[test]
+fn an_npx_cache_run_persists_no_marker() {
+    let npx_hq = "/Users/reviewer/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq";
+    let ctx = PostInstallContext::npm(
+        npx_hq,
+        npx_hq,
+        Some("5.103.1"),
+        Some("5.103.1"),
+        "5.103.18",
+        Some("/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+        "/opt/homebrew/bin/npm",
+        false,
+        Some("5.103.18"),
+    );
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::InstallerUnaimed)
+    );
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(records, 0, "an npx-cache copy must write no durable marker");
+    assert_eq!(captures, 1, "it stays observable once");
 }
 
 /// The pnpm >=11 nested field layout. `matches` is now a native-resolution
