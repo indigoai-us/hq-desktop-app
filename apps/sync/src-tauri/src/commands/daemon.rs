@@ -42,6 +42,7 @@ use hq_desktop_core::watcher_fault::{
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
     deferred_session_end_outcome, describe_exit, is_crash_signal, is_windows_console_control_exit,
+    is_windows_fault_exit,
     normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
     runner_fault_is_disk_exhaustion_content, runner_phase_from_event, runner_stack_shape,
     runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
@@ -1459,13 +1460,15 @@ impl WatcherExitCaptureContext {
     }
 
     /// Whether this watcher exit is fully explained by a full disk (`ENOSPC`).
-    /// Combines the content half computed at the exit boundary with the
-    /// exit-signal gate here, applying the SAME shared recognizer the manual
-    /// route uses so the two boundaries reach the identical verdict. A crash
-    /// signal (SIGSEGV/SIGBUS/SIGABRT/SIGKILL/…) is never a disk-full exit, so it
-    /// stays alertable even if a disk-full line co-occurred.
-    fn attributed_to_disk_exhaustion(&self, signal: Option<i32>) -> bool {
-        self.runner_disk_exhaustion_content && !is_crash_signal(signal)
+    /// Combines the content half computed at the exit boundary with the crash-exit
+    /// gates here, applying the SAME shared recognizer the manual route uses so the
+    /// two boundaries reach the identical verdict. A POSIX crash signal
+    /// (SIGSEGV/SIGBUS/SIGABRT/SIGKILL/…) or a Windows native-fault code is never a
+    /// disk-full exit, so it stays alertable even if a disk-full line co-occurred.
+    fn attributed_to_disk_exhaustion(&self, code: Option<i32>, signal: Option<i32>) -> bool {
+        self.runner_disk_exhaustion_content
+            && !is_crash_signal(signal)
+            && !is_windows_fault_exit(code)
     }
 }
 
@@ -1676,7 +1679,7 @@ fn watcher_exit_capture_context(
         // RunTotals the manual route reads. The exit-signal gate is applied later
         // by `attributed_to_disk_exhaustion` (the signal is not known here).
         runner_disk_exhaustion_content: runner_fault_is_disk_exhaustion_content(
-            totals.runner_fatal_class,
+            totals.saw_genuine_crash_fatal,
             &totals.runner_error_rollup,
         ),
         // The per-generation stderr diagnostics and Windows fault provenance are
@@ -2821,7 +2824,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
 
     let consecutive = effects.note_watcher_crashed();
     let capture_policy = if is_benign_watcher_exit(code, signal)
-        || context.attributed_to_disk_exhaustion(signal)
+        || context.attributed_to_disk_exhaustion(code, signal)
     {
         // A full disk (ENOSPC) is a local-machine condition the user fixes by
         // freeing space, never an actionable watcher crash. Route it to
@@ -2894,7 +2897,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                      windows_terminator=session_end_observed"
                 ),
             );
-        } else if context.attributed_to_disk_exhaustion(signal) {
+        } else if context.attributed_to_disk_exhaustion(code, signal) {
             // Full-disk exit: no capture, but keep the content-safe attribution
             // (runner_fatal_class=disk_full) on the local log and breadcrumb so
             // the condition stays observable at parity with the manual route.
@@ -5335,6 +5338,33 @@ mod tests {
             effects.captures.len(),
             1,
             "a crash signal with a disk-full content signal must still capture"
+        );
+    }
+
+    #[test]
+    fn disk_full_watcher_gate_still_captures_a_windows_native_fault() {
+        // Finding 0 at the watcher boundary: a Windows native fault is reported in
+        // `code` with signal=None; the disk-full content signal must not suppress it.
+        let context = WatcherExitCaptureContext {
+            runner_disk_exhaustion_content: true,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0005u32 as i32), // ACCESS_VIOLATION
+            None,
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            TerminationHost::Windows,
+            &context,
+        );
+        assert_eq!(
+            effects.captures.len(),
+            1,
+            "a Windows native fault with a disk-full content signal must still capture"
         );
     }
 

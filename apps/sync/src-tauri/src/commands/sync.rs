@@ -2574,7 +2574,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             totals_snapshot.saw_error,
                             totals_snapshot.saw_alertable_error,
                             totals_snapshot.saw_node_too_old,
-                            totals_snapshot.runner_fatal_class,
+                            totals_snapshot.saw_genuine_crash_fatal,
                             &totals_snapshot.runner_error_rollup,
                         );
                         let sync_termination_reason =
@@ -3546,7 +3546,7 @@ mod tests {
             totals.saw_error,
             totals.saw_alertable_error,
             totals.saw_node_too_old,
-            totals.runner_fatal_class,
+            totals.saw_genuine_crash_fatal,
             &totals.runner_error_rollup,
         );
         assert_eq!(disposition, RunnerExitDisposition::DiskFull);

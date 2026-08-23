@@ -7,29 +7,19 @@
  * `RunnerExitDisposition::Alert`. The user saw the opaque
  *   `[sync] hq-sync-runner exited with code 1`
  * and Sentry received an Error-level defect whose retained
- * `runner_fatal_class=npm_install_relay` named the npm companion line rather
- * than the causal ENOSPC (which survived only on `runner_error_rollup=ENOSPC:1`).
+ * `runner_fatal_class=npm_install_relay` named the npm companion line rather than
+ * the causal ENOSPC (which survived only on `runner_error_rollup=ENOSPC:1`).
  *
- * The fix adds a shared, content-safe disk-exhaustion recognizer keyed on the
- * rollup (exclusively ENOSPC) — immune to the last-wins fatal-class flap — plus a
- * `RunnerFatalClass::DiskFull` classify arm and a `RunnerExitDisposition::DiskFull`
- * that emits one actionable free-up-space event with NO Sentry capture, wired at
- * BOTH the manual and auto-sync watcher boundaries.
+ * The fix recognises a disk-full exit ONLY from the parsed, last-wins-immune
+ * rollup (exclusively ENOSPC) and a sticky "no genuine crash was seen this pass"
+ * flag, and it excludes both POSIX crash signals and Windows native-fault codes.
+ * A recognised disk-full exit emits one actionable free-up-space event with NO
+ * Sentry capture, at BOTH the manual and auto-sync watcher boundaries.
  *
  * The Rust suites (hq-desktop-core, hq-telemetry, and the app-crate effects
- * recorders) pin the seam from the inside. This spec pins the same property at
+ * recorders) pin the seam from the inside. This spec pins the same properties at
  * the *source-contract* and *artifact* levels, following the fixture-backed
- * pattern of watcher-heap-oom-attribution.spec.ts:
- *
- * 1. Source contracts over the code that actually ships — the classify arm, the
- *    rollup exclusivity accessor, the shared recognizer, the DiskFull disposition,
- *    both route wirings, and the telemetry egress arm — so deleting, bypassing, or
- *    relocating any seam fails here, not only in the Rust suite.
- * 2. An envelope simulator run in BOTH directions and across BOTH routes: the
- *    pre-fix policy reproduces the observed HQ-DESKTOP-5D envelope (Error capture,
- *    npm_install_relay, ENOSPC:1); the post-fix policy produces zero captures, one
- *    terminal event with the fixed free-up-space copy, and runner_fatal_class=
- *    disk_full — so the passing direction is non-vacuous.
+ * pattern of watcher-heap-oom-attribution.spec.ts.
  *
  * Content-safety: every modeled envelope carries only fixed vocabulary and
  * bounded integers — never argv, stderr, symbols, paths, or company slugs.
@@ -117,36 +107,70 @@ describe('runner disk-full attribution — source contracts', () => {
     expect(isCrash).not.toContain('DiskFull');
   });
 
-  it('exposes the last-wins-immune rollup exclusivity accessor', () => {
-    expect(coreSource).toContain('pub fn is_exclusively_disk_full(&self) -> bool');
-    expect(coreSource).toContain('pub fn has_non_disk_full_error(&self) -> bool');
+  it('records a sticky genuine-crash flag from each stderr line before last-wins overwrites', () => {
+    // Finding 1: the crash flag is set from the classified line and never cleared,
+    // so a trailing npm companion line cannot bury an earlier crash class.
+    expect(coreSource).toContain('pub saw_genuine_crash_fatal: bool');
+    const record = sliceBetween(
+      coreSource,
+      'pub fn record_stderr_line(&mut self, line: &str) {',
+      'self.record_heap_oom_stderr_line(line, signature.class);',
+      'record_stderr_line',
+    );
+    expect(record).toContain('signature.class.is_genuine_crash()');
+    expect(record).toContain('self.saw_genuine_crash_fatal = true');
   });
 
-  it('defines the shared recognizer and the DiskFull disposition + projections', () => {
-    expect(coreSource).toContain('DiskFull,'); // RunnerExitDisposition variant
+  it('exposes the last-wins-immune rollup exclusivity accessor', () => {
+    expect(coreSource).toContain('pub fn is_exclusively_disk_full(&self) -> bool');
+  });
+
+  it('recognizer requires the rollup + sticky no-crash, and excludes crash signals/Windows faults', () => {
+    expect(coreSource).toContain('pub fn is_windows_fault_exit(');
     expect(coreSource).toContain('pub fn runner_fault_is_disk_exhaustion_content(');
     expect(coreSource).toContain('pub fn runner_exit_is_disk_exhaustion(');
     expect(coreSource).toContain('pub fn classify_runner_exit_disposition_with_fault(');
     expect(coreSource).toContain('pub fn should_alert_on_nonzero_exit_with_fault(');
-    // The recognizer applies all four gates: crash signal, crash class, non-ENOSPC
-    // error, then the exclusively-ENOSPC-or-DiskFull-fatal signal.
-    const recognizer = sliceBetween(
+
+    // Content half: no crash seen AND the rollup is exclusively ENOSPC. Crucially
+    // it does NOT fall back to the retained fatal class or accept an empty rollup.
+    const content = sliceBetween(
       coreSource,
       'pub fn runner_fault_is_disk_exhaustion_content(',
       '\n}\n',
       'runner_fault_is_disk_exhaustion_content',
     );
-    expect(recognizer).toContain('is_genuine_crash()');
-    expect(recognizer).toContain('has_non_disk_full_error()');
-    expect(recognizer).toContain('is_exclusively_disk_full()');
-    expect(recognizer).toContain('RunnerFatalClass::DiskFull');
+    expect(content).toContain('!saw_genuine_crash');
+    expect(content).toContain('is_exclusively_disk_full()');
+    expect(content).not.toContain('RunnerFatalClass::DiskFull'); // no fatal-class alt
+    expect(content).not.toContain('has_non_disk_full_error'); // subsumed by exclusivity
+
+    // Full recognizer adds both crash-exit gates.
+    const full = sliceBetween(
+      coreSource,
+      'pub fn runner_exit_is_disk_exhaustion(',
+      '\n}\n',
+      'runner_exit_is_disk_exhaustion',
+    );
+    expect(full).toContain('!is_crash_signal(signal)');
+    expect(full).toContain('!is_windows_fault_exit(code)');
+    expect(full).toContain('runner_fault_is_disk_exhaustion_content(saw_genuine_crash');
+
+    // is_windows_fault_exit keys on the WindowsTermination::Fault classification.
+    const fault = sliceBetween(
+      coreSource,
+      'pub fn is_windows_fault_exit(',
+      '\n}\n',
+      'is_windows_fault_exit',
+    );
+    expect(fault).toContain('WindowsTermination::Fault');
   });
 
   it('wires the DiskFull disposition into the MANUAL route with no capture', () => {
-    // The manual exit handler passes the fatal class + rollup into the fault-aware
-    // classifier …
+    // The manual exit handler passes the sticky crash flag + rollup into the
+    // fault-aware classifier …
     expect(syncSource).toContain('classify_runner_exit_disposition_with_fault(');
-    expect(syncSource).toContain('totals_snapshot.runner_fatal_class,');
+    expect(syncSource).toContain('totals_snapshot.saw_genuine_crash_fatal,');
     expect(syncSource).toContain('&totals_snapshot.runner_error_rollup,');
     // … and the DiskFull arm emits one terminal event WITHOUT a capture.
     const arm = sliceBetween(
@@ -170,19 +194,23 @@ describe('runner disk-full attribution — source contracts', () => {
 
   it('wires the SAME verdict into the WATCHER route so the fleet cannot go half-quiet', () => {
     expect(daemonSource).toContain('runner_fault_is_disk_exhaustion_content(');
-    expect(daemonSource).toContain('fn attributed_to_disk_exhaustion(&self, signal: Option<i32>) -> bool');
+    expect(daemonSource).toContain('totals.saw_genuine_crash_fatal,');
+    expect(daemonSource).toContain(
+      'fn attributed_to_disk_exhaustion(&self, code: Option<i32>, signal: Option<i32>) -> bool',
+    );
     // A disk-full watcher exit routes to LocalLogOnly (no Error capture) …
-    expect(daemonSource).toContain('|| context.attributed_to_disk_exhaustion(signal)');
+    expect(daemonSource).toContain('|| context.attributed_to_disk_exhaustion(code, signal)');
     // … while still reporting the content-safe disk_full attribution locally.
     expect(daemonSource).toContain('runner_fatal_class=disk_full');
-    // The signal gate is the shared one, so a crash signal still captures.
+    // The crash-exit gates are the shared ones.
     const method = sliceBetween(
       daemonSource,
-      'fn attributed_to_disk_exhaustion(&self, signal: Option<i32>) -> bool {',
+      'fn attributed_to_disk_exhaustion(&self, code: Option<i32>, signal: Option<i32>) -> bool {',
       '\n    }\n',
       'attributed_to_disk_exhaustion',
     );
     expect(method).toContain('!is_crash_signal(signal)');
+    expect(method).toContain('!is_windows_fault_exit(code)');
   });
 
   it('registers disk_full at the telemetry egress boundary', () => {
@@ -233,28 +261,30 @@ interface RunFixture {
   stdoutLineCount: number;
   /** The rollup is exclusively ENOSPC (the last-wins-immune disk-full signal). */
   exclusivelyDiskFull: boolean;
-  /** A non-ENOSPC runner error was also recorded (blocks the disk-full verdict). */
-  hasOtherError: boolean;
+  /** Sticky: any genuine crash class was seen this pass (blocks suppression). */
+  sawGenuineCrash: boolean;
   /** The retained (last-wins) fatal class — the npm messenger in HQ-DESKTOP-5D. */
   retainedFatalClass: string;
 }
 
 const CRASH_SIGNALS = new Set([4, 6, 7, 9, 10, 11]);
-const CRASH_CLASSES = new Set([
-  'libuv_assert',
-  'libuv_fatal_syscall',
-  'node_check_abort',
-  'node_fatal',
-  'heap_oom',
-  'rust_panic',
-]);
+
+/** TS mirror of `is_windows_fault_exit`: the 0xC000_xxxx NTSTATUS fault range,
+ *  excluding the console-control and 0xFFFFFFFF carve-outs. */
+function isWindowsFaultCode(code: number | null): boolean {
+  if (code === null) return false;
+  const raw = code >>> 0;
+  // `>>> 0` keeps the mask result unsigned; a bare `&` would yield a signed int32
+  // that never equals the unsigned 0xC0000000 literal.
+  return ((raw & 0xc000_0000) >>> 0) === 0xc000_0000 && raw !== 0xffff_ffff && raw !== 0xc000_013a;
+}
 
 /** TS mirror of the shipped `runner_exit_is_disk_exhaustion` recognizer. */
 function isDiskFullVerdict(fx: RunFixture): boolean {
-  if (fx.signal !== null && CRASH_SIGNALS.has(fx.signal)) return false; // gate (d)
-  if (CRASH_CLASSES.has(fx.retainedFatalClass)) return false; // gate (c)
-  if (fx.hasOtherError) return false; // gate (b)
-  return fx.exclusivelyDiskFull || fx.retainedFatalClass === 'disk_full'; // gate (a)
+  if (fx.signal !== null && CRASH_SIGNALS.has(fx.signal)) return false; // POSIX crash signal
+  if (isWindowsFaultCode(fx.code)) return false; // Windows native fault
+  if (fx.sawGenuineCrash) return false; // sticky crash evidence
+  return fx.exclusivelyDiskFull; // requires the parsed exclusively-ENOSPC rollup
 }
 
 /** TS mirror of `is_benign_watcher_exit` for the no-signal code-1/2 case. */
@@ -326,8 +356,8 @@ function simulateWatcherExit(fx: RunFixture, policy: Policy): ExitOutcome {
 }
 
 // The exact reported HQ-DESKTOP-5D shape: a manual code-1 exit whose only error
-// class was ENOSPC, whose retained fatal class was the npm messenger, and which
-// produced no protocol stdout before failing.
+// class was ENOSPC, whose retained fatal class was the npm messenger, with no
+// crash seen and no protocol stdout before failing.
 const HQ_DESKTOP_5D: RunFixture = {
   code: 1,
   signal: null,
@@ -336,7 +366,7 @@ const HQ_DESKTOP_5D: RunFixture = {
   sawAlertableError: true,
   stdoutLineCount: 0,
   exclusivelyDiskFull: true,
-  hasOtherError: false,
+  sawGenuineCrash: false,
   retainedFatalClass: 'npm_install_relay',
 };
 
@@ -344,10 +374,20 @@ const HQ_DESKTOP_5D: RunFixture = {
 // route would otherwise capture, so it proves cross-route parity is required.
 const DISK_FULL_UNKNOWN_CODE: RunFixture = { ...HQ_DESKTOP_5D, code: 243 };
 
-// A genuine crash that merely co-occurred with an ENOSPC rollup: must still alert.
-const CRASH_WITH_ENOSPC: RunFixture = {
+// Finding 1: a genuine crash preceded the npm companion line, so the sticky flag
+// is set even though the ENOSPC rollup is exclusive.
+const CRASH_THEN_ENOSPC: RunFixture = { ...HQ_DESKTOP_5D, sawGenuineCrash: true };
+
+// Finding 0: a Windows native fault reported in `code` with signal=None.
+const WINDOWS_FAULT_WITH_ENOSPC: RunFixture = { ...HQ_DESKTOP_5D, code: 0xc000_0005 | 0 };
+
+// Findings 2 & 3: an npm-own ENOSPC / lifecycle failure before any protocol error
+// — no parsed rollup entry, so not a disk-full verdict.
+const NPM_STARTUP_NO_PROTOCOL: RunFixture = {
   ...HQ_DESKTOP_5D,
-  retainedFatalClass: 'rust_panic',
+  rollup: '',
+  ops: '',
+  exclusivelyDiskFull: false,
 };
 
 describe('runner disk-full attribution — shipped Sentry envelope', () => {
@@ -361,7 +401,6 @@ describe('runner disk-full attribution — shipped Sentry envelope', () => {
     expect(event.tags.runner_error_ops).toBe('open:1');
     expect(event.extras.saw_alertable_error).toBe(true);
     expect(event.extras.runner_stdout_line_count).toBe(0);
-    // The opaque runner-exit string is what the user saw.
     expect(terminalMessage).toBe('[sync] hq-sync-runner exited with code 1');
     assertContentSafeDiagnostics(event);
   });
@@ -373,7 +412,6 @@ describe('runner disk-full attribution — shipped Sentry envelope', () => {
     );
     expect(captures).toHaveLength(0);
     expect(terminalMessage).toBe(SYNC_DISK_FULL_DETAIL);
-    // Actionable, content-safe copy — never the opaque exit-code string.
     expect(terminalMessage).not.toContain('exited with code');
     expect(terminalMessage).toMatch(/space/i);
     expect(reportedFatalClass).toBe('disk_full');
@@ -393,23 +431,38 @@ describe('runner disk-full attribution — shipped Sentry envelope', () => {
     expect(watcher.reportedFatalClass).toBe('disk_full');
   });
 
-  it('never over-suppresses: a genuine crash co-occurring with ENOSPC still alerts', () => {
-    // Even post-fix, a crash class or a crash signal keeps the Alert on both routes.
-    expect(simulateManualExit(CRASH_WITH_ENOSPC, 'post-fix').captures).toHaveLength(1);
+  it('never over-suppresses: crash class, crash signal, or Windows fault still alerts', () => {
+    // Finding 1: a genuine crash seen earlier in the pass (sticky) keeps alerting.
+    expect(simulateManualExit(CRASH_THEN_ENOSPC, 'post-fix').captures).toHaveLength(1);
+    expect(
+      simulateWatcherExit({ ...DISK_FULL_UNKNOWN_CODE, sawGenuineCrash: true }, 'post-fix').captures,
+    ).toHaveLength(1);
+    // A POSIX crash signal still alerts.
     expect(
       simulateWatcherExit({ ...DISK_FULL_UNKNOWN_CODE, signal: 11, code: null }, 'post-fix').captures,
     ).toHaveLength(1);
-    // A mixed rollup (ENOSPC + another class) also stays alertable.
-    expect(
-      simulateManualExit(
-        { ...HQ_DESKTOP_5D, hasOtherError: true, exclusivelyDiskFull: false, rollup: 'EPERM:1,ENOSPC:1' },
-        'post-fix',
-      ).captures,
-    ).toHaveLength(1);
+    // Finding 0: a Windows native fault code still alerts on both routes.
+    expect(simulateManualExit(WINDOWS_FAULT_WITH_ENOSPC, 'post-fix').captures).toHaveLength(1);
+    expect(simulateWatcherExit(WINDOWS_FAULT_WITH_ENOSPC, 'post-fix').captures).toHaveLength(1);
+  });
+
+  it('findings 2 & 3: an ENOSPC startup with no parsed protocol error is not suppressed', () => {
+    // No exclusively-ENOSPC rollup → not a disk-full verdict → keeps alerting,
+    // so the HQ-folder free-space copy never fires for an npx-cache/lifecycle fill.
+    expect(isDiskFullVerdict(NPM_STARTUP_NO_PROTOCOL)).toBe(false);
+    const manual = simulateManualExit(NPM_STARTUP_NO_PROTOCOL, 'post-fix');
+    expect(manual.captures).toHaveLength(1);
+    expect(manual.terminalMessage).not.toBe(SYNC_DISK_FULL_DETAIL);
   });
 
   it('every modeled envelope in both directions is content-safe', () => {
-    for (const fx of [HQ_DESKTOP_5D, DISK_FULL_UNKNOWN_CODE, CRASH_WITH_ENOSPC]) {
+    for (const fx of [
+      HQ_DESKTOP_5D,
+      DISK_FULL_UNKNOWN_CODE,
+      CRASH_THEN_ENOSPC,
+      WINDOWS_FAULT_WITH_ENOSPC,
+      NPM_STARTUP_NO_PROTOCOL,
+    ]) {
       for (const policy of ['pre-fix', 'post-fix'] as Policy[]) {
         for (const route of ['manual', 'watcher'] as Route[]) {
           const outcome =
