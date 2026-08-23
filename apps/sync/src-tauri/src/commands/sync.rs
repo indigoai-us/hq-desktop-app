@@ -44,11 +44,11 @@ use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
 use hq_desktop_core::sync_outcome::classify_runner_exit_disposition;
 use hq_desktop_core::sync_outcome::{
     classify_error_event, classify_runner_error_class,
-    classify_runner_exit_disposition_with_cancellation, classify_runner_fatal_class,
+    classify_runner_exit_disposition_with_fault, classify_runner_fatal_class,
     classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
     runner_phase_from_event, runner_stack_shape_for_exit, should_synthesize_all_complete,
     termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol,
-    RunnerExitDisposition, SyncCancelCause, RUNNER_PHASE_PRE_PROTOCOL,
+    RunnerExitDisposition, SyncCancelCause, SYNC_DISK_FULL_DETAIL, RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use tauri::{AppHandle, Emitter};
@@ -565,6 +565,20 @@ fn terminal_sync_error_for_transient_retry() -> SyncErrorEvent {
     }
 }
 
+/// A disk-full runner exit is a local-machine condition, not a defect: emit the
+/// fixed free-up-space renderer event without capturing to Sentry so both
+/// desktop surfaces leave their active-sync state. The message is the shared
+/// [`SYNC_DISK_FULL_DETAIL`] constant and never includes runner output, a path,
+/// or an exit code; the `(disk)` sentinel path mirrors the `(node)` / `(runner)`
+/// convention of the other terminal events.
+fn terminal_sync_error_for_disk_full() -> SyncErrorEvent {
+    SyncErrorEvent {
+        company: None,
+        path: "(disk)".to_string(),
+        message: SYNC_DISK_FULL_DETAIL.to_string(),
+    }
+}
+
 fn terminal_sync_error_for_cancelled_by_app(cause: SyncCancelCause) -> SyncErrorEvent {
     let message = match cause {
         SyncCancelCause::TimeoutWatchdog => "Sync was stopped after reaching the one-hour limit.",
@@ -745,6 +759,19 @@ fn apply_runner_exit_disposition<E: RunnerExitEffects>(
                 "runner exited non-zero ({exit_desc}) for a transient HQ network retry — ending Sync Now UI state without alerting"
             ));
             effects.emit_sync_error(terminal_sync_error_for_transient_retry());
+        }
+        RunnerExitDisposition::DiskFull => {
+            // The run's only fault was a full disk (ENOSPC). Surface the fixed
+            // free-up-space message so both desktop surfaces leave the syncing
+            // state, and perform NO Sentry capture — a full disk is a local
+            // condition the user fixes, not a product defect. The classified
+            // outcome is recorded locally (runner_fatal_class=disk_full); raw
+            // runner output stays only in the machine-local hq-sync.log.
+            effects.log(&format!(
+                "runner exited non-zero ({exit_desc}) with the disk full (runner_fatal_class=disk_full) \
+                 — surfacing free-up-space message, not alerting"
+            ));
+            effects.emit_sync_error(terminal_sync_error_for_disk_full());
         }
         RunnerExitDisposition::CancelledByApp(cause) => {
             effects.log(&format!(
@@ -2539,7 +2566,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         let totals_snapshot =
                             totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
                         let cancellation = cancellation_for_runner_exit(sync_generation_for_runner);
-                        let disposition = classify_runner_exit_disposition_with_cancellation(
+                        let disposition = classify_runner_exit_disposition_with_fault(
                             code,
                             signal,
                             cancellation.cause,
@@ -2547,6 +2574,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             totals_snapshot.saw_error,
                             totals_snapshot.saw_alertable_error,
                             totals_snapshot.saw_node_too_old,
+                            totals_snapshot.runner_fatal_class,
+                            &totals_snapshot.runner_error_rollup,
                         );
                         let sync_termination_reason =
                             residual_sync_termination_reason(cancellation, &totals_snapshot);
@@ -3486,6 +3515,67 @@ mod tests {
             assert!(
                 !recorded.contains(runner_supplied),
                 "transient retry effect must not copy runner content: {runner_supplied}"
+            );
+        }
+    }
+
+    #[test]
+    fn disk_full_exit_uses_the_no_capture_free_up_space_effect_path() {
+        // HQ-DESKTOP-5D: reconstruct an exclusively-ENOSPC run — a parsed hq-cloud
+        // ENOSPC error (per-file) plus the npm companion stderr line that masks the
+        // fatal class — and prove the manual boundary emits ONE terminal event with
+        // the fixed free-up-space copy and performs ZERO Sentry captures.
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line(
+            "npm error A complete log of this run can be found in: /Users/x/.npm/_logs/z.log",
+        );
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "companies/acme/big.bin".to_string(),
+            message: "ENOSPC: no space left on device, write 'companies/acme/big.bin'".to_string(),
+        });
+        assert!(totals.runner_error_rollup.is_exclusively_disk_full());
+
+        let code = Some(1);
+        let signal = None;
+        let disposition = classify_runner_exit_disposition_with_fault(
+            code,
+            signal,
+            None,
+            false,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old,
+            totals.runner_fatal_class,
+            &totals.runner_error_rollup,
+        );
+        assert_eq!(disposition, RunnerExitDisposition::DiskFull);
+
+        let mut effects = RecordingRunnerExitEffects::default();
+        apply_runner_exit_disposition(
+            &mut effects,
+            disposition,
+            code,
+            signal,
+            &describe_exit(code, signal),
+            &totals,
+            &ManualRunnerExitContext::default(),
+        );
+
+        assert!(
+            effects.captures.is_empty(),
+            "a full-disk exit must not capture to Sentry"
+        );
+        assert_eq!(effects.terminal_events.len(), 1);
+        assert_eq!(effects.terminal_events[0].company, None);
+        assert_eq!(effects.terminal_events[0].path, "(disk)");
+        assert_eq!(effects.terminal_events[0].message, SYNC_DISK_FULL_DETAIL);
+        // Content safety: neither the log nor the terminal event copies runner bytes.
+        let recorded = format!("{:?}{:?}", effects.logs, effects.terminal_events);
+        for runner_supplied in ["big.bin", "no space left on device", "/Users/x", "_logs"] {
+            assert!(
+                !recorded.contains(runner_supplied),
+                "disk-full effect must not copy runner content: {runner_supplied}"
             );
         }
     }

@@ -1008,6 +1008,14 @@ pub enum RunnerFatalClass {
     ExecPermissionDenied,
     ExecNotFound,
     NodeTooOld,
+    /// The runner terminated because the machine's disk is full (`ENOSPC`). An
+    /// expected local-machine condition the user fixes by freeing space, never a
+    /// product defect — mirroring `hq_cli_update`'s `ExpectedDiskFull` for the
+    /// CLI-update lane and `run_cli_provision`'s `disk-full` classification. The
+    /// causal disk-full attribution deliberately outranks the `npm_install_relay`
+    /// messenger in `classify_runner_fatal_class` (its arm runs first). The token
+    /// is a fixed constant, never derived from observed bytes.
+    DiskFull,
     /// npm relayed a failing lifecycle/install status while printing only its own
     /// `npm error …` / `npm ERR! …` lines, with no shell not-found/permission
     /// marker. Attribution for the NEXT occurrence of an npm-shaped fast-fail —
@@ -1021,7 +1029,7 @@ pub enum RunnerFatalClass {
 impl RunnerFatalClass {
     /// Every variant, so content-safety tests can enumerate the emitter's own
     /// fatal-class token set instead of a hand-copied list.
-    pub const ALL: [RunnerFatalClass; 11] = [
+    pub const ALL: [RunnerFatalClass; 12] = [
         Self::LibuvAssert,
         Self::LibuvFatalSyscall,
         Self::NodeCheckAbort,
@@ -1031,6 +1039,7 @@ impl RunnerFatalClass {
         Self::ExecPermissionDenied,
         Self::ExecNotFound,
         Self::NodeTooOld,
+        Self::DiskFull,
         Self::NpmInstallRelay,
         Self::None,
     ];
@@ -1047,6 +1056,7 @@ impl RunnerFatalClass {
             Self::ExecPermissionDenied => "exec_permission_denied",
             Self::ExecNotFound => "exec_not_found",
             Self::NodeTooOld => "node_too_old",
+            Self::DiskFull => "disk_full",
             Self::NpmInstallRelay => "npm_install_relay",
             Self::None => "none",
         }
@@ -1054,6 +1064,22 @@ impl RunnerFatalClass {
 
     pub fn seen(self) -> bool {
         self != Self::None
+    }
+
+    /// Classes that prove the runner genuinely crashed. A disk-exhaustion exit
+    /// must never suppress an alert when one of these co-occurs in the same
+    /// stderr stream, so the disk-full disposition gate excludes them. Kept in
+    /// lockstep with the crash arms of [`classify_runner_fatal_class`].
+    pub fn is_genuine_crash(self) -> bool {
+        matches!(
+            self,
+            Self::LibuvAssert
+                | Self::LibuvFatalSyscall
+                | Self::NodeCheckAbort
+                | Self::NodeFatal
+                | Self::HeapOom
+                | Self::RustPanic
+        )
     }
 }
 
@@ -1323,6 +1349,18 @@ pub fn classify_runner_fatal_class(line: &str) -> RunnerFatalClass {
         .any(|marker| msg.contains(marker))
     {
         RunnerFatalClass::NodeFatal
+    } else if crate::hq_cli_update::is_disk_exhaustion_failure(line) {
+        // Disk exhaustion (ENOSPC) is the causal condition, evaluated BEFORE the
+        // npm-relay arm so an `npm error code ENOSPC` line — and the hq-cloud
+        // `ENOSPC: no space left on device` protocol error — is attributed to the
+        // full disk rather than masked as `npm_install_relay`. Placed AFTER every
+        // genuine-crash arm above so a real crash whose text merely mentions
+        // ENOSPC keeps its crash class. Delegates to the crate's single
+        // disk-exhaustion vocabulary (which excludes npm lifecycle failures) so
+        // the sync, CLI-update, and provisioning lanes can never disagree. The RAW
+        // `line` is passed because the delegate keys on npm's own uppercase
+        // `ENOSPC` code.
+        RunnerFatalClass::DiskFull
     } else if is_npm_error_line(&msg) {
         // npm's OWN line prefix, evaluated BEFORE the shell-exec arms so an
         // `npm error enoent ENOENT: no such file … /.npm/_npx/…` line is
@@ -1391,6 +1429,28 @@ impl RunnerErrorRollup {
             RunnerErrorClass::Other => &mut self.other,
         };
         *count = count.saturating_add(1);
+    }
+
+    /// True when the only runner error class recorded this pass was disk
+    /// exhaustion (`ENOSPC`) — at least one ENOSPC and zero of every other class.
+    /// This is the robust, last-wins-immune signal that a terminal exit was
+    /// caused purely by a full disk: unlike the retained `runner_fatal_class`,
+    /// which an npm companion line can overwrite, the rollup counts every parsed
+    /// error record.
+    pub fn is_exclusively_disk_full(&self) -> bool {
+        self.enospc > 0 && !self.has_non_disk_full_error()
+    }
+
+    /// True when at least one runner error of a class OTHER than disk exhaustion
+    /// was recorded this pass. The disk-full disposition gate requires this to be
+    /// false, so a mixed rollup (e.g. `EPERM:1,ENOSPC:1`) never suppresses.
+    pub fn has_non_disk_full_error(&self) -> bool {
+        self.eperm > 0
+            || self.eacces > 0
+            || self.ebusy > 0
+            || self.network > 0
+            || self.auth > 0
+            || self.other > 0
     }
 
     /// Render only fixed class names and decimal counts. `None` means this
@@ -1582,6 +1642,34 @@ pub fn current_termination_host() -> TerminationHost {
 /// this is attributable to the app only when an exact-generation cancellation
 /// record proves the app escalated a prior cancellation successfully.
 pub const SIGKILL_SIGNAL: i32 = 9;
+
+/// POSIX SIGILL — an illegal instruction, always a genuine crash.
+pub const SIGILL_SIGNAL: i32 = 4;
+/// POSIX SIGBUS on Linux (bus error / bad memory access), a genuine crash.
+pub const SIGBUS_SIGNAL_LINUX: i32 = 7;
+/// POSIX SIGBUS on macOS/BSD (bus error), a genuine crash. Differs from Linux.
+pub const SIGBUS_SIGNAL_MACOS: i32 = 10;
+/// POSIX SIGSEGV — a segmentation fault, always a genuine crash.
+pub const SIGSEGV_SIGNAL: i32 = 11;
+
+/// True when a termination signal denotes a genuine process crash (segfault,
+/// bus error, illegal instruction, abort, or SIGKILL — which can be an OOM
+/// kill). A disk-exhaustion exit must never suppress an alert that carries one
+/// of these, so the disk-full disposition gate excludes them. SIGTERM is
+/// deliberately absent: it is the app's own cancellation signal, not a crash.
+pub fn is_crash_signal(signal: Option<i32>) -> bool {
+    matches!(
+        signal,
+        Some(
+            SIGABRT_SIGNAL
+                | SIGILL_SIGNAL
+                | SIGBUS_SIGNAL_LINUX
+                | SIGBUS_SIGNAL_MACOS
+                | SIGKILL_SIGNAL
+                | SIGSEGV_SIGNAL
+        )
+    )
+}
 
 /// The explicit initiator of a manual sync cancellation. This is deliberately
 /// a small, closed vocabulary: only cancellation paths owned by the desktop
@@ -2593,6 +2681,11 @@ pub enum RunnerExitDisposition {
     WindowsConsoleControl,
     /// End the UI run after hq-cloud's retryable network outcome without a capture.
     TransientRetry,
+    /// Surface the actionable free-up-space message without a capture. The run
+    /// ended solely because the disk is full (`ENOSPC`); like the other
+    /// non-alerting terminal dispositions, callers must still emit exactly one
+    /// terminal UI event so both desktop surfaces leave the syncing state.
+    DiskFull,
     /// End the UI run after an exact run was observably stopped by the desktop
     /// app. This is intentionally distinct from generic `Ignore`: callers must
     /// still emit one terminal UI event so both desktop surfaces leave syncing.
@@ -2737,6 +2830,110 @@ pub fn should_alert_on_nonzero_exit(
         ),
         RunnerExitDisposition::Alert
     )
+}
+
+/// Fixed, content-safe user-facing message for a sync run that ended because the
+/// disk filled. Follows the [`crate::hq_cli_update`] `DISK_FULL_DETAIL` pattern —
+/// name the condition, name the one action, name the retry — but is worded for
+/// the sync lane (write, not install). Never names a specific volume and never
+/// interpolates a path, exit code, or runner byte, so it is safe on both the
+/// user-facing `sync:error` event and any breadcrumb. Every disk-full terminal
+/// event sources this one constant so the wording cannot drift between routes.
+pub const SYNC_DISK_FULL_DETAIL: &str =
+    "HQ Sync ran out of space while writing files. Free up space on the drive that holds your HQ folder, then try Sync again.";
+
+/// The content half of the disk-exhaustion recognizer: gates (a) a disk-full
+/// signal is present (the rollup is exclusively ENOSPC, or the retained fatal
+/// class is `DiskFull`), (b) no non-ENOSPC runner error was recorded, and (c)
+/// the retained fatal class is not a genuine crash. The exit-signal gate (d) is
+/// applied separately by [`runner_exit_is_disk_exhaustion`] because the manual
+/// and watcher routes learn the terminal signal at different seams. Pure and
+/// content-safe: it reads only fixed-vocabulary class tokens and integer counts.
+pub fn runner_fault_is_disk_exhaustion_content(
+    fatal_class: RunnerFatalClass,
+    error_rollup: &RunnerErrorRollup,
+) -> bool {
+    if fatal_class.is_genuine_crash() {
+        return false; // (c) a genuine crash is never a disk-full exit
+    }
+    if error_rollup.has_non_disk_full_error() {
+        return false; // (b) any non-ENOSPC error keeps the exit alertable
+    }
+    // (a) either a parsed exclusively-ENOSPC rollup (last-wins-immune) or a
+    // retained DiskFull fatal class with no contradicting error above.
+    error_rollup.is_exclusively_disk_full() || fatal_class == RunnerFatalClass::DiskFull
+}
+
+/// Whether a terminal runner exit is fully explained by disk exhaustion and
+/// nothing else — the SHARED recognizer used by both the manual-sync exit
+/// classifier and the auto-sync watcher boundary, so the two can never disagree
+/// about what a disk-full exit looks like. Adds the exit-signal gate (d) — a
+/// crash signal is never a disk-full exit — on top of
+/// [`runner_fault_is_disk_exhaustion_content`]. Pure and content-safe.
+pub fn runner_exit_is_disk_exhaustion(
+    signal: Option<i32>,
+    fatal_class: RunnerFatalClass,
+    error_rollup: &RunnerErrorRollup,
+) -> bool {
+    !is_crash_signal(signal) && runner_fault_is_disk_exhaustion_content(fatal_class, error_rollup)
+}
+
+/// Fault-aware manual-sync exit disposition. Layers disk-exhaustion recognition
+/// on top of [`classify_runner_exit_disposition_with_cancellation`]: an
+/// otherwise-`Alert` verdict for a run whose only fault was a full disk becomes
+/// `DiskFull` (no capture, one actionable terminal event). EVERY other verdict —
+/// `NodeTooOld`, `WindowsConsoleControl`, `TransientRetry`, `CancelledByApp`,
+/// `Ignore`, and a genuine `Alert` — is returned unchanged, so no existing
+/// disposition moves for any input. Pure.
+///
+/// The arg list mirrors [`classify_runner_exit_disposition_with_cancellation`]
+/// plus the two disk-full signals; threading them keeps the classifier pure
+/// rather than reading run globals.
+#[allow(clippy::too_many_arguments)]
+pub fn classify_runner_exit_disposition_with_fault(
+    code: Option<i32>,
+    signal: Option<i32>,
+    cause: Option<SyncCancelCause>,
+    termination_effected: bool,
+    saw_error: bool,
+    saw_alertable_error: bool,
+    saw_node_too_old: bool,
+    fatal_class: RunnerFatalClass,
+    error_rollup: &RunnerErrorRollup,
+) -> RunnerExitDisposition {
+    let base = classify_runner_exit_disposition_with_cancellation(
+        code,
+        signal,
+        cause,
+        termination_effected,
+        saw_error,
+        saw_alertable_error,
+        saw_node_too_old,
+    );
+    if base == RunnerExitDisposition::Alert
+        && runner_exit_is_disk_exhaustion(signal, fatal_class, error_rollup)
+    {
+        RunnerExitDisposition::DiskFull
+    } else {
+        base
+    }
+}
+
+/// Fault-aware boolean projection for capture seams that have no cancellation
+/// record (the auto-sync watcher's terminal boundary). Returns `false` for a
+/// disk-exhaustion exit — which must never alert — and otherwise mirrors
+/// [`should_alert_on_nonzero_exit`] exactly.
+pub fn should_alert_on_nonzero_exit_with_fault(
+    code: Option<i32>,
+    signal: Option<i32>,
+    saw_error: bool,
+    saw_alertable_error: bool,
+    saw_node_too_old: bool,
+    fatal_class: RunnerFatalClass,
+    error_rollup: &RunnerErrorRollup,
+) -> bool {
+    should_alert_on_nonzero_exit(code, signal, saw_error, saw_alertable_error, saw_node_too_old)
+        && !runner_exit_is_disk_exhaustion(signal, fatal_class, error_rollup)
 }
 
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
@@ -6226,5 +6423,434 @@ mod tests {
         )
         .expect("progress event");
         assert_eq!(runner_phase_from_event(&directionless), Some("unknown"));
+    }
+
+    // ── disk-exhaustion terminal-exit misreport (HQ-DESKTOP-5D) ──────────────
+
+    fn rollup_of(enospc: u32, eperm: u32, other: u32) -> RunnerErrorRollup {
+        RunnerErrorRollup {
+            enospc,
+            eperm,
+            other,
+            ..Default::default()
+        }
+    }
+
+    /// Reconstruct the exact HQ-DESKTOP-5D run shape from its content-safe axes:
+    /// an ordinary stderr line, the hq-cloud ndjson ENOSPC protocol error
+    /// (per-file path, no company), and an npm companion line whose own
+    /// `npm error ` prefix wins the last-non-None fatal attribution — plus the
+    /// parsed ENOSPC error record that drives the rollup.
+    fn hq_desktop_5d_run_totals() -> RunTotals {
+        let mut totals = RunTotals::default();
+        // #1 ordinary line → (other;none)
+        totals.record_stderr_line("[hq-cloud] starting pull for 3 companies");
+        // #2 the hq-cloud ndjson ENOSPC error line → (enospc;disk_full after fix)
+        let enospc_line = r#"{"type":"error","path":"companies/acme/big.bin","message":"ENOSPC: no space left on device, open 'companies/acme/big.bin'"}"#;
+        totals.record_stderr_line(enospc_line);
+        // #3 the npm companion line → (other;npm_install_relay), the messenger
+        totals.record_stderr_line(
+            "npm error A complete log of this run can be found in: /Users/x/.npm/_logs/2026-log.log",
+        );
+        // The parsed ENOSPC error record — what record_error increments.
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "companies/acme/big.bin".to_string(),
+            message: "ENOSPC: no space left on device, open 'companies/acme/big.bin'".to_string(),
+        });
+        totals
+    }
+
+    #[test]
+    fn hq_desktop_5d_disk_full_exit_is_diskfull_not_alert() {
+        let totals = hq_desktop_5d_run_totals();
+        // The rollup — immune to the last-wins fatal-class flap — proves disk-full,
+        // even though the retained fatal class is the npm messenger.
+        assert!(totals.runner_error_rollup.is_exclusively_disk_full());
+        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::NpmInstallRelay);
+        assert!(totals.saw_alertable_error);
+        assert!(runner_exit_is_disk_exhaustion(
+            None,
+            totals.runner_fatal_class,
+            &totals.runner_error_rollup
+        ));
+        // Exit code 1, no signal, no cancellation → DiskFull (was Alert pre-fix).
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                Some(1),
+                None,
+                None,
+                false,
+                totals.saw_error,
+                totals.saw_alertable_error,
+                totals.saw_node_too_old,
+                totals.runner_fatal_class,
+                &totals.runner_error_rollup,
+            ),
+            RunnerExitDisposition::DiskFull
+        );
+        assert!(!should_alert_on_nonzero_exit_with_fault(
+            Some(1),
+            None,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old,
+            totals.runner_fatal_class,
+            &totals.runner_error_rollup,
+        ));
+        // Base (pre-fix) direction is genuinely red: the same inputs Alert today.
+        assert_eq!(
+            classify_runner_exit_disposition(
+                Some(1),
+                None,
+                totals.saw_error,
+                totals.saw_alertable_error,
+                totals.saw_node_too_old
+            ),
+            RunnerExitDisposition::Alert
+        );
+        assert!(should_alert_on_nonzero_exit(
+            Some(1),
+            None,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old
+        ));
+    }
+
+    #[test]
+    fn disk_full_arm_precedes_npm_relay_but_yields_to_genuine_crashes() {
+        // npm's own ENOSPC code → disk_full, not npm_install_relay (arm ordering).
+        assert_eq!(
+            classify_runner_fatal_class("npm error code ENOSPC"),
+            RunnerFatalClass::DiskFull
+        );
+        assert_eq!(
+            classify_runner_fatal_class("npm ERR! code ENOSPC"),
+            RunnerFatalClass::DiskFull
+        );
+        // hq-cloud errno phrase → disk_full.
+        assert_eq!(
+            classify_runner_fatal_class("ENOSPC: no space left on device, open '/x/y'"),
+            RunnerFatalClass::DiskFull
+        );
+        // A heap-OOM banner that merely also mentions ENOSPC stays HeapOom.
+        assert_eq!(
+            classify_runner_fatal_class(
+                "FATAL ERROR: Reached heap limit — JavaScript heap out of memory (near ENOSPC)"
+            ),
+            RunnerFatalClass::HeapOom
+        );
+        // A Rust panic whose text mentions ENOSPC stays RustPanic.
+        assert_eq!(
+            classify_runner_fatal_class("thread 'main' panicked at 'ENOSPC: no space left on device'"),
+            RunnerFatalClass::RustPanic
+        );
+        // Token + membership + non-crash classification.
+        assert_eq!(RunnerFatalClass::DiskFull.as_str(), "disk_full");
+        assert!(RunnerFatalClass::ALL.contains(&RunnerFatalClass::DiskFull));
+        assert!(!RunnerFatalClass::DiskFull.is_genuine_crash());
+    }
+
+    #[test]
+    fn npm_lifecycle_disk_failure_stays_npm_relay_and_alerts() {
+        // A third-party build script that ran out of space: npm reports a lifecycle
+        // failure (not its own top-level ENOSPC), so is_disk_exhaustion_failure
+        // excludes it and the fatal class stays npm_install_relay — mirroring the
+        // exclusion hq_cli_update already proves. Both spellings.
+        for block in [
+            "npm error code ELIFECYCLE\n\
+             npm error errno 1\n\
+             npm error some-pkg@1.0.0 build: `node-gyp rebuild`\n\
+             npm error gyp ERR! ENOSPC: no space left on device\n\
+             npm error Failed at the some-pkg@1.0.0 build script.\n\
+             npm error A complete log of this run can be found in: /x/.npm/_logs/y.log",
+            "npm ERR! code ELIFECYCLE\n\
+             npm ERR! errno 1\n\
+             npm ERR! gyp ERR! ENOSPC: no space left on device\n\
+             npm ERR! command failed\n\
+             npm ERR! A complete log of this run can be found in: /x/.npm/_logs/y.log",
+        ] {
+            assert_eq!(
+                classify_runner_fatal_class(block),
+                RunnerFatalClass::NpmInstallRelay,
+                "npm lifecycle disk failure must stay npm_install_relay"
+            );
+        }
+        // At the disposition level it keeps alerting: no exclusively-ENOSPC rollup.
+        let empty = RunnerErrorRollup::default();
+        assert!(!runner_exit_is_disk_exhaustion(
+            None,
+            RunnerFatalClass::NpmInstallRelay,
+            &empty
+        ));
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                Some(1),
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                RunnerFatalClass::NpmInstallRelay,
+                &empty,
+            ),
+            RunnerExitDisposition::Alert
+        );
+    }
+
+    #[test]
+    fn is_exclusively_disk_full_requires_enospc_and_nothing_else() {
+        assert!(!RunnerErrorRollup::default().is_exclusively_disk_full());
+        assert!(rollup_of(1, 0, 0).is_exclusively_disk_full());
+        assert!(rollup_of(5, 0, 0).is_exclusively_disk_full());
+        assert!(!rollup_of(1, 0, 1).is_exclusively_disk_full());
+        assert!(!rollup_of(1, 1, 0).is_exclusively_disk_full());
+        assert!(!rollup_of(0, 0, 1).is_exclusively_disk_full());
+        assert!(rollup_of(1, 1, 0).has_non_disk_full_error());
+        assert!(!rollup_of(1, 0, 0).has_non_disk_full_error());
+    }
+
+    #[test]
+    fn mixed_rollup_with_enospc_still_alerts() {
+        // Presence of ENOSPC is not enough; a co-occurring EPERM keeps it alerting.
+        let mixed = rollup_of(1, 1, 0);
+        assert!(!runner_exit_is_disk_exhaustion(
+            None,
+            RunnerFatalClass::DiskFull,
+            &mixed
+        ));
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                Some(1),
+                None,
+                None,
+                false,
+                true,
+                true,
+                false,
+                RunnerFatalClass::DiskFull,
+                &mixed,
+            ),
+            RunnerExitDisposition::Alert
+        );
+    }
+
+    #[test]
+    fn crash_class_with_enospc_rollup_still_alerts() {
+        let enospc = rollup_of(1, 0, 0);
+        for crash in [
+            RunnerFatalClass::LibuvAssert,
+            RunnerFatalClass::LibuvFatalSyscall,
+            RunnerFatalClass::NodeCheckAbort,
+            RunnerFatalClass::NodeFatal,
+            RunnerFatalClass::HeapOom,
+            RunnerFatalClass::RustPanic,
+        ] {
+            assert!(crash.is_genuine_crash(), "{crash:?} must be a genuine crash");
+            assert!(
+                !runner_exit_is_disk_exhaustion(None, crash, &enospc),
+                "{crash:?} must not read as disk-full"
+            );
+            assert_eq!(
+                classify_runner_exit_disposition_with_fault(
+                    Some(1),
+                    None,
+                    None,
+                    false,
+                    true,
+                    true,
+                    false,
+                    crash,
+                    &enospc,
+                ),
+                RunnerExitDisposition::Alert,
+                "{crash:?} co-occurring with ENOSPC must still Alert"
+            );
+        }
+    }
+
+    #[test]
+    fn crash_signal_with_enospc_rollup_still_alerts() {
+        let enospc = rollup_of(1, 0, 0);
+        for signal in [
+            SIGSEGV_SIGNAL,
+            SIGBUS_SIGNAL_MACOS,
+            SIGBUS_SIGNAL_LINUX,
+            SIGABRT_SIGNAL,
+            SIGKILL_SIGNAL,
+            SIGILL_SIGNAL,
+        ] {
+            assert!(is_crash_signal(Some(signal)), "signal {signal} is a crash");
+            assert!(!runner_exit_is_disk_exhaustion(
+                Some(signal),
+                RunnerFatalClass::DiskFull,
+                &enospc
+            ));
+            assert_eq!(
+                classify_runner_exit_disposition_with_fault(
+                    None,
+                    Some(signal),
+                    None,
+                    false,
+                    true,
+                    true,
+                    false,
+                    RunnerFatalClass::DiskFull,
+                    &enospc,
+                ),
+                RunnerExitDisposition::Alert,
+                "crash signal {signal} with ENOSPC must still Alert"
+            );
+        }
+        // SIGTERM is the app's cancellation signal, never a crash.
+        assert!(!is_crash_signal(Some(SIGTERM_SIGNAL)));
+    }
+
+    #[test]
+    fn fatal_class_disk_full_with_empty_rollup_is_still_diskfull() {
+        // gate (a) alt: the runner died with an npm-own ENOSPC before emitting any
+        // hq-cloud protocol error, so the rollup is empty but the fatal class is
+        // DiskFull. Still a disk-full exit.
+        let empty = RunnerErrorRollup::default();
+        assert!(runner_exit_is_disk_exhaustion(
+            None,
+            RunnerFatalClass::DiskFull,
+            &empty
+        ));
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                Some(1),
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                RunnerFatalClass::DiskFull,
+                &empty,
+            ),
+            RunnerExitDisposition::DiskFull
+        );
+    }
+
+    #[test]
+    fn app_cancellation_still_wins_over_disk_full() {
+        // A genuine app-owned Stop that races a disk-full line stays CancelledByApp
+        // (no alertable error), preserving the existing cancellation precedence.
+        let enospc = rollup_of(1, 0, 0);
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                None,
+                Some(SIGTERM_SIGNAL),
+                Some(SyncCancelCause::UserStop),
+                true,
+                false,
+                false,
+                false,
+                RunnerFatalClass::DiskFull,
+                &enospc,
+            ),
+            RunnerExitDisposition::CancelledByApp(SyncCancelCause::UserStop)
+        );
+    }
+
+    #[test]
+    fn fault_layer_only_ever_adds_diskfull_never_moves_an_existing_verdict() {
+        // Full-input-lattice invariance: every input that is not a disk-full
+        // verdict returns the byte-identical pre-fix disposition, and the only
+        // change the fault layer can make is converting a base Alert to DiskFull.
+        let rollups = [
+            RunnerErrorRollup::default(),
+            rollup_of(1, 0, 0), // exclusively disk full
+            rollup_of(1, 1, 0), // mixed
+            rollup_of(0, 0, 3), // other-only
+        ];
+        let codes = [
+            None,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(RUNNER_OPERATION_LOCKED_EXIT),
+            Some(RUNNER_TRANSIENT_RETRY_EXIT),
+            Some(127),
+        ];
+        let signals = [
+            None,
+            Some(SIGTERM_SIGNAL),
+            Some(SIGABRT_SIGNAL),
+            Some(SIGSEGV_SIGNAL),
+            Some(SIGKILL_SIGNAL),
+        ];
+        let causes = [None, Some(SyncCancelCause::UserStop)];
+        for &code in &codes {
+            for &signal in &signals {
+                for &cause in &causes {
+                    for &effected in &[false, true] {
+                        for &saw_error in &[false, true] {
+                            for &saw_alertable in &[false, true] {
+                                for &node_old in &[false, true] {
+                                    for &fatal in &RunnerFatalClass::ALL {
+                                        for rollup in &rollups {
+                                            let base =
+                                                classify_runner_exit_disposition_with_cancellation(
+                                                    code,
+                                                    signal,
+                                                    cause,
+                                                    effected,
+                                                    saw_error,
+                                                    saw_alertable,
+                                                    node_old,
+                                                );
+                                            let fault =
+                                                classify_runner_exit_disposition_with_fault(
+                                                    code,
+                                                    signal,
+                                                    cause,
+                                                    effected,
+                                                    saw_error,
+                                                    saw_alertable,
+                                                    node_old,
+                                                    fatal,
+                                                    rollup,
+                                                );
+                                            if fault == RunnerExitDisposition::DiskFull {
+                                                assert_eq!(
+                                                    base,
+                                                    RunnerExitDisposition::Alert,
+                                                    "DiskFull may only replace a base Alert"
+                                                );
+                                                assert!(runner_exit_is_disk_exhaustion(
+                                                    signal, fatal, rollup
+                                                ));
+                                            } else {
+                                                assert_eq!(
+                                                    fault, base,
+                                                    "fault layer moved a non-disk-full verdict"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sync_disk_full_detail_is_fixed_and_content_safe() {
+        // Names the condition, the one action, and the retry; never a path, an
+        // exit code, the ENOSPC token, a digit, or a specific volume name.
+        let m = SYNC_DISK_FULL_DETAIL;
+        assert!(m.contains("HQ Sync"));
+        assert!(m.to_lowercase().contains("space"));
+        assert!(m.contains("Sync again"));
+        assert!(!m.contains("ENOSPC"));
+        assert!(!m.contains('/'));
+        assert!(!m.chars().any(|c| c.is_ascii_digit()));
     }
 }

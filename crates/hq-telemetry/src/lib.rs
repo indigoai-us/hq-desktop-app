@@ -701,6 +701,7 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
                 | "exec_permission_denied"
                 | "exec_not_found"
                 | "node_too_old"
+                | "disk_full"
                 | "npm_install_relay"
                 | "none"
         )
@@ -1262,6 +1263,17 @@ mod tests {
         assert!(is_content_safe_runner_stderr_message(
             Some("runner.stderr"),
             Some("runner stderr #7245 (identity;none)")
+        ));
+        // HQ-DESKTOP-5D: the disk_full fatal token must validate in both the
+        // ENOSPC-error and the ordinary-line breadcrumb spellings, or the fix's
+        // new attribution would be blanked before it left the machine.
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #2 (enospc;disk_full)")
+        ));
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #3 (other;disk_full)")
         ));
     }
 

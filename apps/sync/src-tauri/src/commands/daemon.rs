@@ -41,10 +41,11 @@ use hq_desktop_core::watcher_fault::{
 };
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
-    deferred_session_end_outcome, describe_exit, is_windows_console_control_exit,
+    deferred_session_end_outcome, describe_exit, is_crash_signal, is_windows_console_control_exit,
     normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
-    runner_phase_from_event, runner_stack_shape, runner_stack_shape_for_exit,
-    session_end_grace_waited_bucket, should_capture_watcher_exit, spawn_failure_capture_policy,
+    runner_fault_is_disk_exhaustion_content, runner_phase_from_event, runner_stack_shape,
+    runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
+    spawn_failure_capture_policy,
     spawn_failure_fingerprint_token, termination_fingerprint_token,
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
@@ -1383,6 +1384,13 @@ struct WatcherExitCaptureContext {
     /// alertable fault must win over durable-record attribution, exactly as at
     /// the manual-sync boundary.
     saw_alertable_error: bool,
+    /// The content half of the shared disk-exhaustion recognizer (gates a/b/c,
+    /// signal-independent) computed at the exit boundary from the SAME `RunTotals`
+    /// the manual route reads. Combined with the exit signal by
+    /// `attributed_to_disk_exhaustion`, it lets the watcher suppress a full-disk
+    /// exit exactly as the manual route's `DiskFull` disposition does, so the two
+    /// boundaries never drift. `false` by default (no disk-full signal).
+    runner_disk_exhaustion_content: bool,
     /// Total stderr lines this generation received, at parity with the manual
     /// route's `runner_stderr_line_count` extra, so the 8-line tail ring is not
     /// misread as the real line count. `None` renders nothing.
@@ -1449,6 +1457,16 @@ impl WatcherExitCaptureContext {
             self.saw_alertable_error,
         )
     }
+
+    /// Whether this watcher exit is fully explained by a full disk (`ENOSPC`).
+    /// Combines the content half computed at the exit boundary with the
+    /// exit-signal gate here, applying the SAME shared recognizer the manual
+    /// route uses so the two boundaries reach the identical verdict. A crash
+    /// signal (SIGSEGV/SIGBUS/SIGABRT/SIGKILL/…) is never a disk-full exit, so it
+    /// stays alertable even if a disk-full line co-occurred.
+    fn attributed_to_disk_exhaustion(&self, signal: Option<i32>) -> bool {
+        self.runner_disk_exhaustion_content && !is_crash_signal(signal)
+    }
 }
 
 impl Default for WatcherExitCaptureContext {
@@ -1496,6 +1514,7 @@ impl Default for WatcherExitCaptureContext {
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
             saw_alertable_error: false,
+            runner_disk_exhaustion_content: false,
             runner_stderr_line_count: None,
             runner_unmatched_stderr_shapes: None,
             // No Windows fault read applies by default (non-Windows, or a clean /
@@ -1653,6 +1672,13 @@ fn watcher_exit_capture_context(
             .map(|record| record.termination_effected)
             .unwrap_or(false),
         saw_alertable_error: totals.saw_alertable_error,
+        // Content half of the shared disk-exhaustion recognizer, from the SAME
+        // RunTotals the manual route reads. The exit-signal gate is applied later
+        // by `attributed_to_disk_exhaustion` (the signal is not known here).
+        runner_disk_exhaustion_content: runner_fault_is_disk_exhaustion_content(
+            totals.runner_fatal_class,
+            &totals.runner_error_rollup,
+        ),
         // The per-generation stderr diagnostics and Windows fault provenance are
         // filled by the exit callback after this snapshot (they need the exit code
         // and the sampled PID set); default them here so the snapshot is complete.
@@ -2794,7 +2820,15 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     }
 
     let consecutive = effects.note_watcher_crashed();
-    let capture_policy = if is_benign_watcher_exit(code, signal) {
+    let capture_policy = if is_benign_watcher_exit(code, signal)
+        || context.attributed_to_disk_exhaustion(signal)
+    {
+        // A full disk (ENOSPC) is a local-machine condition the user fixes by
+        // freeing space, never an actionable watcher crash. Route it to
+        // LocalLogOnly — the same non-capturing outcome the manual route's
+        // `DiskFull` disposition produces — so the two boundaries stay in
+        // lockstep. Still counted toward the crash streak above so the respawn
+        // stays paced while the disk is full.
         WatcherExitCapturePolicy::LocalLogOnly
     } else {
         watcher_exit_capture_policy_with_attribution(code, signal, context.windows_terminator)
@@ -2858,6 +2892,25 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 format!(
                     "session-end-observed auto-sync watcher exit #{consecutive}: \
                      windows_terminator=session_end_observed"
+                ),
+            );
+        } else if context.attributed_to_disk_exhaustion(signal) {
+            // Full-disk exit: no capture, but keep the content-safe attribution
+            // (runner_fatal_class=disk_full) on the local log and breadcrumb so
+            // the condition stays observable at parity with the manual route.
+            effects.log(
+                "daemon",
+                &format!(
+                    "disk-full watcher exit #{consecutive} — capture skipped \
+                     (runner_fatal_class=disk_full)"
+                ),
+            );
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
+                    "disk-full auto-sync watcher exit #{consecutive}: \
+                     runner_fatal_class=disk_full"
                 ),
             );
         } else {
@@ -5222,6 +5275,67 @@ mod tests {
         assert!(!serialized.contains("private-flag"));
         assert!(!serialized.contains("hq-tmp-a1b2"));
         assert!(!serialized.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn disk_full_watcher_exit_is_suppressed_and_reports_disk_full() {
+        // HQ-DESKTOP-5D parity: the auto-sync watcher must not page for a full-disk
+        // exit — not even on an otherwise-alertable (unknown 221) code — matching
+        // the manual route's DiskFull disposition. The condition stays observable:
+        // the local log and breadcrumb name runner_fatal_class=disk_full.
+        let context = WatcherExitCaptureContext {
+            runner_disk_exhaustion_content: true,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(221),
+            None,
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert!(
+            effects.captures.is_empty(),
+            "a full-disk watcher exit must not capture to Sentry"
+        );
+        let recorded = format!("{:?}{:?}", effects.logs, effects.breadcrumbs);
+        assert!(
+            recorded.contains("disk_full"),
+            "watcher must still report runner_fatal_class=disk_full locally: {recorded}"
+        );
+    }
+
+    #[test]
+    fn disk_full_watcher_gate_still_captures_a_crash_signal() {
+        // A crash signal co-occurring with a disk-full content signal is NOT a
+        // disk-full exit — the watcher must still capture it (gate d), mirroring
+        // the manual route's crash-signal negative control.
+        let context = WatcherExitCaptureContext {
+            runner_disk_exhaustion_content: true,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(SIGSEGV),
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert_eq!(
+            effects.captures.len(),
+            1,
+            "a crash signal with a disk-full content signal must still capture"
+        );
     }
 
     #[test]
