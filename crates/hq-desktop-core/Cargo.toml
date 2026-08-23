@@ -1,6 +1,7 @@
 # Foundation crate (Phase 4): product-neutral primitives shared by the HQ desktop
 # app(s) — paths/config dirs, the diagnostic logfile, ignore rules, the HQ CLI
-# resolver, and the meeting/recordings ledgers. No Tauri, no app couplings.
+# resolver. No Tauri, no app couplings. Feature domains (e.g. meetings) live in
+# their own plugin crates that depend on this one — never the reverse.
 [package]
 name = "hq-desktop-core"
 version = "0.1.0"

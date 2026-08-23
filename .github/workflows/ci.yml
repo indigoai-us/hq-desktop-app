@@ -190,8 +190,12 @@ jobs:
       # 32299864862, 32302036015) -- a network dependency worth more than the
       # crate it serves. hq-desktop-core and hq-telemetry are the heavy two and
       # need nothing beyond rustc; hq-platform stays on rust-macos.
-      - name: Shared crate tests (hq-desktop-core, hq-telemetry)
-        run: cargo test -p hq-desktop-core -p hq-telemetry --locked
+      #
+      # This list is explicit, so every new plugin crate under crates/ must be added
+      # here or its tests silently stop running. hq-plugin-meetings is pure Rust
+      # (serde/chrono/tempfile) and needs nothing beyond rustc, like the other two.
+      - name: Shared crate tests (hq-desktop-core, hq-telemetry, hq-plugin-meetings)
+        run: cargo test -p hq-desktop-core -p hq-telemetry -p hq-plugin-meetings --locked
       # rustfmt only parses, so it needs neither the Tauri toolchain nor a macOS
       # runner. Kept non-blocking exactly as it was on rust-macos -- this change
       # moves the check, it does not promote it to a required gate.

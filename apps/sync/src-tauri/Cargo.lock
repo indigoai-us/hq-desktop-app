@@ -2736,6 +2736,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hq-plugin-meetings"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hq-desktop-core",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "hq-sync-menubar"
 version = "0.10.146"
 dependencies = [
@@ -2756,6 +2767,7 @@ dependencies = [
  "glob",
  "hq-desktop-core",
  "hq-platform",
+ "hq-plugin-meetings",
  "hq-telemetry",
  "ignore",
  "libc",

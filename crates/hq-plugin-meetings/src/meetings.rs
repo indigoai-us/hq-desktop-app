@@ -373,7 +373,7 @@ fn scheduled_bots_from_values(values: Vec<serde_json::Value>) -> Vec<ScheduledBo
         match serde_json::from_value::<ScheduledBot>(value) {
             Ok(bot) => bots.push(bot),
             Err(err) => {
-                crate::logfile::log(
+                hq_desktop_core::logfile::log(
                     "meetings",
                     &format!(
                         "skipping malformed scheduled-bot row {index} (botId={bot_id}): {err}"
@@ -540,7 +540,7 @@ mod tests {
     // bound to.
     #[test]
     fn meetings_gate_admits_any_signed_in_user() {
-        use crate::feature_gate::email_present;
+        use hq_desktop_core::feature_gate::email_present;
         assert!(email_present(Some("stefan@getindigo.ai")));
         assert!(email_present(Some("someone@gmail.com")));
         assert!(email_present(Some("qa@example.com")));
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn meetings_gate_rejects_signed_out() {
-        use crate::feature_gate::email_present;
+        use hq_desktop_core::feature_gate::email_present;
         assert!(!email_present(None));
         assert!(!email_present(Some("")));
         assert!(!email_present(Some("   ")));
@@ -782,7 +782,7 @@ mod tests {
     fn bots_response_skips_malformed_row_missing_meeting_url() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let log_path = tmp.path().join("hq-sync.log");
-        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        let _guard = hq_desktop_core::logfile::LogOverrideGuard::new(log_path.clone());
         let json = r#"{
             "bots": [
                 {

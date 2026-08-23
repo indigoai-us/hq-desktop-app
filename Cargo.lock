@@ -866,6 +866,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hq-plugin-meetings"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hq-desktop-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
 name = "hq-telemetry"
 version = "0.1.0"
 dependencies = [

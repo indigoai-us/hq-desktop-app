@@ -32,7 +32,7 @@ use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 
 #[allow(unused_imports)]
-pub use hq_desktop_core::meetings::{
+pub use hq_plugin_meetings::meetings::{
     build_notification_body, build_notification_title, build_set_company_body, dedupe_new,
     encode_query_value, first_active_bot, is_recorded, is_unattributed, is_url_safe_id,
     select_recorded, select_unattributed, set_company_error_message, AccountCalendars,

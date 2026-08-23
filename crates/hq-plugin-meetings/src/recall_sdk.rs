@@ -12,11 +12,11 @@ use std::sync::{Mutex, OnceLock};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::events::{
+use crate::recordings_ledger;
+use hq_desktop_core::events::{
     MeetingClosedEvent, MeetingDetectedEvent, PermissionStatusEvent, RecordingEndedEvent,
     RecordingErrorEvent, RecordingMediaCaptureEvent, RecordingStartedEvent,
 };
-use crate::recordings_ledger;
 
 /// Name of the Recall Desktop SDK binary.
 pub const SDK_BIN: &str = "recall-desktop-sdk";
@@ -118,7 +118,7 @@ pub fn mark_recorded_for_window(window_id: &str) {
     };
     if let Some(key) = stable_key(Some(meeting_url.as_str()), source_event_id.as_deref()) {
         record_action(&key, LedgerAction::Recorded, Utc::now());
-        crate::logfile::log(
+        hq_desktop_core::logfile::log(
             LOG_TAG,
             &format!("notify-ledger: marked Recorded for windowId={window_id}"),
         );
@@ -155,7 +155,7 @@ pub fn active_recordings_from_ledger(
 /// Pure helper — GA gate: true for any signed-in user (non-empty email claim),
 /// regardless of domain.
 pub fn is_meeting_detect_allowed_email(email: Option<&str>) -> bool {
-    crate::feature_gate::email_present(email)
+    hq_desktop_core::feature_gate::email_present(email)
 }
 
 /// Filename of the SDK bridge entrypoint (an ES module run under node).
@@ -225,7 +225,7 @@ pub fn find_sdk_binary() -> Option<String> {
     }
 
     // 2. Try PATH / known install prefixes.
-    let resolved = crate::paths::resolve_bin(SDK_BIN);
+    let resolved = hq_desktop_core::paths::resolve_bin(SDK_BIN);
     if std::path::Path::new(&resolved).exists() {
         return Some(resolved);
     }
@@ -354,7 +354,7 @@ pub fn sdk_command_in(
     // (`paths::resolve_bin`, matching the PATH `build_sdk_spawn_env` hands the
     // child) — this is exactly what the retired bash wrapper's `exec node` did.
     Ok(SdkCommand {
-        program: crate::paths::resolve_bin("node"),
+        program: hq_desktop_core::paths::resolve_bin("node"),
         args: vec![
             bridge.to_string_lossy().into_owned(),
             SDK_JSON_FLAG.to_string(),
@@ -603,7 +603,7 @@ pub fn parse_sdk_line(line: &str) -> Option<RecallSdkEvent> {
 /// Build the environment for the Recall SDK sidecar spawn.
 pub fn build_sdk_spawn_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
-    env.insert("PATH".to_string(), crate::paths::child_path());
+    env.insert("PATH".to_string(), hq_desktop_core::paths::child_path());
     env
 }
 
@@ -669,7 +669,7 @@ pub struct BotStatusResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{DetectionSource, MeetingPlatform, RecallPermission};
+    use hq_desktop_core::events::{DetectionSource, MeetingPlatform, RecallPermission};
 
     fn meeting(line: &str) -> MeetingDetectedEvent {
         match parse_sdk_line(line).expect("should parse") {
@@ -925,7 +925,7 @@ mod tests {
         // email) from different sites in the codebase. If the broader
         // `meetings_feature_enabled` ever diverges from this one, the menubar
         // UI surfaces and the SDK boot will disagree about who's signed in.
-        use crate::feature_gate::email_present;
+        use hq_desktop_core::feature_gate::email_present;
         for email in [
             "stefan@getindigo.ai",
             "Anyone@GetIndigo.AI",

@@ -6,7 +6,7 @@
 //!
 //! ## Binary discovery
 //!
-//! Platform-split, via `hq_desktop_core::recall_sdk::resolve_sdk_command`:
+//! Platform-split, via `hq_plugin_meetings::recall_sdk::resolve_sdk_command`:
 //!
 //! * **Windows** spawns the arch-tagged `bundle.externalBin` launcher
 //!   (`recall-desktop-sdk-<triple>.exe`) — a real compiled PE32+ Node SEA —
@@ -84,7 +84,7 @@ use crate::util::logfile::log;
 use crate::util::recordings_ledger::{self, ReconcileOutcome, RecordingStatus};
 
 #[allow(unused_imports)]
-pub use hq_desktop_core::recall_sdk::{
+pub use hq_plugin_meetings::recall_sdk::{
     active_detections_cell, active_detections_snapshot, active_recordings_from_ledger,
     bridge_stdin_cell, build_sdk_spawn_env, detection_key, detection_url_and_event,
     is_meeting_detect_allowed_email, mark_recorded_for_window, parse_sdk_line, resolve_sdk_command,

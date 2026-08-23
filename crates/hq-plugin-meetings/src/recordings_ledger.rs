@@ -60,7 +60,7 @@ use std::sync::{Mutex, OnceLock};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::paths::hq_config_dir;
+use hq_desktop_core::paths::hq_config_dir;
 
 // ── Test-mode path override ────────────────────────────────────────────────────
 //
