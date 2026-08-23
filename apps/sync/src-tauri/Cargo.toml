@@ -10,7 +10,9 @@ tauri-build = { version = "2", features = [] }
 # Shared HQ crates (Phase 4 extraction).
 hq-telemetry = { path = "../../../crates/hq-telemetry" }
 hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
-hq-plugin-meetings = { path = "../../../crates/hq-plugin-meetings" }
+# Meetings/recording now lives in its own repo, pinned to a release tag.
+# See docs/plugin-boundaries.md for why, and the [patch] below for the catch.
+hq-plugin-meetings = { git = "https://github.com/indigoai-us/hq-plugin-meetings", tag = "v0.1.0" }
 hq-platform = { path = "../../../crates/hq-platform" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
@@ -241,4 +243,17 @@ hq-desktop-core = { path = "../../../crates/hq-desktop-core", features = ["test-
 sentry = { version = "^0.35", features = ["test"] }
 tempfile = "3"
 wiremock = "0.6"
+
+# hq-plugin-meetings depends on hq-desktop-core over git, because that crate still
+# lives here and has no home of its own. Without this patch cargo resolves TWO
+# hq-desktop-core packages — ours by path, the plugin's by git — and they are
+# distinct types to the compiler, so passing a hq_desktop_core::events::* value into
+# a plugin function fails with "expected MeetingDetectedEvent, found
+# MeetingDetectedEvent". The patch collapses both onto this checkout, which also
+# means the revision the plugin pins does not affect this build.
+#
+# Delete this once hq-desktop-core is extracted or published and both crates can
+# depend on one shared copy.
+[patch."https://github.com/indigoai-us/hq-desktop-app"]
+hq-desktop-core = { path = "../../../crates/hq-desktop-core" }
 tauri = { version = "2", features = ["test"] }

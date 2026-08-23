@@ -2738,6 +2738,7 @@ dependencies = [
 [[package]]
 name = "hq-plugin-meetings"
 version = "0.1.0"
+source = "git+https://github.com/indigoai-us/hq-plugin-meetings?tag=v0.1.0#1b1d0a2e08c0ce97748b6910bbe6715202a6d89f"
 dependencies = [
  "chrono",
  "hq-desktop-core",

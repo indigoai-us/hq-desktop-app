@@ -34,14 +34,29 @@ and what will let it move to its own repo behind a plugin SDK later.
 
 ## Meetings — current state
 
-Extracted (this change):
+Meetings is the first domain to leave this repo entirely. It lives in
+[`indigoai-us/hq-plugin-meetings`](https://github.com/indigoai-us/hq-plugin-meetings)
+with its own CI and release cadence, and is consumed here as a git dependency pinned
+to a tag in `apps/sync/src-tauri/Cargo.toml`. Its git history came with it.
 
-- `crates/hq-plugin-meetings/` — meeting detection and the Recall Desktop SDK bridge
-  protocol (`recall_sdk`), the meetings/calendar API surface (`meetings`), and the
-  detected-meeting (`meeting_ledger`) and recordings (`recordings_ledger`) ledgers.
-  ~3.5k LOC lifted out of `hq-desktop-core`, tests included, no behaviour change.
+### The `[patch]` you will notice in the app manifest
 
-Still in the core / shared modules, to be addressed before meetings can leave the repo:
+`hq-plugin-meetings` depends on `hq-desktop-core`, which is still here. From the
+plugin's side that is a git dependency on this repo, so a build of the app would
+resolve two `hq-desktop-core` packages — ours by path and the plugin's by git — which
+cargo treats as unrelated types. The `[patch]` in `apps/sync/src-tauri/Cargo.toml`
+collapses them onto this checkout.
+
+That patch is a symptom, not a design. It disappears when `hq-desktop-core` gets its
+own home and both consumers depend on one copy, which is the natural next extraction.
+Until then, a foundation change meetings needs is a two-repo sequence: land it here,
+then bump the pin in the plugin repo, then bump the tag here.
+
+### Couplings still owned by this repo
+
+These are core services meetings reaches by name. Each one is a place where a plugin
+should be registering with the core rather than being hardcoded into it, and together
+they are the requirements list for the plugin registration API:
 
 | Location | What it holds |
 |---|---|
