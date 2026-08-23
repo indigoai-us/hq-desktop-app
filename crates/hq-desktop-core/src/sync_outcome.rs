@@ -6739,11 +6739,18 @@ mod tests {
     fn app_cancellation_still_wins_over_disk_full() {
         // A genuine app-owned Stop that races a disk-full line stays CancelledByApp
         // (no alertable error), preserving the existing cancellation precedence.
+        // The app-owned termination exit shape is host-specific, so pick the shape
+        // this host's classifier recognises (Posix: SIGTERM/SIGKILL with no code;
+        // Windows: exit code 1 with no signal).
         let enospc = rollup_of(1, 0, 0);
+        let (code, signal) = match current_termination_host() {
+            TerminationHost::Posix => (None, Some(SIGTERM_SIGNAL)),
+            TerminationHost::Windows => (Some(1), None),
+        };
         assert_eq!(
             classify_runner_exit_disposition_with_fault(
-                None,
-                Some(SIGTERM_SIGNAL),
+                code,
+                signal,
                 Some(SyncCancelCause::UserStop),
                 true,
                 false,
