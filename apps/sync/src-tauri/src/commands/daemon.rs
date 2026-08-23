@@ -3835,13 +3835,13 @@ fn note_runner_preflight_failure() -> u32 {
     st.preflight_fails
 }
 
-/// Update the crash-loop state on an unexpected watcher exit and return the
-/// consecutive-failure count so the caller can decide whether to capture.
 /// Pure crash-state transition on an unexpected exit, given how long the dead
-/// generation `ran`. Advances the slow-death episode streak on EVERY exit and
-/// the fast-failure `consecutive` counter per the FAST_FAIL_WINDOW rule (fast →
-/// +1, slow → reset to 1, exactly as before). Returns the global consecutive
-/// count. Extracted so the counting is unit-testable without an `Instant`.
+/// generation `ran`. Updates the fast-failure `consecutive` counter per the
+/// FAST_FAIL_WINDOW rule (fast → +1, slow → reset to 1, exactly as before) and
+/// ends a genuinely-recovered slow-death episode (`ran >= HEALTHY_RUN_WINDOW`).
+/// The per-class slow-death INCREMENT happens later in `capture_policy_streak`,
+/// once the exit class is known. Returns the global consecutive count. Extracted
+/// so the counting is unit-testable without an `Instant`.
 fn apply_watcher_crash(st: &mut WatcherCrashState, ran: Duration) -> u32 {
     // If the dead generation itself outlived HEALTHY_RUN_WINDOW it had genuinely
     // recovered before dying, so the slow-death episode ends here even when the
@@ -3862,6 +3862,8 @@ fn apply_watcher_crash(st: &mut WatcherCrashState, ran: Duration) -> u32 {
     st.consecutive
 }
 
+/// Update the crash-loop state on an unexpected watcher exit and return the
+/// global consecutive-failure count so the caller can pace respawn backoff.
 fn note_watcher_crashed() -> u32 {
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
@@ -3872,14 +3874,6 @@ fn note_watcher_crashed() -> u32 {
     consecutive
 }
 
-/// Return the streak relevant to the selected capture policy. The global
-/// crash-loop counter (`global_consecutive`) still owns backoff and lifecycle;
-/// the capture GATE consults a failure-class streak. The 126/127 escalation uses
-/// its own `exec_not_runnable_consecutive`; every other capturing class uses the
-/// uptime-independent `slow_death_consecutive` so a slow-death loop is rate-
-/// limited to milestones instead of pinned at "#1" (HQ-DESKTOP-4D). The global
-/// counter is intentionally no longer the crash-class gate, but it is left as a
-/// parameter for the exec branch's contract and for callers/tests.
 /// Pure capture-gate streak selection AND per-class streak advance. Always
 /// advances the exec-not-runnable streak per `next_exec_not_runnable_streak` (a
 /// non-126/127 exit resets it), and advances the slow-death streak ONLY for the
