@@ -5438,8 +5438,11 @@ mod tests {
             bin_resolution_source("/Users/z/.npm/_npx/91dc460cc0784cc8/node_modules/.bin/hq"),
             "npx-cache"
         );
-        // A non-npx absolute path is unaffected by the new category.
-        assert_eq!(bin_resolution_source("/opt/homebrew/bin/hq"), "homebrew");
+        // A non-npx absolute path is never mislabeled as npx-cache. The exact
+        // source of `/opt/homebrew/bin/hq` is platform-specific (`homebrew` on
+        // Unix, `unknown` on Windows where that branch is cfg'd out), so assert
+        // the invariant that survives both.
+        assert_ne!(bin_resolution_source("/opt/homebrew/bin/hq"), "npx-cache");
     }
 
     /// Every foreign-managed layout in the 31-event history classifies the same
