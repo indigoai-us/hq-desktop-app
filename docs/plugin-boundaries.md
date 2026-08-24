@@ -119,3 +119,31 @@ the next piece of work, and meetings is its first consumer.
    in `main.rs`.
 4. If the domain needs a core service by name, raise it — that is a missing registration
    API, not a licence to reach into core.
+
+### The repos are private; CI authenticates with an indigo token
+
+`hq-desktop-core` and `hq-plugin-meetings` are private repos. cargo cannot fetch
+them anonymously, so every CI job that compiles across the split configures a git
+credential before its first cargo step:
+
+    git config --global \
+      url."https://x-access-token:${GH_FETCH_TOKEN}@github.com/indigoai-us/".insteadOf \
+      "https://github.com/indigoai-us/"
+
+The token comes from the `INDIGO_GH_TOKEN` Actions secret on each consuming repo
+(this repo and `hq-plugin-meetings`). Its value is indigo's `GH_TOKEN` vault secret —
+a classic PAT with `repo` scope. The rewrite is scoped to `github.com/indigoai-us/`,
+so the credential is only ever sent to this org.
+
+Which jobs carry the step, and which deliberately do not:
+
+- Need it (compile the app crate, which depends on the private plugin): `ci.yml`
+  `rust-macos`; `windows-check.yml` both jobs; `release.yml` `macos` + `windows`.
+- Do NOT need it: `rust-linux` (root workspace excludes the app crate, so it never
+  references the plugin), `frontend` / `e2e-desktop-alt` (no cargo), `release.yml`
+  `validate` (JS-only). `hq-desktop-core`'s own CI needs nothing — it fetches no
+  private deps.
+
+If a new cargo job is added that builds the app crate, it needs this step or it fails
+to fetch the plugin. A fork PR gets no secret and cannot fetch — acceptable, since
+this is an internal repo.
