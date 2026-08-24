@@ -53,12 +53,14 @@
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import {
+    CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
     createWizardRouter,
     markSetupStepCompleted,
     WIZARD_STEPS,
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
+  import ConnectorImportStep from './ConnectorImportStep.svelte';
 
   interface Props {
     initialStep: number;
@@ -119,7 +121,7 @@
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
   const DEFAULT_STEP = WIZARD_STEPS[0].index;
   const READY_STEP_INDEX =
-    WIZARD_STEPS.find((step) => step.id === 'ready')?.index ?? 4;
+    WIZARD_STEPS.find((step) => step.id === 'ready')?.index ?? 5;
 
   let {
     initialStep,
@@ -223,7 +225,7 @@
     installPath ? friendlyPath(installPath, homeDirFromDefaultHqPath(installPath)) : '~/hq',
   );
   const directoryButtonLabel = $derived(directoryBusy ? 'Checking…' : 'Choose…');
-  const topHeight = $derived(currentStep >= 5 ? '240px' : '200px');
+  const topHeight = $derived(currentStep >= 6 ? '240px' : '200px');
   const settledCount = $derived(
     stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
       .length,
@@ -284,7 +286,7 @@
   });
 
   $effect(() => {
-    if (aiTools?.any !== false || currentStep < 4) return;
+    if (aiTools?.any !== false || currentStep < READY_STEP_INDEX) return;
     const intervalId = window.setInterval(() => {
       void probeAiTools();
     }, 3000);
@@ -784,8 +786,7 @@
             ].filter(Boolean).length
           : 0,
       };
-      // Advance to the consent step (index 3), which now sits between setup and
-      // the ready screen.
+      // Consent precedes the optional connector-import step and final handoff.
       advanceTo(CONSENT_STEP_INDEX);
     }
   }
@@ -892,7 +893,7 @@
           properties: { ...setupCompletionMetrics },
         });
       }
-      advanceTo(READY_STEP_INDEX);
+      advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
     } finally {
       consentSubmitting = false;
     }
@@ -1384,7 +1385,7 @@
       setupStarted = false;
       stages = buildInitialStages();
     }
-    if (previous === 3 && next !== 3) {
+    if (previous === READY_STEP_INDEX && next !== READY_STEP_INDEX) {
       stopClaudeWatch();
     }
 
@@ -1521,7 +1522,7 @@
         </div>
 
         <div
-          class="gfx gtop"
+          class="gfx"
           class:on={graphicIsOn(5)}
           class:enter-left={graphicStep === 5 && incomingGraphicDirection === 'left'}
           class:enter-right={graphicStep === 5 && incomingGraphicDirection === 'right'}
@@ -1529,7 +1530,7 @@
           class:out-right={outgoingGraphicStep === 5 && outgoingGraphicDirection === 'right'}
           data-g="5"
         >
-          {@render TrustMock()}
+          {@render BigCheck()}
         </div>
 
         <div
@@ -1853,8 +1854,20 @@
 
         <section
           class="panel"
-          class:on={panelStep === 4 && panelOn}
+          class:on={panelStep === CONNECTOR_IMPORT_STEP_INDEX && panelOn}
           data-p="4"
+          data-testid="onboarding-connector-import"
+          aria-labelledby="onboarding-title-connector-import"
+        >
+          {#if currentStep === CONNECTOR_IMPORT_STEP_INDEX}
+            <ConnectorImportStep oncomplete={() => advanceTo(READY_STEP_INDEX)} />
+          {/if}
+        </section>
+
+        <section
+          class="panel"
+          class:on={panelStep === READY_STEP_INDEX && panelOn}
+          data-p="5"
           data-testid="onboarding-summary"
           aria-labelledby="onboarding-title-ready"
         >

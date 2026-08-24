@@ -23,16 +23,20 @@ export const WIZARD_STEPS: WizardStep[] = [
   // entity to land on (the old sign-in-panel checkbox posted before the entity
   // existed, so the answer 404'd and was silently dropped).
   { index: 3, id: 'consent', label: 'Consent' },
-  { index: 4, id: 'ready', label: 'Ready' },
+  // This runs after setup has made `hq` available, but before final handoff.
+  // It auto-skips when Claude Desktop has no configured connectors.
+  { index: 4, id: 'connector-import', label: 'Import connectors' },
+  { index: 5, id: 'ready', label: 'Ready' },
 ];
 
 const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;
 const SETUP_STEP_INDEX = 2;
 const CONSENT_STEP_INDEX = 3;
+const CONNECTOR_IMPORT_STEP_INDEX = 4;
 const FINAL_STEP_INDEX = WIZARD_STEPS[WIZARD_STEPS.length - 1].index;
 const completedSteps = new Set<number>();
 
-export { CONSENT_STEP_INDEX, SETUP_STEP_INDEX };
+export { CONNECTOR_IMPORT_STEP_INDEX, CONSENT_STEP_INDEX, SETUP_STEP_INDEX };
 
 export const AUTH_GATED_STEPS: number[] = [SETUP_STEP_INDEX];
 

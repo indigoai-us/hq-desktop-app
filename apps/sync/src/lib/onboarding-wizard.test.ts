@@ -19,13 +19,14 @@ function makeState(overrides: Partial<WizardState> = {}): WizardState {
 }
 
 describe('onboarding wizard step contract', () => {
-  it('inserts the consent step after setup and ends on the ready screen', () => {
+  it('inserts connector import after consent and before the ready screen', () => {
     expect(WIZARD_STEPS).toEqual([
       { index: 0, id: 'welcome-signin', label: 'Welcome' },
       { index: 1, id: 'directory', label: 'Location' },
       { index: 2, id: 'setup', label: 'Setup' },
       { index: 3, id: 'consent', label: 'Consent' },
-      { index: 4, id: 'ready', label: 'Ready' },
+      { index: 4, id: 'connector-import', label: 'Import connectors' },
+      { index: 5, id: 'ready', label: 'Ready' },
     ]);
     expect(AUTH_GATED_STEPS).toEqual([2]);
   });
@@ -48,7 +49,7 @@ describe('createWizardRouter', () => {
       router.next();
     }
 
-    expect(router.currentStep).toBe(4);
+    expect(router.currentStep).toBe(5);
     expect(
       router.canGoNext(makeState({ installPath: '/tmp/hq', consentAnswered: true })),
     ).toBe(false);
@@ -118,7 +119,7 @@ describe('createWizardRouter', () => {
 
     expect(router.canNavigateTo(-1)).toBe(false);
     expect(router.canNavigateTo(4)).toBe(false);
-    expect(router.canNavigateTo(5)).toBe(false);
+    expect(router.canNavigateTo(5)).toBe(true);
   });
 
   it('does not navigate to or before a completed setup gate', () => {
