@@ -985,6 +985,17 @@ pub fn non_convergence_kind(
     if paths::is_npx_cache_path(Path::new(post_install_hq_bin)) {
         return NonConvergenceKind::InstallerUnaimed;
     }
+    // The bare `hq` sentinel means nothing resolved at all — a first install HQ
+    // never aimed at any nameable copy. `npm_prefix_from_hq_bin("hq")` is `None`
+    // by construction, so the npm arm below would fall through to the durable-
+    // blocking `ForeignManaged` for a copy HQ could neither name nor prove a
+    // layout defect against. Like the npx-cache copy above, it must stay
+    // observable but NEVER wedge auto-update, so classify it `InstallerUnaimed`.
+    // An absolute foreign layout — a concrete path HQ actually resolved — is
+    // unaffected and keeps blocking.
+    if post_install_hq_bin == "hq" {
+        return NonConvergenceKind::InstallerUnaimed;
+    }
     match executor {
         InstallExecutor::Pnpm => {
             if !pnpm_targeted {
@@ -4514,14 +4525,56 @@ fn remove_dir_all_if_present(path: &Path) -> bool {
 /// forms) all name the package's own path, e.g. `node_modules\@indigoai-us\hq-cli\…`,
 /// so a content check for that scoped name is a reliable ownership signal. A
 /// missing or unreadable file is treated as "not ours" and is left untouched.
-fn shim_belongs_to_hq_cli(path: &Path) -> bool {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
-            text.contains("@indigoai-us") && text.contains("hq-cli")
+fn shim_belongs_to_hq_cli(path: &Path, prefix: &Path) -> bool {
+    // npm's generated wrappers (the unix shell wrapper plus the `.cmd`/`.ps1`/
+    // `.bat` forms) name the scoped package in their own bytes, so a content check
+    // for that scoped name is a reliable ownership signal.
+    if let Ok(bytes) = std::fs::read(path) {
+        let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+        if text.contains("@indigoai-us") && text.contains("hq-cli") {
+            return true;
         }
-        Err(_) => false,
     }
+    // A genuine unix global shim is instead a SYMLINK into the package's own
+    // `dist/…` entrypoint, whose bytes name neither token; it is HQ's own exactly
+    // when the link target canonicalizes INSIDE the derived prefix's
+    // @indigoai-us/hq-cli package directory. A symlink pointing anywhere else is
+    // never treated as ours.
+    shim_symlink_targets_hq_cli_package(path, prefix)
+}
+
+/// Whether `path` is a symlink whose canonicalized target lies inside the derived
+/// prefix's `@indigoai-us/hq-cli` package directory (the unix `lib/node_modules`
+/// or the flat `node_modules` layout). Both the shim and each candidate package
+/// root are canonicalized, so a `..`-relative link or a symlinked prefix cannot
+/// defeat the containment test. A non-symlink, a broken link, or a target outside
+/// the package is not ours.
+fn shim_symlink_targets_hq_cli_package(path: &Path, prefix: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {}
+        _ => return false,
+    }
+    let Ok(target) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    for pkg_root in [
+        prefix
+            .join("lib")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli"),
+        prefix
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli"),
+    ] {
+        if let Ok(canon_pkg) = std::fs::canonicalize(&pkg_root) {
+            if paths::path_is_within(&target, &canon_pkg) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Remove an HQ-managed SHADOW copy of the CLI so the copy in the managed npm
@@ -4556,6 +4609,8 @@ pub fn repair_managed_shadow(
     managed_prefix: &Path,
     latest: &str,
 ) -> ManagedShadowRepairAction {
+    // The shim's OWN directory holds the shims to enumerate and remove:
+    // `<prefix>/bin` on unix, `<prefix>` on Windows.
     let Some(shadow_dir) = shadow_shim
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -4563,10 +4618,21 @@ pub fn repair_managed_shadow(
         return ManagedShadowRepairAction::ProvenanceRefused;
     };
 
-    // Gate 1: the shim's directory must be disjoint from the prefix the install
+    // Derive the shadow's npm PREFIX from the shim, layout-aware: `<prefix>/bin/hq`
+    // -> `<prefix>` on unix, `<prefix>\hq.cmd` -> `<prefix>` on Windows (where it
+    // equals the shim's own directory, so behaviour there is unchanged). A shim we
+    // cannot map to a prefix — a bare name, or a parent that is not a recognised
+    // npm bin dir — is refused: HQ will not guess a prefix to delete a package
+    // from.
+    let Some(shadow_prefix) = npm_prefix_from_hq_bin(&shadow_shim.to_string_lossy()) else {
+        return ManagedShadowRepairAction::ProvenanceRefused;
+    };
+    let shadow_prefix = Path::new(&shadow_prefix);
+
+    // Gate 1: the shadow's PREFIX must be disjoint from the prefix the install
     // just wrote into. Compared by components (case-insensitive on Windows).
-    if paths::path_is_within(shadow_dir, managed_prefix)
-        || paths::path_is_within(managed_prefix, shadow_dir)
+    if paths::path_is_within(shadow_prefix, managed_prefix)
+        || paths::path_is_within(managed_prefix, shadow_prefix)
     {
         return ManagedShadowRepairAction::ProvenanceRefused;
     }
@@ -4581,16 +4647,17 @@ pub fn repair_managed_shadow(
         return ManagedShadowRepairAction::ProvenanceRefused;
     }
 
-    // Gate 3: the shadow directory holds an @indigoai-us/hq-cli manifest AND the
-    // shim the app actually resolves is provably HQ's own (its content names the
-    // package). Both together prove we are removing HQ's shadow, not deleting a
-    // package a user's replacement command depends on.
+    // Gate 3: the shadow's PREFIX holds an @indigoai-us/hq-cli manifest AND the
+    // shim the app actually resolves is provably HQ's own — its content names the
+    // package, OR it is a symlink into that prefix's own hq-cli package dir. Both
+    // together prove we are removing HQ's shadow, not deleting a package a user's
+    // replacement command depends on.
     let shadow_has_manifest = installed_hq_cli_version_in_prefix(
-        &shadow_dir.to_string_lossy(),
+        &shadow_prefix.to_string_lossy(),
         &shadow_shim.to_string_lossy(),
     )
     .is_some();
-    if !shadow_has_manifest || !shim_belongs_to_hq_cli(shadow_shim) {
+    if !shadow_has_manifest || !shim_belongs_to_hq_cli(shadow_shim, shadow_prefix) {
         return ManagedShadowRepairAction::ProvenanceRefused;
     }
 
@@ -4610,7 +4677,8 @@ pub fn repair_managed_shadow(
                 // Could not even stat it: fail safe.
                 Err(_) => shims_ok = false,
                 Ok(_) => {
-                    if shim_belongs_to_hq_cli(&path) && !remove_file_if_present(&path) {
+                    if shim_belongs_to_hq_cli(&path, shadow_prefix) && !remove_file_if_present(&path)
+                    {
                         shims_ok = false;
                     }
                 }
@@ -4627,15 +4695,17 @@ pub fn repair_managed_shadow(
     }
 
     // Every targeted shim is gone, so the package is now unreachable through them.
+    // It is removed from the DERIVED prefix (`<prefix>/lib/node_modules` on unix,
+    // `<prefix>/node_modules` on the flat layout), never the shim's own directory.
     let mut pkg_ok = true;
     pkg_ok &= remove_dir_all_if_present(
-        &shadow_dir
+        &shadow_prefix
             .join("node_modules")
             .join("@indigoai-us")
             .join("hq-cli"),
     );
     pkg_ok &= remove_dir_all_if_present(
-        &shadow_dir
+        &shadow_prefix
             .join("lib")
             .join("node_modules")
             .join("@indigoai-us")
@@ -5332,6 +5402,69 @@ mod tests {
         assert_eq!(outcome.record_nonblocking_episode, None);
     }
 
+    /// The Kevins-MacBook-Pro recurrence: a FIRST install on a machine where
+    /// nothing resolves. npm exits 0 into its own ambient default prefix, `hq`
+    /// still resolves to the bare `hq` sentinel (nothing HQ searches contains
+    /// it), and there is no prefix to read delivery from. HQ never aimed at any
+    /// copy and proved no layout defect, so this is `InstallerUnaimed` —
+    /// observable but NON-BLOCKING (no durable marker). On the base commit the
+    /// npm arm falls through to `ForeignManaged`, which writes the pinned marker
+    /// and wedges auto-update for a copy HQ could not even name.
+    #[test]
+    fn an_unresolved_hq_after_an_npm_install_is_installer_unaimed_and_writes_no_marker() {
+        // Classification is pure: the bare `hq` sentinel with no prefix passed is
+        // installer-unaimed, not foreign-managed.
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Npm, None, false, "hq", false, &[]),
+            NonConvergenceKind::InstallerUnaimed,
+        );
+        let outcome = decide_post_install(&PostInstallContext::npm(
+            "hq",
+            "hq",
+            None,
+            None,
+            "5.103.20",
+            None,
+            "/usr/local/bin/npm",
+            false,
+            None,
+        ));
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::InstallerUnaimed)
+        );
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "an unaimed first install must write no durable marker"
+        );
+        assert!(!outcome.capture_requires_durable_record);
+        assert!(outcome.capture.is_some(), "it stays observable once");
+        assert_eq!(
+            outcome.capture.as_ref().unwrap().hq_bin,
+            "PATH",
+            "the unresolved bin is reported as the closed PATH token, never a home path"
+        );
+    }
+
+    /// An absolute foreign layout with a readable version is unchanged by the
+    /// unaimed-sentinel arm: it still blocks and still writes the durable marker,
+    /// because HQ resolved a concrete copy it could name (it simply cannot drive
+    /// that layout).
+    #[test]
+    fn an_absolute_foreign_layout_is_unaffected_by_the_unaimed_sentinel_arm() {
+        assert_eq!(
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                None,
+                false,
+                "/Users/t/.asdf/shims/hq",
+                false,
+                &[],
+            ),
+            NonConvergenceKind::ForeignManaged,
+        );
+    }
+
     /// The pnpm detection/targeting collapse: `is_pnpm_global_shim(x)` is now
     /// exactly `pnpm_global_env(x).is_some()` for EVERY layout arm, so the two
     /// can never disagree again — the invariant the doc comment promised.
@@ -5755,6 +5888,189 @@ mod tests {
         assert!(
             prefix.join("hq.cmd").exists(),
             "the fresh managed copy is never touched"
+        );
+    }
+
+    /// Build the unix managed-toolchain layout npm ACTUALLY lays down and return
+    /// `(node_prefix, node_bin, npm_global)`: `<node>/bin/hq` is a SYMLINK into
+    /// `<node>/lib/node_modules/@indigoai-us/hq-cli/dist/index.js`, whose bytes
+    /// name NEITHER token (matching the real package), and the fresh copy lives in
+    /// `<npm_global>/lib/node_modules/...`.
+    #[cfg(unix)]
+    fn build_unix_managed_shadow(root: &Path, shadow_version: &str, prefix_version: &str) {
+        use std::os::unix::fs::symlink;
+        let node = root.join("node");
+        let node_bin = node.join("bin");
+        let shadow_pkg = node
+            .join("lib")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(shadow_pkg.join("dist").join("bin")).unwrap();
+        std::fs::create_dir_all(&node_bin).unwrap();
+        std::fs::write(
+            shadow_pkg.join("package.json"),
+            format!(
+                r#"{{"name":"@indigoai-us/hq-cli","version":"{shadow_version}","bin":{{"hq":"dist/index.js","hq-auth-refresh":"dist/bin/hq-auth-refresh.js"}}}}"#
+            ),
+        )
+        .unwrap();
+        // A real hq-cli entrypoint names neither '@indigoai-us' nor 'hq-cli' in
+        // its bytes, so the content-only ownership grep fails on a genuine shim.
+        std::fs::write(
+            shadow_pkg.join("dist").join("index.js"),
+            "#!/usr/bin/env node\nrequire('./cli.js');\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shadow_pkg.join("dist").join("bin").join("hq-auth-refresh.js"),
+            "#!/usr/bin/env node\nrequire('../auth.js');\n",
+        )
+        .unwrap();
+        symlink(shadow_pkg.join("dist").join("index.js"), node_bin.join("hq")).unwrap();
+        symlink(
+            shadow_pkg.join("dist").join("bin").join("hq-auth-refresh.js"),
+            node_bin.join("hq-auth-refresh"),
+        )
+        .unwrap();
+        // The managed toolchain's own Node runtime binaries — bystanders.
+        for keep in ["node", "npm", "npx"] {
+            std::fs::write(node_bin.join(keep), keep).unwrap();
+        }
+        // The fresh copy npm delivered into the managed npm prefix.
+        let prefix_pkg = root
+            .join("npm-global")
+            .join("lib")
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cli");
+        std::fs::create_dir_all(&prefix_pkg).unwrap();
+        std::fs::write(
+            prefix_pkg.join("package.json"),
+            format!(r#"{{"name":"@indigoai-us/hq-cli","version":"{prefix_version}"}}"#),
+        )
+        .unwrap();
+    }
+
+    /// The Sonia recurrence (the macOS reopen): the unix managed-toolchain layout
+    /// npm actually lays down — `<root>/node/bin/hq` a SYMLINK into
+    /// `<root>/node/lib/node_modules/@indigoai-us/hq-cli/dist/index.js`, the fresh
+    /// copy under `<root>/npm-global`. The layout-aware repair derives the prefix
+    /// from the shim (`<root>/node`), proves ownership via the symlink target, and
+    /// removes exactly HQ's shims and package. On the base commit the repair reads
+    /// the prefix as the shim's parent (`<root>/node/bin`), finds no manifest
+    /// there, and the followed symlink names neither token, so it refuses and the
+    /// stale shim survives.
+    #[cfg(unix)]
+    #[test]
+    fn the_unix_managed_toolchain_shadow_is_repaired_from_the_derived_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        build_unix_managed_shadow(root, "5.98.0", "5.103.20");
+        let node_bin = root.join("node").join("bin");
+        let npm_global = root.join("npm-global");
+
+        let action = repair_managed_shadow(&node_bin.join("hq"), &npm_global, "5.103.20");
+        assert_eq!(action, ManagedShadowRepairAction::Removed);
+        assert!(
+            std::fs::symlink_metadata(node_bin.join("hq")).is_err(),
+            "the stale hq symlink is removed"
+        );
+        assert!(
+            std::fs::symlink_metadata(node_bin.join("hq-auth-refresh")).is_err(),
+            "the second declared bin shim is removed too"
+        );
+        assert!(
+            !root
+                .join("node")
+                .join("lib")
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli")
+                .exists(),
+            "the shadow package is removed from the DERIVED prefix, not the shim dir"
+        );
+        for keep in ["node", "npm", "npx"] {
+            assert!(node_bin.join(keep).exists(), "managed {keep} survives");
+        }
+        assert!(
+            npm_global
+                .join("lib")
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli")
+                .exists(),
+            "the fresh managed copy is never touched"
+        );
+    }
+
+    /// A symlinked `hq` that points OUTSIDE the derived prefix's hq-cli package is
+    /// never HQ's own shim: the repair refuses and removes nothing, even though a
+    /// real hq-cli manifest sits in the prefix. Guards the broadened symlink
+    /// ownership rule against deleting an unrelated command.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_shim_pointing_outside_the_hq_cli_package_is_refused() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        build_unix_managed_shadow(root, "5.98.0", "5.103.20");
+        let node_bin = root.join("node").join("bin");
+        // Repoint the resolved shim at an unrelated command outside the package.
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("other"), "#!/bin/sh\necho not hq\n").unwrap();
+        std::fs::remove_file(node_bin.join("hq")).unwrap();
+        symlink(elsewhere.join("other"), node_bin.join("hq")).unwrap();
+
+        let action = repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
+        assert_eq!(action, ManagedShadowRepairAction::ProvenanceRefused);
+        assert!(
+            std::fs::symlink_metadata(node_bin.join("hq")).is_ok(),
+            "a symlink outside the package is left in place"
+        );
+        assert!(
+            root.join("node")
+                .join("lib")
+                .join("node_modules")
+                .join("@indigoai-us")
+                .join("hq-cli")
+                .exists(),
+            "nothing is removed when ownership is refused"
+        );
+    }
+
+    /// A shadow whose shim maps to no derivable npm prefix (a bare name, or a
+    /// parent that is not a recognised npm bin dir) is refused: HQ will not guess a
+    /// prefix to delete from.
+    #[cfg(unix)]
+    #[test]
+    fn a_shadow_whose_prefix_is_underivable_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        build_unix_managed_shadow(root, "5.98.0", "5.103.20");
+        // A bare name has no directory to derive a prefix from.
+        assert_eq!(
+            repair_managed_shadow(Path::new("hq"), &root.join("npm-global"), "5.103.20"),
+            ManagedShadowRepairAction::ProvenanceRefused
+        );
+    }
+
+    /// Gate 2 still holds on the unix layout: when the managed prefix does not yet
+    /// hold `>= latest`, the repair refuses so the shadow removal cannot strand the
+    /// user without a current copy.
+    #[cfg(unix)]
+    #[test]
+    fn a_managed_prefix_below_latest_still_refuses_the_unix_repair() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        build_unix_managed_shadow(root, "5.98.0", "5.103.19");
+        let node_bin = root.join("node").join("bin");
+        let action = repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
+        assert_eq!(action, ManagedShadowRepairAction::ProvenanceRefused);
+        assert!(
+            std::fs::symlink_metadata(node_bin.join("hq")).is_ok(),
+            "nothing is removed when the good copy is not yet in place"
         );
     }
 

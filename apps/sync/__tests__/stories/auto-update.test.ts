@@ -244,7 +244,7 @@ describe('master automatic-updates switch', () => {
 
     // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
     // the version the app compares against is the version it installs.
-    const npmBranchStart = cliUpdate.indexOf('let prefix = hq_cli_install_prefix(&npm, &hq);');
+    const npmBranchStart = cliUpdate.indexOf('let prefix = if first_install {');
     const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retries(&npm');
     expect(npmBranchStart).toBeGreaterThan(-1);
     expect(npmBranchEnd).toBeGreaterThan(npmBranchStart);
@@ -623,7 +623,7 @@ describe('installs the CLI when the machine has none', () => {
     expect(cliUpdate).toContain('async fn provision_managed_npm_for_first_install(');
     expect(cliUpdate).toContain('crate::commands::sync::repair_managed_node(app).await');
     expect(normalize(cliUpdate)).toContain(
-      'if first_install && npm_unresolved(&npm) {',
+      'if first_install && !npm_within_managed_root(&npm, &managed_roots) {',
     );
     // Provisioning failure must not become a new hard failure: fall back to the
     // unresolved npm and surface the ordinary spawn error, as before.

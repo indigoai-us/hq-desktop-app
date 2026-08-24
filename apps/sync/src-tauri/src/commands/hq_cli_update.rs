@@ -1476,24 +1476,34 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     }
     // A machine with no CLI very often has no Node either — the population this
     // first-install path exists for is precisely the one least likely to have a
-    // toolchain. npm would then resolve to the bare name, the very first spawn
-    // would fail `spawn npm: …`, and that error propagates out of
-    // `run_npm_install_with_retries` before the managed-toolchain retry (which
-    // only arms on a failing install OUTPUT, never on a spawn error) is ever
-    // considered. Provision HQ's managed Node up front instead, so the first
-    // install has an npm to run at all.
-    let (npm, path) = if first_install && npm_unresolved(&npm) {
+    // toolchain. And even when it HAS a user npm, that npm's default prefix is one
+    // HQ never searches, so an install aimed there exits 0 yet never converges (the
+    // Kevin recurrence: `hq` stays the bare sentinel and delivered_version is
+    // None). On a first install, provision HQ's managed Node/npm whenever the
+    // resolved npm is not already managed, so the very first spawn has an npm to
+    // run AND the install runs under a runtime the app also executes.
+    let managed_roots = paths::managed_toolchain_roots();
+    let (npm, path) = if first_install && !npm_within_managed_root(&npm, &managed_roots) {
         provision_managed_npm_for_first_install(&app)
             .await
             .unwrap_or((npm, path))
     } else {
         (npm, path)
     };
-    // Derive the prefix from the RUNTIME of the resolved npm, not `hq` alone: if a
-    // prior episode provisioned HQ's managed Node but left no managed `hq`, npm is
-    // now managed (Node 22) while `hq` still resolves the user's Node-20 shim, and a
-    // user-derived prefix would receive ABI-127 artifacts that runtime cannot load.
-    let prefix = hq_cli_install_prefix(&npm, &hq);
+    // Prefix selection. A FIRST install is aimed at HQ's OWN managed npm prefix,
+    // which `paths::resolve_bin_in_dirs` searches before every user prefix, so the
+    // post-install probe deterministically finds what was just installed instead of
+    // an unreachable ambient default prefix. The ordinary (already-installed)
+    // update path derives the prefix from the RUNTIME of the resolved npm, not `hq`
+    // alone: if a prior episode provisioned HQ's managed Node but left no managed
+    // `hq`, npm is now managed (Node 22) while `hq` still resolves the user's
+    // Node-20 shim, and a user-derived prefix would receive ABI-127 artifacts that
+    // runtime cannot load.
+    let prefix = if first_install {
+        first_install_prefix(&managed_roots).or_else(|| hq_cli_install_prefix(&npm, &hq))
+    } else {
+        hq_cli_install_prefix(&npm, &hq)
+    };
     // Pin the target BEFORE building the install argv. The app resolved `latest`
     // from the registry's /latest endpoint; it must ask npm for THAT EXACT
     // version, not the `@latest` dist-tag. npm re-resolves that tag through its
@@ -1755,6 +1765,31 @@ fn hq_cli_install_prefix(npm: &str, hq: &str) -> Option<String> {
     prefer_managed_prefix(npm_is_managed, managed_prefix, npm_prefix_from_hq_bin(hq))
 }
 
+/// Whether the resolved `npm` lives inside one of HQ's managed toolchain roots —
+/// i.e. it is HQ's own managed npm rather than a user (or unresolved) one. An
+/// unresolved bare `npm` never starts with an absolute root, so it reads as not
+/// managed and the first-install path provisions HQ's managed Node, exactly as
+/// before. Pure so the provisioning gate is unit-testable without the filesystem.
+fn npm_within_managed_root(npm: &str, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| Path::new(npm).starts_with(root))
+}
+
+/// The install prefix for a FIRST install (nothing resolved at all): HQ's OWN
+/// managed npm prefix under the primary toolchain root. `paths::resolve_bin_in_dirs`
+/// searches `<root>/npm-global/bin` before every user prefix, so aiming the first
+/// install here makes the post-install probe deterministically find what was just
+/// installed — instead of letting npm write into its ambient default prefix, which
+/// HQ never searches (so the CLI would never converge). Pure so the selection is
+/// unit-testable without the filesystem. `None` only when no managed root is
+/// discoverable, in which case the caller falls back to the npm-derived prefix.
+fn first_install_prefix(roots: &[PathBuf]) -> Option<String> {
+    roots.first().map(|root| {
+        paths::managed_npm_prefix_in(root)
+            .to_string_lossy()
+            .to_string()
+    })
+}
+
 /// Convergence gate + post-install effects shared by the first install attempt
 /// and the managed-toolchain retry. A zero npm exit only proves npm wrote a
 /// package somewhere; this re-resolves the `hq` the app EXECUTES and routes the
@@ -1974,15 +2009,6 @@ fn persist_reported_episode(outcome: InstallFailureEpisode) {
 /// from the SHARED `paths::managed_npm_prefix_in`, the same definition the
 /// first-run dependency installer uses, so the two can never target different
 /// directories.
-/// Whether `resolve_bin("npm")` found nothing and handed back the bare name.
-///
-/// `resolve_bin` returns the name itself as its unresolved marker (so
-/// `Command::new` still errors readably), which means "npm" with no path
-/// separator is exactly the not-found signal.
-fn npm_unresolved(npm: &str) -> bool {
-    Path::new(npm).components().count() <= 1
-}
-
 /// The ONE call into the managed-Node provisioning seam for this module.
 ///
 /// Both consumers — the first-install path below and `managed_toolchain_retry`
@@ -1996,12 +2022,14 @@ async fn request_managed_node_repair(app: &AppHandle) -> ToolchainRepair {
     crate::commands::sync::repair_managed_node(app).await
 }
 
-/// Provision HQ's managed Node so a first install has an npm to run.
+/// Provision HQ's managed Node so a first install has an npm to run — and one
+/// whose runtime matches the managed prefix the first install is aimed at.
 ///
-/// Only used when the machine has no CLI *and* no resolvable npm. Returns the
-/// managed `(npm, PATH)` pair on success, or `None` when provisioning is on
-/// cooldown or fails — in which case the caller proceeds with the unresolved
-/// npm and surfaces the ordinary spawn failure, exactly as before.
+/// Used on the first-install path whenever the resolved npm is not already HQ's
+/// managed npm (it has none, or only a user npm whose default prefix HQ never
+/// searches). Returns the managed `(npm, PATH)` pair on success, or `None` when
+/// provisioning is on cooldown or fails — in which case the caller proceeds with
+/// the original npm and surfaces the ordinary spawn failure, exactly as before.
 async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(String, String)> {
     log(
         "hq-cli-update",
@@ -2811,6 +2839,45 @@ mod tests {
         );
         // npm's default prefix (no `--prefix`) stays None on the user path.
         assert_eq!(prefer_managed_prefix(false, Some(managed), None), None);
+    }
+
+    /// The Kevin recurrence fix: a FIRST install is aimed at HQ's OWN managed npm
+    /// prefix (the primary toolchain root's `npm-global`/`npm-prefix`), which the
+    /// resolver searches before every user prefix, so the post-install probe finds
+    /// what was just installed instead of an unreachable ambient default prefix.
+    #[test]
+    fn the_first_install_targets_the_managed_npm_prefix() {
+        let root = PathBuf::from("/opt/IndigoHQ/toolchain");
+        let roots = [root.clone(), PathBuf::from("/opt/Indigo HQ/toolchain")];
+        assert_eq!(
+            first_install_prefix(&roots),
+            Some(
+                paths::managed_npm_prefix_in(&root)
+                    .to_string_lossy()
+                    .to_string()
+            ),
+            "the first install aims at the PRIMARY managed root's npm prefix"
+        );
+        // No managed root discoverable -> None, so the caller falls back to the
+        // ordinary npm-derived prefix.
+        assert_eq!(first_install_prefix(&[]), None);
+    }
+
+    /// The provisioning gate: only HQ's own managed npm counts as managed. A user
+    /// npm (any absolute path outside the roots) and the unresolved bare `npm`
+    /// sentinel both read as NOT managed, so a first install provisions HQ's Node.
+    #[test]
+    fn npm_within_managed_root_distinguishes_managed_from_user_and_unresolved() {
+        let roots = [PathBuf::from("/opt/IndigoHQ/toolchain")];
+        assert!(npm_within_managed_root(
+            "/opt/IndigoHQ/toolchain/node/bin/npm",
+            &roots
+        ));
+        assert!(!npm_within_managed_root("/usr/local/bin/npm", &roots));
+        assert!(
+            !npm_within_managed_root("npm", &roots),
+            "the unresolved bare sentinel is not managed, so a first install provisions"
+        );
     }
 
     #[test]
