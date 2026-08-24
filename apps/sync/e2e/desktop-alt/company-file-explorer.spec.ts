@@ -272,7 +272,9 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
     expect(rust).toContain('canonical_hq_directory_for_listing(&hq, &normalized)');
     expect(rust).toContain('require_matching_company_scope(&normalized, &canonical)');
     expect(rust).toContain('list_dir_entries(&hq, &canonical)');
-    expect(rust).toContain('workspace_grants_company_file_access(&workspaces, &entry.name)');
+    expect(rust).toContain(
+      'workspace_grants_company_file_read_access(&workspaces, &entry.name)',
+    );
     // The guarded, noise-filtered lister + its DTO are defined AND unit-tested
     // in the core library (list_dir_entries_rejects_traversal_and_missing).
     expect(core).toContain('pub fn list_dir_entries(');

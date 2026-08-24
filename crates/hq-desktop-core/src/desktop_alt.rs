@@ -1559,16 +1559,30 @@ pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str
     };
 
     match workspace.membership_status.as_deref() {
-        // Pausing stops sync work; it does not revoke read access to the
-        // already-present local workspace.
-        Some("active" | "paused") => true,
+        Some("active") => true,
         // A genuinely local-only company is authored on this machine and has
         // no cloud identity to authorize. Cloud-bound folders fail closed
         // when live membership hydration is unavailable.
         None => workspace.state == WorkspaceState::LocalOnly && workspace.cloud_uid.is_none(),
-        // Pending, revoked, and future unknown statuses fail closed.
+        // Pending, paused, revoked, and future unknown statuses fail closed.
         Some(_) => false,
     }
+}
+
+/// Whether a resolved company workspace grants read-only local Files access.
+///
+/// Pausing stops sync and mutation work, but files already present on the
+/// device remain readable. All other membership rules stay fail-closed.
+pub fn workspace_grants_company_file_read_access(
+    workspaces: &[Workspace],
+    slug: &str,
+) -> bool {
+    workspace_grants_company_file_access(workspaces, slug)
+        || workspaces.iter().any(|workspace| {
+            workspace.slug == slug
+                && workspace.has_local_folder
+                && workspace.membership_status.as_deref() == Some("paused")
+        })
 }
 
 /// Curated dev-noise exclusion set for the local file explorer.
@@ -3979,7 +3993,8 @@ mod tests {
             build_file_tree, canonical_hq_directory_for_listing, company_slug_for_hq_path,
             read_file_bytes_capped, read_file_content, read_file_content_capped,
             set_file_read_after_size_check_hook, validate_hq_relative_path,
-            workspace_grants_company_file_access, FileNode,
+            workspace_grants_company_file_access, workspace_grants_company_file_read_access,
+            FileNode,
         };
         #[cfg(unix)]
         use super::super::{
@@ -4324,8 +4339,32 @@ mod tests {
                 &workspaces,
                 "pending"
             ));
-            assert!(workspace_grants_company_file_access(&workspaces, "paused"));
+            assert!(!workspace_grants_company_file_access(&workspaces, "paused"));
+            assert!(workspace_grants_company_file_read_access(
+                &workspaces,
+                "paused"
+            ));
+            assert!(workspace_grants_company_file_read_access(
+                &workspaces,
+                "active"
+            ));
+            assert!(workspace_grants_company_file_read_access(
+                &workspaces,
+                "local"
+            ));
+            assert!(!workspace_grants_company_file_read_access(
+                &workspaces,
+                "pending"
+            ));
+            assert!(!workspace_grants_company_file_read_access(
+                &workspaces,
+                "offline"
+            ));
             assert!(!workspace_grants_company_file_access(
+                &workspaces,
+                "unknown"
+            ));
+            assert!(!workspace_grants_company_file_read_access(
                 &workspaces,
                 "unknown"
             ));
