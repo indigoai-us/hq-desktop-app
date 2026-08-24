@@ -60,8 +60,8 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
   );
   const companyGoals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
   const projectDetail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
-  const companyKnowledge = readRepoFile(
-    'src/desktop-alt/panels/CompanyKnowledgePanel.svelte',
+  const companyScopedFiles = readRepoFile(
+    'src/desktop-alt/panels/CompanyScopedFilesPanel.svelte',
   );
   const companyOperations = readRepoFile(
     'src/desktop-alt/panels/CompanyOperationsPanel.svelte',
@@ -127,8 +127,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     expect(notice).toContain('border-top: 1px solid var(--v4-rowline)');
     expect(notice).not.toContain('border-left:');
     expect(notice).toContain('background: transparent');
-  });
-
+});
   it('opens mission-control sections and separates them with single rules', () => {
     expectOpenStructure(missionControl, '.mc-col', 'mission-control sections');
     expect(rule(missionControl, '.mc-col.mc-agency-q')).toContain('padding-right:');
@@ -151,11 +150,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
       [companyGoals, '.goals-workspace', 'goals workspace'],
       [projectDetail, '.task-workspace', 'task workspace'],
       [projectDetail, '.files-layout', 'files workspace'],
-      [
-        companyKnowledge,
-        '.company-knowledge-panel,\n  .knowledge-workspace',
-        'knowledge workspace',
-      ],
+      [companyScopedFiles, '.scoped-files-workspace', 'company-scoped files workspace'],
       [companyOperations, '.operations-workspace', 'operations workspace'],
       [team, '.team-workspace', 'team workspace'],
     ] as const) {
@@ -165,7 +160,7 @@ describe('DESKTOP-014: unboxed structural layouts', () => {
     expect(rule(companyGoals, '.goals-list-pane')).toContain('border-right:');
     expect(rule(projectDetail, '.project-task-rail')).toContain('border-right:');
     expect(rule(projectDetail, '.files-tree')).toContain('border-right:');
-    expect(rule(companyKnowledge, '.knowledge-tree-pane')).toContain('border-right:');
+    expect(rule(companyScopedFiles, '.scoped-tree-pane')).toContain('border-right:');
     expect(rule(companyOperations, '.ops-nav-pane')).toContain('border-right:');
     expect(rule(team, '.team-list-pane')).toContain('border-right:');
   });

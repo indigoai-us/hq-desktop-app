@@ -1,5 +1,5 @@
 <script lang="ts">
-  /** Company Knowledge workspace, fixed to companies/<slug>/knowledge. */
+  /** Company Clients workspace, fixed to companies/<slug>/clients. */
   import CompanyScopedFilesPanel from './CompanyScopedFilesPanel.svelte';
 
   interface Props {
@@ -9,4 +9,4 @@
   let { slug }: Props = $props();
 </script>
 
-<CompanyScopedFilesPanel {slug} directory="knowledge" />
+<CompanyScopedFilesPanel {slug} directory="clients" />

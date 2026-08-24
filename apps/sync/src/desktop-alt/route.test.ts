@@ -108,7 +108,7 @@ describe('US-002 V4 desktop routes', () => {
     expect(visible.map((workspace) => workspace.displayName)).toEqual(['Dupe Local', 'Next']);
   });
 
-  it('declares the company sections with Skills/Workers/Knowledge/Team (no Accounts/Tasks/Library)', () => {
+  it('declares the company sections with Skills/Workers/Knowledge/Clients/Team (no Accounts/Tasks/Library)', () => {
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
       'goals',
@@ -116,6 +116,7 @@ describe('US-002 V4 desktop routes', () => {
       'skills',
       'workers',
       'knowledge',
+      'clients',
       'team',
       'activity',
       'deployments',
@@ -145,7 +146,7 @@ describe('US-002 V4 desktop routes', () => {
     });
   });
 
-  it('resolves new company tabs skills / workers / team; knowledge renders inline', () => {
+  it('resolves company tabs including inline knowledge and clients browsers', () => {
     expect(resolvePendingDesktopRoute('company:indigo:skills')).toEqual({
       kind: 'company',
       slug: 'indigo',
@@ -160,6 +161,11 @@ describe('US-002 V4 desktop routes', () => {
       kind: 'company',
       slug: 'indigo',
       tab: 'knowledge',
+    });
+    expect(resolvePendingDesktopRoute('company:indigo:clients')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'clients',
     });
   });
 
@@ -369,6 +375,7 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
       'skills',
       'workers',
       'knowledge',
+      'clients',
       'team',
       'more',
     ]);
@@ -382,6 +389,7 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(companyTabForPrimarySection('skills')).toBe('skills');
     expect(companyTabForPrimarySection('workers')).toBe('workers');
     expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
+    expect(companyTabForPrimarySection('clients')).toBe('clients');
   });
 
   it('shows the four library sections — without Marketplace — with the routed tab active', () => {

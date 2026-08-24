@@ -55,12 +55,12 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
       'Skills',
       'Workers',
       'Knowledge',
+      'Clients',
       'Team',
       'More',
     ]);
     expect(indigo?.children.find((c) => c.id === 'overview')?.active).toBe(true);
-  });
-
+});
   it('shows the secondary sidebar only on library / settings surfaces', () => {
     const companies = [workspace({})];
     for (const route of [

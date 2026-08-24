@@ -8,20 +8,21 @@ function cssRule(source: string, selector: string): string {
 
 describe('visual QA batch 3 regressions', () => {
   const knowledge = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
+  const scopedFiles = readRepoFile('src/desktop-alt/panels/CompanyScopedFilesPanel.svelte');
   const palette = readRepoFile('src/desktop-alt/components/CommandPalette.svelte');
   const widget = readRepoFile('src/components/Widget.svelte');
 
   it('renders a high-contrast, accessible Knowledge selection prompt', () => {
-    expect(knowledge).toContain('data-testid="company-knowledge-empty"');
-    expect(knowledge).toContain('role="status"');
-    expect(knowledge).toContain('aria-labelledby="knowledge-empty-title"');
-    expect(knowledge).toContain('aria-describedby="knowledge-empty-description"');
-    expect(knowledge).toContain('Choose a file to preview');
-    expect(cssRule(knowledge, '.knowledge-empty-title')).toContain(
+    expect(knowledge).toContain('directory="knowledge"');
+    expect(scopedFiles).toContain('data-testid={`company-${directory}-empty`}');
+    expect(scopedFiles).toContain('role="status"');
+    expect(scopedFiles).toContain('aria-labelledby={`${directory}-empty-title`}');
+    expect(scopedFiles).toContain('aria-describedby={`${directory}-empty-description`}');
+    expect(scopedFiles).toContain('Choose a file to preview');
+    expect(cssRule(scopedFiles, '.scoped-empty-title')).toContain(
       'color: var(--v4-text-1)',
     );
-  });
-
+});
   it('contains palette results in a bounded internal scroller', () => {
     const shell = cssRule(palette, '.command-palette');
     const list = cssRule(palette, '.command-list');

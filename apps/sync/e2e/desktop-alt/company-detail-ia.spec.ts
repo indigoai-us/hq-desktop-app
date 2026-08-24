@@ -18,6 +18,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'skills',
       'workers',
       'knowledge',
+      'clients',
       'team',
       'activity',
       'deployments',
@@ -27,8 +28,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
     expect(ids).not.toContain('accounts');
     expect(ids).not.toContain('tasks');
     expect(ids).not.toContain('library');
-  });
-
+});
   it('redirects legacy company deep-links', () => {
     expect(resolvePendingDesktopRoute('company:indigo:accounts')?.kind).toBe('company');
     expect(
@@ -82,12 +82,16 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
   });
 
   it('CompanyKnowledgePanel is tenant-scoped to the company knowledge subtree (source contract)', () => {
-    const panel = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
-    expect(panel).toContain('`companies/${slug}/knowledge`');
+    const wrapper = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
+    const panel = readRepoFile('src/desktop-alt/panels/CompanyScopedFilesPanel.svelte');
+    const scope = readRepoFile('src/desktop-alt/lib/company-scoped-files.ts');
+    expect(wrapper).toContain('<CompanyScopedFilesPanel {slug} directory="knowledge" />');
+    expect(scope).toContain('return `companies/${slug}/${directory}`');
+    expect(scope).toContain('path === rootPath || path.startsWith(`${rootPath}/`)');
     expect(panel).toContain('CompanyFileTree');
     expect(panel).toContain('FilePreviewPane');
-    expect(panel).toContain('inKnowledgeScope');
-    expect(panel).toContain('data-testid="company-knowledge-empty"');
+    expect(panel).toContain('inCompanyScopedRoot');
+    expect(panel).toContain('data-testid={`company-${directory}-empty`}');
   });
 
   it('Team telemetry adapter + mixed list/detail panel exist (DESKTOP-009)', () => {

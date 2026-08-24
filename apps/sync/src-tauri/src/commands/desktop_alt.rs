@@ -36,8 +36,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 #[allow(unused_imports)]
 pub use hq_desktop_core::desktop_alt::{
-    activity_url, board_url, bool_field, build_file_tree, build_node, canonical_hq_relative_path,
-    crm_projection_url, deployment_entry_from_value, deployment_last_deploy,
+    activity_url, board_url, bool_field, build_file_tree, build_node,
+    canonical_hq_directory_for_listing, canonical_hq_relative_path, crm_projection_url,
+    deployment_entry_from_value, deployment_last_deploy,
     deployment_matches_selected_slug, deployment_org_slug, deployment_rows, deployment_size,
     deployment_version, deployments_url, derive_initials, dir_has_visible_children,
     first_row_key_names, format_board_date, format_bytes, format_deployment_age,
@@ -55,8 +56,9 @@ pub use hq_desktop_core::desktop_alt::{
     resolve_company_uid_from_workspaces, resolve_hq_folder, secret_env_and_key, secret_key,
     secret_rotation, secret_rows, secret_structure_summary, secret_updated_at, secrets_url,
     string_field, subdomain_from_url, summary_count_or_auth, validate_hq_relative_path,
-    workspace_grants_company_file_access, ActivityContributor, ActivityEntry, ActivityStats,
-    BoardCard, BoardColumn, BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
+    workspace_grants_company_file_access, workspace_grants_company_file_read_access,
+    ActivityContributor, ActivityEntry, ActivityStats, BoardCard, BoardColumn,
+    BoardCreatorEnvelope, BoardCreatorProject, CompanyActivity,
     CompanyActivitySummary, CompanyBoard, CompanySummary, DeploymentEntry, DirEntry, FileNode,
     LiveBoardAssignee, LiveBoardModel, LiveBoardProject, ProjectCreator, SecretEnv, SecretItem,
     DEV_NOISE_NAMES,
@@ -867,11 +869,11 @@ fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
-fn require_company_file_access(workspaces: &[Workspace], rel_path: &str) -> Result<(), String> {
+fn require_company_file_read_access(workspaces: &[Workspace], rel_path: &str) -> Result<(), String> {
     let Some(slug) = company_slug_for_hq_path(rel_path)? else {
         return Ok(());
     };
-    if workspace_grants_company_file_access(workspaces, &slug) {
+    if workspace_grants_company_file_read_access(workspaces, &slug) {
         Ok(())
     } else {
         Err(format!("company files are not authorized: {slug:?}"))
@@ -937,7 +939,7 @@ fn authorize_file_target(
     workspaces: &[Workspace],
 ) -> Result<ResolvedFileTarget, String> {
     if target.company_slug.is_some() {
-        require_company_file_access(workspaces, &target.relative_path)?;
+        require_company_file_read_access(workspaces, &target.relative_path)?;
     }
     Ok(target)
 }
@@ -1117,7 +1119,7 @@ pub async fn get_company_file_tree(
     let (hq, workspaces) = hydrated_file_context().await?;
     let canonical = canonical_hq_relative_path(&hq, &normalized, false)?;
     require_matching_company_scope(&normalized, &canonical)?;
-    require_company_file_access(&workspaces, &canonical)?;
+    require_company_file_read_access(&workspaces, &canonical)?;
     build_file_tree(&hq, slug)
 }
 
@@ -1232,15 +1234,15 @@ pub async fn list_hq_dir(
     } else {
         (resolve_hq_folder(), Vec::new())
     };
-    let canonical = canonical_hq_relative_path(&hq, &normalized, true)?;
+    let canonical = canonical_hq_directory_for_listing(&hq, &normalized)?;
     let company = require_matching_company_scope(&normalized, &canonical)?;
     debug_assert_eq!(lexical_company, company);
-    require_company_file_access(&workspaces, &canonical)?;
+    require_company_file_read_access(&workspaces, &canonical)?;
 
     let mut entries = list_dir_entries(&hq, &canonical)?;
     if canonical == "companies" {
         entries.retain(|entry| {
-            workspace_grants_company_file_access(&workspaces, &entry.name)
+            workspace_grants_company_file_read_access(&workspaces, &entry.name)
                 && entry.path == format!("companies/{}", entry.name)
         });
     }
@@ -1346,13 +1348,21 @@ mod window_router_tests {
         assert!(authorize_file_target(active, &workspaces).is_ok());
         let initially_active = resolve_file_target(root, "companies/active/knowledge.md").unwrap();
         let revalidated = revalidate_file_target(&initially_active).unwrap();
-        let revoked_workspaces = vec![file_workspace(
+        let paused_workspaces = vec![file_workspace(
             "active",
             WorkspaceState::Synced,
             Some("paused"),
             Some("cmp_active"),
         )];
-        assert!(authorize_file_target(revalidated, &revoked_workspaces).is_err());
+        assert!(authorize_file_target(revalidated, &paused_workspaces).is_ok());
+        let revoked = resolve_file_target(root, "companies/active/knowledge.md").unwrap();
+        let revoked_workspaces = vec![file_workspace(
+            "active",
+            WorkspaceState::Synced,
+            Some("revoked"),
+            Some("cmp_active"),
+        )];
+        assert!(authorize_file_target(revoked, &revoked_workspaces).is_err());
         let local = resolve_file_target(root, "companies/local/knowledge.md").unwrap();
         assert!(authorize_file_target(local, &workspaces).is_ok());
         let pending = resolve_file_target(root, "companies/pending/knowledge.md").unwrap();

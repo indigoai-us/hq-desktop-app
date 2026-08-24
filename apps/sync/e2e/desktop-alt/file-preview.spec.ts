@@ -81,8 +81,7 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     expect(preview).not.toMatch(
       /file-preview-monospace[\s\S]{0,80}\{@html/,
     );
-  });
-
+});
   // -------------------------------------------------------------------------
   // US-004 e2eTest 2: Open-in-Claude-Code reuses the shared component
   // -------------------------------------------------------------------------
@@ -144,9 +143,9 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     expect(preview).not.toContain('absolutePath');
     expect(preview).toContain('data-testid="file-preview-image"');
     expect(preview).toContain('data-testid="file-preview-pdf"');
-    // Knowledge panel reuses the same pane.
-    const knowledge = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
-    expect(knowledge).toContain('FilePreviewPane');
+    // Knowledge and Clients reuse the same company-scoped pane.
+    const scoped = readRepoFile('src/desktop-alt/panels/CompanyScopedFilesPanel.svelte');
+    expect(scoped).toContain('FilePreviewPane');
   });
 
   it('drives file-preview-unsupported for failed text/media loads and keeps open actions in the header', () => {

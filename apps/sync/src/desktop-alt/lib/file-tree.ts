@@ -53,9 +53,11 @@ export interface DirEntry {
 /**
  * Companies whose filesystem content the current membership may expose.
  *
- * Only an active cloud membership, or a genuinely local-only/no-cloud-identity
- * workspace, grants company content. Pending/paused/unknown memberships and
- * cloud-bound workspaces whose membership could not be hydrated fail closed.
+ * An active or paused cloud membership, or a genuinely local-only/no-cloud-
+ * identity workspace, grants company content. Pausing a workspace stops sync;
+ * it does not revoke read access to files already on this device. Pending,
+ * revoked, and unknown memberships plus cloud-bound workspaces whose
+ * membership could not be hydrated fail closed.
  * Personal content remains available from the HQ-root tree and is
  * intentionally not presented under "Filter by company".
  */
@@ -63,14 +65,16 @@ export function fileAccessibleCompanies(workspaces: readonly Workspace[]): Works
   const seen = new Set<string>();
   const accessible: Workspace[] = [];
   for (const workspace of workspaces) {
-    const activeCloudMembership = workspace.membershipStatus === 'active';
+    const readableCloudMembership =
+      workspace.membershipStatus === 'active' ||
+      workspace.membershipStatus === 'paused';
     const genuinelyLocalOnly =
       workspace.membershipStatus === null &&
       workspace.state === 'local-only' &&
       workspace.cloudUid === null;
     if (
       workspace.kind !== 'company' ||
-      (!activeCloudMembership && !genuinelyLocalOnly)
+      (!readableCloudMembership && !genuinelyLocalOnly)
     ) {
       continue;
     }
@@ -79,6 +83,21 @@ export function fileAccessibleCompanies(workspaces: readonly Workspace[]): Works
     accessible.push(workspace);
   }
   return accessible;
+}
+
+/**
+ * Bind native company reads independently from sync polling. Pausing sync does
+ * not revoke an active membership, while pending and unknown memberships stay
+ * unbound until authoritative workspace hydration grants file access.
+ */
+export function desktopSessionCompanyScope(
+  routeKind: string,
+  activeCompany: Workspace | null,
+  filesActiveSlug: string | null,
+): string | null {
+  if (routeKind === 'files') return filesActiveSlug;
+  if (routeKind !== 'company' || !activeCompany) return null;
+  return fileAccessibleCompanies([activeCompany]).length === 1 ? activeCompany.slug : null;
 }
 
 /**

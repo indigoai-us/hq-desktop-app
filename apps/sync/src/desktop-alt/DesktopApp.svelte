@@ -38,6 +38,7 @@
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { loadLocalProjects } from './lib/local-projects';
   import {
+    desktopSessionCompanyScope,
     fileAccessibleCompanies,
     isFilesRouteAllowed,
   } from './lib/file-tree';
@@ -341,11 +342,11 @@
     filesRouteAllowed && route.kind === 'files' ? route.path ?? null : null,
   );
   const sessionBoundCompanySlug = $derived<string | null>(
-    route.kind === 'files'
-      ? filesActiveSlug
-      : activeCompanySyncEnabled
-        ? activeCompany?.slug ?? null
-        : null,
+    desktopSessionCompanyScope(
+      route.kind,
+      filesAccessHydrated ? activeCompany : null,
+      filesActiveSlug,
+    ),
   );
   $effect(() => {
     void invoke('set_desktop_active_company', {

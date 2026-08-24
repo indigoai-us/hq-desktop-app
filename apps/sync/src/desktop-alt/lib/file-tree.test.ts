@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
   companySlugForHqPath,
+  desktopSessionCompanyScope,
   dirEntryToLazyNode,
   fileAccessibleCompanies,
   fileTreeRowMeta,
@@ -90,7 +91,20 @@ describe('Files membership boundary', () => {
       localOnly,
       workspace({ slug: 'personal', kind: 'personal', state: 'personal' }),
     ]);
-    expect(companies.map((company) => company.slug)).toEqual(['indigo', 'local-notebook']);
+    expect(companies.map((company) => company.slug)).toEqual([
+      'indigo',
+      'paused',
+      'local-notebook',
+    ]);
+  });
+
+  it('keeps read-only company scope bound while workspace sync is paused', () => {
+    const pausedSync = workspace({ syncEnabled: false });
+
+    expect(fileAccessibleCompanies([pausedSync])).toEqual([pausedSync]);
+    expect(desktopSessionCompanyScope('company', pausedSync, null)).toBe('indigo');
+    expect(desktopSessionCompanyScope('company', pending, null)).toBeNull();
+    expect(desktopSessionCompanyScope('home', pausedSync, null)).toBeNull();
   });
 
   it('extracts company slugs only from company-scoped HQ paths', () => {
@@ -108,7 +122,8 @@ describe('Files membership boundary', () => {
   });
 
   it('rejects pending, unknown, mismatched, and escaped company file routes', () => {
-    const workspaces = [active, pending];
+    const paused = workspace({ slug: 'paused', membershipStatus: 'paused' });
+    const workspaces = [active, paused, pending];
     expect(isFilesRouteAllowed({ slug: 'indigo' }, workspaces)).toBe(true);
     expect(
       isFilesRouteAllowed(
@@ -117,6 +132,12 @@ describe('Files membership boundary', () => {
       ),
     ).toBe(true);
     expect(isFilesRouteAllowed({ slug: 'sender-agency' }, workspaces)).toBe(false);
+    expect(
+      isFilesRouteAllowed(
+        { slug: 'paused', path: 'companies/paused/clients/acme/brief.md' },
+        workspaces,
+      ),
+    ).toBe(true);
     expect(
       isFilesRouteAllowed(
         { path: 'companies/sender-agency/knowledge/overview.md' },

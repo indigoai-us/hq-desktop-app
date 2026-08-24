@@ -10,6 +10,7 @@
   import CompanyOperationsPanel from '../panels/CompanyOperationsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
   import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
+  import CompanyClientsPanel from '../panels/CompanyClientsPanel.svelte';
   import TeamPanel from '../panels/TeamPanel.svelte';
   import {
     DEFAULT_COMPANY_TAB,
@@ -320,6 +321,8 @@
           <CompanyLibraryPanel slug={company.slug} forcedFilter="workers" />
         {:else if tab === 'knowledge'}
           <CompanyKnowledgePanel slug={company.slug} />
+        {:else if tab === 'clients'}
+          <CompanyClientsPanel slug={company.slug} />
         {:else if tab === 'team'}
           <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
         {:else if isCompanyOperationsTab(tab)}
