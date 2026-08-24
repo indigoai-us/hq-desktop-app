@@ -19,6 +19,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from './OnboardingWizard.svelte';
+import { BUILD_STEP_INDEX } from '../../lib/onboarding-wizard';
 
 const wizardSource = readFileSync('src/components/onboarding/OnboardingWizard.svelte', 'utf8');
 
@@ -258,7 +259,7 @@ describe('onboarding launch handoff', () => {
           resolveFinish = resolve;
         }),
     );
-    mountWizard(onfinish, 9);
+    mountWizard(onfinish, BUILD_STEP_INDEX);
     await flush();
 
     const done = host.querySelector<HTMLButtonElement>(

@@ -130,16 +130,18 @@ afterEach(() => {
 });
 
 describe('US-001 wizard step model', () => {
-  it('inserts consent after setup and before ready', () => {
-    expect(WIZARD_STEPS.map((s) => s.id)).toEqual([
+  it('inserts consent and connector import after setup before ready', () => {
+    expect(WIZARD_STEPS.slice(0, 6).map((s) => s.id)).toEqual([
       'welcome-signin',
       'directory',
       'setup',
       'consent',
+      'connector-import',
       'ready',
     ]);
     expect(WIZARD_STEPS.find((s) => s.id === 'consent')?.index).toBe(3);
-    expect(WIZARD_STEPS.find((s) => s.id === 'ready')?.index).toBe(4);
+    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(4);
+    expect(WIZARD_STEPS.find((s) => s.id === 'ready')?.index).toBe(5);
   });
 
   it('gates the consent step until the question is answered', () => {
@@ -310,7 +312,7 @@ describe('US-001 source regressions', () => {
     // step; the sign-in success path must not touch telemetry.
     const signInBlock = wizardSource.slice(
       wizardSource.indexOf('if (result.authenticated)'),
-      wizardSource.indexOf('advanceTo(1)'),
+      wizardSource.indexOf('\n  function detectLooksLikeHq'),
     );
     expect(signInBlock).not.toContain('postOptIn');
     expect(signInBlock).not.toContain('emitDesktopTelemetry');

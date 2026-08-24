@@ -2,9 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -13,6 +11,8 @@ use serde_json::Value;
 
 #[cfg(windows)]
 use crate::commands::install_deps::extended_search_path;
+use crate::commands::install_directory::resolve_hq_path;
+use crate::util::paths;
 
 const CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const RECENCY_MAX_DEPTH: usize = 2;
@@ -36,6 +36,19 @@ pub struct ClaudeReady {
     pub installed: bool,
     pub desktop_installed: bool,
     pub logged_in: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClaudeDesktopConnectors {
+    pub present: bool,
+    pub count: u32,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConnectorImportResult {
+    pub ok: bool,
+    pub message: String,
 }
 
 #[tauri::command]
@@ -71,6 +84,130 @@ pub fn detect_claude_ready() -> ClaudeReady {
         desktop_installed,
         logged_in: home.as_deref().is_some_and(claude_logged_in_in),
     }
+}
+
+/// Read Claude Desktop's documented MCP configuration without treating a
+/// missing, unreadable, or malformed file as an onboarding error.
+#[tauri::command]
+pub fn detect_claude_desktop_connectors() -> ClaudeDesktopConnectors {
+    let Some(path) = claude_desktop_config_path() else {
+        return ClaudeDesktopConnectors {
+            present: false,
+            count: 0,
+            path: String::new(),
+        };
+    };
+    detect_claude_desktop_connectors_at_path(&path)
+}
+
+/// Run the existing CLI importer from the configured HQ root. Its output is
+/// returned verbatim enough for diagnostics, but a failed import never turns
+/// into a Tauri command error that could trap the onboarding flow.
+#[tauri::command]
+pub async fn import_claude_desktop_connectors() -> ConnectorImportResult {
+    let hq_root = match resolve_hq_path() {
+        Ok(path) => path,
+        Err(error) => {
+            return ConnectorImportResult {
+                ok: false,
+                message: error,
+            }
+        }
+    };
+    let hq = paths::resolve_bin("hq");
+    let mut command = paths::tokio_spawn_command(&hq, &[]);
+    let output = command
+        .args(["integrations", "import"])
+        .current_dir(&hq_root)
+        .env("PATH", paths::child_path())
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .env("HQ_ROOT", &hq_root)
+        .output()
+        .await;
+
+    match output {
+        Ok(output) if output.status.success() => ConnectorImportResult {
+            ok: true,
+            message: hq_command_message(&output.stdout, &output.stderr, "Import completed."),
+        },
+        Ok(output) => ConnectorImportResult {
+            ok: false,
+            message: hq_command_message(
+                &output.stdout,
+                &output.stderr,
+                &format!(
+                    "hq integrations import exited with status {}.",
+                    output.status.code().unwrap_or(-1)
+                ),
+            ),
+        },
+        Err(error) => ConnectorImportResult {
+            ok: false,
+            message: format!("Failed to spawn hq integrations import: {error}"),
+        },
+    }
+}
+
+fn hq_command_message(stdout: &[u8], stderr: &[u8], fallback: &str) -> String {
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (true, true) => fallback.to_string(),
+    }
+}
+
+fn detect_claude_desktop_connectors_at_path(path: &Path) -> ClaudeDesktopConnectors {
+    let present = path.is_file();
+    let count = fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .and_then(|json| {
+            json.get("mcpServers")
+                .and_then(Value::as_object)
+                .map(|servers| servers.len())
+        })
+        .and_then(|count| u32::try_from(count).ok())
+        .unwrap_or(0);
+    ClaudeDesktopConnectors {
+        present,
+        count,
+        path: path.to_string_lossy().to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_config_path() -> Option<PathBuf> {
+    dirs::home_dir()
+        .map(|home| home.join("Library/Application Support/Claude/claude_desktop_config.json"))
+}
+
+#[cfg(target_os = "linux")]
+fn claude_desktop_config_path() -> Option<PathBuf> {
+    linux_claude_desktop_config_path_in(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_claude_desktop_config_path_in(
+    xdg_config_home: Option<&OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    xdg_config_home
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join(".config")))
+        .map(|config_home| config_home.join("Claude/claude_desktop_config.json"))
+}
+
+#[cfg(windows)]
+fn claude_desktop_config_path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|app_data| app_data.join("Claude/claude_desktop_config.json"))
 }
 
 fn detect_ai_tools_in(
@@ -399,6 +536,57 @@ mod tests {
         )
         .expect("write oauth marker");
         assert!(claude_logged_in_in(oauth_home.path()));
+    }
+
+    #[test]
+    fn counts_claude_desktop_mcp_servers_without_failing_on_missing_or_invalid_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("claude_desktop_config.json");
+
+        let missing = detect_claude_desktop_connectors_at_path(&config);
+        assert!(!missing.present);
+        assert_eq!(missing.count, 0);
+        assert_eq!(missing.path, config.to_string_lossy());
+
+        fs::write(&config, r#"{"mcpServers":{"linear":{},"notion":{}}}"#).expect("write config");
+        let detected = detect_claude_desktop_connectors_at_path(&config);
+        assert!(detected.present);
+        assert_eq!(detected.count, 2);
+
+        fs::write(&config, "not json").expect("write invalid config");
+        let invalid = detect_claude_desktop_connectors_at_path(&config);
+        assert!(invalid.present);
+        assert_eq!(invalid.count, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolves_claude_desktop_config_under_xdg_config_home() {
+        let xdg_config_home = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("tempdir");
+
+        let path = linux_claude_desktop_config_path_in(
+            Some(xdg_config_home.path().as_os_str()),
+            Some(home.path()),
+        );
+
+        assert_eq!(
+            path,
+            Some(
+                xdg_config_home
+                    .path()
+                    .join("Claude/claude_desktop_config.json")
+            )
+        );
+    }
+
+    #[test]
+    fn combines_hq_command_output_without_losing_stderr() {
+        assert_eq!(
+            hq_command_message(b"done\n", b"warning\n", "fallback"),
+            "done\nwarning"
+        );
+        assert_eq!(hq_command_message(b"", b"", "fallback"), "fallback");
     }
 
     #[cfg(target_os = "macos")]

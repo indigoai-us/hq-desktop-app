@@ -68,6 +68,7 @@ let postResult: { mode: 'ok' } | { mode: 'reject'; error: unknown } = { mode: 'o
 // to prove finding #5: with NO cached answer there is nothing to reconcile, so
 // "finish offline" must not be offered.
 let cacheWriteFails = false;
+let detectedConnectorCount = 0;
 const calls: { command: string; args?: Record<string, unknown> }[] = [];
 
 function stubInvoke() {
@@ -78,6 +79,12 @@ function stubInvoke() {
         return '/Users/test/hq';
       case 'detect_ai_tools':
         return { any: true, claude_cli: true };
+      case 'detect_claude_desktop_connectors':
+        return {
+          present: detectedConnectorCount > 0,
+          count: detectedConnectorCount,
+          path: '/Users/test/.config/Claude/claude_desktop_config.json',
+        };
       case 'ensure_person_entity':
         return true;
       case 'write_menubar_telemetry_pref':
@@ -126,6 +133,13 @@ function readyIsActive(): boolean {
   return Boolean(ready && ready.classList.contains('on'));
 }
 
+function connectorImportIsActive(): boolean {
+  const connectorImport = host.querySelector<HTMLElement>(
+    '[data-testid="onboarding-connector-import"]',
+  );
+  return Boolean(connectorImport && connectorImport.classList.contains('on'));
+}
+
 function postCalls() {
   return calls.filter((c) => c.command === 'post_telemetry_opt_in');
 }
@@ -149,6 +163,7 @@ beforeEach(() => {
   calls.length = 0;
   postResult = { mode: 'ok' };
   cacheWriteFails = false;
+  detectedConnectorCount = 0;
   stubInvoke();
   document.body.innerHTML = '';
   host = document.createElement('div');
@@ -271,6 +286,9 @@ describe('US-002 AC4 — offline does not trap the user', () => {
       mode: 'reject',
       error: 'error sending request: connection refused (offline)',
     };
+    // A locally configured connector keeps the optional panel visible instead
+    // of auto-skipping to ready, so this proves the offline route itself.
+    detectedConnectorCount = 1;
     await mountAt(3);
     chooseShare();
     await flush();
@@ -296,8 +314,10 @@ describe('US-002 AC4 — offline does not trap the user', () => {
     await new Promise((r) => setTimeout(r, 400));
     await flush();
 
-    // The person reached the ready screen…
-    expect(readyIsActive()).toBe(true);
+    // The offline path reaches the same connector-import step as an uploaded
+    // answer; it must not bypass the locally available import offer.
+    expect(connectorImportIsActive()).toBe(true);
+    expect(readyIsActive()).toBe(false);
     // …WITHOUT another opt-in POST being claimed as successful — finishing
     // offline does not re-post nor pretend the server confirmed the write. The
     // cached answer is reconciled later by the consent repair.

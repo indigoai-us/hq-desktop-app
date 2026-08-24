@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  BUILD_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
   AUTH_GATED_STEPS,
   createWizardRouter,
@@ -19,14 +20,26 @@ function makeState(overrides: Partial<WizardState> = {}): WizardState {
 }
 
 describe('onboarding wizard step contract', () => {
-  it('inserts the consent step after setup and ends on the ready screen', () => {
+  it('assigns every panel a unique index from the ordered step registry', () => {
     expect(WIZARD_STEPS).toEqual([
       { index: 0, id: 'welcome-signin', label: 'Welcome' },
       { index: 1, id: 'directory', label: 'Location' },
       { index: 2, id: 'setup', label: 'Setup' },
       { index: 3, id: 'consent', label: 'Consent' },
-      { index: 4, id: 'ready', label: 'Ready' },
+      { index: 4, id: 'connector-import', label: 'Import connectors' },
+      { index: 5, id: 'ready', label: 'Ready' },
+      { index: 6, id: 'trust', label: 'Trust workspace' },
+      { index: 7, id: 'settings', label: 'Settings' },
+      { index: 8, id: 'run-setup', label: 'Run setup' },
+      { index: 9, id: 'handoff', label: 'Handoff' },
+      { index: 10, id: 'build', label: 'Build' },
     ]);
+    expect(WIZARD_STEPS.find((step) => step.id === 'ready')?.index).toBe(
+      WIZARD_STEPS.findIndex((step) => step.id === 'ready'),
+    );
+    expect(new Set(WIZARD_STEPS.map((step) => step.index)).size).toBe(
+      WIZARD_STEPS.length,
+    );
     expect(AUTH_GATED_STEPS).toEqual([2]);
   });
 });
@@ -48,7 +61,7 @@ describe('createWizardRouter', () => {
       router.next();
     }
 
-    expect(router.currentStep).toBe(4);
+    expect(router.currentStep).toBe(BUILD_STEP_INDEX);
     expect(
       router.canGoNext(makeState({ installPath: '/tmp/hq', consentAnswered: true })),
     ).toBe(false);
@@ -118,7 +131,7 @@ describe('createWizardRouter', () => {
 
     expect(router.canNavigateTo(-1)).toBe(false);
     expect(router.canNavigateTo(4)).toBe(false);
-    expect(router.canNavigateTo(5)).toBe(false);
+    expect(router.canNavigateTo(5)).toBe(true);
   });
 
   it('does not navigate to or before a completed setup gate', () => {

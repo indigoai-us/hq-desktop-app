@@ -14,7 +14,7 @@ export interface WizardState {
   consentAnswered: boolean;
 }
 
-export const WIZARD_STEPS: WizardStep[] = [
+export const WIZARD_STEPS = [
   { index: 0, id: 'welcome-signin', label: 'Welcome' },
   { index: 1, id: 'directory', label: 'Location' },
   { index: 2, id: 'setup', label: 'Setup' },
@@ -23,16 +23,55 @@ export const WIZARD_STEPS: WizardStep[] = [
   // entity to land on (the old sign-in-panel checkbox posted before the entity
   // existed, so the answer 404'd and was silently dropped).
   { index: 3, id: 'consent', label: 'Consent' },
-  { index: 4, id: 'ready', label: 'Ready' },
-];
+  // This runs after setup has made `hq` available, but before final handoff.
+  // It auto-skips when Claude Desktop has no configured connectors.
+  { index: 4, id: 'connector-import', label: 'Import connectors' },
+  { index: 5, id: 'ready', label: 'Ready' },
+  { index: 6, id: 'trust', label: 'Trust workspace' },
+  { index: 7, id: 'settings', label: 'Settings' },
+  { index: 8, id: 'run-setup', label: 'Run setup' },
+  { index: 9, id: 'handoff', label: 'Handoff' },
+  { index: 10, id: 'build', label: 'Build' },
+] as const satisfies readonly WizardStep[];
+
+export type WizardStepId = (typeof WIZARD_STEPS)[number]['id'];
+
+/**
+ * The sole index mapping for wizard panels, graphics, and router transitions.
+ * Keep panel identifiers in `WIZARD_STEPS`; do not hand-number a panel.
+ */
+export const WIZARD_STEP_INDEX = Object.fromEntries(
+  WIZARD_STEPS.map((step) => [step.id, step.index]),
+) as Record<WizardStepId, number>;
 
 const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;
-const SETUP_STEP_INDEX = 2;
-const CONSENT_STEP_INDEX = 3;
+const WELCOME_SIGNIN_STEP_INDEX = WIZARD_STEP_INDEX['welcome-signin'];
+const DIRECTORY_STEP_INDEX = WIZARD_STEP_INDEX.directory;
+const SETUP_STEP_INDEX = WIZARD_STEP_INDEX.setup;
+const CONSENT_STEP_INDEX = WIZARD_STEP_INDEX.consent;
+const CONNECTOR_IMPORT_STEP_INDEX = WIZARD_STEP_INDEX['connector-import'];
+const READY_STEP_INDEX = WIZARD_STEP_INDEX.ready;
+const TRUST_STEP_INDEX = WIZARD_STEP_INDEX.trust;
+const SETTINGS_STEP_INDEX = WIZARD_STEP_INDEX.settings;
+const RUN_SETUP_STEP_INDEX = WIZARD_STEP_INDEX['run-setup'];
+const HANDOFF_STEP_INDEX = WIZARD_STEP_INDEX.handoff;
+const BUILD_STEP_INDEX = WIZARD_STEP_INDEX.build;
 const FINAL_STEP_INDEX = WIZARD_STEPS[WIZARD_STEPS.length - 1].index;
 const completedSteps = new Set<number>();
 
-export { CONSENT_STEP_INDEX, SETUP_STEP_INDEX };
+export {
+  BUILD_STEP_INDEX,
+  CONNECTOR_IMPORT_STEP_INDEX,
+  CONSENT_STEP_INDEX,
+  DIRECTORY_STEP_INDEX,
+  HANDOFF_STEP_INDEX,
+  READY_STEP_INDEX,
+  RUN_SETUP_STEP_INDEX,
+  SETTINGS_STEP_INDEX,
+  SETUP_STEP_INDEX,
+  TRUST_STEP_INDEX,
+  WELCOME_SIGNIN_STEP_INDEX,
+};
 
 export const AUTH_GATED_STEPS: number[] = [SETUP_STEP_INDEX];
 
@@ -49,7 +88,7 @@ export function getStepValidity(
   state: Readonly<WizardState>,
 ): boolean {
   switch (step) {
-    case 1:
+    case DIRECTORY_STEP_INDEX:
       return state.installPath !== null && state.installPath.length > 0;
     case SETUP_STEP_INDEX:
       return false;
@@ -151,10 +190,10 @@ export function createWizardRouter(opts: { start?: number } = {}): WizardRouter 
 export function initialStepForLifecycle(state: string): number {
   switch (state) {
     case 'NeedsAuthForInstall':
-      return 0;
+      return WELCOME_SIGNIN_STEP_INDEX;
     case 'InstallResume':
-      return 2;
+      return SETUP_STEP_INDEX;
     default:
-      return 0;
+      return WELCOME_SIGNIN_STEP_INDEX;
   }
 }
