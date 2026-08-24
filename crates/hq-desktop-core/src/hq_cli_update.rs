@@ -12,8 +12,8 @@ use serde_json::Value;
 use crate::paths;
 
 /// Re-exported so probe diagnostics and their telemetry tests have a single
-/// import path for the resolver's program classification.
-pub use crate::paths::ResolvedProgramKind;
+/// import path for the resolver's program classification and resolution lane.
+pub use crate::paths::{ResolutionSource, ResolvedProgramKind};
 
 /// npm package the menubar nags the user to keep current. The `@latest`
 /// dist-tag is a MUTABLE pointer that npm re-resolves through its own
@@ -128,6 +128,63 @@ pub enum BinaryAnchorShape {
     UnresolvableParent,
 }
 
+/// Managed ("private") Node runtime state at the moment of a version probe,
+/// projected into a closed, privacy-safe enum. Mirrors the variants of
+/// [`crate::toolchain::ManagedRuntime`] WITHOUT its `PathBuf` payloads, so no
+/// path can reach telemetry. `NotProbed` marks the paths that never classify
+/// the runtime (a version read on the first try, or no `hq` at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedRuntimeState {
+    #[default]
+    NotProbed,
+    NotProvisioned,
+    Incomplete,
+    Present,
+    PresentMissingNpx,
+    Unknown,
+}
+
+impl ManagedRuntimeState {
+    fn from_runtime(runtime: &crate::toolchain::ManagedRuntime) -> Self {
+        use crate::toolchain::ManagedRuntime as R;
+        match runtime {
+            R::NotProvisioned => Self::NotProvisioned,
+            R::Incomplete { .. } => Self::Incomplete,
+            R::Present { .. } => Self::Present,
+            R::PresentMissingNpx { .. } => Self::PresentMissingNpx,
+            R::Unknown { .. } => Self::Unknown,
+        }
+    }
+}
+
+/// Outcome of the managed-Node interpreter recovery the version probe attempts
+/// when a resolved `hq` cannot be read because its interpreter is
+/// undiscoverable. Closed + path-free for telemetry. The core probe sets the
+/// first four; the app's check flow overwrites with the `provision_*` variants
+/// after it asks the existing provisioner for a managed Node and re-probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InterpreterRecovery {
+    /// No recovery was engaged — a version was read without it, or the failure
+    /// is not an interpreter/spawn class a working Node could repair.
+    #[default]
+    NotNeeded,
+    /// The version was read by retrying through HQ's managed Node.
+    RecoveredWithManagedNode,
+    /// Recovery was applicable but no managed Node is present to retry with.
+    ManagedNodeAbsent,
+    /// The check flow asked the existing provisioner to install a managed Node
+    /// for a re-probe.
+    ProvisionRequested,
+    /// A provision was skipped because the provisioner's cooldown is active.
+    ProvisionSkippedCooldown,
+    /// A requested provision did not yield a usable managed Node.
+    ProvisionFailed,
+    /// Every recovery avenue ran and the version is still unreadable.
+    StillUnreadable,
+}
+
 /// The three ordered probes used to discover an installed hq CLI version.
 /// The shape remains fixed even when a successful earlier probe means a later
 /// one must not execute.
@@ -142,6 +199,14 @@ pub struct LocalVersionProbeDiagnostics {
     /// is the difference between "the CLI is broken" and "every probe happened
     /// to fail" — without it those two read identically in telemetry.
     pub resolved_program_kind: ResolvedProgramKind,
+    /// The managed-Node runtime state when a recovery was considered. Lets the
+    /// next occurrence say whether HQ owned the interpreter gap.
+    pub managed_runtime: ManagedRuntimeState,
+    /// What the managed-Node interpreter recovery did.
+    pub interpreter_recovery: InterpreterRecovery,
+    /// Which resolution lane produced the `hq` binary (settings PATH, managed
+    /// toolchain, a user/system prefix, or the login-shell fallback).
+    pub resolution_source: ResolutionSource,
 }
 
 impl LocalVersionProbeDiagnostics {
@@ -152,6 +217,9 @@ impl LocalVersionProbeDiagnostics {
             hq_version: VersionProbeOutcome::NotAttempted,
             binary_anchor_shape: BinaryAnchorShape::NotAttempted,
             resolved_program_kind: ResolvedProgramKind::NotResolved,
+            managed_runtime: ManagedRuntimeState::NotProbed,
+            interpreter_recovery: InterpreterRecovery::NotNeeded,
+            resolution_source: ResolutionSource::NotResolved,
         }
     }
 }
@@ -369,6 +437,216 @@ fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionPr
     }
 }
 
+/// A `hq --version` failure a *working* Node interpreter could plausibly
+/// repair: the shim resolved but its `#!/usr/bin/env node` interpreter was not
+/// on the child PATH (exit 127 → `InterpreterNotFound`), or — on Unix, where
+/// the resolver hands back anything it found — the shim could not be spawned at
+/// all. Every other outcome (a real nonzero exit, empty/invalid output) is not
+/// an interpreter problem, so recovery would be pointless and must not fire.
+fn recovery_applicable(outcome: VersionProbeOutcome) -> bool {
+    match outcome {
+        VersionProbeOutcome::InterpreterNotFound => true,
+        #[cfg(unix)]
+        VersionProbeOutcome::SpawnProgramMissing | VersionProbeOutcome::SpawnNotExecutable => true,
+        _ => false,
+    }
+}
+
+/// The managed Node executable to recover with, for the one runtime state that
+/// owns one. `None` for every other state, so recovery can never fabricate an
+/// interpreter path from a runtime that has not got one.
+fn managed_node_executable(runtime: &crate::toolchain::ManagedRuntime) -> Option<&Path> {
+    match runtime {
+        crate::toolchain::ManagedRuntime::Present { node } => Some(node.as_path()),
+        _ => None,
+    }
+}
+
+/// Whether the resolved program is a `#!` script whose interpreter line names
+/// `node` (directly or via `env node`). Bounded read of only the first line;
+/// any read failure or a non-node interpreter answers `false`, so the direct
+/// `<node> <program>` invocation is gated to genuine node entrypoints and never
+/// runs a Volta/asdf shim binary as if it were JavaScript.
+#[cfg(unix)]
+fn shebang_names_node(program: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(program) else {
+        return false;
+    };
+    let mut head = [0u8; 128];
+    let read = match file.read(&mut head) {
+        Ok(read) => read,
+        Err(_) => return false,
+    };
+    let head = &head[..read];
+    if !head.starts_with(b"#!") {
+        return false;
+    }
+    let first_line = head.split(|&byte| byte == b'\n').next().unwrap_or(head);
+    let Ok(first_line) = std::str::from_utf8(first_line) else {
+        return false;
+    };
+    // The interpreter is a whitespace token on the shebang line: `#!/usr/bin/node`,
+    // `#!/usr/bin/env node`, and `#!/usr/bin/env -S node --flag` all carry a
+    // `node`(or versioned `nodejs`) token. Requiring an explicit token means a
+    // bare `#!/usr/bin/env` with only flags never qualifies.
+    first_line
+        .trim_start_matches("#!")
+        .split_whitespace()
+        .any(|token| {
+            let name = Path::new(token)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(token);
+            name == "node" || name == "nodejs"
+        })
+}
+
+/// Parse a `node`/`hq --version` stdout line into a bare version string. Shared
+/// by the direct-node recovery read.
+#[cfg(unix)]
+fn parse_version_line(stdout: &str) -> (Option<String>, VersionProbeOutcome) {
+    let Some(line) = stdout.lines().next() else {
+        return (None, VersionProbeOutcome::EmptyOutput);
+    };
+    let cleaned = line.trim().trim_start_matches('v').trim();
+    if cleaned.is_empty() {
+        (None, VersionProbeOutcome::EmptyOutput)
+    } else {
+        (Some(cleaned.to_string()), VersionProbeOutcome::Succeeded)
+    }
+}
+
+/// Run `<node> <program> --version` directly, bypassing the shebang. Used only
+/// when [`shebang_names_node`] confirmed the program is a node entrypoint but
+/// the shebang's own interpreter lookup failed.
+#[cfg(unix)]
+fn hq_version_via_node(
+    node: &Path,
+    program: &Path,
+    path: &str,
+) -> (Option<String>, VersionProbeOutcome) {
+    let node = node.to_string_lossy();
+    let program = program.to_string_lossy();
+    let mut cmd = paths::spawn_command(node.as_ref(), &[program.as_ref(), "--version"]);
+    let out = match cmd.env("PATH", path).output() {
+        Ok(output) => output,
+        Err(error) => return (None, classify_spawn_error(&error)),
+    };
+    if !out.status.success() {
+        return (
+            None,
+            if out.status.code() == Some(127) {
+                VersionProbeOutcome::InterpreterNotFound
+            } else {
+                VersionProbeOutcome::NonzeroExit
+            },
+        );
+    }
+    match String::from_utf8(out.stdout) {
+        Ok(stdout) => parse_version_line(&stdout),
+        Err(_) => (None, VersionProbeOutcome::InvalidUtf8),
+    }
+}
+
+/// Read `hq --version`, and when the read fails because the shim's interpreter
+/// is undiscoverable, recover through HQ's managed Node before giving up.
+///
+/// Recovery is bounded and side-effect-free: at most one widened-PATH retry and
+/// (for a node-shebanged shim on Unix) one direct `<node> <program>` retry, both
+/// using the managed Node already on disk. It never installs anything —
+/// provisioning a *missing* managed Node is the app check flow's job
+/// (`recover_unreadable_version_once`). Returns the version, the probe outcome,
+/// the projected managed-runtime state, and what the recovery did.
+fn hq_version_with_recovery(
+    hq: Option<&Path>,
+    path: &str,
+    managed: Option<&crate::toolchain::ManagedRuntime>,
+) -> (
+    Option<String>,
+    VersionProbeOutcome,
+    ManagedRuntimeState,
+    InterpreterRecovery,
+) {
+    let Some(hq) = hq else {
+        return (
+            None,
+            VersionProbeOutcome::NotAttempted,
+            ManagedRuntimeState::NotProbed,
+            InterpreterRecovery::NotNeeded,
+        );
+    };
+
+    let (local, outcome) = hq_version_string_probe(hq, path);
+    if local.is_some() || !recovery_applicable(outcome) {
+        return (
+            local,
+            outcome,
+            ManagedRuntimeState::NotProbed,
+            InterpreterRecovery::NotNeeded,
+        );
+    }
+
+    // The read failed on an interpreter/spawn class. Consult the managed runtime
+    // the caller classified — tests inject a fixture, production passes the real
+    // `classify_runtime()`. Absent (`None`) means the caller did not classify,
+    // so there is nothing to recover with.
+    let Some(managed) = managed else {
+        return (
+            local,
+            outcome,
+            ManagedRuntimeState::NotProbed,
+            InterpreterRecovery::NotNeeded,
+        );
+    };
+    let managed_state = ManagedRuntimeState::from_runtime(managed);
+    let Some(node) = managed_node_executable(managed) else {
+        return (
+            local,
+            outcome,
+            managed_state,
+            InterpreterRecovery::ManagedNodeAbsent,
+        );
+    };
+
+    if let Some(node_bin) = node.parent() {
+        // Retry 1: put the managed Node's own bin dir first on the child PATH so
+        // the shim's `env node` resolves it.
+        let widened = paths::path_with_interpreter_hint(path, node_bin);
+        let (recovered, recovered_outcome) = hq_version_string_probe(hq, &widened);
+        if recovered.is_some() {
+            return (
+                recovered,
+                recovered_outcome,
+                managed_state,
+                InterpreterRecovery::RecoveredWithManagedNode,
+            );
+        }
+
+        // Retry 2 (Unix): if the shim is a node entrypoint, run it under the
+        // managed Node directly, bypassing the shebang lookup entirely.
+        #[cfg(unix)]
+        if shebang_names_node(hq) {
+            let (recovered, recovered_outcome) = hq_version_via_node(node, hq, &widened);
+            if recovered.is_some() {
+                return (
+                    recovered,
+                    recovered_outcome,
+                    managed_state,
+                    InterpreterRecovery::RecoveredWithManagedNode,
+                );
+            }
+        }
+    }
+
+    (
+        local,
+        outcome,
+        managed_state,
+        InterpreterRecovery::StillUnreadable,
+    )
+}
+
 /// Resolve the installed `@indigoai-us/hq-cli` version. Returns `None`
 /// only when the CLI genuinely isn't installed (or, rarely, is installed
 /// but unreadable by every probe — `check_once` Sentry-captures that case).
@@ -392,12 +670,21 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
     // resolution that exists but cannot be spawned stays `hq_installed` and
     // still reports — it is a broken CLI, not an absent one.
     let hq = paths::resolve_bin_with_kind("hq");
-    if hq.is_resolved() {
+    // Attribute the resolution lane once, from the resolved path, and stamp it
+    // onto whichever result the branches below produce. Best-effort telemetry
+    // only — it never changes which binary was chosen.
+    let resolution_source = if hq.is_resolved() {
+        paths::resolution_source_of(Path::new(&hq.path))
+    } else {
+        ResolutionSource::NotResolved
+    };
+
+    let mut result = if hq.is_resolved() {
         let hq_path = Path::new(&hq.path);
         let binary_anchor_shape = binary_anchor_shape(hq_path);
         let (local, binary_anchor) = version_from_hq_binary_probe(hq_path);
         if let Some(local) = local {
-            return LocalVersionProbeResult {
+            LocalVersionProbeResult {
                 local: Some(local),
                 hq_installed: true,
                 probes: LocalVersionProbeDiagnostics {
@@ -406,33 +693,44 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
                     resolved_program_kind: hq.kind,
                     ..LocalVersionProbeDiagnostics::not_attempted()
                 },
-            };
+            }
+        } else {
+            let npm = paths::resolve_bin("npm");
+            let npm = (npm != "npm").then_some(npm.as_str());
+            // The binary-anchored read failed on a RESOLVED `hq`. Classify HQ's
+            // managed Node once so the version probe can recover through it and
+            // the diagnostics can say whether HQ owned the interpreter gap.
+            let managed = crate::toolchain::classify_runtime();
+            probe_local_version_after_binary(
+                Some(hq_path),
+                binary_anchor,
+                binary_anchor_shape,
+                hq.kind,
+                Some(&managed),
+                npm,
+                &paths::child_path(),
+            )
         }
+    } else {
+        // Preserve the legacy npm-root fallback even when `hq` is absent: an npm
+        // package may exist before its bin-link is created. The result still
+        // marks hq as absent, so an all-fail check remains a quiet no-op — and
+        // no managed-Node recovery is attempted (there is no shim to run).
         let npm = paths::resolve_bin("npm");
         let npm = (npm != "npm").then_some(npm.as_str());
-        return probe_local_version_after_binary(
-            Some(hq_path),
-            binary_anchor,
-            binary_anchor_shape,
-            hq.kind,
+        probe_local_version_after_binary(
+            None,
+            VersionProbeOutcome::NotAttempted,
+            BinaryAnchorShape::NotAttempted,
+            ResolvedProgramKind::NotResolved,
+            None,
             npm,
             &paths::child_path(),
-        );
-    }
+        )
+    };
 
-    // Preserve the legacy npm-root fallback even when `hq` is absent: an npm
-    // package may exist before its bin-link is created. The result still marks
-    // hq as absent, so an all-fail check remains a quiet no-op.
-    let npm = paths::resolve_bin("npm");
-    let npm = (npm != "npm").then_some(npm.as_str());
-    probe_local_version_after_binary(
-        None,
-        VersionProbeOutcome::NotAttempted,
-        BinaryAnchorShape::NotAttempted,
-        ResolvedProgramKind::NotResolved,
-        npm,
-        &paths::child_path(),
-    )
+    result.probes.resolution_source = resolution_source;
+    result
 }
 
 #[cfg(test)]
@@ -454,6 +752,22 @@ fn probe_local_version(
 fn probe_local_version_with_kind(
     hq: Option<&Path>,
     resolved_program_kind: ResolvedProgramKind,
+    npm: Option<&str>,
+    path: &str,
+) -> LocalVersionProbeResult {
+    // Legacy seam: no managed Node injected, so no interpreter recovery runs and
+    // the observable `local`/`hq_version` stay exactly as before this change.
+    probe_local_version_with_managed(hq, resolved_program_kind, None, npm, path)
+}
+
+/// Test seam that also injects the managed-Node runtime, so the interpreter
+/// recovery is exercisable with fixture paths and no real toolchain. Mirrors
+/// `probe_local_version_with_kind`'s binary-anchor handling.
+#[cfg(test)]
+fn probe_local_version_with_managed(
+    hq: Option<&Path>,
+    resolved_program_kind: ResolvedProgramKind,
+    managed: Option<&crate::toolchain::ManagedRuntime>,
     npm: Option<&str>,
     path: &str,
 ) -> LocalVersionProbeResult {
@@ -481,6 +795,7 @@ fn probe_local_version_with_kind(
         binary_anchor,
         binary_anchor_shape,
         resolved_program_kind,
+        managed,
         npm,
         path,
     )
@@ -491,6 +806,7 @@ fn probe_local_version_after_binary(
     binary_anchor: VersionProbeOutcome,
     binary_anchor_shape: BinaryAnchorShape,
     resolved_program_kind: ResolvedProgramKind,
+    managed: Option<&crate::toolchain::ManagedRuntime>,
     npm: Option<&str>,
     path: &str,
 ) -> LocalVersionProbeResult {
@@ -509,14 +825,13 @@ fn probe_local_version_after_binary(
                 hq_version: VersionProbeOutcome::NotAttempted,
                 binary_anchor_shape,
                 resolved_program_kind,
+                ..LocalVersionProbeDiagnostics::not_attempted()
             },
         };
     }
 
-    let (local, hq_version) = match hq {
-        Some(hq) => hq_version_string_probe(hq, path),
-        None => (None, VersionProbeOutcome::NotAttempted),
-    };
+    let (local, hq_version, managed_runtime, interpreter_recovery) =
+        hq_version_with_recovery(hq, path, managed);
     LocalVersionProbeResult {
         local,
         hq_installed,
@@ -526,6 +841,9 @@ fn probe_local_version_after_binary(
             hq_version,
             binary_anchor_shape,
             resolved_program_kind,
+            managed_runtime,
+            interpreter_recovery,
+            resolution_source: ResolutionSource::NotResolved,
         },
     }
 }
@@ -2263,6 +2581,9 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
                     "hq_version": probes.hq_version,
                     "binary_anchor_shape": probes.binary_anchor_shape,
                     "resolved_program_kind": probes.resolved_program_kind,
+                    "managed_runtime": probes.managed_runtime,
+                    "interpreter_recovery": probes.interpreter_recovery,
+                    "resolution_source": probes.resolution_source,
                 })
                 .into(),
             );
@@ -9731,6 +10052,284 @@ mod tests {
             VersionProbeOutcome::InterpreterNotFound
         );
         assert!(should_report_unreadable_version(&result));
+    }
+
+    // ---- HQ-DESKTOP-3P: managed-Node interpreter recovery ------------------
+
+    /// HQ-DESKTOP-3P reproduction: a resolved `hq` shim in an npm-prefix `bin`
+    /// dir whose `env node` interpreter is not on the child PATH, with no npm
+    /// and no managed Node, produces the EXACT production quadruple and reports.
+    /// Injecting `managed = None` keeps this identical to the base commit's
+    /// behaviour, so it anchors the byte-identical field set the recovery test
+    /// then flips.
+    #[test]
+    #[cfg(unix)]
+    fn unreadable_version_reproduces_the_production_quadruple_and_reports() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        let hq = bin.join("hq");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_executable(&hq, "#!/usr/bin/env node\n");
+
+        let result =
+            probe_local_version_with_managed(Some(&hq), ResolvedProgramKind::Exe, None, None, "");
+
+        assert_eq!(result.local, None);
+        assert!(result.hq_installed);
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(result.probes.npm_root, VersionProbeOutcome::NotAttempted);
+        assert_eq!(
+            result.probes.hq_version,
+            VersionProbeOutcome::InterpreterNotFound
+        );
+        assert_eq!(
+            result.probes.binary_anchor_shape,
+            BinaryAnchorShape::NpmPrefix
+        );
+        assert_eq!(result.probes.resolved_program_kind, ResolvedProgramKind::Exe);
+        assert!(should_report_unreadable_version(&result));
+    }
+
+    /// HQ-DESKTOP-3P fix: with HQ's managed Node present, the same otherwise
+    /// unreadable shim reads its version by retrying with the managed Node's bin
+    /// dir on the child PATH — so NO unreadable-version event is emitted. The
+    /// four non-`hq_version` fields keep their production meaning; only
+    /// `hq_version` flips to Succeeded.
+    #[test]
+    #[cfg(unix)]
+    fn recovers_version_through_managed_node_when_env_node_is_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        let hq = bin.join("hq");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_executable(&hq, "#!/usr/bin/env node\n");
+
+        // Managed Node: a `node` in its own bin dir that answers `--version`.
+        let managed_bin = tmp.path().join("managed/node/bin");
+        std::fs::create_dir_all(&managed_bin).unwrap();
+        let node = managed_bin.join("node");
+        write_executable(&node, "#!/bin/sh\nprintf 'v5.99.0\\n'\n");
+        let managed = crate::toolchain::ManagedRuntime::Present { node };
+
+        let result = probe_local_version_with_managed(
+            Some(&hq),
+            ResolvedProgramKind::Exe,
+            Some(&managed),
+            None,
+            "",
+        );
+
+        assert_eq!(result.local.as_deref(), Some("5.99.0"));
+        assert!(!should_report_unreadable_version(&result));
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::Succeeded);
+        assert_eq!(result.probes.managed_runtime, ManagedRuntimeState::Present);
+        assert_eq!(
+            result.probes.interpreter_recovery,
+            InterpreterRecovery::RecoveredWithManagedNode
+        );
+        // The four original fields keep their production meaning.
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound
+        );
+        assert_eq!(result.probes.npm_root, VersionProbeOutcome::NotAttempted);
+        assert_eq!(
+            result.probes.binary_anchor_shape,
+            BinaryAnchorShape::NpmPrefix
+        );
+        assert_eq!(result.probes.resolved_program_kind, ResolvedProgramKind::Exe);
+    }
+
+    /// The direct `<node> <program>` retry recovers when the shim names node but
+    /// the managed Node executable is NOT itself named `node` — so `env node` on
+    /// the widened PATH still misses and only the direct invocation works. This
+    /// isolates the second retry from the first.
+    #[test]
+    #[cfg(unix)]
+    fn recovers_via_direct_managed_node_when_env_node_lookup_still_misses() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        let hq = bin.join("hq");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_executable(&hq, "#!/usr/bin/env node\n");
+
+        let managed_bin = tmp.path().join("managed/node/bin");
+        std::fs::create_dir_all(&managed_bin).unwrap();
+        let node = managed_bin.join("hqnode");
+        write_executable(&node, "#!/bin/sh\nprintf 'v6.0.1\\n'\n");
+        let managed = crate::toolchain::ManagedRuntime::Present { node };
+
+        let result = probe_local_version_with_managed(
+            Some(&hq),
+            ResolvedProgramKind::Exe,
+            Some(&managed),
+            None,
+            "",
+        );
+
+        assert_eq!(result.local.as_deref(), Some("6.0.1"));
+        assert_eq!(
+            result.probes.interpreter_recovery,
+            InterpreterRecovery::RecoveredWithManagedNode
+        );
+        assert!(!should_report_unreadable_version(&result));
+    }
+
+    /// With `ManagedRuntime::NotProvisioned` the outcome stays
+    /// `InterpreterNotFound`, the recovery is `ManagedNodeAbsent`, and the event
+    /// STILL reports — no silent swallow of the unreadable-version signal.
+    #[test]
+    #[cfg(unix)]
+    fn unprovisioned_managed_node_keeps_reporting_and_names_the_gap() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        let hq = bin.join("hq");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_executable(&hq, "#!/usr/bin/env node\n");
+
+        let managed = crate::toolchain::ManagedRuntime::NotProvisioned;
+        let result = probe_local_version_with_managed(
+            Some(&hq),
+            ResolvedProgramKind::Exe,
+            Some(&managed),
+            None,
+            "",
+        );
+
+        assert_eq!(result.local, None);
+        assert_eq!(
+            result.probes.hq_version,
+            VersionProbeOutcome::InterpreterNotFound
+        );
+        assert_eq!(
+            result.probes.managed_runtime,
+            ManagedRuntimeState::NotProvisioned
+        );
+        assert_eq!(
+            result.probes.interpreter_recovery,
+            InterpreterRecovery::ManagedNodeAbsent
+        );
+        assert!(should_report_unreadable_version(&result));
+    }
+
+    /// The direct `<node> <program>` invocation is never attempted when the
+    /// resolved program has no node-naming shebang; only the widened-PATH retry
+    /// runs. A managed Node that WOULD answer `--version` makes a `StillUnreadable`
+    /// outcome proof that the direct invocation did not fire.
+    #[test]
+    #[cfg(unix)]
+    fn direct_managed_node_is_skipped_when_the_shim_has_no_node_shebang() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        let hq = bin.join("hq");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_executable(&hq, "#!/usr/bin/env hq-fixture-node\n");
+
+        let managed_bin = tmp.path().join("managed/node/bin");
+        std::fs::create_dir_all(&managed_bin).unwrap();
+        let node = managed_bin.join("node");
+        write_executable(&node, "#!/bin/sh\nprintf 'v9.9.9\\n'\n");
+        let managed = crate::toolchain::ManagedRuntime::Present { node };
+
+        let result = probe_local_version_with_managed(
+            Some(&hq),
+            ResolvedProgramKind::Exe,
+            Some(&managed),
+            None,
+            "",
+        );
+
+        assert_eq!(
+            result.local, None,
+            "a non-node shim must never be run under node"
+        );
+        assert_eq!(
+            result.probes.interpreter_recovery,
+            InterpreterRecovery::StillUnreadable
+        );
+        assert!(should_report_unreadable_version(&result));
+    }
+
+    /// A resolved-but-absent program (`SpawnProgramMissing`) routes through the
+    /// same recovery gate, but its reported spawn outcome is unchanged when
+    /// recovery cannot read a version.
+    #[test]
+    #[cfg(unix)]
+    fn a_missing_shim_routes_through_recovery_without_changing_its_outcome() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hq = tmp.path().join("bin/hq"); // deliberately never created
+        let managed_bin = tmp.path().join("managed/node/bin");
+        std::fs::create_dir_all(&managed_bin).unwrap();
+        let node = managed_bin.join("node");
+        write_executable(&node, "#!/bin/sh\nprintf 'v1.2.3\\n'\n");
+        let managed = crate::toolchain::ManagedRuntime::Present { node };
+
+        let result = probe_local_version_with_managed(
+            Some(&hq),
+            ResolvedProgramKind::Exe,
+            Some(&managed),
+            None,
+            "",
+        );
+
+        assert_eq!(result.local, None);
+        assert_eq!(
+            result.probes.interpreter_recovery,
+            InterpreterRecovery::StillUnreadable
+        );
+        assert_eq!(
+            result.probes.hq_version,
+            VersionProbeOutcome::SpawnProgramMissing
+        );
+        assert!(should_report_unreadable_version(&result));
+    }
+
+    /// A machine with no `hq` at all stays completely silent — hq_installed
+    /// false, no report, no recovery — unchanged from today.
+    #[test]
+    fn no_hq_at_all_stays_silent() {
+        let result = probe_local_version_with_managed(
+            None,
+            ResolvedProgramKind::NotResolved,
+            None,
+            None,
+            "",
+        );
+
+        assert_eq!(result.local, None);
+        assert!(!result.hq_installed);
+        assert!(!should_report_unreadable_version(&result));
+        assert_eq!(
+            result.probes.interpreter_recovery,
+            InterpreterRecovery::NotNeeded
+        );
+        assert_eq!(result.probes.managed_runtime, ManagedRuntimeState::NotProbed);
+    }
+
+    /// The direct-node gate recognizes node entrypoints only — the exact set of
+    /// shebang shapes that decide whether the `<node> <program>` retry may run.
+    #[test]
+    #[cfg(unix)]
+    fn shebang_names_node_recognizes_node_entrypoints_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cases = [
+            ("env-node", "#!/usr/bin/env node\n", true),
+            ("abs-node", "#!/usr/local/bin/node --enable-source-maps\n", true),
+            ("env-dash-s", "#!/usr/bin/env -S node --experimental\n", true),
+            ("env-nodejs", "#!/usr/bin/env nodejs\n", true),
+            ("env-other", "#!/usr/bin/env hq-fixture-node\n", false),
+            ("sh", "#!/bin/sh\n", false),
+            ("bare-env", "#!/usr/bin/env\n", false),
+            ("no-shebang", "console.log(1)\n", false),
+        ];
+        for (name, body, expected) in cases {
+            let path = tmp.path().join(name);
+            write_executable(&path, body);
+            assert_eq!(shebang_names_node(&path), expected, "case {name}");
+        }
     }
 
     #[test]

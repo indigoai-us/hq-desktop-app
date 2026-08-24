@@ -70,6 +70,7 @@ use crate::util::paths;
 use hq_desktop_core::cli_update_lock::{
     acquire_cli_update_lock, CliUpdateLockAttempt, CliUpdateLockGuard,
 };
+use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
@@ -99,7 +100,7 @@ pub use hq_desktop_core::hq_cli_update::{
     report_unreadable_version, repair_managed_shadow, resolved_hq_version, should_auto_install,
     should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
-    InstallFailureEpisode, InstallFailureKind, LocalVersionProbeDiagnostics,
+    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
     NonConvergenceKind, NonConvergentReport, NpmLatest,
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
@@ -170,7 +171,14 @@ async fn fetch_latest() -> Result<String, String> {
 /// them; `should_report_unreadable_version` below reports it for triage instead.
 pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, String> {
     let latest = fetch_latest().await?;
-    let local_version = get_local_version_diagnostics();
+    let mut local_version = get_local_version_diagnostics();
+    // A resolved CLI whose version no probe could read may just be missing its
+    // Node interpreter. When HQ's managed Node is not provisioned, ask the
+    // existing provisioner for one and re-probe — bounded to one provision and
+    // one re-probe — before deciding anything or reporting.
+    if should_report_unreadable_version(&local_version) {
+        local_version = recover_unreadable_version_once(app, local_version).await;
+    }
     let local = local_version.local.clone();
     // Now also true when NO `hq` is installed at all. Previously the
     // unreadable-version arm was unconditionally false, so a user with no CLI
@@ -2045,6 +2053,68 @@ fn persist_reported_episode(outcome: InstallFailureEpisode) {
 /// from the SHARED `paths::managed_npm_prefix_in`, the same definition the
 /// first-run dependency installer uses, so the two can never target different
 /// directories.
+/// Whether `resolve_bin("npm")` found nothing and handed back the bare name.
+///
+/// `resolve_bin` returns the name itself as its unresolved marker (so
+/// `Command::new` still errors readably), which means "npm" with no path
+/// separator is exactly the not-found signal.
+fn npm_unresolved(npm: &str) -> bool {
+    Path::new(npm).components().count() <= 1
+}
+
+/// One-shot managed-Node provision + re-probe for a resolved-but-unreadable CLI.
+///
+/// The core version probe already retries through a managed Node that is
+/// *present* (`hq_version_with_recovery`). This closes the other half: when the
+/// interpreter is undiscoverable AND HQ's managed Node is not provisioned (or is
+/// incomplete), ask the EXISTING provisioner for one — bounded to a single
+/// attempt by `repair_managed_node`'s own cooldown — then re-probe exactly once.
+/// Never a loop, never a second installer. The caller reports only if recovery
+/// still cannot read a version.
+async fn recover_unreadable_version_once(
+    app: &AppHandle,
+    mut probed: LocalVersionProbeResult,
+) -> LocalVersionProbeResult {
+    // Only HQ-owned gaps are ours to repair: a managed Node that was never
+    // installed or is incomplete. A present managed Node means the core probe
+    // already retried through it; a foreign/unknown toolchain is not ours to
+    // provision.
+    match classify_runtime() {
+        ManagedRuntime::NotProvisioned | ManagedRuntime::Incomplete { .. } => {}
+        _ => return probed,
+    }
+
+    match request_managed_node_repair(app).await {
+        ToolchainRepair::Repaired => {}
+        ToolchainRepair::Skipped => {
+            log(
+                "hq-cli-update",
+                "unreadable version: managed-Node provisioning skipped (repair cooldown)",
+            );
+            probed.probes.interpreter_recovery = InterpreterRecovery::ProvisionSkippedCooldown;
+            return probed;
+        }
+        ToolchainRepair::Failed(reason) => {
+            log(
+                "hq-cli-update",
+                &format!("unreadable version: managed-Node provisioning failed: {reason}"),
+            );
+            probed.probes.interpreter_recovery = InterpreterRecovery::ProvisionFailed;
+            return probed;
+        }
+    }
+
+    // Re-probe exactly once. The core probe now sees a present managed Node and
+    // recovers through it; if it still cannot read a version, report that.
+    let mut reprobed = get_local_version_diagnostics();
+    reprobed.probes.interpreter_recovery = if reprobed.local.is_some() {
+        InterpreterRecovery::RecoveredWithManagedNode
+    } else {
+        InterpreterRecovery::StillUnreadable
+    };
+    reprobed
+}
+
 /// The ONE call into the managed-Node provisioning seam for this module.
 ///
 /// Both consumers — the first-install path below and `managed_toolchain_retry`
@@ -3485,6 +3555,9 @@ exit 0
             binary_anchor_shape: hq_desktop_core::hq_cli_update::BinaryAnchorShape::FlatGlobalBin,
             resolved_program_kind:
                 hq_desktop_core::hq_cli_update::ResolvedProgramKind::Extensionless,
+            managed_runtime: hq_desktop_core::hq_cli_update::ManagedRuntimeState::NotProbed,
+            interpreter_recovery: hq_desktop_core::hq_cli_update::InterpreterRecovery::NotNeeded,
+            resolution_source: hq_desktop_core::hq_cli_update::ResolutionSource::NotResolved,
         };
         let events = sentry::test::with_captured_events(|| {
             sentry::configure_scope(|scope| {
@@ -3515,6 +3588,9 @@ exit 0
                 // A resolution Windows cannot execute survives scrubbing as a
                 // closed enum value — never as the offending path.
                 "resolved_program_kind": "extensionless",
+                "managed_runtime": "not_probed",
+                "interpreter_recovery": "not_needed",
+                "resolution_source": "not_resolved",
             })
         );
         assert_eq!(event.extra["token"], serde_json::json!("[Filtered]"));

@@ -833,6 +833,103 @@ impl ResolvedProgramKind {
     }
 }
 
+/// Best-effort, closed classification of WHICH resolution lane produced the
+/// `hq` binary the resolver returned. Path-free so it can ride the
+/// unreadable-version telemetry event: it names the lane (settings PATH,
+/// managed toolchain, a user prefix, a system prefix, or the login-shell
+/// fallback) without carrying the path itself.
+///
+/// Attribution is a membership test of the resolved binary's parent directory
+/// against the same directory sets the resolver searches, in resolver
+/// precedence order, so a directory shared by two lanes is credited to the
+/// higher-precedence one — exactly how the resolver would have picked it. A
+/// resolution that matches none of the deterministic sets came from the
+/// login-shell (`zsh -lc`) enumeration on Unix or `where.exe` on Windows, which
+/// this records as [`ResolutionSource::LoginShell`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionSource {
+    #[default]
+    NotResolved,
+    SettingsPath,
+    ManagedToolchain,
+    UserPrefix,
+    SystemPrefix,
+    LoginShell,
+}
+
+fn parent_in(path: &Path, dirs: &[PathBuf]) -> bool {
+    match path.parent() {
+        Some(parent) => dirs.iter().any(|dir| dir == parent),
+        None => false,
+    }
+}
+
+/// Pure classifier: attribute a resolved binary to a resolution lane by testing
+/// its parent directory against the supplied dir sets in resolver-precedence
+/// order. Kept pure so the precedence is unit-testable with fixture dirs.
+pub(crate) fn classify_resolution_source(
+    resolved: &Path,
+    settings: &[PathBuf],
+    managed: &[PathBuf],
+    user: &[PathBuf],
+    system: &[PathBuf],
+) -> ResolutionSource {
+    if parent_in(resolved, settings) {
+        ResolutionSource::SettingsPath
+    } else if parent_in(resolved, managed) {
+        ResolutionSource::ManagedToolchain
+    } else if parent_in(resolved, user) {
+        ResolutionSource::UserPrefix
+    } else if parent_in(resolved, system) {
+        ResolutionSource::SystemPrefix
+    } else {
+        ResolutionSource::LoginShell
+    }
+}
+
+/// The managed-toolchain bin directories the resolver searches, per platform.
+fn managed_resolution_dirs() -> Vec<PathBuf> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Some(home) = home_dir() else {
+            return Vec::new();
+        };
+        let toolchain = managed_toolchain_dir(&home);
+        vec![
+            toolchain.join("npm-global").join("bin"),
+            toolchain.join("node").join("bin"),
+        ]
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut dirs = Vec::new();
+        for root in [managed_toolchain_dir(), legacy_managed_toolchain_dir()]
+            .into_iter()
+            .flatten()
+        {
+            dirs.push(root.join("node"));
+            dirs.push(root.join("npm-prefix"));
+            dirs.push(root.join("bin"));
+        }
+        dirs
+    }
+}
+
+/// Best-effort resolution-lane attribution for the binary `resolve_bin_with_kind`
+/// returned. Only meaningful for a resolved path; callers pass
+/// [`ResolutionSource::NotResolved`] themselves when nothing resolved.
+pub fn resolution_source_of(resolved: &Path) -> ResolutionSource {
+    classify_resolution_source(
+        resolved,
+        &settings_path_dirs(),
+        &managed_resolution_dirs(),
+        &user_program_roots(),
+        &system_program_roots(),
+    )
+}
+
 /// A resolved program plus the classification of what kind of file it is.
 ///
 /// A non-spawnable resolution is deliberately *retained and marked*, never
@@ -1037,6 +1134,72 @@ pub fn tokio_spawn_command(path: &str, args: &[&str]) -> tokio::process::Command
     cmd
 }
 
+/// Append `<version-dir>/<subdir>` for every immediate child of `versions_root`.
+/// Used to enumerate the per-version `bin` dirs of the version managers that lay
+/// out an installed node like nvm does (`<root>/<version>/…/bin`).
+#[cfg(not(target_os = "windows"))]
+fn push_versioned_node_bins(out: &mut Vec<PathBuf>, versions_root: &Path, subdirs: &[&str]) {
+    if let Ok(entries) = std::fs::read_dir(versions_root) {
+        for entry in entries.flatten() {
+            for sub in subdirs {
+                out.push(entry.path().join(sub));
+            }
+        }
+    }
+}
+
+/// Interpreter directories owned by Node version managers and system package
+/// managers OTHER than nvm, so a node-shebanged `hq` still resolves its
+/// interpreter when the user manages Node with fnm, Volta, asdf, mise, nodenv,
+/// MacPorts, or Nix. Every entry is filtered to those that exist, so an absent
+/// manager contributes nothing. Kept pure (a fixture `home`) so the enumeration
+/// is unit-testable without the developer machine's real HOME.
+#[cfg(not(target_os = "windows"))]
+fn node_version_manager_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // fnm — each installed node version, under the legacy `~/.fnm` root or the
+    // XDG data dir; the interpreter is one level below `installation/bin`.
+    for root in [
+        home.join(".fnm"),
+        home.join(".local").join("share").join("fnm"),
+    ] {
+        push_versioned_node_bins(
+            &mut dirs,
+            &root.join("node-versions"),
+            &["installation/bin", "bin"],
+        );
+    }
+    // Volta keeps its managed shims in a single bin dir.
+    dirs.push(home.join(".volta").join("bin"));
+    // asdf — each nodejs install plus the global shim dir.
+    push_versioned_node_bins(
+        &mut dirs,
+        &home.join(".asdf").join("installs").join("nodejs"),
+        &["bin"],
+    );
+    dirs.push(home.join(".asdf").join("shims"));
+    // mise (the rtx successor) — each node install plus its shim dir.
+    let mise = home.join(".local").join("share").join("mise");
+    push_versioned_node_bins(&mut dirs, &mise.join("installs").join("node"), &["bin"]);
+    dirs.push(mise.join("shims"));
+    // nodenv — each version plus its shim dir.
+    push_versioned_node_bins(
+        &mut dirs,
+        &home.join(".nodenv").join("versions"),
+        &["bin"],
+    );
+    dirs.push(home.join(".nodenv").join("shims"));
+    // Nix profiles.
+    dirs.push(home.join(".nix-profile").join("bin"));
+    dirs.push(PathBuf::from("/nix/var/nix/profiles/default/bin"));
+    // MacPorts.
+    dirs.push(PathBuf::from("/opt/local/bin"));
+
+    dirs.retain(|dir| dir.exists());
+    dirs
+}
+
 /// Build a PATH value suitable for handing to a spawned child process.
 ///
 /// **Why this exists:** even after we resolve a launcher binary to an absolute
@@ -1131,6 +1294,13 @@ pub fn child_path() -> String {
                     }
                 }
             }
+            // Other Node version managers (fnm/Volta/asdf/mise/nodenv) and
+            // system package managers (MacPorts/Nix). Additive after nvm — an
+            // nvm-managed node keeps its existing precedence — and each skipped
+            // when absent.
+            for dir in node_version_manager_dirs(&home) {
+                parts.push(dir.to_string_lossy().to_string());
+            }
             // User-level npm/pnpm prefixes (no-sudo installs).
             for dir in user_cli_dirs(&home) {
                 if dir.exists() {
@@ -1165,6 +1335,26 @@ pub fn child_path() -> String {
 
         parts.join(&PATH_SEP.to_string())
     }
+}
+
+/// Prepend an interpreter-hint directory to a child PATH unless it is already
+/// present. The version probe uses this to add the directory that ships a
+/// `node` interpreter beside the resolved CLI shim — the managed Node's bin
+/// dir, or the shim's own parent — so a `#!/usr/bin/env node` shebang resolves
+/// on a recovery retry even when the base child PATH could not find `node`.
+///
+/// Pure and order-preserving (mirrors [`crate::hq_cli_update::pnpm_child_path`]):
+/// the hint goes first so it wins the interpreter lookup, and a hint already on
+/// the PATH is left untouched rather than duplicated.
+pub fn path_with_interpreter_hint(base_path: &str, hint_dir: &Path) -> String {
+    let hint = hint_dir.to_string_lossy();
+    if hint.is_empty() || base_path.split(PATH_SEP).any(|segment| segment == hint) {
+        return base_path.to_string();
+    }
+    if base_path.is_empty() {
+        return hint.into_owned();
+    }
+    format!("{hint}{PATH_SEP}{base_path}")
 }
 
 /// Returns the path to ~/.hq/config.json.
@@ -2307,5 +2497,131 @@ mod tests {
             Path::new("/opt/IndigoHQ/toolchain/node"),
             &[],
         ));
+    }
+
+    // ---- HQ-DESKTOP-3P: interpreter-hint PATH + version-manager widening ----
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn path_with_interpreter_hint_prepends_once_and_never_duplicates() {
+        let hint = Path::new("/opt/managed/node/bin");
+        // Empty base → just the hint.
+        assert_eq!(
+            path_with_interpreter_hint("", hint),
+            "/opt/managed/node/bin"
+        );
+        // Prepended, preserving the existing PATH.
+        assert_eq!(
+            path_with_interpreter_hint("/usr/bin:/bin", hint),
+            "/opt/managed/node/bin:/usr/bin:/bin"
+        );
+        // Already present → unchanged (no duplicate, order preserved).
+        assert_eq!(
+            path_with_interpreter_hint("/usr/bin:/opt/managed/node/bin", hint),
+            "/usr/bin:/opt/managed/node/bin"
+        );
+        // An empty hint is a no-op.
+        assert_eq!(
+            path_with_interpreter_hint("/usr/bin", Path::new("")),
+            "/usr/bin"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn node_version_manager_dirs_includes_present_managers_and_skips_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        // Present: a Volta shim dir, an fnm node version, an asdf shim dir.
+        std::fs::create_dir_all(home.join(".volta/bin")).unwrap();
+        std::fs::create_dir_all(home.join(".fnm/node-versions/v20.0.0/installation/bin")).unwrap();
+        std::fs::create_dir_all(home.join(".asdf/shims")).unwrap();
+        // Absent: nodenv and mise are never created.
+
+        let dirs = node_version_manager_dirs(home);
+
+        assert!(dirs.contains(&home.join(".volta/bin")), "Volta bin present");
+        assert!(
+            dirs.contains(&home.join(".fnm/node-versions/v20.0.0/installation/bin")),
+            "fnm version bin present"
+        );
+        assert!(
+            dirs.contains(&home.join(".asdf/shims")),
+            "asdf shims present"
+        );
+        assert!(
+            !dirs.contains(&home.join(".nodenv/shims")),
+            "an absent nodenv dir must be skipped"
+        );
+        assert!(
+            !dirs.contains(&home.join(".local/share/mise/shims")),
+            "an absent mise dir must be skipped"
+        );
+    }
+
+    #[test]
+    fn classify_resolution_source_credits_the_highest_precedence_lane() {
+        let settings = vec![PathBuf::from("/s/bin")];
+        let managed = vec![PathBuf::from("/m/node/bin")];
+        let user = vec![PathBuf::from("/u/.npm-global/bin")];
+        let system = vec![PathBuf::from("/usr/local/bin")];
+
+        assert_eq!(
+            classify_resolution_source(Path::new("/s/bin/hq"), &settings, &managed, &user, &system),
+            ResolutionSource::SettingsPath
+        );
+        assert_eq!(
+            classify_resolution_source(
+                Path::new("/m/node/bin/hq"),
+                &settings,
+                &managed,
+                &user,
+                &system
+            ),
+            ResolutionSource::ManagedToolchain
+        );
+        assert_eq!(
+            classify_resolution_source(
+                Path::new("/u/.npm-global/bin/hq"),
+                &settings,
+                &managed,
+                &user,
+                &system
+            ),
+            ResolutionSource::UserPrefix
+        );
+        assert_eq!(
+            classify_resolution_source(
+                Path::new("/usr/local/bin/hq"),
+                &settings,
+                &managed,
+                &user,
+                &system
+            ),
+            ResolutionSource::SystemPrefix
+        );
+        // Not in any known set → attributed to the login-shell fallback.
+        assert_eq!(
+            classify_resolution_source(
+                Path::new("/opt/custom/bin/hq"),
+                &settings,
+                &managed,
+                &user,
+                &system
+            ),
+            ResolutionSource::LoginShell
+        );
+        // A dir shared by two lanes is credited to the higher-precedence one.
+        let shared = vec![PathBuf::from("/shared/bin")];
+        assert_eq!(
+            classify_resolution_source(
+                Path::new("/shared/bin/hq"),
+                &shared,
+                &managed,
+                &shared,
+                &system
+            ),
+            ResolutionSource::SettingsPath
+        );
     }
 }
