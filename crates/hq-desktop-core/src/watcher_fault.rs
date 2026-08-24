@@ -953,6 +953,373 @@ fn render_top_n(counts: &[(&'static str, u32)], n: usize) -> Option<String> {
     (!rendered.is_empty()).then(|| rendered.join(","))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// macOS SIGKILL / jetsam kill provenance (HQ-DESKTOP-4D)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// On macOS a watcher SIGKILL (`signal=9`) carries NO Windows fault surface: the
+// whole `WatcherFaultProvenance` channel is `NotApplicable` for a signal death,
+// so a jetsam (memory-pressure) kill and an external `kill -9` were
+// indistinguishable — the exact ambiguity HQ-DESKTOP-4D records. This parallel,
+// allow-listed vocabulary attributes the kill from macOS's own JetsamEvent
+// reports plus live memory-pressure evidence, under the SAME content-safety
+// discipline as the Windows surface above: only fixed constants, bare integers,
+// and bucketed values ever leave the process. A victim name is mapped through the
+// existing [`classify_watcher_fault_binary`] allow-list; absence of a record is
+// never rendered as evidence.
+
+/// The fixed sentinel every macOS kill field degrades to when no read applies or
+/// nothing bound. Distinct from a bound attribution so a blind read is visibly
+/// different from a real jetsam match.
+pub const WATCHER_KILL_UNAVAILABLE: &str = "unavailable";
+
+/// How confidently a macOS SIGKILL of the watcher is attributed to a jetsam kill
+/// of THIS generation, and — when nothing bound — precisely why. Mirrors
+/// [`WatcherFaultProvenance`] for the signal-death case the Windows surface can
+/// never speak to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherKillProvenance {
+    /// A JetsamEvent report in the generation window names a victim PID that is a
+    /// member of the generation's sampled process set — the strongest binding.
+    JetsamPidMatched,
+    /// A JetsamEvent report falls in the generation window but names no sampled
+    /// PID — a weaker, coincidence-possible binding.
+    JetsamWindowMatched,
+    /// The reader ran, but no JetsamEvent report bound to this generation (none in
+    /// the window, or none at all), and the live evidence did not point elsewhere.
+    NoJetsamRecord,
+    /// No binding jetsam report, but the generation's live memory-pressure samples
+    /// reached `warn`/`critical` — a pressure kill is plausible though the OS wrote
+    /// no report we could bind.
+    PressureOnly,
+    /// No binding jetsam report, pressure stayed `normal`, and the peak RSS was
+    /// low — the kill looks external (`kill -9`), not memory-driven. The one state
+    /// that positively separates an external kill from a jetsam victim.
+    ExternalKillSuspected,
+    /// The app's own SIGTERM→SIGKILL escalation fired for this generation, so the
+    /// SIGKILL is self-inflicted teardown and can never be reported as external
+    /// (defence in depth behind the HQ-DESKTOP-4P durable cancellation record).
+    SelfEscalated,
+    /// The DiagnosticReports directories could not be listed or opened (TCC,
+    /// sandbox, or a hardened runtime). Absence of a reader, not absence of a kill.
+    ReaderUnavailable,
+    /// The deferred read reached its bounded deadline before a report was found.
+    DeadlineExpired,
+    /// The read has been deferred off the exit path and has not resolved yet.
+    /// Emitted only when a teardown flush preempts the deferred worker; an honest
+    /// "not read yet", never an attribution.
+    Deferred,
+    /// No macOS kill read applies to this exit (non-macOS platform, or a
+    /// non-SIGKILL exit). Parallel to [`WatcherFaultProvenance::NotApplicable`].
+    NotApplicable,
+}
+
+impl WatcherKillProvenance {
+    pub const ALL: [WatcherKillProvenance; 10] = [
+        Self::JetsamPidMatched,
+        Self::JetsamWindowMatched,
+        Self::NoJetsamRecord,
+        Self::PressureOnly,
+        Self::ExternalKillSuspected,
+        Self::SelfEscalated,
+        Self::ReaderUnavailable,
+        Self::DeadlineExpired,
+        Self::Deferred,
+        Self::NotApplicable,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::JetsamPidMatched => "jetsam_pid_matched",
+            Self::JetsamWindowMatched => "jetsam_window_matched",
+            Self::NoJetsamRecord => "no_jetsam_record",
+            Self::PressureOnly => "pressure_only",
+            Self::ExternalKillSuspected => "external_kill_suspected",
+            Self::SelfEscalated => "self_escalated",
+            Self::ReaderUnavailable => "reader_unavailable",
+            Self::DeadlineExpired => "deadline_expired",
+            Self::Deferred => "deferred",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+
+    /// True only for the two states that bind a jetsam report to this generation
+    /// and therefore may carry a kill reason and an rpages bucket. Every other
+    /// state must render the `unavailable` sentinels, so a producer bug that named
+    /// a reason on a non-binding provenance is caught by the invariant test.
+    pub fn is_bound(self) -> bool {
+        matches!(self, Self::JetsamPidMatched | Self::JetsamWindowMatched)
+    }
+}
+
+/// Closed vocabulary for a JetsamEvent kill reason. macOS records a free-form
+/// `killReason`/`reason` string; it is mapped to one of these fixed tokens and
+/// the raw string is never copied out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JetsamKillReason {
+    /// The victim exceeded its per-process memory limit (`per-process-limit`).
+    PerProcessLimit,
+    /// The victim crossed a memory high-water mark (`highwater`).
+    Highwater,
+    /// System-wide page shortage forced the kill (`vm-pageshortage`).
+    VmPageshortage,
+    /// System-wide thrashing forced the kill (`vm-thrashing`).
+    VmThrashing,
+    /// A reason string was present but outside the allow-list — never a nearest
+    /// guess; the raw string is discarded.
+    Other,
+}
+
+impl JetsamKillReason {
+    pub const ALL: [JetsamKillReason; 5] = [
+        Self::PerProcessLimit,
+        Self::Highwater,
+        Self::VmPageshortage,
+        Self::VmThrashing,
+        Self::Other,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PerProcessLimit => "per_process_limit",
+            Self::Highwater => "highwater",
+            Self::VmPageshortage => "vm_pageshortage",
+            Self::VmThrashing => "vm_thrashing",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Map an untrusted JetsamEvent reason string to a fixed allow-listed token. Only
+/// used to SELECT a closed-vocabulary value; the returned token is always a code
+/// constant, so no record byte can leak. Tolerant of the hyphen/underscore/space
+/// spellings macOS has used across releases.
+pub fn classify_jetsam_kill_reason(raw: &str) -> JetsamKillReason {
+    let normalized: String = raw
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c == ' ' || c == '_' { '-' } else { c })
+        .collect();
+    match normalized.as_str() {
+        "per-process-limit" | "perprocesslimit" | "per-process" => JetsamKillReason::PerProcessLimit,
+        "highwater" | "high-water" | "high-watermark" => JetsamKillReason::Highwater,
+        "vm-pageshortage" | "pageshortage" | "vm-page-shortage" => JetsamKillReason::VmPageshortage,
+        "vm-thrashing" | "thrashing" => JetsamKillReason::VmThrashing,
+        _ => JetsamKillReason::Other,
+    }
+}
+
+/// Bucket a JetsamEvent victim's resident-page count (`rpages`) into a fixed
+/// vocabulary, so the victim's footprint is comparable across events without a
+/// raw byte figure ever leaving the process. Bucketing is on the raw page COUNT,
+/// not an inferred byte total, because the macOS page size is platform-dependent
+/// (16 KiB Apple Silicon / 4 KiB Intel) and must not be assumed here.
+pub fn jetsam_rpages_bucket(rpages: u64) -> &'static str {
+    match rpages {
+        0..=9_999 => "under_10k",
+        10_000..=99_999 => "10k_to_100k",
+        100_000..=499_999 => "100k_to_500k",
+        500_000..=999_999 => "500k_to_1m",
+        _ => "over_1m",
+    }
+}
+
+/// Closed vocabulary for the live memory-pressure axis (`kern.memorystatus_vm_
+/// pressure_level`). Needs no entitlement and no file access, so it still
+/// separates a pressure kill from a quiet external kill even when the .ips reader
+/// is blind. `Unknown` keeps "we could not read the level" distinct from a real
+/// `normal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryPressureLevel {
+    Normal,
+    Warn,
+    Critical,
+    Unknown,
+}
+
+impl MemoryPressureLevel {
+    pub const ALL: [MemoryPressureLevel; 4] = [
+        Self::Normal,
+        Self::Warn,
+        Self::Critical,
+        Self::Unknown,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Warn => "warn",
+            Self::Critical => "critical",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Map the raw `kern.memorystatus_vm_pressure_level` sysctl value (a bitmask:
+    /// 1=normal, 2=warn, 4=critical) to a level. Any other value is `Unknown`, so
+    /// a future/garbage reading never masquerades as `normal`.
+    pub fn from_sysctl_level(raw: i32) -> Self {
+        match raw {
+            1 => Self::Normal,
+            2 => Self::Warn,
+            4 => Self::Critical,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Severity for retaining the generation PEAK across samples. `Unknown` ranks
+    /// below `Normal` so a single readable `normal` is preferred over an unreadable
+    /// sample, and `Critical` always wins.
+    fn severity(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Normal => 1,
+            Self::Warn => 2,
+            Self::Critical => 3,
+        }
+    }
+
+    /// Fold one sample into the retained peak, keeping the more severe level. Pure,
+    /// so the supervisor's per-tick peak retention is unit-testable off macOS.
+    pub fn peak_with(self, sample: MemoryPressureLevel) -> MemoryPressureLevel {
+        if sample.severity() > self.severity() {
+            sample
+        } else {
+            self
+        }
+    }
+}
+
+/// Bind a single candidate JetsamEvent report to this watcher generation. Pure and
+/// testable on every platform (the macOS .ips read that produces the inputs lives
+/// behind `cfg(macos)` in `commands/process.rs`).
+///
+/// - `record_ms` is the report's timestamp, or `None` when the reader found no
+///   report at all.
+/// - `victim_pids` are the PIDs the report names as jetsam victims.
+/// - `sampled_pids` is the union of live process ids sampled across the
+///   generation's lifetime; `[window_start_ms, window_end_ms]` is that lifetime.
+///
+/// Precedence: an in-window report naming a sampled PID is `JetsamPidMatched`; an
+/// in-window report naming no sampled PID is `JetsamWindowMatched`; anything else
+/// (no report, or a report outside the window) does not bind and returns
+/// `NoJetsamRecord`. A report outside the window is never reported, so PID reuse
+/// or an unrelated jetsam kill on the same machine can never produce a false
+/// `jetsam_pid_matched`.
+pub fn bind_jetsam_record(
+    record_ms: Option<i64>,
+    victim_pids: &[u32],
+    sampled_pids: &[u32],
+    window_start_ms: i64,
+    window_end_ms: i64,
+) -> WatcherKillProvenance {
+    let Some(record_ms) = record_ms else {
+        return WatcherKillProvenance::NoJetsamRecord;
+    };
+    if record_ms < window_start_ms || record_ms > window_end_ms {
+        return WatcherKillProvenance::NoJetsamRecord;
+    }
+    if victim_pids
+        .iter()
+        .any(|victim| sampled_pids.contains(victim))
+    {
+        WatcherKillProvenance::JetsamPidMatched
+    } else {
+        WatcherKillProvenance::JetsamWindowMatched
+    }
+}
+
+/// When no jetsam report bound, decide the honest non-binding provenance from the
+/// generation's live evidence. Warn/critical memory pressure → `PressureOnly` (a
+/// pressure kill the OS did not report where we could bind it). Normal pressure
+/// with a low peak RSS → `ExternalKillSuspected` (positively not memory-driven).
+/// Everything else stays `NoJetsamRecord`, because an ambiguous case must not
+/// claim an external kill. Pure and platform-independent.
+pub fn resolve_unbound_kill_provenance(
+    pressure_peak: MemoryPressureLevel,
+    peak_rss_low: bool,
+) -> WatcherKillProvenance {
+    match pressure_peak {
+        MemoryPressureLevel::Warn | MemoryPressureLevel::Critical => {
+            WatcherKillProvenance::PressureOnly
+        }
+        MemoryPressureLevel::Normal if peak_rss_low => WatcherKillProvenance::ExternalKillSuspected,
+        _ => WatcherKillProvenance::NoJetsamRecord,
+    }
+}
+
+/// The content-safe result of attributing a macOS SIGKILL. Every field is a fixed
+/// token or a bare bucketed string. `reason`/`rpages_bucket` are `None` (rendered
+/// as [`WATCHER_KILL_UNAVAILABLE`]) for every provenance except the two bound
+/// states, so absence can never masquerade as evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherKillOutcome {
+    pub provenance: WatcherKillProvenance,
+    pub reason: Option<JetsamKillReason>,
+    pub rpages_bucket: Option<&'static str>,
+}
+
+impl WatcherKillOutcome {
+    /// An unresolved outcome with the given non-binding provenance: no reason, no
+    /// rpages bucket. The one constructor for every non-binding state, so absence
+    /// is uniform and a named reason can never leak onto one.
+    pub fn unresolved(provenance: WatcherKillProvenance) -> Self {
+        debug_assert!(
+            !provenance.is_bound(),
+            "unresolved kill outcome must not carry a bound provenance"
+        );
+        Self {
+            provenance,
+            reason: None,
+            rpages_bucket: None,
+        }
+    }
+
+    /// No macOS kill read applies (non-macOS, or a non-SIGKILL exit).
+    pub fn not_applicable() -> Self {
+        Self::unresolved(WatcherKillProvenance::NotApplicable)
+    }
+
+    /// The read has been deferred and has not resolved yet.
+    pub fn deferred() -> Self {
+        Self::unresolved(WatcherKillProvenance::Deferred)
+    }
+
+    /// A bound jetsam attribution: the binding provenance plus the closed-vocabulary
+    /// reason and bucketed rpages of the matched victim.
+    pub fn bound(
+        provenance: WatcherKillProvenance,
+        reason: JetsamKillReason,
+        rpages: u64,
+    ) -> Self {
+        debug_assert!(
+            provenance.is_bound(),
+            "bound kill outcome requires a bound provenance"
+        );
+        Self {
+            provenance,
+            reason: Some(reason),
+            rpages_bucket: Some(jetsam_rpages_bucket(rpages)),
+        }
+    }
+
+    pub fn provenance_token(&self) -> &'static str {
+        self.provenance.as_str()
+    }
+
+    /// Fixed token for the jetsam kill reason, or [`WATCHER_KILL_UNAVAILABLE`].
+    pub fn reason_token(&self) -> &'static str {
+        self.reason
+            .map(JetsamKillReason::as_str)
+            .unwrap_or(WATCHER_KILL_UNAVAILABLE)
+    }
+
+    /// Bucketed rpages token, or [`WATCHER_KILL_UNAVAILABLE`].
+    pub fn rpages_token(&self) -> &'static str {
+        self.rpages_bucket.unwrap_or(WATCHER_KILL_UNAVAILABLE)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1436,12 +1803,30 @@ mod tests {
         let binary = WatcherFaultBinary::ALL.map(WatcherFaultBinary::as_str);
         let provenance = WatcherFaultProvenance::ALL.map(WatcherFaultProvenance::as_str);
         let shapes = UnmatchedStderrShape::ALL.map(UnmatchedStderrShape::as_str);
+        // macOS kill-attribution axes (HQ-DESKTOP-4D) ride the SAME content-safety
+        // proof: every provenance, kill-reason, pressure level, and rpages bucket
+        // must be a bare denylist-free token or the @password:filter deletes it.
+        let kill_provenance = WatcherKillProvenance::ALL.map(WatcherKillProvenance::as_str);
+        let kill_reason = JetsamKillReason::ALL.map(JetsamKillReason::as_str);
+        let pressure = MemoryPressureLevel::ALL.map(MemoryPressureLevel::as_str);
+        let rpages = [
+            jetsam_rpages_bucket(0),
+            jetsam_rpages_bucket(10_000),
+            jetsam_rpages_bucket(100_000),
+            jetsam_rpages_bucket(500_000),
+            jetsam_rpages_bucket(1_000_000),
+        ];
         for token in binary
             .into_iter()
             .chain(provenance)
             .chain(shapes)
+            .chain(kill_provenance)
+            .chain(kill_reason)
+            .chain(pressure)
+            .chain(rpages)
             .chain(std::iter::once(WATCHER_FAULT_UNAVAILABLE))
             .chain(std::iter::once(WATCHER_JOB_IMAGE_OBSERVED))
+            .chain(std::iter::once(WATCHER_KILL_UNAVAILABLE))
         {
             assert!(!token.is_empty() && token.len() <= 64);
             assert!(
@@ -1452,5 +1837,193 @@ mod tests {
                 assert!(!token.contains(denied), "token {token:?} contains denylist substring {denied:?}");
             }
         }
+    }
+
+    // ── macOS SIGKILL / jetsam kill provenance (HQ-DESKTOP-4D) ──────────────────
+
+    const GEN_START: i64 = 1_000_000;
+    const GEN_END: i64 = 1_060_000; // a 60s generation window
+
+    #[test]
+    fn bind_jetsam_record_pid_match_is_strongest() {
+        // In-window report naming a sampled PID → the strongest binding.
+        assert_eq!(
+            bind_jetsam_record(Some(1_030_000), &[4242], &[1, 4242, 7], GEN_START, GEN_END),
+            WatcherKillProvenance::JetsamPidMatched
+        );
+    }
+
+    #[test]
+    fn bind_jetsam_record_in_window_without_pid_is_window_only() {
+        // In-window report, but none of its victims are in the sampled set.
+        assert_eq!(
+            bind_jetsam_record(Some(1_030_000), &[9999], &[1, 4242, 7], GEN_START, GEN_END),
+            WatcherKillProvenance::JetsamWindowMatched
+        );
+    }
+
+    #[test]
+    fn bind_jetsam_record_out_of_window_and_absent_both_do_not_bind() {
+        // A report before the window, a report after it, and no report at all all
+        // fail to bind — never a false attribution from PID reuse or a stale crash.
+        assert_eq!(
+            bind_jetsam_record(Some(GEN_START - 1), &[4242], &[4242], GEN_START, GEN_END),
+            WatcherKillProvenance::NoJetsamRecord
+        );
+        assert_eq!(
+            bind_jetsam_record(Some(GEN_END + 1), &[4242], &[4242], GEN_START, GEN_END),
+            WatcherKillProvenance::NoJetsamRecord
+        );
+        assert_eq!(
+            bind_jetsam_record(None, &[4242], &[4242], GEN_START, GEN_END),
+            WatcherKillProvenance::NoJetsamRecord
+        );
+    }
+
+    #[test]
+    fn bind_jetsam_record_boundaries_are_inclusive() {
+        assert_eq!(
+            bind_jetsam_record(Some(GEN_START), &[4242], &[4242], GEN_START, GEN_END),
+            WatcherKillProvenance::JetsamPidMatched
+        );
+        assert_eq!(
+            bind_jetsam_record(Some(GEN_END), &[4242], &[4242], GEN_START, GEN_END),
+            WatcherKillProvenance::JetsamPidMatched
+        );
+    }
+
+    #[test]
+    fn resolve_unbound_kill_provenance_separates_pressure_from_external() {
+        // Warn/critical pressure → a pressure kill is plausible.
+        assert_eq!(
+            resolve_unbound_kill_provenance(MemoryPressureLevel::Warn, false),
+            WatcherKillProvenance::PressureOnly
+        );
+        assert_eq!(
+            resolve_unbound_kill_provenance(MemoryPressureLevel::Critical, true),
+            WatcherKillProvenance::PressureOnly
+        );
+        // Normal pressure + low peak RSS → positively an external kill.
+        assert_eq!(
+            resolve_unbound_kill_provenance(MemoryPressureLevel::Normal, true),
+            WatcherKillProvenance::ExternalKillSuspected
+        );
+        // Normal pressure but a HIGH peak RSS is ambiguous — must not claim external.
+        assert_eq!(
+            resolve_unbound_kill_provenance(MemoryPressureLevel::Normal, false),
+            WatcherKillProvenance::NoJetsamRecord
+        );
+        // Unknown pressure can never assert an external kill.
+        assert_eq!(
+            resolve_unbound_kill_provenance(MemoryPressureLevel::Unknown, true),
+            WatcherKillProvenance::NoJetsamRecord
+        );
+    }
+
+    #[test]
+    fn classify_jetsam_kill_reason_maps_allow_list_and_falls_back_to_other() {
+        assert_eq!(
+            classify_jetsam_kill_reason("per-process-limit"),
+            JetsamKillReason::PerProcessLimit
+        );
+        assert_eq!(
+            classify_jetsam_kill_reason("  Per-Process-Limit "),
+            JetsamKillReason::PerProcessLimit
+        );
+        assert_eq!(classify_jetsam_kill_reason("highwater"), JetsamKillReason::Highwater);
+        assert_eq!(
+            classify_jetsam_kill_reason("vm-pageshortage"),
+            JetsamKillReason::VmPageshortage
+        );
+        assert_eq!(
+            classify_jetsam_kill_reason("vm_thrashing"),
+            JetsamKillReason::VmThrashing
+        );
+        // Anything else — including a name-bearing string — collapses to `other`,
+        // never a nearest guess and never copied through.
+        assert_eq!(
+            classify_jetsam_kill_reason("idle-exit /Users/someone/secret"),
+            JetsamKillReason::Other
+        );
+    }
+
+    #[test]
+    fn jetsam_rpages_bucket_boundaries_are_monotonic() {
+        assert_eq!(jetsam_rpages_bucket(0), "under_10k");
+        assert_eq!(jetsam_rpages_bucket(9_999), "under_10k");
+        assert_eq!(jetsam_rpages_bucket(10_000), "10k_to_100k");
+        assert_eq!(jetsam_rpages_bucket(99_999), "10k_to_100k");
+        assert_eq!(jetsam_rpages_bucket(100_000), "100k_to_500k");
+        assert_eq!(jetsam_rpages_bucket(499_999), "100k_to_500k");
+        assert_eq!(jetsam_rpages_bucket(500_000), "500k_to_1m");
+        assert_eq!(jetsam_rpages_bucket(999_999), "500k_to_1m");
+        assert_eq!(jetsam_rpages_bucket(1_000_000), "over_1m");
+    }
+
+    #[test]
+    fn memory_pressure_level_maps_sysctl_and_retains_peak() {
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(1), MemoryPressureLevel::Normal);
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(2), MemoryPressureLevel::Warn);
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(4), MemoryPressureLevel::Critical);
+        // A garbage/future bitmask never masquerades as normal.
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(3), MemoryPressureLevel::Unknown);
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(-1), MemoryPressureLevel::Unknown);
+        // Peak retention keeps the most severe, and prefers a readable normal over
+        // an unreadable unknown.
+        assert_eq!(
+            MemoryPressureLevel::Normal.peak_with(MemoryPressureLevel::Critical),
+            MemoryPressureLevel::Critical
+        );
+        assert_eq!(
+            MemoryPressureLevel::Critical.peak_with(MemoryPressureLevel::Warn),
+            MemoryPressureLevel::Critical
+        );
+        assert_eq!(
+            MemoryPressureLevel::Unknown.peak_with(MemoryPressureLevel::Normal),
+            MemoryPressureLevel::Normal
+        );
+    }
+
+    #[test]
+    fn kill_provenance_and_reason_tokens_round_trip_without_gaps() {
+        // Every variant has a distinct, non-empty as_str, and ALL enumerates them.
+        let mut seen = std::collections::HashSet::new();
+        for provenance in WatcherKillProvenance::ALL {
+            assert!(seen.insert(provenance.as_str()), "duplicate provenance token");
+        }
+        assert_eq!(seen.len(), WatcherKillProvenance::ALL.len());
+        let mut reasons = std::collections::HashSet::new();
+        for reason in JetsamKillReason::ALL {
+            assert!(reasons.insert(reason.as_str()), "duplicate reason token");
+        }
+        assert_eq!(reasons.len(), JetsamKillReason::ALL.len());
+    }
+
+    #[test]
+    fn kill_outcome_bound_carries_reason_and_bucket_unbound_carries_sentinels() {
+        let bound = WatcherKillOutcome::bound(
+            WatcherKillProvenance::JetsamPidMatched,
+            JetsamKillReason::PerProcessLimit,
+            27_000,
+        );
+        assert_eq!(bound.provenance_token(), "jetsam_pid_matched");
+        assert_eq!(bound.reason_token(), "per_process_limit");
+        assert_eq!(bound.rpages_token(), "10k_to_100k");
+
+        // Every non-binding outcome renders the sentinels, never a stale reason.
+        for provenance in WatcherKillProvenance::ALL
+            .into_iter()
+            .filter(|p| !p.is_bound())
+        {
+            let outcome = WatcherKillOutcome::unresolved(provenance);
+            assert_eq!(outcome.reason_token(), WATCHER_KILL_UNAVAILABLE);
+            assert_eq!(outcome.rpages_token(), WATCHER_KILL_UNAVAILABLE);
+            assert_eq!(outcome.provenance_token(), provenance.as_str());
+        }
+        assert_eq!(
+            WatcherKillOutcome::not_applicable().provenance_token(),
+            "not_applicable"
+        );
+        assert_eq!(WatcherKillOutcome::deferred().provenance_token(), "deferred");
     }
 }
