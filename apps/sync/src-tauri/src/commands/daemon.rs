@@ -3842,11 +3842,16 @@ fn note_runner_preflight_failure() -> u32 {
 fn note_watcher_crashed() -> u32 {
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
-    // The EPISODE streak grows on every unexpected exit regardless of how long
-    // the generation ran, so a slow-death loop (each generation outliving
-    // `FAST_FAIL_WINDOW`) is still counted and rate-limited. It never influences
-    // `consecutive` or backoff below — only capture rate-limiting reads it.
-    st.slow_death_consecutive = st.slow_death_consecutive.saturating_add(1);
+    // Exit-path episode recovery, mirroring the supervisor's live reset: if THIS
+    // generation itself survived `HEALTHY_RUN_WINDOW` before dying, the episode has
+    // recovered even when the 30s supervisor poll did not observe it before this
+    // exit, so clear the episode streak here — before the capture-policy streak
+    // counts this death — and a fresh actionable death starts a new episode at #1.
+    // (The streak is INCREMENTED in note_watcher_capture_policy_streak, only for the
+    // capture-eligible classes that read it, so unrelated classes cannot advance it.)
+    if should_reset_after_recovery(Some(ran), HEALTHY_RUN_WINDOW) {
+        st.slow_death_consecutive = 0;
+    }
     if is_fast_failure(ran, FAST_FAIL_WINDOW) {
         st.consecutive = st.consecutive.saturating_add(1);
     } else {
@@ -3883,6 +3888,11 @@ fn note_watcher_capture_policy_streak(
     match policy {
         WatcherExitCapturePolicy::CaptureRateLimited => st.exec_not_runnable_consecutive,
         WatcherExitCapturePolicy::Capture | WatcherExitCapturePolicy::DeferSessionEndDecision => {
+            // Advance the episode streak ONLY for the capture-eligible classes that
+            // READ it, so a burst of LocalLogOnly (disk/environmental) or separately
+            // rate-limited 126/127 exits can never consume the milestones that gate a
+            // SIGKILL's first actionable alert — one class can never mute another's.
+            st.slow_death_consecutive = st.slow_death_consecutive.saturating_add(1);
             st.slow_death_consecutive
         }
         WatcherExitCapturePolicy::LocalLogOnly => global_consecutive,
@@ -5062,7 +5072,6 @@ mod tests {
 
     impl WatcherProcessEffects for RecordingWatcherEffects {
         fn note_watcher_crashed(&mut self) -> u32 {
-            self.slow_death_consecutive = self.slow_death_consecutive.saturating_add(1);
             if self.simulate_slow_death {
                 // Ran healthily, then died: production pins `consecutive` to 1.
                 self.consecutive = 1;
@@ -5083,7 +5092,11 @@ mod tests {
             match policy {
                 WatcherExitCapturePolicy::CaptureRateLimited => self.exec_not_runnable_consecutive,
                 WatcherExitCapturePolicy::Capture
-                | WatcherExitCapturePolicy::DeferSessionEndDecision => self.slow_death_consecutive,
+                | WatcherExitCapturePolicy::DeferSessionEndDecision => {
+                    // Episode streak advances only for the capture-eligible classes.
+                    self.slow_death_consecutive = self.slow_death_consecutive.saturating_add(1);
+                    self.slow_death_consecutive
+                }
                 WatcherExitCapturePolicy::LocalLogOnly => global_consecutive,
             }
         }
@@ -8650,27 +8663,24 @@ mod tests {
         assert_eq!(HEALTHY_RUN_WINDOW, RESPAWN_MAX_BACKOFF);
     }
 
-    /// Failure classes stay isolated: an interleaved exec-not-runnable (127) blip
-    /// neither mutes the slow-death episode milestones nor is escalated by them.
-    /// The 127 sits at exec streak 1 (its own CaptureRateLimited class, below the
-    /// 4-milestone) so it never captures, and the SIGKILL after it still captures
-    /// at its own episode milestone.
+    /// Failure classes stay isolated (Codex P2): a burst of LocalLogOnly
+    /// (disk/environmental) exits must NOT advance the episode streak, so the first
+    /// actionable SIGKILL after them still alerts at episode #1. With the streak
+    /// advanced on every exit this SIGKILL would land on #3 (a non-milestone) and be
+    /// silently muted — the exact regression this asserts against (fix → 1 capture,
+    /// pre-fix → 0).
     #[test]
-    fn exec_not_runnable_blip_does_not_disturb_slow_death_episode() {
+    fn local_log_only_burst_does_not_mute_first_sigkill() {
         let mut effects = RecordingWatcherEffects {
             simulate_slow_death: true,
             ..RecordingWatcherEffects::default()
         };
-        for &(code, signal) in &[
-            (None, Some(SIGKILL)), // episode #1 → captured
-            (None, Some(SIGKILL)), // episode #2 → captured
-            (Some(127), None),     // exec streak 1 → NOT captured, does not mute
-            (None, Some(SIGKILL)), // episode #4 → captured
-        ] {
+        // Two environmental exits (exit code 1 → LocalLogOnly, breadcrumb-only)...
+        for _ in 0..2 {
             handle_watcher_exit_with_effects(
                 &mut effects,
-                code,
-                signal,
+                Some(1),
+                None,
                 false,
                 false,
                 "npx",
@@ -8679,26 +8689,69 @@ mod tests {
                 &WatcherExitCaptureContext::default(),
             );
         }
-        // Exactly the three SIGKILL milestone captures; the 127 blip captured nothing.
+        // ...then the first SIGKILL of the episode.
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(SIGKILL),
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
         assert_eq!(
             effects.captures.len(),
-            3,
-            "127 blip must neither capture nor mute the episode: {:?}",
-            effects
-                .captures
-                .iter()
-                .map(|capture| capture.fingerprint.clone())
-                .collect::<Vec<_>>()
+            1,
+            "the LocalLogOnly burst must not capture and must not mute the SIGKILL"
         );
-        for capture in &effects.captures {
-            assert_eq!(
-                capture.fingerprint[2], "signal:9",
-                "only the SIGKILL episode should have captured, never the 127"
+        assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
+        assert!(effects.captures[0].message.contains("consecutive failure #1"));
+        assert!(!effects.captures[0].message.contains("episode failure"));
+    }
+
+    /// The same isolation for the exec-not-runnable class: two 126/127 exits (exec
+    /// streak 1, 2 — below the 4-milestone so neither captures) must not advance the
+    /// episode streak, so the first SIGKILL still alerts at #1 (fix → 1 capture,
+    /// pre-fix → 0 because the SIGKILL would land on #3).
+    #[test]
+    fn exec_not_runnable_exits_do_not_mute_first_sigkill() {
+        let mut effects = RecordingWatcherEffects {
+            simulate_slow_death: true,
+            ..RecordingWatcherEffects::default()
+        };
+        for _ in 0..2 {
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                Some(127),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                TerminationHost::Posix,
+                &WatcherExitCaptureContext::default(),
             );
         }
-        // The SIGKILL after the 127 landed on episode milestone #4, proving the
-        // exec blip did not reset or advance the slow-death streak.
-        assert!(effects.captures[2].message.contains("(episode failure #4)"));
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(SIGKILL),
+            false,
+            false,
+            "npx",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(
+            effects.captures.len(),
+            1,
+            "the 126/127 exits must not capture (streak < 4) nor mute the SIGKILL"
+        );
+        assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
+        assert!(effects.captures[0].message.contains("consecutive failure #1"));
     }
 
     /// A cancelled exit stays silent AND never touches the episode streak (it

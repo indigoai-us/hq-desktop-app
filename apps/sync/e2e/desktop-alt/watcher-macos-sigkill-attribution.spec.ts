@@ -48,13 +48,17 @@ const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
 
 describe('macOS SIGKILL alerting cap — source contracts', () => {
-  it('adds a per-episode slow-death streak that grows on every unexpected exit', () => {
-    // The new counter exists on the crash state and is incremented in
-    // note_watcher_crashed, distinct from `consecutive`.
+  it('adds a per-episode slow-death streak advanced only for capture-eligible exits', () => {
+    // The new counter exists on the crash state, distinct from `consecutive`, and
+    // is incremented in the capture-policy streak (so unrelated classes can't
+    // advance it — failure-class isolation).
     expect(daemonSource).toContain('slow_death_consecutive: u32');
     expect(daemonSource).toContain(
       'st.slow_death_consecutive = st.slow_death_consecutive.saturating_add(1);',
     );
+    // Exit-path episode recovery: a generation that itself survived
+    // HEALTHY_RUN_WINDOW clears the streak even if the 30s poll missed it.
+    expect(daemonSource).toContain('should_reset_after_recovery(Some(ran), HEALTHY_RUN_WINDOW)');
   });
 
   it('clears the episode streak only after a HEALTHY_RUN_WINDOW recovery, not the 60s window', () => {
@@ -74,10 +78,11 @@ describe('macOS SIGKILL alerting cap — source contracts', () => {
     // Capture and DeferSessionEndDecision policies, leaving the 126/127
     // exec-not-runnable class on its own streak.
     expect(daemonSource).toContain('WatcherExitCapturePolicy::CaptureRateLimited => st.exec_not_runnable_consecutive,');
-    // The Capture / DeferSessionEndDecision arm returns the episode streak
-    // (whitespace-tolerant so a rustfmt reflow does not falsely fail the seam).
+    // The Capture / DeferSessionEndDecision arm advances + returns the episode
+    // streak (comment/whitespace-tolerant so a rustfmt reflow does not falsely
+    // fail the seam). [\s\S] spans comment lines between the arm and the increment.
     expect(daemonSource).toMatch(
-      /WatcherExitCapturePolicy::DeferSessionEndDecision\s*=>\s*\{\s*st\.slow_death_consecutive/,
+      /WatcherExitCapturePolicy::DeferSessionEndDecision\s*=>\s*\{[\s\S]{0,500}?st\.slow_death_consecutive = st\.slow_death_consecutive\.saturating_add\(1\);/,
     );
   });
 

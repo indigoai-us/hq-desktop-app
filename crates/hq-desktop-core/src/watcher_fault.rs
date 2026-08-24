@@ -1155,14 +1155,18 @@ impl MemoryPressureLevel {
         }
     }
 
-    /// Map the raw `kern.memorystatus_vm_pressure_level` sysctl value (a bitmask:
-    /// 1=normal, 2=warn, 4=critical) to a level. Any other value is `Unknown`, so
-    /// a future/garbage reading never masquerades as `normal`.
+    /// Map the raw `kern.memorystatus_vm_pressure_level` sysctl value to a level.
+    /// That sysctl reports Darwin's `vm_pressure_level_t` enum — 0=normal,
+    /// 1=warning, 2=urgent, (3/4)=critical — NOT the `dispatch_source`
+    /// memory-pressure notification bitmask (1=normal, 2=warn, 4=critical). Urgent
+    /// is folded into `Warn` (elevated pressure short of critical) since this axis
+    /// carries three levels; both critical encodings are accepted. Any other value
+    /// is `Unknown`, so a future/garbage reading never masquerades as `normal`.
     pub fn from_sysctl_level(raw: i32) -> Self {
         match raw {
-            1 => Self::Normal,
-            2 => Self::Warn,
-            4 => Self::Critical,
+            0 => Self::Normal,
+            1 | 2 => Self::Warn,
+            3 | 4 => Self::Critical,
             _ => Self::Unknown,
         }
     }
@@ -1962,11 +1966,14 @@ mod tests {
 
     #[test]
     fn memory_pressure_level_maps_sysctl_and_retains_peak() {
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(1), MemoryPressureLevel::Normal);
+        // Darwin vm_pressure_level_t: 0=normal, 1=warning, 2=urgent, 3/4=critical.
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(0), MemoryPressureLevel::Normal);
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(1), MemoryPressureLevel::Warn);
         assert_eq!(MemoryPressureLevel::from_sysctl_level(2), MemoryPressureLevel::Warn);
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(3), MemoryPressureLevel::Critical);
         assert_eq!(MemoryPressureLevel::from_sysctl_level(4), MemoryPressureLevel::Critical);
-        // A garbage/future bitmask never masquerades as normal.
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(3), MemoryPressureLevel::Unknown);
+        // A garbage/future value never masquerades as normal.
+        assert_eq!(MemoryPressureLevel::from_sysctl_level(9), MemoryPressureLevel::Unknown);
         assert_eq!(MemoryPressureLevel::from_sysctl_level(-1), MemoryPressureLevel::Unknown);
         // Peak retention keeps the most severe, and prefers a readable normal over
         // an unreadable unknown.
