@@ -186,7 +186,21 @@ fn claude_desktop_config_path() -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn claude_desktop_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".config/Claude/claude_desktop_config.json"))
+    linux_claude_desktop_config_path_in(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_claude_desktop_config_path_in(
+    xdg_config_home: Option<&OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    xdg_config_home
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join(".config")))
+        .map(|config_home| config_home.join("Claude/claude_desktop_config.json"))
 }
 
 #[cfg(windows)]
@@ -543,6 +557,27 @@ mod tests {
         let invalid = detect_claude_desktop_connectors_at_path(&config);
         assert!(invalid.present);
         assert_eq!(invalid.count, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolves_claude_desktop_config_under_xdg_config_home() {
+        let xdg_config_home = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("tempdir");
+
+        let path = linux_claude_desktop_config_path_in(
+            Some(xdg_config_home.path().as_os_str()),
+            Some(home.path()),
+        );
+
+        assert_eq!(
+            path,
+            Some(
+                xdg_config_home
+                    .path()
+                    .join("Claude/claude_desktop_config.json")
+            )
+        );
     }
 
     #[test]

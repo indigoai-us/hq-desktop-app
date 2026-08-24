@@ -53,10 +53,19 @@
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopTelemetry } from '../../lib/desktop-telemetry';
   import {
+    BUILD_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
     createWizardRouter,
+    DIRECTORY_STEP_INDEX,
+    HANDOFF_STEP_INDEX,
     markSetupStepCompleted,
+    READY_STEP_INDEX,
+    RUN_SETUP_STEP_INDEX,
+    SETTINGS_STEP_INDEX,
+    SETUP_STEP_INDEX,
+    TRUST_STEP_INDEX,
+    WELCOME_SIGNIN_STEP_INDEX,
     WIZARD_STEPS,
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
@@ -119,9 +128,7 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
-  const DEFAULT_STEP = WIZARD_STEPS[0].index;
-  const READY_STEP_INDEX =
-    WIZARD_STEPS.find((step) => step.id === 'ready')?.index ?? 5;
+  const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
 
   let {
     initialStep,
@@ -225,7 +232,7 @@
     installPath ? friendlyPath(installPath, homeDirFromDefaultHqPath(installPath)) : '~/hq',
   );
   const directoryButtonLabel = $derived(directoryBusy ? 'Checking…' : 'Choose…');
-  const topHeight = $derived(currentStep >= 6 ? '240px' : '200px');
+  const topHeight = $derived(currentStep >= TRUST_STEP_INDEX ? '240px' : '200px');
   const settledCount = $derived(
     stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
       .length,
@@ -280,7 +287,7 @@
   $effect(() => {
     // In re-prompt mode there is no install/setup — only the consent step — so
     // the setup run must never start even if the step index momentarily reads 2.
-    if (isReprompt || currentStep !== 2 || setupStarted) return;
+    if (isReprompt || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
     setupStarted = true;
     void startSetupRun();
   });
@@ -443,7 +450,7 @@
         // its own step after setup — before an answer exists we must not opt the
         // person in NOR emit any usage event (a person who later declines must
         // have produced zero events).
-        advanceTo(1);
+        advanceTo(DIRECTORY_STEP_INDEX);
       } else {
         signInError = 'Authentication failed. Please try again.';
       }
@@ -534,7 +541,7 @@
 
   function handleInstall() {
     if (!installPath || directoryBusy) return;
-    advanceTo(2);
+    advanceTo(SETUP_STEP_INDEX);
   }
 
   function beginSetupRun(): number {
@@ -934,7 +941,7 @@
       await finishWithRecovery();
       return;
     }
-    advanceTo(READY_STEP_INDEX);
+    advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
   }
 
   async function startSetupRun() {
@@ -1316,9 +1323,16 @@
 
   async function runMorph(prev: number, next: number, token: number) {
     if (reducedMotion || !logoEl || !folderLabelEl || !folderLargeEl) return false;
-    if (!((prev === 0 && next === 1) || (prev === 1 && next === 0))) return false;
+    if (
+      !(
+        (prev === WELCOME_SIGNIN_STEP_INDEX && next === DIRECTORY_STEP_INDEX) ||
+        (prev === DIRECTORY_STEP_INDEX && next === WELCOME_SIGNIN_STEP_INDEX)
+      )
+    ) {
+      return false;
+    }
 
-    morphMode = prev === 0 ? 'forward' : 'back';
+    morphMode = prev === WELCOME_SIGNIN_STEP_INDEX ? 'forward' : 'back';
     graphicStep = next;
     graphicOn = true;
     await tick();
@@ -1326,7 +1340,7 @@
       return true;
     }
 
-    if (prev === 0) {
+    if (prev === WELCOME_SIGNIN_STEP_INDEX) {
       folderLargeEl.style.transition = 'none';
       folderLargeEl.style.opacity = '0';
       folderLabelEl.style.transition = 'none';
@@ -1380,7 +1394,7 @@
     clearTransitionTimers();
     resetMorphArtifacts();
 
-    if (previous === 2 && next !== 2 && !setupCompleted) {
+    if (previous === SETUP_STEP_INDEX && next !== SETUP_STEP_INDEX && !setupCompleted) {
       cancelSetupRun();
       setupStarted = false;
       stages = buildInitialStages();
@@ -1394,7 +1408,7 @@
 
     void runMorph(previous, next, token).then((handled) => {
       if (handled) return;
-      const slide = previous >= 5 && next >= 5 && !reducedMotion;
+      const slide = previous >= READY_STEP_INDEX && next >= READY_STEP_INDEX && !reducedMotion;
       if (slide) {
         outgoingGraphicStep = graphicStep;
         outgoingGraphicDirection = next > previous ? 'left' : 'right';
@@ -1435,8 +1449,10 @@
   function graphicIsOn(step: number): boolean {
     return (
       (graphicStep === step && graphicOn) ||
-      (morphMode === 'forward' && (step === 0 || step === 1)) ||
-      (morphMode === 'back' && (step === 0 || step === 1)) ||
+      (morphMode === 'forward' &&
+        (step === WELCOME_SIGNIN_STEP_INDEX || step === DIRECTORY_STEP_INDEX)) ||
+      (morphMode === 'back' &&
+        (step === WELCOME_SIGNIN_STEP_INDEX || step === DIRECTORY_STEP_INDEX)) ||
       outgoingGraphicStep === step
     );
   }
@@ -1457,24 +1473,24 @@
       <div class="gfxwrap" aria-hidden="true">
         <div
           class="gfx"
-          class:on={graphicIsOn(0)}
-          class:enter-left={graphicStep === 0 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 0 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 0 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 0 && outgoingGraphicDirection === 'right'}
-          data-g="0"
+          class:on={graphicIsOn(WELCOME_SIGNIN_STEP_INDEX)}
+          class:enter-left={graphicStep === WELCOME_SIGNIN_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === WELCOME_SIGNIN_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === WELCOME_SIGNIN_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === WELCOME_SIGNIN_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={WELCOME_SIGNIN_STEP_INDEX}
         >
           <div class="logo" bind:this={logoEl}>{@render HqLogo()}</div>
         </div>
 
         <div
           class="gfx"
-          class:on={graphicIsOn(1)}
-          class:enter-left={graphicStep === 1 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 1 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 1 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 1 && outgoingGraphicDirection === 'right'}
-          data-g="1"
+          class:on={graphicIsOn(DIRECTORY_STEP_INDEX)}
+          class:enter-left={graphicStep === DIRECTORY_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === DIRECTORY_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === DIRECTORY_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === DIRECTORY_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={DIRECTORY_STEP_INDEX}
         >
           <div class="finder-item">
             <img class="macfolder-lg" src={folderIcon} alt="" bind:this={folderLargeEl} />
@@ -1484,12 +1500,12 @@
 
         <div
           class="gfx"
-          class:on={graphicIsOn(2)}
-          class:enter-left={graphicStep === 2 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 2 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 2 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 2 && outgoingGraphicDirection === 'right'}
-          data-g="2"
+          class:on={graphicIsOn(SETUP_STEP_INDEX)}
+          class:enter-left={graphicStep === SETUP_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === SETUP_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === SETUP_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === SETUP_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={SETUP_STEP_INDEX}
         >
           <div
             class="prog"
@@ -1513,70 +1529,82 @@
           </div>
         </div>
 
-        <div class="gfx" class:on={graphicIsOn(3)} data-g="3">
+        <div class="gfx" class:on={graphicIsOn(CONSENT_STEP_INDEX)} data-g={CONSENT_STEP_INDEX}>
           {@render ConsentShield()}
         </div>
 
-        <div class="gfx" class:on={graphicIsOn(4)} data-g="4">
+        <div class="gfx" class:on={graphicIsOn(CONNECTOR_IMPORT_STEP_INDEX)} data-g={CONNECTOR_IMPORT_STEP_INDEX}>
           {@render BigCheck()}
         </div>
 
         <div
           class="gfx"
-          class:on={graphicIsOn(5)}
-          class:enter-left={graphicStep === 5 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 5 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 5 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 5 && outgoingGraphicDirection === 'right'}
-          data-g="5"
+          class:on={graphicIsOn(READY_STEP_INDEX)}
+          class:enter-left={graphicStep === READY_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === READY_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === READY_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === READY_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={READY_STEP_INDEX}
         >
           {@render BigCheck()}
         </div>
 
         <div
           class="gfx"
-          class:on={graphicIsOn(6)}
-          class:enter-left={graphicStep === 6 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 6 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 6 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 6 && outgoingGraphicDirection === 'right'}
-          data-g="6"
+          class:on={graphicIsOn(TRUST_STEP_INDEX)}
+          class:enter-left={graphicStep === TRUST_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === TRUST_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === TRUST_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === TRUST_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={TRUST_STEP_INDEX}
+        >
+          {@render TrustMock()}
+        </div>
+
+        <div
+          class="gfx"
+          class:on={graphicIsOn(SETTINGS_STEP_INDEX)}
+          class:enter-left={graphicStep === SETTINGS_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === SETTINGS_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === SETTINGS_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === SETTINGS_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={SETTINGS_STEP_INDEX}
         >
           {@render SettingsMock()}
         </div>
 
         <div
-          class="gfx"
-          class:on={graphicIsOn(7)}
-          class:enter-left={graphicStep === 7 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 7 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 7 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 7 && outgoingGraphicDirection === 'right'}
-          data-g="7"
+          class="gfx gtop"
+          class:on={graphicIsOn(RUN_SETUP_STEP_INDEX)}
+          class:enter-left={graphicStep === RUN_SETUP_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === RUN_SETUP_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === RUN_SETUP_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === RUN_SETUP_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={RUN_SETUP_STEP_INDEX}
         >
           {@render SetupPromptMock()}
         </div>
 
         <div
           class="gfx gtop"
-          class:on={graphicIsOn(8)}
-          class:enter-left={graphicStep === 8 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 8 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 8 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 8 && outgoingGraphicDirection === 'right'}
-          data-g="8"
+          class:on={graphicIsOn(HANDOFF_STEP_INDEX)}
+          class:enter-left={graphicStep === HANDOFF_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === HANDOFF_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === HANDOFF_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === HANDOFF_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={HANDOFF_STEP_INDEX}
         >
           {@render HandoffMock()}
         </div>
 
         <div
           class="gfx gtop"
-          class:on={graphicIsOn(9)}
-          class:enter-left={graphicStep === 9 && incomingGraphicDirection === 'left'}
-          class:enter-right={graphicStep === 9 && incomingGraphicDirection === 'right'}
-          class:out-left={outgoingGraphicStep === 9 && outgoingGraphicDirection === 'left'}
-          class:out-right={outgoingGraphicStep === 9 && outgoingGraphicDirection === 'right'}
-          data-g="9"
+          class:on={graphicIsOn(BUILD_STEP_INDEX)}
+          class:enter-left={graphicStep === BUILD_STEP_INDEX && incomingGraphicDirection === 'left'}
+          class:enter-right={graphicStep === BUILD_STEP_INDEX && incomingGraphicDirection === 'right'}
+          class:out-left={outgoingGraphicStep === BUILD_STEP_INDEX && outgoingGraphicDirection === 'left'}
+          class:out-right={outgoingGraphicStep === BUILD_STEP_INDEX && outgoingGraphicDirection === 'right'}
+          data-g={BUILD_STEP_INDEX}
         >
           {@render BuildMock()}
         </div>
@@ -1585,8 +1613,8 @@
       <div class="panelwrap">
         <section
           class="panel"
-          class:on={panelStep === 0 && panelOn}
-          data-p="0"
+          class:on={panelStep === WELCOME_SIGNIN_STEP_INDEX && panelOn}
+          data-p={WELCOME_SIGNIN_STEP_INDEX}
           data-testid="onboarding-signin"
           aria-labelledby="onboarding-title-signin"
         >
@@ -1627,8 +1655,8 @@
 
         <section
           class="panel"
-          class:on={panelStep === 1 && panelOn}
-          data-p="1"
+          class:on={panelStep === DIRECTORY_STEP_INDEX && panelOn}
+          data-p={DIRECTORY_STEP_INDEX}
           data-testid="onboarding-directory"
           aria-labelledby="onboarding-title-directory"
         >
@@ -1650,7 +1678,7 @@
             </p>
           {/if}
           <div class="btns split">
-            <button class="btn btn-secondary" type="button" onclick={() => goBackTo(0)}>Back</button>
+            <button class="btn btn-secondary" type="button" onclick={() => goBackTo(WELCOME_SIGNIN_STEP_INDEX)}>Back</button>
             <button
               class="btn btn-primary"
               type="button"
@@ -1664,8 +1692,8 @@
 
         <section
           class="panel"
-          class:on={panelStep === 2 && panelOn}
-          data-p="2"
+          class:on={panelStep === SETUP_STEP_INDEX && panelOn}
+          data-p={SETUP_STEP_INDEX}
           data-testid="onboarding-setup"
           aria-labelledby="onboarding-title-setup"
         >
@@ -1690,14 +1718,14 @@
                still fails is surfaced on the "HQ is ready" screen's needs-attention note,
                not here. No percentages, stage counts, staging toggle, or manual controls. -->
           <div class="btns">
-            <button class="btn btn-secondary" type="button" onclick={() => goBackTo(1)}>Back</button>
+            <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>
         </section>
 
         <section
           class="panel"
-          class:on={panelStep === 3 && panelOn}
-          data-p="3"
+          class:on={panelStep === CONSENT_STEP_INDEX && panelOn}
+          data-p={CONSENT_STEP_INDEX}
           data-testid="onboarding-consent"
           aria-labelledby="onboarding-title-consent"
         >
@@ -1855,7 +1883,7 @@
         <section
           class="panel"
           class:on={panelStep === CONNECTOR_IMPORT_STEP_INDEX && panelOn}
-          data-p="4"
+          data-p={CONNECTOR_IMPORT_STEP_INDEX}
           data-testid="onboarding-connector-import"
           aria-labelledby="onboarding-title-connector-import"
         >
@@ -1867,7 +1895,7 @@
         <section
           class="panel"
           class:on={panelStep === READY_STEP_INDEX && panelOn}
-          data-p="5"
+          data-p={READY_STEP_INDEX}
           data-testid="onboarding-summary"
           aria-labelledby="onboarding-title-ready"
         >
@@ -2010,56 +2038,56 @@
 
         <section
           class="panel"
-          class:on={panelStep === 5 && panelOn}
-          data-p="5"
+          class:on={panelStep === TRUST_STEP_INDEX && panelOn}
+          data-p={TRUST_STEP_INDEX}
           data-testid="onboarding-trust"
           aria-labelledby="onboarding-title-trust"
         >
           <h2 class="h" id="onboarding-title-trust">Trust your workspace</h2>
           <p class="body">Claude Code will open with your hq folder selected and /setup ready to run. Choose “Yes, trust this workspace.” Just check that hq is still the folder it’s pointing at.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(4)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(6)}>Continue</button></div>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}>Continue</button></div>
         </section>
 
         <section
           class="panel"
-          class:on={panelStep === 6 && panelOn}
-          data-p="6"
+          class:on={panelStep === SETTINGS_STEP_INDEX && panelOn}
+          data-p={SETTINGS_STEP_INDEX}
           data-testid="onboarding-settings"
           aria-labelledby="onboarding-title-settings"
         >
           <h2 class="h" id="onboarding-title-settings">Dial in your settings</h2>
           <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(5)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(7)}>Continue</button></div>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}>Continue</button></div>
         </section>
 
         <section
           class="panel"
-          class:on={panelStep === 7 && panelOn}
-          data-p="7"
+          class:on={panelStep === RUN_SETUP_STEP_INDEX && panelOn}
+          data-p={RUN_SETUP_STEP_INDEX}
           data-testid="onboarding-run-setup"
           aria-labelledby="onboarding-title-run-setup"
         >
           <h2 class="h" id="onboarding-title-run-setup">Press enter to run /setup</h2>
           <p class="body">Hit ⏎ in the message box to start setup.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(6)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(8)}>Continue</button></div>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}>Continue</button></div>
         </section>
 
         <section
           class="panel"
-          class:on={panelStep === 8 && panelOn}
-          data-p="8"
+          class:on={panelStep === HANDOFF_STEP_INDEX && panelOn}
+          data-p={HANDOFF_STEP_INDEX}
           data-testid="onboarding-handoff"
           aria-labelledby="onboarding-title-handoff"
         >
           <h2 class="h" id="onboarding-title-handoff">Answer, then run /handoff</h2>
           <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(7)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(9)}>Continue</button></div>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}>Continue</button></div>
         </section>
 
         <section
           class="panel"
-          class:on={panelStep === 9 && panelOn}
-          data-p="9"
+          class:on={panelStep === BUILD_STEP_INDEX && panelOn}
+          data-p={BUILD_STEP_INDEX}
           data-testid="onboarding-build"
           aria-labelledby="onboarding-title-build"
         >
@@ -2070,7 +2098,7 @@
               Setup is saved on disk. Tap Retry to close this window.
             </p>
           {/if}
-          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(8)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
+          <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(HANDOFF_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
         </section>
       </div>
     </div>

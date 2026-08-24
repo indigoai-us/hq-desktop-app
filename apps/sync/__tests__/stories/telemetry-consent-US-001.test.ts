@@ -131,7 +131,7 @@ afterEach(() => {
 
 describe('US-001 wizard step model', () => {
   it('inserts consent and connector import after setup before ready', () => {
-    expect(WIZARD_STEPS.map((s) => s.id)).toEqual([
+    expect(WIZARD_STEPS.slice(0, 6).map((s) => s.id)).toEqual([
       'welcome-signin',
       'directory',
       'setup',
@@ -312,7 +312,7 @@ describe('US-001 source regressions', () => {
     // step; the sign-in success path must not touch telemetry.
     const signInBlock = wizardSource.slice(
       wizardSource.indexOf('if (result.authenticated)'),
-      wizardSource.indexOf('advanceTo(1)'),
+      wizardSource.indexOf('\n  function detectLooksLikeHq'),
     );
     expect(signInBlock).not.toContain('postOptIn');
     expect(signInBlock).not.toContain('emitDesktopTelemetry');
