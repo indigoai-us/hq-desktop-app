@@ -133,6 +133,17 @@ jobs:
             .
             apps/sync/src-tauri
           cache-on-failure: true
+      # hq-plugin-meetings is a private repo, so cargo's git fetch of it needs
+      # credentials. Rewrite only indigoai-us HTTPS URLs to carry the token —
+      # scoped to the org, not all of github.com. The secret is masked in logs.
+      - name: Authenticate cargo git fetches to private indigoai-us repos
+        shell: bash
+        env:
+          GH_FETCH_TOKEN: ${{ secrets.INDIGO_GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_FETCH_TOKEN}@github.com/indigoai-us/".insteadOf \
+            "https://github.com/indigoai-us/"
       - name: App crate tests (hq-sync-menubar)
         timeout-minutes: 20
         working-directory: apps/sync/src-tauri

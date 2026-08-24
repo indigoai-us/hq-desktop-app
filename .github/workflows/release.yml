@@ -296,6 +296,17 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # hq-plugin-meetings is a private repo; cargo's git fetch of it needs
+      # credentials. Rewrite only indigoai-us HTTPS URLs. Masked in logs.
+      - name: Authenticate cargo git fetches to private indigoai-us repos
+        shell: bash
+        env:
+          GH_FETCH_TOKEN: ${{ secrets.INDIGO_GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_FETCH_TOKEN}@github.com/indigoai-us/".insteadOf \
+            "https://github.com/indigoai-us/"
+
       - name: Put rustup-managed cargo first on PATH
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
@@ -726,6 +737,17 @@ jobs:
         with:
           workspaces: "apps/sync/src-tauri -> apps/sync/src-tauri/target"
           key: ${{ matrix.target }}
+
+      # hq-plugin-meetings is a private repo; cargo's git fetch of it needs
+      # credentials. Rewrite only indigoai-us HTTPS URLs. Masked in logs.
+      - name: Authenticate cargo git fetches to private indigoai-us repos
+        shell: bash
+        env:
+          GH_FETCH_TOKEN: ${{ secrets.INDIGO_GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_FETCH_TOKEN}@github.com/indigoai-us/".insteadOf \
+            "https://github.com/indigoai-us/"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
