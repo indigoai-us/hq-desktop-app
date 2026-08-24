@@ -2,8 +2,8 @@
 //
 // Starts a one-shot HTTP server on 127.0.0.1:53682 and advertises the
 // callback as http://localhost:53682/callback, which matches the
-// `http://localhost:*/callback` wildcard registered on Cognito app client
-// 7acei2c8v870enheptb1j5foln (hq-prod stack, canonical post-2026-04-25 cutover).
+// `http://localhost:*/callback` wildcard registered on the configured
+// non-production Cognito app client.
 // Binding the loopback addresses 127.0.0.1 and ::1 (never 0.0.0.0/::) keeps the
 // listener off the LAN. `localhost` in the redirect URI is required because
 // Cognito matches the host segment literally — `127.0.0.1` fails — and because
@@ -39,8 +39,8 @@
 
 use super::cognito::{self, AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
-    build_authorize_url, cognito_identity_provider, cognito_token_url, compute_code_challenge,
-    generate_code_verifier, parse_callback, COGNITO_CLIENT_ID, REDIRECT_URI,
+    build_authorize_url, cognito_client_id, cognito_identity_provider, cognito_token_url,
+    compute_code_challenge, generate_code_verifier, parse_callback, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -420,6 +420,7 @@ pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuth
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
+    let authorize_url = build_authorize_url(&state, &challenge, identity_provider)?;
 
     // Drop sticky topmost before the system browser opens so a raised
     // popover / earlier post-OAuth raise cannot cover the provider page.
@@ -468,10 +469,6 @@ pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuth
         *guard = Some(verifier);
     }
 
-    // Explicit identity_provider tells Cognito Hosted UI to skip its own
-    // username/password form and redirect straight to the selected provider.
-    let authorize_url = build_authorize_url(&state, &challenge, identity_provider);
-
     Ok(OAuthFlowInit {
         authorize_url,
         state,
@@ -496,6 +493,9 @@ pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
 /// Exchange an authorization code for tokens using the stored PKCE verifier.
 #[tauri::command]
 pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthState, String> {
+    let client_id = cognito_client_id()?;
+    let token_url = cognito_token_url()?;
+
     // Take the verifier out of storage (one-time use)
     let verifier = {
         let mut guard = pkce_store()
@@ -510,7 +510,7 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
 
     let params = [
         ("grant_type", "authorization_code"),
-        ("client_id", COGNITO_CLIENT_ID),
+        ("client_id", client_id.as_str()),
         ("code", &code),
         ("redirect_uri", REDIRECT_URI),
         ("code_verifier", &verifier),
@@ -518,7 +518,7 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
 
     eprintln!("[oauth] token exchange started");
     let response = client
-        .post(cognito_token_url())
+        .post(token_url)
         .form(&params)
         .send()
         .await
