@@ -868,12 +868,19 @@ fn parent_in(path: &Path, dirs: &[PathBuf]) -> bool {
 /// Pure classifier: attribute a resolved binary to a resolution lane by testing
 /// its parent directory against the supplied dir sets in resolver-precedence
 /// order. Kept pure so the precedence is unit-testable with fixture dirs.
+///
+/// `resolver_fallback` is the remaining deterministic-resolver dir set (used on
+/// Windows, where the resolver also searches pnpm / Scoop / `.hq\bin` /
+/// WindowsApps before the `where.exe` fallback): checked AFTER the precise
+/// lanes, so a resolution found there is a user-level install
+/// (`UserPrefix`) rather than the login-shell residual. Empty on Unix.
 pub(crate) fn classify_resolution_source(
     resolved: &Path,
     settings: &[PathBuf],
     managed: &[PathBuf],
     user: &[PathBuf],
     system: &[PathBuf],
+    resolver_fallback: &[PathBuf],
 ) -> ResolutionSource {
     if parent_in(resolved, settings) {
         ResolutionSource::SettingsPath
@@ -883,6 +890,8 @@ pub(crate) fn classify_resolution_source(
         ResolutionSource::UserPrefix
     } else if parent_in(resolved, system) {
         ResolutionSource::SystemPrefix
+    } else if parent_in(resolved, resolver_fallback) {
+        ResolutionSource::UserPrefix
     } else {
         ResolutionSource::LoginShell
     }
@@ -921,12 +930,23 @@ fn managed_resolution_dirs() -> Vec<PathBuf> {
 /// returned. Only meaningful for a resolved path; callers pass
 /// [`ResolutionSource::NotResolved`] themselves when nothing resolved.
 pub fn resolution_source_of(resolved: &Path) -> ResolutionSource {
+    // On Windows the resolver also searches the broader `extended_search_dirs()`
+    // (pnpm / Scoop / `.hq\bin` / WindowsApps / Git) before `where.exe`; feed
+    // that set as the resolver fallback so those installs classify as a user
+    // prefix, not `login_shell`. Empty on Unix, where the deterministic set is
+    // already covered by managed/user/system.
+    #[cfg(target_os = "windows")]
+    let resolver_fallback = extended_search_dirs();
+    #[cfg(not(target_os = "windows"))]
+    let resolver_fallback: Vec<PathBuf> = Vec::new();
+
     classify_resolution_source(
         resolved,
         &settings_path_dirs(),
         &managed_resolution_dirs(),
         &user_program_roots(),
         &system_program_roots(),
+        &resolver_fallback,
     )
 }
 
@@ -1294,13 +1314,6 @@ pub fn child_path() -> String {
                     }
                 }
             }
-            // Other Node version managers (fnm/Volta/asdf/mise/nodenv) and
-            // system package managers (MacPorts/Nix). Additive after nvm — an
-            // nvm-managed node keeps its existing precedence — and each skipped
-            // when absent.
-            for dir in node_version_manager_dirs(&home) {
-                parts.push(dir.to_string_lossy().to_string());
-            }
             // User-level npm/pnpm prefixes (no-sudo installs).
             for dir in user_cli_dirs(&home) {
                 if dir.exists() {
@@ -1325,6 +1338,19 @@ pub fn child_path() -> String {
                 if !p.is_empty() && !parts.iter().any(|x| x == p) {
                     parts.push(p.to_string());
                 }
+            }
+        }
+
+        // Other Node version managers (fnm/Volta/asdf/mise/nodenv) and system
+        // package managers (MacPorts/Nix), appended LAST — a pure last-resort
+        // interpreter source. Placed after the inherited PATH so they can never
+        // override the node the user's manager, an nvm install, or the inherited
+        // PATH already selected: sync and daemon launches keep the active
+        // version, while a machine with no node anywhere still gets an
+        // interpreter for the version probe to recover with.
+        if let Some(home) = home_dir() {
+            for dir in node_version_manager_dirs(&home) {
+                parts.push(dir.to_string_lossy().to_string());
             }
         }
 
@@ -2565,51 +2591,41 @@ mod tests {
         let managed = vec![PathBuf::from("/m/node/bin")];
         let user = vec![PathBuf::from("/u/.npm-global/bin")];
         let system = vec![PathBuf::from("/usr/local/bin")];
+        // Remaining deterministic-resolver dirs (Windows pnpm/Scoop analogue).
+        let fallback = vec![PathBuf::from("/pnpm/shims")];
+        let classify = |resolved: &str| {
+            classify_resolution_source(
+                Path::new(resolved),
+                &settings,
+                &managed,
+                &user,
+                &system,
+                &fallback,
+            )
+        };
 
-        assert_eq!(
-            classify_resolution_source(Path::new("/s/bin/hq"), &settings, &managed, &user, &system),
-            ResolutionSource::SettingsPath
-        );
-        assert_eq!(
-            classify_resolution_source(
-                Path::new("/m/node/bin/hq"),
-                &settings,
-                &managed,
-                &user,
-                &system
-            ),
-            ResolutionSource::ManagedToolchain
-        );
-        assert_eq!(
-            classify_resolution_source(
-                Path::new("/u/.npm-global/bin/hq"),
-                &settings,
-                &managed,
-                &user,
-                &system
-            ),
-            ResolutionSource::UserPrefix
-        );
+        assert_eq!(classify("/s/bin/hq"), ResolutionSource::SettingsPath);
+        assert_eq!(classify("/m/node/bin/hq"), ResolutionSource::ManagedToolchain);
+        assert_eq!(classify("/u/.npm-global/bin/hq"), ResolutionSource::UserPrefix);
+        assert_eq!(classify("/usr/local/bin/hq"), ResolutionSource::SystemPrefix);
+        // A deterministic resolver dir (pnpm/Scoop) is a user-level install, not
+        // the login-shell residual — this is the Windows misclassification fix.
+        assert_eq!(classify("/pnpm/shims/hq"), ResolutionSource::UserPrefix);
+        // Not in any known set → attributed to the login-shell fallback.
+        assert_eq!(classify("/opt/custom/bin/hq"), ResolutionSource::LoginShell);
+
+        // The precise system lane is checked BEFORE the broad resolver fallback,
+        // so a system dir that also appears in the fallback stays SystemPrefix.
         assert_eq!(
             classify_resolution_source(
                 Path::new("/usr/local/bin/hq"),
                 &settings,
                 &managed,
                 &user,
-                &system
+                &system,
+                &[PathBuf::from("/usr/local/bin")],
             ),
             ResolutionSource::SystemPrefix
-        );
-        // Not in any known set → attributed to the login-shell fallback.
-        assert_eq!(
-            classify_resolution_source(
-                Path::new("/opt/custom/bin/hq"),
-                &settings,
-                &managed,
-                &user,
-                &system
-            ),
-            ResolutionSource::LoginShell
         );
         // A dir shared by two lanes is credited to the higher-precedence one.
         let shared = vec![PathBuf::from("/shared/bin")];
@@ -2619,7 +2635,8 @@ mod tests {
                 &shared,
                 &managed,
                 &shared,
-                &system
+                &system,
+                &fallback,
             ),
             ResolutionSource::SettingsPath
         );

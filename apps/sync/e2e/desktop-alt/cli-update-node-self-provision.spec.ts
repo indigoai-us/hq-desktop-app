@@ -322,6 +322,11 @@ describe('hq-CLI version probe recovers an unreadable CLI through the managed No
     expect(recoverHelper).toContain(
       'ManagedRuntime::NotProvisioned | ManagedRuntime::Incomplete',
     );
+    // And ONLY for an undiscoverable interpreter — a genuinely broken CLI
+    // (nonzero exit / empty output) is never provisioned for.
+    expect(recoverHelper).toContain(
+      'interpreter_recovery != InterpreterRecovery::ManagedNodeAbsent',
+    );
   });
 
   it('reports only after recovery has failed', () => {

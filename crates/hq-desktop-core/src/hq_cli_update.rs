@@ -10332,6 +10332,45 @@ mod tests {
         }
     }
 
+    /// A genuinely broken CLI (a real nonzero exit) is NOT an interpreter
+    /// failure, so the probe leaves `interpreter_recovery = NotNeeded` even with
+    /// a managed Node present. The app's provisioner gate keys on
+    /// `ManagedNodeAbsent`, so this is what keeps a broken or native `hq` from
+    /// triggering a managed-Node download.
+    #[test]
+    #[cfg(unix)]
+    fn a_genuinely_failing_cli_is_not_flagged_for_interpreter_recovery() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        let hq = bin.join("hq");
+        std::fs::create_dir_all(&bin).unwrap();
+        // Exits nonzero for a real reason — not a missing interpreter.
+        write_executable(&hq, "#!/bin/sh\nexit 3\n");
+
+        let managed_bin = tmp.path().join("managed/node/bin");
+        std::fs::create_dir_all(&managed_bin).unwrap();
+        let node = managed_bin.join("node");
+        write_executable(&node, "#!/bin/sh\nprintf 'v5.0.0\\n'\n");
+        let managed = crate::toolchain::ManagedRuntime::Present { node };
+
+        let result = probe_local_version_with_managed(
+            Some(&hq),
+            ResolvedProgramKind::Exe,
+            Some(&managed),
+            None,
+            "",
+        );
+
+        assert_eq!(result.local, None);
+        assert_eq!(result.probes.hq_version, VersionProbeOutcome::NonzeroExit);
+        assert_eq!(
+            result.probes.interpreter_recovery,
+            InterpreterRecovery::NotNeeded,
+            "a real nonzero exit must not be flagged for managed-Node recovery"
+        );
+        assert!(should_report_unreadable_version(&result));
+    }
+
     #[test]
     #[cfg(unix)]
     fn hq_version_probe_still_reports_nonzero_exit_for_a_genuine_failing_cli() {

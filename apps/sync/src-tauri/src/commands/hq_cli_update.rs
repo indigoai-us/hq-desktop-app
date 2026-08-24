@@ -2075,10 +2075,19 @@ async fn recover_unreadable_version_once(
     app: &AppHandle,
     mut probed: LocalVersionProbeResult,
 ) -> LocalVersionProbeResult {
-    // Only HQ-owned gaps are ours to repair: a managed Node that was never
-    // installed or is incomplete. A present managed Node means the core probe
-    // already retried through it; a foreign/unknown toolchain is not ours to
-    // provision.
+    // Provision ONLY for an undiscoverable interpreter. A CLI that is present
+    // but genuinely broken — a real nonzero exit, empty or invalid output — is
+    // not an interpreter problem Node can repair. The core probe marks exactly
+    // the recoverable-but-no-managed-Node case `ManagedNodeAbsent`; every other
+    // unreadable outcome stays `NotNeeded`/`StillUnreadable`, so this never
+    // downloads Node for a native or otherwise broken `hq`.
+    if probed.probes.interpreter_recovery != InterpreterRecovery::ManagedNodeAbsent {
+        return probed;
+    }
+    // And only when HQ owns the gap: a managed Node that was never installed or
+    // is incomplete. (`ManagedNodeAbsent` also covers PresentMissingNpx and
+    // Unknown, which are not cleanly provisionable, so gate on the two states
+    // the provisioner can actually repair.)
     match classify_runtime() {
         ManagedRuntime::NotProvisioned | ManagedRuntime::Incomplete { .. } => {}
         _ => return probed,
