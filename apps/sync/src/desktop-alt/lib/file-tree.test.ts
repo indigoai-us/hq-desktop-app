@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import {
   companySlugForHqPath,
+  desktopSessionCompanyScope,
   dirEntryToLazyNode,
   fileAccessibleCompanies,
   fileTreeRowMeta,
@@ -95,6 +96,15 @@ describe('Files membership boundary', () => {
       'paused',
       'local-notebook',
     ]);
+  });
+
+  it('keeps read-only company scope bound while workspace sync is paused', () => {
+    const pausedSync = workspace({ syncEnabled: false });
+
+    expect(fileAccessibleCompanies([pausedSync])).toEqual([pausedSync]);
+    expect(desktopSessionCompanyScope('company', pausedSync, null)).toBe('indigo');
+    expect(desktopSessionCompanyScope('company', pending, null)).toBeNull();
+    expect(desktopSessionCompanyScope('home', pausedSync, null)).toBeNull();
   });
 
   it('extracts company slugs only from company-scoped HQ paths', () => {
