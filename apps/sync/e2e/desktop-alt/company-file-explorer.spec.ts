@@ -269,7 +269,7 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
     expect(rust).toContain(
       'Ok((PathBuf::from(result.hq_folder_path), result.workspaces))',
     );
-    expect(rust).toContain('canonical_hq_relative_path(&hq, &normalized, true)');
+    expect(rust).toContain('canonical_hq_directory_for_listing(&hq, &normalized)');
     expect(rust).toContain('require_matching_company_scope(&normalized, &canonical)');
     expect(rust).toContain('list_dir_entries(&hq, &canonical)');
     expect(rust).toContain('workspace_grants_company_file_access(&workspaces, &entry.name)');
@@ -277,6 +277,7 @@ describe('desktop-alt Files mode — exit + root-default + company filter (US-01
     // in the core library (list_dir_entries_rejects_traversal_and_missing).
     expect(core).toContain('pub fn list_dir_entries(');
     expect(core).toContain('is_within(hq_root, &abs)');
+    expect(core).toContain('open_hq_scoped_directory(&canonical_root, &rel)');
     expect(core).toContain('is_dev_noise(&name, is_dir)');
     expect(core).toContain('pub struct DirEntry');
     // Registered in main.rs (authorized by core:default — no new token).

@@ -1528,6 +1528,27 @@ pub fn canonical_hq_relative_path(
     Ok(segments.join("/"))
 }
 
+/// Resolve a directory for the lazy Files/Clients browser while preserving the
+/// stable missing-directory error consumed by renderer empty states.
+pub fn canonical_hq_directory_for_listing(
+    hq_root: &Path,
+    rel_path: &str,
+) -> Result<String, String> {
+    canonical_hq_relative_path(hq_root, rel_path, true).map_err(|error| {
+        let candidate = if rel_path.is_empty() {
+            hq_root.to_path_buf()
+        } else {
+            hq_root.join(rel_path)
+        };
+        match std::fs::symlink_metadata(candidate) {
+            Err(io_error) if io_error.kind() == std::io::ErrorKind::NotFound => {
+                format!("directory not found: {rel_path:?}")
+            }
+            _ => error,
+        }
+    })
+}
+
 /// Whether a resolved company workspace grants local Files access.
 pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str) -> bool {
     let Some(workspace) = workspaces
@@ -1538,12 +1559,14 @@ pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str
     };
 
     match workspace.membership_status.as_deref() {
-        Some("active") => true,
+        // Pausing stops sync work; it does not revoke read access to the
+        // already-present local workspace.
+        Some("active" | "paused") => true,
         // A genuinely local-only company is authored on this machine and has
         // no cloud identity to authorize. Cloud-bound folders fail closed
         // when live membership hydration is unavailable.
         None => workspace.state == WorkspaceState::LocalOnly && workspace.cloud_uid.is_none(),
-        // Pending, paused, revoked, and future unknown statuses fail closed.
+        // Pending, revoked, and future unknown statuses fail closed.
         Some(_) => false,
     }
 }
@@ -2297,6 +2320,9 @@ mod windows_path_authority_contract_tests {
             "share_mode(FILE_SHARE_READ)",
             "FILE_SHARE_READ,",
             "open_hq_scoped_directory(hq_root, parent_rel)?.open_regular_file(file_name)?",
+            "let directory = open_hq_scoped_directory(&canonical_root, &rel)?;",
+            "std::fs::read_dir(canonical_root.join(&rel))",
+            "drop(directory);",
         ] {
             assert!(
                 source.contains(required),
@@ -2396,6 +2422,128 @@ pub struct DirEntry {
     /// `false` for files.
     pub has_children: bool,
 }
+
+#[cfg(test)]
+thread_local! {
+    static DIR_LIST_BEFORE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_dir_list_before_open_hook(hook: impl FnOnce() + 'static) {
+    DIR_LIST_BEFORE_OPEN_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_dir_list_before_open_hook() {
+    DIR_LIST_BEFORE_OPEN_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_dir_list_before_open_hook() {}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn scoped_dir_has_visible_children(directory: &std::fs::File) -> bool {
+    let Ok(mut entries) = rustix::fs::Dir::read_from(directory) else {
+        return false;
+    };
+    for entry in &mut entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        let Ok(name_text) = std::str::from_utf8(name.to_bytes()) else {
+            continue;
+        };
+        let Ok(stat) = rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        else {
+            continue;
+        };
+        let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+        if file_type == rustix::fs::FileType::Symlink {
+            continue;
+        }
+        if !is_dev_noise(name_text, file_type == rustix::fs::FileType::Directory) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn list_scoped_dir_entries(
+    directory: &HqScopedDirectory,
+    rel: &str,
+) -> Result<Vec<DirEntry>, String> {
+    let mut entries = rustix::fs::Dir::read_from(directory.descriptor.as_ref())
+        .map_err(|error| format!("could not read authorized HQ directory: {error}"))?;
+    let mut out = Vec::new();
+    for entry in &mut entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name_c = entry.file_name();
+        if name_c.to_bytes() == b"." || name_c.to_bytes() == b".." {
+            continue;
+        }
+        let Ok(name) = std::str::from_utf8(name_c.to_bytes()).map(str::to_string) else {
+            continue;
+        };
+        let Ok(stat) = rustix::fs::statat(
+            directory.descriptor.as_ref(),
+            name_c,
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        ) else {
+            continue;
+        };
+        let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+        if file_type == rustix::fs::FileType::Symlink {
+            continue;
+        }
+        let is_dir = file_type == rustix::fs::FileType::Directory;
+        if is_dev_noise(&name, is_dir) {
+            continue;
+        }
+        let child_rel = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        let has_children = if is_dir {
+            match rustix::fs::openat(
+                directory.descriptor.as_ref(),
+                name_c,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NOFOLLOW,
+                rustix::fs::Mode::empty(),
+            ) {
+                Ok(child) => scoped_dir_has_visible_children(&std::fs::File::from(child)),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        out.push(DirEntry {
+            name,
+            path: child_rel,
+            is_dir,
+            has_children,
+        });
+    }
+    Ok(out)
+}
+
 /// Pure body for `list_hq_dir` — takes an explicit HQ root so the traversal
 /// guard + noise filter + sort order are unit-testable without the gate.
 pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>, String> {
@@ -2411,51 +2559,111 @@ pub fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>,
     if !is_within(hq_root, &abs) {
         return Err(format!("path escapes the HQ folder: {rel_path:?}"));
     }
-    if !abs.is_dir() {
-        return Err(format!("directory not found: {rel_path:?}"));
+    if !rel.is_empty() {
+        match std::fs::symlink_metadata(&abs) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(format!("directory not found: {rel_path:?}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!("directory not found: {rel_path:?}"));
+            }
+            Err(error) => {
+                return Err(format!("could not inspect directory {rel_path:?}: {error}"));
+            }
+        }
     }
 
-    let canonical_rel = canonical_hq_relative_path(hq_root, &rel, true)?;
     let canonical_root =
         std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
-    let canonical_abs = canonical_root.join(canonical_rel);
+    run_dir_list_before_open_hook();
+    let directory = open_hq_scoped_directory(&canonical_root, &rel)?;
 
-    let entries = std::fs::read_dir(&canonical_abs)
-        .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
-    let mut out: Vec<DirEntry> = Vec::new();
-    for entry in entries.flatten() {
-        if entry
-            .file_type()
-            .map(|file_type| file_type.is_symlink())
-            .unwrap_or(true)
-        {
-            continue;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let mut out = list_scoped_dir_entries(&directory, &rel)?;
+
+    // On Windows the retained handle chain denies delete sharing for every
+    // component, so the path-backed ReadDir cannot be redirected by a parent
+    // junction swap while `directory` remains alive.
+    #[cfg(target_os = "windows")]
+    let mut out = {
+        let entries = std::fs::read_dir(canonical_root.join(&rel))
+            .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
+        let mut listed = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let is_dir = file_type.is_dir();
+            if is_dev_noise(&name, is_dir) {
+                continue;
+            }
+            let child_rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            let has_children = if is_dir {
+                match open_hq_scoped_directory(&canonical_root, &child_rel) {
+                    Ok(child_directory) => {
+                        let has_children = dir_has_visible_children(&entry.path());
+                        drop(child_directory);
+                        has_children
+                    }
+                    Err(_) => false,
+                }
+            } else {
+                false
+            };
+            listed.push(DirEntry {
+                name,
+                path: child_rel,
+                is_dir,
+                has_children,
+            });
         }
-        let name = match entry.file_name().into_string() {
-            Ok(n) => n,
-            // Non-UTF-8 names can't round-trip through the JSON contract — skip.
-            Err(_) => continue,
-        };
-        let child_abs = entry.path();
-        let is_dir = child_abs.is_dir();
-        if is_dev_noise(&name, is_dir) {
-            continue;
+        listed
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let mut out = {
+        let entries = std::fs::read_dir(canonical_root.join(&rel))
+            .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
+        let mut listed = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let is_dir = file_type.is_dir();
+            if is_dev_noise(&name, is_dir) {
+                continue;
+            }
+            let child_rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            listed.push(DirEntry {
+                name,
+                path: child_rel,
+                is_dir,
+                has_children: is_dir && dir_has_visible_children(&entry.path()),
+            });
         }
-        let child_rel = if rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel}/{name}")
-        };
-        // Cheap one-level peek so the UI knows whether to show an expand
-        // chevron — does NOT recurse, so a giant subtree is never walked here.
-        let has_children = is_dir && dir_has_visible_children(&child_abs);
-        out.push(DirEntry {
-            name,
-            path: child_rel,
-            is_dir,
-            has_children,
-        });
-    }
+        listed
+    };
+
+    drop(directory);
     // Directories before files, each group case-insensitive alphabetical.
     out.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
@@ -2473,17 +2681,16 @@ pub fn dir_has_visible_children(abs: &Path) -> bool {
         return false;
     };
     for entry in entries.flatten() {
-        if entry
-            .file_type()
-            .map(|file_type| file_type.is_symlink())
-            .unwrap_or(true)
-        {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
             continue;
         }
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let is_dir = entry.path().is_dir();
+        let is_dir = file_type.is_dir();
         if !is_dev_noise(&name, is_dir) {
             return true;
         }
@@ -3769,12 +3976,16 @@ mod tests {
 
     mod file_explorer {
         use super::super::{
-            build_file_tree, company_slug_for_hq_path, read_file_bytes_capped, read_file_content,
-            read_file_content_capped, set_file_read_after_size_check_hook,
-            validate_hq_relative_path, workspace_grants_company_file_access, FileNode,
+            build_file_tree, canonical_hq_directory_for_listing, company_slug_for_hq_path,
+            read_file_bytes_capped, read_file_content, read_file_content_capped,
+            set_file_read_after_size_check_hook, validate_hq_relative_path,
+            workspace_grants_company_file_access, FileNode,
         };
         #[cfg(unix)]
-        use super::super::{canonical_hq_relative_path, set_file_read_before_open_hook};
+        use super::super::{
+            canonical_hq_relative_path, set_dir_list_before_open_hook,
+            set_file_read_before_open_hook,
+        };
         use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
         use std::fs;
         use std::path::PathBuf;
@@ -4113,7 +4324,7 @@ mod tests {
                 &workspaces,
                 "pending"
             ));
-            assert!(!workspace_grants_company_file_access(&workspaces, "paused"));
+            assert!(workspace_grants_company_file_access(&workspaces, "paused"));
             assert!(!workspace_grants_company_file_access(
                 &workspaces,
                 "unknown"
@@ -4466,6 +4677,19 @@ mod tests {
         }
 
         #[test]
+        fn missing_listing_directory_uses_the_renderer_empty_state_contract() {
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+            fs::create_dir_all(root.join("companies/active")).unwrap();
+
+            assert_eq!(
+                canonical_hq_directory_for_listing(&root, "companies/active/clients")
+                    .unwrap_err(),
+                "directory not found: \"companies/active/clients\""
+            );
+        }
+
+        #[test]
         fn list_dir_entries_rejects_cross_company_parent_traversal() {
             use super::super::list_dir_entries;
             let tmp = TempDir::new().unwrap();
@@ -4474,6 +4698,49 @@ mod tests {
 
             let err = list_dir_entries(&root, "companies/indigo/../pending").unwrap_err();
             assert!(err.contains("invalid HQ-relative path"), "got: {err}");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn list_dir_entries_rejects_cross_company_parent_swap_before_open() {
+            use super::super::list_dir_entries;
+            use std::os::unix::fs::symlink;
+
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+            let active_clients = root.join("companies/active/clients");
+            let pending_clients = root.join("companies/pending/clients");
+            fs::create_dir_all(&active_clients).unwrap();
+            fs::create_dir_all(&pending_clients).unwrap();
+            fs::write(active_clients.join("visible.md"), "authorized").unwrap();
+            fs::write(pending_clients.join("secret.md"), "pending-secret").unwrap();
+
+            // Model the command's successful canonical authorization, then
+            // replace the authorized directory in the former path-based race
+            // window immediately before the listing opens it.
+            assert_eq!(
+                canonical_hq_relative_path(&root, "companies/active/clients", true).unwrap(),
+                "companies/active/clients"
+            );
+            set_dir_list_before_open_hook({
+                let active_clients = active_clients.clone();
+                let pending_clients = pending_clients.clone();
+                move || {
+                    fs::rename(
+                        &active_clients,
+                        active_clients.parent().unwrap().join("clients-original"),
+                    )
+                    .unwrap();
+                    symlink(&pending_clients, &active_clients).unwrap();
+                }
+            });
+
+            let result = list_dir_entries(&root, "companies/active/clients");
+            assert!(
+                result.is_err(),
+                "a cross-company directory swap must fail closed, got {:?}",
+                result.unwrap()
+            );
         }
     }
 }

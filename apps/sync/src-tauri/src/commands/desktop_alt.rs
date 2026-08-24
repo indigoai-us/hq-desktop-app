@@ -36,8 +36,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use hq_desktop_core::desktop_alt::company_slug_for_hq_path;
 #[allow(unused_imports)]
 pub use hq_desktop_core::desktop_alt::{
-    activity_url, board_url, bool_field, build_file_tree, build_node, canonical_hq_relative_path,
-    crm_projection_url, deployment_entry_from_value, deployment_last_deploy,
+    activity_url, board_url, bool_field, build_file_tree, build_node,
+    canonical_hq_directory_for_listing, canonical_hq_relative_path, crm_projection_url,
+    deployment_entry_from_value, deployment_last_deploy,
     deployment_matches_selected_slug, deployment_org_slug, deployment_rows, deployment_size,
     deployment_version, deployments_url, derive_initials, dir_has_visible_children,
     first_row_key_names, format_board_date, format_bytes, format_deployment_age,
@@ -1232,7 +1233,7 @@ pub async fn list_hq_dir(
     } else {
         (resolve_hq_folder(), Vec::new())
     };
-    let canonical = canonical_hq_relative_path(&hq, &normalized, true)?;
+    let canonical = canonical_hq_directory_for_listing(&hq, &normalized)?;
     let company = require_matching_company_scope(&normalized, &canonical)?;
     debug_assert_eq!(lexical_company, company);
     require_company_file_access(&workspaces, &canonical)?;
@@ -1346,13 +1347,21 @@ mod window_router_tests {
         assert!(authorize_file_target(active, &workspaces).is_ok());
         let initially_active = resolve_file_target(root, "companies/active/knowledge.md").unwrap();
         let revalidated = revalidate_file_target(&initially_active).unwrap();
-        let revoked_workspaces = vec![file_workspace(
+        let paused_workspaces = vec![file_workspace(
             "active",
             WorkspaceState::Synced,
             Some("paused"),
             Some("cmp_active"),
         )];
-        assert!(authorize_file_target(revalidated, &revoked_workspaces).is_err());
+        assert!(authorize_file_target(revalidated, &paused_workspaces).is_ok());
+        let revoked = resolve_file_target(root, "companies/active/knowledge.md").unwrap();
+        let revoked_workspaces = vec![file_workspace(
+            "active",
+            WorkspaceState::Synced,
+            Some("revoked"),
+            Some("cmp_active"),
+        )];
+        assert!(authorize_file_target(revoked, &revoked_workspaces).is_err());
         let local = resolve_file_target(root, "companies/local/knowledge.md").unwrap();
         assert!(authorize_file_target(local, &workspaces).is_ok());
         let pending = resolve_file_target(root, "companies/pending/knowledge.md").unwrap();
