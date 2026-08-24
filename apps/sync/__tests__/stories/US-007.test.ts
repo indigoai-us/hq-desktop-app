@@ -98,6 +98,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       'skills',
       'workers',
       'knowledge',
+      'clients',
       'team',
       'activity',
       'deployments',

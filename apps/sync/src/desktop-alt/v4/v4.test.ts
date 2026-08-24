@@ -123,6 +123,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       'skills',
       'workers',
       'knowledge',
+      'clients',
       'team',
       'more',
     ]);
@@ -153,8 +154,8 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     expect(row.children).toEqual([]);
   });
 
-  it('keeps Skills and Workers visible and highlights their company child routes', () => {
-    for (const tab of ['skills', 'workers'] as const) {
+  it('keeps Skills, Workers, and Clients visible and highlights their company child routes', () => {
+    for (const tab of ['skills', 'workers', 'clients'] as const) {
       const model = getV4SidebarModel({ kind: 'company', slug: 'hpo', tab }, workspaces);
       const activeCompany = model.companies.find((row) => row.slug === 'hpo');
       expect(activeCompany?.children.some((child) => child.id === tab)).toBe(true);

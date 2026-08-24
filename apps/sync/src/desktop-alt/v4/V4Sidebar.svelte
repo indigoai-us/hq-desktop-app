@@ -28,7 +28,7 @@
    * is the complete conversation workspace; US-007 removed Home / Mission
    * Control / Companies page rows) →
    * COMPANIES section (selected company expands Overview / Goals / Projects /
-   * Knowledge / Team / More inline; children collapse on global destinations)
+   * Knowledge / Clients / Team / More inline; children collapse on global destinations)
    * → Settings footer.
    *
    * Pointer reveal waits a short hover-intent delay so sweeping the mouse down

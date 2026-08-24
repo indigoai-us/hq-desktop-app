@@ -14,7 +14,9 @@ import { readRepoFile } from './harness';
  */
 
 describe('DESKTOP-008: company knowledge workspace', () => {
-  const panel = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
+  const wrapper = readRepoFile('src/desktop-alt/panels/CompanyKnowledgePanel.svelte');
+  const panel = readRepoFile('src/desktop-alt/panels/CompanyScopedFilesPanel.svelte');
+  const scope = readRepoFile('src/desktop-alt/lib/company-scoped-files.ts');
   const tree = readRepoFile('src/desktop-alt/components/CompanyFileTree.svelte');
   const preview = readRepoFile('src/desktop-alt/components/FilePreviewPane.svelte');
   const companyPage = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
@@ -23,33 +25,34 @@ describe('DESKTOP-008: company knowledge workspace', () => {
   const desktopCss = readRepoFile('src/desktop-alt/styles/desktop-alt.css');
 
   it('keeps Company Knowledge strictly scoped by the existing path guard', () => {
-    expect(panel).toContain('`companies/${slug}/knowledge`');
-    expect(panel).toContain('function inKnowledgeScope(path: string)');
-    expect(panel).toContain('path === rootPath || path.startsWith(`${rootPath}/`)');
-    expect(panel).toContain('path outside company knowledge scope');
+    expect(wrapper).toContain('<CompanyScopedFilesPanel {slug} directory="knowledge" />');
+    expect(scope).toContain('return `companies/${slug}/${directory}`');
+    expect(scope).toContain('export function inCompanyScopedRoot');
+    expect(scope).toContain('path === rootPath || path.startsWith(`${rootPath}/`)');
+    expect(panel).toContain('path outside company ${labelLower} scope');
     expect(panel).toContain("invoke<DirEntry[]>('list_hq_dir', { relPath })");
     // Guard is applied before list + select — never weakened/bypassed.
-    expect(panel).toContain('if (!inKnowledgeScope(relPath))');
-    expect(panel).toContain('if (!inKnowledgeScope(path)) return');
-    // No alternate root that could escape the knowledge subtree.
-    expect(panel).not.toMatch(/rootPath\s*=\s*\$derived\(`companies\/\$\{slug\}`\)/);
+    expect(panel).toContain('if (!inCompanyScopedRoot(relPath, rootPath))');
+    expect(panel).toContain('if (!inCompanyScopedRoot(path, rootPath)) return');
+    // The shared root always includes the explicitly selected company subtree.
+    expect(panel).toContain('const rootPath = $derived(companyScopedRoot(slug, directory))');
+    expect(scope).not.toContain('return `companies/${slug}`');
     expect(panel).not.toMatch(/rootPath\s*=\s*['"]['"]/);
-  });
-
+});
   it('shows search, tenant-scoped tree, and selected document preview in one workspace', () => {
-    expect(panel).toContain('data-testid="company-knowledge-panel"');
-    expect(panel).toContain('data-testid="knowledge-search"');
-    expect(panel).toContain('data-testid="knowledge-tree"');
-    expect(panel).toContain('data-testid="knowledge-tree-pane"');
-    expect(panel).toContain('data-testid="knowledge-preview-pane"');
-    expect(panel).toContain('data-testid="company-knowledge-empty"');
-    expect(panel).toContain('data-testid="knowledge-scope-meta"');
-    expect(panel).toContain('companies/{slug}/knowledge');
+    expect(wrapper).toContain('directory="knowledge"');
+    expect(panel).toContain('data-testid={`company-${directory}-panel`}');
+    expect(panel).toContain('data-testid={`${directory}-search`}');
+    expect(panel).toContain('data-testid={`${directory}-tree`}');
+    expect(panel).toContain('data-testid={`${directory}-tree-pane`}');
+    expect(panel).toContain('data-testid={`${directory}-preview-pane`}');
+    expect(panel).toContain('data-testid={`company-${directory}-empty`}');
+    expect(panel).toContain('data-testid={`${directory}-scope-meta`}');
     expect(panel).toContain('bind:value={searchQuery}');
     expect(panel).toContain('filterQuery={searchQuery}');
     expect(panel).toContain('<CompanyFileTree');
     expect(panel).toContain('<FilePreviewPane path={selectedPath}');
-    expect(panel).toContain('class="list-detail knowledge-workspace');
+    expect(panel).toContain('class="list-detail scoped-files-workspace"');
   });
 
   it('preserves preview, Reveal in Finder, Copy path, and Open in Claude Code', () => {
@@ -112,13 +115,13 @@ describe('DESKTOP-008: company knowledge workspace', () => {
   });
 
   it('uses naked hairline tree/preview split with no rounded outer shell', () => {
-    expect(panel).toContain('border: 1px solid var(--v4-hairline)');
+    expect(panel).toMatch(/\.scoped-files-workspace\s*\{[\s\S]*?border:\s*0;/);
     expect(panel).toContain('border-radius: 0');
     expect(panel).toContain('background: transparent');
     expect(panel).toContain('border-right: 1px solid var(--v4-hairline)');
     // Search/actions are controls; tree selection remains an open, square row.
     expect(panel).not.toContain('border-radius: var(--v4-radius-card');
-    expect(panel).toMatch(/\.knowledge-search\s*\{[\s\S]*?border-radius:\s*6px;/);
+    expect(panel).toMatch(/\.scoped-search\s*\{[\s\S]*?border-radius:\s*6px;/);
     expect(tree).toMatch(
       /\.ft-row\s*\{[\s\S]*?border:\s*(?:0|none);[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
     );
@@ -155,15 +158,15 @@ describe('DESKTOP-008: company knowledge workspace', () => {
   });
 
   it('supports keyboard tree/search focus, visible focus, and list-detail collapse', () => {
-    expect(panel).toContain('data-testid="knowledge-search"');
+    expect(panel).toContain('data-testid={`${directory}-search`}');
     expect(panel).toContain('handleWorkspaceKeydown');
     expect(panel).toContain("event.key.toLowerCase() === 'f'");
     expect(panel).toContain('focusSearch');
     expect(panel).toContain('data-detail-open={selectedPath != null ? \'true\' : \'false\'}');
-    expect(panel).toContain('data-testid="knowledge-detail-back"');
+    expect(panel).toContain('data-testid={`${directory}-detail-back`}');
     expect(panel).toContain('@media (max-width: 820px)');
-    expect(panel).toContain('.knowledge-search:focus-visible');
-    expect(panel).toContain('.knowledge-detail-back:focus-visible');
+    expect(panel).toContain('.scoped-search:focus-visible');
+    expect(panel).toContain('.scoped-detail-back:focus-visible');
 
     expect(tree).toContain('handleTreeKeydown');
     expect(tree).toContain("event.key === 'ArrowDown'");

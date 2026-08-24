@@ -43,6 +43,7 @@ export type V4CompanyPrimaryId =
   | 'skills'
   | 'workers'
   | 'knowledge'
+  | 'clients'
   | 'team'
   | 'more';
 
@@ -56,6 +57,7 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   { id: 'skills', label: 'Skills' },
   { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
+  { id: 'clients', label: 'Clients' },
   { id: 'team', label: 'Team' },
   { id: 'more', label: 'More' },
 ];
@@ -154,6 +156,7 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
     case 'skills':
     case 'workers':
     case 'knowledge':
+    case 'clients':
     case 'team':
       return tab;
     case 'activity':

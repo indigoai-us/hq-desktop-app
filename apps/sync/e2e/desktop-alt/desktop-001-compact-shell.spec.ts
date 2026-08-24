@@ -91,9 +91,8 @@ describe('DESKTOP-001: compact native shell', () => {
       'library',
       'files',
     ]);
-  });
-
-  it('selected company expands Overview / Goals / Projects / Skills / Workers / Knowledge / Team / More', () => {
+});
+  it('selected company expands Overview / Goals / Projects / Skills / Workers / Knowledge / Clients / Team / More', () => {
     expect(COMPANY_PRIMARY_SECTIONS.map((s) => s.id)).toEqual([
       'overview',
       'goals',
@@ -101,6 +100,7 @@ describe('DESKTOP-001: compact native shell', () => {
       'skills',
       'workers',
       'knowledge',
+      'clients',
       'team',
       'more',
     ]);
@@ -118,6 +118,7 @@ describe('DESKTOP-001: compact native shell', () => {
       'skills',
       'workers',
       'knowledge',
+      'clients',
       'team',
       'more',
     ]);

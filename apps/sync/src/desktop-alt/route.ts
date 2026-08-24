@@ -16,7 +16,7 @@ import {
  * notification chronology; Messages is the full conversation workspace. Home /
  * Mission Control / Moderation are palette-only. DESKTOP-001 expands the
  * selected company inline (Overview /
- * Goals / Projects / Skills / Workers / Knowledge / Team / More) and removes
+ * Goals / Projects / Skills / Workers / Knowledge / Clients / Team / More) and removes
  * the permanent company secondary sidebar; Library and Settings keep their
  * contextual secondary columns. DESKTOP-010 groups Activity / Deployments /
  * Secrets / company Settings under More as one operations workspace.
@@ -48,6 +48,7 @@ export type CompanyTab =
   | 'skills'
   | 'workers'
   | 'knowledge'
+  | 'clients'
   | 'team'
   | 'activity'
   | 'deployments'
@@ -68,6 +69,7 @@ export type CompanyPrimarySectionId =
   | 'skills'
   | 'workers'
   | 'knowledge'
+  | 'clients'
   | 'team'
   | 'more';
 
@@ -112,6 +114,7 @@ export function companyPrimarySectionForTab(
     case 'skills':
     case 'workers':
     case 'knowledge':
+    case 'clients':
     case 'team':
       return resolved;
     case 'activity':
@@ -181,6 +184,7 @@ export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> 
   { id: 'skills', label: 'Skills' },
   { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
+  { id: 'clients', label: 'Clients' },
   { id: 'team', label: 'Team' },
   { id: 'activity', label: 'Activity' },
   { id: 'deployments', label: 'Deployments' },
@@ -219,6 +223,7 @@ export const COMPANY_PRIMARY_SECTIONS: ReadonlyArray<{
   { id: 'skills', label: 'Skills' },
   { id: 'workers', label: 'Workers' },
   { id: 'knowledge', label: 'Knowledge' },
+  { id: 'clients', label: 'Clients' },
   { id: 'team', label: 'Team' },
   { id: 'more', label: 'More' },
 ];
@@ -265,7 +270,7 @@ export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
 
 /**
  * Remount key for the routed page. Company pages key on the slug only — the
- * eight sections swap panels inside the page (keyed there), so switching
+ * sections swap panels inside the page (keyed there), so switching
  * sections never tears down the page chrome. The library likewise keys on the
  * surface, not the tab, so tab switches don't refetch the library tree.
  */
