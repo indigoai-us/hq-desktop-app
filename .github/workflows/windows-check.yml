@@ -6,28 +6,25 @@
 # platform graft. It is EXPECTED TO BE RED until the platform-seam port in
 # PHASE3.md is complete; it becomes a required check once green.
 #
-# Triggers on PRs that touch the app (not push to main) so main is not shown red
-# while the fold is in progress; also manually dispatchable.
+# Triggers on PRs (not push to main) so main is not shown red while the fold is
+# in progress; also manually dispatchable.
+#
+# The relevant-paths list is NOT a `paths:` trigger filter. Both jobs here are
+# REQUIRED status checks, and GitHub leaves a required context of a
+# path-filtered workflow pending forever ("Expected — Waiting for status to be
+# reported") on any pull request that does not match, so such a PR can never
+# merge. A job skipped by a job-level `if:` reports Success instead. The
+# workflow therefore runs on every pull request and the two expensive
+# windows-latest jobs are gated on the `changes` job below, which applies the
+# same path list via scripts/windows-check-relevant.mjs. No PR that used to run
+# the gate stops running it; irrelevant PRs get a green skip that costs no
+# Windows minutes instead of an eternal pending.
 name: Windows check (Phase 3)
 
 on:
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "apps/sync/**"
-      - "imports/hq-installer-react/**"
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "versions.toml"
-      - "scripts/release-*.mjs"
-      - "scripts/release-*.test.ts"
-      - "scripts/windows-msi-version.mjs"
-      - "scripts/windows-msi-version.test.ts"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/windows-check.yml"
-      - "workspace/evidence/**"
 
 # A pull_request workflow with no concurrency group keeps burning Windows
 # minutes (2x) on commits the branch has already moved past. Measured over 30
@@ -38,8 +35,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Cheap ubuntu gate that decides whether the two windows-latest jobs below
+  # have anything to check. A manual dispatch always runs them.
+  changes:
+    name: Windows-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      windows: ${{ steps.filter.outputs.windows }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the Windows gate applies
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          # Anything that is not a pull request (workflow_dispatch) runs the
+          # full gate: there is no diff to scope it to.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "windows=true" >>"$GITHUB_OUTPUT"
+            echo "not a pull_request — running the Windows gate"
+            exit 0
+          fi
+
+          # An undeterminable diff must run the gate, never skip it. The
+          # matcher treats an empty list the same way; this branch just keeps a
+          # git failure from being reported as "nothing changed".
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "windows=true" >>"$GITHUB_OUTPUT"
+            echo "could not diff $BASE_SHA...$HEAD_SHA — running the Windows gate"
+            exit 0
+          fi
+
+          printf '%s\n' "$changed"
+          verdict="$(printf '%s\n' "$changed" | node scripts/windows-check-relevant.mjs)"
+
+          # Same failure direction as the matcher itself: only an explicit
+          # "false" skips the gate. A crashed matcher must not read as "nothing
+          # to check".
+          if [ "$verdict" != "false" ]; then
+            verdict=true
+          fi
+
+          echo "windows=$verdict" >>"$GITHUB_OUTPUT"
+          echo "Windows gate applies: $verdict"
+
   windows-check:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
     defaults:
@@ -377,7 +427,8 @@ jobs:
       #   run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings
 
   windows-installer-e2e:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: installer E2E (x64 MSI + NSIS)
     runs-on: windows-latest
     timeout-minutes: 45

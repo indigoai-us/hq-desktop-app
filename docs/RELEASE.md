@@ -25,6 +25,66 @@ git push origin vX.Y.Z
 
 Supported tag forms are `vX.Y.Z`, `vX.Y.Z-beta.N`, and `vX.Y.Z-alpha.N`.
 
+## Release Tag Cooldown
+
+Because the tag *is* the release, a `git push` of a `v*` tag starts a macOS
+universal build plus Windows x64 and ARM64 builds on GitHub-hosted runners.
+GitHub bills macOS minutes at 10x and Windows minutes at 2x a Linux minute, so
+each tag push spends a meaningful amount of money, and a burst of tags spends
+it repeatedly on builds nobody installs.
+
+A `pre-push` hook at `.githooks/pre-push` therefore enforces two rules:
+
+- **One release at a time.** A `v*` tag is refused when another release went
+  out within the last **6 hours**.
+- **One release per push.** `git push origin v1.2.3 v1.2.4` is refused
+  outright; git runs the hook once for the whole push, so a single cooldown
+  check would otherwise clear two builds at once.
+
+What the hook ignores: branch pushes, tag deletions, and any tag that is not
+`v*` — the Release workflow triggers on `v*` alone, so a tag like `docs-2026`
+starts no build and neither spends nor is blocked by the cooldown.
+
+The hook classifies on the **destination** ref, so `git push origin
+HEAD:refs/tags/v1.2.3` is paced exactly like `git push origin v1.2.3`.
+
+"When did a release last go out" is the newer of two signals: a marker this
+clone writes on each release push, and the creation date of the newest `v*` tag
+it can see. The second is what protects a fresh clone, and what stops a clone
+with a stale marker from releasing again right after fetching a teammate's
+ten-minute-old tag.
+
+The marker is kept **per destination**, so pushing a tag to a personal fork or
+a local mirror does not spend the cooldown that protects `origin`. The tag-date
+signal is deliberately not scoped that way: a release tag created minutes ago
+means a billed build is probably already running, and the hook cannot tell a
+harmless bare mirror from a fork that would build it, so it errs toward
+blocking.
+
+The hook installs itself: `pnpm install` runs the root `prepare` script, which
+runs `scripts/install-git-hooks.mjs`. That script sets `core.hooksPath` to
+`.githooks` only when no custom hooks path is already configured — if your
+clone points `core.hooksPath` somewhere else, it says so and leaves your setup
+alone rather than silently disabling your other hooks. In an existing clone you
+can also run it by hand:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+If a release is genuinely urgent and you accept the build cost, bypass the
+cooldown explicitly rather than disabling hooks wholesale:
+
+```bash
+HQ_ALLOW_TAG_PUSH=1 git push origin vX.Y.Z
+```
+
+A bypassed release still resets the cooldown for the next push — it started a
+real build, so the window has to move with it.
+
+`HQ_TAG_PUSH_COOLDOWN_SECONDS` overrides the window length. Behaviour is
+covered by `scripts/pre-push-tag-cooldown.test.ts`.
+
 Where you tag depends on the channel:
 
 - **Stable** (`vX.Y.Z`) must be cut from `main` — its commit has to be merged

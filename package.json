@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "prepare": "node scripts/install-git-hooks.mjs",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "test": "turbo run test",

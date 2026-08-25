@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+#
+# pre-push: rate-limit release tag pushes.
+#
+# Pushing a `v*` tag is the entire release trigger for this repository (see
+# docs/RELEASE.md and .github/workflows/release.yml). The Release workflow then
+# builds the macOS universal app and the Windows x64 + ARM64 installers on
+# GitHub-hosted runners. GitHub bills macOS minutes at 10x and Windows minutes
+# at 2x a Linux minute, so a single tag push is one of the most expensive things
+# anyone can do to this repo, and back-to-back tags multiply that cost for
+# builds nobody installs.
+#
+# This hook refuses a release tag push when another release tag was pushed
+# within the cooldown window (6 hours by default), and refuses to push more than
+# one release tag in a single push. Everything else — branches, tag deletions,
+# non-`v` tags — passes straight through.
+#
+# Install: `git config core.hooksPath .githooks` (the root `prepare` script runs
+# scripts/install-git-hooks.mjs, which does this without clobbering an existing
+# custom hooks path).
+#
+# Escape hatch for a genuinely urgent release:
+#   HQ_ALLOW_TAG_PUSH=1 git push origin vX.Y.Z
+#
+# Covered by scripts/pre-push-tag-cooldown.test.ts.
+
+set -euo pipefail
+
+COOLDOWN_SECONDS="${HQ_TAG_PUSH_COOLDOWN_SECONDS:-21600}" # 6 hours
+
+# Git passes the destination remote name and location as $1 and $2.
+REMOTE_NAME="${1:-}"
+REMOTE_URL="${2:-}"
+
+# --- collect the release tags this push would create or update ----------------
+
+# Classify on the DESTINATION ref, never the source. `git push origin
+# HEAD:refs/tags/v1.2.3` is a valid refspec whose local ref is `HEAD`; the
+# release workflow keys off the destination tag, so that is what has to be
+# matched or the hook is trivially bypassable.
+#
+# Only `v*` matches. The Release workflow triggers on `tags: ["v*"]` and nothing
+# else, so an unrelated tag like `docs-2026` starts no billed build — blocking it
+# would be a false positive, and recording it would suppress a real release for
+# six hours.
+tags=()
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  [ -n "${remote_ref:-}" ] || continue
+
+  case "$remote_ref" in
+    refs/tags/v*) ;;
+    *) continue ;;
+  esac
+
+  # An all-zero local sha is a tag deletion (`git push origin :refs/tags/v1`).
+  # Deleting runs no workflow and costs nothing, so it is always allowed.
+  case "$local_sha" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+
+  tags+=("${remote_ref#refs/tags/}")
+done
+
+if [ ${#tags[@]} -eq 0 ]; then
+  exit 0
+fi
+
+# --- the cooldown marker, scoped to this destination --------------------------
+
+# One marker per destination. Pushing a release tag to a personal fork or a
+# local bare mirror cannot start THIS repository's release workflow, so it must
+# not spend the cooldown that protects pushes to origin.
+remote_key="$(printf '%s' "${REMOTE_URL:-${REMOTE_NAME:-unknown}}" | tr -c 'A-Za-z0-9._-' '_')"
+marker="$(git rev-parse --git-path "hq-last-tag-push-${remote_key}")"
+now="$(date +%s)"
+
+record_push() {
+  # Record on every push we let through — including a bypassed one. The bypass
+  # still starts a billed release, so it has to reset the window for the next
+  # push; otherwise an urgent release followed five hours later by an ordinary
+  # one lets the second through against a marker the first should have moved.
+  printf '%s\n' "$now" >"$marker"
+}
+
+human_duration() {
+  local total="$1" h m
+  h=$((total / 3600))
+  m=$(((total % 3600) / 60))
+  if [ "$h" -gt 0 ]; then
+    printf '%dh %dm' "$h" "$m"
+  else
+    printf '%dm' "$m"
+  fi
+}
+
+cost_explanation() {
+  echo "Pushing a tag runs the release. The Release workflow builds the"
+  echo "macOS universal app and the Windows x64 + ARM64 installers on"
+  echo "GitHub-hosted runners, and GitHub bills macOS minutes at 10x and"
+  echo "Windows minutes at 2x a Linux minute. Each tag push therefore costs"
+  echo "a lot of real money in GitHub Actions, and pushing tags back to"
+  echo "back spends it over and over on builds nobody installs."
+}
+
+if [ "${HQ_ALLOW_TAG_PUSH:-}" = "1" ]; then
+  echo "pre-push: HQ_ALLOW_TAG_PUSH=1 — release tag cooldown bypassed." >&2
+  record_push
+  exit 0
+fi
+
+# --- one release per push -----------------------------------------------------
+
+# Git invokes the hook once for the whole push and supplies one line per ref, so
+# `git push origin v1.2.3 v1.2.4` would otherwise clear a single cooldown check
+# and start two releases at once.
+if [ ${#tags[@]} -gt 1 ]; then
+  {
+    echo
+    echo "BLOCKED: refusing to push ${#tags[@]} release tags at once: ${tags[*]}"
+    echo
+    cost_explanation
+    echo
+    echo "Push one release tag, let it build, then push the next — or, if you"
+    echo "accept the cost of all ${#tags[@]} builds, bypass explicitly:"
+    echo
+    echo "  HQ_ALLOW_TAG_PUSH=1 git push ${REMOTE_NAME:-origin} ${tags[*]}"
+    echo
+  } >&2
+  exit 1
+fi
+
+# --- when did a release last go out? ------------------------------------------
+
+# Two independent signals, and the NEWER one wins. Using only the marker would
+# let a clone that just fetched a teammate's ten-minute-old release tag push
+# another release immediately, because its own marker is older.
+last=""
+source=""
+
+consider() {
+  local when="$1" what="$2"
+  [ -n "$when" ] || return 0
+  if [ -z "$last" ] || [ "$when" -gt "$last" ]; then
+    last="$when"
+    source="$what"
+  fi
+}
+
+if [ -f "$marker" ]; then
+  consider "$(tr -cd '0-9' <"$marker")" "the last release pushed to ${REMOTE_NAME:-this remote} from this clone"
+fi
+
+# The newest release tag that is not part of this push. Release tags are created
+# and pushed within seconds of each other, so their creation date is a close
+# proxy for when the build started — and it is the only signal a fresh clone
+# has.
+pushed_now=" ${tags[*]} "
+while read -r when name; do
+  [ -n "${name:-}" ] || continue
+  case "$pushed_now" in
+    *" $name "*) continue ;;
+  esac
+  consider "$when" "tag $name"
+  break
+done < <(git for-each-ref --sort=-creatordate \
+  --format='%(creatordate:unix) %(refname:short)' 'refs/tags/v*')
+
+# --- decide -------------------------------------------------------------------
+
+if [ -n "$last" ]; then
+  elapsed=$((now - last))
+  if [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$COOLDOWN_SECONDS" ]; then
+    remaining=$((COOLDOWN_SECONDS - elapsed))
+    {
+      echo
+      echo "BLOCKED: refusing to push tag ${tags[0]}"
+      echo
+      echo "A release went out $(human_duration "$elapsed") ago (per ${source})."
+      echo "The cooldown between releases is $(human_duration "$COOLDOWN_SECONDS")."
+      echo
+      cost_explanation
+      echo
+      echo "Wait $(human_duration "$remaining"), or — if this release is genuinely urgent"
+      echo "and you accept the build cost — bypass the cooldown explicitly:"
+      echo
+      echo "  HQ_ALLOW_TAG_PUSH=1 git push ${REMOTE_NAME:-origin} ${tags[0]}"
+      echo
+    } >&2
+    exit 1
+  fi
+fi
+
+# Allowed. Record before the push rather than after: the cost being paced is the
+# workflow trigger, and a failed push costs nothing, so a slightly conservative
+# window is the right failure direction.
+record_push
+exit 0

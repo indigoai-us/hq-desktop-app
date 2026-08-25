@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { isWindowsRelevant } from "./windows-check-relevant.mjs";
+
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 let workflow = "";
@@ -493,16 +495,23 @@ describe("release workflow channel contract", () => {
     );
   });
 
+  // The relevance list used to be a `paths:` trigger filter on
+  // windows-check.yml, and this test read it as YAML text. It now lives in
+  // scripts/windows-check-relevant.mjs, because a path-filtered workflow leaves
+  // its REQUIRED contexts pending forever on a non-matching PR. Assert the
+  // decision instead of the syntax: these are the release-control files that
+  // must still bring the Windows gate with them.
   it("runs the required Windows gate for release-control changes", () => {
     for (const path of [
-      '"versions.toml"',
-      '"scripts/release-*.mjs"',
-      '"scripts/release-*.test.ts"',
-      '"scripts/windows-msi-version.mjs"',
-      '"scripts/windows-msi-version.test.ts"',
-      '".github/workflows/release.yml"',
+      "versions.toml",
+      "scripts/release-asset-contract.mjs",
+      "scripts/release-stable-order.mjs",
+      "scripts/release-asset-contract.test.ts",
+      "scripts/windows-msi-version.mjs",
+      "scripts/windows-msi-version.test.ts",
+      ".github/workflows/release.yml",
     ]) {
-      expect(windowsCheckWorkflow).toContain(path);
+      expect(isWindowsRelevant([path]), `${path} must run the gate`).toBe(true);
     }
   });
 
