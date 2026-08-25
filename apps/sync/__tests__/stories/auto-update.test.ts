@@ -379,6 +379,17 @@ describe('master automatic-updates switch', () => {
       'const NON_CONVERGENT_EPISODE_KEYS: &str = "cliNonConvergentEpisodeKeys";',
     );
     expect(cliUpdate).toContain('fn non_convergent_episode_markers()');
+    // The npm finalization path threads the SAME persisted set in and persists the
+    // returned key too, so the installer-unaimed shape (an unresolved `hq` after an
+    // npm install) is bounded once per episode instead of re-paging every check.
+    const npmFinalize = cliUpdate.slice(
+      cliUpdate.indexOf('async fn finalize_convergence('),
+      cliUpdate.indexOf('fn managed_shadow_repair_outcome('),
+    );
+    expect(npmFinalize).toContain(
+      '.with_nonblocking_episode_keys(&nonblocking_episode_keys)',
+    );
+    expect(npmFinalize).toContain('non_convergent_episode_record(&existing, key, latest)');
   });
 
   it('a non-convergent capture names which package manager ran', () => {

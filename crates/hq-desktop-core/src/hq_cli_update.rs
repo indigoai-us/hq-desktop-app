@@ -985,17 +985,6 @@ pub fn non_convergence_kind(
     if paths::is_npx_cache_path(Path::new(post_install_hq_bin)) {
         return NonConvergenceKind::InstallerUnaimed;
     }
-    // The bare `hq` sentinel means nothing resolved at all — a first install HQ
-    // never aimed at any nameable copy. `npm_prefix_from_hq_bin("hq")` is `None`
-    // by construction, so the npm arm below would fall through to the durable-
-    // blocking `ForeignManaged` for a copy HQ could neither name nor prove a
-    // layout defect against. Like the npx-cache copy above, it must stay
-    // observable but NEVER wedge auto-update, so classify it `InstallerUnaimed`.
-    // An absolute foreign layout — a concrete path HQ actually resolved — is
-    // unaffected and keeps blocking.
-    if post_install_hq_bin == "hq" {
-        return NonConvergenceKind::InstallerUnaimed;
-    }
     match executor {
         InstallExecutor::Pnpm => {
             if !pnpm_targeted {
@@ -1064,6 +1053,15 @@ pub fn non_convergence_kind(
             {
                 NonConvergenceKind::ManagedShadowed
             }
+            // The bare `hq` sentinel: nothing resolved at all after an npm install.
+            // HQ passed no prefix (npm_prefix_from_hq_bin("hq") is None by
+            // construction, so neither Some-Some arm above matched), cannot name the
+            // file it executes, and has no delivery evidence — an unaimed first
+            // install, not a foreign layout HQ could prove a defect against. It
+            // stays observable but must never wedge auto-update. Scoped to the npm
+            // arm: pnpm/Bun keep classifying on their own targeting/delivery
+            // evidence. An absolute foreign layout keeps falling to ForeignManaged.
+            _ if post_install_hq_bin == "hq" => NonConvergenceKind::InstallerUnaimed,
             _ => NonConvergenceKind::ForeignManaged,
         },
     }
@@ -1528,10 +1526,12 @@ impl<'a> PostInstallContext<'a> {
             delivered_version,
             installer_bin: npm_bin,
             already_blocked,
-            // The npm arm keeps reporting a shortfall on every occurrence, as
-            // before: an npm registry lag is genuinely transient and self-heals
-            // in minutes rather than persisting like the pnpm environment shape,
-            // so it needs no episode bound.
+            // Default to an empty set: direct and test callers report every
+            // occurrence. The production npm finalize path threads the persisted
+            // episode set in via `with_nonblocking_episode_keys`, so a PERSISTENT
+            // non-blocking shape (the installer-unaimed unresolved `hq`, or a
+            // recurring shortfall) is bounded to one capture per episode exactly
+            // like the pnpm/Bun paths, rather than re-paging on every check.
             nonblocking_episode_keys: &[],
             pnpm: None,
             // Defaults reproduce the prior npm behaviour: with no managed roots
@@ -4526,21 +4526,27 @@ fn remove_dir_all_if_present(path: &Path) -> bool {
 /// so a content check for that scoped name is a reliable ownership signal. A
 /// missing or unreadable file is treated as "not ours" and is left untouched.
 fn shim_belongs_to_hq_cli(path: &Path, prefix: &Path) -> bool {
-    // npm's generated wrappers (the unix shell wrapper plus the `.cmd`/`.ps1`/
-    // `.bat` forms) name the scoped package in their own bytes, so a content check
-    // for that scoped name is a reliable ownership signal.
-    if let Ok(bytes) = std::fs::read(path) {
-        let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
-        if text.contains("@indigoai-us") && text.contains("hq-cli") {
-            return true;
-        }
+    // A SYMLINK is HQ's own ONLY when its canonical target resolves inside the
+    // derived prefix's @indigoai-us/hq-cli package. The shim's CONTENT is never
+    // trusted for a symlink: `std::fs::read` FOLLOWS the link, so an unrelated
+    // wrapper whose target script merely names the package would otherwise be
+    // accepted and unlinked — the exact case the containment rule must refuse.
+    if std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return shim_symlink_targets_hq_cli_package(path, prefix);
     }
-    // A genuine unix global shim is instead a SYMLINK into the package's own
-    // `dist/…` entrypoint, whose bytes name neither token; it is HQ's own exactly
-    // when the link target canonicalizes INSIDE the derived prefix's
-    // @indigoai-us/hq-cli package directory. A symlink pointing anywhere else is
-    // never treated as ours.
-    shim_symlink_targets_hq_cli_package(path, prefix)
+    // A regular file (npm's generated `.cmd`/`.ps1`/`.bat` wrappers and the unix
+    // shell wrapper) names the scoped package in its OWN bytes, so a content check
+    // for that scoped name is a reliable ownership signal.
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+            text.contains("@indigoai-us") && text.contains("hq-cli")
+        }
+        Err(_) => false,
+    }
 }
 
 /// Whether `path` is a symlink whose canonicalized target lies inside the derived
@@ -5465,6 +5471,23 @@ mod tests {
         );
     }
 
+    /// The bare-sentinel override is scoped to the npm arm: a pnpm or Bun run that
+    /// was aimed at the executed copy AND delivered the target keeps its targeted
+    /// (blocking) classification even if the post-install shim momentarily resolves
+    /// to the bare `hq` sentinel — the executor's own targeting/delivery evidence is
+    /// never discarded by the npm-only sentinel exception.
+    #[test]
+    fn the_bare_sentinel_override_does_not_touch_targeted_pnpm_or_bun() {
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Pnpm, None, true, "hq", true, &[]),
+            NonConvergenceKind::PnpmTargeted,
+        );
+        assert_eq!(
+            non_convergence_kind(InstallExecutor::Bun, None, true, "hq", true, &[]),
+            NonConvergenceKind::BunTargeted,
+        );
+    }
+
     /// The pnpm detection/targeting collapse: `is_pnpm_global_shim(x)` is now
     /// exactly `pnpm_global_env(x).is_some()` for EVERY layout arm, so the two
     /// can never disagree again — the invariant the doc comment promised.
@@ -6016,10 +6039,17 @@ mod tests {
         let root = tmp.path();
         build_unix_managed_shadow(root, "5.98.0", "5.103.20");
         let node_bin = root.join("node").join("bin");
-        // Repoint the resolved shim at an unrelated command outside the package.
+        // Repoint the resolved shim at an unrelated command outside the package —
+        // and make its target CONTENT name the scoped package, the exact shape a
+        // content-only ownership check (which follows the symlink) would wrongly
+        // accept and unlink. Containment must refuse it regardless of content.
         let elsewhere = root.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
-        std::fs::write(elsewhere.join("other"), "#!/bin/sh\necho not hq\n").unwrap();
+        std::fs::write(
+            elsewhere.join("other"),
+            "#!/bin/sh\n# an unrelated wrapper that merely mentions @indigoai-us/hq-cli\n",
+        )
+        .unwrap();
         std::fs::remove_file(node_bin.join("hq")).unwrap();
         symlink(elsewhere.join("other"), node_bin.join("hq")).unwrap();
 

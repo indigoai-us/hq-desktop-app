@@ -1500,7 +1500,14 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     // Node-20 shim, and a user-derived prefix would receive ABI-127 artifacts that
     // runtime cannot load.
     let prefix = if first_install {
-        first_install_prefix(&managed_roots).or_else(|| hq_cli_install_prefix(&npm, &hq))
+        // Aim at the managed prefix of the npm we will actually RUN — its own root
+        // (canonical or the legacy `Indigo HQ` root), so the copy we write and the
+        // copy resolution finds live in the SAME root. Only when npm is still
+        // unmanaged (provisioning failed) fall back to the canonical managed prefix
+        // as best effort. Taking `roots.first()` unconditionally would install into
+        // the canonical root while a legacy-only managed npm keeps resolving the
+        // legacy root — a cross-root split the classifier treats as ForeignManaged.
+        hq_cli_install_prefix(&npm, &hq).or_else(|| first_install_prefix(&managed_roots))
     } else {
         hq_cli_install_prefix(&npm, &hq)
     };
@@ -1832,6 +1839,18 @@ async fn finalize_convergence(
         None => None,
     };
     let managed_roots = paths::managed_toolchain_roots();
+    // The persisted non-blocking episode set bounds a NON-blocking non-convergence
+    // — a resolution shortfall, or the installer-unaimed shape an unresolved `hq`
+    // now produces — to one capture per `(latest, executor, kind, home_source)`
+    // episode, so a persistent shape does not re-page on every scheduled check.
+    // Mirrors the pnpm/Bun paths; read only on the non-convergent path, empty when
+    // converged (fail-closed: report).
+    let converged = install_converged(resolved.as_deref(), latest);
+    let nonblocking_episode_keys = if converged {
+        Vec::new()
+    } else {
+        non_convergent_episode_markers()
+    };
     let outcome = decide_post_install(
         &PostInstallContext::npm(
             before_bin,
@@ -1844,7 +1863,8 @@ async fn finalize_convergence(
             already_blocked,
             delivered_version.as_deref(),
         )
-        .with_managed_roots(&managed_roots),
+        .with_managed_roots(&managed_roots)
+        .with_nonblocking_episode_keys(&nonblocking_episode_keys),
     );
 
     // Managed shadow: HQ owns BOTH copies (on Windows, `<root>\npm-prefix` was
@@ -1870,7 +1890,23 @@ async fn finalize_convergence(
     }
 
     log("hq-cli-update", &outcome.log_line);
-    apply_post_install_with_app(app, &outcome)
+    let result = apply_post_install_with_app(app, &outcome);
+    // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
+    // never the durable blocking marker), so a persistent installer-unaimed or
+    // resolution-shortfall shape reports once per `latest` instead of on every
+    // check. Best-effort and never gates the capture (fail-loud): a failed write
+    // simply means the next occurrence reports again.
+    if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(error) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {error}"),
+            );
+        }
+    }
+    result
 }
 
 /// Map the removal action plus the post-removal convergence into the decision's
