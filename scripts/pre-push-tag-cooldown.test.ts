@@ -8,7 +8,8 @@
 // git repositories rather than asserting on its source text.
 
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +21,7 @@ const hookPath = resolve(rootDir, ".githooks/pre-push");
 const HOUR = 3600;
 const ZERO = "0".repeat(40);
 const SHA = "a".repeat(40);
+const REMOTE = "https://example.invalid/repo.git";
 
 let workdir = "";
 
@@ -66,7 +68,7 @@ function run(
   });
 }
 
-/** A repo with one commit and no tags, plus a helper to invoke the hook. */
+/** A repo with one commit and no tags. */
 async function makeRepo(name: string): Promise<string> {
   const repo = resolve(workdir, name);
   await mkdir(repo, { recursive: true });
@@ -81,32 +83,53 @@ async function makeRepo(name: string): Promise<string> {
   return repo;
 }
 
-/** Feed the hook one `pre-push` stdin line. */
+/** Invoke the hook with raw `pre-push` stdin lines. */
+function invoke(
+  repo: string,
+  stdin: string,
+  env: NodeJS.ProcessEnv = {},
+  remoteUrl = REMOTE,
+): Promise<RunResult> {
+  return run(repo, ["bash", hookPath, "origin", remoteUrl], env, stdin);
+}
+
+/** One `<local ref> <local sha> <remote ref> <remote sha>` line. */
+function line(localRef: string, localSha: string, remoteRef: string): string {
+  return `${localRef} ${localSha} ${remoteRef} ${ZERO}\n`;
+}
+
+/** The ordinary `git push origin vX` shape: local and remote refs match. */
 function pushRef(
   repo: string,
   ref: string,
   localSha: string,
   env: NodeJS.ProcessEnv = {},
+  remoteUrl = REMOTE,
 ): Promise<RunResult> {
-  return run(
-    repo,
-    ["bash", hookPath, "origin", "https://example.invalid/repo.git"],
-    env,
-    `${ref} ${localSha} ${ref} ${ZERO}\n`,
-  );
+  return invoke(repo, line(ref, localSha, ref), env, remoteUrl);
 }
 
-/** Backdate the "last tag push" marker by `hoursAgo`. */
-async function setMarker(repo: string, hoursAgo: number): Promise<void> {
-  const { stderr } = await run(repo, [
-    "git",
-    "rev-parse",
-    "--git-path",
-    "hq-last-tag-push",
-  ]);
-  void stderr;
+function markerPath(repo: string, remoteUrl = REMOTE): string {
+  const key = remoteUrl.replace(/[^A-Za-z0-9._-]/g, "_");
+  return resolve(repo, `.git/hq-last-tag-push-${key}`);
+}
+
+/** Backdate the cooldown marker for a destination by `hoursAgo`. */
+async function setMarker(
+  repo: string,
+  hoursAgo: number,
+  remoteUrl = REMOTE,
+): Promise<void> {
   const epoch = Math.floor(Date.now() / 1000) - Math.round(hoursAgo * HOUR);
-  await writeFile(resolve(repo, ".git/hq-last-tag-push"), `${epoch}\n`);
+  await writeFile(markerPath(repo, remoteUrl), `${epoch}\n`);
+}
+
+async function markerAgeHours(
+  repo: string,
+  remoteUrl = REMOTE,
+): Promise<number> {
+  const raw = await readFile(markerPath(repo, remoteUrl), "utf8");
+  return (Math.floor(Date.now() / 1000) - Number(raw.trim())) / HOUR;
 }
 
 /** Create a tag whose creation date is `hoursAgo` in the past. */
@@ -139,8 +162,6 @@ describe("release tag pushes are paced", () => {
     expect(code).toBe(1);
     expect(stderr).toContain("v1.2.3");
     // The message has to explain the cost, not just say "no".
-    expect(stderr).toContain("Pushing a tag runs the release");
-    // The wording is hard-wrapped, so compare against unwrapped text.
     const flat = stderr.replace(/\s+/g, " ");
     expect(flat).toMatch(/costs? a lot of real money in GitHub Actions/);
     expect(stderr).toContain("macOS");
@@ -152,32 +173,27 @@ describe("release tag pushes are paced", () => {
     const repo = await makeRepo("outside-window");
     await setMarker(repo, 6.5);
 
-    const { code } = await pushRef(repo, "refs/tags/v1.2.4", SHA);
-
-    expect(code).toBe(0);
+    expect((await pushRef(repo, "refs/tags/v1.2.4", SHA)).code).toBe(0);
   });
 
   it("blocks the second tag of a back-to-back pair", async () => {
     const repo = await makeRepo("consecutive");
 
-    const first = await pushRef(repo, "refs/tags/v1.0.0", SHA);
-    expect(first.code).toBe(0);
+    expect((await pushRef(repo, "refs/tags/v1.0.0", SHA)).code).toBe(0);
 
     const second = await pushRef(repo, "refs/tags/v1.0.1", SHA);
     expect(second.code).toBe(1);
     expect(second.stderr).toContain("v1.0.1");
   });
 
-  it("blocks when a batch push contains any tag", async () => {
+  it("blocks when a batch push contains a release tag", async () => {
     const repo = await makeRepo("mixed-batch");
     await setMarker(repo, 0.5);
 
-    const { code, stderr } = await run(
+    const { code, stderr } = await invoke(
       repo,
-      ["bash", hookPath, "origin", "https://example.invalid/repo.git"],
-      {},
-      `refs/heads/main ${SHA} refs/heads/main ${ZERO}\n` +
-        `refs/tags/v2.0.0 ${SHA} refs/tags/v2.0.0 ${ZERO}\n`,
+      line("refs/heads/main", SHA, "refs/heads/main") +
+        line("refs/tags/v2.0.0", SHA, "refs/tags/v2.0.0"),
     );
 
     expect(code).toBe(1);
@@ -185,8 +201,178 @@ describe("release tag pushes are paced", () => {
   });
 });
 
+describe("the destination ref decides, not the source ref", () => {
+  // `git push origin HEAD:refs/tags/v1.2.3` is a valid refspec whose LOCAL ref
+  // is `HEAD`. Matching on the local ref lets that form skip the hook entirely
+  // while still triggering the release workflow.
+  it("blocks a tag pushed via HEAD:refs/tags/vX", async () => {
+    const repo = await makeRepo("refspec-head");
+    await setMarker(repo, 0.5);
+
+    const { code, stderr } = await invoke(
+      repo,
+      line("HEAD", SHA, "refs/tags/v9.9.9"),
+    );
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("v9.9.9");
+  });
+
+  it("blocks a tag pushed from a branch ref to a tag ref", async () => {
+    const repo = await makeRepo("refspec-branch");
+    await setMarker(repo, 0.5);
+
+    const { code } = await invoke(
+      repo,
+      line("refs/heads/main", SHA, "refs/tags/v9.9.8"),
+    );
+
+    expect(code).toBe(1);
+  });
+
+  it("records the marker for a refspec push it allows", async () => {
+    const repo = await makeRepo("refspec-records");
+
+    expect((await invoke(repo, line("HEAD", SHA, "refs/tags/v9.9.7"))).code).toBe(
+      0,
+    );
+    expect(await markerAgeHours(repo)).toBeLessThan(0.1);
+  });
+
+  it("ignores a local tag ref pushed to a branch", async () => {
+    const repo = await makeRepo("tag-to-branch");
+    await setMarker(repo, 0.5);
+
+    const { code } = await invoke(
+      repo,
+      line("refs/tags/v1.0.0", SHA, "refs/heads/release"),
+    );
+
+    expect(code).toBe(0);
+  });
+});
+
+describe("only release tags count", () => {
+  // The Release workflow triggers on `tags: ["v*"]` and nothing else, so any
+  // other tag starts no billed build.
+  it("allows a non-release tag during the cooldown", async () => {
+    const repo = await makeRepo("non-release-tag");
+    await setMarker(repo, 0.5);
+
+    expect((await pushRef(repo, "refs/tags/docs-2026", SHA)).code).toBe(0);
+  });
+
+  it("does not spend the cooldown on a non-release tag", async () => {
+    const repo = await makeRepo("non-release-no-marker");
+
+    expect((await pushRef(repo, "refs/tags/docs-2026", SHA)).code).toBe(0);
+    expect(existsSync(markerPath(repo))).toBe(false);
+
+    // The real release that follows must still be allowed.
+    expect((await pushRef(repo, "refs/tags/v1.0.0", SHA)).code).toBe(0);
+  });
+
+  it("ignores a non-release tag when reading the fallback", async () => {
+    const repo = await makeRepo("non-release-fallback");
+    await tagAt(repo, "docs-2026", 0.5);
+
+    expect((await pushRef(repo, "refs/tags/v1.0.0", SHA)).code).toBe(0);
+  });
+});
+
+describe("one release per push", () => {
+  // Git invokes the hook once per push with one line per ref, so a single
+  // cooldown check would otherwise clear two releases at once.
+  it("refuses two release tags in one push", async () => {
+    const repo = await makeRepo("two-tags");
+
+    const { code, stderr } = await invoke(
+      repo,
+      line("refs/tags/v1.2.3", SHA, "refs/tags/v1.2.3") +
+        line("refs/tags/v1.2.4", SHA, "refs/tags/v1.2.4"),
+    );
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("v1.2.3");
+    expect(stderr).toContain("v1.2.4");
+    expect(stderr).toMatch(/2 release tags/);
+  });
+
+  it("refuses two release tags even with a cold cooldown", async () => {
+    const repo = await makeRepo("two-tags-cold");
+    await setMarker(repo, 48);
+
+    const { code } = await invoke(
+      repo,
+      line("refs/tags/v3.0.0", SHA, "refs/tags/v3.0.0") +
+        line("refs/tags/v3.0.1", SHA, "refs/tags/v3.0.1"),
+    );
+
+    expect(code).toBe(1);
+  });
+
+  it("allows a batch of one release tag plus branches", async () => {
+    const repo = await makeRepo("one-tag-plus-branch");
+
+    const { code } = await invoke(
+      repo,
+      line("refs/heads/main", SHA, "refs/heads/main") +
+        line("refs/tags/v4.0.0", SHA, "refs/tags/v4.0.0"),
+    );
+
+    expect(code).toBe(0);
+  });
+
+  it("lets the bypass push several tags deliberately", async () => {
+    const repo = await makeRepo("two-tags-bypass");
+
+    const { code } = await invoke(
+      repo,
+      line("refs/tags/v5.0.0", SHA, "refs/tags/v5.0.0") +
+        line("refs/tags/v5.0.1", SHA, "refs/tags/v5.0.1"),
+      { HQ_ALLOW_TAG_PUSH: "1" },
+    );
+
+    expect(code).toBe(0);
+  });
+});
+
+describe("the newest signal wins", () => {
+  // A clone whose own marker is old but which has just fetched a teammate's
+  // fresh release tag must not be allowed to release again immediately.
+  it("blocks on a fresh fetched tag despite an old marker", async () => {
+    const repo = await makeRepo("fresh-tag-old-marker");
+    await setMarker(repo, 20);
+    await tagAt(repo, "v6.0.0", 0.3);
+
+    const { code, stderr } = await pushRef(repo, "refs/tags/v6.0.1", SHA);
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("tag v6.0.0");
+  });
+
+  it("blocks on a fresh marker despite an old tag", async () => {
+    const repo = await makeRepo("fresh-marker-old-tag");
+    await setMarker(repo, 0.3);
+    await tagAt(repo, "v6.0.0", 20);
+
+    const { code, stderr } = await pushRef(repo, "refs/tags/v6.0.1", SHA);
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("from this clone");
+  });
+
+  it("allows when both signals are older than the window", async () => {
+    const repo = await makeRepo("both-old");
+    await setMarker(repo, 20);
+    await tagAt(repo, "v6.0.0", 30);
+
+    expect((await pushRef(repo, "refs/tags/v6.0.1", SHA)).code).toBe(0);
+  });
+});
+
 describe("a fresh clone falls back to tag dates", () => {
-  it("blocks when the newest existing tag is recent", async () => {
+  it("blocks when the newest existing release tag is recent", async () => {
     const repo = await makeRepo("fallback-recent");
     await tagAt(repo, "v3.0.0", 2);
 
@@ -200,26 +386,78 @@ describe("a fresh clone falls back to tag dates", () => {
     const repo = await makeRepo("fallback-old");
     await tagAt(repo, "v3.0.0", 30);
 
-    const { code } = await pushRef(repo, "refs/tags/v3.0.1", SHA);
-
-    expect(code).toBe(0);
+    expect((await pushRef(repo, "refs/tags/v3.0.1", SHA)).code).toBe(0);
   });
 
   it("allows the very first tag in a repo with no history", async () => {
     const repo = await makeRepo("first-tag");
 
-    const { code } = await pushRef(repo, "refs/tags/v0.1.0", SHA);
-
-    expect(code).toBe(0);
+    expect((await pushRef(repo, "refs/tags/v0.1.0", SHA)).code).toBe(0);
   });
 
   it("ignores the tag being pushed when it already exists locally", async () => {
     const repo = await makeRepo("self-tag");
     await tagAt(repo, "v4.0.0", 0);
 
-    const { code } = await pushRef(repo, "refs/tags/v4.0.0", SHA);
+    expect((await pushRef(repo, "refs/tags/v4.0.0", SHA)).code).toBe(0);
+  });
+});
 
-    expect(code).toBe(0);
+describe("the cooldown is scoped to its destination", () => {
+  // Pushing to a personal fork or a local mirror cannot start THIS repo's
+  // release workflow, so it must not spend origin's cooldown.
+  const other = "https://example.invalid/fork.git";
+
+  it("does not let a mirror push block the production remote", async () => {
+    const repo = await makeRepo("per-remote");
+
+    expect((await pushRef(repo, "refs/tags/v7.0.0", SHA, {}, other)).code).toBe(
+      0,
+    );
+    expect((await pushRef(repo, "refs/tags/v7.0.0", SHA, {}, REMOTE)).code).toBe(
+      0,
+    );
+  });
+
+  it("still paces repeat pushes to the same destination", async () => {
+    const repo = await makeRepo("per-remote-same");
+
+    expect((await pushRef(repo, "refs/tags/v7.1.0", SHA, {}, other)).code).toBe(
+      0,
+    );
+    expect((await pushRef(repo, "refs/tags/v7.1.1", SHA, {}, other)).code).toBe(
+      1,
+    );
+  });
+
+  it("keeps separate marker files per destination", async () => {
+    const repo = await makeRepo("per-remote-files");
+
+    await pushRef(repo, "refs/tags/v7.2.0", SHA, {}, other);
+
+    expect(existsSync(markerPath(repo, other))).toBe(true);
+    expect(existsSync(markerPath(repo, REMOTE))).toBe(false);
+  });
+
+  // The marker is per-destination; the tag-date floor deliberately is not. A
+  // release tag that exists locally and was created minutes ago means a billed
+  // release is probably already running, and the hook cannot tell a harmless
+  // bare mirror from a fork that would build it. Blocking is the safe
+  // direction, and the bypass is one environment variable away.
+  it("paces every destination once a real release tag is that recent", async () => {
+    const repo = await makeRepo("per-remote-tag-floor");
+    await tagAt(repo, "v7.3.0", 0.3);
+
+    expect((await pushRef(repo, "refs/tags/v7.3.1", SHA, {}, other)).code).toBe(
+      1,
+    );
+    expect(
+      (
+        await pushRef(repo, "refs/tags/v7.3.1", SHA, {
+          HQ_ALLOW_TAG_PUSH: "1",
+        }, other)
+      ).code,
+    ).toBe(0);
   });
 });
 
@@ -228,32 +466,41 @@ describe("non-release pushes are untouched", () => {
     const repo = await makeRepo("branch-push");
     await setMarker(repo, 0.1);
 
-    const { code } = await pushRef(repo, "refs/heads/main", SHA);
-
-    expect(code).toBe(0);
+    expect((await pushRef(repo, "refs/heads/main", SHA)).code).toBe(0);
   });
 
   it("allows tag deletions inside the window", async () => {
     const repo = await makeRepo("tag-delete");
     await setMarker(repo, 0.1);
 
-    const { code } = await pushRef(repo, "refs/tags/v5.0.0", ZERO);
+    expect((await pushRef(repo, "refs/tags/v5.0.0", ZERO)).code).toBe(0);
+  });
+
+  it("allows the colon form of a tag deletion", async () => {
+    const repo = await makeRepo("tag-delete-colon");
+    await setMarker(repo, 0.1);
+
+    const { code } = await invoke(
+      repo,
+      line("(delete)", ZERO, "refs/tags/v5.0.0"),
+    );
 
     expect(code).toBe(0);
+  });
+
+  it("does not spend the cooldown on a deletion", async () => {
+    const repo = await makeRepo("delete-no-marker");
+
+    await pushRef(repo, "refs/tags/v5.0.0", ZERO);
+
+    expect(existsSync(markerPath(repo))).toBe(false);
   });
 
   it("allows an empty push with no refs", async () => {
     const repo = await makeRepo("empty-push");
     await setMarker(repo, 0.1);
 
-    const { code } = await run(
-      repo,
-      ["bash", hookPath, "origin", "https://example.invalid/repo.git"],
-      {},
-      "",
-    );
-
-    expect(code).toBe(0);
+    expect((await invoke(repo, "")).code).toBe(0);
   });
 });
 
@@ -270,20 +517,39 @@ describe("the cooldown is escapable and configurable", () => {
     expect(stderr).toContain("bypassed");
   });
 
+  it("resets the cooldown when a bypass releases", async () => {
+    // A bypassed release still starts a billed build, so it has to move the
+    // window. Otherwise an urgent release now, followed by an ordinary one
+    // five hours later, sees a six-hour-old marker and goes out early.
+    const repo = await makeRepo("bypass-records");
+    await setMarker(repo, 5);
+
+    await pushRef(repo, "refs/tags/v6.1.0", SHA, { HQ_ALLOW_TAG_PUSH: "1" });
+
+    expect(await markerAgeHours(repo)).toBeLessThan(0.1);
+    expect((await pushRef(repo, "refs/tags/v6.1.1", SHA)).code).toBe(1);
+  });
+
   it("honours HQ_TAG_PUSH_COOLDOWN_SECONDS", async () => {
     const repo = await makeRepo("custom-window");
     await setMarker(repo, 1);
 
-    const relaxed = await pushRef(repo, "refs/tags/v7.0.0", SHA, {
-      HQ_TAG_PUSH_COOLDOWN_SECONDS: "600",
-    });
-    expect(relaxed.code).toBe(0);
+    expect(
+      (
+        await pushRef(repo, "refs/tags/v7.0.0", SHA, {
+          HQ_TAG_PUSH_COOLDOWN_SECONDS: "600",
+        })
+      ).code,
+    ).toBe(0);
 
     await setMarker(repo, 1);
-    const strict = await pushRef(repo, "refs/tags/v7.0.0", SHA, {
-      HQ_TAG_PUSH_COOLDOWN_SECONDS: `${24 * HOUR}`,
-    });
-    expect(strict.code).toBe(1);
+    expect(
+      (
+        await pushRef(repo, "refs/tags/v7.0.0", SHA, {
+          HQ_TAG_PUSH_COOLDOWN_SECONDS: `${24 * HOUR}`,
+        })
+      ).code,
+    ).toBe(1);
   });
 
   it("defaults to a 6 hour window", async () => {
@@ -297,13 +563,12 @@ describe("the cooldown is escapable and configurable", () => {
 });
 
 describe("pnpm install wires the hook up", () => {
-  it("points core.hooksPath at .githooks from the root prepare script", async () => {
+  it("installs hooks through the cross-platform installer", async () => {
     const pkg = JSON.parse(
-      await import("node:fs/promises").then((fs) =>
-        fs.readFile(resolve(rootDir, "package.json"), "utf8"),
-      ),
+      await readFile(resolve(rootDir, "package.json"), "utf8"),
     );
-    expect(pkg.scripts.prepare).toContain("core.hooksPath");
-    expect(pkg.scripts.prepare).toContain(".githooks");
+    // Not a POSIX shell one-liner: lifecycle scripts run through cmd.exe on
+    // Windows, where `/dev/null` and `true` break the install outright.
+    expect(pkg.scripts.prepare).toBe("node scripts/install-git-hooks.mjs");
   });
 });
