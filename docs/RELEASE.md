@@ -25,6 +25,36 @@ git push origin vX.Y.Z
 
 Supported tag forms are `vX.Y.Z`, `vX.Y.Z-beta.N`, and `vX.Y.Z-alpha.N`.
 
+## Release Tag Cooldown
+
+Because the tag *is* the release, a `git push` of a `v*` tag starts a macOS
+universal build plus Windows x64 and ARM64 builds on GitHub-hosted runners.
+GitHub bills macOS minutes at 10x and Windows minutes at 2x a Linux minute, so
+each tag push spends a meaningful amount of money, and a burst of tags spends
+it repeatedly on builds nobody installs.
+
+A `pre-push` hook at `.githooks/pre-push` therefore refuses to push a tag when
+another tag was pushed within the last **6 hours**. Branch pushes and tag
+deletions are unaffected.
+
+The hook installs itself: `pnpm install` runs the root `prepare` script, which
+sets `core.hooksPath` to `.githooks`. In an existing clone, run it once by
+hand:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+If a release is genuinely urgent and you accept the build cost, bypass the
+cooldown explicitly rather than disabling hooks wholesale:
+
+```bash
+HQ_ALLOW_TAG_PUSH=1 git push origin vX.Y.Z
+```
+
+`HQ_TAG_PUSH_COOLDOWN_SECONDS` overrides the window length. Behaviour is
+covered by `scripts/pre-push-tag-cooldown.test.ts`.
+
 Where you tag depends on the channel:
 
 - **Stable** (`vX.Y.Z`) must be cut from `main` — its commit has to be merged
