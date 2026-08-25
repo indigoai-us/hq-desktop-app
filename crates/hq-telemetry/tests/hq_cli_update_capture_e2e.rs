@@ -291,6 +291,90 @@ fn foreign_managed_repeat_episodes_stay_suppressed_through_the_executor() {
     }
 }
 
+/// The Kevins-MacBook-Pro capture contract: the unresolved first-install shape
+/// emits exactly ONE scrubbed envelope tagged `non_convergence_kind=installer-
+/// unaimed`, with the unresolved bin reported as the closed `PATH` token and no
+/// raw home path in any field. It writes no durable marker, so auto-update is
+/// never wedged on a copy HQ could not name.
+#[test]
+fn an_unresolved_hq_captures_installer_unaimed_with_no_raw_home_path() {
+    let ctx = PostInstallContext::npm(
+        "hq",
+        "hq",
+        None,
+        None,
+        "5.103.20",
+        None,
+        "/usr/local/bin/npm",
+        false,
+        None,
+    );
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(records, 0, "an unaimed first install writes no durable marker");
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        fingerprint(event),
+        ["hq-cli-update", "install-non-convergent"]
+    );
+    assert_eq!(
+        event.tags.get("non_convergence_kind").map(String::as_str),
+        Some("installer-unaimed")
+    );
+    assert_eq!(
+        event.tags.get("install_executor").map(String::as_str),
+        Some("npm")
+    );
+    assert_eq!(
+        event.extra.get("hq_bin").and_then(Value::as_str),
+        Some("PATH"),
+        "the unresolved bin is the closed PATH token, never a home path"
+    );
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    for forbidden in ["/Users/", "/home/"] {
+        assert!(
+            !serialized.contains(forbidden),
+            "installer-unaimed envelope leaked {forbidden:?}"
+        );
+    }
+}
+
+/// The per-episode bound holds for the new arm: two runs of the same unresolved
+/// first-install shape emit exactly one envelope, so the fix cannot grow Sentry
+/// volume.
+#[test]
+fn the_unaimed_first_install_episode_emits_exactly_one_envelope_across_two_runs() {
+    let ctx = PostInstallContext::npm(
+        "hq",
+        "hq",
+        None,
+        None,
+        "5.103.20",
+        None,
+        "/usr/local/bin/npm",
+        false,
+        None,
+    );
+    let (events, _, captures, _) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(events.len(), 1, "the first episode is captured once");
+    assert_eq!(captures, 1);
+
+    let key = non_convergent_episode_key(
+        "5.103.20",
+        InstallExecutor::Npm,
+        NonConvergenceKind::InstallerUnaimed,
+        None,
+    );
+    let seen = [key];
+    let ctx2 = ctx.clone().with_nonblocking_episode_keys(&seen);
+    let (events, _, captures, _) = composed_non_convergent_events(&ctx2, true);
+    assert!(events.is_empty(), "a repeat episode captures nothing");
+    assert_eq!(captures, 0);
+}
+
 #[test]
 fn npm_targeted_non_convergence_stays_loud_for_an_already_marked_episode() {
     let home = hq_desktop_core::paths::home_dir().expect("test home directory");

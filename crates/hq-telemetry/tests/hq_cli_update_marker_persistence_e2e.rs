@@ -186,6 +186,39 @@ fn an_npx_cache_run_persists_no_marker() {
     assert_eq!(captures, 1, "it stays observable once");
 }
 
+/// The Kevins-MacBook-Pro marker contract: a FIRST install where nothing
+/// resolved leaves `hq` as the bare sentinel, npm exits 0 into its own ambient
+/// default prefix, and there is no prefix to read delivery from. It is
+/// `InstallerUnaimed` — it persists NO durable `cliUpdateNonConvergentVersion`
+/// marker (so `should_auto_install` stays true and the next check retries) and
+/// never clears a pre-existing one (the injected `clear` panics if called). On the
+/// base commit the npm arm falls through to `ForeignManaged`, which writes the
+/// pinned marker and wedges auto-update for a copy HQ could not even name.
+#[test]
+fn an_unresolved_hq_run_persists_no_marker() {
+    let ctx = PostInstallContext::npm(
+        "hq",
+        "hq",
+        None,
+        None,
+        "5.103.20",
+        None,
+        "/usr/local/bin/npm",
+        false,
+        None,
+    );
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::InstallerUnaimed)
+    );
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(
+        records, 0,
+        "an unresolved first install must write no durable marker"
+    );
+    assert_eq!(captures, 1, "it stays observable once");
+}
+
 /// The pnpm >=11 nested field layout. `matches` is now a native-resolution
 /// diagnostic only; the marker decision turns on delivery evidence. `'static` so
 /// the fixtures need no caller-side locals.

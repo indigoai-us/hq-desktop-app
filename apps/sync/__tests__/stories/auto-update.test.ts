@@ -244,7 +244,7 @@ describe('master automatic-updates switch', () => {
 
     // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
     // the version the app compares against is the version it installs.
-    const npmBranchStart = cliUpdate.indexOf('let prefix = hq_cli_install_prefix(&npm, &hq);');
+    const npmBranchStart = cliUpdate.indexOf('let prefix = if first_install {');
     const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retries(&npm');
     expect(npmBranchStart).toBeGreaterThan(-1);
     expect(npmBranchEnd).toBeGreaterThan(npmBranchStart);
@@ -379,6 +379,17 @@ describe('master automatic-updates switch', () => {
       'const NON_CONVERGENT_EPISODE_KEYS: &str = "cliNonConvergentEpisodeKeys";',
     );
     expect(cliUpdate).toContain('fn non_convergent_episode_markers()');
+    // The npm finalization path threads the SAME persisted set in and persists the
+    // returned key too, so the installer-unaimed shape (an unresolved `hq` after an
+    // npm install) is bounded once per episode instead of re-paging every check.
+    const npmFinalize = cliUpdate.slice(
+      cliUpdate.indexOf('async fn finalize_convergence('),
+      cliUpdate.indexOf('fn managed_shadow_repair_outcome('),
+    );
+    expect(npmFinalize).toContain(
+      '.with_nonblocking_episode_keys(&nonblocking_episode_keys)',
+    );
+    expect(npmFinalize).toContain('non_convergent_episode_record(&existing, key, latest)');
   });
 
   it('a non-convergent capture names which package manager ran', () => {
@@ -623,7 +634,7 @@ describe('installs the CLI when the machine has none', () => {
     expect(cliUpdate).toContain('async fn provision_managed_npm_for_first_install(');
     expect(cliUpdate).toContain('crate::commands::sync::repair_managed_node(app).await');
     expect(normalize(cliUpdate)).toContain(
-      'if first_install && npm_unresolved(&npm) {',
+      'if first_install && !npm_within_managed_root(&npm, &managed_roots) {',
     );
     // Provisioning failure must not become a new hard failure: fall back to the
     // unresolved npm and surface the ordinary spawn error, as before.

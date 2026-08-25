@@ -155,7 +155,12 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // managed `hq`, npm is managed (Node 22) while `hq` still resolves the user's
     // Node-20 shim — a user-derived prefix would then receive ABI-127 artifacts that
     // runtime cannot load, the very corruption the managed-retry fix prevents.
-    expect(cli).toContain('let prefix = hq_cli_install_prefix(&npm, &hq);');
+    // The ordinary (already-installed) update path still derives its prefix from
+    // the resolved npm's runtime via hq_cli_install_prefix; only a FIRST install
+    // (nothing resolved at all) is instead aimed at HQ's own managed npm prefix so
+    // the post-install probe can converge.
+    expect(cli).toContain('hq_cli_install_prefix(&npm, &hq)');
+    expect(cli).toContain('first_install_prefix(&managed_roots)');
     expect(cli).toContain('fn hq_cli_install_prefix(');
     expect(cli).toContain('fn prefer_managed_prefix(');
     // A managed npm (living inside a managed toolchain root) routes to the SHARED
