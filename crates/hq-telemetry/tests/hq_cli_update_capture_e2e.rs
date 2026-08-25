@@ -4,10 +4,12 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
-    BinaryAnchorShape, ConvergenceVerdict, InstallExecutor, LocalVersionProbeDiagnostics,
-    ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
-    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
-    ResolvedProgramKind, VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
+    should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, InstallExecutor,
+    InterpreterRecovery, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
+    ManagedRuntimeState, ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
+    PostInstallCoreEffects, ResolutionSource, ResolvedProgramKind, VersionProbeOutcome,
+    NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -698,6 +700,9 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
         hq_version: VersionProbeOutcome::InterpreterNotFound,
         binary_anchor_shape: BinaryAnchorShape::FlatGlobalBin,
         resolved_program_kind: ResolvedProgramKind::Exe,
+        managed_runtime: ManagedRuntimeState::NotProvisioned,
+        interpreter_recovery: InterpreterRecovery::ManagedNodeAbsent,
+        resolution_source: ResolutionSource::SettingsPath,
     };
 
     let events = captured_events(|| report_unreadable_version("5.88.3", &probes));
@@ -734,6 +739,9 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
                 "hq_version": "interpreter_not_found",
                 "binary_anchor_shape": "flat_global_bin",
                 "resolved_program_kind": "exe",
+                "managed_runtime": "not_provisioned",
+                "interpreter_recovery": "managed_node_absent",
+                "resolution_source": "settings_path",
             })
             .as_object()
             .unwrap()
@@ -754,6 +762,94 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
     );
 }
 
+/// HQ-DESKTOP-3P: the widened unreadable-version payload carries the three new
+/// closed diagnostics — `managed_runtime`, `interpreter_recovery`,
+/// `resolution_source` — as enum strings, retains the original fields, and keeps
+/// Sentry's default grouping so the cluster watermark stays comparable.
+#[test]
+fn unreadable_version_capture_carries_the_recovery_diagnostics_and_keeps_grouping() {
+    let probes = LocalVersionProbeDiagnostics {
+        binary_anchor: VersionProbeOutcome::PackageNotFound,
+        npm_root: VersionProbeOutcome::NotAttempted,
+        hq_version: VersionProbeOutcome::InterpreterNotFound,
+        binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+        resolved_program_kind: ResolvedProgramKind::Exe,
+        managed_runtime: ManagedRuntimeState::NotProvisioned,
+        interpreter_recovery: InterpreterRecovery::ManagedNodeAbsent,
+        resolution_source: ResolutionSource::SettingsPath,
+    };
+
+    let events = captured_events(|| report_unreadable_version("5.99.0", &probes));
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+
+    let Some(Value::Object(recorded)) = event.extra.get("hq_cli_version_probes") else {
+        panic!("probe diagnostics must be an object: {:?}", event.extra);
+    };
+    // The three new closed fields serialize as snake_case enum strings.
+    assert_eq!(
+        recorded.get("managed_runtime"),
+        Some(&Value::String("not_provisioned".into()))
+    );
+    assert_eq!(
+        recorded.get("interpreter_recovery"),
+        Some(&Value::String("managed_node_absent".into()))
+    );
+    assert_eq!(
+        recorded.get("resolution_source"),
+        Some(&Value::String("settings_path".into()))
+    );
+    // The original fields keep their names and values.
+    assert_eq!(
+        recorded.get("binary_anchor"),
+        Some(&Value::String("package_not_found".into()))
+    );
+    assert_eq!(
+        recorded.get("hq_version"),
+        Some(&Value::String("interpreter_not_found".into()))
+    );
+    assert_eq!(
+        recorded.get("resolved_program_kind"),
+        Some(&Value::String("exe".into()))
+    );
+    // Grouping is unchanged, so the cluster does not split.
+    assert_eq!(fingerprint(event), ["{{ default }}"]);
+    // Still closed + path-free after scrubbing.
+    let serialized = serde_json::to_string(&event).unwrap();
+    for leak in ["/Users/", "/home/", "fixture", "C:\\\\"] {
+        assert!(!serialized.contains(leak), "leaked {leak}: {serialized}");
+    }
+}
+
+/// A probe that RECOVERS a version through the managed Node reports nothing:
+/// `should_report_unreadable_version` is false for it, so the check flow emits
+/// zero unreadable-version events.
+#[test]
+fn a_recovered_probe_emits_no_unreadable_event() {
+    let recovered = LocalVersionProbeResult {
+        local: Some("5.99.0".to_string()),
+        hq_installed: true,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor: VersionProbeOutcome::PackageNotFound,
+            npm_root: VersionProbeOutcome::NotAttempted,
+            hq_version: VersionProbeOutcome::Succeeded,
+            binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+            resolved_program_kind: ResolvedProgramKind::Exe,
+            managed_runtime: ManagedRuntimeState::Present,
+            interpreter_recovery: InterpreterRecovery::RecoveredWithManagedNode,
+            resolution_source: ResolutionSource::SettingsPath,
+        },
+    };
+
+    assert!(!should_report_unreadable_version(&recovered));
+    let events = captured_events(|| {
+        if should_report_unreadable_version(&recovered) {
+            report_unreadable_version("5.99.0", &recovered.probes);
+        }
+    });
+    assert!(events.is_empty(), "a recovered probe must emit no event");
+}
+
 /// HQ-DESKTOP-3P: replay the exact production probe quadruple the Windows field
 /// events carried and prove the widened payload names the resolver's program
 /// classification. `resolved_program_kind` is absent from the emitted extras on
@@ -766,6 +862,9 @@ fn production_field_quadruple_capture_carries_the_resolved_program_kind() {
         hq_version: VersionProbeOutcome::SpawnNotExecutable,
         binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
         resolved_program_kind: ResolvedProgramKind::Extensionless,
+        managed_runtime: ManagedRuntimeState::NotProbed,
+        interpreter_recovery: InterpreterRecovery::NotNeeded,
+        resolution_source: ResolutionSource::SystemPrefix,
     };
 
     let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
@@ -830,6 +929,9 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
         hq_version: VersionProbeOutcome::SpawnNotExecutable,
         binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
         resolved_program_kind: ResolvedProgramKind::Extensionless,
+        managed_runtime: ManagedRuntimeState::NotProbed,
+        interpreter_recovery: InterpreterRecovery::NotNeeded,
+        resolution_source: ResolutionSource::SystemPrefix,
     };
 
     let events = captured_events(|| report_unreadable_version("5.94.1", &probes));

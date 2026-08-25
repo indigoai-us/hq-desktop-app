@@ -264,3 +264,78 @@ describe('hq-CLI updater recovers a prefix-less ENOTEMPTY wedge and absorbs a re
     expect(core).toContain('"EIDLETIMEOUT"');
   });
 });
+
+/**
+ * HQ-DESKTOP-3P — the hq-CLI VERSION PROBE self-provisions/reuses HQ's managed
+ * Node before reporting a resolved-but-unreadable CLI forever.
+ *
+ * The reopened field events (macOS, release 0.10.147) carried the quadruple
+ * {binary_anchor: package_not_found, hq_version: interpreter_not_found,
+ * npm_root: not_attempted, resolved_program_kind: exe}: a resolved `hq` shim
+ * whose `#!/usr/bin/env node` interpreter is undiscoverable, so every probe
+ * fails and `should_report_unreadable_version` fires on every 6h check. HQ owns
+ * a checksum-verified managed Node the probe simply never fell back to.
+ *
+ * Same source-contract style — no built binary; runs in the scripted
+ * "Desktop-alt E2E" CI job.
+ */
+describe('hq-CLI version probe recovers an unreadable CLI through the managed Node (HQ-DESKTOP-3P)', () => {
+  const cli = readRepoFile('src-tauri/src/commands/hq_cli_update.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+  const pathsCore = readRepoFile('../../crates/hq-desktop-core/src/paths.rs');
+
+  const occurrences = (haystack: string, needle: string) =>
+    haystack.split(needle).length - 1;
+
+  // The re-probe helper body, sliced so "bounded to one provision + one re-probe"
+  // cannot be satisfied by unrelated code elsewhere in the file.
+  const recoverHelper = cli.slice(
+    cli.indexOf('async fn recover_unreadable_version_once('),
+    cli.indexOf('/// The ONE call into the managed-Node provisioning seam'),
+  );
+
+  it('gives the core version probe a managed-Node interpreter fallback', () => {
+    // A present managed Node is retried by prepending its bin dir to the child
+    // PATH, and — for a node-shebanged shim — invoked directly.
+    expect(core).toContain('fn hq_version_with_recovery(');
+    expect(core).toContain('paths::path_with_interpreter_hint(');
+    expect(core).toContain('fn managed_node_executable(');
+    expect(core).toContain('fn shebang_names_node(');
+    expect(core).toContain('InterpreterRecovery::RecoveredWithManagedNode');
+    // The widened child PATH searches beyond nvm, and the hint helper + the new
+    // resolution-source enum live in paths.rs.
+    expect(pathsCore).toContain('fn node_version_manager_dirs(');
+    expect(pathsCore).toContain('.join(".fnm")');
+    expect(pathsCore).toContain('pub fn path_with_interpreter_hint(');
+    expect(pathsCore).toContain('pub enum ResolutionSource');
+  });
+
+  it('reuses repair_managed_node once and re-probes once — never a second installer, never a loop', () => {
+    // Exactly one provision (the shared seam) and one re-probe inside the helper.
+    expect(occurrences(recoverHelper, 'request_managed_node_repair(app).await')).toBe(1);
+    expect(occurrences(recoverHelper, 'get_local_version_diagnostics()')).toBe(1);
+    // No second installer, no retry loop.
+    expect(recoverHelper).not.toContain('repair_managed_node(');
+    expect(recoverHelper).not.toContain('loop {');
+    expect(recoverHelper).not.toContain('while ');
+    // Only an HQ-owned gap (unprovisioned/incomplete) is provisioned here.
+    expect(recoverHelper).toContain(
+      'ManagedRuntime::NotProvisioned | ManagedRuntime::Incomplete',
+    );
+    // And ONLY for an undiscoverable interpreter — a genuinely broken CLI
+    // (nonzero exit / empty output) is never provisioned for.
+    expect(recoverHelper).toContain(
+      'interpreter_recovery != InterpreterRecovery::ManagedNodeAbsent',
+    );
+  });
+
+  it('reports only after recovery has failed', () => {
+    // The provision + re-probe runs BEFORE the unreadable-version report in the
+    // check flow, so a recovered version emits no event.
+    const recoverAt = cli.indexOf('recover_unreadable_version_once(app, local_version).await');
+    const reportAt = cli.indexOf('report_unreadable_version(&latest, &local_version.probes)');
+    expect(recoverAt).toBeGreaterThan(0);
+    expect(reportAt).toBeGreaterThan(0);
+    expect(recoverAt).toBeLessThan(reportAt);
+  });
+});
