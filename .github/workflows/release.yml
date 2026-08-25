@@ -191,13 +191,40 @@ jobs:
             echo "::error::$SHELL_DIR/chat exists — this tag carries the V2 chat shell, which now lives in indigoai-us/hq-work-mono. Cut the tag from a commit whose desktop shell is v1, or remove the chat shell before tagging."
             exit 1
           fi
-          for marker in v4/V4Sidebar.svelte v4/V4SecondarySidebar.svelte; do
-            if [ ! -f "$SHELL_DIR/$marker" ]; then
-              echo "::error::$SHELL_DIR/$marker is missing — the v1 desktop shell is not intact in this tag's tree."
-              exit 1
+
+          # The absence check above is only half the job. The revert that
+          # removed the V2 shell (#454) also deleted the "Finish setting up
+          # HQ" card, and this step waved through 36 releases without it
+          # because it only ever asked whether the v1 sidebars were present.
+          # Anything shipped after v0.10.109 was invisible to it. The manifest
+          # is the list of surfaces a revert-to-an-older-tree must not
+          # silently destroy; scripts/release-workflow.test.ts keeps it honest
+          # against the working tree.
+          MANIFEST="scripts/release-required-surfaces.txt"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::$MANIFEST is missing — the release guard cannot verify this tag's surfaces. Cut the tag from a commit that carries the manifest."
+            exit 1
+          fi
+
+          missing=0
+          while IFS= read -r surface; do
+            surface="${surface%%#*}"
+            surface="${surface#"${surface%%[![:space:]]*}"}"
+            surface="${surface%"${surface##*[![:space:]]}"}"
+            if [ -z "$surface" ]; then
+              continue
             fi
-          done
-          echo "v1 desktop shell intact; no V2 chat shell present."
+            if [ ! -e "$surface" ]; then
+              echo "::error::$surface is missing — a required surface is absent from this tag's tree. If it was removed on purpose, drop its line from $MANIFEST in the same change."
+              missing=1
+            fi
+          done < "$MANIFEST"
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "v1 desktop shell intact; no V2 chat shell present; all surfaces in $MANIFEST accounted for."
 
       - uses: pnpm/action-setup@v4
 
