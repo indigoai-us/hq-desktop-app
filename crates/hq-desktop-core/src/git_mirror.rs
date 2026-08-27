@@ -1838,14 +1838,51 @@ fn report_auto_reaped_index_lock(size_bytes: u64, wedged_secs: u64, wedge_report
     );
 }
 
-/// Bill one wedge warning if the finite budget allows, and persist the spend on
-/// the durable wedge record. Called only from the reap-failure branches — the
-/// states where HQ tried to recover a wedged non-empty lock and could not — so
-/// `recovery_failed` is always true here; the pure [`decide_wedge_report`] takes
-/// it as a parameter for testability. `wedged_secs` is the durable wedge age the
-/// reap decision measured. A missing prior record (never expected past a reap,
-/// which only fires against a matured record) is treated conservatively as
-/// "nothing to warn from" and skipped.
+/// In-memory mirror of each wedge's report budget, keyed by resolved git dir.
+///
+/// Two failure modes the durable record alone cannot cover, both raised in review:
+///   1. A full or read-only `.git` makes the best-effort [`write_wedge_state`]
+///      fail, so the on-disk `reports` never advances and every subsequent pass
+///      would re-emit `first-confirmed` — reopening the very flood this change
+///      removes. The authoritative count lives here instead, so a failed disk
+///      write cannot un-pace a wedge within a process.
+///   2. [`reap_stale_index_lock_on_launch`] runs the reaper on its own thread
+///      WITHOUT the cross-process mirror lock, so it can overlap a normal pass.
+///      Holding this mutex across the whole read/decide/emit/write serialises
+///      them, so two threads cannot both bill `first-confirmed` and lose an
+///      increment.
+///
+/// The durable record remains the cross-restart carrier; this is seeded from it
+/// and reconciled with it (the higher count and more recent anchor win), so
+/// another app instance advancing the record is respected too. Keyed by git dir
+/// with the wedge's `first_seen_at` stored inside, so a new wedge (a changed
+/// `first_seen`, after a reset or a recovery) transparently starts a fresh budget
+/// with no explicit teardown.
+static WEDGE_REPORT_STATE: LazyLock<Mutex<HashMap<PathBuf, WedgeReportBudget>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The process-local half of one wedge's finite report budget. `first_seen_at`
+/// is the wedge identity: a mismatch means this entry belongs to a prior wedge
+/// and must be discarded before use.
+#[derive(Debug, Clone, Default)]
+struct WedgeReportBudget {
+    first_seen_at: Option<String>,
+    reports: usize,
+    last_report_at: Option<DateTime<Utc>>,
+}
+
+/// Bill one wedge warning if the finite budget allows, and record the spend.
+/// Called only from the reap-failure branches — the states where HQ tried to
+/// recover a wedged non-empty lock and could not — so `recovery_failed` is always
+/// true here; the pure [`decide_wedge_report`] takes it as a parameter for
+/// testability. `wedged_secs` is the durable wedge age the reap decision measured.
+/// A missing prior record (never expected past a reap, which only fires against a
+/// matured record) is treated conservatively as "nothing to warn from", skipped.
+///
+/// The read/decide/emit/write runs under [`WEDGE_REPORT_STATE`], with the
+/// in-memory budget authoritative and the durable record a cross-restart backup,
+/// so neither a failed disk write nor an overlapping launch-thread reap can
+/// re-open the flood.
 fn report_wedge_if_due(
     git_dir: &Path,
     prior: Option<&PersistedIndexLockWedge>,
@@ -1856,18 +1893,39 @@ fn report_wedge_if_due(
     let Some(prior) = prior else {
         return;
     };
-    // The cooldown anchor. A missing, unparsable or future-dated stamp resolves to
-    // `None` — treat the cooldown as re-armed rather than latch a wedge silent
-    // (the shared future-clock fail-safe, via `usable_stamp`).
-    let since_last_report = usable_stamp(
+    let mut state = WEDGE_REPORT_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = state.entry(git_dir.to_path_buf()).or_default();
+    // A budget carrying a different `first_seen` belongs to a prior wedge (a reset
+    // clock, or a fresh wedge after a recovery) — discard it and start clean from
+    // this wedge's durable record.
+    if entry.first_seen_at.as_deref() != Some(prior.first_seen_at.as_str()) {
+        *entry = WedgeReportBudget {
+            first_seen_at: Some(prior.first_seen_at.clone()),
+            reports: 0,
+            last_report_at: None,
+        };
+    }
+    // Reconcile with the durable record: the higher count and more recent anchor
+    // win, so neither a failed in-process write nor another app instance's write
+    // can under-count. A missing, unparsable or future-dated persisted stamp
+    // resolves to `None` (the shared future-clock fail-safe, via `usable_stamp`).
+    let disk_last = usable_stamp(
         prior.last_report_at.as_ref(),
         wall_now,
         &wedge_state_path(git_dir),
         "wedge report timestamp",
-    )
-    .and_then(|at| elapsed_since_wall(at, wall_now));
+    );
+    let reports = entry.reports.max(prior.reports);
+    let last_report_at = match (entry.last_report_at, disk_last) {
+        (Some(mem), Some(disk)) => Some(mem.max(disk)),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    };
+    let since_last_report = last_report_at.and_then(|at| elapsed_since_wall(at, wall_now));
     let action = decide_wedge_report(
-        prior.reports,
+        reports,
         Duration::from_secs(wedged_secs),
         since_last_report,
         true,
@@ -1876,16 +1934,19 @@ fn report_wedge_if_due(
         &REFUSAL_ESCALATION_AGES,
     );
     if action.emits() {
-        report_wedged_index_lock(size_bytes, prior.reports, action.source());
-        // Persist the spend on the same record, preserving the reap clock's
-        // identity so the durable wedge age keeps climbing toward the next rung.
+        report_wedged_index_lock(size_bytes, reports, action.source());
+        let new_reports = reports + 1;
+        // In-memory first (cannot fail), then the durable record (best-effort), so
+        // the spend is never lost even when `.git` cannot be written.
+        entry.reports = new_reports;
+        entry.last_report_at = Some(wall_now);
         write_wedge_state(
             git_dir,
             &PersistedIndexLockWedge {
                 first_seen_at: prior.first_seen_at.clone(),
                 lock_mtime_nanos: prior.lock_mtime_nanos,
                 size_bytes: prior.size_bytes,
-                reports: prior.reports + 1,
+                reports: new_reports,
                 last_report_at: Some(wall_now.to_rfc3339_opts(SecondsFormat::Secs, true)),
             },
         );
@@ -3590,6 +3651,10 @@ mod tests {
     /// the probe-override slot and the hard-timeout env override, and both are
     /// reset to their unset defaults.
     fn reset_index_lock_report_state() {
+        WEDGE_REPORT_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         set_probe_override(None);
         std::env::remove_var(WEDGED_LOCK_HARD_TIMEOUT_ENV);
     }
@@ -9404,6 +9469,47 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].tags["source"], "first-confirmed");
         assert_eq!(events[0].tags["wedge_reports"], "0");
+    }
+
+    #[test]
+    fn a_stale_or_unpersisted_budget_does_not_reopen_the_flood() {
+        // Covers both review findings: (1) a full or read-only `.git` makes the
+        // durable write fail so the on-disk `reports` never advances, and (2) an
+        // overlapping launch-thread reap can read the same pre-increment record a
+        // normal pass did. Both reduce to "a later observation still carries a
+        // reports=0 record"; the shared, mutex-guarded in-memory budget must pace
+        // it to one warning rather than re-emit `first-confirmed` every pass.
+        let _serial = serial();
+        reset_index_lock_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "root");
+        let start = epoch();
+        // A record whose persisted budget never advances past zero — exactly what
+        // the caller keeps reading when the disk write cannot land, or what a
+        // racing thread reads before the first increment is written.
+        let stale = wedge_record(start, 777);
+
+        let mut warnings = 0;
+        for i in 0..5 {
+            let wall_now = start + chrono::Duration::seconds(40 * 60 + i);
+            let events = sentry::test::with_captured_events(|| {
+                report_wedge_if_due(&git_dir, Some(&stale), 40 * 60, 18, wall_now);
+            });
+            warnings += wedged_warnings(&events);
+        }
+        assert_eq!(
+            warnings, 1,
+            "a wedge whose budget is stale or unpersisted must still warn once, not every pass"
+        );
+        // The shared in-memory budget carries the spend the durable record could
+        // not, so subsequent passes are floored by the cooldown.
+        let carried = WEDGE_REPORT_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&git_dir)
+            .map(|budget| budget.reports);
+        assert_eq!(carried, Some(1));
     }
 
     #[test]
