@@ -2,13 +2,15 @@
  * Sync host seams for the embedded @hq/ui DesktopApp (US-103).
  *
  * Bridges PlatformAdapter results onto ChatSidebarApi and maps desktop-alt
- * pending routes onto in-window HQ Work events. Never launches HQ Work.
+ * pending routes onto in-window HQ Work events (US-104 pending-open).
+ * Never launches HQ Work.
  */
 
 import type { AdapterResult, PlatformAdapter } from '@hq/platform';
 import {
   normalizeDirectoryFeed,
   OPEN_SETTINGS_EVENT,
+  requestDeepLinkOpen,
   type Channel,
   type ChannelsResponse,
   type ChatSidebarApi,
@@ -16,6 +18,7 @@ import {
   type MessageSearchResult,
   type RequestsResponse,
 } from '@hq/ui';
+import { parseHqWorkOpenUrl } from '../lib/hq-work';
 
 function unwrap<T>(result: AdapterResult<T>): T {
   if (result.ok) return result.value;
@@ -100,6 +103,13 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
 export function applyDesktopAltRoute(route: string | null | undefined): void {
   const trimmed = route?.trim() ?? '';
   if (!trimmed) return;
+  // hqwork:// must be handled before slash→colon (otherwise `://` becomes `:::`).
+  if (trimmed.startsWith('hqwork://')) {
+    const target = parseHqWorkOpenUrl(trimmed);
+    if (!target) return;
+    requestDeepLinkOpen(target);
+    return;
+  }
   const normalized = trimmed.replace(/\//g, ':');
   const kind = normalized.split(':')[0] ?? '';
   if (kind === 'settings') {

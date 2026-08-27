@@ -345,7 +345,14 @@ fn main() {
         // Launch Services by bundle id, which would otherwise start a duplicate
         // menubar process. Here the callback surfaces the existing instance and
         // the second process exits instead of becoming a ghost duplicate.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // US-104: if the OS delivered a hqwork:// URL to THIS process,
+            // route it internally. Do not steal the popover for a deep link.
+            if let Some(url) = commands::hq_work::hqwork_url_from_argv(&argv) {
+                commands::hq_work::spawn_open_hqwork_deep_link(app, url);
+                return;
+            }
+
             // US-004 WindowRouter: taskbar / second-process activation always
             // shows the compact notification popover — never auto-focuses the
             // full desktop. Desktop opens only via explicit Open HQ / shortcut.
@@ -505,6 +512,7 @@ fn main() {
             commands::config::get_config,
             commands::hq_work::hq_work_installed,
             commands::hq_work::launch_hq_work,
+            commands::hq_work::open_hqwork_deep_link,
             commands::hq_work::install_hq_work,
             commands::hq_work::get_hq_work_handoff_card_shown,
             commands::hq_work::mark_hq_work_handoff_card_shown,
@@ -834,6 +842,13 @@ fn main() {
             // See commands/first_run.rs for the full rationale.
             let launch_kind = commands::first_run::classify_launch(app.handle());
             commands::lifecycle::setup_lifecycle(app.handle());
+
+            // US-104: cold-start hqwork:// on argv (if the OS delivered one).
+            // Not an OS-scheme registration — only handle what we were given.
+            let startup_args: Vec<String> = std::env::args().collect();
+            if let Some(url) = commands::hq_work::hqwork_url_from_argv(&startup_args) {
+                commands::hq_work::spawn_open_hqwork_deep_link(app.handle(), url);
+            }
 
             // One-shot migration of any legacy `/deploy`-skill stub at
             // ~/.hq/config.json. Runs first so subsequent prewarm /

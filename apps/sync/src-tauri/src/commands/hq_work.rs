@@ -368,7 +368,7 @@ pub fn should_intercept_desktop_alt(handoff_enabled: bool, installed: bool) -> b
 /// Tokens that may appear as `channel` / `person` / `reply` query values.
 /// Reject anything `validate_hqwork_deep_link` would refuse rather than
 /// percent-encoding (HQ Work does not decode `%XX` in query values).
-fn hqwork_query_token(raw: &str) -> Option<&str> {
+pub fn hqwork_query_token(raw: &str) -> Option<&str> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -411,6 +411,104 @@ pub fn build_hqwork_open_url(
         Ok(()) => Some(url),
         Err(_) => None,
     }
+}
+
+/// Flag-on notification/widget opens go to the embedded desktop, not compact windows.
+pub fn should_route_notification_to_embedded(handoff_enabled: bool) -> bool {
+    handoff_enabled
+}
+
+/// Validated internal route payload. None if tokens fail charset.
+pub fn embedded_conversation_route(
+    channel: Option<&str>,
+    person: Option<&str>,
+    reply: Option<&str>,
+) -> Option<String> {
+    build_hqwork_open_url(channel, person, reply)
+}
+
+fn hqwork_query_tokens(
+    url: &str,
+) -> Option<(Option<&str>, Option<&str>, Option<&str>)> {
+    let query = url.split_once('?')?.1;
+    let query = query.split_once('#').map(|(q, _)| q).unwrap_or(query);
+    let mut channel = None;
+    let mut person = None;
+    let mut reply = None;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match key {
+            "channel" => channel = hqwork_query_token(value),
+            "person" => person = hqwork_query_token(value),
+            "reply" => reply = hqwork_query_token(value),
+            _ => {}
+        }
+    }
+    Some((channel, person, reply))
+}
+
+/// Parse a delivered `hqwork://` URL into an internal route after validation.
+/// Malformed / missing channel+person → None (caller logs; never dialog).
+pub fn internal_route_from_external_hqwork_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if validate_hqwork_deep_link(trimmed).is_err() {
+        return None;
+    }
+    let (channel, person, _) = hqwork_query_tokens(trimmed)?;
+    if channel.is_none() && person.is_none() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+pub fn hqwork_url_from_argv<S: AsRef<str>>(argv: &[S]) -> Option<String> {
+    argv.iter()
+        .map(|s| s.as_ref().trim())
+        .find(|s| s.starts_with("hqwork://open?"))
+        .map(|s| s.to_string())
+}
+
+fn spawn_embedded_desktop_open(app: &AppHandle, route: String) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = crate::commands::desktop_alt::open_desktop_alt_window_inner(
+            handle,
+            Some(route.as_str()),
+        )
+        .await
+        {
+            crate::util::logfile::log(
+                "hq-work",
+                &format!("embedded conversation open failed: {err}"),
+            );
+        }
+    });
+}
+
+/// If the OS delivered a `hqwork://` URL to THIS process, route internally.
+/// Malformed → log and ignore (no dialog, never `launch_hq_work`). Flag-off → ignore.
+#[tauri::command]
+pub async fn open_hqwork_deep_link(app: AppHandle, url: String) -> Result<(), String> {
+    let Some(route) = internal_route_from_external_hqwork_url(&url) else {
+        crate::util::logfile::log("hq-work", "ignoring malformed or empty hqwork URL");
+        return Ok(());
+    };
+    if !should_route_notification_to_embedded(
+        crate::commands::config::get_hq_work_handoff().unwrap_or(false),
+    ) {
+        crate::util::logfile::log("hq-work", "ignoring hqwork URL while handoff flag is off");
+        return Ok(());
+    }
+    crate::commands::desktop_alt::open_desktop_alt_window_inner(app, Some(route.as_str())).await
+}
+
+pub fn spawn_open_hqwork_deep_link(app: &AppHandle, url: String) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = open_hqwork_deep_link(handle, url).await;
+    });
 }
 
 /// Sync updater ticket UI (`settings:updates`) has no HQ Work equivalent —
@@ -604,25 +702,41 @@ pub fn maybe_intercept_desktop_alt_handoff(
 }
 
 /// Intercept `open_communications_window` when the handoff flag is on.
-/// US-103: conversations stay in this app; never launch HQ Work.
+/// US-104: open THIS desktop-alt window on the validated conversation route.
+/// Never launch HQ Work. Flag-off keeps the compact communications window.
 pub fn maybe_intercept_conversation_open(
     app: &AppHandle,
     channel_id: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
-    let _ = (app, channel_id, reply);
-    Ok(false)
+    if !should_route_notification_to_embedded(
+        crate::commands::config::get_hq_work_handoff().unwrap_or(false),
+    ) {
+        return Ok(false);
+    }
+    let route = embedded_conversation_route(channel_id, None, reply)
+        .unwrap_or_else(|| "messages".to_string());
+    spawn_embedded_desktop_open(app, route);
+    Ok(true)
 }
 
 /// Intercept `open_dm_detail` when the handoff flag is on.
-/// US-103: DMs stay in this app; never launch HQ Work.
+/// US-104: open THIS desktop-alt window on the validated person route.
+/// Never launch HQ Work. Flag-off keeps the compact DM window.
 pub fn maybe_intercept_dm_open(
     app: &AppHandle,
     person_uid: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
-    let _ = (app, person_uid, reply);
-    Ok(false)
+    if !should_route_notification_to_embedded(
+        crate::commands::config::get_hq_work_handoff().unwrap_or(false),
+    ) {
+        return Ok(false);
+    }
+    let route = embedded_conversation_route(None, person_uid, reply)
+        .unwrap_or_else(|| "messages".to_string());
+    spawn_embedded_desktop_open(app, route);
+    Ok(true)
 }
 
 #[allow(dead_code)]
@@ -1530,6 +1644,47 @@ mod tests {
         assert!(!intercept_steals_desktop_alt_window());
         assert!(!should_probe_install_on_desktop_alt_open(false));
         assert!(!should_probe_install_on_desktop_alt_open(true));
+    }
+
+    #[test]
+    fn us104_notification_routes_use_validated_tokens() {
+        assert!(!should_route_notification_to_embedded(false));
+        assert!(should_route_notification_to_embedded(true));
+        assert_eq!(
+            embedded_conversation_route(Some("chn_x"), None, Some("evt_1")).as_deref(),
+            Some("hqwork://open?channel=chn_x&reply=evt_1")
+        );
+        assert_eq!(
+            embedded_conversation_route(None, Some("prs_ada"), None).as_deref(),
+            Some("hqwork://open?person=prs_ada")
+        );
+        assert_eq!(
+            embedded_conversation_route(Some("bad id"), None, None),
+            None
+        );
+        assert_eq!(
+            internal_route_from_external_hqwork_url("hqwork://open?channel=chn_x&reply=evt_1")
+                .as_deref(),
+            Some("hqwork://open?channel=chn_x&reply=evt_1")
+        );
+        assert_eq!(
+            internal_route_from_external_hqwork_url("hqwork://open?person=prs_ada").as_deref(),
+            Some("hqwork://open?person=prs_ada")
+        );
+        assert!(internal_route_from_external_hqwork_url("").is_none());
+        assert!(internal_route_from_external_hqwork_url("https://example.com").is_none());
+        assert!(internal_route_from_external_hqwork_url("hqwork://settings").is_none());
+        assert!(internal_route_from_external_hqwork_url("hqwork://open").is_none());
+        assert!(internal_route_from_external_hqwork_url("hqwork://open?channel=").is_none());
+        assert!(internal_route_from_external_hqwork_url("hqwork://open?channel=a b").is_none());
+        assert!(internal_route_from_external_hqwork_url("hqwork://open?thread=evt_root").is_none());
+        assert_eq!(
+            hqwork_url_from_argv(&["HQ", "hqwork://open?channel=chn_x"]),
+            Some("hqwork://open?channel=chn_x".into())
+        );
+        assert!(hqwork_url_from_argv(&["HQ", "--foreground"]).is_none());
+        assert!(hqwork_url_from_argv(&["HQ", "hqwork://settings"]).is_none());
+        assert!(!intercept_steals_desktop_alt_window());
     }
 
     #[test]

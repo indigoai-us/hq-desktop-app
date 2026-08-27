@@ -13,6 +13,12 @@ export {
   resolveDesktopAltShell,
   type DesktopAltShell,
 } from '../desktop-alt/boot';
+export {
+  hqworkQueryToken,
+  isValidHqWorkDeepLink,
+  parseHqWorkOpenUrl,
+  type HqWorkOpenTarget,
+} from './hq-work';
 
 /** Named export to import from this package: `import { DesktopApp } from '@hq/ui'`. */
 export const HQ_WORK_UI_PACKAGE = '@hq/ui' as const;
