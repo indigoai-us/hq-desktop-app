@@ -1822,6 +1822,18 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
+        // The stderr-origin attribution and self-heal decision (HQ-DESKTOP-56) MUST key
+        // on the ACTUAL stderr, never `npm_output_detail`'s stdout fallback. When stderr
+        // is empty but stdout is not, `raw_detail` holds stdout bytes; classifying those
+        // as a `non-npm` stderr origin would wrongly arm the ~50MB managed-Node download
+        // and give the event an attributed, repeat-suppressed signature, even though the
+        // real stderr is empty and must stay genuinely shapeless (none:unknown:none,
+        // unbounded). So the origin and the repeat-guarded report below key on
+        // `raw_stderr`; `raw_detail` keeps the stdout fallback ONLY for the user-facing
+        // message and the local diagnostic log.
+        let raw_stderr = String::from_utf8_lossy(&install_run.output.stderr)
+            .trim()
+            .to_string();
 
         // Probe the user's failing toolchain ONCE, up front. The Node ABI is
         // retry-gate evidence — a run already on HQ's managed ABI, or a
@@ -1870,7 +1882,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // re-derived at the call site.
         let unattributed_origin = unattributed_install_stderr_origin(
             install_run.output.status.code(),
-            &raw_detail,
+            &raw_stderr,
             prefix.as_deref(),
             install_run.final_attempt_forced,
             &install_env,
@@ -1950,9 +1962,14 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             ),
         );
         let reported_episode_keys = install_failure_episode_markers();
+        // The Sentry capture keys on `raw_stderr`, not the stdout fallback: an empty
+        // stderr must group as the genuinely shapeless none:unknown:none (unbounded,
+        // never attributed), while a non-empty stderr keeps the identical envelope
+        // (`raw_stderr == raw_detail` whenever stderr is non-empty). The user-facing
+        // `detail` above still uses the stdout fallback so the UI/log lose nothing.
         persist_reported_episode(report_install_failure_episode(
             install_run.output.status.code(),
-            &raw_detail,
+            &raw_stderr,
             prefix.as_deref(),
             install_run.final_attempt_forced,
             &install_env,

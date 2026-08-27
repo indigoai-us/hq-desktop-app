@@ -109,6 +109,15 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // And it still routes through the SAME one-shot managed-toolchain retry.
     expect(cli).toContain('managed_toolchain_retry(');
     expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
+    // Stream preservation: the origin AND the repeat-guarded Sentry report key on the
+    // ACTUAL stderr, never npm_output_detail's stdout fallback. An empty stderr with
+    // non-empty stdout must therefore stay genuinely shapeless (none:unknown:none,
+    // unbounded) and must NOT arm the ~50MB managed-Node download from stdout bytes.
+    expect(cli).toContain(
+      'let raw_stderr = String::from_utf8_lossy(&install_run.output.stderr)',
+    );
+    // Used by both the origin computation and report_install_failure_episode.
+    expect(occurrences(cli, '&raw_stderr')).toBeGreaterThanOrEqual(2);
   });
 
   it('bounds the self-heal to one provision and one re-run — no loop', () => {
