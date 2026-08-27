@@ -80,7 +80,9 @@ describe('US-003 desktop-view-moved handoff card', () => {
       expect(idx).toBeGreaterThan(-1);
       const body = src.slice(idx, idx + 2800);
       expect(body).toContain('maybe_intercept_desktop_alt_handoff');
-      expect(body).toMatch(/if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff\(&app\)\?/);
+      expect(body).toMatch(
+        /if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff\(&app,\s*route\)\?/,
+      );
       expect(body).toContain('return Ok(())');
       const interceptAt = body.indexOf('maybe_intercept_desktop_alt_handoff');
       const hideAt = body.indexOf('get_webview_window("main")');

@@ -659,10 +659,10 @@ pub async fn open_desktop_alt_window_inner(
         return Err("desktop-alt requires a signed-in user".to_string());
     }
 
-    // US-003: flag on + HQ Work missing → compact handoff card, not desktop-alt.
-    // Flag off, or HQ Work already installed, keeps today's open path (US-005
-    // is the later reroute). Return Ok so tray/Open HQ callers do not fall back.
-    if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app)? {
+    // US-003/US-005: flag on + HQ Work missing → compact handoff card.
+    // Flag on + installed → launch HQ Work (except settings:updates, which
+    // keeps desktop-alt). Flag off restores desktop-alt exactly.
+    if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app, route)? {
         return Ok(());
     }
 

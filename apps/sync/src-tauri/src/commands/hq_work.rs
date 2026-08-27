@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// HQ Work macOS application bundle identifier.
 pub const HQ_WORK_BUNDLE_ID: &str = "ai.getindigo.hq-work";
@@ -297,11 +297,36 @@ const CARD_SHOWN_KEY: &str = "hqWorkHandoffCardShown";
 const MAX_INSTALLER_BYTES: usize = 400 * 1024 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// What `open_desktop_alt_window_inner` should do.
+/// What `open_desktop_alt_window_inner` / conversation opens should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopAltHandoffPlan {
     OpenDesktopAlt,
     ShowHandoffCard { first_show: bool },
+    LaunchHqWork { url: Option<String> },
+}
+
+/// Channel or DM target for `hqwork://open?...` URLs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HqWorkConversation {
+    Channel { id: String, reply: Option<String> },
+    Person { uid: String, reply: Option<String> },
+}
+
+impl HqWorkConversation {
+    pub fn to_url(&self) -> Option<String> {
+        match self {
+            Self::Channel { id, reply } => build_hqwork_open_url(Some(id), None, reply.as_deref()),
+            Self::Person { uid, reply } => build_hqwork_open_url(None, Some(uid), reply.as_deref()),
+        }
+    }
+}
+
+/// Result of applying a handoff plan through an injectable launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandoffInterceptAction {
+    OpenDesktopAlt,
+    ShowHandoffCard { first_show: bool },
+    Launched { url: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -332,9 +357,79 @@ pub enum InstallerKind {
     AppTarGz,
 }
 
-/// Intercept desktop-alt only when the handoff flag is on and HQ Work is missing.
+/// Show the US-003 card when the handoff flag is on and HQ Work is missing.
 pub fn should_intercept_desktop_alt(handoff_enabled: bool, installed: bool) -> bool {
     handoff_enabled && !installed
+}
+
+/// Tokens that may appear as `channel` / `person` / `reply` query values.
+/// Reject anything `validate_hqwork_deep_link` would refuse rather than
+/// percent-encoding (HQ Work does not decode `%XX` in query values).
+fn hqwork_query_token(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let ok = trimmed
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'));
+    if ok {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+/// Build `hqwork://open?channel=` / `?person=` / `&reply=` URLs.
+///
+/// Generic open (`hqwork://open` with no query) is `None` so callers use
+/// `launch_hq_work(None)` (bundle id). US-002 `validate_hqwork_deep_link`
+/// rejects `hqwork://open` without `?`. Channel wins over person.
+pub fn build_hqwork_open_url(
+    channel: Option<&str>,
+    person: Option<&str>,
+    reply: Option<&str>,
+) -> Option<String> {
+    let channel = channel.and_then(hqwork_query_token);
+    let person = person.and_then(hqwork_query_token);
+    let reply = reply.and_then(hqwork_query_token);
+    let mut url = if let Some(id) = channel {
+        format!("hqwork://open?channel={id}")
+    } else if let Some(uid) = person {
+        format!("hqwork://open?person={uid}")
+    } else {
+        return None;
+    };
+    if let Some(root) = reply {
+        url.push_str("&reply=");
+        url.push_str(root);
+    }
+    match validate_hqwork_deep_link(&url) {
+        Ok(()) => Some(url),
+        Err(_) => None,
+    }
+}
+
+/// Sync updater ticket UI (`settings:updates`) has no HQ Work equivalent —
+/// keep desktop-alt even when the handoff flag is on. This is the only
+/// intentional exception.
+pub fn desktop_alt_route_bypasses_hq_work(route: Option<&str>) -> bool {
+    matches!(route.map(str::trim), Some("settings:updates"))
+}
+
+/// Map a desktop-alt `route` to an HQ Work launch URL.
+///
+/// - None / home / meetings / `company:{slug}:activity` → generic open (`None`)
+/// - inbox / messages → pending channel/person when present, else generic
+/// - `settings:updates` is not mapped here; callers keep desktop-alt
+pub fn hqwork_url_for_desktop_alt_route(
+    route: Option<&str>,
+    pending: Option<&HqWorkConversation>,
+) -> Option<String> {
+    match route.map(str::trim).unwrap_or("") {
+        "inbox" | "messages" | "notifications" => pending.and_then(HqWorkConversation::to_url),
+        _ => None,
+    }
 }
 
 pub fn plan_desktop_alt_open(
@@ -346,8 +441,68 @@ pub fn plan_desktop_alt_open(
         DesktopAltHandoffPlan::ShowHandoffCard {
             first_show: !card_already_shown,
         }
+    } else if handoff_enabled && installed {
+        DesktopAltHandoffPlan::LaunchHqWork { url: None }
     } else {
         DesktopAltHandoffPlan::OpenDesktopAlt
+    }
+}
+
+pub fn plan_desktop_alt_open_with_route(
+    handoff_enabled: bool,
+    installed: bool,
+    card_already_shown: bool,
+    route: Option<&str>,
+    pending: Option<&HqWorkConversation>,
+) -> DesktopAltHandoffPlan {
+    if desktop_alt_route_bypasses_hq_work(route) {
+        return DesktopAltHandoffPlan::OpenDesktopAlt;
+    }
+    match plan_desktop_alt_open(handoff_enabled, installed, card_already_shown) {
+        DesktopAltHandoffPlan::LaunchHqWork { .. } => DesktopAltHandoffPlan::LaunchHqWork {
+            url: hqwork_url_for_desktop_alt_route(route, pending),
+        },
+        other => other,
+    }
+}
+
+pub fn plan_conversation_open(
+    handoff_enabled: bool,
+    installed: bool,
+    card_already_shown: bool,
+    conversation: Option<&HqWorkConversation>,
+) -> DesktopAltHandoffPlan {
+    match plan_desktop_alt_open(handoff_enabled, installed, card_already_shown) {
+        DesktopAltHandoffPlan::LaunchHqWork { .. } => DesktopAltHandoffPlan::LaunchHqWork {
+            url: conversation.and_then(HqWorkConversation::to_url),
+        },
+        other => other,
+    }
+}
+
+/// Apply a plan through an injectable `launch`. Tests assert this instead of
+/// spawning `open`. Launch failure with HQ Work missing falls through to the
+/// US-003 card; launch failure while installed is `Err` (never a silent no-op).
+pub fn intercept_with_launch(
+    plan: DesktopAltHandoffPlan,
+    installed: bool,
+    launch: impl FnOnce(Option<String>) -> Result<(), String>,
+) -> Result<HandoffInterceptAction, String> {
+    match plan {
+        DesktopAltHandoffPlan::OpenDesktopAlt => Ok(HandoffInterceptAction::OpenDesktopAlt),
+        DesktopAltHandoffPlan::ShowHandoffCard { first_show } => {
+            Ok(HandoffInterceptAction::ShowHandoffCard { first_show })
+        }
+        DesktopAltHandoffPlan::LaunchHqWork { url } => match launch(url.clone()) {
+            Ok(()) => Ok(HandoffInterceptAction::Launched { url }),
+            Err(err) => {
+                if !installed {
+                    Ok(HandoffInterceptAction::ShowHandoffCard { first_show: true })
+                } else {
+                    Err(err)
+                }
+            }
+        },
     }
 }
 
@@ -379,26 +534,108 @@ pub fn mark_hq_work_handoff_card_shown() -> Result<(), String> {
     )
 }
 
-/// If the handoff card should replace desktop-alt, show the compact popover,
-/// emit `handoff:show-card`, persist first-show, and return `true`.
-pub fn maybe_intercept_desktop_alt_handoff(app: &AppHandle) -> Result<bool, String> {
-    if !cfg!(target_os = "macos") {
-        let _ = app;
-        return Ok(false);
-    }
+fn handoff_inputs() -> (bool, bool, bool) {
     let enabled = crate::commands::config::get_hq_work_handoff().unwrap_or(false);
     let installed = hq_work_installed();
     let shown = get_hq_work_handoff_card_shown().unwrap_or(false);
-    match plan_desktop_alt_open(enabled, installed, shown) {
-        DesktopAltHandoffPlan::OpenDesktopAlt => Ok(false),
-        DesktopAltHandoffPlan::ShowHandoffCard { first_show } => {
+    (enabled, installed, shown)
+}
+
+fn apply_handoff_plan(
+    app: &AppHandle,
+    plan: DesktopAltHandoffPlan,
+    installed: bool,
+) -> Result<bool, String> {
+    match intercept_with_launch(plan, installed, launch_hq_work) {
+        Ok(HandoffInterceptAction::OpenDesktopAlt) => Ok(false),
+        Ok(HandoffInterceptAction::ShowHandoffCard { first_show }) => {
             if first_show {
                 let _ = mark_hq_work_handoff_card_shown();
             }
             reveal_handoff_card(app, first_show);
             Ok(true)
         }
+        Ok(HandoffInterceptAction::Launched { url }) => {
+            handoff_log(&format!(
+                "handoff.launched {}",
+                url.as_deref().unwrap_or("hqwork://open")
+            ));
+            hide_compact_popover(app);
+            Ok(true)
+        }
+        Err(err) => {
+            handoff_log(&format!("handoff.failed {err}"));
+            Err(err)
+        }
     }
+}
+
+/// If HQ Work should replace desktop-alt, launch it (or show the US-003 card)
+/// and return `true`. `settings:updates` always returns `false` (keep desktop-alt).
+pub fn maybe_intercept_desktop_alt_handoff(
+    app: &AppHandle,
+    route: Option<&str>,
+) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        let _ = (app, route);
+        return Ok(false);
+    }
+    let (enabled, installed, shown) = handoff_inputs();
+    let plan = plan_desktop_alt_open_with_route(enabled, installed, shown, route, None);
+    apply_handoff_plan(app, plan, installed)
+}
+
+/// Intercept `open_communications_window` when the handoff flag is on.
+pub fn maybe_intercept_conversation_open(
+    app: &AppHandle,
+    channel_id: Option<&str>,
+    reply: Option<&str>,
+) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        let _ = (app, channel_id, reply);
+        return Ok(false);
+    }
+    let conversation =
+        channel_id
+            .and_then(hqwork_query_token)
+            .map(|id| HqWorkConversation::Channel {
+                id: id.to_string(),
+                reply: reply.and_then(hqwork_query_token).map(str::to_string),
+            });
+    let (enabled, installed, shown) = handoff_inputs();
+    let plan = plan_conversation_open(enabled, installed, shown, conversation.as_ref());
+    apply_handoff_plan(app, plan, installed)
+}
+
+/// Intercept `open_dm_detail` when the handoff flag is on.
+pub fn maybe_intercept_dm_open(
+    app: &AppHandle,
+    person_uid: Option<&str>,
+    reply: Option<&str>,
+) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        let _ = (app, person_uid, reply);
+        return Ok(false);
+    }
+    let conversation =
+        person_uid
+            .and_then(hqwork_query_token)
+            .map(|uid| HqWorkConversation::Person {
+                uid: uid.to_string(),
+                reply: reply.and_then(hqwork_query_token).map(str::to_string),
+            });
+    let (enabled, installed, shown) = handoff_inputs();
+    let plan = plan_conversation_open(enabled, installed, shown, conversation.as_ref());
+    apply_handoff_plan(app, plan, installed)
+}
+
+fn hide_compact_popover(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(popover) = handle.get_webview_window("main") {
+            let _ = popover.hide();
+        }
+    });
 }
 
 fn reveal_handoff_card(app: &AppHandle, first_show: bool) {
@@ -406,10 +643,7 @@ fn reveal_handoff_card(app: &AppHandle, first_show: bool) {
     let _ = app.run_on_main_thread(move || {
         crate::tray::show_popover_window(&handle);
     });
-    let _ = app.emit(
-        HANDOFF_SHOW_CARD_EVENT,
-        HandoffCardEvent { first_show },
-    );
+    let _ = app.emit(HANDOFF_SHOW_CARD_EVENT, HandoffCardEvent { first_show });
 }
 
 pub fn parse_hq_work_feed(json: &str) -> Result<HqWorkFeed, String> {
@@ -420,9 +654,9 @@ pub fn pick_darwin_platform<'a>(
     feed: &'a HqWorkFeed,
     platform_key: &str,
 ) -> Result<&'a HqWorkFeedPlatform, String> {
-    feed.platforms.get(platform_key).ok_or_else(|| {
-        format!("HQ Work feed has no installer for {platform_key}")
-    })
+    feed.platforms
+        .get(platform_key)
+        .ok_or_else(|| format!("HQ Work feed has no installer for {platform_key}"))
 }
 
 pub fn require_artifact_signature(platform: &HqWorkFeedPlatform) -> Result<(), String> {
@@ -454,11 +688,7 @@ pub fn darwin_platform_key_for_arch(arch: &str) -> Result<&'static str, String> 
 }
 
 pub fn installer_kind_from_url(url: &str) -> Result<InstallerKind, String> {
-    let path = url
-        .split('?')
-        .next()
-        .unwrap_or(url)
-        .to_ascii_lowercase();
+    let path = url.split('?').next().unwrap_or(url).to_ascii_lowercase();
     if path.ends_with(".dmg") {
         Ok(InstallerKind::Dmg)
     } else if path.ends_with(".app.tar.gz") || path.ends_with(".tar.gz") {
@@ -483,8 +713,7 @@ pub fn verify_hq_work_bytes(bytes: &[u8], signature: &str) -> Result<(), String>
     }
     let pk_pem = decode_tauri_minisign_blob(HQ_WORK_UPDATER_PUBKEY)?;
     let sig_pem = decode_tauri_minisign_blob(signature)?;
-    let public_key =
-        PublicKey::decode(&pk_pem).map_err(|e| format!("HQ Work pubkey: {e}"))?;
+    let public_key = PublicKey::decode(&pk_pem).map_err(|e| format!("HQ Work pubkey: {e}"))?;
     let sig = Signature::decode(&sig_pem).map_err(|e| format!("HQ Work signature: {e}"))?;
     public_key
         .verify(bytes, &sig, true)
@@ -571,9 +800,10 @@ pub fn find_app_bundle(root: &Path) -> Result<PathBuf, String> {
     if found.is_empty() {
         return Err("HQ Work.app was not found in the installer".into());
     }
-    if let Some(preferred) = found.iter().find(|path| {
-        path.file_name().and_then(|n| n.to_str()) == Some("HQ Work.app")
-    }) {
+    if let Some(preferred) = found
+        .iter()
+        .find(|path| path.file_name().and_then(|n| n.to_str()) == Some("HQ Work.app"))
+    {
         return Ok(preferred.clone());
     }
     Ok(found.swap_remove(0))
@@ -670,7 +900,13 @@ fn copy_app_to_applications(src: &Path) -> Result<(), String> {
 fn install_from_dmg(dmg: &Path) -> Result<(), String> {
     let mount = unique_temp_dir("hq-work-dmg")?;
     let attach = Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-readonly", "-noverify", "-mountpoint"])
+        .args([
+            "attach",
+            "-nobrowse",
+            "-readonly",
+            "-noverify",
+            "-mountpoint",
+        ])
         .arg(&mount)
         .arg(dmg)
         .output()
@@ -736,7 +972,12 @@ pub async fn install_hq_work() -> Result<(), String> {
     {
         tauri::async_runtime::spawn_blocking(|| {
             let platform = current_darwin_platform_key()?;
-            install_hq_work_with(http_get_text, http_get_bytes, platform, install_verified_bytes)?;
+            install_hq_work_with(
+                http_get_text,
+                http_get_bytes,
+                platform,
+                install_verified_bytes,
+            )?;
             refresh_hq_work_install_cache();
             Ok(())
         })
@@ -1021,7 +1262,12 @@ where
 
 fn co_install_from_release_feed() -> Result<(), String> {
     let platform = current_darwin_platform_key()?;
-    install_hq_work_with(http_get_text, http_get_bytes, platform, install_verified_bytes)
+    install_hq_work_with(
+        http_get_text,
+        http_get_bytes,
+        platform,
+        install_verified_bytes,
+    )
 }
 
 /// Canonical silent co-install. Next-launch is the path that survives macOS
@@ -1254,7 +1500,214 @@ mod tests {
         );
         assert_eq!(
             plan_desktop_alt_open(true, true, false),
+            DesktopAltHandoffPlan::LaunchHqWork { url: None }
+        );
+    }
+
+    #[test]
+    fn plan_three_outcomes_table() {
+        let cases = [
+            (false, false, false, DesktopAltHandoffPlan::OpenDesktopAlt),
+            (false, true, false, DesktopAltHandoffPlan::OpenDesktopAlt),
+            (
+                true,
+                false,
+                false,
+                DesktopAltHandoffPlan::ShowHandoffCard { first_show: true },
+            ),
+            (
+                true,
+                false,
+                true,
+                DesktopAltHandoffPlan::ShowHandoffCard { first_show: false },
+            ),
+            (
+                true,
+                true,
+                false,
+                DesktopAltHandoffPlan::LaunchHqWork { url: None },
+            ),
+            (
+                true,
+                true,
+                true,
+                DesktopAltHandoffPlan::LaunchHqWork { url: None },
+            ),
+        ];
+        for (enabled, installed, shown, expected) in cases {
+            assert_eq!(
+                plan_desktop_alt_open(enabled, installed, shown),
+                expected,
+                "enabled={enabled} installed={installed} shown={shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn flag_off_opens_desktop_alt_regardless_of_install() {
+        assert_eq!(
+            plan_desktop_alt_open_with_route(false, true, false, Some("inbox"), None),
             DesktopAltHandoffPlan::OpenDesktopAlt
+        );
+        assert_eq!(
+            plan_desktop_alt_open_with_route(false, false, false, Some("home"), None),
+            DesktopAltHandoffPlan::OpenDesktopAlt
+        );
+        assert_eq!(
+            plan_conversation_open(
+                false,
+                true,
+                false,
+                Some(&HqWorkConversation::Channel {
+                    id: "chn_x".into(),
+                    reply: None,
+                }),
+            ),
+            DesktopAltHandoffPlan::OpenDesktopAlt
+        );
+    }
+
+    #[test]
+    fn settings_updates_keeps_desktop_alt() {
+        assert!(desktop_alt_route_bypasses_hq_work(Some("settings:updates")));
+        assert!(!desktop_alt_route_bypasses_hq_work(Some("settings")));
+        assert!(!desktop_alt_route_bypasses_hq_work(Some("meetings")));
+        assert_eq!(
+            plan_desktop_alt_open_with_route(true, true, false, Some("settings:updates"), None),
+            DesktopAltHandoffPlan::OpenDesktopAlt
+        );
+        assert_eq!(
+            plan_desktop_alt_open_with_route(true, false, false, Some("settings:updates"), None),
+            DesktopAltHandoffPlan::OpenDesktopAlt
+        );
+    }
+
+    #[test]
+    fn build_hqwork_open_urls() {
+        assert_eq!(build_hqwork_open_url(None, None, None), None);
+        assert_eq!(
+            build_hqwork_open_url(Some("X"), None, None).as_deref(),
+            Some("hqwork://open?channel=X")
+        );
+        assert_eq!(
+            build_hqwork_open_url(Some("X"), None, Some("root")).as_deref(),
+            Some("hqwork://open?channel=X&reply=root")
+        );
+        assert_eq!(
+            build_hqwork_open_url(None, Some("prs_ada"), None).as_deref(),
+            Some("hqwork://open?person=prs_ada")
+        );
+        assert_eq!(
+            build_hqwork_open_url(Some("chn_x"), Some("prs_ada"), None).as_deref(),
+            Some("hqwork://open?channel=chn_x")
+        );
+        let channel = build_hqwork_open_url(Some("chn_x"), None, Some("evt_root")).unwrap();
+        assert!(validate_hqwork_deep_link(&channel).is_ok());
+        assert!(build_hqwork_open_url(Some("bad id"), None, None).is_none());
+        assert!(build_hqwork_open_url(Some(""), None, None).is_none());
+        assert!(build_hqwork_open_url(None, Some("prs ada"), None).is_none());
+    }
+
+    #[test]
+    fn desktop_alt_route_maps_to_hqwork_urls() {
+        assert_eq!(hqwork_url_for_desktop_alt_route(None, None), None);
+        assert_eq!(hqwork_url_for_desktop_alt_route(Some("home"), None), None);
+        assert_eq!(
+            hqwork_url_for_desktop_alt_route(Some("meetings"), None),
+            None
+        );
+        assert_eq!(
+            hqwork_url_for_desktop_alt_route(Some("company:indigo:activity"), None),
+            None
+        );
+        assert_eq!(hqwork_url_for_desktop_alt_route(Some("inbox"), None), None);
+        let pending = HqWorkConversation::Channel {
+            id: "chn_x".into(),
+            reply: Some("evt_1".into()),
+        };
+        assert_eq!(
+            hqwork_url_for_desktop_alt_route(Some("inbox"), Some(&pending)).as_deref(),
+            Some("hqwork://open?channel=chn_x&reply=evt_1")
+        );
+        assert_eq!(
+            hqwork_url_for_desktop_alt_route(Some("messages"), Some(&pending)).as_deref(),
+            Some("hqwork://open?channel=chn_x&reply=evt_1")
+        );
+        let dm = HqWorkConversation::Person {
+            uid: "prs_ada".into(),
+            reply: None,
+        };
+        assert_eq!(
+            hqwork_url_for_desktop_alt_route(Some("inbox"), Some(&dm)).as_deref(),
+            Some("hqwork://open?person=prs_ada")
+        );
+        assert_eq!(
+            plan_desktop_alt_open_with_route(true, true, false, Some("home"), None),
+            DesktopAltHandoffPlan::LaunchHqWork { url: None }
+        );
+        assert_eq!(
+            plan_desktop_alt_open_with_route(true, true, false, Some("inbox"), Some(&pending)),
+            DesktopAltHandoffPlan::LaunchHqWork {
+                url: Some("hqwork://open?channel=chn_x&reply=evt_1".into())
+            }
+        );
+    }
+
+    #[test]
+    fn intercept_with_launch_three_outcomes() {
+        let called = Cell::new(false);
+        assert_eq!(
+            intercept_with_launch(DesktopAltHandoffPlan::OpenDesktopAlt, true, |_| {
+                called.set(true);
+                Ok(())
+            })
+            .unwrap(),
+            HandoffInterceptAction::OpenDesktopAlt
+        );
+        assert!(!called.get());
+
+        assert_eq!(
+            intercept_with_launch(
+                DesktopAltHandoffPlan::ShowHandoffCard { first_show: true },
+                false,
+                |_| panic!("must not launch")
+            )
+            .unwrap(),
+            HandoffInterceptAction::ShowHandoffCard { first_show: true }
+        );
+
+        let launched = Cell::new(None);
+        let url = Some("hqwork://open?channel=X".to_string());
+        assert_eq!(
+            intercept_with_launch(
+                DesktopAltHandoffPlan::LaunchHqWork { url: url.clone() },
+                true,
+                |got| {
+                    launched.set(got);
+                    Ok(())
+                }
+            )
+            .unwrap(),
+            HandoffInterceptAction::Launched { url }
+        );
+        assert_eq!(launched.take().as_deref(), Some("hqwork://open?channel=X"));
+
+        let err = intercept_with_launch(
+            DesktopAltHandoffPlan::LaunchHqWork { url: None },
+            true,
+            |_| Err("open failed".into()),
+        )
+        .unwrap_err();
+        assert!(err.contains("open failed"), "{err}");
+
+        assert_eq!(
+            intercept_with_launch(
+                DesktopAltHandoffPlan::LaunchHqWork { url: None },
+                false,
+                |_| Err("gone".into()),
+            )
+            .unwrap(),
+            HandoffInterceptAction::ShowHandoffCard { first_show: true }
         );
     }
 
@@ -1296,7 +1749,8 @@ mod tests {
 
     #[test]
     fn reject_missing_platform_without_download() {
-        let feed = r#"{"platforms":{"darwin-aarch64":{"url":"https://x/a.dmg","signature":"abc"}}}"#;
+        let feed =
+            r#"{"platforms":{"darwin-aarch64":{"url":"https://x/a.dmg","signature":"abc"}}}"#;
         let mut downloaded = false;
         let err = install_hq_work_with(
             |_| Ok(feed.to_string()),
@@ -1333,8 +1787,14 @@ mod tests {
 
     #[test]
     fn darwin_platform_key_maps_arch() {
-        assert_eq!(darwin_platform_key_for_arch("aarch64").unwrap(), "darwin-aarch64");
-        assert_eq!(darwin_platform_key_for_arch("x86_64").unwrap(), "darwin-x86_64");
+        assert_eq!(
+            darwin_platform_key_for_arch("aarch64").unwrap(),
+            "darwin-aarch64"
+        );
+        assert_eq!(
+            darwin_platform_key_for_arch("x86_64").unwrap(),
+            "darwin-x86_64"
+        );
         assert!(darwin_platform_key_for_arch("arm").is_err());
     }
 
@@ -1508,8 +1968,7 @@ mod tests {
             last_seen_installed: true,
             ..CoInstallPersisted::default()
         };
-        let (observed, action) =
-            maybe_co_install_from_state(true, false, &persisted, "0.10.150");
+        let (observed, action) = maybe_co_install_from_state(true, false, &persisted, "0.10.150");
         assert!(observed.uninstalled);
         assert!(!observed.last_seen_installed);
         assert_eq!(
@@ -1589,7 +2048,9 @@ mod tests {
         assert!(err.contains("signature"), "{err}");
         assert_eq!(calls.get(), 1);
         assert!(sleeps.borrow().is_empty());
-        assert!(!co_install_error_is_retryable("refusing to install unsigned HQ Work bytes"));
+        assert!(!co_install_error_is_retryable(
+            "refusing to install unsigned HQ Work bytes"
+        ));
         assert!(!co_install_error_is_retryable("invalid minisign encoding"));
     }
 
@@ -1597,11 +2058,7 @@ mod tests {
     fn maybe_co_install_at_honors_uninstall_marker_without_calling_installer() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("menubar.json");
-        fs::write(
-            &path,
-            r#"{"hqWorkUninstalled":true,"hqPath":"/tmp/HQ"}"#,
-        )
-        .unwrap();
+        fs::write(&path, r#"{"hqWorkUninstalled":true,"hqPath":"/tmp/HQ"}"#).unwrap();
         let calls = Cell::new(0);
         let outcome = maybe_co_install_at(
             &path,
@@ -1734,11 +2191,7 @@ mod tests {
     fn maybe_co_install_at_runs_again_on_new_sync_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("menubar.json");
-        fs::write(
-            &path,
-            r#"{"hqWorkCoInstalledForVersion":"0.10.149"}"#,
-        )
-        .unwrap();
+        fs::write(&path, r#"{"hqWorkCoInstalledForVersion":"0.10.149"}"#).unwrap();
         let calls = Cell::new(0);
         let outcome = maybe_co_install_at(
             &path,
