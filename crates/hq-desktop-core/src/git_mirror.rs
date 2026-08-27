@@ -1155,6 +1155,17 @@ fn wedged_lock_hard_timeout() -> Duration {
     }
 }
 
+/// How long a non-empty lock must have stood wedged before a warning is billed
+/// to Sentry — the triage-visibility floor, deliberately equal to the *default*
+/// [`WEDGED_LOCK_HARD_TIMEOUT`] and read independently of
+/// [`wedged_lock_hard_timeout`]. A warning describes a state a human must act on:
+/// a wedge HQ could not recover after the hard timeout. Because the gate is this
+/// fixed constant rather than the env-tunable reap clock, lowering
+/// [`WEDGED_LOCK_HARD_TIMEOUT_ENV`] to reap sooner can never bill a warning before
+/// the wedge is genuinely, human-actionably old, and cannot blind triage: the
+/// warning floor stays at 30 minutes whatever the knob says.
+const WEDGE_WARN_AFTER: Duration = WEDGED_LOCK_HARD_TIMEOUT;
+
 /// The observability record that lets the hard timeout span passes and restarts.
 const WEDGE_STATE_FILE: &str = "hq-sync-mirror-index-wedge.json";
 
@@ -1176,6 +1187,20 @@ struct PersistedIndexLockWedge {
     /// Forensic only: the lock's size when first seen. Never gates the decision.
     #[serde(default)]
     size_bytes: u64,
+    /// Warnings this exact wedge has already billed to Sentry — its finite report
+    /// budget, carried on the same durable record as the reap clock so it survives
+    /// app restarts and auto-updates. Additive with `#[serde(default)]`: a record
+    /// written by a build before this field existed reads as 0, i.e. "nothing
+    /// reported yet" — the conservative default that earns the wedge its first
+    /// warning rather than latching a live wedge silent across an upgrade.
+    #[serde(default)]
+    reports: usize,
+    /// Wall clock, RFC3339: when the most recent warning for this wedge was billed
+    /// — the cooldown-floor anchor. Absent until the first warning, and a
+    /// future-dated stamp (a backwards clock) re-arms rather than latches, exactly
+    /// like every other stamp in this module.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_report_at: Option<String>,
 }
 
 /// Observable facts about `.git/index.lock`, separated from the decision so
@@ -1429,6 +1454,101 @@ fn decide_wedge_reap(
     }
 }
 
+/// What an unrecoverable-wedge observation should do about the Sentry channel.
+/// The sibling [`RefusalReportAction`] is the model: one explicit arm per
+/// variant, no catch-all, so a newly added emitting variant cannot silently
+/// render as a fresh warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WedgeReportAction {
+    /// Not yet a confirmed, unrecoverable wedge — either the warning floor has
+    /// not elapsed or HQ has not exhausted recovery — so it stays in the local
+    /// log only.
+    AwaitConfirmation,
+    /// Confirmed unrecoverable, but inside the cooldown floor or past the finite
+    /// report budget.
+    Suppress,
+    /// The first warning for this wedge.
+    ReportFirstConfirmed,
+    /// A still-unrecoverable wedge crossing the next rung of the finite ladder —
+    /// the bounded re-report that keeps a standing wedge visible without flooding.
+    ReportEscalation,
+}
+
+impl WedgeReportAction {
+    fn emits(self) -> bool {
+        matches!(
+            self,
+            WedgeReportAction::ReportFirstConfirmed | WedgeReportAction::ReportEscalation
+        )
+    }
+
+    /// Tag value, so triage can tell a first warning from a laddered re-warn.
+    /// One explicit arm per variant on purpose, exactly as the sibling reporter
+    /// documents: a catch-all would render any future emitting variant as
+    /// `first-confirmed`.
+    fn source(self) -> &'static str {
+        match self {
+            WedgeReportAction::AwaitConfirmation => "await-confirmation",
+            WedgeReportAction::Suppress => "suppressed",
+            WedgeReportAction::ReportFirstConfirmed => "first-confirmed",
+            WedgeReportAction::ReportEscalation => "episode-escalation",
+        }
+    }
+}
+
+/// Pure warning decision for a wedged non-empty lock, modelled directly on
+/// [`decide_refusal_report`].
+///
+/// A warning describes a state a human must act on, so it fires only once BOTH
+/// hold: the wedge has stood past `warn_after` (the fixed triage-visibility
+/// floor, never the env-tunable reap clock, so field-tuning the escape hatch can
+/// neither warn early nor blind triage) AND HQ has actually tried to recover it
+/// and failed (`recovery_failed`). A wedge the escape hatch clears never reaches
+/// here — that success is a distinct Info notice — so a self-healed episode bills
+/// no warning at all.
+///
+/// Past that gate a finite budget decides, exactly like the sibling. `since_last_report`
+/// floors two warnings for one wedge at `cooldown` apart whatever the ladder
+/// asks; a never-warned wedge (`None`) has no anchor to floor against. The first
+/// clearance always warns; afterwards the wedge re-warns only as its DURABLE age
+/// crosses successive `escalation_ages`, and never more than
+/// `escalation_ages.len() + 1` times however long it stays wedged. That is the
+/// whole fix: an unchanged, already-warned wedge stops re-arming every pass.
+///
+/// Every threshold is an explicit parameter, so the arithmetic is unit-testable
+/// with no git repo and no real clock.
+fn decide_wedge_report(
+    reports_so_far: usize,
+    wedge_age: Duration,
+    since_last_report: Option<Duration>,
+    recovery_failed: bool,
+    warn_after: Duration,
+    cooldown: Duration,
+    escalation_ages: &[Duration],
+) -> WedgeReportAction {
+    // Gate: a warning is only for a human-actionable, unrecoverable wedge.
+    if !recovery_failed || wedge_age < warn_after {
+        return WedgeReportAction::AwaitConfirmation;
+    }
+    // Cooldown floor: never two warnings for one wedge closer than this, whatever
+    // the ladder below allows. A never-warned wedge (`None`) has no anchor.
+    if since_last_report.is_some_and(|elapsed| elapsed < cooldown) {
+        return WedgeReportAction::Suppress;
+    }
+    // The first confirmation is always warned.
+    if reports_so_far == 0 {
+        return WedgeReportAction::ReportFirstConfirmed;
+    }
+    // Afterwards this wedge re-warns only as it crosses the next rung, measured
+    // against the durable wedge age; the ladder is finite by construction, so once
+    // the budget is spent the wedge stays visible in the local log but stops
+    // billing Sentry.
+    if reports_so_far <= escalation_ages.len() && wedge_age >= escalation_ages[reports_so_far - 1] {
+        return WedgeReportAction::ReportEscalation;
+    }
+    WedgeReportAction::Suppress
+}
+
 /// Copy a doomed non-empty lock aside before removing it, so a mis-judged
 /// partial index stays recoverable for forensics. Lands in the git dir beside
 /// the lock — untracked, exactly like the other observability files, so the
@@ -1505,8 +1625,17 @@ fn handle_wedged_nonempty_lock(
             // Back up before removing. A failed backup means we keep refusing —
             // never destroy the only copy of a possible partial index.
             let Some(backup) = back_up_wedged_lock(lock_path, git_dir, wall_now) else {
+                // Recovery failed: HQ reached the reap but could not back the lock
+                // up, so it stays wedged. This is the human-actionable state — bill
+                // a warning if the finite budget allows, and persist the spend.
                 log_wedged_refusal(hq_folder, lock_path, state);
-                report_wedged_index_lock(state.size_bytes);
+                report_wedge_if_due(
+                    git_dir,
+                    prior.as_ref(),
+                    wedged_secs,
+                    state.size_bytes,
+                    wall_now,
+                );
                 return false;
             };
             match fs::remove_file(lock_path) {
@@ -1523,10 +1652,18 @@ fn handle_wedged_nonempty_lock(
                             backup.display()
                         ),
                     );
-                    report_auto_reaped_index_lock(state.size_bytes, wedged_secs);
+                    report_auto_reaped_index_lock(
+                        state.size_bytes,
+                        wedged_secs,
+                        prior.as_ref().map(|p| p.reports).unwrap_or(0),
+                    );
                     true
                 }
                 Err(err) => {
+                    // Recovery failed the other way: the backup exists but the lock
+                    // could not be removed (the Windows held-file case). Still an
+                    // unrecoverable, human-actionable wedge — bill a warning if the
+                    // finite budget allows.
                     log(
                         LOG_TAG,
                         &format!(
@@ -1534,6 +1671,13 @@ fn handle_wedged_nonempty_lock(
                             lock_path.display(),
                             backup.display()
                         ),
+                    );
+                    report_wedge_if_due(
+                        git_dir,
+                        prior.as_ref(),
+                        wedged_secs,
+                        state.size_bytes,
+                        wall_now,
                     );
                     false
                 }
@@ -1550,17 +1694,24 @@ fn handle_wedged_nonempty_lock(
                         first_seen_at: wall_now.to_rfc3339_opts(SecondsFormat::Secs, true),
                         lock_mtime_nanos: mtime,
                         size_bytes: state.size_bytes,
+                        reports: 0,
+                        last_report_at: None,
                     },
                 ),
                 None => clear_wedge_state(git_dir),
             }
+            // Every refusing pass still logs in full on the machine it happened on;
+            // only the Sentry channel now waits for a confirmed, unrecoverable
+            // wedge (the reap-failure branches above). This is what turns one
+            // self-healing episode from a warning per pass into zero.
             log_wedged_refusal(hq_folder, lock_path, state);
-            report_wedged_index_lock(state.size_bytes);
             false
         }
         WedgeDecision::AwaitTimeout => {
+            // Still refusing, still inside the hard-timeout window: keep the local
+            // signal but do not bill Sentry. The reap has not even been attempted,
+            // so there is nothing unrecoverable to warn about yet.
             log_wedged_refusal(hq_folder, lock_path, state);
-            report_wedged_index_lock(state.size_bytes);
             false
         }
     }
@@ -1632,13 +1783,22 @@ fn reap_index_lock_if_stale(
     }
 }
 
-/// The one lock state the reaper cannot safely clear. Surfaced centrally so a
-/// wedged machine shows up in triage instead of only in a local log file.
-fn report_wedged_index_lock(size_bytes: u64) {
+/// The one lock state the reaper cannot safely clear even after the hard timeout.
+/// Surfaced centrally so a wedged machine shows up in triage instead of only in a
+/// local log file — but now on a finite budget (see [`decide_wedge_report`]), so
+/// one standing wedge bills at most `escalation_ages.len() + 1` warnings rather
+/// than one per mirror pass. `reports_before` is how many warnings this wedge had
+/// already billed (0 for the first); `source` distinguishes the first warning from
+/// a laddered re-warn. The `git_mirror_kind` and `lock_size_bytes` tags and the
+/// message string are unchanged, so the existing issue group and any saved triage
+/// query keep resolving.
+fn report_wedged_index_lock(size_bytes: u64, reports_before: usize, source: &str) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("git_mirror_kind", "index-lock-wedged");
             scope.set_tag("lock_size_bytes", size_bytes.to_string());
+            scope.set_tag("wedge_reports", reports_before.to_string());
+            scope.set_tag("source", source);
         },
         || {
             sentry::capture_message(
@@ -1653,23 +1813,135 @@ fn report_wedged_index_lock(size_bytes: u64) {
 /// The escape hatch fired: a non-empty lock stayed frozen and unheld past the
 /// hard timeout, so HQ backed it up and removed it. A distinct signal from
 /// [`report_wedged_index_lock`] so triage can tell "still wedged, watching" from
-/// "recovered automatically".
-fn report_auto_reaped_index_lock(size_bytes: u64, wedged_secs: u64) {
+/// "recovered automatically". Emitted at `Info`, not `Warning`: HQ healed itself
+/// with zero human action, so this must stay observable for rate analysis without
+/// minting a new unresolved warning-level issue. `wedge_reports` carries how many
+/// warnings the episode billed before recovering. The message string and the
+/// `git_mirror_kind`, `lock_size_bytes` and `wedged_secs` tags are byte-identical
+/// to before, so existing triage queries and dashboards keep resolving.
+fn report_auto_reaped_index_lock(size_bytes: u64, wedged_secs: u64, wedge_reports: usize) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("git_mirror_kind", "index-lock-auto-reaped");
             scope.set_tag("lock_size_bytes", size_bytes.to_string());
             scope.set_tag("wedged_secs", wedged_secs.to_string());
+            scope.set_tag("wedge_reports", wedge_reports.to_string());
         },
         || {
             sentry::capture_message(
                 "[git-mirror] auto-reaped a non-empty .git/index.lock after the hard timeout: it \
                  stayed byte-for-byte frozen, unheld, with no git process the entire window, so \
                  HQ backed it up and removed it to unblock git writes",
-                sentry::Level::Warning,
+                sentry::Level::Info,
             );
         },
     );
+}
+
+/// Bill one wedge warning if the finite budget allows, and persist the spend on
+/// the durable wedge record. Called only from the reap-failure branches — the
+/// states where HQ tried to recover a wedged non-empty lock and could not — so
+/// `recovery_failed` is always true here; the pure [`decide_wedge_report`] takes
+/// it as a parameter for testability. `wedged_secs` is the durable wedge age the
+/// reap decision measured. A missing prior record (never expected past a reap,
+/// which only fires against a matured record) is treated conservatively as
+/// "nothing to warn from" and skipped.
+fn report_wedge_if_due(
+    git_dir: &Path,
+    prior: Option<&PersistedIndexLockWedge>,
+    wedged_secs: u64,
+    size_bytes: u64,
+    wall_now: DateTime<Utc>,
+) {
+    let Some(prior) = prior else {
+        return;
+    };
+    // The cooldown anchor. A missing, unparsable or future-dated stamp resolves to
+    // `None` — treat the cooldown as re-armed rather than latch a wedge silent
+    // (the shared future-clock fail-safe, via `usable_stamp`).
+    let since_last_report = usable_stamp(
+        prior.last_report_at.as_ref(),
+        wall_now,
+        &wedge_state_path(git_dir),
+        "wedge report timestamp",
+    )
+    .and_then(|at| elapsed_since_wall(at, wall_now));
+    let action = decide_wedge_report(
+        prior.reports,
+        Duration::from_secs(wedged_secs),
+        since_last_report,
+        true,
+        WEDGE_WARN_AFTER,
+        REFUSAL_COOLDOWN,
+        &REFUSAL_ESCALATION_AGES,
+    );
+    if action.emits() {
+        report_wedged_index_lock(size_bytes, prior.reports, action.source());
+        // Persist the spend on the same record, preserving the reap clock's
+        // identity so the durable wedge age keeps climbing toward the next rung.
+        write_wedge_state(
+            git_dir,
+            &PersistedIndexLockWedge {
+                first_seen_at: prior.first_seen_at.clone(),
+                lock_mtime_nanos: prior.lock_mtime_nanos,
+                size_bytes: prior.size_bytes,
+                reports: prior.reports + 1,
+                last_report_at: Some(wall_now.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            },
+        );
+    }
+}
+
+/// The recovery outcome of one wedged-lock observation, for the test seam below.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, Copy)]
+pub enum WedgeRecoveryOutcomeForTest {
+    /// The escape hatch backed up and removed the lock: emit the Info notice.
+    Recovered,
+    /// Backup or removal failed: route through the finite warning budget.
+    Failed,
+}
+
+/// Test-only production reporting seam for the wedged-index-lock path.
+///
+/// Drives the SAME [`decide_wedge_report`] budget decision and the SAME reporter
+/// functions the mirror's reap-failure and reap-success branches use, over a
+/// supplied report budget and clocks, without needing a git repo. An hq-telemetry
+/// envelope test drives this through the real `before_send` scrubber and asserts
+/// on the resulting envelopes, so it measures production behaviour rather than a
+/// re-implementation of it. Returns the wedge's new report count so a caller can
+/// chain observations of one standing wedge.
+#[cfg(any(test, feature = "test-support"))]
+pub fn drive_wedge_report_for_test(
+    reports_so_far: usize,
+    wedge_age_secs: u64,
+    secs_since_last_report: Option<u64>,
+    outcome: WedgeRecoveryOutcomeForTest,
+    size_bytes: u64,
+) -> usize {
+    match outcome {
+        WedgeRecoveryOutcomeForTest::Recovered => {
+            report_auto_reaped_index_lock(size_bytes, wedge_age_secs, reports_so_far);
+            reports_so_far
+        }
+        WedgeRecoveryOutcomeForTest::Failed => {
+            let action = decide_wedge_report(
+                reports_so_far,
+                Duration::from_secs(wedge_age_secs),
+                secs_since_last_report.map(Duration::from_secs),
+                true,
+                WEDGE_WARN_AFTER,
+                REFUSAL_COOLDOWN,
+                &REFUSAL_ESCALATION_AGES,
+            );
+            if action.emits() {
+                report_wedged_index_lock(size_bytes, reports_so_far, action.source());
+                reports_so_far + 1
+            } else {
+                reports_so_far
+            }
+        }
+    }
 }
 
 /// Launch-time self-heal. A lock orphaned by a killed run blocks every HQ git
@@ -3309,6 +3581,17 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
+    }
+
+    /// Reset the process-global state the index-lock wedge suite touches, so the
+    /// new tests cannot race the existing episode tests. The wedge report budget is
+    /// durable-on-disk (in each test's own `TempDir`), so unlike the refusal
+    /// reporter there is no in-memory episode map to clear here; what IS shared is
+    /// the probe-override slot and the hard-timeout env override, and both are
+    /// reset to their unset defaults.
+    fn reset_index_lock_report_state() {
+        set_probe_override(None);
+        std::env::remove_var(WEDGED_LOCK_HARD_TIMEOUT_ENV);
     }
 
     /// A deletion set with the shape the reporter needs, without a git repo.
@@ -8296,6 +8579,7 @@ mod tests {
     fn stale_orphaned_lock_is_reaped_and_the_mirror_proceeds() {
         let _serial = serial();
         std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_index_lock_report_state();
         set_probe_override(Some((false, false)));
 
         let tmp = TempDir::new().unwrap();
@@ -8309,16 +8593,24 @@ mod tests {
 
         // The lock was just created, so simulate the age gate by asking as if
         // it were an hour from now rather than by rewriting its mtime.
-        let reaped = reap_index_lock_if_stale(
-            tmp.path().to_str().unwrap(),
-            &git_dir,
-            STALE_LOCK_MIN_AGE,
-            SystemTime::now() + Duration::from_secs(3600),
-        );
+        let mut reaped = false;
+        let events = sentry::test::with_captured_events(|| {
+            reaped = reap_index_lock_if_stale(
+                tmp.path().to_str().unwrap(),
+                &git_dir,
+                STALE_LOCK_MIN_AGE,
+                SystemTime::now() + Duration::from_secs(3600),
+            );
+        });
         set_probe_override(None);
 
         assert!(reaped, "an empty, unheld, aged lock must be reaped");
         assert!(!lock.exists());
+        // An empty reap is routine self-heal, never a Sentry event.
+        assert!(
+            events.is_empty(),
+            "reaping an empty orphaned lock must not capture anything"
+        );
 
         fs::write(tmp.path().join("after-reap.md"), "content").unwrap();
         run_mirror_at(tmp.path()).expect("mirror ok");
@@ -8329,6 +8621,7 @@ mod tests {
     fn fresh_lock_blocks_the_mirror_and_is_not_reaped() {
         let _serial = serial();
         std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_index_lock_report_state();
         set_probe_override(Some((false, false)));
 
         let tmp = TempDir::new().unwrap();
@@ -8339,7 +8632,10 @@ mod tests {
         fs::write(&lock, b"").unwrap();
         fs::write(tmp.path().join("blocked.md"), "content").unwrap();
 
-        let result = run_mirror_at(tmp.path());
+        let mut result: Result<(), String> = Ok(());
+        let events = sentry::test::with_captured_events(|| {
+            result = run_mirror_at(tmp.path());
+        });
         set_probe_override(None);
 
         assert!(
@@ -8351,12 +8647,20 @@ mod tests {
             "a lock younger than the grace period must survive"
         );
         assert_eq!(rev_count(tmp.path()), before);
+        // A fresh lock is neither reaped nor wedged — a blocked pass must stay
+        // silent in Sentry (the whole point: only a confirmed, unrecoverable
+        // wedge warns).
+        assert!(
+            events.is_empty(),
+            "a fresh lock that merely blocks a pass must not capture anything"
+        );
         fs::remove_file(&lock).unwrap();
     }
 
     #[test]
-    fn nonempty_orphaned_lock_is_reported_but_never_removed() {
+    fn nonempty_orphaned_lock_refuses_and_logs_but_does_not_yet_capture() {
         let _serial = serial();
+        reset_index_lock_report_state();
         set_probe_override(Some((false, false)));
 
         let tmp = TempDir::new().unwrap();
@@ -8365,21 +8669,39 @@ mod tests {
         let lock = index_lock_path(&git_dir);
         fs::write(&lock, b"partial index data").unwrap();
 
-        let state = read_index_lock_state(&lock, SystemTime::now() + Duration::from_secs(3600));
-        let reaped = reap_index_lock_if_stale(
-            tmp.path().to_str().unwrap(),
-            &git_dir,
-            STALE_LOCK_MIN_AGE,
-            SystemTime::now() + Duration::from_secs(3600),
-        );
+        let now = SystemTime::now() + Duration::from_secs(3600);
+        let state = read_index_lock_state(&lock, now);
+        let mut reaped = true;
+        let events = sentry::test::with_captured_events(|| {
+            reaped = reap_index_lock_if_stale(
+                tmp.path().to_str().unwrap(),
+                &git_dir,
+                STALE_LOCK_MIN_AGE,
+                now,
+            );
+        });
         set_probe_override(None);
 
         assert!(
             is_orphaned_but_nonempty(state, STALE_LOCK_MIN_AGE),
-            "this is the state that gets escalated rather than reaped"
+            "this is the state that refuses rather than reaps"
         );
         assert!(!reaped, "a non-empty lock must never be removed");
         assert!(lock.exists());
+        // The first observation opens the hard-timeout clock and refuses — it is
+        // NOT yet an unrecoverable wedge, so it logs locally and captures nothing.
+        // On the pre-fix code this exact pass captured a warning; that is the
+        // over-reporting this fix removes.
+        assert!(
+            events.is_empty(),
+            "the first refusing observation must not capture a Sentry event: {:?}",
+            events.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+        );
+        // But it DID leave the durable clock behind, exactly as before.
+        assert!(
+            read_wedge_state(&git_dir).is_some(),
+            "the wedge clock must open on the first observation"
+        );
         fs::remove_file(&lock).unwrap();
     }
 
@@ -8390,6 +8712,8 @@ mod tests {
             first_seen_at: first_seen.to_rfc3339_opts(SecondsFormat::Secs, true),
             lock_mtime_nanos: mtime_nanos,
             size_bytes: 42,
+            reports: 0,
+            last_report_at: None,
         }
     }
 
@@ -8682,6 +9006,444 @@ mod tests {
         std::env::set_var(WEDGED_LOCK_HARD_TIMEOUT_ENV, "not-a-number");
         assert_eq!(wedged_lock_hard_timeout(), WEDGED_LOCK_HARD_TIMEOUT);
         std::env::remove_var(WEDGED_LOCK_HARD_TIMEOUT_ENV);
+    }
+
+    // ── over-reporting fix: the wedge warning is paced, not per-pass ──────
+
+    /// Count the captured events tagged as a wedged-lock warning.
+    fn wedged_warnings(events: &[sentry::protocol::Event<'static>]) -> usize {
+        events
+            .iter()
+            .filter(|e| {
+                e.tags.get("git_mirror_kind").map(String::as_str) == Some("index-lock-wedged")
+            })
+            .count()
+    }
+
+    /// Force `back_up_wedged_lock` to fail deterministically by pre-creating the
+    /// exact backup target it would write as a *directory* — `fs::copy` into an
+    /// existing directory errors on every platform. The backup name is derived
+    /// from `wall_now` at seconds resolution, so a fixed injected clock makes this
+    /// stable for the whole pass.
+    fn block_wedge_backup(git_dir: &Path, wall_now: DateTime<Utc>) {
+        let stamp = wall_now
+            .to_rfc3339_opts(SecondsFormat::Secs, true)
+            .replace(':', "-");
+        fs::create_dir_all(git_dir.join(format!("index.lock.reaped-{stamp}"))).unwrap();
+    }
+
+    #[test]
+    fn wedge_report_decision_table() {
+        let warn = WEDGE_WARN_AFTER;
+        let cooldown = REFUSAL_COOLDOWN;
+        let ladder = REFUSAL_ESCALATION_AGES;
+        let d = |reports, age: Duration, since: Option<Duration>, failed| {
+            decide_wedge_report(reports, age, since, failed, warn, cooldown, &ladder)
+        };
+        let past_warn = warn + Duration::from_secs(60);
+
+        // Recovery has NOT failed (the escape hatch cleared it, or has not run):
+        // never a warning, whatever the age. A self-healed wedge bills none.
+        assert_eq!(
+            d(0, past_warn, None, false),
+            WedgeReportAction::AwaitConfirmation
+        );
+        // Failed but younger than the fixed warning floor: not yet actionable.
+        assert_eq!(
+            d(0, warn - Duration::from_secs(1), None, true),
+            WedgeReportAction::AwaitConfirmation
+        );
+        // Failed, past the floor, never warned: the first warning.
+        assert_eq!(
+            d(0, past_warn, None, true),
+            WedgeReportAction::ReportFirstConfirmed
+        );
+        // Warned once, inside the cooldown floor: suppressed even though the age
+        // would otherwise cross the first rung.
+        assert_eq!(
+            d(1, ladder[0], Some(cooldown - Duration::from_secs(1)), true),
+            WedgeReportAction::Suppress
+        );
+        // Warned once, past the cooldown, past the first rung: escalate.
+        assert_eq!(
+            d(1, ladder[0], Some(cooldown), true),
+            WedgeReportAction::ReportEscalation
+        );
+        // Warned once, past the cooldown, but NOT yet at the first rung: hold.
+        assert_eq!(
+            d(1, ladder[0] - Duration::from_secs(1), Some(cooldown), true),
+            WedgeReportAction::Suppress
+        );
+        // Warned twice, past the cooldown, past the second rung: the last rung.
+        assert_eq!(
+            d(2, ladder[1], Some(cooldown), true),
+            WedgeReportAction::ReportEscalation
+        );
+        // Budget exhausted: reports beyond the ladder never warn again, however
+        // old the wedge gets.
+        assert_eq!(
+            d(ladder.len() + 1, ladder[1] * 100, Some(cooldown), true),
+            WedgeReportAction::Suppress
+        );
+        // A future-dated last-report stamp resolves to `None` upstream (the shared
+        // backwards-clock fail-safe in `elapsed_since_wall`), and `None` re-arms
+        // rather than latches: an already-warned wedge still escalates when its
+        // cooldown anchor is unusable, never goes silent.
+        assert_eq!(
+            d(1, ladder[0], None, true),
+            WedgeReportAction::ReportEscalation
+        );
+        // The whole life of an unrecoverable wedge bills exactly len() + 1.
+        let emitting = [
+            d(0, past_warn, None, true),
+            d(1, ladder[0], Some(cooldown), true),
+            d(2, ladder[1], Some(cooldown), true),
+        ];
+        assert_eq!(
+            emitting.iter().filter(|a| a.emits()).count(),
+            REFUSAL_ESCALATION_AGES.len() + 1
+        );
+    }
+
+    #[test]
+    fn one_mirror_pass_over_a_wedged_lock_captures_at_most_one_event() {
+        // The reported cluster (HQ-DESKTOP-5F): one mirror pass makes TWO reaper
+        // calls over a wedged non-empty lock — the pre-run reap in `run_mirror`
+        // (min_age = STALE_LOCK_MIN_AGE) and, after `git add -A` fails on the
+        // still-present lock, the failure-arm reap in `mirror_after_sync`
+        // (min_age = ZERO). On the pre-fix code each captured a warning, so ONE
+        // self-healing pass billed the observed 15:18:37 / 15:18:39 pair. The same
+        // two calls must now capture nothing: neither is an unrecoverable wedge.
+        let _serial = serial();
+        reset_index_lock_report_state();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        let hq = tmp.path().to_str().unwrap();
+        let now = future_now();
+        let events = sentry::test::with_captured_events(|| {
+            assert!(!reap_index_lock_if_stale(
+                hq,
+                &git_dir,
+                STALE_LOCK_MIN_AGE,
+                now
+            ));
+            assert!(!reap_index_lock_if_stale(hq, &git_dir, Duration::ZERO, now));
+        });
+        set_probe_override(None);
+
+        assert!(lock.exists(), "a non-empty lock is never removed");
+        assert!(
+            events.is_empty(),
+            "one mirror pass over a fresh wedge must capture zero events \
+             (pre-fix: two warnings); got: {:?}",
+            events
+                .iter()
+                .map(|e| (e.level, e.tags.get("git_mirror_kind").cloned()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_self_healed_wedge_episode_bills_exactly_one_info_event() {
+        // The full reported episode (HQ-DESKTOP-5F + 5G): two refusing passes then
+        // the escape hatch reaps and heals ~1920s later. Pre-fix that billed three
+        // events across two warning issues; it must now be exactly one Info notice.
+        let _serial = serial();
+        reset_index_lock_report_state();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        // The reported lock size, so the preserved tag is proven byte-for-byte.
+        fs::write(&lock, vec![b'x'; 5_767_168]).unwrap();
+
+        let hq = tmp.path().to_str().unwrap();
+        let now = future_now();
+        // 1920s later, past the 30-minute hard timeout, without sleeping: the same
+        // frozen lock carried on the same durable record.
+        let later = now + Duration::from_secs(1920);
+
+        let events = sentry::test::with_captured_events(|| {
+            // Pass 1: pre-run reap opens the wedge clock (StartClock).
+            assert!(!reap_index_lock_if_stale(
+                hq,
+                &git_dir,
+                STALE_LOCK_MIN_AGE,
+                now
+            ));
+            // Pass 2: post-`git add -A`-failure reap, same pass (AwaitTimeout).
+            assert!(!reap_index_lock_if_stale(hq, &git_dir, Duration::ZERO, now));
+            // A later pass past the hard timeout: the escape hatch heals it.
+            assert!(reap_index_lock_if_stale(
+                hq,
+                &git_dir,
+                STALE_LOCK_MIN_AGE,
+                later
+            ));
+        });
+        set_probe_override(None);
+
+        assert!(!lock.exists(), "the escape hatch removed the healed lock");
+        assert!(
+            read_wedge_state(&git_dir).is_none(),
+            "the clock was cleared"
+        );
+
+        assert_eq!(
+            events.len(),
+            1,
+            "a self-healed episode bills exactly one event, got: {:?}",
+            events
+                .iter()
+                .map(|e| (e.level, e.message.clone()))
+                .collect::<Vec<_>>()
+        );
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Info);
+        assert_eq!(event.tags["git_mirror_kind"], "index-lock-auto-reaped");
+        assert_eq!(event.tags["lock_size_bytes"], "5767168");
+        assert_eq!(event.tags["wedge_reports"], "0");
+        assert!(event.tags.contains_key("wedged_secs"));
+        assert_eq!(
+            wedged_warnings(&events),
+            0,
+            "a self-healed episode must bill zero warnings"
+        );
+    }
+
+    #[test]
+    fn an_unrecoverable_wedge_warns_once_then_respects_the_cooldown_floor() {
+        // Backup fails, so the lock cannot be recovered: this is the genuinely
+        // actionable state, and it must earn EXACTLY one warning across a burst of
+        // refusing passes — the cooldown floor swallows the rest.
+        let _serial = serial();
+        reset_index_lock_report_state();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        let hq = tmp.path().to_str().unwrap();
+        let now = future_now();
+        let wall_now: DateTime<Utc> = now.into();
+        let mtime = read_index_lock_state(&lock, now).mtime_nanos.unwrap();
+        // A matured, frozen clock so the reap fires; backup forced to fail so the
+        // pass takes the unrecoverable branch and the lock stays put.
+        write_wedge_state(
+            &git_dir,
+            &wedge_record(wall_now - chrono::Duration::seconds(2000), mtime),
+        );
+        block_wedge_backup(&git_dir, wall_now);
+
+        let events = sentry::test::with_captured_events(|| {
+            for _ in 0..5 {
+                assert!(!reap_index_lock_if_stale(
+                    hq,
+                    &git_dir,
+                    STALE_LOCK_MIN_AGE,
+                    now
+                ));
+            }
+        });
+        set_probe_override(None);
+
+        assert!(lock.exists(), "an unrecoverable wedge is never removed");
+        assert_eq!(
+            wedged_warnings(&events),
+            1,
+            "an unrecoverable wedge warns exactly once, not every pass; got {}",
+            events.len()
+        );
+        let warning = &events[0];
+        assert_eq!(warning.level, sentry::Level::Warning);
+        assert_eq!(warning.tags["git_mirror_kind"], "index-lock-wedged");
+        assert_eq!(warning.tags["wedge_reports"], "0");
+        assert_eq!(warning.tags["source"], "first-confirmed");
+        assert_eq!(warning.tags["lock_size_bytes"], "18"); // "partial index data"
+                                                           // The spent budget is persisted on the same record for the next pass.
+        let rec = read_wedge_state(&git_dir).expect("record persists while wedged");
+        assert_eq!(rec.reports, 1);
+        assert!(rec.last_report_at.is_some());
+    }
+
+    #[test]
+    fn a_standing_unrecoverable_wedge_climbs_a_finite_ladder_then_goes_quiet() {
+        // Drives the production reap-failure reporter (`report_wedge_if_due`) at a
+        // sequence of durable wedge ages, reading and rewriting the on-disk budget
+        // each pass exactly as the reap-failure branch does, and pins the finite
+        // 24h/7d ladder end to end.
+        let _serial = serial();
+        reset_index_lock_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "root");
+        let start = epoch();
+        write_wedge_state(&git_dir, &wedge_record(start, 12_345));
+
+        let drive = |secs: i64| -> Vec<sentry::protocol::Event<'static>> {
+            let wall_now = start + chrono::Duration::seconds(secs);
+            sentry::test::with_captured_events(|| {
+                let prior = read_wedge_state(&git_dir);
+                report_wedge_if_due(&git_dir, prior.as_ref(), secs as u64, 18, wall_now);
+            })
+        };
+
+        // t = 40 min: first warning (past the 30-minute floor).
+        let first = drive(40 * 60);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].tags["wedge_reports"], "0");
+        assert_eq!(first[0].tags["source"], "first-confirmed");
+
+        // t = 1 h 40 min: inside the 6-hour cooldown and below the 24-hour rung.
+        assert_eq!(drive(40 * 60 + 3600).len(), 0);
+
+        // t = 24 h: crosses the first rung, past the cooldown — escalate.
+        let rung1 = drive(24 * 60 * 60);
+        assert_eq!(rung1.len(), 1);
+        assert_eq!(rung1[0].tags["wedge_reports"], "1");
+        assert_eq!(rung1[0].tags["source"], "episode-escalation");
+
+        // t = 7 d: crosses the second (last) rung — escalate.
+        let rung2 = drive(7 * 24 * 60 * 60);
+        assert_eq!(rung2.len(), 1);
+        assert_eq!(rung2[0].tags["wedge_reports"], "2");
+
+        // t = 30 d: budget exhausted — no more warnings, ever.
+        assert_eq!(drive(30 * 24 * 60 * 60).len(), 0);
+
+        let rec = read_wedge_state(&git_dir).expect("record persists");
+        assert_eq!(
+            rec.reports,
+            REFUSAL_ESCALATION_AGES.len() + 1,
+            "a standing wedge bills at most escalation_ages.len() + 1 for its life"
+        );
+    }
+
+    #[test]
+    fn a_cleared_lock_resets_the_report_budget() {
+        // A healed root can never be latched permanently silent: after the record
+        // is cleared, a later fresh wedge earns its first warning again.
+        let _serial = serial();
+        reset_index_lock_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "root");
+        let start = epoch();
+        write_wedge_state(&git_dir, &wedge_record(start, 111));
+
+        let wall1 = start + chrono::Duration::seconds(40 * 60);
+        let first = sentry::test::with_captured_events(|| {
+            let prior = read_wedge_state(&git_dir);
+            report_wedge_if_due(&git_dir, prior.as_ref(), 40 * 60, 18, wall1);
+        });
+        assert_eq!(first.len(), 1);
+        assert_eq!(read_wedge_state(&git_dir).unwrap().reports, 1);
+
+        // The lock clears (vanished, empty-reaped, or wedged-reaped): the record is
+        // cleared, exactly as the production lifecycle does on recovery.
+        clear_wedge_state(&git_dir);
+        assert!(read_wedge_state(&git_dir).is_none());
+
+        // A later, fresh wedge opens a fresh budget and warns again.
+        let wall2 = wall1 + chrono::Duration::seconds(24 * 60 * 60);
+        write_wedge_state(&git_dir, &wedge_record(wall2, 222));
+        let second = sentry::test::with_captured_events(|| {
+            let prior = read_wedge_state(&git_dir);
+            report_wedge_if_due(
+                &git_dir,
+                prior.as_ref(),
+                40 * 60,
+                18,
+                wall2 + chrono::Duration::seconds(40 * 60),
+            );
+        });
+        assert_eq!(second.len(), 1, "a fresh wedge must earn its warning again");
+        assert_eq!(second[0].tags["wedge_reports"], "0");
+        assert_eq!(second[0].tags["source"], "first-confirmed");
+    }
+
+    #[test]
+    fn a_legacy_wedge_record_without_the_new_fields_still_earns_its_warning() {
+        // A record written by the pre-fix build lacks `reports`/`last_report_at`.
+        // Those must read as "nothing reported yet" so an in-flight upgrade cannot
+        // latch a live wedge silent.
+        let _serial = serial();
+        reset_index_lock_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let git_dir = scratch_git_dir(&tmp, "root");
+        let start = epoch();
+        let legacy = format!(
+            r#"{{"first_seen_at":"{}","lock_mtime_nanos":999,"size_bytes":18}}"#,
+            start.to_rfc3339_opts(SecondsFormat::Secs, true)
+        );
+        fs::write(wedge_state_path(&git_dir), legacy).unwrap();
+
+        let loaded = read_wedge_state(&git_dir).expect("a legacy record still loads");
+        assert_eq!(
+            loaded.reports, 0,
+            "a missing budget reads as nothing reported"
+        );
+        assert!(loaded.last_report_at.is_none());
+
+        let wall_now = start + chrono::Duration::seconds(40 * 60);
+        let events = sentry::test::with_captured_events(|| {
+            report_wedge_if_due(&git_dir, Some(&loaded), 40 * 60, 18, wall_now);
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["source"], "first-confirmed");
+        assert_eq!(events[0].tags["wedge_reports"], "0");
+    }
+
+    #[test]
+    fn every_refusing_pass_still_logs_locally_even_when_sentry_is_silent() {
+        // The Sentry gate must never become a diagnostic gate: both intra-pass
+        // reaps that now capture NOTHING still write the full refusal line to the
+        // machine's own log.
+        let _serial = serial();
+        reset_index_lock_report_state();
+        set_probe_override(Some((false, false)));
+
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("hq-sync.log");
+        let _log = crate::logfile::LogOverrideGuard::new(log_path.clone());
+
+        seed_repo(tmp.path(), 5);
+        let git_dir = git_dir_of(tmp.path());
+        let lock = index_lock_path(&git_dir);
+        fs::write(&lock, b"partial index data").unwrap();
+
+        let hq = tmp.path().to_str().unwrap();
+        let now = future_now();
+        let events = sentry::test::with_captured_events(|| {
+            assert!(!reap_index_lock_if_stale(
+                hq,
+                &git_dir,
+                STALE_LOCK_MIN_AGE,
+                now
+            ));
+            assert!(!reap_index_lock_if_stale(hq, &git_dir, Duration::ZERO, now));
+        });
+        set_probe_override(None);
+
+        assert!(events.is_empty(), "the Sentry channel is paced");
+        let logged = fs::read_to_string(&log_path).unwrap_or_default();
+        assert_eq!(
+            logged.matches("will not remove it yet").count(),
+            2,
+            "both refusing passes must log locally even though neither captures"
+        );
     }
 
     #[test]

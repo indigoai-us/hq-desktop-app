@@ -322,6 +322,16 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test provision_missing_node_capture_e2e
 
+      # The index-lock over-reporting fix bills at most one warning per wedge
+      # episode and demotes the self-heal notice to Info. The `fs::remove_file`
+      # fails branch — an unrecoverable wedge whose lock another process still
+      # holds — is the Windows-specific route into the warning path, so the
+      # envelope proof runs on the msvc target too rather than being inferred from
+      # the Linux `cargo test -p hq-telemetry` job.
+      - name: Index-lock episode capture envelope tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test index_lock_episode_capture_e2e
+
       # The Connect self-repair policy decides whether HQ downloads a Node
       # runtime. Its bound (one repair, one retry) is what stops a machine that
       # cannot install Node from looping on the download, so it is verified on
