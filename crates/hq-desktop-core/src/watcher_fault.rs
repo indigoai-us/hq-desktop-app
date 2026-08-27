@@ -901,7 +901,24 @@ impl UnmatchedStderrShapeRollup {
         if classify_runner_fatal_class(line) != RunnerFatalClass::None {
             return;
         }
-        let count = match classify_unmatched_stderr_shape(line) {
+        self.bump(classify_unmatched_stderr_shape(line));
+    }
+
+    /// Record one stderr line UNCONDITIONALLY by structure. Unlike
+    /// [`Self::record_if_unmatched`], this does NOT consult
+    /// [`classify_runner_fatal_class`]: the install-failure route (HQ-DESKTOP-56)
+    /// applies its OWN npm-marker skip predicate before feeding lines here, so the
+    /// sync-runner's fatal-class filter — which is specific to that route's stderr
+    /// vocabulary — must not silently drop npm/OS lines. The sync-runner path keeps
+    /// using `record_if_unmatched`, whose behaviour is unchanged.
+    pub fn record(&mut self, line: &str) {
+        self.bump(classify_unmatched_stderr_shape(line));
+    }
+
+    /// Increment the saturating counter for one already-classified shape. Shared by
+    /// both record entrypoints so their counting can never drift apart.
+    fn bump(&mut self, shape: UnmatchedStderrShape) {
+        let count = match shape {
             UnmatchedStderrShape::NdjsonRecord => &mut self.ndjson_record,
             UnmatchedStderrShape::StackFrame => &mut self.stack_frame,
             UnmatchedStderrShape::HashFrame => &mut self.hash_frame,
@@ -931,6 +948,27 @@ impl UnmatchedStderrShapeRollup {
     /// unmatched lines were seen this generation, so no tag should be sent.
     pub fn tag_value(&self) -> Option<String> {
         render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+
+    /// The single most-frequent shape recorded this generation, with a stable
+    /// declaration-order tie-break (identical to the ordering [`render_top_n`]
+    /// uses, so the dominant shape is always the first token the tag renders).
+    /// `None` when nothing was recorded.
+    pub fn dominant(&self) -> Option<UnmatchedStderrShape> {
+        UnmatchedStderrShape::ALL
+            .into_iter()
+            .zip(self.counts().into_iter().map(|(_, count)| count))
+            .filter(|(_, count)| *count > 0)
+            .fold(
+                None,
+                |best: Option<(UnmatchedStderrShape, u32)>, (shape, count)| match best {
+                    // Strictly-greater replaces; an equal count keeps the earlier
+                    // (declaration-order) shape, matching render_top_n's stable sort.
+                    Some((_, best_count)) if best_count >= count => best,
+                    _ => Some((shape, count)),
+                },
+            )
+            .map(|(shape, _)| shape)
     }
 }
 

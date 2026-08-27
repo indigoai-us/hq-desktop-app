@@ -518,6 +518,47 @@ describe('master automatic-updates switch', () => {
     expect(cliUpdate).toContain('install_failure_detail_with_environment(');
   });
 
+  it('attributes, self-heals, and episode-bounds a markerless install failure whose npm never ran (HQ-DESKTOP-56 reopen)', () => {
+    const core = normalize(cliUpdateCore);
+    const appCli = normalize(cliUpdate);
+    // Core reuses the reviewed, content-safe stderr-shape vocabulary (HQ-DESKTOP-5H)
+    // rather than inventing a second telemetry primitive.
+    expect(cliUpdateCore).toContain(
+      'use crate::watcher_fault::{UnmatchedStderrShape, UnmatchedStderrShapeRollup};',
+    );
+    // A NON-EMPTY markerless Unexpected failure leaves the empty none:unknown:none
+    // bucket for a bounded `unattributed:<origin>:<dominant shape>` group...
+    expect(cliUpdateCore).toContain('"unattributed:{}:{}"');
+    // ...while an EMPTY stderr stays byte-identical (shapeless, unbounded).
+    expect(cliUpdateCore).toContain(
+      'const SHAPELESS_INSTALL_SIGNATURE: &str = "none:unknown:none";',
+    );
+    // The failure is attributed by WHERE its bytes came from — a closed origin enum.
+    expect(cliUpdateCore).toContain('pub const STDERR_ORIGIN_NON_NPM: &str = "non-npm";');
+    expect(cliUpdateCore).toContain('pub fn unattributed_install_stderr_origin(');
+    // Two diagnostics-only tags (never in the fingerprint) make the next occurrence
+    // self-diagnosing.
+    expect(cliUpdateCore).toContain('scope.set_tag("npm_stderr_origin", profile.origin);');
+    expect(cliUpdateCore).toContain(
+      'scope.set_tag("npm_stderr_shapes", profile.shapes_tag.as_str());',
+    );
+    // It pages once per published CLI version on that discriminating signature.
+    expect(cliUpdateCore).toContain('"{latest}|unattributed|{}|{}"');
+
+    // The app widens its OWN managed-toolchain self-heal to the non-npm subclass —
+    // npm's logger emitted nothing, so the user's npm/shim never really ran and HQ's
+    // managed npm bypasses it — computing the origin once and threading it into the
+    // pure gate, which arms ONLY for the non-npm origin.
+    expect(cliUpdate).toContain('unattributed_install_stderr_origin(');
+    expect(cliUpdate).toContain('unattributed_origin: Option<&str>');
+    expect(appCli).toContain(
+      'kind == InstallFailureKind::Unexpected && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM)',
+    );
+    expect(appCli).toContain(
+      'repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm)',
+    );
+  });
+
   it('a collision on either declared hq-cli shim reaches the same --force remedy', () => {
     // HQ-DESKTOP-4Y: an EEXIST on the package's second declared shim
     // (`hq-auth-refresh`) classified as `EEXIST:unknown:other` and never armed

@@ -99,7 +99,8 @@ pub use hq_desktop_core::hq_cli_update::{
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
     report_unreadable_version, repair_managed_shadow, resolved_hq_version, should_auto_install,
-    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
+    should_report_unreadable_version, suppress_for_dismissal, unattributed_install_stderr_origin,
+    version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
@@ -109,6 +110,7 @@ pub use hq_desktop_core::hq_cli_update::{
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
     NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
+    STDERR_ORIGIN_NON_NPM,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -1601,24 +1603,41 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             &install_env,
         );
         let lifecycle_cause = npm_lifecycle_cause(&raw_detail);
+        // The markerless-stderr origin (HQ-DESKTOP-56 reopen): `Some("non-npm")` when
+        // npm's own logger emitted nothing at all, so the user's npm/shim never really
+        // ran — the subclass HQ's checksum-verified managed Node 22 + npm bypasses
+        // entirely. `None` for every other failure (a shape npm characterised, an empty
+        // stderr, or a below-floor Node already owned by UnsupportedNode). Computed ONCE
+        // from the already-probed environment and threaded into the gate below, never
+        // re-derived at the call site.
+        let unattributed_origin = unattributed_install_stderr_origin(
+            install_run.output.status.code(),
+            &raw_detail,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+            &install_env,
+        );
 
-        // Self-heal (HQ-DESKTOP-4V / HQ-DESKTOP-4W and HQ-DESKTOP-56). Two shapes
+        // Self-heal (HQ-DESKTOP-4V / HQ-DESKTOP-4W and HQ-DESKTOP-56). Three shapes
         // under the user's OWN Node are ones HQ can repair itself by provisioning
         // its checksum-verified managed Node 22: (1) a third-party native-build
         // lifecycle failure (better-sqlite3 / node-llama-cpp) whose ABI has no
-        // prebuild and no Xcode CLT to build from source, and (2) a Node older than
-        // the CLI's floor, on which no install can ever converge. Only user-path
-        // runs whose failing ABI differs from HQ's managed one arm the bounded,
-        // one-shot managed-toolchain retry (so a run already on the managed
-        // toolchain never retries into itself, and a disk-space/network lifecycle
-        // cause is refused); every other kind/cause keeps today's behaviour. HQ
-        // blames the user's toolchain (the copy below) only AFTER its own repair
-        // was attempted and could not converge.
+        // prebuild and no Xcode CLT to build from source, (2) a Node older than
+        // the CLI's floor, on which no install can ever converge, and (3) the
+        // HQ-DESKTOP-56 reopen — a markerless failure whose stderr carried NO npm
+        // line at all (`non-npm` origin), so the user's npm/shim never really ran and
+        // HQ's managed npm bypasses it. Only user-path runs whose failing ABI differs
+        // from HQ's managed one arm the bounded, one-shot managed-toolchain retry (so
+        // a run already on the managed toolchain never retries into itself, and a
+        // disk-space/network lifecycle cause is refused); every other kind/cause keeps
+        // today's behaviour. HQ blames the user's toolchain (the copy below) only AFTER
+        // its own repair was attempted and could not converge.
         if install_failure_earns_managed_retry(
             failure_kind,
             install_env.toolchain_source,
             lifecycle_cause,
             failing_node_abi,
+            unattributed_origin,
         ) {
             match managed_toolchain_retry(
                 &app,
@@ -1713,7 +1732,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 ///     probe could not read it) is treated as "not the managed ABI", so the
 ///     reported Node-20 (ABI 115) and Node-6 (ABI 48) clusters still arm.
 ///
-/// ...plus ONE of two repairable failure shapes:
+/// ...plus ONE of three repairable failure shapes:
 ///   * Shape 1 (HQ-DESKTOP-4V/4W) — a third-party native-build lifecycle failure
 ///     (`UnexpectedLifecycle`) whose `cause` a new runtime can fix. A full disk
 ///     (`disk-space`) or a dead network (`network`) would only waste a ~50MB Node
@@ -1725,13 +1744,22 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 ///     Node is below the CLI's floor, so no npm run can converge on it. There is
 ///     no lifecycle cause to consult (npm never ran a build); provisioning HQ's
 ///     managed Node 22 is the exact repair, and a converged retry emits no event.
+///   * Shape 3 (HQ-DESKTOP-56 reopen) — an `Unexpected` failure whose stderr was
+///     markerless with a `non-npm` origin: npm's own logger emitted NOTHING, so the
+///     user's npm/shim never really ran. HQ's checksum-verified managed Node 22 +
+///     npm bypasses a broken user npm/shim entirely, so it is the exact repair.
+///     `unattributed_origin` carries `Some("non-npm")` for exactly this subclass and
+///     `None` otherwise; an `npm-logger` origin (npm ran and reported) and an empty
+///     stderr both decline — a new runtime is unlikely to help and would spend the
+///     ~50MB download.
 fn install_failure_earns_managed_retry(
     kind: InstallFailureKind,
     source: NpmToolchainSource,
     cause: &str,
     failing_node_abi: Option<u32>,
+    unattributed_origin: Option<&str>,
 ) -> bool {
-    // Both repairable shapes share these two runtime conditions: only the user's
+    // All repairable shapes share these two runtime conditions: only the user's
     // own toolchain is worth replacing, and a run already on HQ's managed ABI
     // gains nothing from provisioning it again.
     let repairable_runtime =
@@ -1745,7 +1773,13 @@ fn install_failure_earns_managed_retry(
     // no lifecycle cause to consult; installing HQ's managed Node 22 is the exact
     // repair, and a converged retry emits no event.
     let unsupported_node = kind == InstallFailureKind::UnsupportedNode;
-    repairable_runtime && (repairable_lifecycle || unsupported_node)
+    // Shape 3 (HQ-DESKTOP-56 reopen): a markerless `Unexpected` failure whose stderr
+    // origin is `non-npm` (npm's logger produced nothing at all). Only the non-npm
+    // origin arms — an `npm-logger` origin or an empty stderr is folded into `None`
+    // by the caller, so this can never fire for a failure npm actually reported.
+    let unattributed_non_npm =
+        kind == InstallFailureKind::Unexpected && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM);
+    repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm)
 }
 
 /// Pure selection of the ordinary install prefix from the RUNTIME of the resolved
@@ -2847,6 +2881,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     cause,
                     Some(115),
+                    None,
                 ),
                 "cause {cause:?} on user-path Node 20 must arm the managed retry"
             );
@@ -2863,6 +2898,7 @@ mod tests {
                 NpmToolchainSource::UserPath,
                 "postinstall-script",
                 Some(137),
+                None,
             ),
             "the reported HQ-DESKTOP-5E tuple (postinstall-script, ABI 137, user-path) must arm the managed retry"
         );
@@ -2876,6 +2912,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     cause,
                     Some(115),
+                    None,
                 ),
                 "cause {cause:?} must never arm the managed retry"
             );
@@ -2888,6 +2925,7 @@ mod tests {
             NpmToolchainSource::UserPath,
             "unknown",
             Some(MANAGED_NODE_ABI),
+            None,
         ));
 
         // An UNKNOWN ABI (the probe could not read it) is treated as not-managed,
@@ -2897,6 +2935,7 @@ mod tests {
             InstallFailureKind::UnexpectedLifecycle,
             NpmToolchainSource::UserPath,
             "unknown",
+            None,
             None,
         ));
 
@@ -2908,12 +2947,14 @@ mod tests {
                 source,
                 "unknown",
                 Some(115),
+                None,
             ));
         }
 
         // Every non-lifecycle kind keeps today's behaviour, even under user-path
         // Node with an eligible cause/ABI, so no expected/permission/Windows/
-        // registry failure ever triggers a managed provision.
+        // registry failure ever triggers a managed provision. `Unexpected` here has
+        // no attributed origin (`None`), so it does not arm the reopen shape either.
         for kind in [
             InstallFailureKind::ExpectedPrefixPermission,
             InstallFailureKind::ExpectedWindowsAbort,
@@ -2929,6 +2970,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     "unknown",
                     Some(115),
+                    None,
                 ),
                 "kind {kind:?} must not arm the managed-toolchain retry"
             );
@@ -2950,6 +2992,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     cause,
                     Some(48), // the reported Node 6.17.1 ABI
+                    None,
                 ),
                 "unsupported node on user-path Node 6 (ABI 48) must arm, cause {cause:?}"
             );
@@ -2961,6 +3004,7 @@ mod tests {
             NpmToolchainSource::UserPath,
             "",
             None,
+            None,
         ));
         // ...but a run already on HQ's managed ABI cannot be improved by
         // provisioning it again.
@@ -2969,6 +3013,7 @@ mod tests {
             NpmToolchainSource::UserPath,
             "",
             Some(MANAGED_NODE_ABI),
+            None,
         ));
         // And a managed/unknown SOURCE never arms — only the user's own toolchain
         // is worth replacing.
@@ -2978,8 +3023,74 @@ mod tests {
                 source,
                 "",
                 Some(48),
+                None,
             ));
         }
+    }
+
+    #[test]
+    fn unattributed_non_npm_markerless_failure_arms_the_managed_retry() {
+        // HQ-DESKTOP-56 reopen: a markerless `Unexpected` failure whose stderr origin
+        // is `non-npm` (npm's own logger emitted nothing) is a user-path runtime HQ's
+        // managed npm can bypass, so it arms the SAME one-shot retry — under the
+        // UNCHANGED runtime conditions (UserPath + failing ABI != managed ABI).
+        assert!(install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147), // the reported Node 26.3.0 ABI
+            Some("non-npm"),
+        ));
+        // An unknown ABI still arms — never gate the reported cluster out on a
+        // missing probe.
+        assert!(install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            None,
+            Some("non-npm"),
+        ));
+        // An `npm-logger` origin (npm ran and reported) does NOT arm — a new runtime
+        // is unlikely to help and would spend a ~50MB download.
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147),
+            Some("npm-logger"),
+        ));
+        // Neither does an empty stderr (the caller folds it to `None`)...
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147),
+            None,
+        ));
+        // ...nor a managed toolchain source, nor a run already on HQ's managed ABI.
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::Managed,
+            "none",
+            Some(147),
+            Some("non-npm"),
+        ));
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(MANAGED_NODE_ABI),
+            Some("non-npm"),
+        ));
+        // A non-Unexpected kind never arms via the non-npm origin, even if an origin
+        // were somehow supplied (defense in depth against a caller mistake).
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::ExpectedDiskFull,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147),
+            Some("non-npm"),
+        ));
     }
 
     #[test]
