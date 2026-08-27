@@ -8,7 +8,10 @@ import '../styles/design-system.css';
 import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
 import { installDesktopZoom } from '../lib/desktopZoom';
 import { installAppearancePreferences } from '../lib/appearancePreferences';
+import { getHqWorkHandoff } from '../lib/hq-work';
+import { bootDesktopAltWindow } from './boot';
 import DesktopApp from './DesktopApp.svelte';
+import HqWorkDesktopShell from './HqWorkDesktopShell.svelte';
 
 const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
@@ -28,9 +31,20 @@ if (!target) {
   throw new Error('Missing desktop-alt mount target');
 }
 
-const app = mount(GlobalErrorBoundary, {
-  target,
-  props: { component: DesktopApp, windowLabel },
+const app = await bootDesktopAltWindow({
+  getHandoff: () => getHqWorkHandoff(),
+  mountLegacy: () => {
+    mount(GlobalErrorBoundary, {
+      target,
+      props: { component: DesktopApp, windowLabel },
+    });
+  },
+  mountHqWork: () => {
+    mount(GlobalErrorBoundary, {
+      target,
+      props: { component: HqWorkDesktopShell, windowLabel },
+    });
+  },
 });
 
 export default app;

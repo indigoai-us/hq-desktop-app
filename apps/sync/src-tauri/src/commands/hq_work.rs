@@ -30,6 +30,7 @@ pub const HQ_WORK_BUNDLE_ID: &str = "ai.getindigo.hq-work";
 const INSTALL_CACHE_TTL: Duration = Duration::from_secs(45);
 
 static INSTALL_CACHE: Mutex<Option<(bool, Instant)>> = Mutex::new(None);
+#[allow(dead_code)] // retained two-app helper; live path is US-103 no-op
 static CO_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// How `launch_hq_work` will invoke `open` after validation. Tests assert this
@@ -288,6 +289,7 @@ pub const HQ_WORK_FEED_URL: &str =
     "https://indigo-electron-releases.s3.us-east-1.amazonaws.com/hq-work/latest.json";
 
 /// Frontend event that opens the compact "desktop view moved" overlay.
+#[allow(dead_code)] // retained for US-003 source-contract; live intercept no longer emits
 pub const HANDOFF_SHOW_CARD_EVENT: &str = "handoff:show-card";
 
 /// HQ Work updater pubkey from hq-work-mono `tauri.conf.json` (Tauri minisign blob).
@@ -331,6 +333,7 @@ pub enum HandoffInterceptAction {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // retained two-app card payload; live intercept no longer emits
 pub struct HandoffCardEvent {
     pub first_show: bool,
 }
@@ -534,6 +537,7 @@ pub fn mark_hq_work_handoff_card_shown() -> Result<(), String> {
     )
 }
 
+#[allow(dead_code)] // retained two-app probe; live intercept must not call this (finding-6)
 fn handoff_inputs() -> (bool, bool, bool) {
     let enabled = crate::commands::config::get_hq_work_handoff().unwrap_or(false);
     let installed = hq_work_installed();
@@ -543,6 +547,7 @@ fn handoff_inputs() -> (bool, bool, bool) {
     (enabled, installed, shown)
 }
 
+#[allow(dead_code)] // retained two-app launcher; live intercept no longer steals the window
 fn apply_handoff_plan(
     app: &AppHandle,
     plan: DesktopAltHandoffPlan,
@@ -573,65 +578,54 @@ fn apply_handoff_plan(
     }
 }
 
+/// Live intercept never steals the desktop-alt window (US-103 embed-in-process).
+pub fn intercept_steals_desktop_alt_window() -> bool {
+    false
+}
+
+/// finding-6: opening desktop-alt must not probe install or emit [handoff] logs,
+/// including when the handoff flag is on (the window stays in-process).
+pub fn should_probe_install_on_desktop_alt_open(handoff_enabled: bool) -> bool {
+    let _ = handoff_enabled;
+    false
+}
+
 /// If HQ Work should replace desktop-alt, launch it (or show the US-003 card)
-/// and return `true`. `settings:updates` always returns `false` (keep desktop-alt).
+/// and return `true`. US-103: always `false` so THIS window still opens.
+/// `settings:updates` is no longer a two-app exception; the embed host maps it.
 pub fn maybe_intercept_desktop_alt_handoff(
     app: &AppHandle,
     route: Option<&str>,
 ) -> Result<bool, String> {
-    if !cfg!(target_os = "macos") {
-        let _ = (app, route);
-        return Ok(false);
-    }
-    let (enabled, installed, shown) = handoff_inputs();
-    let plan = plan_desktop_alt_open_with_route(enabled, installed, shown, route, None);
-    apply_handoff_plan(app, plan, installed)
+    // Combined-app embed: never launch HQ Work / never show the card.
+    // finding-6: do not call handoff_inputs() (install probe + handoff.detected).
+    let _ = (app, route);
+    Ok(intercept_steals_desktop_alt_window())
 }
 
 /// Intercept `open_communications_window` when the handoff flag is on.
+/// US-103: conversations stay in this app; never launch HQ Work.
 pub fn maybe_intercept_conversation_open(
     app: &AppHandle,
     channel_id: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
-    if !cfg!(target_os = "macos") {
-        let _ = (app, channel_id, reply);
-        return Ok(false);
-    }
-    let conversation =
-        channel_id
-            .and_then(hqwork_query_token)
-            .map(|id| HqWorkConversation::Channel {
-                id: id.to_string(),
-                reply: reply.and_then(hqwork_query_token).map(str::to_string),
-            });
-    let (enabled, installed, shown) = handoff_inputs();
-    let plan = plan_conversation_open(enabled, installed, shown, conversation.as_ref());
-    apply_handoff_plan(app, plan, installed)
+    let _ = (app, channel_id, reply);
+    Ok(false)
 }
 
 /// Intercept `open_dm_detail` when the handoff flag is on.
+/// US-103: DMs stay in this app; never launch HQ Work.
 pub fn maybe_intercept_dm_open(
     app: &AppHandle,
     person_uid: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
-    if !cfg!(target_os = "macos") {
-        let _ = (app, person_uid, reply);
-        return Ok(false);
-    }
-    let conversation =
-        person_uid
-            .and_then(hqwork_query_token)
-            .map(|uid| HqWorkConversation::Person {
-                uid: uid.to_string(),
-                reply: reply.and_then(hqwork_query_token).map(str::to_string),
-            });
-    let (enabled, installed, shown) = handoff_inputs();
-    let plan = plan_conversation_open(enabled, installed, shown, conversation.as_ref());
-    apply_handoff_plan(app, plan, installed)
+    let _ = (app, person_uid, reply);
+    Ok(false)
 }
 
+#[allow(dead_code)]
 fn hide_compact_popover(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -641,6 +635,7 @@ fn hide_compact_popover(app: &AppHandle) {
     });
 }
 
+#[allow(dead_code)]
 fn reveal_handoff_card(app: &AppHandle, first_show: bool) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -1046,6 +1041,7 @@ pub enum CoInstallOutcome {
     Failed(String),
 }
 
+#[allow(dead_code)]
 struct CoInstallGuard;
 
 impl Drop for CoInstallGuard {
@@ -1054,6 +1050,7 @@ impl Drop for CoInstallGuard {
     }
 }
 
+#[allow(dead_code)]
 fn try_begin_co_install() -> Option<CoInstallGuard> {
     CO_INSTALL_IN_PROGRESS
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -1265,6 +1262,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 fn co_install_from_release_feed() -> Result<(), String> {
     let platform = current_darwin_platform_key()?;
     install_hq_work_with(
@@ -1277,35 +1275,11 @@ fn co_install_from_release_feed() -> Result<(), String> {
 
 /// Canonical silent co-install. Next-launch is the path that survives macOS
 /// updater process kill. Never shows windows or dialogs.
-pub fn maybe_co_install_hq_work() {
-    let Some(_guard) = try_begin_co_install() else {
-        handoff_log("co_install skipped: already in progress");
-        return;
-    };
-    let macos = cfg!(target_os = "macos");
-    if !macos {
-        handoff_log("co_install skipped: not macos");
-    }
-    let enabled = macos && crate::commands::config::get_hq_work_handoff().unwrap_or(false);
-    let installed = hq_work_installed();
-    handoff_log(&format!("handoff.detected installed={installed}"));
-    let path = match crate::util::paths::menubar_json_path() {
-        Ok(path) => path,
-        Err(err) => {
-            handoff_log(&format!("handoff.failed {err}"));
-            handoff_log(&format!("co_install failed: {err}"));
-            return;
-        }
-    };
-    let _ = maybe_co_install_at(
-        &path,
-        enabled,
-        installed,
-        env!("APP_VERSION"),
-        co_install_from_release_feed,
-        |d| std::thread::sleep(d),
-    );
-}
+///
+/// US-103: combined-app embed does not co-install a second HQ Work app.
+/// finding-6: flag-off must not probe `hq_work_installed` or emit [handoff]
+/// logs. Decision helpers (`maybe_co_install_at`) remain for tests/rollback.
+pub fn maybe_co_install_hq_work() {}
 
 /// Fire-and-forget spawn. Callers must not wait on HQ Work download.
 pub fn spawn_maybe_co_install_hq_work() {
@@ -1549,6 +1523,13 @@ mod tests {
                 "enabled={enabled} installed={installed} shown={shown}"
             );
         }
+    }
+
+    #[test]
+    fn us103_live_intercept_never_steals_desktop_alt_window() {
+        assert!(!intercept_steals_desktop_alt_window());
+        assert!(!should_probe_install_on_desktop_alt_open(false));
+        assert!(!should_probe_install_on_desktop_alt_open(true));
     }
 
     #[test]

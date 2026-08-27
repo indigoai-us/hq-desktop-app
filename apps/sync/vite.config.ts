@@ -25,6 +25,15 @@ export default defineConfig({
   server: {
     port: 1421,
     strictPort: true,
+    fs: {
+      allow: [
+        rootDir,
+        resolve(rootDir, '../../../../hq-work-mono/hq-work-sync-handoff'),
+      ],
+    },
+  },
+  optimizeDeps: {
+    exclude: ['@hq/ui', '@hq/platform', '@hq/core'],
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

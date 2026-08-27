@@ -659,9 +659,9 @@ pub async fn open_desktop_alt_window_inner(
         return Err("desktop-alt requires a signed-in user".to_string());
     }
 
-    // US-003/US-005: flag on + HQ Work missing → compact handoff card.
-    // Flag on + installed → launch HQ Work (except settings:updates, which
-    // keeps desktop-alt). Flag off restores desktop-alt exactly.
+    // US-103: intercept is a no-op (always false). Combined-app embed still
+    // opens THIS desktop-alt window; the webview mounts @hq/ui DesktopApp when
+    // hq_work_handoff is on. Flag-off must not probe install or log (finding-6).
     if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app, route)? {
         return Ok(());
     }
