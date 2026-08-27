@@ -257,6 +257,10 @@ pub struct MenubarPrefs {
     /// the app already owns a taskbar presence there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dock_icon: Option<bool>,
+    /// HQ Work desktop-view handoff. Absent → false so existing installs
+    /// keep desktop-alt until ~/.hq/menubar.json is flipped (no rebuild).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hq_work_handoff: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
@@ -762,6 +766,35 @@ mod tests {
         assert_eq!(prefs.instant_sync, Some(false));
         let out = serde_json::to_string(&prefs).unwrap();
         assert!(out.contains("\"instantSync\":false"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_hq_work_handoff_absent_deserializes_none() {
+        let json = r#"{}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.hq_work_handoff, None);
+    }
+
+    #[test]
+    fn test_menubar_prefs_hq_work_handoff_true_round_trip() {
+        let json = r#"{"hqWorkHandoff": true}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.hq_work_handoff, Some(true));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(
+            out.contains("\"hqWorkHandoff\":true"),
+            "expected camelCase key 'hqWorkHandoff' in serialized output, got: {out}"
+        );
+        assert!(!out.contains("hq_work_handoff"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_hq_work_handoff_false_round_trip() {
+        let json = r#"{"hqWorkHandoff": false}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.hq_work_handoff, Some(false));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(out.contains("\"hqWorkHandoff\":false"));
     }
 
     #[test]

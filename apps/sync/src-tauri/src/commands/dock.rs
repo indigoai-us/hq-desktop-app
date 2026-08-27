@@ -315,6 +315,7 @@ mod tests {
             widget_enabled: None,
             widget_display: None,
             dock_icon,
+            hq_work_handoff: None,
         }
     }
 

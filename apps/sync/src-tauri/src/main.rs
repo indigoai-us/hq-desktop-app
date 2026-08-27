@@ -462,6 +462,9 @@ fn main() {
                     });
                 }
             }
+            if let tauri::WindowEvent::Focused(true) = event {
+                std::thread::spawn(commands::hq_work::refresh_hq_work_install_cache);
+            }
             // Windows: reapply Mica/Acrylic when the OS theme flips so light
             // mode never keeps a forced-dark backdrop (US-003). Theme is left
             // unset on window builders so ThemeChanged keeps firing.
@@ -499,6 +502,10 @@ fn main() {
             commands::auth::refresh_tokens,
             commands::auth::sign_out,
             commands::config::get_config,
+            commands::hq_work::hq_work_installed,
+            commands::hq_work::launch_hq_work,
+            commands::config::get_hq_work_handoff,
+            commands::config::set_hq_work_handoff,
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
@@ -1315,6 +1322,7 @@ fn main() {
             // enabled (the default on macOS).
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
+                std::thread::spawn(commands::hq_work::refresh_hq_work_install_cache);
                 let _ = commands::desktop_alt::activation_policy(
                     commands::desktop_alt::ActivationSource::DockIconClick,
                 );
