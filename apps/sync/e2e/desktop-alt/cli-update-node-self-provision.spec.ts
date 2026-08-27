@@ -95,12 +95,21 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
     // ...and the retry body never loops.
     expect(retryHelper).not.toMatch(/\b(loop|while)\b/);
-    // Cooldown-skipped or failed provisioning falls straight through (no retry),
-    // so the caller reports the original user-path failure unchanged.
-    expect(cli).toContain('ToolchainRepair::Repaired => {}');
+    // The provision result is reduced to a disposition (Repaired / Deferred /
+    // Failed). Per the HQ-DESKTOP-5E fix, a cooldown deferral or a failed FRESH
+    // provision NO LONGER abandons the retry: the pure start decision proceeds
+    // whenever a managed npm resolves, and declines — once, with no retry — only
+    // when none does, so the caller then reports the original user-path failure.
+    expect(retryHelper).toContain(
+      'ToolchainRepair::Repaired => ManagedRepairDisposition::Repaired',
+    );
     expect(retryHelper).toContain('ToolchainRepair::Skipped =>');
     expect(retryHelper).toContain('ToolchainRepair::Failed(reason) =>');
-    expect(occurrences(retryHelper, 'return None;')).toBeGreaterThanOrEqual(3);
+    expect(retryHelper).toContain(
+      'managed_retry_start_decision(disposition, managed_toolchain_npm_and_path())',
+    );
+    expect(retryHelper).toContain('ManagedRetryStart::Decline(outcome) =>');
+    expect(retryHelper).toContain('return ManagedRetryAttempt::Declined(outcome)');
   });
 
   it('installs into HQ`s managed prefix, never the user prefix, with ABI-aware convergence', () => {
@@ -139,7 +148,10 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // convergence result — so a FAILED retry never persists a PATH change that could
     // shadow the user's still-working CLI under a mismatched Node.
     expect(retryHelper).toContain('configure_managed_shell_path(app, &managed_prefix)');
-    expect(retryHelper).toContain('if converged.is_ok()');
+    // The convergence result gates the branches: the PATH change lives in the
+    // Ok(info) arm only, so a failed retry never persists it.
+    expect(retryHelper).toContain('match converged {');
+    expect(retryHelper).toContain('Ok(info) =>');
     // The PATH call appears AFTER the convergence decision (deferred, not up front)...
     expect(retryHelper.indexOf('configure_managed_shell_path(')).toBeGreaterThan(
       retryHelper.indexOf('managed_retry_converged('),
@@ -172,7 +184,7 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
   it('emits no Sentry event on a converged retry, and reports a failed retry with managed provenance', () => {
     // A converged retry returns the success info directly — the shared cleared /
     // convergence path already ran, so NO install-failure capture happens.
-    expect(cli).toContain('Some(Ok(info)) => return Ok(info)');
+    expect(cli).toContain('ManagedRetryAttempt::Converged(info) => return Ok(info)');
     // The original user-path report carries managed_toolchain_retry=false, but a
     // real managed retry now carries true. (Assert on the tokens rather than an
     // exact call layout so rustfmt reflow can't defeat it.)
