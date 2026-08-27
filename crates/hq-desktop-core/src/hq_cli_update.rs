@@ -3927,6 +3927,112 @@ impl NpmToolchainSource {
     }
 }
 
+/// Why the one-shot managed-toolchain retry did or did not run, as a CLOSED
+/// enumeration carried on [`InstallEnvironment`] and tagged on the reported
+/// install failure. This is the evidence HQ-DESKTOP-5E lacked: the wire could not
+/// distinguish "the self-heal was never armed" from "it was armed and declined",
+/// nor which branch declined. Every value maps to a fixed `&'static str`, so no
+/// free text ever reaches Sentry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ManagedRetryOutcome {
+    /// The reported failure was not a shape that arms the managed retry
+    /// (`install_failure_earns_managed_retry` returned false). The default, so an
+    /// `InstallEnvironment` that never considered a retry tags itself honestly.
+    #[default]
+    NotArmed,
+    /// The retry ran npm under HQ's managed toolchain (this is the provenance of a
+    /// managed-site failure report; a converged retry emits no event at all).
+    Ran,
+    /// Armed, and a fresh managed-Node provision completed, but HQ's managed npm
+    /// still could not be resolved on disk — so no retry ran.
+    NoManagedNpm,
+    /// Armed, but the shared Node repair slot was claimed too recently
+    /// (cooldown deferral) AND no already-present managed npm was available to fall
+    /// back on. A deferral is NOT evidence a managed toolchain is absent, so this is
+    /// only reached when the managed npm is genuinely missing.
+    ProvisionDeferred,
+    /// Armed, but a fresh managed-Node provision failed AND no already-present
+    /// managed npm was available to fall back on.
+    ProvisionFailed,
+    /// Armed and a managed npm resolved, but npm itself could not be spawned.
+    SpawnFailed,
+}
+
+impl ManagedRetryOutcome {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::NotArmed => "not-armed",
+            Self::Ran => "ran",
+            Self::NoManagedNpm => "no-managed-npm",
+            Self::ProvisionDeferred => "provision-deferred",
+            Self::ProvisionFailed => "provision-failed",
+            Self::SpawnFailed => "spawn-failed",
+        }
+    }
+}
+
+/// The disposition of the shared managed-Node repair, reduced to the three cases
+/// the retry START decision turns on. The app crate maps its `ToolchainRepair`
+/// onto this (dropping the failure-reason string it only logs), so the decision
+/// stays pure and platform-independent — testable on every target, including the
+/// Linux CI job and off-device, not only the macOS app-crate runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedRepairDisposition {
+    /// A fresh managed-Node provision just completed.
+    Repaired,
+    /// The shared repair slot was claimed too recently; provisioning was deferred.
+    Deferred,
+    /// A fresh managed-Node provision was attempted and failed.
+    Failed,
+}
+
+/// The START decision for the one-shot managed-toolchain retry: either run it with
+/// a resolved managed `(npm, PATH, prefix)` triple, or decline with a closed reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedRetryStart {
+    /// Run the one-shot retry under this managed toolchain.
+    Proceed {
+        npm: String,
+        path: String,
+        prefix: String,
+    },
+    /// Do not run the retry; the caller reports the user-path failure tagging this
+    /// outcome.
+    Decline(ManagedRetryOutcome),
+}
+
+/// Pure START decision for the one-shot managed-toolchain retry, given the shared
+/// Node repair's disposition and the already-resolved managed toolchain triple.
+///
+/// This is the seam the HQ-DESKTOP-5E fix turns on. `ToolchainRepair` reports
+/// whether a FRESH provision happened, NOT whether a managed toolchain EXISTS:
+/// `repair_managed_node`'s slot is a process-global single-flight shared with the
+/// sync/daemon/Connect lanes, so a `Deferred` (cooldown) or `Failed` disposition
+/// can occur on a machine that already has HQ's managed Node installed and usable.
+/// The old code returned "no retry" on `Deferred`/`Failed` before ever consulting
+/// the managed npm, abandoning the one-shot retry — and then blaming the user's
+/// toolchain in the UI for a repair it never attempted.
+///
+/// So: whenever a managed npm resolves, PROCEED regardless of the repair
+/// disposition (it is idempotent — an already-present managed Node needs no fresh
+/// provision). Decline only when no managed npm is resolvable at all, naming which
+/// disposition left it absent so the next occurrence is self-diagnosing. Free of
+/// `AppHandle`, IO and the app-crate `ToolchainRepair` type, so it compiles and
+/// tests on every platform.
+pub fn managed_retry_start_decision(
+    disposition: ManagedRepairDisposition,
+    resolved_managed: Option<(String, String, String)>,
+) -> ManagedRetryStart {
+    match resolved_managed {
+        Some((npm, path, prefix)) => ManagedRetryStart::Proceed { npm, path, prefix },
+        None => ManagedRetryStart::Decline(match disposition {
+            ManagedRepairDisposition::Repaired => ManagedRetryOutcome::NoManagedNpm,
+            ManagedRepairDisposition::Deferred => ManagedRetryOutcome::ProvisionDeferred,
+            ManagedRepairDisposition::Failed => ManagedRetryOutcome::ProvisionFailed,
+        }),
+    }
+}
+
 /// Toolchain provenance for a failed hq-CLI install — the evidence the reported
 /// HQ-DESKTOP-4R / HQ-DESKTOP-4S events lacked. Every version field is optional
 /// because the updater probes them best-effort; a missing or malformed value is
@@ -3941,6 +4047,11 @@ pub struct InstallEnvironment {
     pub npm_version: Option<String>,
     pub toolchain_source: NpmToolchainSource,
     pub managed_toolchain_retry: bool,
+    /// Why HQ's one-shot managed-toolchain retry did or did not run for this
+    /// failure. A pure tag/diagnostic addition (never a fingerprint or signature
+    /// component), defaulting to [`ManagedRetryOutcome::NotArmed`] so every existing
+    /// caller reproduces today's grouping and only gains the new descriptive tag.
+    pub managed_retry_outcome: ManagedRetryOutcome,
 }
 
 /// Reduce a caller-supplied node/npm version or Node ABI to a strictly bounded
@@ -3966,7 +4077,7 @@ fn sanitized_version_token(raw: Option<&str>) -> String {
 }
 
 /// The provenance segment appended to `npm_diagnostics`. Its shape is constant
-/// (always these five keys) so the extra stays trivially assertable; each value
+/// (always these six keys) so the extra stays trivially assertable; each value
 /// is already a closed enumeration or a `sanitized_version_token` output.
 fn install_environment_diagnostics_suffix(
     lifecycle_cause: Option<&str>,
@@ -3974,14 +4085,16 @@ fn install_environment_diagnostics_suffix(
     node_abi: &str,
     npm_version: &str,
     toolchain_source: &str,
+    managed_retry_outcome: &str,
 ) -> String {
     format!(
-        "lifecycle_cause={} node_version={} node_abi={} npm_version={} toolchain_source={}",
+        "lifecycle_cause={} node_version={} node_abi={} npm_version={} toolchain_source={} managed_retry_outcome={}",
         lifecycle_cause.unwrap_or("none"),
         node_version,
         node_abi,
         npm_version,
         toolchain_source,
+        managed_retry_outcome,
     )
 }
 
@@ -4095,6 +4208,7 @@ pub fn report_install_failure_with_environment(
             &node_abi,
             &npm_version,
             toolchain_source,
+            env.managed_retry_outcome.tag_value(),
         ),
     );
     sentry::with_scope(
@@ -4150,6 +4264,13 @@ pub fn report_install_failure_with_environment(
                 } else {
                     "false"
                 },
+            );
+            // Why HQ's one-shot managed-toolchain retry did or did not run — the
+            // evidence HQ-DESKTOP-5E lacked. A tag and diagnostics key only; never a
+            // fingerprint or signature component, so the group is unchanged.
+            scope.set_tag(
+                "npm_managed_retry_outcome",
+                env.managed_retry_outcome.tag_value(),
             );
             scope.set_tag(
                 "npm_prefix_known",
@@ -9474,6 +9595,7 @@ mod tests {
             npm_version: Some("10.9.8".to_string()),
             toolchain_source: NpmToolchainSource::UserPath,
             managed_toolchain_retry: false,
+            ..Default::default()
         };
         let key =
             install_failure_episode_key_with_environment(Some(190), enotempty, None, false, latest, &env)
@@ -11359,7 +11481,140 @@ mod tests {
             npm_version: None,
             toolchain_source: NpmToolchainSource::UserPath,
             managed_toolchain_retry: false,
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn managed_retry_start_proceeds_whenever_a_managed_npm_resolves() {
+        // The HQ-DESKTOP-5E fix: a cooldown-deferred (Deferred) or failed (Failed)
+        // FRESH provision is NOT evidence that a managed toolchain is absent, so the
+        // one-shot retry must PROCEED whenever a managed npm actually resolves —
+        // regardless of the repair disposition. The old code abandoned the retry on
+        // Deferred/Failed before ever consulting the managed npm.
+        let triple = || {
+            Some((
+                "/managed/bin/npm".to_string(),
+                "/managed/bin:/usr/bin".to_string(),
+                "/managed/npm-global".to_string(),
+            ))
+        };
+        for disposition in [
+            ManagedRepairDisposition::Repaired,
+            ManagedRepairDisposition::Deferred,
+            ManagedRepairDisposition::Failed,
+        ] {
+            assert_eq!(
+                managed_retry_start_decision(disposition, triple()),
+                ManagedRetryStart::Proceed {
+                    npm: "/managed/bin/npm".to_string(),
+                    path: "/managed/bin:/usr/bin".to_string(),
+                    prefix: "/managed/npm-global".to_string(),
+                },
+                "disposition {disposition:?} with a resolvable managed npm must proceed"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_retry_declines_only_when_no_managed_npm_resolves_naming_the_disposition() {
+        // With no managed npm on disk, the retry declines — and names WHICH
+        // disposition left it absent, so the next occurrence is self-diagnosing
+        // instead of silently blaming the user's toolchain (the HQ-DESKTOP-5E gap).
+        assert_eq!(
+            managed_retry_start_decision(ManagedRepairDisposition::Repaired, None),
+            ManagedRetryStart::Decline(ManagedRetryOutcome::NoManagedNpm),
+        );
+        assert_eq!(
+            managed_retry_start_decision(ManagedRepairDisposition::Deferred, None),
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionDeferred),
+        );
+        assert_eq!(
+            managed_retry_start_decision(ManagedRepairDisposition::Failed, None),
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionFailed),
+        );
+    }
+
+    #[test]
+    fn managed_retry_outcome_tag_values_are_a_closed_stable_set() {
+        for (outcome, expected) in [
+            (ManagedRetryOutcome::NotArmed, "not-armed"),
+            (ManagedRetryOutcome::Ran, "ran"),
+            (ManagedRetryOutcome::NoManagedNpm, "no-managed-npm"),
+            (ManagedRetryOutcome::ProvisionDeferred, "provision-deferred"),
+            (ManagedRetryOutcome::ProvisionFailed, "provision-failed"),
+            (ManagedRetryOutcome::SpawnFailed, "spawn-failed"),
+        ] {
+            assert_eq!(outcome.tag_value(), expected);
+        }
+        // The default reproduces "no retry considered", so every pre-existing caller
+        // that never sets the field tags itself not-armed and keeps today's shape.
+        assert_eq!(ManagedRetryOutcome::default(), ManagedRetryOutcome::NotArmed);
+    }
+
+    #[test]
+    fn managed_retry_outcome_is_never_a_grouping_component() {
+        // Adding the outcome must not move any event between Sentry issues: neither
+        // the signature nor the repeat-guard key may read it. Two environments that
+        // differ ONLY in managed_retry_outcome must produce byte-identical grouping.
+        let enotempty = "npm error code ENOTEMPTY\n\
+            npm error syscall rename\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        let base = InstallEnvironment {
+            node_version: Some("22.23.1".to_string()),
+            node_abi: Some("127".to_string()),
+            npm_version: Some("10.9.8".to_string()),
+            toolchain_source: NpmToolchainSource::UserPath,
+            managed_toolchain_retry: false,
+            managed_retry_outcome: ManagedRetryOutcome::NotArmed,
+        };
+        let mut declined = base.clone();
+        declined.managed_retry_outcome = ManagedRetryOutcome::ProvisionDeferred;
+
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                enotempty,
+                None,
+                &base,
+            ),
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                enotempty,
+                None,
+                &declined,
+            ),
+            "managed_retry_outcome must never change the install-failure signature"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(190),
+                enotempty,
+                None,
+                false,
+                "5.103.22",
+                &base,
+            ),
+            install_failure_episode_key_with_environment(
+                Some(190),
+                enotempty,
+                None,
+                false,
+                "5.103.22",
+                &declined,
+            ),
+            "managed_retry_outcome must never change the repeat-guard key"
+        );
+        // Non-vacuous: the shared key is genuinely minted, not a None == None pass.
+        assert!(install_failure_episode_key_with_environment(
+            Some(190),
+            enotempty,
+            None,
+            false,
+            "5.103.22",
+            &base,
+        )
+        .is_some());
     }
 
     #[test]

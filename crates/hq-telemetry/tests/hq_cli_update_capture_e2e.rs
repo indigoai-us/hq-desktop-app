@@ -1019,7 +1019,7 @@ fn install_failure_capture_is_suppressed_or_tagged_after_the_real_scrubber() {
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(
             format!(
-                "error_code=EACCES syscall=mkdir path_shape=other prefix_known=false eacces=true exit_code=1 errno=unknown stderr_len={unexpected_eacces_len} lifecycle_cause=none node_version=unknown node_abi=unknown npm_version=unknown toolchain_source=unknown"
+                "error_code=EACCES syscall=mkdir path_shape=other prefix_known=false eacces=true exit_code=1 errno=unknown stderr_len={unexpected_eacces_len} lifecycle_cause=none node_version=unknown node_abi=unknown npm_version=unknown toolchain_source=unknown managed_retry_outcome=not-armed"
             )
             .into()
         ))
