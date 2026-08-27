@@ -3965,13 +3965,33 @@ mod tests {
     /// portable base-red proof.
     #[test]
     fn real_child_scan_exit_1_carries_the_unmatched_stderr_rollup_and_is_content_safe() {
-        let stdout_lines: Vec<String> = (0..16).map(|i| format!("protocol line {i}")).collect();
+        // 16 genuine protocol lines (valid SyncEvent ndjson) so the production
+        // parser accepts and counts each — exactly as the runner did before it
+        // died. Deriving the count through handle_sync_line (below), not by counting
+        // raw stdout lines, is what makes runner_stdout_line_count=16 faithful: a
+        // malformed line the parser rejects would never have inflated it.
+        let stdout_lines: Vec<String> = (0..16)
+            .map(|i| {
+                serde_json::json!({
+                    "type": "progress",
+                    "company": "acme",
+                    "path": format!("knowledge/file-{i}.md"),
+                    "bytes": 1,
+                    "direction": "up",
+                })
+                .to_string()
+            })
+            .collect();
         // One unrecognised plain-stderr line: not ndjson, no drive path, no colon
         // identifier, no fatal signature — the coarse `other` shape, exactly as the
         // reported event's single line.
         let stderr_lines = vec!["runner stopped unexpectedly".to_string()];
         let spawn = stdout_then_stderr_spawn_args(&stdout_lines, &stderr_lines, 1);
 
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().expect("temporary HQ folder");
+        let hq_folder_path = hq_folder.path().to_str().expect("UTF-8 temporary path");
         let payload = SyncErrorEvent {
             company: None,
             path: "(runner)".to_string(),
@@ -3987,9 +4007,14 @@ mod tests {
 
         let captures = sentry::test::with_captured_events(|| {
             run_process_impl("manual-runner-scan-exit-1", &spawn, |event| match event {
-                ProcessEvent::Stdout(_) => {
-                    // Count protocol lines exactly like the production stdout arm.
-                    stdout_sequence = stdout_sequence.saturating_add(1);
+                ProcessEvent::Stdout(line) => {
+                    // Exactly the production stdout arm: count ONLY lines the parser
+                    // accepts as protocol, so a malformed line could never inflate the
+                    // count. The 16 seeded progress records all parse, yielding 16.
+                    if handle_sync_line(&handle, hq_folder_path, &totals, &phase, "test-jwt", &line)
+                    {
+                        stdout_sequence = stdout_sequence.saturating_add(1);
+                    }
                 }
                 ProcessEvent::Stderr(line) => {
                     // Exactly the production stderr arm: sequence, breadcrumb, tail,
@@ -4088,8 +4113,8 @@ mod tests {
         }
 
         // (3) No stderr or stdout byte leaks: the rollup emits `other:1`, never the
-        // line, and stdout never reaches Sentry at all.
-        for forbidden in ["runner stopped unexpectedly", "protocol line"] {
+        // stderr line, and the stdout progress records' paths never reach Sentry.
+        for forbidden in ["runner stopped unexpectedly", "knowledge/file-"] {
             assert!(
                 !serialized.contains(forbidden),
                 "final event leaked runner content: {forbidden}"
