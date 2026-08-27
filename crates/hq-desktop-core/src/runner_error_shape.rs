@@ -44,12 +44,23 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// The hq-cloud version whose `this.name` identity set the [`RunnerErrorCause`]
 /// vocabulary below was derived from. Pinned equal to
 /// [`crate::hq_cloud::HQ_CLOUD_VERSION`] by
-/// `cause_vocabulary_source_version_is_pinned_to_the_runner`, so bumping the
+/// `cause_vocabulary_source_version_is_pinned_to_the_runner`, so editing the
 /// runner pin without re-deriving the identity list from the new hq-cloud source
 /// fails the build. This is the guard against a silent vocabulary-drift reopen:
 /// the prior fix pinned its vocabulary to a 16-name *sample* of hq-cloud's
 /// identities and collapsed every out-of-sample company-scope fault back to
 /// `unknown`, which is exactly the recurrence this change closes.
+///
+/// Scope, deliberately two-layered. This static equality catches a *maintainer*
+/// editing the runner pin (e.g. to `~6.16.0`) without re-deriving. It does NOT —
+/// and statically cannot — catch WITHIN-range drift: `~6.15.37` lets npx resolve
+/// any later `6.15.x` at runtime, so `6.15.38` adding a new class does not change
+/// either constant. That residual drift is covered at runtime by the second
+/// layer: a new class arrives as an `unknown_named` cause plus a stable
+/// `runner_error_cause_signature`, so it surfaces as a decodable correlator
+/// rather than silently collapsing to a flat `unknown`. The pin forces
+/// re-derivation on a coarse bump; the signature axis absorbs the fine drift in
+/// between.
 pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.37";
 
 /// Length of a `runner_error_cause_signature` token: the first 12 lowercase hex
@@ -58,6 +69,16 @@ pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.37";
 /// bounded tag well under Sentry's limit and to stay offline-decodable by hashing
 /// candidate class names.
 const SIGNATURE_HEX_LEN: usize = 12;
+
+/// Hard cap on how many DISTINCT signatures the per-pass signature accumulator
+/// retains. Unlike the fixed-array rollups, the signature map is keyed by an
+/// open-ended digest, so a faulty or hostile runner emitting many distinct
+/// uppercase-CamelCase identifiers could otherwise grow it without bound and
+/// exhaust process memory. Comfortably above the rendered top-3 and any realistic
+/// per-pass identity count (a real recurrence carries one or two distinct
+/// identities), so genuine correlators are always retained; a pathological flood
+/// past the cap simply stops inserting NEW keys.
+const SIGNATURE_ROLLUP_CAP: usize = 64;
 
 /// Fixed, content-safe runner error *message shapes*.
 ///
@@ -996,12 +1017,18 @@ pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
 /// when the message carries none. `describeError` emits `e.name` first, and only
 /// when `e.name !== "Error"`, so a real fault leads with its CamelCase class name.
 ///
-/// Gated to a bare, uppercase-initial identifier `[A-Z][A-Za-z0-9]{0,63}`: every
-/// hq-cloud error class and every AWS/Node error name is uppercase-initial
-/// CamelCase, so this admits real identities while refusing — and therefore never
-/// hashing into a signature — a path, URL, host, quoted string, any token with a
-/// separator, and lower-cased pull-leg prose. The literal `Error` is excluded
-/// because `describeError` never emits it as a name.
+/// Gated to a bare, **multi-hump CamelCase** identifier — `[A-Z][A-Za-z0-9]{0,63}`
+/// with at least one further uppercase letter. Every hq-cloud error class and
+/// every AWS/Node error name is multi-hump (`AccessDenied`, `NoSuchKey`,
+/// `RateLimited`, `VaultNotFoundError`), so this admits real identities while
+/// refusing — and therefore never hashing into a signature — a path, URL, host,
+/// quoted string, any token with a separator, lower-cased pull-leg prose, AND a
+/// single-hump sentence-case word. The last point matters: a plain `Error` whose
+/// message begins with an ordinary capitalized word (`"Vault unreachable"`,
+/// `"Connection reset"`, a company name like `"Acme failed…"`) must NOT be
+/// signed, or a customer- or company-derived first word could become an
+/// offline-decodable hash. The literal `Error` is excluded because
+/// `describeError` never emits it as a name.
 fn leading_error_identity(message: &str) -> Option<&str> {
     let first = message.split_whitespace().next()?;
     if first == "Error" {
@@ -1011,31 +1038,42 @@ fn leading_error_identity(message: &str) -> Option<&str> {
     if bytes.is_empty() || bytes.len() > 64 || !bytes[0].is_ascii_uppercase() {
         return None;
     }
-    bytes[1..]
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric())
-        .then_some(first)
+    let mut has_inner_upper = false;
+    for &byte in &bytes[1..] {
+        if !byte.is_ascii_alphanumeric() {
+            return None;
+        }
+        has_inner_upper |= byte.is_ascii_uppercase();
+    }
+    has_inner_upper.then_some(first)
 }
 
 /// The `runner_error_cause_signature` of a runner error message: the first
 /// [`SIGNATURE_HEX_LEN`] lowercase-hex chars of the SHA-256 of its gated leading
-/// identity, or `None` unless the message is an [`RunnerErrorCause::UnknownNamed`]
-/// residual. A matched cause needs no signature (already named); an
-/// `UnknownUnnamed` residual has no gated identifier to hash.
+/// identity, or `None` when there is no *unlisted* leading identity to sign.
 ///
-/// Content-safe by construction: only a bare `[A-Z][A-Za-z0-9]{0,63}` identifier
-/// is ever hashed (no path, host, URL, quote, or separator can pass the gate),
-/// and only a fixed-length hex digest is returned — never a runner byte. The
-/// digest is stable across machines, so the same unlisted class correlates, and
-/// is offline-decodable by hashing candidate class names.
+/// Signed exactly when the leading token is a gated identity (see
+/// [`leading_error_identity`]) that is NOT already in the cause vocabulary — so an
+/// identity the cause axis can already name needs no correlator. This is
+/// deliberately **independent of the nested `code=`/`cause=` classification**: a
+/// future unlisted class that wraps an allow-listed cause (e.g.
+/// `FutureVaultError cause=AccessDenied …`) reports `access_denied` on the cause
+/// axis *and* still surfaces `FutureVaultError`'s signature — the exact
+/// producer-vocabulary drift this axis exists to expose would otherwise be hidden
+/// behind the known nested cause.
+///
+/// Content-safe by construction: only a bare multi-hump CamelCase identifier is
+/// ever hashed (no path, host, URL, quote, separator, or sentence-case word can
+/// pass the gate), and only a fixed-length hex digest is returned — never a runner
+/// byte. The digest is stable across machines, so the same unlisted class
+/// correlates, and is offline-decodable by hashing candidate class names.
 pub fn runner_error_cause_signature(message: &str) -> Option<String> {
-    if !matches!(
-        classify_runner_error_cause(message),
-        RunnerErrorCause::UnknownNamed
-    ) {
+    let identity = leading_error_identity(message)?;
+    // A listed identity is already named by the cause axis; only an UNLISTED one
+    // needs a correlator.
+    if cause_from_identifier(identity).is_some() {
         return None;
     }
-    let identity = leading_error_identity(message)?;
     let digest = format!("{:x}", Sha256::digest(identity.as_bytes()));
     Some(digest[..SIGNATURE_HEX_LEN].to_string())
 }
@@ -1085,13 +1123,16 @@ impl RunnerErrorCauseRollup {
 }
 
 /// Saturating per-pass counts of the `runner_error_cause_signature` axis: a
-/// bounded, content-safe correlator for the [`RunnerErrorCause::UnknownNamed`]
-/// residual — an error whose leading identity is real but not yet in the cause
-/// vocabulary. Each key is a fixed [`SIGNATURE_HEX_LEN`]-char lowercase-hex
-/// SHA-256 prefix of a gated `[A-Z][A-Za-z0-9]{0,63}` identifier (never a runner
-/// byte), so the SAME unlisted identity is correlatable across machines and
-/// offline-decodable by hashing candidate class names. A matched cause or an
-/// `UnknownUnnamed` residual contributes nothing.
+/// bounded, content-safe correlator for an *unlisted* leading error identity —
+/// one not yet in the cause vocabulary (see [`runner_error_cause_signature`]).
+/// Each key is a fixed [`SIGNATURE_HEX_LEN`]-char lowercase-hex SHA-256 prefix of
+/// a gated multi-hump CamelCase identifier (never a runner byte), so the SAME
+/// unlisted identity is correlatable across machines and offline-decodable by
+/// hashing candidate class names. A listed identity contributes nothing.
+///
+/// Bounded in BOTH dimensions: the rendered tag is capped by `render_top_n`, and
+/// the retained key set is capped by [`SIGNATURE_ROLLUP_CAP`] so an error flood
+/// with many distinct identifiers can never grow the map without limit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunnerErrorCauseSignatureRollup {
     /// Keyed by hex signature; `BTreeMap` gives a deterministic (ascending-hex)
@@ -1100,11 +1141,17 @@ pub struct RunnerErrorCauseSignatureRollup {
 }
 
 impl RunnerErrorCauseSignatureRollup {
-    /// Classify one runner error message and, when it is an `UnknownNamed`
-    /// residual, increment its signature count. Any other message increments
-    /// nothing, so a pass with no unlisted identity renders no tag.
+    /// Increment the signature count for one runner error message, when it has an
+    /// unlisted leading identity. A message with no such identity increments
+    /// nothing, so a pass with no unlisted identity renders no tag. Bounded: once
+    /// [`SIGNATURE_ROLLUP_CAP`] distinct signatures are retained, an already-seen
+    /// signature still increments but a NEW one is dropped, so the map cannot grow
+    /// without limit under a distinct-identifier flood.
     pub fn record(&mut self, message: &str) {
         if let Some(signature) = runner_error_cause_signature(message) {
+            if self.counts.len() >= SIGNATURE_ROLLUP_CAP && !self.counts.contains_key(&signature) {
+                return;
+            }
             let count = self.counts.entry(signature).or_insert(0);
             *count = count.saturating_add(1);
         }
@@ -1961,5 +2008,96 @@ mod tests {
             "re-derive the cause vocabulary from the new hq-cloud source, then \
              update CAUSE_VOCABULARY_SOURCE_VERSION and HQ_CLOUD_IDENTITIES",
         );
+    }
+
+    #[test]
+    fn sentence_case_prose_is_unnamed_and_never_signed() {
+        // A plain `Error` whose message begins with an ordinary single-hump
+        // capitalized word is NOT an error-class identity: it must classify as
+        // `unknown_unnamed` and attach no signature, so a customer- or
+        // company-derived first word can never become a decodable hash.
+        for prose in [
+            "Vault unreachable",
+            "Connection reset by peer",
+            "Timeout while connecting to the outpost",
+            "Forbidden by policy",
+            "Acme failed to reach its vault",
+        ] {
+            assert_eq!(
+                classify_runner_error_cause(prose),
+                RunnerErrorCause::UnknownUnnamed,
+                "single-hump sentence-case prose must be unnamed: {prose:?}"
+            );
+            assert_eq!(
+                runner_error_cause_signature(prose),
+                None,
+                "sentence-case prose must never be signed: {prose:?}"
+            );
+        }
+        // A genuine multi-hump CamelCase class name is still named + signed.
+        assert_eq!(
+            classify_runner_error_cause("FutureVaultError the vault vanished"),
+            RunnerErrorCause::UnknownNamed
+        );
+        assert!(runner_error_cause_signature("FutureVaultError the vault vanished").is_some());
+        // The multi-hump gate boundary: one internal uppercase is admitted, none
+        // is refused.
+        assert_eq!(leading_error_identity("VaultX gone"), Some("VaultX"));
+        assert_eq!(leading_error_identity("Vaultx gone"), None);
+    }
+
+    #[test]
+    fn unlisted_outer_identity_is_signed_even_when_a_nested_cause_matches() {
+        // An unlisted leading class that WRAPS a known nested cause: the cause axis
+        // reports the actionable nested cause, and the signature axis still exposes
+        // the unlisted wrapper — the producer-vocabulary drift this axis exists for
+        // must not be hidden behind the known cause.
+        let message = "FutureVaultError cause=AccessDenied http=403 host=x.example.com denied";
+        assert_eq!(classify_runner_error_cause(message), RunnerErrorCause::AccessDenied);
+        let signature = runner_error_cause_signature(message).expect("unlisted wrapper is signed");
+        let expected = format!("{:x}", Sha256::digest(b"FutureVaultError"));
+        assert_eq!(signature, expected[..SIGNATURE_HEX_LEN]);
+
+        // A LISTED leading identity that wraps a nested cause is already named, so
+        // it carries no signature (the cause axis names it directly).
+        let listed = "VaultNotFoundError cause=AccessDenied vault entry missing";
+        assert_eq!(classify_runner_error_cause(listed), RunnerErrorCause::VaultNotFound);
+        assert_eq!(runner_error_cause_signature(listed), None);
+
+        // Recorded across both axes independently: one cause count, one signature.
+        let mut causes = RunnerErrorCauseRollup::default();
+        let mut signatures = RunnerErrorCauseSignatureRollup::default();
+        causes.record(message);
+        signatures.record(message);
+        assert_eq!(causes.tag_value().as_deref(), Some("access_denied:1"));
+        assert_eq!(
+            signatures.tag_value(),
+            Some(format!("{}:1", &expected[..SIGNATURE_HEX_LEN]))
+        );
+    }
+
+    #[test]
+    fn cause_signature_rollup_is_bounded_under_a_distinct_identity_flood() {
+        // Unlike the fixed-array rollups the signature map is keyed by an
+        // open-ended digest, so a flood of DISTINCT identifiers must not grow it
+        // without bound. Feed far more distinct identities than the cap and assert
+        // the retained key set stays capped while the tag still renders top-N.
+        let mut rollup = RunnerErrorCauseSignatureRollup::default();
+        for i in 0..(SIGNATURE_ROLLUP_CAP * 4) {
+            // Each identifier is a distinct multi-hump CamelCase token.
+            rollup.record(&format!("FloodError{i}X boom on the company leg"));
+        }
+        assert_eq!(
+            rollup.counts.len(),
+            SIGNATURE_ROLLUP_CAP,
+            "the distinct-signature set must be capped"
+        );
+        // An already-seen signature still increments past the cap, and the tag
+        // stays bounded to the top-N.
+        for _ in 0..10 {
+            rollup.record("FloodError0X boom on the company leg");
+        }
+        let value = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
     }
 }
