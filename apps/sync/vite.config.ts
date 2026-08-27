@@ -48,5 +48,12 @@ export default defineConfig({
       // vitest's default exclude, so this only matches our own bridge tests.
       "sidecar/recall-sdk-bridge/**/*.test.mjs",
     ],
+    // Linked hq-work-mono packages ship TypeScript source, not JS. Vitest 4
+    // will not strip types under node_modules unless we inline them.
+    server: {
+      deps: {
+        inline: [/@hq\/(ui|platform|core)($|\/)/],
+      },
+    },
   },
 });
