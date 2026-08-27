@@ -2199,7 +2199,16 @@ fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
         "npm"
     };
     let managed_npm = bin_dir.join(npm_name);
-    if !managed_npm.exists() {
+    // A usable managed toolchain needs BOTH the managed npm AND the managed Node it
+    // must run under — not npm alone. An incomplete provision can leave npm behind
+    // without node (e.g. a Failed fresh provision that got partway), and the managed
+    // PATH puts this bin dir FIRST but then falls through to the user's Node: running
+    // that npm would build native dependencies for the USER's ABI inside the managed
+    // prefix, pass convergence under the user's Node, and persist the managed prefix
+    // to the shell — only to break once the managed Node is later repaired to a
+    // different ABI. Require the node executable too, so a "managed" retry is always
+    // genuinely managed (HQ-DESKTOP-5E review follow-up).
+    if !managed_npm.exists() || !node_exe.exists() {
         return None;
     }
     let sep = if cfg!(target_os = "windows") {
@@ -3563,6 +3572,46 @@ exit 0
             ),
             InstallFailureKind::Unexpected
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_toolchain_npm_and_path_requires_node_not_just_npm() {
+        use std::fs;
+        // Serialize HOME mutation against every other env/home-touching test.
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _restore_home = HomeEnvRestore(std::env::var_os("HOME"));
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp.path());
+
+        // The unix managed layout: <HOME>/Library/Application Support/Indigo HQ/
+        // toolchain/node/bin/{node,npm}.
+        let bin = temp
+            .path()
+            .join("Library/Application Support/Indigo HQ/toolchain/node/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("npm"), "#!/bin/sh\nexit 0\n").unwrap();
+
+        // npm present but the managed Node ABSENT is an INCOMPLETE toolchain — not
+        // usable, because the managed PATH would fall through to the user's Node.
+        // The HQ-DESKTOP-5E retry must not proceed on it (review follow-up).
+        assert!(
+            managed_toolchain_npm_and_path().is_none(),
+            "npm without a managed node next to it is not a usable managed toolchain"
+        );
+
+        // Once the managed Node exists too, it resolves.
+        fs::write(bin.join("node"), "#!/bin/sh\nexit 0\n").unwrap();
+        let (resolved_npm, resolved_path, _prefix) = managed_toolchain_npm_and_path()
+            .expect("npm + node present must resolve a usable managed toolchain");
+        let expected_npm = bin.join("npm").to_string_lossy().into_owned();
+        let bin_str = bin.to_string_lossy().into_owned();
+        assert_eq!(resolved_npm, expected_npm);
+        assert!(resolved_path.starts_with(bin_str.as_str()));
     }
 
     #[cfg(unix)]
