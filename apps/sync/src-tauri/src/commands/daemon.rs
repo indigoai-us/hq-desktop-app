@@ -51,10 +51,10 @@ use hq_desktop_core::sync_outcome::{
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
     windows_exit_status_hex, windows_fault_symbol, windows_teardown_verdict,
-    DeferredSessionEndOutcome, SpawnFailureCapturePolicy, SyncCancelCause, TeardownLogReading,
-    TeardownShuttingDown, TerminationHost, WatcherExitCapturePolicy, WindowsTeardownProbeReading,
-    WindowsTeardownVerdict, WindowsTermination, WindowsTerminatorAttribution, SESSION_END_GRACE_MS,
-    WINDOWS_SESSION_TERMINATE_EXIT,
+    DeferredSessionEndOutcome, SessionEndLatchReading, SpawnFailureCapturePolicy, SyncCancelCause,
+    TeardownLogReading, TeardownShuttingDown, TerminationHost, WatcherExitCapturePolicy,
+    WindowsTeardownProbeReading, WindowsTeardownVerdict, WindowsTermination,
+    WindowsTerminatorAttribution, SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 use crate::commands::windows_teardown_probe::{
     sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
@@ -1117,6 +1117,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             daemon_generation,
                             &stderr_tail,
                             current_windows_terminator_attribution(&app, code, signal),
+                            current_session_end_latch_reading_for_exit(code, signal),
                             cancellation_record,
                             watcher_stdout_line_count,
                             watcher_node_major,
@@ -1374,6 +1375,11 @@ struct WatcherExitCaptureContext {
     runner_heap_total_mb: Option<u64>,
     runner_oom_frame_count: Option<u32>,
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    /// The durable session-end latch read at the exit boundary, consulted ONLY on
+    /// the session-terminate/no-signal shape (`Unavailable` otherwise). A
+    /// contemporaneous latch is positive OS evidence that suppresses the alert
+    /// immediately, even when the observer thread has already died (HQ-DESKTOP r3).
+    session_end_latch: SessionEndLatchReading,
     /// Durable cancellation-record readout for this exact generation, read at the
     /// terminal boundary alongside the ephemeral cancelled flag. These three make
     /// the next occurrence self-assigning between an external kill and a lost
@@ -1513,6 +1519,7 @@ impl Default for WatcherExitCaptureContext {
             runner_heap_total_mb: None,
             runner_oom_frame_count: None,
             windows_terminator: None,
+            session_end_latch: SessionEndLatchReading::Unavailable,
             cancellation_record_present: false,
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
@@ -1589,6 +1596,7 @@ fn watcher_exit_capture_context(
     process_generation: u64,
     stderr_tail: &[String],
     windows_terminator: Option<WindowsTerminatorAttribution>,
+    session_end_latch: SessionEndLatchReading,
     cancellation_record: Option<CancellationRecord>,
     stdout_line_count: u32,
     node_major: Option<u32>,
@@ -1669,6 +1677,7 @@ fn watcher_exit_capture_context(
         runner_heap_total_mb: totals.runner_heap_used_total_mb().map(|(_, total)| total),
         runner_oom_frame_count: totals.runner_heap_oom_frame_count(),
         windows_terminator,
+        session_end_latch,
         cancellation_record_present: cancellation_record.is_some(),
         cancellation_record_cause: cancellation_record.and_then(|record| record.cause),
         cancellation_termination_effected: cancellation_record
@@ -1749,6 +1758,29 @@ fn current_windows_terminator_attribution<R: tauri::Runtime>(
     _signal: Option<i32>,
 ) -> Option<WindowsTerminatorAttribution> {
     None
+}
+
+/// Read the durable session-end latch at the exit boundary, but ONLY on the
+/// `DBG_TERMINATE_PROCESS`/no-signal shape — the one exit that may consult it, so
+/// a genuine fault on any other code can never be suppressed by a coincident
+/// session end. The latch is a process-global, so this needs no `AppHandle`.
+#[cfg(target_os = "windows")]
+fn current_session_end_latch_reading_for_exit(
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> SessionEndLatchReading {
+    if code != Some(WINDOWS_SESSION_TERMINATE_EXIT) || signal.is_some() {
+        return SessionEndLatchReading::Unavailable;
+    }
+    crate::commands::session_end_latch::current_session_end_latch_reading()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_session_end_latch_reading_for_exit(
+    _code: Option<i32>,
+    _signal: Option<i32>,
+) -> SessionEndLatchReading {
+    SessionEndLatchReading::Unavailable
 }
 
 /// Re-read the observer after a grace, from wherever the deferral resolves.
@@ -1899,6 +1931,10 @@ pub fn flush_pending_session_end_captures() -> usize {
                 shuttingdown_at_resolve: TeardownShuttingDown::Unavailable,
                 log: TeardownLogReading::Unavailable,
             },
+            // An app-initiated quit is not a session end and consults nothing:
+            // the latch reports `unavailable`, exactly as the probe extras do,
+            // and the alert is sent.
+            SessionEndLatchReading::Unavailable,
         );
     });
     if flushed > 0 {
@@ -1991,14 +2027,33 @@ struct DeferredResolution {
 fn resolve_deferred_decision(
     reading: Option<SessionEndReading>,
     teardown: WindowsTeardownProbeReading,
+    latch: SessionEndLatchReading,
 ) -> DeferredResolution {
     let verdict = windows_teardown_verdict(teardown);
     let outcome = reading
-        .map(|reading| deferred_session_end_outcome(reading.attribution, verdict))
-        // Fail closed: an observer that cannot be consulted never suppresses.
-        .unwrap_or(DeferredSessionEndOutcome::Capture);
-    let final_attribution =
-        reading.map(|reading| resolved_session_end_attribution(reading.attribution, verdict));
+        .map(|reading| deferred_session_end_outcome(reading.attribution, verdict, latch))
+        // Fail closed: an observer that cannot be consulted never suppresses on
+        // its own. A contemporaneous latch is still positive evidence even when
+        // the observer is gone, so honour it here too.
+        .unwrap_or_else(|| {
+            if latch.suppresses() {
+                DeferredSessionEndOutcome::Drop
+            } else {
+                DeferredSessionEndOutcome::Capture
+            }
+        });
+    let final_attribution = match reading {
+        Some(reading) => Some(resolved_session_end_attribution(
+            reading.attribution,
+            verdict,
+            latch,
+        )),
+        // No observer reading at all: a contemporaneous latch still names itself
+        // so a suppressed alert carries a suppressing tag; otherwise the tag is
+        // left as the exit-time value by leaving it `None`.
+        None if latch.suppresses() => Some(WindowsTerminatorAttribution::SessionEndLatched),
+        None => None,
+    };
     DeferredResolution {
         outcome,
         final_attribution,
@@ -2035,7 +2090,13 @@ fn resolve_deferred_session_end_capture(id: u64) {
         shuttingdown_at_resolve: sample_shuttingdown(),
         log: payload.teardown_sweep.reading(),
     };
-    let resolution = resolve_deferred_decision(reading, teardown);
+    // Third evidence dimension (r3): the durable session-end latch, re-read fresh
+    // now. Every deferral is on the session-terminate shape by construction, so
+    // the latch is always eligible here. During the grace the app's own
+    // RunEvent::Exit branch (or a committed WM_ENDSESSION) sets it, so a capture
+    // that raced the one-shot drop sweep still sees positive evidence.
+    let latch = current_session_end_latch_reading_at_resolution();
+    let resolution = resolve_deferred_decision(reading, teardown, latch);
 
     match resolution.outcome {
         DeferredSessionEndOutcome::Drop => {
@@ -2073,9 +2134,17 @@ fn resolve_deferred_session_end_capture(id: u64) {
                 "grace_elapsed",
                 resolution.verdict,
                 teardown,
+                latch,
             );
         }
     }
+}
+
+/// Read the durable session-end latch when resolving a deferral. Every deferral
+/// is on the session-terminate shape, so the latch is always eligible here; on
+/// non-Windows the process-global is never set, so this reads `Absent`.
+fn current_session_end_latch_reading_at_resolution() -> SessionEndLatchReading {
+    crate::commands::session_end_latch::current_session_end_latch_reading()
 }
 
 /// Stamp a deferral's resolution onto its held-back payload.
@@ -2093,6 +2162,7 @@ fn finalize_deferred_session_end_payload(
     resolution: &str,
     verdict: WindowsTeardownVerdict,
     teardown: WindowsTeardownProbeReading,
+    latch: SessionEndLatchReading,
 ) -> DeferredSessionEndCapture {
     let at_exit = payload
         .tags
@@ -2140,6 +2210,10 @@ fn finalize_deferred_session_end_payload(
             "windows_teardown_probe_log",
             teardown.log.class_name().to_string(),
         ),
+        // Durable session-end latch (HQ-DESKTOP r3): the third, observer-thread-
+        // independent evidence dimension. A fixed content-safe token —
+        // latched / absent / unavailable — never a timestamp or identifier.
+        ("session_end_latch", latch.class_name().to_string()),
     ] {
         payload
             .extras
@@ -2171,6 +2245,7 @@ fn send_deferred_session_end_capture(
     resolution: &str,
     verdict: WindowsTeardownVerdict,
     teardown: WindowsTeardownProbeReading,
+    latch: SessionEndLatchReading,
 ) {
     let payload = finalize_deferred_session_end_payload(
         payload,
@@ -2180,6 +2255,7 @@ fn send_deferred_session_end_capture(
         resolution,
         verdict,
         teardown,
+        latch,
     );
     let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
     let tags: Vec<(&str, String)> = payload
@@ -2834,7 +2910,12 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // stays paced while the disk is full.
         WatcherExitCapturePolicy::LocalLogOnly
     } else {
-        watcher_exit_capture_policy_with_attribution(code, signal, context.windows_terminator)
+        watcher_exit_capture_policy_with_attribution(
+            code,
+            signal,
+            context.windows_terminator,
+            context.session_end_latch,
+        )
     };
     let policy_consecutive =
         effects.note_watcher_capture_policy_streak(capture_policy, consecutive);
@@ -2895,6 +2976,29 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 format!(
                     "session-end-observed auto-sync watcher exit #{consecutive}: \
                      windows_terminator=session_end_observed"
+                ),
+            );
+        } else if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
+            && signal.is_none()
+            && context.session_end_latch == SessionEndLatchReading::Latched
+        {
+            // r3: a contemporaneous durable latch suppressed on the spot — the
+            // observer thread was dead (or unattributed) but the app's own
+            // session-end signal survived. Name the latch so a fourth recurrence
+            // says which of the three links fired.
+            effects.log(
+                "daemon",
+                &format!(
+                    "session-end-latched watcher exit #{consecutive} — capture skipped \
+                     (windows_terminator=session_end_latched)"
+                ),
+            );
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
+                    "session-end-latched auto-sync watcher exit #{consecutive}: \
+                     windows_terminator=session_end_latched"
                 ),
             );
         } else if context.attributed_to_disk_exhaustion(code, signal) {
@@ -7591,24 +7695,40 @@ mod tests {
             WindowsTerminatorAttribution::ObserverUnavailable,
         ] {
             assert_eq!(
-                deferred_session_end_outcome(attribution, WindowsTeardownVerdict::Unknown),
+                deferred_session_end_outcome(
+                    attribution,
+                    WindowsTeardownVerdict::Unknown,
+                    SessionEndLatchReading::Absent
+                ),
                 DeferredSessionEndOutcome::Capture,
                 "{attribution:?} must still reach Sentry after the grace"
             );
         }
-        // Only positive evidence drops it: an observed message, or a probe that
-        // confirmed the teardown.
+        // Only positive evidence drops it: an observed message, a probe that
+        // confirmed the teardown, or a contemporaneous latch.
         assert_eq!(
             deferred_session_end_outcome(
                 WindowsTerminatorAttribution::SessionEndObserved,
-                WindowsTeardownVerdict::Unknown
+                WindowsTeardownVerdict::Unknown,
+                SessionEndLatchReading::Absent
             ),
             DeferredSessionEndOutcome::Drop
         );
         assert_eq!(
             deferred_session_end_outcome(
                 WindowsTerminatorAttribution::UnattributedNoSignal,
-                WindowsTeardownVerdict::Confirmed
+                WindowsTeardownVerdict::Confirmed,
+                SessionEndLatchReading::Absent
+            ),
+            DeferredSessionEndOutcome::Drop
+        );
+        // r3: a contemporaneous latch drops even an observer-fault reading with
+        // an unknown probe — the case the recurrence would now suppress.
+        assert_eq!(
+            deferred_session_end_outcome(
+                WindowsTerminatorAttribution::ObserverFailed,
+                WindowsTeardownVerdict::Unknown,
+                SessionEndLatchReading::Latched
             ),
             DeferredSessionEndOutcome::Drop
         );
@@ -7629,6 +7749,7 @@ mod tests {
             "grace_elapsed",
             WindowsTeardownVerdict::Unknown,
             unknown_teardown,
+            SessionEndLatchReading::Absent,
         );
         assert_eq!(
             sent.tags,
@@ -7668,6 +7789,11 @@ mod tests {
                     "windows_teardown_probe_log".to_string(),
                     sentry::protocol::Value::String("unavailable".to_string())
                 ),
+                // r3: the latch was consulted at resolution and held nothing.
+                (
+                    "session_end_latch".to_string(),
+                    sentry::protocol::Value::String("absent".to_string())
+                ),
             ]
         );
 
@@ -7686,6 +7812,7 @@ mod tests {
                 readiness: "registered",
             }),
             absent_teardown,
+            SessionEndLatchReading::Absent,
         );
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Capture);
         assert_eq!(resolution.verdict, WindowsTeardownVerdict::Absent);
@@ -7697,11 +7824,13 @@ mod tests {
             "grace_elapsed",
             resolution.verdict,
             absent_teardown,
+            SessionEndLatchReading::Absent,
         );
         assert_eq!(
             recorded_string_tag(&sent, "windows_terminator"),
             "unattributed_no_teardown"
         );
+        assert_eq!(recorded_deferred_extra(&sent, "session_end_latch"), "absent");
         assert_eq!(
             recorded_deferred_extra(&sent, "windows_teardown_probe_verdict"),
             "teardown_absent"
@@ -7732,7 +7861,8 @@ mod tests {
             shuttingdown_at_resolve: TeardownShuttingDown::No,
             log: TeardownLogReading::None,
         };
-        let resolution = resolve_deferred_decision(Some(reading), confirmed);
+        let resolution =
+            resolve_deferred_decision(Some(reading), confirmed, SessionEndLatchReading::Absent);
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Drop);
         assert_eq!(resolution.verdict, WindowsTeardownVerdict::Confirmed);
         assert_eq!(
@@ -7750,7 +7880,11 @@ mod tests {
                 hq_desktop_core::sync_outcome::TeardownLogClass::KernelGeneral,
             ),
         };
-        let resolution = resolve_deferred_decision(Some(reading), confirmed_by_log);
+        let resolution = resolve_deferred_decision(
+            Some(reading),
+            confirmed_by_log,
+            SessionEndLatchReading::Absent,
+        );
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Drop);
         assert_eq!(
             resolution.final_attribution,
@@ -7766,15 +7900,108 @@ mod tests {
                 hq_desktop_core::sync_outcome::TeardownLogClass::User32Initiated,
             ),
         };
-        let resolution = resolve_deferred_decision(Some(reading), initiation_only);
+        let resolution = resolve_deferred_decision(
+            Some(reading),
+            initiation_only,
+            SessionEndLatchReading::Absent,
+        );
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Capture);
         assert_eq!(resolution.verdict, WindowsTeardownVerdict::Unknown);
 
         // An observer that could not be consulted at all still fails closed even
-        // with a confirmed teardown: nothing to rename, so it sends.
-        let resolution = resolve_deferred_decision(None, confirmed);
+        // with a confirmed teardown when there is no latch: nothing to rename, so
+        // it sends.
+        let resolution =
+            resolve_deferred_decision(None, confirmed, SessionEndLatchReading::Absent);
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Capture);
         assert_eq!(resolution.final_attribution, None);
+
+        // r3: but a contemporaneous latch suppresses even with no observer reading
+        // at all, and names itself so the suppressed alert carries a suppressing
+        // tag — the durable evidence survives the observer's death.
+        let resolution =
+            resolve_deferred_decision(None, initiation_only, SessionEndLatchReading::Latched);
+        assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Drop);
+        assert_eq!(
+            resolution.final_attribution,
+            Some(WindowsTerminatorAttribution::SessionEndLatched)
+        );
+    }
+
+    /// The r3 recurrence, replayed at the resolver: an `ObserverFailed` reading
+    /// (event 5bcd8d2aa8c047768419f18613426a59) resolved three ways. The latch
+    /// suppresses; a probe-confirmed teardown suppresses as `session_end_probed`;
+    /// and a verifiably-absent teardown with no latch SENDS with the honest
+    /// `observer_failed` tag intact — so every non-suppressed alert stays labelled
+    /// with which link failed.
+    #[test]
+    fn the_observer_failed_recurrence_resolves_by_latch_probe_or_honest_send() {
+        let reading = SessionEndReading {
+            attribution: WindowsTerminatorAttribution::ObserverFailed,
+            readiness: "failed",
+        };
+        let absent = WindowsTeardownProbeReading {
+            shuttingdown_at_exit: TeardownShuttingDown::No,
+            shuttingdown_at_resolve: TeardownShuttingDown::No,
+            log: TeardownLogReading::None,
+        };
+        let confirmed = WindowsTeardownProbeReading {
+            shuttingdown_at_exit: TeardownShuttingDown::Yes,
+            shuttingdown_at_resolve: TeardownShuttingDown::No,
+            log: TeardownLogReading::None,
+        };
+
+        // (1) latch set -> suppressed and named session_end_latched.
+        let latched =
+            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Latched);
+        assert_eq!(latched.outcome, DeferredSessionEndOutcome::Drop);
+        assert_eq!(
+            latched.final_attribution,
+            Some(WindowsTerminatorAttribution::SessionEndLatched)
+        );
+
+        // (2) no latch, probe Confirmed -> suppressed and named session_end_probed.
+        let probed =
+            resolve_deferred_decision(Some(reading), confirmed, SessionEndLatchReading::Absent);
+        assert_eq!(probed.outcome, DeferredSessionEndOutcome::Drop);
+        assert_eq!(
+            probed.final_attribution,
+            Some(WindowsTerminatorAttribution::SessionEndProbed)
+        );
+
+        // (3) no latch, probe Absent -> SENT, tag stays the honest observer_failed.
+        let sent =
+            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Absent);
+        assert_eq!(sent.outcome, DeferredSessionEndOutcome::Capture);
+        assert_eq!(
+            sent.final_attribution,
+            Some(WindowsTerminatorAttribution::ObserverFailed)
+        );
+        // The finalized payload carries the honest latch extra alongside it.
+        let payload = DeferredSessionEndCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &["sync", "auto-sync-watcher-termination"],
+            &[("windows_terminator", "observer_failed".to_string())],
+            &[],
+        );
+        let finalized = finalize_deferred_session_end_payload(
+            payload,
+            sent.final_attribution,
+            SESSION_END_GRACE_MS,
+            "failed",
+            "grace_elapsed",
+            sent.verdict,
+            absent,
+            SessionEndLatchReading::Absent,
+        );
+        assert_eq!(
+            recorded_string_tag(&finalized, "windows_terminator"),
+            "observer_failed"
+        );
+        assert_eq!(
+            recorded_deferred_extra(&finalized, "session_end_latch"),
+            "absent"
+        );
     }
 
     /// A deferral is resolved by exactly one claimant. The registry is what
@@ -7875,6 +8102,7 @@ mod tests {
                 shuttingdown_at_resolve: TeardownShuttingDown::Unavailable,
                 log: TeardownLogReading::Unavailable,
             },
+            SessionEndLatchReading::Absent,
         );
 
         let terminator = sent
@@ -7900,6 +8128,7 @@ mod tests {
             "windows_teardown_probe_verdict",
             "windows_teardown_probe_shuttingdown",
             "windows_teardown_probe_log",
+            "session_end_latch",
         ] {
             let value = recorded_deferred_extra(&sent, key);
             assert!(
@@ -7946,6 +8175,7 @@ mod tests {
                 shuttingdown_at_resolve: TeardownShuttingDown::Unavailable,
                 log: TeardownLogReading::Unavailable,
             },
+            SessionEndLatchReading::Absent,
         );
 
         assert_eq!(sent.message, payload.message);
@@ -7989,6 +8219,7 @@ mod tests {
                 shuttingdown_at_resolve: TeardownShuttingDown::Unavailable,
                 log: TeardownLogReading::Unavailable,
             },
+            SessionEndLatchReading::Unavailable,
         );
         assert_eq!(
             recorded_string_tag(&unread, "windows_terminator"),
@@ -8005,6 +8236,12 @@ mod tests {
         assert_eq!(
             recorded_deferred_extra(&unread, "session_end_observer_readiness"),
             "not_read"
+        );
+        // The app-quit flush consults nothing, so the latch reports unavailable —
+        // exactly as the probe extras do on this path.
+        assert_eq!(
+            recorded_deferred_extra(&unread, "session_end_latch"),
+            "unavailable"
         );
     }
 
@@ -8028,15 +8265,23 @@ mod tests {
             .unwrap_or_else(|| panic!("missing extra {key}"))
     }
 
+    /// r3 recurrence fix: an observer-fault reading on the session-terminate shape
+    /// must NO LONGER capture on the spot (the exact shape of recurrence event
+    /// 5bcd8d2aa8c047768419f18613426a59, windows_terminator=observer_failed). With
+    /// no contemporaneous latch it now DEFERS so the r2 probe and the latch get a
+    /// second look; with a latch it suppresses immediately.
     #[test]
-    fn watcher_session_terminate_observer_unavailable_and_failed_fail_closed() {
+    fn watcher_session_terminate_observer_fault_defers_and_a_latch_suppresses() {
         const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
         for attribution in [
             WindowsTerminatorAttribution::ObserverUnavailable,
             WindowsTerminatorAttribution::ObserverFailed,
         ] {
+            // No latch: defer, do not send inline. The tag carried into the
+            // deferral is the exit-time reading, resolved after the grace.
             let context = WatcherExitCaptureContext {
                 windows_terminator: Some(attribution),
+                session_end_latch: SessionEndLatchReading::Absent,
                 ..Default::default()
             };
             let mut effects = RecordingWatcherEffects::default();
@@ -8051,11 +8296,50 @@ mod tests {
                 current_termination_host(),
                 &context,
             );
-
-            assert_eq!(effects.captures.len(), 1);
+            assert!(
+                effects.captures.is_empty(),
+                "{attribution:?} must no longer send inline"
+            );
             assert_eq!(
-                recorded_tag(&effects.captures[0], "windows_terminator"),
-                attribution.class_name()
+                effects.deferred.len(),
+                1,
+                "{attribution:?} must defer exactly one capture"
+            );
+            assert_eq!(
+                effects.deferred[0]
+                    .tags
+                    .last()
+                    .map(|(_, value)| value.as_str()),
+                Some(attribution.class_name())
+            );
+
+            // A contemporaneous latch is positive evidence: suppress immediately,
+            // no send and no deferral, and self-diagnose as session_end_latched.
+            let latched_context = WatcherExitCaptureContext {
+                windows_terminator: Some(attribution),
+                session_end_latch: SessionEndLatchReading::Latched,
+                ..Default::default()
+            };
+            let mut latched_effects = RecordingWatcherEffects::default();
+            handle_watcher_exit_with_effects(
+                &mut latched_effects,
+                Some(OBSERVED_SESSION_TERMINATE_EXIT),
+                None,
+                false,
+                false,
+                "npx",
+                None,
+                current_termination_host(),
+                &latched_context,
+            );
+            assert!(
+                latched_effects.captures.is_empty() && latched_effects.deferred.is_empty(),
+                "{attribution:?} with a latch must suppress with no capture and no deferral"
+            );
+            assert!(
+                latched_effects.logs.iter().any(|(_, message)| message
+                    .starts_with("session-end-latched watcher exit")),
+                "{attribution:?} with a latch must self-diagnose as session_end_latched"
             );
         }
     }
@@ -9322,6 +9606,7 @@ mod tests {
             0,
             &[],
             None,
+            SessionEndLatchReading::Unavailable,
             None,
             0,
             None,
@@ -9500,6 +9785,7 @@ mod tests {
             0,
 &[],
             None,
+            SessionEndLatchReading::Unavailable,
             None,
             0,
             None,
@@ -9540,6 +9826,7 @@ mod tests {
             0,
 &tail,
             None,
+            SessionEndLatchReading::Unavailable,
             None,
             0,
             None,
@@ -9642,6 +9929,7 @@ mod tests {
             0,
 &tail,
             None,
+            SessionEndLatchReading::Unavailable,
             None,
             0,
             None,
@@ -9755,6 +10043,7 @@ mod tests {
             0,
 &[],
             None,
+            SessionEndLatchReading::Unavailable,
             None,
             0,
             None,

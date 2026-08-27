@@ -11,6 +11,8 @@ use hq_desktop_core::sync_outcome::{
     session_end_affirms, session_end_signal_is_fresh, WindowsTerminatorAttribution,
 };
 
+use super::session_end_latch::{NoopSessionEndLatch, SessionEndLatchSink};
+
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -81,13 +83,31 @@ struct TrackerState {
 /// from an affirmation: Windows can later revoke a query with WM_ENDSESSION(0).
 pub struct SessionEndTracker {
     clock: Arc<dyn MonotonicClock>,
+    /// Where a committed session end is made durable, so it survives the observer
+    /// thread dying and this tracker's readiness flipping to `Stopped`. Injected
+    /// so unit tests can observe the write without touching the process-global
+    /// latch the daemon reads (HQ-DESKTOP r3).
+    latch: Arc<dyn SessionEndLatchSink>,
     state: Mutex<TrackerState>,
 }
 
 impl SessionEndTracker {
+    /// A tracker that records no durable latch. The production observer uses
+    /// [`SessionEndTracker::with_latch`]; this default keeps every existing unit
+    /// test inert against the process-global latch.
     pub fn new(clock: Arc<dyn MonotonicClock>) -> Self {
+        Self::with_latch(clock, Arc::new(NoopSessionEndLatch))
+    }
+
+    /// A tracker whose committed session ends also write `latch`. Production
+    /// passes the durable process-global sink; a test may pass a recorder.
+    pub fn with_latch(
+        clock: Arc<dyn MonotonicClock>,
+        latch: Arc<dyn SessionEndLatchSink>,
+    ) -> Self {
         Self {
             clock,
+            latch,
             state: Mutex::new(TrackerState {
                 pending_query_ms: None,
                 affirmed_end_ms: None,
@@ -114,9 +134,18 @@ impl SessionEndTracker {
         if ending {
             state.affirmed_end_ms = Some(now);
             state.pending_query_ms = None;
+            // Make the committed WM_ENDSESSION(TRUE) durable BEFORE the observer
+            // thread can die: `attribution_now` discards `affirmed_end_ms` the
+            // moment readiness flips to Stopped, but the process-global latch
+            // outlives the thread and still suppresses the false alert (r3). A
+            // vetoed end (below) and a bare query never reach here, so they never
+            // latch. Drop the mutex first so the sink write holds no lock.
+            drop(state);
+            self.latch.note_session_end();
         } else {
             // A vetoed query is not a session end. Do not clear a previously
-            // committed WM_ENDSESSION(TRUE), which remains valid until TTL.
+            // committed WM_ENDSESSION(TRUE), which remains valid until TTL, and
+            // do not latch.
             state.pending_query_ms = None;
         }
     }
@@ -128,6 +157,10 @@ impl SessionEndTracker {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.affirmed_end_ms = Some(now);
+        // A same-session WTS logoff is positive session-end evidence too; make it
+        // durable on the same latch. Release the mutex before the sink write.
+        drop(state);
+        self.latch.note_session_end();
     }
 
     pub fn set_readiness(&self, readiness: ObserverReadiness) {
@@ -1490,6 +1523,45 @@ mod tests {
             tracker.attribution_now(),
             WindowsTerminatorAttribution::SessionEndObserved,
             "a false end only revokes its pending query, not a committed end"
+        );
+    }
+
+    /// The r3 durable latch: only POSITIVE session-end evidence writes it, and it
+    /// survives the observer thread dying (readiness -> Stopped) so a
+    /// `DBG_TERMINATE_PROCESS` exit attributed after the stop still sees it.
+    #[test]
+    fn only_positive_session_end_evidence_writes_the_durable_latch() {
+        use super::super::session_end_latch::RecordingSessionEndLatch;
+
+        // A bare query and a vetoed end are NOT session ends: they must not latch.
+        let latch = Arc::new(RecordingSessionEndLatch::default());
+        let tracker = SessionEndTracker::with_latch(Arc::new(TestClock::default()), latch.clone());
+        tracker.note_query_end_session();
+        assert_eq!(latch.writes(), 0, "a bare WM_QUERYENDSESSION must not latch");
+        tracker.note_end_session(false);
+        assert_eq!(latch.writes(), 0, "a vetoed WM_ENDSESSION(FALSE) must not latch");
+
+        // A committed WM_ENDSESSION(TRUE) latches exactly once.
+        tracker.note_end_session(true);
+        assert_eq!(latch.writes(), 1, "a committed WM_ENDSESSION(TRUE) must latch");
+
+        // A same-session WTS logoff latches too.
+        tracker.note_wts_logoff_same_session();
+        assert_eq!(latch.writes(), 2, "a same-session WTS logoff must latch");
+
+        // The latch is written regardless of the observer thread's later death:
+        // moving readiness to Stopped (what happens when the OS destroys the
+        // observer's window at a real session end) makes `attribution_now` report
+        // ObserverFailed, but the recorded writes are already durable.
+        tracker.set_readiness(ObserverReadiness::Stopped);
+        assert_eq!(
+            tracker.attribution_now(),
+            WindowsTerminatorAttribution::ObserverFailed
+        );
+        assert_eq!(
+            latch.writes(),
+            2,
+            "the latch is not un-written by the observer stopping"
         );
     }
 

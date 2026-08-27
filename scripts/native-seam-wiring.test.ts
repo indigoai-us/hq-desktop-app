@@ -261,6 +261,25 @@ const boundaryContracts: BoundaryContract[] = [
     endMarker: "// Dock-icon click on the already-running app.",
   },
   {
+    // HQ-DESKTOP r3. Setting the durable session-end latch is the FIRST thing the
+    // session-end teardown does, so a watcher capture that races the one-shot
+    // `drop_pending_session_end_captures` sweep — built microseconds later, during
+    // its own grace — still sees positive OS evidence at resolution and
+    // suppresses. It must precede the exit seam, the drop sweep, the child
+    // teardown and the process exit; deletion, same-file relocation and any
+    // reordering that moves it past those all fail here.
+    label: "session-end durable latch set",
+    file: "main",
+    hook: "commands::session_end_latch::note_windows_session_end();",
+    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    endMarker: "// Dock-icon click on the already-running app.",
+    beforeMarkers: [
+      "commands::daemon::drop_pending_session_end_captures();",
+      "commands::process::terminate_all_for_exit(",
+      "|| std::process::exit(0),",
+    ],
+  },
+  {
     label: "session-end observer corroboration seam",
     file: "main",
     hook: "NativePanicSeam::AppSessionEndObserved",
