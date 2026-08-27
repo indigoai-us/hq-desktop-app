@@ -4,8 +4,8 @@ use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_install_failure_episode,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
-    InstallExecutor, InstallFailureEpisode, ManagedShadowRepairOutcome, NonConvergenceKind,
-    NonConvergentReport, NpmToolchainSource,
+    InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome, ManagedShadowRepairOutcome,
+    NonConvergenceKind, NonConvergentReport, NpmToolchainSource,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -143,6 +143,9 @@ fn assert_unexpected_install_event(
         ("npm_version", "unknown"),
         ("npm_toolchain_source", "unknown"),
         ("npm_managed_toolchain_retry", "false"),
+        // The legacy entrypoints never engage the self-heal, so the closed outcome
+        // tag is always its `not-armed` default — but it must always be present.
+        ("npm_managed_retry_outcome", "not-armed"),
     ] {
         assert_eq!(
             event.tags.get(tag_key).map(String::as_str),
@@ -154,7 +157,7 @@ fn assert_unexpected_install_event(
         event.extra.get("npm_diagnostics"),
         Some(&Value::String(
             format!(
-                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len} lifecycle_cause={expected_lifecycle_cause} node_version=unknown node_abi=unknown npm_version=unknown toolchain_source=unknown"
+                "error_code={expected_error_code} syscall=unknown path_shape={expected_path_shape} prefix_known=true eacces={expected_eacces} exit_code=1 errno=unknown stderr_len={expected_stderr_len} lifecycle_cause={expected_lifecycle_cause} node_version=unknown node_abi=unknown npm_version=unknown toolchain_source=unknown managed_retry_outcome=not-armed"
             )
             .into()
         ))
@@ -444,6 +447,7 @@ fn eidletimeout_registry_idle_timeout_captures_no_event() {
         npm_version: Some("11.16.0".to_string()),
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
     };
     let events = captured_events(|| {
         report_install_failure_with_environment(Some(1), eidletimeout, None, false, &env)
@@ -472,6 +476,7 @@ fn a_post_remedy_enotempty_still_captures_a_path_safe_error() {
         npm_version: Some("10.9.8".to_string()),
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
     };
     // Exit 190, prefix None — the recorded latest-event environment.
     let event = single_event(captured_events(|| {
@@ -513,6 +518,7 @@ fn enotempty_wedge_pages_once_per_published_version() {
         npm_version: Some("10.9.8".to_string()),
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
     };
     let run = |reported: &[String], latest: &str| -> (usize, Vec<String>) {
         let mut updated = reported.to_vec();
@@ -1052,6 +1058,7 @@ fn environment_aware_capture_carries_the_previously_missing_provenance() {
         npm_version: Some("10.9.2".to_string()),
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
+        managed_retry_outcome: ManagedRetryOutcome::Ran,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1121,6 +1128,7 @@ fn malformed_probe_values_are_rejected_to_unknown_before_tagging() {
         npm_version: Some(String::new()),
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1156,6 +1164,7 @@ fn unsupported_node_capture_groups_by_major_at_warning_with_retained_provenance(
         npm_version: None,
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1230,6 +1239,7 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         npm_version: Some("10.9.2".to_string()),
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
+        managed_retry_outcome: ManagedRetryOutcome::Ran,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1316,6 +1326,7 @@ fn provenance_instrumentation_never_weakens_scrub_safety() {
         npm_version: Some("10.9.2".to_string()),
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(Some(1), &raw, Some(SELECTED_PREFIX), false, &env)
@@ -1418,6 +1429,7 @@ fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
         npm_version: Some("10.9.2".to_string()),
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
+        managed_retry_outcome: ManagedRetryOutcome::Ran,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1558,6 +1570,7 @@ fn a_disk_full_install_failure_emits_no_event() {
         npm_version: Some("11.11.0".to_string()),
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NotArmed,
     };
     for prefix in [None, Some("/usr/local")] {
         let events = captured_events(|| {
@@ -1636,4 +1649,168 @@ fn a_legacy_npm_err_lifecycle_failure_carrying_enospc_still_captures() {
         Some("unexpected-lifecycle")
     );
     assert_path_safe(&event, &["/Users/", "alice", ".npm-global"]);
+}
+
+/// Reproduce HQ-DESKTOP-5E's stderr: node-llama-cpp's `node ./dist/cli/cli.js
+/// postinstall` failing under the selected prefix with no native-builder output —
+/// so the diagnosed cause and builder are both `postinstall-script`, and the failing
+/// package is `node-llama-cpp` (npm's `npm error path` line).
+fn llama_postinstall_stderr() -> String {
+    format!(
+        "npm error code 1\n\
+         npm error path {SELECTED_PREFIX}/lib/node_modules/node-llama-cpp\n\
+         npm error command failed\n\
+         npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+         Error: postinstall failed while resolving the local binary"
+    )
+}
+
+/// HQ-DESKTOP-5E, defect 2 (the evidence gap): the reported user-path install
+/// failure — node-llama-cpp's postinstall aborting `npm i -g @indigoai-us/hq-cli`
+/// under the machine's own Node 24.14.0 / ABI 137 — now carries the closed
+/// `npm_managed_retry_outcome` tag AND its `managed_retry_outcome` diagnostics key
+/// naming which branch HQ's self-heal took, WITHOUT changing the event's group,
+/// any pre-existing tag, or the scrub-safety guarantee. Proven end to end through
+/// the real `before_send` scrubber for the exact reported fixture.
+#[test]
+fn hq_desktop_5e_user_path_postinstall_failure_carries_the_managed_retry_outcome_tag() {
+    let stderr = llama_postinstall_stderr();
+    // The reported environment: user-path Node 24.14.0 (ABI 137), npm 11.9.0, no
+    // managed retry — and, post-fix, a self-heal that declined because no managed
+    // npm was resolvable on disk (the `no-managed-npm` branch).
+    let env = InstallEnvironment {
+        node_version: Some("24.14.0".to_string()),
+        node_abi: Some("137".to_string()),
+        npm_version: Some("11.9.0".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NoManagedNpm,
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(1), &stderr, Some(SELECTED_PREFIX), false, &env)
+    }));
+
+    // The group is unchanged: message + fingerprint stay the 5E identity.
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (lifecycle:node-llama-cpp:postinstall-script)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected-lifecycle",
+            "lifecycle:node-llama-cpp:postinstall-script"
+        ]
+    );
+
+    // Every pre-existing tag byte-identical to the reported event...
+    for (key, value) in [
+        ("install_failure_kind", "unexpected-lifecycle"),
+        ("npm_lifecycle_failed", "true"),
+        ("npm_lifecycle_package", "node-llama-cpp"),
+        ("npm_lifecycle_cause", "postinstall-script"),
+        ("npm_lifecycle_builder", "postinstall-script"),
+        ("npm_toolchain_source", "user-path"),
+        ("npm_managed_toolchain_retry", "false"),
+        ("node_version", "24.14.0"),
+        ("node_abi", "137"),
+        ("npm_version", "11.9.0"),
+        ("npm_path_shape", "selected-prefix-node-modules"),
+        ("eacces", "false"),
+        ("exit_code", "1"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+
+    // ...plus the NEW closed outcome tag naming the declined self-heal branch.
+    assert_eq!(
+        tag(&event, "npm_managed_retry_outcome"),
+        Some("no-managed-npm")
+    );
+
+    // The npm_diagnostics extra carries the same closed value.
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(value)) => value.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        diagnostics.contains("managed_retry_outcome=no-managed-npm"),
+        "npm_diagnostics missing the managed-retry outcome: {diagnostics}"
+    );
+
+    // No filesystem path or raw npm stderr leaks — the scrub boundary is intact.
+    assert_path_safe(&event, &["/Users/", "alice", ".npm-global", "npm error"]);
+}
+
+/// HQ-DESKTOP-5E, companion: adding the outcome tag must not change what pages.
+/// The lifecycle repeat guard still bounds the user-path failure to once per
+/// `(latest | node-llama-cpp | postinstall-script)`, and the managed-provenance
+/// retry stays a DISTINCT episode (the `|managed` discriminator) so the diagnostic
+/// it exists to emit is never suppressed by its own user-path predecessor.
+#[test]
+fn hq_desktop_5e_managed_retry_report_stays_a_distinct_episode_from_the_user_path_failure() {
+    let stderr = llama_postinstall_stderr();
+    let latest = "5.103.22";
+    let user_env = InstallEnvironment {
+        node_version: Some("24.14.0".to_string()),
+        node_abi: Some("137".to_string()),
+        npm_version: Some("11.9.0".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+        managed_retry_outcome: ManagedRetryOutcome::NoManagedNpm,
+    };
+    let managed_env = InstallEnvironment {
+        node_version: Some("22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::Managed,
+        managed_toolchain_retry: true,
+        managed_retry_outcome: ManagedRetryOutcome::Ran,
+    };
+    let run = |reported: &[String], env: &InstallEnvironment| -> (usize, Vec<String>) {
+        let mut updated = reported.to_vec();
+        let events = captured_events(|| {
+            match report_install_failure_episode(
+                Some(1),
+                &stderr,
+                Some(SELECTED_PREFIX),
+                false,
+                env,
+                latest,
+                reported,
+            ) {
+                InstallFailureEpisode::Reported {
+                    persist_keys: Some(set),
+                } => updated = set,
+                InstallFailureEpisode::SuppressedRepeat => {}
+                other => panic!("unexpected outcome {other:?}"),
+            }
+        });
+        (events.len(), updated)
+    };
+
+    // 1. The user-path failure pages once and persists its lifecycle key.
+    let (n, after_user) = run(&[], &user_env);
+    assert_eq!(n, 1, "the user-path postinstall failure must page once");
+    // 2. An identical user-path repeat under the same version is suppressed.
+    let (n, _) = run(&after_user, &user_env);
+    assert_eq!(n, 0, "an identical user-path repeat is suppressed");
+    // 3. The managed-provenance retry for the SAME (latest, package, cause) is a
+    //    DISTINCT episode — it pages even though the user-path key is already set.
+    let (n, after_managed) = run(&after_user, &managed_env);
+    assert_eq!(
+        n, 1,
+        "the managed-provenance retry is a distinct episode and still pages"
+    );
+    // 4. Once recorded, the managed key suppresses its own identical repeat.
+    let (n, _) = run(&after_managed, &managed_env);
+    assert_eq!(n, 0, "an identical managed-provenance repeat is suppressed");
+    // The two keys never collapsed: adding the outcome tag did not change grouping.
+    assert_ne!(
+        after_user, after_managed,
+        "the |managed discriminator must keep the two episodes distinct"
+    );
 }

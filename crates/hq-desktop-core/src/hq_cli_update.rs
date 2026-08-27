@@ -3927,6 +3927,41 @@ impl NpmToolchainSource {
     }
 }
 
+/// What HQ's managed-toolchain self-heal did for a reported install failure, as a
+/// CLOSED enumeration. Without it, a captured event cannot tell "the self-heal was
+/// never armed" from "it was armed and declined", nor which branch declined — the
+/// evidence gap behind HQ-DESKTOP-5E. Only the enum value ever reaches Sentry.
+///
+///   * `NotArmed` — `install_failure_earns_managed_retry` returned false (this is
+///     also the default, so every event that never engaged the self-heal path
+///     reports it), so no managed retry was considered for this failure shape.
+///   * `Ran` — the retry ran the pinned install once under HQ's managed toolchain.
+///     A converged run heals silently and emits no event; this value is therefore
+///     seen only on the managed-provenance failure report.
+///   * `NoManagedNpm` — the retry was armed but no managed npm could be resolved on
+///     disk at all, so there was nothing to retry under.
+///   * `SpawnFailed` — the retry was armed and a managed npm was present, but npm
+///     could not be spawned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ManagedRetryOutcome {
+    #[default]
+    NotArmed,
+    Ran,
+    NoManagedNpm,
+    SpawnFailed,
+}
+
+impl ManagedRetryOutcome {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::NotArmed => "not-armed",
+            Self::Ran => "ran",
+            Self::NoManagedNpm => "no-managed-npm",
+            Self::SpawnFailed => "spawn-failed",
+        }
+    }
+}
+
 /// Toolchain provenance for a failed hq-CLI install — the evidence the reported
 /// HQ-DESKTOP-4R / HQ-DESKTOP-4S events lacked. Every version field is optional
 /// because the updater probes them best-effort; a missing or malformed value is
@@ -3941,6 +3976,10 @@ pub struct InstallEnvironment {
     pub npm_version: Option<String>,
     pub toolchain_source: NpmToolchainSource,
     pub managed_toolchain_retry: bool,
+    /// What HQ's managed-toolchain self-heal did for this failure. Defaults to
+    /// `NotArmed` so every existing caller reports the same behaviour it did
+    /// before this field existed; the app-side updater sets the real outcome.
+    pub managed_retry_outcome: ManagedRetryOutcome,
 }
 
 /// Reduce a caller-supplied node/npm version or Node ABI to a strictly bounded
@@ -3966,7 +4005,7 @@ fn sanitized_version_token(raw: Option<&str>) -> String {
 }
 
 /// The provenance segment appended to `npm_diagnostics`. Its shape is constant
-/// (always these five keys) so the extra stays trivially assertable; each value
+/// (always these six keys) so the extra stays trivially assertable; each value
 /// is already a closed enumeration or a `sanitized_version_token` output.
 fn install_environment_diagnostics_suffix(
     lifecycle_cause: Option<&str>,
@@ -3974,14 +4013,16 @@ fn install_environment_diagnostics_suffix(
     node_abi: &str,
     npm_version: &str,
     toolchain_source: &str,
+    managed_retry_outcome: &str,
 ) -> String {
     format!(
-        "lifecycle_cause={} node_version={} node_abi={} npm_version={} toolchain_source={}",
+        "lifecycle_cause={} node_version={} node_abi={} npm_version={} toolchain_source={} managed_retry_outcome={}",
         lifecycle_cause.unwrap_or("none"),
         node_version,
         node_abi,
         npm_version,
         toolchain_source,
+        managed_retry_outcome,
     )
 }
 
@@ -4079,6 +4120,7 @@ pub fn report_install_failure_with_environment(
     let node_abi = sanitized_version_token(env.node_abi.as_deref());
     let npm_version = sanitized_version_token(env.npm_version.as_deref());
     let toolchain_source = env.toolchain_source.tag_value();
+    let managed_retry_outcome = env.managed_retry_outcome.tag_value();
     let npm_diagnostics = format!(
         "{} {}",
         npm_diagnostics_summary(
@@ -4095,6 +4137,7 @@ pub fn report_install_failure_with_environment(
             &node_abi,
             &npm_version,
             toolchain_source,
+            managed_retry_outcome,
         ),
     );
     sentry::with_scope(
@@ -4151,6 +4194,10 @@ pub fn report_install_failure_with_environment(
                     "false"
                 },
             );
+            // Which branch HQ's managed-toolchain self-heal took for this failure
+            // (closed enumeration). Tag + diagnostics only — deliberately NOT a
+            // fingerprint or signature component, so HQ-DESKTOP-5E keeps its group.
+            scope.set_tag("npm_managed_retry_outcome", managed_retry_outcome);
             scope.set_tag(
                 "npm_prefix_known",
                 if npm_prefix_known { "true" } else { "false" },
@@ -9474,6 +9521,7 @@ mod tests {
             npm_version: Some("10.9.8".to_string()),
             toolchain_source: NpmToolchainSource::UserPath,
             managed_toolchain_retry: false,
+            managed_retry_outcome: ManagedRetryOutcome::NotArmed,
         };
         let key =
             install_failure_episode_key_with_environment(Some(190), enotempty, None, false, latest, &env)
@@ -9636,6 +9684,69 @@ mod tests {
             install_failure_episode_key_with_provenance("5.97.0", "npm error code ENOTDIR", true),
             None
         );
+    }
+
+    #[test]
+    fn managed_retry_outcome_field_is_tag_only_never_grouping_or_repeat_key() {
+        // HQ-DESKTOP-5E invariant: the new managed-retry outcome is a tag + a
+        // diagnostics key ONLY — never a fingerprint, signature, or repeat-guard
+        // component. Vary ONLY that field over its whole closed range and prove the
+        // install-failure signature and the repeat-guard episode key stay byte-identical.
+        let detail = "npm error code 1\n\
+            npm error path /usr/local/lib/node_modules/node-llama-cpp\n\
+            npm error command failed\n\
+            npm error command sh -c node ./dist/cli/cli.js postinstall\n\
+            Error: postinstall failed while resolving the local binary";
+        let latest = "5.103.22";
+        let prefix = Some("/usr/local");
+        let base = InstallEnvironment {
+            node_version: Some("24.14.0".to_string()),
+            node_abi: Some("137".to_string()),
+            npm_version: Some("11.9.0".to_string()),
+            toolchain_source: NpmToolchainSource::UserPath,
+            managed_toolchain_retry: false,
+            managed_retry_outcome: ManagedRetryOutcome::default(),
+        };
+        let signature = |env: &InstallEnvironment| {
+            let kind = classify_install_failure_with_environment(Some(1), detail, prefix, false, env);
+            install_failure_signature_with_environment(kind, detail, prefix, env)
+        };
+        let episode_key = |env: &InstallEnvironment| {
+            install_failure_episode_key_with_environment(Some(1), detail, prefix, false, latest, env)
+        };
+        let reference_signature = signature(&base);
+        let reference_key = episode_key(&base);
+        for outcome in [
+            ManagedRetryOutcome::NotArmed,
+            ManagedRetryOutcome::Ran,
+            ManagedRetryOutcome::NoManagedNpm,
+            ManagedRetryOutcome::SpawnFailed,
+        ] {
+            let mut env = base.clone();
+            env.managed_retry_outcome = outcome;
+            assert_eq!(
+                signature(&env),
+                reference_signature,
+                "outcome {outcome:?} must not change the install-failure signature"
+            );
+            assert_eq!(
+                episode_key(&env),
+                reference_key,
+                "outcome {outcome:?} must not change the repeat-guard episode key"
+            );
+        }
+
+        // The default reproduces today's behaviour for every legacy caller: no
+        // self-heal engaged, so the closed tag reads `not-armed`.
+        assert_eq!(
+            InstallEnvironment::default().managed_retry_outcome,
+            ManagedRetryOutcome::NotArmed
+        );
+        assert_eq!(ManagedRetryOutcome::default().tag_value(), "not-armed");
+        // Every outcome maps to a stable, closed tag string.
+        assert_eq!(ManagedRetryOutcome::Ran.tag_value(), "ran");
+        assert_eq!(ManagedRetryOutcome::NoManagedNpm.tag_value(), "no-managed-npm");
+        assert_eq!(ManagedRetryOutcome::SpawnFailed.tag_value(), "spawn-failed");
     }
 
     #[test]
@@ -11359,6 +11470,7 @@ mod tests {
             npm_version: None,
             toolchain_source: NpmToolchainSource::UserPath,
             managed_toolchain_retry: false,
+            managed_retry_outcome: ManagedRetryOutcome::NotArmed,
         }
     }
 
