@@ -47,3 +47,15 @@ export async function setHqWorkHandoff(
 ): Promise<void> {
   await invokeFn<void>('set_hq_work_handoff', { enabled });
 }
+
+export async function installHqWork(
+  invokeFn: HqWorkInvoker = invoke as HqWorkInvoker,
+): Promise<void> {
+  await invokeFn<void>('install_hq_work');
+}
+
+export async function getHqWorkHandoffCardShown(
+  invokeFn: HqWorkInvoker = invoke as HqWorkInvoker,
+): Promise<boolean> {
+  return invokeFn<boolean>('get_hq_work_handoff_card_shown');
+}

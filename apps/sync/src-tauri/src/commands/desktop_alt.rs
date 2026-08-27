@@ -659,6 +659,13 @@ pub async fn open_desktop_alt_window_inner(
         return Err("desktop-alt requires a signed-in user".to_string());
     }
 
+    // US-003: flag on + HQ Work missing → compact handoff card, not desktop-alt.
+    // Flag off, or HQ Work already installed, keeps today's open path (US-005
+    // is the later reroute). Return Ok so tray/Open HQ callers do not fall back.
+    if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app)? {
+        return Ok(());
+    }
+
     // One HQ window at a time: opening the desktop view hides the classic
     // popover (whether summoned via shortcut, menu, or the popover's own
     // "Open desktop view" button).

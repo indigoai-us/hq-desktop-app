@@ -1,15 +1,26 @@
-//! HQ Work install detection and launcher.
+//! HQ Work install detection, launcher, and signed installer.
 //!
 //! Detection is **state**, not a setup trigger: a missing or present app is a
-//! boolean for later handoff UI. These commands must never open onboarding,
-//! installer, import, or desktop-alt windows.
+//! boolean for later handoff UI. `hq_work_installed` / `launch_hq_work` must
+//! never open onboarding, import, or desktop-alt windows.
+//!
+//! `install_hq_work` is the explicit user-initiated installer (US-003 card
+//! Install). It is not opened by detection. Reused by US-004 silent co-install.
 //!
 //! Bundle id: `ai.getindigo.hq-work`.
 
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use base64::Engine as _;
+use minisign_verify::{PublicKey, Signature};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
 
 /// HQ Work macOS application bundle identifier.
 pub const HQ_WORK_BUNDLE_ID: &str = "ai.getindigo.hq-work";
@@ -267,6 +278,470 @@ pub fn launch_hq_work(url: Option<String>) -> Result<(), String> {
     }
 }
 
+// ── US-003 handoff intercept + signed installer ──────────────────────────────
+
+/// HQ Work updater feed (Tauri latest.json).
+pub const HQ_WORK_FEED_URL: &str =
+    "https://indigo-electron-releases.s3.us-east-1.amazonaws.com/hq-work/latest.json";
+
+/// Frontend event that opens the compact "desktop view moved" overlay.
+pub const HANDOFF_SHOW_CARD_EVENT: &str = "handoff:show-card";
+
+/// HQ Work updater pubkey from hq-work-mono `tauri.conf.json` (Tauri minisign blob).
+pub const HQ_WORK_UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZERDlGOUI4NDhCRTVFRTQKUldUa1hyNUl1UG5aL2UzeGhpdzBsRzdKV3dkQWx3VzlDeTFLdGFnSW5UL3FrbDAvcnhSby9vcjUK";
+
+const CARD_SHOWN_KEY: &str = "hqWorkHandoffCardShown";
+const MAX_INSTALLER_BYTES: usize = 400 * 1024 * 1024;
+const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// What `open_desktop_alt_window_inner` should do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopAltHandoffPlan {
+    OpenDesktopAlt,
+    ShowHandoffCard { first_show: bool },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffCardEvent {
+    pub first_show: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HqWorkFeed {
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub platforms: HashMap<String, HqWorkFeedPlatform>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HqWorkFeedPlatform {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallerKind {
+    Dmg,
+    AppTarGz,
+}
+
+/// Intercept desktop-alt only when the handoff flag is on and HQ Work is missing.
+pub fn should_intercept_desktop_alt(handoff_enabled: bool, installed: bool) -> bool {
+    handoff_enabled && !installed
+}
+
+pub fn plan_desktop_alt_open(
+    handoff_enabled: bool,
+    installed: bool,
+    card_already_shown: bool,
+) -> DesktopAltHandoffPlan {
+    if should_intercept_desktop_alt(handoff_enabled, installed) {
+        DesktopAltHandoffPlan::ShowHandoffCard {
+            first_show: !card_already_shown,
+        }
+    } else {
+        DesktopAltHandoffPlan::OpenDesktopAlt
+    }
+}
+
+pub fn hq_work_handoff_card_shown_from_json(contents: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|v| v.get(CARD_SHOWN_KEY).and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn get_hq_work_handoff_card_shown() -> Result<bool, String> {
+    let path = crate::util::paths::menubar_json_path()?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let Ok(contents) = fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    Ok(hq_work_handoff_card_shown_from_json(&contents))
+}
+
+#[tauri::command]
+pub fn mark_hq_work_handoff_card_shown() -> Result<(), String> {
+    let path = crate::util::paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(CARD_SHOWN_KEY, serde_json::json!(true))],
+    )
+}
+
+/// If the handoff card should replace desktop-alt, show the compact popover,
+/// emit `handoff:show-card`, persist first-show, and return `true`.
+pub fn maybe_intercept_desktop_alt_handoff(app: &AppHandle) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        let _ = app;
+        return Ok(false);
+    }
+    let enabled = crate::commands::config::get_hq_work_handoff().unwrap_or(false);
+    let installed = hq_work_installed();
+    let shown = get_hq_work_handoff_card_shown().unwrap_or(false);
+    match plan_desktop_alt_open(enabled, installed, shown) {
+        DesktopAltHandoffPlan::OpenDesktopAlt => Ok(false),
+        DesktopAltHandoffPlan::ShowHandoffCard { first_show } => {
+            if first_show {
+                let _ = mark_hq_work_handoff_card_shown();
+            }
+            reveal_handoff_card(app, first_show);
+            Ok(true)
+        }
+    }
+}
+
+fn reveal_handoff_card(app: &AppHandle, first_show: bool) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::tray::show_popover_window(&handle);
+    });
+    let _ = app.emit(
+        HANDOFF_SHOW_CARD_EVENT,
+        HandoffCardEvent { first_show },
+    );
+}
+
+pub fn parse_hq_work_feed(json: &str) -> Result<HqWorkFeed, String> {
+    serde_json::from_str(json).map_err(|e| format!("HQ Work feed parse failed: {e}"))
+}
+
+pub fn pick_darwin_platform<'a>(
+    feed: &'a HqWorkFeed,
+    platform_key: &str,
+) -> Result<&'a HqWorkFeedPlatform, String> {
+    feed.platforms.get(platform_key).ok_or_else(|| {
+        format!("HQ Work feed has no installer for {platform_key}")
+    })
+}
+
+pub fn require_artifact_signature(platform: &HqWorkFeedPlatform) -> Result<(), String> {
+    if platform.url.trim().is_empty() {
+        return Err("HQ Work feed is missing an installer URL".into());
+    }
+    if platform.signature.trim().is_empty() {
+        return Err("HQ Work feed is missing a signature".into());
+    }
+    Ok(())
+}
+
+pub fn current_darwin_platform_key() -> Result<&'static str, String> {
+    if cfg!(target_arch = "aarch64") {
+        Ok("darwin-aarch64")
+    } else if cfg!(target_arch = "x86_64") {
+        Ok("darwin-x86_64")
+    } else {
+        Err("HQ Work install requires darwin aarch64 or x86_64".into())
+    }
+}
+
+pub fn darwin_platform_key_for_arch(arch: &str) -> Result<&'static str, String> {
+    match arch {
+        "aarch64" => Ok("darwin-aarch64"),
+        "x86_64" => Ok("darwin-x86_64"),
+        other => Err(format!("HQ Work install has no darwin mapping for {other}")),
+    }
+}
+
+pub fn installer_kind_from_url(url: &str) -> Result<InstallerKind, String> {
+    let path = url
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    if path.ends_with(".dmg") {
+        Ok(InstallerKind::Dmg)
+    } else if path.ends_with(".app.tar.gz") || path.ends_with(".tar.gz") {
+        Ok(InstallerKind::AppTarGz)
+    } else {
+        Err(format!("unsupported HQ Work installer URL: {url}"))
+    }
+}
+
+fn decode_tauri_minisign_blob(blob: &str) -> Result<String, String> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(blob.trim())
+        .map_err(|e| format!("invalid minisign encoding: {e}"))?;
+    String::from_utf8(decoded).map_err(|_| "minisign blob is not utf-8".into())
+}
+
+/// Same trust chain as `tauri-plugin-updater`: base64-decode the pubkey and
+/// signature blobs, then minisign-verify (allow_legacy = true).
+pub fn verify_hq_work_bytes(bytes: &[u8], signature: &str) -> Result<(), String> {
+    if signature.trim().is_empty() {
+        return Err("refusing to install unsigned HQ Work bytes".into());
+    }
+    let pk_pem = decode_tauri_minisign_blob(HQ_WORK_UPDATER_PUBKEY)?;
+    let sig_pem = decode_tauri_minisign_blob(signature)?;
+    let public_key =
+        PublicKey::decode(&pk_pem).map_err(|e| format!("HQ Work pubkey: {e}"))?;
+    let sig = Signature::decode(&sig_pem).map_err(|e| format!("HQ Work signature: {e}"))?;
+    public_key
+        .verify(bytes, &sig, true)
+        .map_err(|_| "HQ Work signature verification failed".to_string())?;
+    Ok(())
+}
+
+/// Injectable install pipeline. Tests supply HTTP; production uses reqwest.
+pub fn install_hq_work_with(
+    fetch_feed: impl FnOnce(&str) -> Result<String, String>,
+    fetch_bytes: impl FnOnce(&str) -> Result<Vec<u8>, String>,
+    platform_key: &str,
+    install_bytes: impl FnOnce(&[u8], InstallerKind) -> Result<(), String>,
+) -> Result<(), String> {
+    let feed = parse_hq_work_feed(&fetch_feed(HQ_WORK_FEED_URL)?)?;
+    let artifact = pick_darwin_platform(&feed, platform_key)?;
+    require_artifact_signature(artifact)?;
+    let kind = installer_kind_from_url(&artifact.url)?;
+    let url = artifact.url.clone();
+    let signature = artifact.signature.clone();
+    let bytes = fetch_bytes(&url)?;
+    verify_hq_work_bytes(&bytes, &signature)?;
+    install_bytes(&bytes, kind)?;
+    Ok(())
+}
+
+fn http_get_text(url: &str) -> Result<String, String> {
+    require_https(url)?;
+    reqwest::blocking::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| format!("HQ Work HTTP client: {e}"))?
+        .get(url)
+        .send()
+        .map_err(|e| format!("HQ Work feed fetch failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("HQ Work feed HTTP error: {e}"))?
+        .text()
+        .map_err(|e| format!("HQ Work feed read failed: {e}"))
+}
+
+fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
+    require_https(url)?;
+    let response = reqwest::blocking::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| format!("HQ Work HTTP client: {e}"))?
+        .get(url)
+        .send()
+        .map_err(|e| format!("HQ Work installer fetch failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("HQ Work installer HTTP error: {e}"))?;
+    if let Some(len) = response.content_length() {
+        if len as usize > MAX_INSTALLER_BYTES {
+            return Err("HQ Work installer is larger than expected".into());
+        }
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("HQ Work installer read failed: {e}"))?;
+    if bytes.len() > MAX_INSTALLER_BYTES {
+        return Err("HQ Work installer is larger than expected".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+fn require_https(url: &str) -> Result<(), String> {
+    if url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err("refusing to download HQ Work over non-HTTPS".into())
+    }
+}
+
+fn unique_temp_dir(prefix: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
+    Ok(dir)
+}
+
+pub fn find_app_bundle(root: &Path) -> Result<PathBuf, String> {
+    let mut found = Vec::new();
+    walk_app_bundles(root, &mut found);
+    if found.is_empty() {
+        return Err("HQ Work.app was not found in the installer".into());
+    }
+    if let Some(preferred) = found.iter().find(|path| {
+        path.file_name().and_then(|n| n.to_str()) == Some("HQ Work.app")
+    }) {
+        return Ok(preferred.clone());
+    }
+    Ok(found.swap_remove(0))
+}
+
+fn walk_app_bundles(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) == Some("app") {
+            out.push(path);
+        } else {
+            walk_app_bundles(&path, out);
+        }
+    }
+}
+
+fn is_safe_archive_path(path: &Path) -> bool {
+    let mut comps = path.components();
+    match comps.next() {
+        Some(Component::Normal(_)) => {}
+        _ => return false,
+    }
+    comps.all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// Extract a `.app.tar.gz` into `dest_dir` and return the `.app` path.
+pub fn extract_app_bundle_from_tarball(bytes: &[u8], dest_dir: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(dest_dir).map_err(|e| format!("extract dir: {e}"))?;
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(gz);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("HQ Work archive: {e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("HQ Work archive entry: {e}"))?;
+        let rel = entry
+            .path()
+            .map_err(|e| format!("HQ Work archive path: {e}"))?
+            .into_owned();
+        if !is_safe_archive_path(&rel) {
+            continue;
+        }
+        let out = dest_dir.join(&rel);
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("extract parent: {e}"))?;
+        }
+        entry
+            .unpack(&out)
+            .map_err(|e| format!("HQ Work extract failed: {e}"))?;
+    }
+    find_app_bundle(dest_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn copy_app_to_applications(src: &Path) -> Result<(), String> {
+    let dest = PathBuf::from("/Applications/HQ Work.app");
+    let staging = PathBuf::from("/Applications/HQ Work.app.installing");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)
+            .map_err(|e| format!("could not clear installer staging: {e}"))?;
+    }
+    let status = Command::new("ditto")
+        .arg(src)
+        .arg(&staging)
+        .status()
+        .map_err(|e| format!("ditto failed: {e}"))?;
+    if !status.success() {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!(
+            "ditto exited {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        ));
+    }
+    if dest.exists() {
+        if let Err(e) = fs::remove_dir_all(&dest) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!("could not replace existing HQ Work.app: {e}"));
+        }
+    }
+    fs::rename(&staging, &dest)
+        .map_err(|e| format!("could not move HQ Work.app into /Applications: {e}"))
+}
+
+#[cfg(target_os = "macos")]
+fn install_from_dmg(dmg: &Path) -> Result<(), String> {
+    let mount = unique_temp_dir("hq-work-dmg")?;
+    let attach = Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-noverify", "-mountpoint"])
+        .arg(&mount)
+        .arg(dmg)
+        .output()
+        .map_err(|e| format!("hdiutil attach failed: {e}"))?;
+    let result = (|| {
+        if !attach.status.success() {
+            return Err(format!(
+                "hdiutil attach failed: {}",
+                String::from_utf8_lossy(&attach.stderr).trim()
+            ));
+        }
+        let app = find_app_bundle(&mount)?;
+        copy_app_to_applications(&app)
+    })();
+    let _ = Command::new("hdiutil")
+        .args(["detach", "-quiet", "-force"])
+        .arg(&mount)
+        .status();
+    let _ = fs::remove_dir_all(&mount);
+    result
+}
+
+fn install_verified_bytes(bytes: &[u8], kind: InstallerKind) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (bytes, kind);
+        Err("HQ Work install is only supported on macOS".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match kind {
+            InstallerKind::Dmg => {
+                let dir = unique_temp_dir("hq-work-installer")?;
+                let dmg = dir.join("HQ-Work.dmg");
+                let result = (|| {
+                    fs::write(&dmg, bytes).map_err(|e| format!("failed to write dmg: {e}"))?;
+                    install_from_dmg(&dmg)
+                })();
+                let _ = fs::remove_dir_all(&dir);
+                result
+            }
+            InstallerKind::AppTarGz => {
+                let dir = unique_temp_dir("hq-work-tar")?;
+                let result = (|| {
+                    let app = extract_app_bundle_from_tarball(bytes, &dir)?;
+                    copy_app_to_applications(&app)
+                })();
+                let _ = fs::remove_dir_all(&dir);
+                result
+            }
+        }
+    }
+}
+
+/// Download the signed HQ Work installer from the updater feed, verify, install.
+#[tauri::command]
+pub async fn install_hq_work() -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("HQ Work install is only supported on macOS".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        tauri::async_runtime::spawn_blocking(|| {
+            let platform = current_darwin_platform_key()?;
+            install_hq_work_with(http_get_text, http_get_bytes, platform, install_verified_bytes)?;
+            refresh_hq_work_install_cache();
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("HQ Work install task failed: {e}"))?
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +889,224 @@ mod tests {
     #[test]
     fn hq_work_installed_non_macos_is_false() {
         assert!(!hq_work_installed());
+    }
+
+    fn sample_feed(signature: &str) -> String {
+        format!(
+            r#"{{
+                "version": "0.1.25",
+                "platforms": {{
+                    "darwin-aarch64": {{
+                        "signature": "{signature}",
+                        "url": "https://indigo-electron-releases.s3.us-east-1.amazonaws.com/hq-work/HQ-Work.dmg"
+                    }},
+                    "darwin-x86_64": {{
+                        "signature": "{signature}",
+                        "url": "https://indigo-electron-releases.s3.us-east-1.amazonaws.com/hq-work/HQ-Work_x64.app.tar.gz"
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn intercepts_only_when_flag_on_and_not_installed() {
+        assert!(should_intercept_desktop_alt(true, false));
+        assert!(!should_intercept_desktop_alt(false, false));
+        assert!(!should_intercept_desktop_alt(true, true));
+        assert!(!should_intercept_desktop_alt(false, true));
+    }
+
+    #[test]
+    fn plan_first_show_then_quiet_rerun() {
+        assert_eq!(
+            plan_desktop_alt_open(true, false, false),
+            DesktopAltHandoffPlan::ShowHandoffCard { first_show: true }
+        );
+        assert_eq!(
+            plan_desktop_alt_open(true, false, true),
+            DesktopAltHandoffPlan::ShowHandoffCard { first_show: false }
+        );
+        assert_eq!(
+            plan_desktop_alt_open(false, false, false),
+            DesktopAltHandoffPlan::OpenDesktopAlt
+        );
+        assert_eq!(
+            plan_desktop_alt_open(true, true, false),
+            DesktopAltHandoffPlan::OpenDesktopAlt
+        );
+    }
+
+    #[test]
+    fn feed_parse_picks_darwin_arch_platforms() {
+        let feed = parse_hq_work_feed(&sample_feed("c2ln")).unwrap();
+        assert_eq!(feed.version.as_deref(), Some("0.1.25"));
+        let arm = pick_darwin_platform(&feed, "darwin-aarch64").unwrap();
+        assert!(arm.url.ends_with("HQ-Work.dmg"));
+        let intel = pick_darwin_platform(&feed, "darwin-x86_64").unwrap();
+        assert!(intel.url.ends_with(".app.tar.gz"));
+        assert!(pick_darwin_platform(&feed, "windows-x86_64").is_err());
+    }
+
+    #[test]
+    fn reject_missing_signature_before_download() {
+        let feed = r#"{
+            "platforms": {
+                "darwin-aarch64": {
+                    "url": "https://indigo-electron-releases.s3.us-east-1.amazonaws.com/hq-work/HQ-Work.dmg",
+                    "signature": ""
+                }
+            }
+        }"#;
+        let mut downloaded = false;
+        let err = install_hq_work_with(
+            |_| Ok(feed.to_string()),
+            |_| {
+                downloaded = true;
+                Ok(vec![1, 2, 3])
+            },
+            "darwin-aarch64",
+            |_, _| panic!("install must not run"),
+        )
+        .unwrap_err();
+        assert!(err.to_lowercase().contains("signature"), "{err}");
+        assert!(!downloaded);
+    }
+
+    #[test]
+    fn reject_missing_platform_without_download() {
+        let feed = r#"{"platforms":{"darwin-aarch64":{"url":"https://x/a.dmg","signature":"abc"}}}"#;
+        let mut downloaded = false;
+        let err = install_hq_work_with(
+            |_| Ok(feed.to_string()),
+            |_| {
+                downloaded = true;
+                Ok(vec![1, 2, 3])
+            },
+            "darwin-x86_64",
+            |_, _| panic!("install must not run"),
+        )
+        .unwrap_err();
+        assert!(err.contains("darwin-x86_64"), "{err}");
+        assert!(!downloaded);
+    }
+
+    #[test]
+    fn installer_kind_from_feed_urls() {
+        assert_eq!(
+            installer_kind_from_url(
+                "https://indigo-electron-releases.s3.us-east-1.amazonaws.com/hq-work/HQ-Work.dmg"
+            )
+            .unwrap(),
+            InstallerKind::Dmg
+        );
+        assert_eq!(
+            installer_kind_from_url(
+                "https://indigo-electron-releases.s3.us-east-1.amazonaws.com/hq-work/HQ-Work_0.1.25_aarch64.app.tar.gz"
+            )
+            .unwrap(),
+            InstallerKind::AppTarGz
+        );
+        assert!(installer_kind_from_url("https://example/HQ-Work.zip").is_err());
+    }
+
+    #[test]
+    fn darwin_platform_key_maps_arch() {
+        assert_eq!(darwin_platform_key_for_arch("aarch64").unwrap(), "darwin-aarch64");
+        assert_eq!(darwin_platform_key_for_arch("x86_64").unwrap(), "darwin-x86_64");
+        assert!(darwin_platform_key_for_arch("arm").is_err());
+    }
+
+    #[test]
+    fn hq_work_updater_pubkey_decodes() {
+        let pem = decode_tauri_minisign_blob(HQ_WORK_UPDATER_PUBKEY).unwrap();
+        assert!(pem.contains("minisign public key"));
+        PublicKey::decode(&pem).unwrap();
+    }
+
+    #[test]
+    fn verify_rejects_unsigned_and_garbage_signatures() {
+        let err = verify_hq_work_bytes(&[1, 2, 3], "").unwrap_err();
+        assert!(err.contains("unsigned"), "{err}");
+        assert!(verify_hq_work_bytes(&[1, 2, 3], "not-base64!!!").is_err());
+    }
+
+    #[test]
+    fn card_shown_json_and_merge_persist() {
+        assert!(!hq_work_handoff_card_shown_from_json("{}"));
+        assert!(!hq_work_handoff_card_shown_from_json("not-json"));
+        assert!(hq_work_handoff_card_shown_from_json(
+            r#"{"hqWorkHandoffCardShown":true}"#
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(&path, r#"{"hqPath":"/tmp/HQ"}"#).unwrap();
+        hq_desktop_core::first_run::merge_menubar_flags(
+            &path,
+            &[(CARD_SHOWN_KEY, serde_json::json!(true))],
+        )
+        .unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(hq_work_handoff_card_shown_from_json(&contents));
+        assert!(contents.contains("hqPath"));
+    }
+
+    #[test]
+    fn find_app_bundle_prefers_hq_work() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("Other.app")).unwrap();
+        fs::create_dir_all(dir.path().join("nested/HQ Work.app")).unwrap();
+        let found = find_app_bundle(dir.path()).unwrap();
+        assert_eq!(found.file_name().unwrap(), "HQ Work.app");
+    }
+
+    #[test]
+    fn extract_app_bundle_from_tarball_finds_app() {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "HQ Work.app", std::io::empty())
+            .unwrap();
+        let mut file_header = tar::Header::new_gnu();
+        let body = b"ok";
+        file_header.set_size(body.len() as u64);
+        file_header.set_cksum();
+        builder
+            .append_data(
+                &mut file_header,
+                "HQ Work.app/Contents/Info.plist",
+                &body[..],
+            )
+            .unwrap();
+        let tar_bytes = builder.into_inner().unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, &tar_bytes).unwrap();
+        let gz = encoder.finish().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let app = extract_app_bundle_from_tarball(&gz, dest.path()).unwrap();
+        assert_eq!(app.file_name().unwrap(), "HQ Work.app");
+        assert!(app.join("Contents/Info.plist").is_file());
+    }
+
+    #[test]
+    fn install_pipeline_does_not_hit_network_on_injected_http() {
+        let feed = sample_feed("c2ln");
+        let err = install_hq_work_with(
+            |url| {
+                assert_eq!(url, HQ_WORK_FEED_URL);
+                Ok(feed.clone())
+            },
+            |_| Ok(b"not-a-real-dmg".to_vec()),
+            "darwin-aarch64",
+            |_, _| panic!("must not install unsigned/unverified bytes"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("signature") || err.contains("minisign") || err.contains("encoding"),
+            "{err}"
+        );
     }
 }
