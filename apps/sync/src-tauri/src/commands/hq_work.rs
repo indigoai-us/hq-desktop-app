@@ -538,6 +538,8 @@ fn handoff_inputs() -> (bool, bool, bool) {
     let enabled = crate::commands::config::get_hq_work_handoff().unwrap_or(false);
     let installed = hq_work_installed();
     let shown = get_hq_work_handoff_card_shown().unwrap_or(false);
+    // Once per intercept (user action), not on cache hits / app-activate.
+    handoff_log(&format!("handoff.detected installed={installed}"));
     (enabled, installed, shown)
 }
 
@@ -552,6 +554,7 @@ fn apply_handoff_plan(
             if first_show {
                 let _ = mark_hq_work_handoff_card_shown();
             }
+            handoff_log(&format!("handoff.card_shown first={first_show}"));
             reveal_handoff_card(app, first_show);
             Ok(true)
         }
@@ -1245,9 +1248,11 @@ where
                 Ok(()) => {
                     after.last_seen_installed = true;
                     refresh_hq_work_install_cache();
+                    handoff_log("handoff.co_installed");
                     handoff_log("co_install ok");
                 }
                 Err(err) => {
+                    handoff_log(&format!("handoff.failed {err}"));
                     handoff_log(&format!("co_install failed: {err}"));
                 }
             }
@@ -1283,9 +1288,11 @@ pub fn maybe_co_install_hq_work() {
     }
     let enabled = macos && crate::commands::config::get_hq_work_handoff().unwrap_or(false);
     let installed = hq_work_installed();
+    handoff_log(&format!("handoff.detected installed={installed}"));
     let path = match crate::util::paths::menubar_json_path() {
         Ok(path) => path,
         Err(err) => {
+            handoff_log(&format!("handoff.failed {err}"));
             handoff_log(&format!("co_install failed: {err}"));
             return;
         }
@@ -1304,6 +1311,7 @@ pub fn maybe_co_install_hq_work() {
 pub fn spawn_maybe_co_install_hq_work() {
     tauri::async_runtime::spawn(async {
         if let Err(err) = tauri::async_runtime::spawn_blocking(maybe_co_install_hq_work).await {
+            handoff_log(&format!("handoff.failed {err}"));
             handoff_log(&format!("co_install task failed: {err}"));
         }
     });

@@ -71,3 +71,14 @@ npm run test:e2e:desktop-alt
 `npm run test:e2e:desktop-alt` runs a scripted source-contract harness by default. To exercise a live app through `tauri-driver`, set `HQ_SYNC_DESKTOP_ALT_LIVE=1` and `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`; `HQ_SYNC_DESKTOP_ALT_WEBDRIVER_URL` defaults to `http://127.0.0.1:4444`.
 
 Live mode is strict: when `HQ_SYNC_DESKTOP_ALT_LIVE` is set and the `tauri-driver` harness cannot be resolved, the run **fails** with the resolution reason rather than quietly falling back to the scripted harness. A silent fallback would let the Windows installer job report a pass without ever launching the installed binary.
+
+## HQ Work handoff (rollback path)
+
+Desktop-alt is the flag-off rollback surface for the HQ Work desktop-view
+handoff. `hqWorkHandoff` / `hq_work_handoff` **defaults false**; Open HQ still
+opens this window until the flag is on.
+
+See [hq-work-handoff.md](hq-work-handoff.md) for alpha enable (`@getindigo.ai`,
+`~/.hq/menubar.json`), the copy-paste default-on one-liners, `[handoff]` log
+events, the rollback drill, and the removal note: **delete this window one
+Sync release after default-on bake — keep the code until then.**
