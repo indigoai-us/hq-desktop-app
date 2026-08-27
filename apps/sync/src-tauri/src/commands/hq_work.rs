@@ -5,7 +5,8 @@
 //! never open onboarding, import, or desktop-alt windows.
 //!
 //! `install_hq_work` is the explicit user-initiated installer (US-003 card
-//! Install). It is not opened by detection. Reused by US-004 silent co-install.
+//! Install). It is not opened by detection. US-004 silent co-install calls
+//! `install_hq_work_with` / `verify_hq_work_bytes` with no windows or dialogs.
 //!
 //! Bundle id: `ai.getindigo.hq-work`.
 
@@ -14,6 +15,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -28,6 +30,7 @@ pub const HQ_WORK_BUNDLE_ID: &str = "ai.getindigo.hq-work";
 const INSTALL_CACHE_TTL: Duration = Duration::from_secs(45);
 
 static INSTALL_CACHE: Mutex<Option<(bool, Instant)>> = Mutex::new(None);
+static CO_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// How `launch_hq_work` will invoke `open` after validation. Tests assert this
 /// instead of spawning the OS opener.
@@ -742,6 +745,324 @@ pub async fn install_hq_work() -> Result<(), String> {
     }
 }
 
+// ── US-004 silent co-install (post-update / next launch) ──────────────────────
+
+const UNINSTALLED_KEY: &str = "hqWorkUninstalled";
+const LAST_SEEN_KEY: &str = "hqWorkLastSeenInstalled";
+const CO_INSTALLED_VERSION_KEY: &str = "hqWorkCoInstalledForVersion";
+const CO_INSTALL_ATTEMPT_COUNT: usize = 3;
+
+/// Inputs for the pure skip/run table. `current_version` is the running Sync
+/// version (`APP_VERSION` / Cargo package version).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoInstallDecisionInput<'a> {
+    pub handoff_enabled: bool,
+    pub installed: bool,
+    pub uninstalled: bool,
+    pub co_installed_for_version: Option<&'a str>,
+    pub current_version: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoInstallSkipReason {
+    FlagOff,
+    AlreadyInstalled,
+    Uninstalled,
+    AlreadyAttemptedThisVersion,
+}
+
+impl CoInstallSkipReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FlagOff => "flag off",
+            Self::AlreadyInstalled => "already installed",
+            Self::Uninstalled => "user uninstalled HQ Work",
+            Self::AlreadyAttemptedThisVersion => "already attempted this version",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoInstallAction {
+    Run,
+    Skip(CoInstallSkipReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CoInstallPersisted {
+    pub uninstalled: bool,
+    pub last_seen_installed: bool,
+    pub co_installed_for_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoInstallOutcome {
+    Skipped(&'static str),
+    Installed,
+    Failed(String),
+}
+
+struct CoInstallGuard;
+
+impl Drop for CoInstallGuard {
+    fn drop(&mut self) {
+        CO_INSTALL_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+fn try_begin_co_install() -> Option<CoInstallGuard> {
+    CO_INSTALL_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| CoInstallGuard)
+}
+
+/// Skip when the handoff flag is off, HQ Work is present, the user uninstalled
+/// it, or this Sync version already attempted co-install.
+pub fn maybe_co_install_decision(input: &CoInstallDecisionInput<'_>) -> CoInstallAction {
+    if !input.handoff_enabled {
+        return CoInstallAction::Skip(CoInstallSkipReason::FlagOff);
+    }
+    if input.installed {
+        return CoInstallAction::Skip(CoInstallSkipReason::AlreadyInstalled);
+    }
+    if input.uninstalled {
+        return CoInstallAction::Skip(CoInstallSkipReason::Uninstalled);
+    }
+    if input
+        .co_installed_for_version
+        .is_some_and(|v| !v.is_empty() && v == input.current_version)
+    {
+        return CoInstallAction::Skip(CoInstallSkipReason::AlreadyAttemptedThisVersion);
+    }
+    CoInstallAction::Run
+}
+
+/// Previously installed, now missing, and we are not in the middle of our own
+/// install → treat as a user uninstall.
+pub fn should_mark_hq_work_uninstalled(
+    last_seen_installed: bool,
+    now_installed: bool,
+    our_install_running: bool,
+) -> bool {
+    last_seen_installed && !now_installed && !our_install_running
+}
+
+pub fn apply_install_observation(
+    persisted: &CoInstallPersisted,
+    now_installed: bool,
+    our_install_running: bool,
+) -> CoInstallPersisted {
+    let mut next = persisted.clone();
+    if now_installed {
+        next.last_seen_installed = true;
+    } else if should_mark_hq_work_uninstalled(
+        persisted.last_seen_installed,
+        now_installed,
+        our_install_running,
+    ) {
+        next.uninstalled = true;
+        next.last_seen_installed = false;
+    }
+    next
+}
+
+pub fn maybe_co_install_from_state(
+    handoff_enabled: bool,
+    installed: bool,
+    persisted: &CoInstallPersisted,
+    current_version: &str,
+) -> (CoInstallPersisted, CoInstallAction) {
+    let observed = apply_install_observation(persisted, installed, false);
+    let action = maybe_co_install_decision(&CoInstallDecisionInput {
+        handoff_enabled,
+        installed,
+        uninstalled: observed.uninstalled,
+        co_installed_for_version: observed.co_installed_for_version.as_deref(),
+        current_version,
+    });
+    (observed, action)
+}
+
+pub fn co_install_persisted_from_json(contents: &str) -> CoInstallPersisted {
+    let v = serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    CoInstallPersisted {
+        uninstalled: v
+            .get(UNINSTALLED_KEY)
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false),
+        last_seen_installed: v
+            .get(LAST_SEEN_KEY)
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false),
+        co_installed_for_version: v
+            .get(CO_INSTALLED_VERSION_KEY)
+            .and_then(|s| s.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    }
+}
+
+pub fn co_install_error_is_retryable(err: &str) -> bool {
+    let e = err.to_lowercase();
+    !(e.contains("signature")
+        || e.contains("unsigned")
+        || e.contains("minisign")
+        || e.contains("only supported on macos"))
+}
+
+pub fn co_install_backoff_delay(attempt_index: usize) -> Duration {
+    Duration::from_secs(1u64 << attempt_index.min(2))
+}
+
+pub fn run_co_install_with_retries<F, S>(mut install: F, mut sleep: S) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), String>,
+    S: FnMut(Duration),
+{
+    let mut last_err = String::from("co-install failed");
+    for attempt in 0..CO_INSTALL_ATTEMPT_COUNT {
+        match install() {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_err = err;
+                let more = attempt + 1 < CO_INSTALL_ATTEMPT_COUNT;
+                if more && co_install_error_is_retryable(&last_err) {
+                    sleep(co_install_backoff_delay(attempt));
+                } else if !co_install_error_is_retryable(&last_err) {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
+fn persist_co_install_state(path: &Path, state: &CoInstallPersisted) -> Result<(), String> {
+    let uninstalled = serde_json::json!(state.uninstalled);
+    let last_seen = serde_json::json!(state.last_seen_installed);
+    match state.co_installed_for_version.as_deref() {
+        Some(version) => hq_desktop_core::first_run::merge_menubar_flags(
+            path,
+            &[
+                (UNINSTALLED_KEY, uninstalled),
+                (LAST_SEEN_KEY, last_seen),
+                (CO_INSTALLED_VERSION_KEY, serde_json::json!(version)),
+            ],
+        ),
+        None => hq_desktop_core::first_run::merge_menubar_flags(
+            path,
+            &[(UNINSTALLED_KEY, uninstalled), (LAST_SEEN_KEY, last_seen)],
+        ),
+    }
+}
+
+fn handoff_log(msg: &str) {
+    crate::util::logfile::log("handoff", msg);
+}
+
+/// Injectable co-install. Tests supply a fake installer and zero-duration sleep.
+pub fn maybe_co_install_at<F, S>(
+    menubar_path: &Path,
+    handoff_enabled: bool,
+    installed: bool,
+    current_version: &str,
+    install: F,
+    sleep: S,
+) -> CoInstallOutcome
+where
+    F: FnMut() -> Result<(), String>,
+    S: FnMut(Duration),
+{
+    let persisted = if menubar_path.exists() {
+        fs::read_to_string(menubar_path)
+            .ok()
+            .map(|s| co_install_persisted_from_json(&s))
+            .unwrap_or_default()
+    } else {
+        CoInstallPersisted::default()
+    };
+    let (observed, action) =
+        maybe_co_install_from_state(handoff_enabled, installed, &persisted, current_version);
+    if observed != persisted {
+        let _ = persist_co_install_state(menubar_path, &observed);
+    }
+    match action {
+        CoInstallAction::Skip(reason) => {
+            handoff_log(&format!("co_install skipped: {}", reason.as_str()));
+            CoInstallOutcome::Skipped(reason.as_str())
+        }
+        CoInstallAction::Run => {
+            let result = run_co_install_with_retries(install, sleep);
+            let mut after = observed;
+            after.co_installed_for_version = Some(current_version.to_string());
+            match &result {
+                Ok(()) => {
+                    after.last_seen_installed = true;
+                    refresh_hq_work_install_cache();
+                    handoff_log("co_install ok");
+                }
+                Err(err) => {
+                    handoff_log(&format!("co_install failed: {err}"));
+                }
+            }
+            let _ = persist_co_install_state(menubar_path, &after);
+            match result {
+                Ok(()) => CoInstallOutcome::Installed,
+                Err(err) => CoInstallOutcome::Failed(err),
+            }
+        }
+    }
+}
+
+fn co_install_from_release_feed() -> Result<(), String> {
+    let platform = current_darwin_platform_key()?;
+    install_hq_work_with(http_get_text, http_get_bytes, platform, install_verified_bytes)
+}
+
+/// Canonical silent co-install. Next-launch is the path that survives macOS
+/// updater process kill. Never shows windows or dialogs.
+pub fn maybe_co_install_hq_work() {
+    let Some(_guard) = try_begin_co_install() else {
+        handoff_log("co_install skipped: already in progress");
+        return;
+    };
+    let macos = cfg!(target_os = "macos");
+    if !macos {
+        handoff_log("co_install skipped: not macos");
+    }
+    let enabled = macos && crate::commands::config::get_hq_work_handoff().unwrap_or(false);
+    let installed = hq_work_installed();
+    let path = match crate::util::paths::menubar_json_path() {
+        Ok(path) => path,
+        Err(err) => {
+            handoff_log(&format!("co_install failed: {err}"));
+            return;
+        }
+    };
+    let _ = maybe_co_install_at(
+        &path,
+        enabled,
+        installed,
+        env!("APP_VERSION"),
+        co_install_from_release_feed,
+        |d| std::thread::sleep(d),
+    );
+}
+
+/// Fire-and-forget spawn. Callers must not wait on HQ Work download.
+pub fn spawn_maybe_co_install_hq_work() {
+    tauri::async_runtime::spawn(async {
+        if let Err(err) = tauri::async_runtime::spawn_blocking(maybe_co_install_hq_work).await {
+            handoff_log(&format!("co_install task failed: {err}"));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,6 +1428,379 @@ mod tests {
         assert!(
             err.contains("signature") || err.contains("minisign") || err.contains("encoding"),
             "{err}"
+        );
+    }
+
+    fn decision_input<'a>(
+        flag: bool,
+        installed: bool,
+        uninstalled: bool,
+        version_marker: Option<&'a str>,
+        current: &'a str,
+    ) -> CoInstallDecisionInput<'a> {
+        CoInstallDecisionInput {
+            handoff_enabled: flag,
+            installed,
+            uninstalled,
+            co_installed_for_version: version_marker,
+            current_version: current,
+        }
+    }
+
+    #[test]
+    fn co_install_decision_table_skip_and_run() {
+        let current = "0.10.150";
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(true, false, false, None, current)),
+            CoInstallAction::Run
+        );
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(false, false, false, None, current)),
+            CoInstallAction::Skip(CoInstallSkipReason::FlagOff)
+        );
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(true, true, false, None, current)),
+            CoInstallAction::Skip(CoInstallSkipReason::AlreadyInstalled)
+        );
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(true, false, true, None, current)),
+            CoInstallAction::Skip(CoInstallSkipReason::Uninstalled)
+        );
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(
+                true,
+                false,
+                false,
+                Some("0.10.150"),
+                current
+            )),
+            CoInstallAction::Skip(CoInstallSkipReason::AlreadyAttemptedThisVersion)
+        );
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(
+                true,
+                false,
+                false,
+                Some("0.10.149"),
+                current
+            )),
+            CoInstallAction::Run
+        );
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(true, false, false, Some(""), current)),
+            CoInstallAction::Run
+        );
+        // ANY skip condition wins; flag off beats an otherwise-runnable state.
+        assert_eq!(
+            maybe_co_install_decision(&decision_input(false, false, true, Some(current), current)),
+            CoInstallAction::Skip(CoInstallSkipReason::FlagOff)
+        );
+    }
+
+    #[test]
+    fn uninstall_marker_when_last_seen_installed_now_missing() {
+        assert!(should_mark_hq_work_uninstalled(true, false, false));
+        assert!(!should_mark_hq_work_uninstalled(true, false, true));
+        assert!(!should_mark_hq_work_uninstalled(false, false, false));
+        assert!(!should_mark_hq_work_uninstalled(true, true, false));
+
+        let persisted = CoInstallPersisted {
+            last_seen_installed: true,
+            ..CoInstallPersisted::default()
+        };
+        let (observed, action) =
+            maybe_co_install_from_state(true, false, &persisted, "0.10.150");
+        assert!(observed.uninstalled);
+        assert!(!observed.last_seen_installed);
+        assert_eq!(
+            action,
+            CoInstallAction::Skip(CoInstallSkipReason::Uninstalled)
+        );
+    }
+
+    #[test]
+    fn last_seen_installed_updated_when_present() {
+        let persisted = CoInstallPersisted::default();
+        let (observed, action) = maybe_co_install_from_state(true, true, &persisted, "0.10.150");
+        assert!(observed.last_seen_installed);
+        assert!(!observed.uninstalled);
+        assert_eq!(
+            action,
+            CoInstallAction::Skip(CoInstallSkipReason::AlreadyInstalled)
+        );
+    }
+
+    #[test]
+    fn retries_three_times_with_exponential_backoff_then_gives_up() {
+        let calls = Cell::new(0);
+        let sleeps = std::cell::RefCell::new(Vec::new());
+        let err = run_co_install_with_retries(
+            || {
+                calls.set(calls.get() + 1);
+                Err("network down".into())
+            },
+            |d| sleeps.borrow_mut().push(d),
+        )
+        .unwrap_err();
+        assert_eq!(err, "network down");
+        assert_eq!(calls.get(), 3);
+        assert_eq!(
+            sleeps.borrow().as_slice(),
+            &[Duration::from_secs(1), Duration::from_secs(2)]
+        );
+    }
+
+    #[test]
+    fn retries_until_fake_installer_succeeds() {
+        let calls = Cell::new(0);
+        let sleeps = std::cell::RefCell::new(Vec::new());
+        run_co_install_with_retries(
+            || {
+                let n = calls.get() + 1;
+                calls.set(n);
+                if n < 3 {
+                    Err("transient".into())
+                } else {
+                    Ok(())
+                }
+            },
+            |d| sleeps.borrow_mut().push(d),
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 3);
+        assert_eq!(
+            sleeps.borrow().as_slice(),
+            &[Duration::from_secs(1), Duration::from_secs(2)]
+        );
+    }
+
+    #[test]
+    fn signature_failure_does_not_retry() {
+        let calls = Cell::new(0);
+        let sleeps = std::cell::RefCell::new(Vec::new());
+        let err = run_co_install_with_retries(
+            || {
+                calls.set(calls.get() + 1);
+                Err("HQ Work signature verification failed".into())
+            },
+            |d| sleeps.borrow_mut().push(d),
+        )
+        .unwrap_err();
+        assert!(err.contains("signature"), "{err}");
+        assert_eq!(calls.get(), 1);
+        assert!(sleeps.borrow().is_empty());
+        assert!(!co_install_error_is_retryable("refusing to install unsigned HQ Work bytes"));
+        assert!(!co_install_error_is_retryable("invalid minisign encoding"));
+    }
+
+    #[test]
+    fn maybe_co_install_at_honors_uninstall_marker_without_calling_installer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(
+            &path,
+            r#"{"hqWorkUninstalled":true,"hqPath":"/tmp/HQ"}"#,
+        )
+        .unwrap();
+        let calls = Cell::new(0);
+        let outcome = maybe_co_install_at(
+            &path,
+            true,
+            false,
+            "0.10.150",
+            || {
+                calls.set(calls.get() + 1);
+                panic!("must not co-install after uninstall");
+            },
+            |_| {},
+        );
+        assert_eq!(
+            outcome,
+            CoInstallOutcome::Skipped("user uninstalled HQ Work")
+        );
+        assert_eq!(calls.get(), 0);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("hqPath"));
+        assert!(!contents.contains("hqWorkCoInstalledForVersion"));
+    }
+
+    #[test]
+    fn maybe_co_install_at_sets_uninstall_marker_from_last_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(&path, r#"{"hqWorkLastSeenInstalled":true}"#).unwrap();
+        let calls = Cell::new(0);
+        let outcome = maybe_co_install_at(
+            &path,
+            true,
+            false,
+            "0.10.150",
+            || {
+                calls.set(calls.get() + 1);
+                panic!("must not co-install after inferred uninstall");
+            },
+            |_| {},
+        );
+        assert_eq!(
+            outcome,
+            CoInstallOutcome::Skipped("user uninstalled HQ Work")
+        );
+        assert_eq!(calls.get(), 0);
+        let persisted = co_install_persisted_from_json(&fs::read_to_string(&path).unwrap());
+        assert!(persisted.uninstalled);
+        assert!(!persisted.last_seen_installed);
+        assert!(persisted.co_installed_for_version.is_none());
+    }
+
+    #[test]
+    fn maybe_co_install_at_writes_version_marker_after_silent_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(&path, "{}").unwrap();
+        let calls = Cell::new(0);
+        let outcome = maybe_co_install_at(
+            &path,
+            true,
+            false,
+            "0.10.150",
+            || {
+                calls.set(calls.get() + 1);
+                Err("network down".into())
+            },
+            |_| {},
+        );
+        assert_eq!(calls.get(), 3);
+        match outcome {
+            CoInstallOutcome::Failed(err) => assert_eq!(err, "network down"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        let persisted = co_install_persisted_from_json(&fs::read_to_string(&path).unwrap());
+        assert_eq!(
+            persisted.co_installed_for_version.as_deref(),
+            Some("0.10.150")
+        );
+        assert!(!persisted.last_seen_installed);
+
+        let calls_after = Cell::new(0);
+        let skipped = maybe_co_install_at(
+            &path,
+            true,
+            false,
+            "0.10.150",
+            || {
+                calls_after.set(calls_after.get() + 1);
+                panic!("must not loop on the same Sync version");
+            },
+            |_| {},
+        );
+        assert_eq!(
+            skipped,
+            CoInstallOutcome::Skipped("already attempted this version")
+        );
+        assert_eq!(calls_after.get(), 0);
+    }
+
+    #[test]
+    fn maybe_co_install_at_success_marks_version_and_last_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(&path, r#"{"hqPath":"/tmp/HQ"}"#).unwrap();
+        let calls = Cell::new(0);
+        let outcome = maybe_co_install_at(
+            &path,
+            true,
+            false,
+            "0.10.150",
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            |_| panic!("success must not sleep"),
+        );
+        assert_eq!(outcome, CoInstallOutcome::Installed);
+        assert_eq!(calls.get(), 1);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("hqPath"));
+        let persisted = co_install_persisted_from_json(&contents);
+        assert_eq!(
+            persisted.co_installed_for_version.as_deref(),
+            Some("0.10.150")
+        );
+        assert!(persisted.last_seen_installed);
+        assert!(!persisted.uninstalled);
+    }
+
+    #[test]
+    fn maybe_co_install_at_runs_again_on_new_sync_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(
+            &path,
+            r#"{"hqWorkCoInstalledForVersion":"0.10.149"}"#,
+        )
+        .unwrap();
+        let calls = Cell::new(0);
+        let outcome = maybe_co_install_at(
+            &path,
+            true,
+            false,
+            "0.10.150",
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            |_| {},
+        );
+        assert_eq!(outcome, CoInstallOutcome::Installed);
+        assert_eq!(calls.get(), 1);
+        let persisted = co_install_persisted_from_json(&fs::read_to_string(&path).unwrap());
+        assert_eq!(
+            persisted.co_installed_for_version.as_deref(),
+            Some("0.10.150")
+        );
+    }
+
+    #[test]
+    fn maybe_co_install_at_skips_flag_off_without_installer_or_version_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(&path, "{}").unwrap();
+        let calls = Cell::new(0);
+        let outcome = maybe_co_install_at(
+            &path,
+            false,
+            false,
+            "0.10.150",
+            || {
+                calls.set(calls.get() + 1);
+                panic!("flag off must not install");
+            },
+            |_| {},
+        );
+        assert_eq!(outcome, CoInstallOutcome::Skipped("flag off"));
+        assert_eq!(calls.get(), 0);
+        let persisted = co_install_persisted_from_json(&fs::read_to_string(&path).unwrap());
+        assert!(persisted.co_installed_for_version.is_none());
+    }
+
+    #[test]
+    fn co_install_backoff_is_1s_2s_4s() {
+        assert_eq!(co_install_backoff_delay(0), Duration::from_secs(1));
+        assert_eq!(co_install_backoff_delay(1), Duration::from_secs(2));
+        assert_eq!(co_install_backoff_delay(2), Duration::from_secs(4));
+    }
+
+    #[test]
+    fn json_helpers_read_co_install_keys() {
+        let parsed = co_install_persisted_from_json(
+            r#"{"hqWorkUninstalled":true,"hqWorkLastSeenInstalled":false,"hqWorkCoInstalledForVersion":"0.10.150"}"#,
+        );
+        assert!(parsed.uninstalled);
+        assert!(!parsed.last_seen_installed);
+        assert_eq!(parsed.co_installed_for_version.as_deref(), Some("0.10.150"));
+        assert_eq!(
+            co_install_persisted_from_json("not-json"),
+            CoInstallPersisted::default()
         );
     }
 }

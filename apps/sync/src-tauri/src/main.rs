@@ -1074,6 +1074,11 @@ fn main() {
             // `commands::prewarm` for the rationale.
             commands::prewarm::spawn_prewarm();
 
+            // US-004: silent HQ Work co-install after a Sync update. Canonical
+            // path is next launch — macOS download_and_install often kills the
+            // process before post-install hooks run.
+            commands::hq_work::spawn_maybe_co_install_hq_work();
+
             // Auto-start the watcher when either flag is on:
             //   - `autostart_daemon` (V2-prep devtools flag, default OFF)
             //   - `realtime_sync`   (user-facing Auto-sync toggle, default ON)
