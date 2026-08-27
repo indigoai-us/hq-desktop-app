@@ -1356,6 +1356,7 @@ struct WatcherExitCaptureContext {
     runner_error_path_roots: Option<String>,
     runner_error_http: Option<String>,
     runner_error_causes: Option<String>,
+    runner_error_cause_signature: Option<String>,
     runner_error_scope: Option<String>,
     runner_error_companies: u32,
     runner_phase: String,
@@ -1504,6 +1505,7 @@ impl Default for WatcherExitCaptureContext {
             runner_error_path_roots: None,
             runner_error_http: None,
             runner_error_causes: None,
+            runner_error_cause_signature: None,
             runner_error_scope: None,
             runner_error_companies: 0,
             runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
@@ -1655,6 +1657,7 @@ fn watcher_exit_capture_context(
         runner_error_path_roots: totals.runner_error_path_roots.tag_value(),
         runner_error_http: totals.runner_error_http.tag_value(),
         runner_error_causes: totals.runner_error_causes.tag_value(),
+        runner_error_cause_signature: totals.runner_error_cause_signature.tag_value(),
         runner_error_scope: totals.runner_error_scope(),
         runner_error_companies: totals.runner_error_company_count(),
         runner_phase: phase_context.phase.to_string(),
@@ -3276,6 +3279,11 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     }
     if let Some(causes) = &context.runner_error_causes {
         tags.push(("runner_error_causes", causes.clone()));
+    }
+    // Route parity: the cause-signature axis rides the same capture from the same
+    // shared RunTotals source as the manual seam, pushed only when present.
+    if let Some(signature) = &context.runner_error_cause_signature {
+        tags.push(("runner_error_cause_signature", signature.clone()));
     }
     if code == Some(WINDOWS_SESSION_TERMINATE_EXIT) && signal.is_none() {
         if let Some(attribution) = context.windows_terminator {
@@ -5947,7 +5955,8 @@ mod tests {
             runner_error_shapes: Some("presigned_get_failed:40,unknown:8".to_string()),
             runner_error_path_roots: Some("knowledge:120,repos:40".to_string()),
             runner_error_http: Some("http_500:40,http_403:8".to_string()),
-            runner_error_causes: Some("unknown:160,access_denied:8".to_string()),
+            runner_error_causes: Some("vault_not_found:120,unknown_named:8".to_string()),
+            runner_error_cause_signature: Some("1a2b3c4d5e6f:8".to_string()),
             ..Default::default()
         };
         let mut effects = RecordingWatcherEffects::default();
@@ -5972,7 +5981,13 @@ mod tests {
         );
         assert_eq!(
             recorded_tag(capture, "runner_error_causes"),
-            "unknown:160,access_denied:8"
+            "vault_not_found:120,unknown_named:8"
+        );
+        // The cause-signature axis rides the SAME capture from the same shared
+        // source, so the watcher route emits it alongside the cause axis.
+        assert_eq!(
+            recorded_tag(capture, "runner_error_cause_signature"),
+            "1a2b3c4d5e6f:8"
         );
         // The pre-existing axes still ride the same capture unchanged.
         assert_eq!(

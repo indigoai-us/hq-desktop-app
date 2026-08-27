@@ -102,16 +102,46 @@ describe('manual runner-exit attribution — shared classifier source', () => {
     const causeTokens = sliceBetween(
       shapeSource,
       'Self::EntityNotFound => "entity_not_found",',
-      'Self::Unknown => "unknown",',
+      'Self::UnknownUnnamed => "unknown_unnamed",',
       'RunnerErrorCause tokens',
     );
     for (const denied of DENYLIST) {
       expect(httpTokens).not.toMatch(new RegExp(`"[^"]*${denied}[^"]*"`));
       expect(causeTokens).not.toMatch(new RegExp(`"[^"]*${denied}[^"]*"`));
     }
-    // The identity-adjacent causes use the safe spelling, never *_token/*_auth.
+    // The identity-adjacent causes use the safe spelling, never *_token/*_auth —
+    // including the Cognito identities, spelled cognito_identity, never *_auth.
     expect(causeTokens).toContain('"expired_identity"');
     expect(causeTokens).toContain('"vault_identity"');
+    expect(causeTokens).toContain('"cognito_identity"');
+    expect(causeTokens).toContain('"cognito_identity_refresh"');
+  });
+
+  it('completes the cause vocabulary against the real identity set and pins it', () => {
+    // The reopen: the vocabulary now covers hq-cloud's REAL identity set, not the
+    // 16-name sample — the Vault*/StateStore*/Cursor/BaseVersion families the
+    // prior fix collapsed to `unknown` are now named tokens.
+    for (const token of [
+      'vault_not_found',
+      'vault_permission_denied',
+      'state_store_corruption',
+      'cursor_retired',
+      'base_version_unavailable',
+      'rate_limited',
+      'source_not_found',
+    ]) {
+      expect(shapeSource).toContain(`"${token}"`);
+    }
+    // The flat residual is split so a future unlisted identity stays describable,
+    // and only the named side is correlatable by signature.
+    expect(shapeSource).toContain('"unknown_named"');
+    expect(shapeSource).toContain('"unknown_unnamed"');
+    expect(shapeSource).toContain('pub fn runner_error_cause_signature(');
+    expect(shapeSource).toContain('pub struct RunnerErrorCauseSignatureRollup');
+    // The staleness pin: the vocabulary source version is asserted equal to the
+    // runner pin, so bumping the runner without re-deriving fails the build.
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION');
+    expect(shapeSource).toContain('crate::hq_cloud::HQ_CLOUD_VERSION');
   });
 });
 
@@ -130,11 +160,13 @@ describe('manual runner-exit attribution — manual capture seam (commands::sync
     expect(telemetryContext).toContain('"runner_error_path_roots"');
   });
 
-  it('emits the HTTP-status and cause rollups from the shared RunTotals source', () => {
+  it('emits the HTTP-status, cause, and cause-signature rollups from the shared source', () => {
     expect(telemetryContext).toContain('totals.runner_error_http.tag_value()');
     expect(telemetryContext).toContain('"runner_error_http"');
     expect(telemetryContext).toContain('totals.runner_error_causes.tag_value()');
     expect(telemetryContext).toContain('"runner_error_causes"');
+    expect(telemetryContext).toContain('totals.runner_error_cause_signature.tag_value()');
+    expect(telemetryContext).toContain('"runner_error_cause_signature"');
   });
 
   it('attaches runner provenance so the npx-resolved runner is identifiable', () => {
@@ -241,6 +273,11 @@ describe('manual runner-exit attribution — content-safe allowlist (hq-telemetr
     );
     expect(telemetrySource).toContain('RUNNER_ERROR_SHAPE_TOKENS');
     expect(telemetrySource).toContain('RUNNER_ERROR_PATH_ROOT_TOKENS');
+    // The cause-signature axis has its own egress arm: only a bare hex12:count
+    // entry survives, so a producer bug degrades to [Filtered].
+    expect(telemetrySource).toContain(
+      '"runner_error_cause_signature" => Some(is_runner_error_cause_signature_rollup(',
+    );
   });
 });
 
@@ -256,11 +293,12 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     expect(captureContext).toContain('totals.runner_error_path_roots.tag_value()');
     expect(captureContext).toContain('totals.runner_error_http.tag_value()');
     expect(captureContext).toContain('totals.runner_error_causes.tag_value()');
+    expect(captureContext).toContain('totals.runner_error_cause_signature.tag_value()');
     expect(captureContext).toContain('totals.runner_error_scope()');
     expect(captureContext).toContain('classify_runner_stack_input(stderr_tail)');
   });
 
-  it('emits the shape, path-root, HTTP-status, and cause tags alongside the class/op rollups', () => {
+  it('emits the shape, path-root, HTTP, cause, and cause-signature tags alongside class/op', () => {
     const tagAssembly = sliceBetween(
       daemonSource,
       'if let Some(rollup) = &context.runner_error_rollup {',
@@ -271,6 +309,7 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     expect(tagAssembly).toContain('"runner_error_path_roots"');
     expect(tagAssembly).toContain('"runner_error_http"');
     expect(tagAssembly).toContain('"runner_error_causes"');
+    expect(tagAssembly).toContain('"runner_error_cause_signature"');
   });
 
   it('emits the stack-input and scope extras', () => {

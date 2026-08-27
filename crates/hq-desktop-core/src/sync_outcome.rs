@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    RunnerErrorCauseRollup, RunnerErrorHttpRollup, RunnerErrorPathRootRollup, RunnerErrorShapeRollup,
-    COMPANY_ERROR_PATH_SENTINEL, DISCOVERY_ERROR_PATH_SENTINEL,
+    RunnerErrorCauseRollup, RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup,
+    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
+    DISCOVERY_ERROR_PATH_SENTINEL,
 };
 use sha2::{Digest, Sha256};
 
@@ -127,6 +128,12 @@ pub struct RunTotals {
     /// the HTTP-status axis: together they turn the OTHER/other/unknown collapse
     /// into an actionable signal. Every rendered token is chosen in code.
     pub runner_error_causes: RunnerErrorCauseRollup,
+    /// Content-safe correlator for the `unknown_named` cause residual: the SHA-256
+    /// hex12 of a real-but-unlisted leading error identity. Lets the SAME fault
+    /// recurring across machines be recognised as one producer even before its
+    /// class name is added to the vocabulary — the drift-resilience this reopen
+    /// adds. Never a runner byte: only a gated identifier is hashed.
+    pub runner_error_cause_signature: RunnerErrorCauseSignatureRollup,
     /// Count of company-scope errors (`path == "(company)"`) seen this pass.
     runner_error_company_scope: u32,
     /// Count of pre-fanout discovery-phase errors (`path == "(discovery)"`) seen
@@ -219,6 +226,10 @@ impl RunTotals {
         // live. Both parse only content-safe fixed vocabulary from err.message.
         self.runner_error_http.record(&err.message);
         self.runner_error_causes.record(&err.message);
+        // Signature of the cause residual, recorded from the SAME message so an
+        // `unknown_named` fault is correlatable across machines. Records nothing
+        // for a matched cause or an `unknown_unnamed` residual.
+        self.runner_error_cause_signature.record(&err.message);
         if err.path == COMPANY_ERROR_PATH_SENTINEL {
             self.runner_error_company_scope = self.runner_error_company_scope.saturating_add(1);
         } else if err.path == DISCOVERY_ERROR_PATH_SENTINEL {
@@ -3357,11 +3368,15 @@ mod tests {
         );
         assert_eq!(
             totals.runner_error_causes.tag_value().as_deref(),
-            Some("unknown:3,access_denied:1,internal_error:1")
+            Some("unknown_unnamed:3,access_denied:1,internal_error:1")
         );
+        // No unlisted (uppercase-initial, unmatched) identity appeared: AccessDenied
+        // and InternalError are named, the presigned prose is unnamed — so the
+        // signature axis attaches no tag.
+        assert_eq!(totals.runner_error_cause_signature.tag_value(), None);
 
         // Every pre-existing axis is byte-identical to its pre-change value for
-        // the same inputs — the two added record() calls perturb nothing.
+        // the same inputs — the added record() calls perturb nothing.
         assert_eq!(
             totals.runner_error_scope().as_deref(),
             Some("company:1,file:3,discovery:1")
