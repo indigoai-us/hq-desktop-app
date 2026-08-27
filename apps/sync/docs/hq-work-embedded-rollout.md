@@ -230,5 +230,4 @@ remove the legacy shell and the boot branch.
 - US-103 mount — `src/desktop-alt/boot.ts`, `HqWorkDesktopShell.svelte`
 - US-104 routing — notification / conversation clicks into this window
 - US-105 parity
-- US-107 live smoke (checklist not in this story; `hq-work-embedded-qa.md`
-  may not exist yet)
+- US-107 live smoke: [hq-work-embedded-smoke.md](hq-work-embedded-smoke.md)

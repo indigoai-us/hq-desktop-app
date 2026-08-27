@@ -31,7 +31,8 @@ if (!target) {
   throw new Error('Missing desktop-alt mount target');
 }
 
-const app = await bootDesktopAltWindow({
+// No top-level await: vite `target: safari13` cannot transpile TLA in this entry.
+const app = bootDesktopAltWindow({
   getHandoff: () => getHqWorkHandoff(),
   mountLegacy: () => {
     mount(GlobalErrorBoundary, {

@@ -1,5 +1,11 @@
 # HQ Work handoff — QA smoke checklist
 
+**Superseded for the combined-app embed.** Live smoke for the flag-on
+embedded `@hq/ui` window is
+[hq-work-embedded-smoke.md](hq-work-embedded-smoke.md) (US-107). This file
+is the two-app (card / co-install / launch HQ Work) script and is kept
+because existing tests source-contract it.
+
 Executable checklist for the HQ Sync → HQ Work desktop-view handoff. Run
 **once on a real macOS machine** before flipping `hqWorkHandoff` beyond the
 alpha cohort (`@getindigo.ai`).

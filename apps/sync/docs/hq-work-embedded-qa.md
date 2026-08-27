@@ -77,5 +77,5 @@ that in this story.
 - Shell: [`HqWorkDesktopShell.svelte`](../src/desktop-alt/HqWorkDesktopShell.svelte)
 - Native hop: [`vault-s3-put.ts`](../src/desktop-alt/vault-s3-put.ts),
   [`vault_s3.rs`](../src-tauri/src/commands/vault_s3.rs)
-- Rollout / live smoke: [hq-work-embedded-rollout.md](./hq-work-embedded-rollout.md)
-  (US-106), US-107
+- Rollout: [hq-work-embedded-rollout.md](./hq-work-embedded-rollout.md)
+- Live smoke (US-107): [hq-work-embedded-smoke.md](./hq-work-embedded-smoke.md)
