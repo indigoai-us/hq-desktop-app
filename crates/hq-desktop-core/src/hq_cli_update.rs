@@ -3938,8 +3938,10 @@ impl NpmToolchainSource {
 ///   * `Ran` — the retry ran the pinned install once under HQ's managed toolchain.
 ///     A converged run heals silently and emits no event; this value is therefore
 ///     seen only on the managed-provenance failure report.
-///   * `NoManagedNpm` — the retry was armed but no managed npm could be resolved on
-///     disk at all, so there was nothing to retry under.
+///   * `NoManagedNpm` — the retry was armed but no USABLE managed toolchain could be
+///     resolved: no root carried a complete node+npm pair, or the resolved managed
+///     Node did not execute (a partial or in-flight toolchain), so there was nothing
+///     safe to retry under.
 ///   * `SpawnFailed` — the retry was armed and a managed npm was present, but npm
 ///     could not be spawned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

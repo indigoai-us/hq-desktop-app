@@ -126,6 +126,27 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(retryHelper).not.toContain('return None;');
   });
 
+  it('resolves a complete, runnable managed toolchain across every root before proceeding', () => {
+    // HQ-DESKTOP-5E review hardening. (1) EVERY managed-toolchain root is searched,
+    // not just the canonical first one, so an upgraded install whose usable managed
+    // Node lives under a legacy root is still found.
+    expect(cli).toContain('for root in paths::managed_toolchain_roots()');
+    // (2) A present npm alone never resolves — BOTH the managed node executable and
+    // npm must exist, so npm can never fall back to the user's Node.
+    expect(cli).toContain('!node_exe.exists() || !managed_npm.exists()');
+    // (3) Before running npm, the retry PROBES that the managed Node actually
+    // executes — file presence is not enough; a broken or in-flight Node is declined,
+    // never used (which would reproduce the ABI failure or race a concurrent repair).
+    expect(retryHelper).toContain('probe_tool_line(');
+    const probeAt = retryHelper.indexOf('probe_tool_line(');
+    const npmRunAt = retryHelper.indexOf('run_npm_install_with_retries(');
+    expect(probeAt).toBeGreaterThan(0);
+    expect(probeAt).toBeLessThan(npmRunAt);
+    expect(retryHelper).toContain(
+      'ManagedRetryAttempt::Declined(ManagedRetryOutcome::NoManagedNpm)',
+    );
+  });
+
   it('installs into HQ`s managed prefix, never the user prefix, with ABI-aware convergence', () => {
     // The retry rebuilds its argv against the MANAGED prefix and the pinned
     // version, and hands the SAME managed prefix to the retry ladder (so the

@@ -2186,33 +2186,50 @@ async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(Str
     Some((managed_npm, managed_path))
 }
 
+/// Resolve a COMPLETE managed toolchain — the `(npm, PATH, prefix)` triple — from
+/// the first supported managed-toolchain root that carries one.
+///
+/// Two hardenings over "first root, npm file only" (both from the HQ-DESKTOP-5E
+/// review): EVERY root is searched, not just the canonical one, so an upgraded
+/// install whose usable managed Node still lives under a legacy root is found; and
+/// BOTH the managed node executable AND npm must exist, so a partial/interrupted
+/// toolchain (npm without its sibling node) never resolves — which would otherwise
+/// let npm's `env node` shebang fall back to the user's Node and reproduce the very
+/// ABI failure the retry exists to avoid. Whether the resolved Node actually RUNS is
+/// a separate, bounded runtime probe the retry performs before using it.
 fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
-    let root = paths::managed_toolchain_roots().into_iter().next()?;
-    let node_exe = paths::managed_node_executable_in(&root);
-    let bin_dir = node_exe.parent()?.to_path_buf();
     let npm_name = if cfg!(target_os = "windows") {
         "npm.cmd"
     } else {
         "npm"
     };
-    let managed_npm = bin_dir.join(npm_name);
-    if !managed_npm.exists() {
-        return None;
-    }
     let sep = if cfg!(target_os = "windows") {
         ";"
     } else {
         ":"
     };
-    let path = format!("{}{}{}", bin_dir.display(), sep, paths::child_path());
-    let managed_prefix = paths::managed_npm_prefix_in(&root)
-        .to_string_lossy()
-        .to_string();
-    Some((
-        managed_npm.to_string_lossy().to_string(),
-        path,
-        managed_prefix,
-    ))
+    for root in paths::managed_toolchain_roots() {
+        let node_exe = paths::managed_node_executable_in(&root);
+        let Some(bin_dir) = node_exe.parent() else {
+            continue;
+        };
+        let managed_npm = bin_dir.join(npm_name);
+        // A COMPLETE pair only — a present npm whose sibling node is missing must
+        // never resolve, or npm would run under the user's Node.
+        if !node_exe.exists() || !managed_npm.exists() {
+            continue;
+        }
+        let path = format!("{}{}{}", bin_dir.display(), sep, paths::child_path());
+        let managed_prefix = paths::managed_npm_prefix_in(&root)
+            .to_string_lossy()
+            .to_string();
+        return Some((
+            managed_npm.to_string_lossy().to_string(),
+            path,
+            managed_prefix,
+        ));
+    }
+    None
 }
 
 /// The after-version the managed-retry convergence decision should use: the
@@ -2504,6 +2521,28 @@ async fn managed_toolchain_retry(
                 path,
                 prefix,
             } => {
+                // File presence is not enough: PROBE that the managed Node actually
+                // executes before running npm under it. A present-but-broken managed
+                // Node would otherwise let npm's `env node` shebang fall back to the
+                // user's Node (reproducing the original ABI failure, but mis-reported
+                // as a managed run); and a Node a concurrent lane is actively replacing
+                // must not be used mid-swap. A Node that runs cleanly is, by the
+                // installer's idempotence, one no lane is replacing — so this bounded
+                // probe also settles that race.
+                if probe_tool_line(
+                    "node".to_string(),
+                    path.clone(),
+                    vec!["--version".to_string()],
+                )
+                .await
+                .is_none()
+                {
+                    log(
+                        "hq-cli-update",
+                        "managed-toolchain retry unavailable — the resolved managed Node did not execute (partial or in-flight toolchain)",
+                    );
+                    return ManagedRetryAttempt::Declined(ManagedRetryOutcome::NoManagedNpm);
+                }
                 if fresh {
                     log(
                         "hq-cli-update",
