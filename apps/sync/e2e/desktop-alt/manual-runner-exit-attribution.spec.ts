@@ -9,15 +9,23 @@
  * default @password:filter scrubber because the app spelled its own token
  * `auth`.
  *
+ * HQ-DESKTOP-5H later showed the SAME both-seams invariant had a hole: the
+ * content-safe unmatched-stderr structural rollup (runner_unmatched_stderr_shapes)
+ * was wired ONLY on the watcher route, so a manual-route runner that exited
+ * non-zero after emitting one unrecognised plain-stderr line and no ndjson error
+ * records reached Sentry with every attribution axis empty. This spec now also
+ * pins that axis at BOTH seams.
+ *
  * The Rust suites pin the seam from the inside (crates/hq-desktop-core,
- * crates/hq-telemetry, and a real-child artifact test in commands::sync that
- * drives the production capture path end to end). This spec pins the same
- * property at the *source-contract* level, following the fixture-backed pattern
- * of watcher-stall-teardown-attribution.spec.ts: the additive attribution must
- * be wired at BOTH capture seams from the one shared hq-desktop-core source, and
- * the breadcrumb renderer must not emit a denylist-colliding token. Every
- * assertion slices the exact function that ships, so deleting or relocating an
- * emission fails here — the guard is not vacuous.
+ * crates/hq-telemetry, and real-child artifact tests in commands::sync that
+ * drive the production capture path end to end — including the exact
+ * 16-stdout/1-unrecognised-stderr/exit-1 shape of the reported event). This spec
+ * pins the same properties at the *source-contract* level, following the
+ * fixture-backed pattern of watcher-stall-teardown-attribution.spec.ts: the
+ * additive attribution must be wired at BOTH capture seams from the one shared
+ * hq-desktop-core source, and the breadcrumb renderer must not emit a
+ * denylist-colliding token. Every assertion slices the exact function that ships,
+ * so deleting or relocating an emission fails here — the guard is not vacuous.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -145,6 +153,28 @@ describe('manual runner-exit attribution — manual capture seam (commands::sync
     expect(telemetryContext).toContain('"runner_error_scope"');
   });
 
+  it('records the unmatched-stderr rollup on every line and attaches it at the manual seam', () => {
+    // HQ-DESKTOP-5H: a manual-route non-zero exit whose only evidence was one
+    // unrecognised stderr line reached Sentry with this axis empty, because the
+    // rollup was wired ONLY on the watcher route. The manual run loop must now feed
+    // the shared hq-desktop-core recorder on every stderr line and carry the
+    // rendered value onto the exit context, and the capture builder must push the
+    // tag — exactly as the watcher route does. Deleting any leg fails here.
+    const runLoop = sliceBetween(
+      syncSource,
+      'let mut runner_stderr_sequence = 0_u32;',
+      'apply_runner_exit_disposition(',
+      'manual run loop',
+    );
+    expect(runLoop).toContain('UnmatchedStderrShapeRollup::default()');
+    expect(runLoop).toContain('runner_unmatched_stderr.record_if_unmatched(&line)');
+    expect(runLoop).toContain('exit_context.runner_unmatched_stderr_shapes');
+    expect(runLoop).toContain('runner_unmatched_stderr.tag_value()');
+    // The capture builder pushes the tag from the rendered value, absent-safe.
+    expect(telemetryContext).toContain('context.runner_unmatched_stderr_shapes');
+    expect(telemetryContext).toContain('"runner_unmatched_stderr_shapes"');
+  });
+
   it('renders the breadcrumb class through the denylist-safe single source', () => {
     const breadcrumb = sliceBetween(
       syncSource,
@@ -252,5 +282,26 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     );
     expect(extras).toContain('"runner_stack_input"');
     expect(extras).toContain('"runner_error_scope"');
+  });
+
+  it('records and attaches the SAME unmatched-stderr axis, so both seams carry it', () => {
+    // Both-seams invariant for the unmatched-stderr axis (HQ-DESKTOP-5H): the
+    // watcher route feeds the same shared recorder and pushes the same tag, so an
+    // unrecognised-line exit is attributed identically on both seams. This is the
+    // axis the manual seam was missing; pinning it here proves the parity holds
+    // from the one shared hq-desktop-core source, not two hand-rolled copies.
+    expect(daemonSource).toContain('.record_if_unmatched(&line)');
+    expect(daemonSource).toContain(
+      'exit_context.runner_unmatched_stderr_shapes = process_unmatched_stderr',
+    );
+    const watcherUnmatchedPush = sliceBetween(
+      daemonSource,
+      'if let Some(shapes) = &context.runner_unmatched_stderr_shapes {',
+      'if let (Some(code), Some(termination))',
+      'watcher unmatched-stderr push',
+    );
+    expect(watcherUnmatchedPush).toContain(
+      'tags.push(("runner_unmatched_stderr_shapes", shapes.clone()))',
+    );
   });
 });
