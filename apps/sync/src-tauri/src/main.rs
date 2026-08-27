@@ -497,6 +497,7 @@ fn main() {
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
+            commands::hq_pro::hq_pro_fetch,
             commands::auth::has_stored_token,
             commands::auth::begin_reauth,
             commands::auth::refresh_tokens,
