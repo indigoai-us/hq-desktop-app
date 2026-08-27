@@ -180,4 +180,6 @@ remove desktop-alt and the intercept's `OpenDesktopAlt` arm.
 - US-003 handoff card
 - US-004 silent co-install
 - US-005 reroute (`plan_desktop_alt_open` / `maybe_intercept_*`)
+- US-007 smoke checklist: [hq-work-handoff-qa.md](hq-work-handoff-qa.md)
+  (live-machine Results stay blank until an operator run)
 - US-007 (later): live-machine smoke checklist before flipping beyond alpha
