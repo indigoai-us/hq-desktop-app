@@ -585,6 +585,12 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "user32_1074" | "kernel_general_13" | "kernel_power_109" | "none" | "unavailable"
         )),
+        // Durable session-end latch (HQ-DESKTOP r3). The producer emits only the
+        // three fixed tokens from `SessionEndLatchReading::class_name`; this
+        // independent egress check degrades a producer bug that shipped a raw
+        // timestamp, host name, or identifier to `[Filtered]` instead of leaking
+        // it — the same discipline as the pull-based probe extras above.
+        "session_end_latch" => Some(matches!(value, "latched" | "absent" | "unavailable")),
         _ => None,
     }
 }
@@ -1345,7 +1351,8 @@ mod tests {
     #[test]
     fn every_windows_teardown_probe_token_survives_and_lookalikes_fail_closed() {
         use hq_desktop_core::sync_outcome::{
-            TeardownLogClass, TeardownLogReading, TeardownShuttingDown, WindowsTeardownVerdict,
+            SessionEndLatchReading, TeardownLogClass, TeardownLogReading, TeardownShuttingDown,
+            WindowsTeardownVerdict,
         };
         // Drive the accepted set from the producer's OWN vocabulary so the egress
         // check can never drift behind a newly-added token and blank a real value.
@@ -1385,13 +1392,29 @@ mod tests {
             );
         }
 
+        // Durable session-end latch (HQ-DESKTOP r3): every producer token must
+        // survive egress, driven from the producer's OWN vocabulary so the check
+        // can never fall behind a newly-added state.
+        for token in [
+            SessionEndLatchReading::Latched.class_name(),
+            SessionEndLatchReading::Absent.class_name(),
+            SessionEndLatchReading::Unavailable.class_name(),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("session_end_latch", token),
+                Some(true),
+                "latch token {token:?} must survive egress"
+            );
+        }
+
         // Raw event-log text — the exact leak the allowlist exists to stop — must
-        // fail closed on every one of the three probe keys.
+        // fail closed on every one of the probe keys AND the latch key.
         let leak = r"1074: shutdown.exe (DESKTOP-QOH7J4N) by Ada at C:\Windows";
         for key in [
             "windows_teardown_probe_verdict",
             "windows_teardown_probe_shuttingdown",
             "windows_teardown_probe_log",
+            "session_end_latch",
         ] {
             assert_eq!(
                 valid_runner_diagnostic_field(key, leak),
