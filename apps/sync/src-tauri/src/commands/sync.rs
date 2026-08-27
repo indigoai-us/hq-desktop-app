@@ -51,6 +51,7 @@ use hq_desktop_core::sync_outcome::{
     RunnerExitDisposition, SyncCancelCause, SYNC_DISK_FULL_DETAIL, RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
+use hq_desktop_core::watcher_fault::UnmatchedStderrShapeRollup;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
@@ -259,6 +260,13 @@ struct ManualRunnerExitContext {
     /// nothing answered. Reporting-only provenance for a libuv abort, which is a
     /// property of the Node build's bundled libuv.
     node_major: Option<u32>,
+    /// The coarse, content-safe structural shape of every stderr line the fatal
+    /// classifier did not recognise, rendered from the shared
+    /// [`UnmatchedStderrShapeRollup`]. `None` when nothing unmatched was recorded,
+    /// so a missing axis is never misread as a positive shape. The watcher route
+    /// already attaches this axis (`daemon.rs`); the manual route now reads the
+    /// SAME shared hq-desktop-core source so the two capture seams cannot drift.
+    runner_unmatched_stderr_shapes: Option<String>,
 }
 
 impl Default for ManualRunnerExitContext {
@@ -271,6 +279,7 @@ impl Default for ManualRunnerExitContext {
             stderr_line_count: 0,
             stdout_line_count: 0,
             node_major: None,
+            runner_unmatched_stderr_shapes: None,
         }
     }
 }
@@ -304,6 +313,10 @@ fn manual_runner_exit_context(
         stderr_line_count,
         stdout_line_count,
         node_major,
+        // Set by the caller after this snapshot from the per-run rollup's
+        // tag_value(), mirroring daemon.rs — `None` here so a context that never
+        // recorded an unmatched line renders no tag.
+        runner_unmatched_stderr_shapes: None,
     }
 }
 
@@ -356,6 +369,15 @@ fn runner_exit_telemetry_context(
     }
     if let Some(causes) = totals.runner_error_causes.tag_value() {
         tags.push(("runner_error_causes", causes));
+    }
+    // The coarse structural shape of the stderr lines the fatal classifier did
+    // not recognise — the manual route's copy of the watcher route's
+    // `runner_unmatched_stderr_shapes` axis (daemon.rs), rendered from the SAME
+    // shared hq-desktop-core rollup so the two seams stay attribute-identical.
+    // Absent (no tag) when nothing unmatched was recorded, so an unexplained exit
+    // whose only evidence was one unrecognised line never renders as silent.
+    if let Some(shapes) = &context.runner_unmatched_stderr_shapes {
+        tags.push(("runner_unmatched_stderr_shapes", shapes.clone()));
     }
     // Runner provenance: npx resolves `~6.14.x` at spawn, so the desktop release
     // tag alone cannot say which runner emitted the errors. Mirrors the watcher
@@ -2488,6 +2510,14 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // the stderr counter, so an exit capture can tell "died before emitting any
     // protocol" from "died mid-transfer".
     let mut runner_stdout_sequence = 0_u32;
+    // Per-run structural rollup of the stderr lines the fatal classifier did not
+    // recognise. Content-safe: only fixed-vocabulary shape tokens and bounded
+    // counts ever leave the process; raw lines stay in hq-sync.log. Mirrors the
+    // watcher route (daemon.rs), reading the SAME shared hq-desktop-core seam so
+    // an unexplained manual-route exit retains a describable structural rollup of
+    // the only evidence that existed instead of reaching Sentry with every axis
+    // empty.
+    let mut runner_unmatched_stderr = UnmatchedStderrShapeRollup::default();
     tauri::async_runtime::spawn_blocking(move || {
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
@@ -2539,6 +2569,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // emits the re-authentication signal even though the runner
                     // intentionally exits 0 after a failed token refresh.
                     handle_runner_stderr_line(&app_bg, &totals, &line);
+                    // Structural rollup of the unrecognised-line remainder, exactly
+                    // as the watcher route records it (daemon.rs:record_if_unmatched):
+                    // a recognised fatal line already has a runner_fatal_class and is
+                    // skipped, so this describes exactly the unattributed lines. The
+                    // line is inspected only to select a fixed token, never retained.
+                    runner_unmatched_stderr.record_if_unmatched(&line);
                     // Modern runners emit error/auth protocol records on stderr.
                     // A parsed one still proves the runner emitted protocol, so
                     // route it through the phase observer to clear pre_protocol.
@@ -2579,7 +2615,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                         );
                         let sync_termination_reason =
                             residual_sync_termination_reason(cancellation, &totals_snapshot);
-                        let exit_context = manual_runner_exit_context(
+                        let mut exit_context = manual_runner_exit_context(
                             &scope,
                             &runner_phase,
                             &runner_stderr_tail,
@@ -2587,6 +2623,12 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                             runner_stdout_sequence,
                             runner_node_major,
                         );
+                        // Additive per-run diagnostic, set after the content
+                        // snapshot and consulted by no capture policy — mirrors
+                        // daemon.rs. `None` when nothing unmatched was recorded, so
+                        // absence never renders as evidence.
+                        exit_context.runner_unmatched_stderr_shapes =
+                            runner_unmatched_stderr.tag_value();
                         let mut effects = ProductionRunnerExitEffects {
                             app: &app_bg,
                             sync_termination_reason,
@@ -3615,6 +3657,52 @@ mod tests {
         }
     }
 
+    /// Build the cross-platform script for the unmatched-stderr artifact proof:
+    /// emit each stdout line to stdout, then each stderr line to stderr, then exit
+    /// `code`. Models a runner that did protocol work (stdout) and then died on one
+    /// unrecognised stderr line. Lines carry no single quote, so single-quoting on
+    /// both shells needs no escaping.
+    fn stdout_then_stderr_spawn_args(
+        stdout_lines: &[String],
+        stderr_lines: &[String],
+        code: i32,
+    ) -> SpawnArgs {
+        #[cfg(unix)]
+        {
+            let mut script = String::new();
+            for line in stdout_lines {
+                script.push_str(&format!("printf '%s\\n' '{line}'; "));
+            }
+            for line in stderr_lines {
+                script.push_str(&format!("printf '%s\\n' '{line}' >&2; "));
+            }
+            script.push_str(&format!("exit {code}"));
+            SpawnArgs {
+                cmd: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                cwd: None,
+                env: None,
+            }
+        }
+        #[cfg(windows)]
+        {
+            let mut script = String::new();
+            for line in stdout_lines {
+                script.push_str(&format!("[Console]::Out.WriteLine('{line}'); "));
+            }
+            for line in stderr_lines {
+                script.push_str(&format!("[Console]::Error.WriteLine('{line}'); "));
+            }
+            script.push_str(&format!("exit {code}"));
+            SpawnArgs {
+                cmd: "powershell.exe".to_string(),
+                args: vec!["-NoProfile".to_string(), "-Command".to_string(), script],
+                cwd: None,
+                env: None,
+            }
+        }
+    }
+
     /// Artifact/E2E proof for HQ-DESKTOP-4T: a genuine child floods stderr with
     /// hq-cloud's verbatim pull-leg error prose (carrying realistic company-root-
     /// relative vault keys) and exits 2. Driving it through the production
@@ -3786,6 +3874,225 @@ mod tests {
             assert!(
                 !serialized.contains(forbidden),
                 "final event leaked seeded runner content: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_exit_capture_attaches_unmatched_stderr_shapes_when_recorded() {
+        // A manual exit whose run recorded unrecognised stderr lines attaches the
+        // runner_unmatched_stderr_shapes tag, rendered byte-for-byte from the shared
+        // UnmatchedStderrShapeRollup — the same axis the watcher route already
+        // carries (daemon.rs). This is the axis that reached Sentry empty on the
+        // reported HQ-DESKTOP-5H manual-route exit.
+        let mut rollup = UnmatchedStderrShapeRollup::default();
+        rollup.record_if_unmatched("runner stopped unexpectedly");
+        let context = ManualRunnerExitContext {
+            runner_unmatched_stderr_shapes: rollup.tag_value(),
+            ..Default::default()
+        };
+        let (tags, _extras) =
+            runner_exit_telemetry_context(Some(1), &RunTotals::default(), &context, "uncancelled");
+        assert!(
+            tags.iter().any(|(key, value)| {
+                *key == "runner_unmatched_stderr_shapes" && value.as_str() == "other:1"
+            }),
+            "manual exit capture must attach the unmatched-stderr rollup: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn manual_exit_capture_omits_unmatched_stderr_shapes_when_empty() {
+        // A run that recorded nothing unmatched attaches no tag, so a missing axis
+        // is never misread as a positive shape — mirrors the daemon.rs negative
+        // assertion in watcher_capture_reports_not_applicable_fault_provenance.
+        let context = ManualRunnerExitContext::default();
+        assert!(context.runner_unmatched_stderr_shapes.is_none());
+        let (tags, _extras) =
+            runner_exit_telemetry_context(Some(1), &RunTotals::default(), &context, "uncancelled");
+        assert!(
+            tags.iter()
+                .all(|(key, _)| *key != "runner_unmatched_stderr_shapes"),
+            "an empty rollup must attach no tag: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn manual_and_watcher_seams_render_the_unmatched_rollup_identically() {
+        // Route parity: the identical ordered stderr stream drives two independent
+        // UnmatchedStderrShapeRollup instances — modeling the two capture seams — to
+        // the SAME rendered tag, because both routes feed the one shared
+        // hq-desktop-core recorder. A recognised fatal line is excluded identically
+        // on both, proving the shared record_if_unmatched gate (not a per-route
+        // copy) decides the axis, so the manual and watcher seams cannot drift.
+        let stream = [
+            // Recognised Windows-watcher fatal → excluded on both seams.
+            "ReadDirectoryChangesW: (5) Access is denied.",
+            // Unrecognised remainder → counted identically on both seams.
+            r#"{"type":"error","company":"acme","path":"knowledge/a.md","message":"x"}"#,
+            r"C:\Users\Ada\leak.txt is bad",
+            "runner stopped unexpectedly",
+        ];
+        let mut manual_seam = UnmatchedStderrShapeRollup::default();
+        let mut watcher_seam = UnmatchedStderrShapeRollup::default();
+        for line in stream {
+            manual_seam.record_if_unmatched(line);
+            watcher_seam.record_if_unmatched(line);
+        }
+        assert_eq!(manual_seam.tag_value(), watcher_seam.tag_value());
+        // Non-vacuous: the recognised line is excluded and the three unmatched
+        // shapes render, so a route that stopped feeding the seam would diverge.
+        assert_eq!(
+            manual_seam.tag_value(),
+            Some("ndjson_record:1,path_like:1,other:1".to_string())
+        );
+    }
+
+    /// Artifact/E2E proof for HQ-DESKTOP-5H: a genuine child does protocol work
+    /// (16 stdout lines) and then dies on exactly one unrecognised plain-stderr
+    /// line carrying no fatal signature and no stack frame, emitting zero ndjson
+    /// error records, then exits code 1 — the exact shape of the reported manual-
+    /// route event. Driving it through the production breadcrumb + RunTotals +
+    /// capture path (now recording the unmatched-stderr rollup) and then
+    /// `hq_telemetry::before_send` must yield a scrubbed event that (1) newly
+    /// carries runner_unmatched_stderr_shapes=other:1 — the axis that was empty on
+    /// the real event — un-[Filtered]; (2) still reproduces the observed collapse
+    /// (runner_fatal_class=none, runner_stack_shape=all_redacted,
+    /// runner_stack_signature=unknown, the plain-stderr stack input, the 16/1
+    /// stdout/stderr counts, and the alerting disposition); and (3) leaks not one
+    /// stderr or stdout byte. On the base revision the field does not exist, so
+    /// this test cannot compile there — the source-contract e2e spec is the
+    /// portable base-red proof.
+    #[test]
+    fn real_child_scan_exit_1_carries_the_unmatched_stderr_rollup_and_is_content_safe() {
+        let stdout_lines: Vec<String> = (0..16).map(|i| format!("protocol line {i}")).collect();
+        // One unrecognised plain-stderr line: not ndjson, no drive path, no colon
+        // identifier, no fatal signature — the coarse `other` shape, exactly as the
+        // reported event's single line.
+        let stderr_lines = vec!["runner stopped unexpectedly".to_string()];
+        let spawn = stdout_then_stderr_spawn_args(&stdout_lines, &stderr_lines, 1);
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 1".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut stderr_sequence = 0_u32;
+        let mut stdout_sequence = 0_u32;
+        let mut unmatched = UnmatchedStderrShapeRollup::default();
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-scan-exit-1", &spawn, |event| match event {
+                ProcessEvent::Stdout(_) => {
+                    // Count protocol lines exactly like the production stdout arm.
+                    stdout_sequence = stdout_sequence.saturating_add(1);
+                }
+                ProcessEvent::Stderr(line) => {
+                    // Exactly the production stderr arm: sequence, breadcrumb, tail,
+                    // RunTotals re-ingest, and the unmatched-stderr rollup.
+                    stderr_sequence = stderr_sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(stderr_sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line.clone(),
+                    );
+                    unmatched.record_if_unmatched(&line);
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+            })
+            .expect("real fake runner should run");
+
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            // Disposition: an unexplained non-zero exit with no alertable error
+            // still alerts and captures — the change is additive attribution only.
+            assert!(hq_desktop_core::sync_outcome::should_alert_on_nonzero_exit(
+                Some(1),
+                None,
+                snapshot.saw_error,
+                snapshot.saw_alertable_error,
+                snapshot.saw_node_too_old,
+            ));
+            let mut context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                stderr_sequence,
+                stdout_sequence,
+                None,
+            );
+            context.runner_unmatched_stderr_shapes = unmatched.tag_value();
+            capture_runner_exit_error(Some(1), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(1), None, false)));
+        assert_eq!(stdout_sequence, 16);
+        assert_eq!(stderr_sequence, 1);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("scan-exit event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // (1) The axis that was empty on the real event now carries the shape and
+        // survives egress un-[Filtered].
+        assert_eq!(event.tags["runner_unmatched_stderr_shapes"], "other:1");
+
+        // (2) The observed collapse is reproduced, proving the fixture matches the
+        // real event rather than a strawman.
+        assert_eq!(event.tags["runner_fatal_class"], "none");
+        assert_eq!(event.tags["runner_stack_shape"], "all_redacted");
+        assert_eq!(event.tags["runner_stack_signature"], "unknown");
+        assert_eq!(event.tags["sync_route"], "manual");
+        assert_eq!(
+            event.extra["runner_stack_input"],
+            sentry::protocol::Value::String("plain_stderr".to_string())
+        );
+        assert_eq!(
+            event.extra["runner_stderr_line_count"],
+            sentry::protocol::Value::Number(1.into())
+        );
+        assert_eq!(
+            event.extra["runner_stdout_line_count"],
+            sentry::protocol::Value::Number(16.into())
+        );
+        assert_eq!(
+            event.extra["saw_alertable_error"],
+            sentry::protocol::Value::Bool(false)
+        );
+
+        // The retained breadcrumb is the fixed content-safe grammar and exactly
+        // reproduces the observed `runner stderr #1 (other;none)`.
+        let breadcrumbs: Vec<&str> = event
+            .breadcrumbs
+            .values
+            .iter()
+            .filter_map(|breadcrumb| breadcrumb.message.as_deref())
+            .collect();
+        assert!(
+            breadcrumbs.contains(&"runner stderr #1 (other;none)"),
+            "expected the observed breadcrumb, got: {breadcrumbs:?}"
+        );
+        for message in &breadcrumbs {
+            assert!(
+                message.starts_with("runner stderr #") && message.ends_with("(other;none)"),
+                "unexpected breadcrumb shape: {message:?}"
+            );
+        }
+
+        // (3) No stderr or stdout byte leaks: the rollup emits `other:1`, never the
+        // line, and stdout never reaches Sentry at all.
+        for forbidden in ["runner stopped unexpectedly", "protocol line"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "final event leaked runner content: {forbidden}"
             );
         }
     }
