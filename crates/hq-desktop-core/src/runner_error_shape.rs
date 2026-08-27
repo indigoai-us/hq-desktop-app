@@ -22,6 +22,8 @@
 //! mislabel or leak.
 
 use crate::events::SyncEvent;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 /// Sentinel `path` value the runner uses for a company-scope (non per-file)
 /// error, mirroring hq-cloud's fanout error emitter. Kept as one constant so the
@@ -38,6 +40,24 @@ pub const DISCOVERY_ERROR_PATH_SENTINEL: &str = "(discovery)";
 /// tag-value limit even when many distinct shapes or path roots occur in one
 /// flood, while still surfacing the dominant contributors.
 const ROLLUP_TAG_TOP_N: usize = 3;
+
+/// The hq-cloud version whose `this.name` identity set the [`RunnerErrorCause`]
+/// vocabulary below was derived from. Pinned equal to
+/// [`crate::hq_cloud::HQ_CLOUD_VERSION`] by
+/// `cause_vocabulary_source_version_is_pinned_to_the_runner`, so bumping the
+/// runner pin without re-deriving the identity list from the new hq-cloud source
+/// fails the build. This is the guard against a silent vocabulary-drift reopen:
+/// the prior fix pinned its vocabulary to a 16-name *sample* of hq-cloud's
+/// identities and collapsed every out-of-sample company-scope fault back to
+/// `unknown`, which is exactly the recurrence this change closes.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.37";
+
+/// Length of a `runner_error_cause_signature` token: the first 12 lowercase hex
+/// chars of the SHA-256 of a gated leading identity. Long enough that a collision
+/// between two real error-class names is negligible, short enough to keep the
+/// bounded tag well under Sentry's limit and to stay offline-decodable by hashing
+/// candidate class names.
+const SIGNATURE_HEX_LEN: usize = 12;
 
 /// Fixed, content-safe runner error *message shapes*.
 ///
@@ -641,10 +661,17 @@ impl RunnerErrorHttpRollup {
 /// (the original HQ-DESKTOP-4T loss). Enforced by a machine-checked test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunnerErrorCause {
-    // hq-cloud error classes (this.name), grounded in the cited source sites.
+    // ── hq-cloud error classes (this.name) ────────────────────────────────────
+    // Derived mechanically from the complete `this.name = "…"` set across the
+    // pinned hq-cloud source (see `CAUSE_VOCABULARY_SOURCE_VERSION`), so this is
+    // the producer's ACTUAL identity set — not the 16-name sample the prior fix
+    // took, whose out-of-sample faults collapsed to `unknown` and reopened this
+    // lane. Each subclass sets `this.name`, which `describeError` emits as the
+    // leading token.
     EntityNotFound,
     EntityPermission,
     EntityResolution,
+    SourceNotFound,
     OperationLocked,
     OperationLockUnwritable,
     ScopeShrinkBlocked,
@@ -653,12 +680,46 @@ pub enum RunnerErrorCause {
     MultipartSourceChanged,
     MultipartAbort,
     RealtimeConflict,
+    RealtimeEnrollmentUnavailable,
+    SyncMutationNotEnrolled,
     UnreachablePushPaths,
+    ServerOwnedPushPaths,
     PushEventDecode,
+    // Retained from the prior vocabulary though the class is absent from the
+    // current pinned source: a within-range older runner may still emit it, and a
+    // token that never fires is harmless, whereas dropping it could lose a real
+    // identity mid-rollout.
     LocalSnapshotChanged,
     RescuePathChanged,
+    CursorRetired,
+    BaseVersionUnavailable,
+    DurableApply,
+    DurableApplyRecovery,
+    JournalCheckpoint,
+    PrematureJournalEntry,
+    SnapshotClient,
+    StateStoreCorruption,
+    StateStoreLock,
+    StateStoreReducer,
     VaultIdentity,
-    // AWS S3/STS error names.
+    VaultClient,
+    VaultConflict,
+    VaultNotFound,
+    VaultPermissionDenied,
+    VendDenied,
+    RateLimited,
+    PresignPreconditionMissing,
+    OutpostHttp,
+    TombstoneFetch,
+    UnregisteredCompanySkill,
+    RefreshLockTimeout,
+    // Cognito identity classes, spelled `cognito_identity[_refresh]` so the
+    // server-side `@password:filter` cannot eat them (never `*_auth`/`*_token`).
+    CognitoIdentity,
+    CognitoIdentityRefresh,
+    DanglingSymlinkParent,
+    WindowsSymlinkPrivilege,
+    // ── AWS S3/STS error names ────────────────────────────────────────────────
     AccessDenied,
     NoSuchKey,
     NoSuchBucket,
@@ -668,18 +729,27 @@ pub enum RunnerErrorCause {
     ExpiredIdentity,
     InvalidIdentity,
     UnknownError,
-    // Unrecognised — never a nearest guess. Distinct from `UnknownError`, which
-    // is the AWS SDK's own `UnknownError` wrapper name.
-    Unknown,
+    // ── Residual (never a nearest guess) ──────────────────────────────────────
+    // A leading, uppercase-initial identity token was present but matched nothing
+    // in the vocabulary above: a class hq-cloud added since the pin, or a
+    // non-hq-cloud (Node/undici/AWS) error name. Self-describing — correlatable
+    // across machines through the `runner_error_cause_signature` axis and
+    // offline-decodable by hashing candidate class names.
+    UnknownNamed,
+    // `describeError` emitted no leading identity token at all: a plain `Error`
+    // whose name was suppressed, a leading `key=value`, or lower-cased pull-leg
+    // prose. There is no identity to name, so no signature is attached.
+    UnknownUnnamed,
 }
 
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 26] = [
+    pub const ALL: [RunnerErrorCause; 56] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
+        Self::SourceNotFound,
         Self::OperationLocked,
         Self::OperationLockUnwritable,
         Self::ScopeShrinkBlocked,
@@ -688,11 +758,39 @@ impl RunnerErrorCause {
         Self::MultipartSourceChanged,
         Self::MultipartAbort,
         Self::RealtimeConflict,
+        Self::RealtimeEnrollmentUnavailable,
+        Self::SyncMutationNotEnrolled,
         Self::UnreachablePushPaths,
+        Self::ServerOwnedPushPaths,
         Self::PushEventDecode,
         Self::LocalSnapshotChanged,
         Self::RescuePathChanged,
+        Self::CursorRetired,
+        Self::BaseVersionUnavailable,
+        Self::DurableApply,
+        Self::DurableApplyRecovery,
+        Self::JournalCheckpoint,
+        Self::PrematureJournalEntry,
+        Self::SnapshotClient,
+        Self::StateStoreCorruption,
+        Self::StateStoreLock,
+        Self::StateStoreReducer,
         Self::VaultIdentity,
+        Self::VaultClient,
+        Self::VaultConflict,
+        Self::VaultNotFound,
+        Self::VaultPermissionDenied,
+        Self::VendDenied,
+        Self::RateLimited,
+        Self::PresignPreconditionMissing,
+        Self::OutpostHttp,
+        Self::TombstoneFetch,
+        Self::UnregisteredCompanySkill,
+        Self::RefreshLockTimeout,
+        Self::CognitoIdentity,
+        Self::CognitoIdentityRefresh,
+        Self::DanglingSymlinkParent,
+        Self::WindowsSymlinkPrivilege,
         Self::AccessDenied,
         Self::NoSuchKey,
         Self::NoSuchBucket,
@@ -702,7 +800,8 @@ impl RunnerErrorCause {
         Self::ExpiredIdentity,
         Self::InvalidIdentity,
         Self::UnknownError,
-        Self::Unknown,
+        Self::UnknownNamed,
+        Self::UnknownUnnamed,
     ];
 
     /// Fixed vocabulary safe for Sentry tags. Never derived from runner input.
@@ -711,6 +810,7 @@ impl RunnerErrorCause {
             Self::EntityNotFound => "entity_not_found",
             Self::EntityPermission => "entity_permission",
             Self::EntityResolution => "entity_resolution",
+            Self::SourceNotFound => "source_not_found",
             Self::OperationLocked => "operation_locked",
             Self::OperationLockUnwritable => "operation_lock_unwritable",
             Self::ScopeShrinkBlocked => "scope_shrink_blocked",
@@ -719,11 +819,39 @@ impl RunnerErrorCause {
             Self::MultipartSourceChanged => "multipart_source_changed",
             Self::MultipartAbort => "multipart_abort",
             Self::RealtimeConflict => "realtime_conflict",
+            Self::RealtimeEnrollmentUnavailable => "realtime_enrollment_unavailable",
+            Self::SyncMutationNotEnrolled => "sync_mutation_not_enrolled",
             Self::UnreachablePushPaths => "unreachable_push_paths",
+            Self::ServerOwnedPushPaths => "server_owned_push_paths",
             Self::PushEventDecode => "push_event_decode",
             Self::LocalSnapshotChanged => "local_snapshot_changed",
             Self::RescuePathChanged => "rescue_path_changed",
+            Self::CursorRetired => "cursor_retired",
+            Self::BaseVersionUnavailable => "base_version_unavailable",
+            Self::DurableApply => "durable_apply",
+            Self::DurableApplyRecovery => "durable_apply_recovery",
+            Self::JournalCheckpoint => "journal_checkpoint",
+            Self::PrematureJournalEntry => "premature_journal_entry",
+            Self::SnapshotClient => "snapshot_client",
+            Self::StateStoreCorruption => "state_store_corruption",
+            Self::StateStoreLock => "state_store_lock",
+            Self::StateStoreReducer => "state_store_reducer",
             Self::VaultIdentity => "vault_identity",
+            Self::VaultClient => "vault_client",
+            Self::VaultConflict => "vault_conflict",
+            Self::VaultNotFound => "vault_not_found",
+            Self::VaultPermissionDenied => "vault_permission_denied",
+            Self::VendDenied => "vend_denied",
+            Self::RateLimited => "rate_limited",
+            Self::PresignPreconditionMissing => "presign_precondition_missing",
+            Self::OutpostHttp => "outpost_http",
+            Self::TombstoneFetch => "tombstone_fetch",
+            Self::UnregisteredCompanySkill => "unregistered_company_skill",
+            Self::RefreshLockTimeout => "refresh_lock_timeout",
+            Self::CognitoIdentity => "cognito_identity",
+            Self::CognitoIdentityRefresh => "cognito_identity_refresh",
+            Self::DanglingSymlinkParent => "dangling_symlink_parent",
+            Self::WindowsSymlinkPrivilege => "windows_symlink_privilege",
             Self::AccessDenied => "access_denied",
             Self::NoSuchKey => "no_such_key",
             Self::NoSuchBucket => "no_such_bucket",
@@ -733,7 +861,8 @@ impl RunnerErrorCause {
             Self::ExpiredIdentity => "expired_identity",
             Self::InvalidIdentity => "invalid_identity",
             Self::UnknownError => "unknown_error",
-            Self::Unknown => "unknown",
+            Self::UnknownNamed => "unknown_named",
+            Self::UnknownUnnamed => "unknown_unnamed",
         }
     }
 }
@@ -749,10 +878,13 @@ impl RunnerErrorCause {
 /// values above.
 fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
     Some(match raw {
-        // hq-cloud custom error class names (this.name).
+        // hq-cloud custom error class names (this.name). The complete set derived
+        // from the pinned hq-cloud source; every name here corresponds to a
+        // `this.name = "…"` site at `CAUSE_VOCABULARY_SOURCE_VERSION`.
         "EntityNotFoundError" => RunnerErrorCause::EntityNotFound,
         "EntityPermissionError" => RunnerErrorCause::EntityPermission,
         "EntityResolutionError" => RunnerErrorCause::EntityResolution,
+        "SourceNotFoundError" => RunnerErrorCause::SourceNotFound,
         "OperationLockedError" => RunnerErrorCause::OperationLocked,
         "OperationLockUnwritableError" => RunnerErrorCause::OperationLockUnwritable,
         "ScopeShrinkBlockedError" => RunnerErrorCause::ScopeShrinkBlocked,
@@ -761,15 +893,45 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "MultipartSourceChangedError" => RunnerErrorCause::MultipartSourceChanged,
         "MultipartAbortError" => RunnerErrorCause::MultipartAbort,
         "RealtimeConflictError" => RunnerErrorCause::RealtimeConflict,
+        "RealtimeEnrollmentUnavailableError" => RunnerErrorCause::RealtimeEnrollmentUnavailable,
+        "SyncMutationNotEnrolledError" => RunnerErrorCause::SyncMutationNotEnrolled,
         "UnreachablePushPathsError" => RunnerErrorCause::UnreachablePushPaths,
+        "ServerOwnedPushPathsError" => RunnerErrorCause::ServerOwnedPushPaths,
         "PushEventDecodeError" => RunnerErrorCause::PushEventDecode,
         "LocalSnapshotChangedError" => RunnerErrorCause::LocalSnapshotChanged,
         "RescuePathChangedError" => RunnerErrorCause::RescuePathChanged,
+        "CursorRetiredError" => RunnerErrorCause::CursorRetired,
+        "AuthoritativeBaseVersionUnavailableError" => RunnerErrorCause::BaseVersionUnavailable,
+        "DurableApplyError" => RunnerErrorCause::DurableApply,
+        "DurableApplyRecoveryError" => RunnerErrorCause::DurableApplyRecovery,
+        "JournalCheckpointError" => RunnerErrorCause::JournalCheckpoint,
+        "PrematureJournalEntryError" => RunnerErrorCause::PrematureJournalEntry,
+        "SnapshotClientError" => RunnerErrorCause::SnapshotClient,
+        "StateStoreCorruptionError" => RunnerErrorCause::StateStoreCorruption,
+        "StateStoreLockError" => RunnerErrorCause::StateStoreLock,
+        "StateStoreReducerError" => RunnerErrorCause::StateStoreReducer,
         // The vault auth-error class, spelled safely so the scrubber cannot eat it.
         "VaultAuthError" => RunnerErrorCause::VaultIdentity,
+        "VaultClientError" => RunnerErrorCause::VaultClient,
+        "VaultConflictError" => RunnerErrorCause::VaultConflict,
+        "VaultNotFoundError" => RunnerErrorCause::VaultNotFound,
+        "VaultPermissionDeniedError" => RunnerErrorCause::VaultPermissionDenied,
+        "VendDeniedError" => RunnerErrorCause::VendDenied,
+        "RateLimited" => RunnerErrorCause::RateLimited,
+        "PresignPreconditionMissing" => RunnerErrorCause::PresignPreconditionMissing,
+        "OutpostHttpError" => RunnerErrorCause::OutpostHttp,
+        "TombstoneFetchError" => RunnerErrorCause::TombstoneFetch,
+        "UnregisteredCompanySkillError" => RunnerErrorCause::UnregisteredCompanySkill,
+        "RefreshLockTimeoutError" => RunnerErrorCause::RefreshLockTimeout,
+        // Cognito identity classes, emitted as the safe `cognito_identity` spelling.
+        "CognitoAuthError" => RunnerErrorCause::CognitoIdentity,
+        "CognitoRefreshError" => RunnerErrorCause::CognitoIdentityRefresh,
+        "DanglingSymlinkParentError" => RunnerErrorCause::DanglingSymlinkParent,
+        "WindowsSymlinkPrivilegeError" => RunnerErrorCause::WindowsSymlinkPrivilege,
         // AWS S3/STS error names (surfaced as `e.name` by the SDK, or as a
-        // `code=`/`cause=` value by older wrappers).
-        "AccessDenied" => RunnerErrorCause::AccessDenied,
+        // `code=`/`cause=` value by older wrappers). hq-cloud's own
+        // `AccessDeniedError` class shares the `access_denied` identity.
+        "AccessDenied" | "AccessDeniedError" => RunnerErrorCause::AccessDenied,
         "NoSuchKey" => RunnerErrorCause::NoSuchKey,
         "NoSuchBucket" => RunnerErrorCause::NoSuchBucket,
         "SlowDown" => RunnerErrorCause::SlowDown,
@@ -785,7 +947,11 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
 /// Map an untrusted runner error message to a fixed cause token. Reads ONLY the
 /// leading name token and the values of the `code=`, `cause=`, and `syscall=`
 /// keys — never the `host=` value or any free prose — each looked up in the
-/// closed allow-list. Returns `Unknown` rather than a nearest guess.
+/// closed allow-list. An unmatched message is never a nearest guess: it splits
+/// into [`RunnerErrorCause::UnknownNamed`] when a leading, uppercase-initial
+/// identity token was present (still correlatable via
+/// [`runner_error_cause_signature`]) and [`RunnerErrorCause::UnknownUnnamed`]
+/// otherwise.
 pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
     // 1) The leading name token, e.g. `AccessDenied` or `EntityPermissionError`.
     // Skipped when the first token is a `key=value` (`describeError` omits the
@@ -815,16 +981,82 @@ pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
             return matched;
         }
     }
-    RunnerErrorCause::Unknown
+    // 3) Unmatched residual, never a nearest guess. A leading, uppercase-initial
+    // identity token makes this `UnknownNamed` — a real but unlisted class we can
+    // still correlate by signature; anything else (a suppressed name, a leading
+    // `key=value`, pull-leg prose, a path) is `UnknownUnnamed`.
+    if leading_error_identity(message).is_some() {
+        RunnerErrorCause::UnknownNamed
+    } else {
+        RunnerErrorCause::UnknownUnnamed
+    }
+}
+
+/// The leading error-class identity of a `describeError` rendering, or `None`
+/// when the message carries none. `describeError` emits `e.name` first, and only
+/// when `e.name !== "Error"`, so a real fault leads with its CamelCase class name.
+///
+/// Gated to a bare, uppercase-initial identifier `[A-Z][A-Za-z0-9]{0,63}`: every
+/// hq-cloud error class and every AWS/Node error name is uppercase-initial
+/// CamelCase, so this admits real identities while refusing — and therefore never
+/// hashing into a signature — a path, URL, host, quoted string, any token with a
+/// separator, and lower-cased pull-leg prose. The literal `Error` is excluded
+/// because `describeError` never emits it as a name.
+fn leading_error_identity(message: &str) -> Option<&str> {
+    let first = message.split_whitespace().next()?;
+    if first == "Error" {
+        return None;
+    }
+    let bytes = first.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 || !bytes[0].is_ascii_uppercase() {
+        return None;
+    }
+    bytes[1..]
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric())
+        .then_some(first)
+}
+
+/// The `runner_error_cause_signature` of a runner error message: the first
+/// [`SIGNATURE_HEX_LEN`] lowercase-hex chars of the SHA-256 of its gated leading
+/// identity, or `None` unless the message is an [`RunnerErrorCause::UnknownNamed`]
+/// residual. A matched cause needs no signature (already named); an
+/// `UnknownUnnamed` residual has no gated identifier to hash.
+///
+/// Content-safe by construction: only a bare `[A-Z][A-Za-z0-9]{0,63}` identifier
+/// is ever hashed (no path, host, URL, quote, or separator can pass the gate),
+/// and only a fixed-length hex digest is returned — never a runner byte. The
+/// digest is stable across machines, so the same unlisted class correlates, and
+/// is offline-decodable by hashing candidate class names.
+pub fn runner_error_cause_signature(message: &str) -> Option<String> {
+    if !matches!(
+        classify_runner_error_cause(message),
+        RunnerErrorCause::UnknownNamed
+    ) {
+        return None;
+    }
+    let identity = leading_error_identity(message)?;
+    let digest = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    Some(digest[..SIGNATURE_HEX_LEN].to_string())
 }
 
 /// Saturating per-pass counts of the closed cause vocabulary. Renders a compact
 /// Sentry tag such as `access_denied:8,unknown:160`. Every error is recorded,
 /// with `unknown` for an unrecognised one, so the `unknown` count itself signals
 /// when the vocabulary needs one more entry.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerErrorCauseRollup {
     counts: [u32; RunnerErrorCause::ALL.len()],
+}
+
+impl Default for RunnerErrorCauseRollup {
+    // `#[derive(Default)]` only covers arrays up to length 32; the completed
+    // vocabulary is longer, so the zero-initialised array is spelled by hand.
+    fn default() -> Self {
+        Self {
+            counts: [0; RunnerErrorCause::ALL.len()],
+        }
+    }
 }
 
 impl RunnerErrorCauseRollup {
@@ -849,6 +1081,45 @@ impl RunnerErrorCauseRollup {
     /// runner error records were seen, so no tag should be sent.
     pub fn tag_value(&self) -> Option<String> {
         render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+/// Saturating per-pass counts of the `runner_error_cause_signature` axis: a
+/// bounded, content-safe correlator for the [`RunnerErrorCause::UnknownNamed`]
+/// residual — an error whose leading identity is real but not yet in the cause
+/// vocabulary. Each key is a fixed [`SIGNATURE_HEX_LEN`]-char lowercase-hex
+/// SHA-256 prefix of a gated `[A-Z][A-Za-z0-9]{0,63}` identifier (never a runner
+/// byte), so the SAME unlisted identity is correlatable across machines and
+/// offline-decodable by hashing candidate class names. A matched cause or an
+/// `UnknownUnnamed` residual contributes nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorCauseSignatureRollup {
+    /// Keyed by hex signature; `BTreeMap` gives a deterministic (ascending-hex)
+    /// tie-break so the rendered tag never flaps for the same multiset.
+    counts: BTreeMap<String, u32>,
+}
+
+impl RunnerErrorCauseSignatureRollup {
+    /// Classify one runner error message and, when it is an `UnknownNamed`
+    /// residual, increment its signature count. Any other message increments
+    /// nothing, so a pass with no unlisted identity renders no tag.
+    pub fn record(&mut self, message: &str) {
+        if let Some(signature) = runner_error_cause_signature(message) {
+            let count = self.counts.entry(signature).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+
+    /// Render the top-N signatures by count as a bounded Sentry tag such as
+    /// `1a2b3c4d5e6f:9`. `None` when no unlisted identity was seen, so no tag
+    /// should be sent. Ties break by signature ascending (`BTreeMap` order).
+    pub fn tag_value(&self) -> Option<String> {
+        let pairs: Vec<(&str, u32)> = self
+            .counts
+            .iter()
+            .map(|(signature, count)| (signature.as_str(), *count))
+            .collect();
+        render_top_n(&pairs, ROLLUP_TAG_TOP_N)
     }
 }
 
@@ -908,10 +1179,13 @@ pub fn classify_runner_stack_input(tail: &[String]) -> RunnerStackInput {
 }
 
 /// Shared bounded renderer for the count rollups: keep nonzero entries, order by
-/// count descending with a stable declaration-order tie-break, take the top `n`,
-/// and join as `token:count`. Returns `None` when every count is zero.
-fn render_top_n(counts: &[(&'static str, u32)], n: usize) -> Option<String> {
-    let mut nonzero: Vec<(&'static str, u32)> = counts
+/// count descending with a stable input-order tie-break, take the top `n`, and
+/// join as `token:count`. Returns `None` when every count is zero. Generic over
+/// the token's lifetime so both the fixed-vocabulary rollups (whose tokens are
+/// `&'static str`) and the signature rollup (whose tokens borrow a `BTreeMap`
+/// key) share one renderer; the caller supplies the tie-break order.
+fn render_top_n(counts: &[(&str, u32)], n: usize) -> Option<String> {
+    let mut nonzero: Vec<(&str, u32)> = counts
         .iter()
         .copied()
         .filter(|(_, count)| *count > 0)
@@ -1331,15 +1605,21 @@ mod tests {
     // ── Cause axis ────────────────────────────────────────────────────────────
 
     #[test]
-    fn classify_cause_maps_names_and_key_values_and_defaults_to_unknown() {
+    fn classify_cause_maps_names_and_key_values_and_splits_the_residual() {
         use RunnerErrorCause::*;
         for (message, expected) in [
-            // Leading hq-cloud class names.
+            // Leading hq-cloud class names — sampled across the completed vocabulary.
             ("EntityPermissionError access is denied for cmp_x", EntityPermission),
             ("OperationLockedError the operation lock is held", OperationLocked),
             ("DeltaGapError delta cursor gap detected", DeltaGap),
             ("RealtimeConflictError concurrent mutation", RealtimeConflict),
             ("VaultAuthError session is not valid", VaultIdentity),
+            // Newly covered identities — the classes the prior sample missed.
+            ("VaultNotFoundError vault entry not found for company", VaultNotFound),
+            ("StateStoreCorruptionError reducer state is corrupt", StateStoreCorruption),
+            ("RateLimited too many requests", RateLimited),
+            ("CognitoAuthError identity could not be established", CognitoIdentity),
+            ("AccessDeniedError company leg refused", AccessDenied),
             // Leading AWS error names.
             ("AccessDenied http=403 denied", AccessDenied),
             ("NoSuchKey http=404 missing", NoSuchKey),
@@ -1348,12 +1628,20 @@ mod tests {
             ("Error code=SlowDown request throttled", SlowDown),
             ("WrapperError cause=InternalError upstream failed", InternalError),
             ("StsError code=ExpiredToken the security token expired", ExpiredIdentity),
-            // A syscall/errno value is never a cause identity → falls through.
-            ("Error syscall=unlink code=EPERM permission denied", Unknown),
-            // Unmodelled leading name → Unknown, never a nearest guess.
-            ("KaboomError the sky is falling", Unknown),
-            // Per-file pull-leg prose has no identity → Unknown.
-            ("presigned GET failed for knowledge/a.md: 403 Forbidden", Unknown),
+            // ── Residual split (never a nearest guess) ────────────────────────
+            // A syscall/errno value is never a cause identity; the leading token
+            // is the sentinel `Error`, which describeError never emits as a name,
+            // so this is unnamed.
+            ("Error syscall=unlink code=EPERM permission denied", UnknownUnnamed),
+            // Unmodelled uppercase-initial leading name → named (still hashable).
+            ("KaboomError the sky is falling", UnknownNamed),
+            ("UndiciHeadersTimeoutError request timed out", UnknownNamed),
+            // Lower-cased per-file pull-leg prose is not a class name → unnamed.
+            ("presigned GET failed for knowledge/a.md: 403 Forbidden", UnknownUnnamed),
+            // A leading key=value (a plain Node system error) → unnamed.
+            ("code=ENOENT syscall=open no such file", UnknownUnnamed),
+            // A leading path/quote can never be a name → unnamed (and unhashable).
+            ("'/vault/secret.env' could not be read", UnknownUnnamed),
         ] {
             assert_eq!(
                 classify_runner_error_cause(message),
@@ -1387,7 +1675,7 @@ mod tests {
     fn cause_rollup_renders_top_three_by_count_with_stable_order() {
         let mut rollup = RunnerErrorCauseRollup::default();
         for _ in 0..160 {
-            rollup.record("presigned GET failed for repos/x: 500"); // unknown
+            rollup.record("presigned GET failed for repos/x: 500"); // unknown_unnamed
         }
         for _ in 0..8 {
             rollup.record("AccessDenied http=403 denied");
@@ -1396,9 +1684,10 @@ mod tests {
             rollup.record("NoSuchKey http=404 missing");
         }
         let value = rollup.tag_value().expect("nonzero rollup renders a tag");
-        // 160 unknown wins; access_denied and no_such_key tie at 8, and declaration
-        // order (access_denied precedes no_such_key) breaks it deterministically.
-        assert_eq!(value, "unknown:160,access_denied:8,no_such_key:8");
+        // 160 unknown_unnamed wins; access_denied and no_such_key tie at 8, and
+        // declaration order (access_denied precedes no_such_key) breaks it
+        // deterministically.
+        assert_eq!(value, "unknown_unnamed:160,access_denied:8,no_such_key:8");
         assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
         assert_eq!(RunnerErrorCauseRollup::default().tag_value(), None);
     }
@@ -1451,5 +1740,226 @@ mod tests {
         assert_eq!(cause_value, "access_denied:7205");
         // Both well under Sentry's 200-char tag-value limit.
         assert!(http_value.len() < 200 && cause_value.len() < 200);
+    }
+
+    // ── Completed vocabulary + residual signature (this reopen) ────────────────
+
+    /// The COMPLETE hq-cloud `this.name` identity set at
+    /// `CAUSE_VOCABULARY_SOURCE_VERSION`, derived mechanically from
+    /// `git grep -hoE 'this\.name = "[A-Za-z0-9]+"'` over the pinned hq-cloud
+    /// source. Re-derive when the pin bumps — the
+    /// `cause_vocabulary_source_version_is_pinned_to_the_runner` guard fails the
+    /// build if the pin moves without this list (and the vocabulary) refreshed.
+    const HQ_CLOUD_IDENTITIES: &[&str] = &[
+        "AccessDeniedError",
+        "AuthoritativeBaseVersionUnavailableError",
+        "CognitoAuthError",
+        "CognitoRefreshError",
+        "CursorRetiredError",
+        "DanglingSymlinkParentError",
+        "DeltaGapError",
+        "DurableApplyError",
+        "DurableApplyRecoveryError",
+        "EntityNotFoundError",
+        "EntityPermissionError",
+        "EntityResolutionError",
+        "JournalCheckpointError",
+        "MultipartAbortError",
+        "MultipartSourceChangedError",
+        "OperationLockUnwritableError",
+        "OperationLockedError",
+        "OutpostHttpError",
+        "PrematureJournalEntryError",
+        "PresignPreconditionMissing",
+        "PushEventDecodeError",
+        "RateLimited",
+        "RealtimeConflictError",
+        "RealtimeEnrollmentUnavailableError",
+        "RefreshLockTimeoutError",
+        "RescuePathChangedError",
+        "ScopeShrinkBlockedError",
+        "ScopeShrinkLargePruneError",
+        "ServerOwnedPushPathsError",
+        "SnapshotClientError",
+        "SourceNotFoundError",
+        "StateStoreCorruptionError",
+        "StateStoreLockError",
+        "StateStoreReducerError",
+        "SyncMutationNotEnrolledError",
+        "TombstoneFetchError",
+        "UnreachablePushPathsError",
+        "UnregisteredCompanySkillError",
+        "VaultAuthError",
+        "VaultClientError",
+        "VaultConflictError",
+        "VaultNotFoundError",
+        "VaultPermissionDeniedError",
+        "VendDeniedError",
+        "WindowsSymlinkPrivilegeError",
+    ];
+
+    #[test]
+    fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
+        // Completeness over the FULL derived identity set (not a sample): every
+        // hq-cloud this.name must classify as a specific, non-residual cause, and
+        // the 45 identities must map to 45 DISTINCT tokens — the exact property
+        // the prior 16-name sample violated, collapsing every out-of-sample
+        // company fault to the flat residual and reopening this lane.
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 45);
+        let mut tokens = std::collections::BTreeSet::new();
+        for name in HQ_CLOUD_IDENTITIES {
+            // A realistic describeError rendering: the leading class name + prose.
+            let message = format!("{name} something went wrong on the company leg");
+            let cause = classify_runner_error_cause(&message);
+            assert!(
+                !matches!(
+                    cause,
+                    RunnerErrorCause::UnknownNamed | RunnerErrorCause::UnknownUnnamed
+                ),
+                "hq-cloud identity {name:?} collapsed to the residual {:?}",
+                cause.as_str()
+            );
+            // A matched identity is already named, so it carries no signature.
+            assert_eq!(
+                runner_error_cause_signature(&message),
+                None,
+                "a matched identity must carry no cause signature: {name:?}"
+            );
+            assert!(
+                tokens.insert(cause.as_str()),
+                "two hq-cloud identities share a cause token at {name:?}: {:?}",
+                cause.as_str()
+            );
+        }
+        assert_eq!(tokens.len(), 45, "expected 45 distinct cause tokens");
+    }
+
+    #[test]
+    fn residual_splits_named_from_unnamed_and_only_named_is_signed() {
+        // A leading, uppercase-initial, unlisted identity → unknown_named + a
+        // stable signature. A plain-Error / prose / key=value message → unknown
+        // _unnamed + NO signature. The two residuals are never conflated.
+        let named = "FreshFleetError the fleet melted down";
+        assert_eq!(classify_runner_error_cause(named), RunnerErrorCause::UnknownNamed);
+        let signature = runner_error_cause_signature(named).expect("named residual is signed");
+        assert_eq!(signature.len(), SIGNATURE_HEX_LEN);
+        let expected = format!("{:x}", Sha256::digest(b"FreshFleetError"));
+        assert_eq!(
+            signature,
+            expected[..SIGNATURE_HEX_LEN],
+            "signature must be the hex12 SHA-256 of the leading identity",
+        );
+
+        for unnamed in [
+            "code=ENOENT syscall=open no such file",        // leading key=value
+            "presigned GET failed for knowledge/a.md: 403", // lower-cased prose
+            "Error the generic error name is suppressed",   // literal Error
+            "'/vault/secret.env' unreadable",               // leading quote/path
+            "",                                             // empty
+        ] {
+            assert_eq!(
+                classify_runner_error_cause(unnamed),
+                RunnerErrorCause::UnknownUnnamed,
+                "message should be unnamed: {unnamed:?}"
+            );
+            assert_eq!(
+                runner_error_cause_signature(unnamed),
+                None,
+                "an unnamed residual must carry no signature: {unnamed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cause_signature_gate_refuses_paths_hosts_quotes_and_lowercase() {
+        // The gate admits only a bare [A-Z][A-Za-z0-9]{0,63} identifier, so no
+        // path, host, URL, quoted string, separator, over-long token, leading
+        // digit, or lower-cased word can ever be hashed into a signature.
+        let overlong = format!("{} overlong", "A".repeat(65));
+        for refused in [
+            "knowledge/a.md failed",                // '/', '.'
+            "https://x.example.com/y timed out",    // ':' '/' '.'
+            "hq-vault-cmp.s3.amazonaws.com denied", // '-' '.'
+            "'quoted' value",                       // leading quote
+            "lowercasey not a class",               // lower-cased first byte
+            "403 status only",                      // leading digit
+            "code=EAI_AGAIN dns failure",           // '='
+            overlong.as_str(),                      // > 64 chars
+        ] {
+            assert_eq!(leading_error_identity(refused), None, "gate must refuse: {refused:?}");
+            assert_eq!(
+                runner_error_cause_signature(refused),
+                None,
+                "a refused leading token must yield no signature: {refused:?}"
+            );
+        }
+        // The boundary: exactly 64 chars is admitted, 65 is not.
+        let max = "A".repeat(64);
+        assert_eq!(leading_error_identity(&format!("{max} ok")), Some(max.as_str()));
+        let over = "A".repeat(65);
+        assert_eq!(leading_error_identity(&format!("{over} no")), None);
+    }
+
+    #[test]
+    fn cause_signature_is_stable_hex12_and_distinct_per_identity() {
+        let a = runner_error_cause_signature("AlphaError boom").expect("signed");
+        let a_again = runner_error_cause_signature("AlphaError different prose").expect("signed");
+        let b = runner_error_cause_signature("BetaError boom").expect("signed");
+        // Stable for the same identity regardless of trailing prose …
+        assert_eq!(a, a_again);
+        // … distinct for different identities, and always 12 lowercase-hex chars.
+        assert_ne!(a, b);
+        for signature in [&a, &b] {
+            assert_eq!(signature.len(), 12);
+            assert!(signature
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+        }
+    }
+
+    #[test]
+    fn cause_signature_rollup_is_bounded_order_independent_and_empty_when_none() {
+        let mut rollup = RunnerErrorCauseSignatureRollup::default();
+        for _ in 0..9 {
+            rollup.record("MysteryFleetError primary fault");
+        }
+        for _ in 0..4 {
+            rollup.record("OtherFleetError secondary fault");
+        }
+        // Matched causes and unnamed residuals never contribute a signature.
+        for _ in 0..100 {
+            rollup.record("AccessDenied http=403 denied");
+            rollup.record("presigned GET failed for repos/x: 500");
+        }
+        let mystery_full = format!("{:x}", Sha256::digest(b"MysteryFleetError"));
+        let other_full = format!("{:x}", Sha256::digest(b"OtherFleetError"));
+        let expected = format!("{}:9,{}:4", &mystery_full[..12], &other_full[..12]);
+        let value = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert_eq!(value, expected);
+        assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
+
+        // Order-independent for the same multiset, and empty renders no tag.
+        let mut reversed = RunnerErrorCauseSignatureRollup::default();
+        for _ in 0..4 {
+            reversed.record("OtherFleetError secondary fault");
+        }
+        for _ in 0..9 {
+            reversed.record("MysteryFleetError primary fault");
+        }
+        assert_eq!(reversed.tag_value(), Some(value));
+        assert_eq!(RunnerErrorCauseSignatureRollup::default().tag_value(), None);
+    }
+
+    #[test]
+    fn cause_vocabulary_source_version_is_pinned_to_the_runner() {
+        // Bumping the hq-cloud runner pin WITHOUT re-deriving the identity list
+        // (this test's HQ_CLOUD_IDENTITIES and the vocabulary) must fail the
+        // build — the guard against a third silent vocabulary-drift reopen.
+        assert_eq!(
+            CAUSE_VOCABULARY_SOURCE_VERSION,
+            crate::hq_cloud::HQ_CLOUD_VERSION,
+            "re-derive the cause vocabulary from the new hq-cloud source, then \
+             update CAUSE_VOCABULARY_SOURCE_VERSION and HQ_CLOUD_IDENTITIES",
+        );
     }
 }

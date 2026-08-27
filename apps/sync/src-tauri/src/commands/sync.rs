@@ -370,6 +370,13 @@ fn runner_exit_telemetry_context(
     if let Some(causes) = totals.runner_error_causes.tag_value() {
         tags.push(("runner_error_causes", causes));
     }
+    // The cause-signature axis: correlates an `unknown_named` residual (a real but
+    // unlisted error identity) across machines from the SAME RunTotals source the
+    // watcher route reads. Absent when no unlisted identity was seen, so absence
+    // never renders as evidence.
+    if let Some(signature) = totals.runner_error_cause_signature.tag_value() {
+        tags.push(("runner_error_cause_signature", signature));
+    }
     // The coarse structural shape of the stderr lines the fatal classifier did
     // not recognise — the manual route's copy of the watcher route's
     // `runner_unmatched_stderr_shapes` axis (daemon.rs), rendered from the SAME
@@ -3814,9 +3821,16 @@ mod tests {
         );
         // The two additive axes: the HTTP status (from the presigned `: 500` tail
         // and the company-scope describeError `http=403`) and the error identity
-        // (the AWS name; the pull-leg prose has none, so it reads `unknown`).
+        // (the AWS name is named; the lower-cased pull-leg prose has no class name,
+        // so it reads `unknown_unnamed`).
         assert_eq!(event.tags["runner_error_http"], "http_500:40,http_403:8");
-        assert_eq!(event.tags["runner_error_causes"], "unknown:160,access_denied:8");
+        assert_eq!(event.tags["runner_error_causes"], "unknown_unnamed:160,access_denied:8");
+        // No unlisted (uppercase-initial, unmatched) identity appears in this
+        // flood, so the signature axis attaches no tag at all.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_cause_signature"));
         assert_eq!(event.tags["hq_cloud_version"], HQ_CLOUD_VERSION);
         assert_eq!(event.tags["hq_cloud_package"], HQ_CLOUD_PACKAGE);
         assert_eq!(
@@ -4118,6 +4132,132 @@ mod tests {
             assert!(
                 !serialized.contains(forbidden),
                 "final event leaked runner content: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_child_unlisted_identity_is_named_or_signed_and_content_safe() {
+        // The reopen's core proof through the PRODUCTION capture path: a
+        // company-scope flood of (a) a named-but-previously-uncovered hq-cloud
+        // identity and (b) an identity outside the vocabulary must reach Sentry as
+        // the named cause token and a stable 12-hex signature — never collapsing to
+        // a flat `unknown`, and never carrying a raw identity or host byte.
+        let mut lines: Vec<String> = Vec::new();
+        for _ in 0..5 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // Previously uncovered hq-cloud identity → vault_not_found.
+                    "message": "VaultNotFoundError vault entry not found for company acme",
+                })
+                .to_string(),
+            );
+        }
+        for _ in 0..3 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    // An identity outside the vocabulary → unknown_named + signature.
+                    "message": "MysteryFleetError the company leg blew up unexpectedly",
+                })
+                .to_string(),
+            );
+        }
+        for _ in 0..2 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    "message": "AccessDenied http=403 host=hq-vault-cmp_SECRET.s3.us-east-1.amazonaws.com access is denied",
+                })
+                .to_string(),
+            );
+        }
+        let spawn = error_flood_spawn_args(&lines);
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut sequence = 0_u32;
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-unlisted-identity", &spawn, |event| match event {
+                ProcessEvent::Stderr(line) => {
+                    sequence = sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line,
+                    );
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) => {}
+            })
+            .expect("real fake runner should run");
+
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let context =
+                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(2), None, false)));
+        assert_eq!(sequence, 10);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("flood event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // The named identity is now attributable, the AWS name stays named, and the
+        // unlisted identity reads `unknown_named` rather than collapsing to a flat
+        // residual.
+        assert_eq!(
+            event.tags["runner_error_causes"],
+            "vault_not_found:5,unknown_named:3,access_denied:2"
+        );
+        // The unlisted identity carries a stable 12-hex signature — the production
+        // classifier's own digest of the leading class name — un-[Filtered].
+        let expected_signature =
+            hq_desktop_core::runner_error_shape::runner_error_cause_signature("MysteryFleetError x")
+                .expect("an unlisted uppercase identity is signed");
+        assert_eq!(
+            event.tags["runner_error_cause_signature"],
+            format!("{expected_signature}:3")
+        );
+
+        // Content safety: no raw class name, host, message fragment, or company
+        // leaks — only the derived tokens and the fixed-length digest ship.
+        for forbidden in [
+            "VaultNotFoundError",
+            "MysteryFleetError",
+            "AccessDenied",
+            "vault entry not found",
+            "company leg blew up",
+            "hq-vault",
+            "cmp_SECRET",
+            "amazonaws",
+            "acme",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "final event leaked seeded runner content: {forbidden}"
             );
         }
     }
