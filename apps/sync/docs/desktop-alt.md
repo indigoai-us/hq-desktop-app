@@ -74,6 +74,9 @@ Live mode is strict: when `HQ_SYNC_DESKTOP_ALT_LIVE` is set and the `tauri-drive
 
 ## HQ Work handoff (rollback path)
 
+Canonical combined-app rollout (flag-gated embed of `@hq/ui` DesktopApp in
+this window): [hq-work-embedded-rollout.md](hq-work-embedded-rollout.md).
+
 Desktop-alt is the flag-off rollback surface for the HQ Work desktop-view
 handoff. `hqWorkHandoff` / `hq_work_handoff` **defaults false**; Open HQ still
 opens this window until the flag is on.

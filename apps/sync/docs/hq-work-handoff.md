@@ -1,3 +1,9 @@
+> **SUPERSEDED.** Combined-app rollout (embed `@hq/ui` DesktopApp in the
+> desktop-alt window) is documented in
+> [hq-work-embedded-rollout.md](hq-work-embedded-rollout.md). This file is
+> the historical two-app launch / co-install / card procedure. Kept because
+> existing tests source-contract it. Do not delete.
+
 # HQ Work handoff — rollout, bake, rollback
 
 Flag-gated handoff from Sync's desktop-alt window to the HQ Work app
