@@ -24,6 +24,7 @@
     type SyncInvokeFn,
   } from '../lib/hq-work-adapter';
   import { applyDesktopAltRoute, createHqWorkSidebarApi } from './hq-work-host';
+  import { getVaultObject, putVaultObject } from './vault-s3-put';
 
   interface Props {
     invokeFn?: SyncInvokeFn;
@@ -99,6 +100,8 @@
     settingsProfile={settingsProfileFromSelf(self)}
     hydrateLiveMessages={true}
     coreFixtures={false}
+    putAttachmentObject={putVaultObject}
+    getAttachmentObject={getVaultObject}
   />
 </div>
 

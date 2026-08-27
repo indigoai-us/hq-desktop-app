@@ -361,11 +361,7 @@ export function createSyncPlatformAdapter(
         const extra = args as { attachments?: Json[] };
         if (extra.attachments && extra.attachments.length > 0) {
           const req = buildSendReplyRequest({
-            scope: args.scope,
-            rootEventId: args.rootEventId,
-            body: args.body,
-            withPersonUid: args.withPersonUid,
-            channelId: args.channelId,
+            ...args,
             attachments: extra.attachments,
           });
           return hqProJson('POST', req.path, req.body);
