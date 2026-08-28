@@ -4,7 +4,8 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
-    should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, InstallExecutor,
+    should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, DeliveredPrefixShim,
+    ExecutedCopyAim, InstallExecutor,
     InterpreterRecovery, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
     ManagedRuntimeState, ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport,
     PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
@@ -95,6 +96,9 @@ fn pnpm_context<'a>(
         nonblocking_episode_keys: &[],
         managed_roots: &[],
         managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+        executed_copy_aim: ExecutedCopyAim::Undrivable,
+        hq_bin_lane: ResolutionSource::NotResolved,
+        delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present: false,
@@ -291,6 +295,210 @@ fn foreign_managed_repeat_episodes_stay_suppressed_through_the_executor() {
         assert_eq!(captures, 0);
         assert_eq!(record_failures, 0);
     }
+}
+
+/// The live r3 recurrence shape: npm delivered `latest` into HQ's managed
+/// prefix, but the app executes an nvm copy one version behind. Builds the
+/// non-convergent context with a home-anchored nvm `hq` (so `redact_home` is
+/// exercised) and a managed prefix + npm, at latest 5.84.0 to match the shared
+/// harness's record-closure contract.
+fn foreign_nvm_ctx<'a>(
+    hq_bin: &'a str,
+    managed_prefix: &'a str,
+    managed_npm: &'a str,
+    roots: &'a [std::path::PathBuf],
+    aim: ExecutedCopyAim,
+    shim: DeliveredPrefixShim,
+    lane: ResolutionSource,
+    episode_keys: &'a [String],
+) -> PostInstallContext<'a> {
+    PostInstallContext::npm(
+        hq_bin,
+        hq_bin,
+        Some("5.83.0"),
+        Some("5.83.0"),
+        "5.84.0",
+        Some(managed_prefix),
+        managed_npm,
+        false,
+        // Delivered `latest` INTO the managed prefix — delivery is proven.
+        Some("5.84.0"),
+    )
+    .with_managed_roots(roots)
+    .with_executed_copy_aim(aim)
+    .with_resolution_telemetry(lane, shim)
+    .with_nonblocking_episode_keys(episode_keys)
+}
+
+/// A not-yet-aimed foreign run emits exactly one scrubbed envelope and writes NO
+/// durable marker, so the corrected aim converges on the next cycle instead of
+/// wedging auto-update. Drives the real decide → effects → reporter seam.
+#[test]
+fn a_foreign_managed_run_not_yet_aimed_emits_one_event_and_no_marker() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = home
+        .join(".nvm/versions/node/v24.20.0/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    let ctx = foreign_nvm_ctx(
+        &hq_bin,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::NotYetAimed,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::UserPrefix,
+        &[],
+    );
+    // durable_record is moot: a not-yet-aimed foreign run never calls `record`.
+    let (events, records, captures, record_failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(
+        records, 0,
+        "a not-yet-aimed foreign run writes no durable marker"
+    );
+    assert_eq!(captures, 1);
+    assert_eq!(record_failures, 0);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].tags.get("non_convergence_kind").map(String::as_str),
+        Some("foreign-managed")
+    );
+    let serialized = serde_json::to_string(&events[0]).expect("serialize event");
+    assert!(
+        !serialized.contains(&home_text),
+        "the scrubbed event carries no raw home path"
+    );
+}
+
+/// The non-convergent event carries the two new closed lane/shim tokens, drawn
+/// from their fixed vocabularies, and the scrubbed body still contains no raw
+/// home path.
+#[test]
+fn the_non_convergent_event_carries_hq_bin_lane_and_delivered_prefix_shim() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = home
+        .join(".nvm/versions/node/v24.20.0/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    // Undrivable aim + a present shim -> the durable-blocking foreign path, which
+    // still carries both new tags.
+    let ctx = foreign_nvm_ctx(
+        &hq_bin,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::Undrivable,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::SettingsPath,
+        &[],
+    );
+    let (events, records, captures, _failures) = composed_non_convergent_events(&ctx, true);
+    assert_eq!(records, 1, "an undrivable foreign layout still blocks");
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("hq_bin_lane").map(String::as_str),
+        Some("settings_path")
+    );
+    assert_eq!(
+        event.tags.get("delivered_prefix_shim").map(String::as_str),
+        Some("present")
+    );
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+    // The lane/shim tokens are never a path.
+    for forbidden in ["/Users/", "/home/", "/.nvm/"] {
+        let lane = event.tags.get("hq_bin_lane").map(String::as_str).unwrap();
+        let shim = event
+            .tags
+            .get("delivered_prefix_shim")
+            .map(String::as_str)
+            .unwrap();
+        assert!(!lane.contains(forbidden) && !shim.contains(forbidden));
+    }
+}
+
+/// The per-episode bound holds ACROSS runs for the not-yet-aimed foreign shape:
+/// a persistent environment emits exactly one envelope, not one every 6h.
+#[test]
+fn the_unaimed_foreign_episode_emits_exactly_one_envelope_across_two_runs() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let hq_bin = home
+        .join(".nvm/versions/node/v24.20.0/bin/hq")
+        .to_string_lossy()
+        .to_string();
+
+    // Run 1: empty episode set -> captured exactly once.
+    let ctx1 = foreign_nvm_ctx(
+        &hq_bin,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::NotYetAimed,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::UserPrefix,
+        &[],
+    );
+    let (events1, records1, captures1, _f1) = composed_non_convergent_events(&ctx1, true);
+    assert_eq!(records1, 0);
+    assert_eq!(captures1, 1);
+    assert_eq!(events1.len(), 1);
+
+    // Run 2: the episode key is already present -> suppressed, no envelope.
+    let seen = [non_convergent_episode_key(
+        "5.84.0",
+        InstallExecutor::Npm,
+        NonConvergenceKind::ForeignManaged,
+        None,
+    )];
+    let ctx2 = foreign_nvm_ctx(
+        &hq_bin,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::NotYetAimed,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::UserPrefix,
+        &seen,
+    );
+    let (events2, _r2, captures2, _f2) = composed_non_convergent_events(&ctx2, true);
+    assert!(
+        events2.is_empty(),
+        "the per-episode bound holds so a persistent env does not re-page every 6h"
+    );
+    assert_eq!(captures2, 0);
 }
 
 /// The Kevins-MacBook-Pro capture contract: the unresolved first-install shape
@@ -1272,6 +1480,9 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
         nonblocking_episode_keys: &[],
         managed_roots: &[],
         managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+        executed_copy_aim: ExecutedCopyAim::Undrivable,
+        hq_bin_lane: ResolutionSource::NotResolved,
+        delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,

@@ -1255,6 +1255,197 @@ pub enum ManagedShadowRepairAction {
     RemovalFailed,
 }
 
+/// Whether HQ aimed this install at the copy the app now executes — the closed
+/// input that makes the durable ForeignManaged block CONDITIONAL. A residual
+/// foreign-managed verdict may write the durable marker only when HQ either
+/// aimed at the executed copy in place (and still could not converge) or could
+/// not aim at all (an undrivable layout). A drivable copy HQ did NOT aim at this
+/// run stays observable and episode-bounded so the corrected aim converges on
+/// the next cycle instead of wedging auto-update. Default is
+/// [`Self::Undrivable`] so every existing caller keeps today's
+/// block-on-foreign behaviour unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutedCopyAim {
+    /// The install was aimed at the executed copy's own user-owned prefix and
+    /// run with that copy's own co-located npm. A residual ForeignManaged
+    /// verdict is a genuinely undrivable layout and blocks exactly as before.
+    Aimed,
+    /// The executed copy is not one HQ can drive in place: a system/Homebrew
+    /// prefix, a managed cross-root split, or a user-owned prefix with no
+    /// co-located npm. A ForeignManaged verdict blocks as before.
+    #[default]
+    Undrivable,
+    /// A drivable user-owned prefix HQ did NOT aim at this run (the pre-install
+    /// resolution did not identify it). A ForeignManaged verdict stays
+    /// observable and episode-bounded — no durable marker — so the corrected aim
+    /// converges on the next cycle.
+    NotYetAimed,
+}
+
+impl ExecutedCopyAim {
+    /// Whether a ForeignManaged verdict under this aim may write the durable
+    /// marker. Only [`Self::NotYetAimed`] must stay non-blocking.
+    pub fn foreign_verdict_may_block(self) -> bool {
+        !matches!(self, Self::NotYetAimed)
+    }
+}
+
+/// Whether the shim the aimed prefix should expose after a delivered install is
+/// present. A closed, path-free telemetry token (the `delivered_prefix_shim`
+/// tag) that ALSO gates the durable block: a ForeignManaged verdict whose aimed
+/// prefix delivered the target but exposes no shim is HQ's OWN incomplete
+/// install, not a foreign layout HQ cannot drive — kept non-blocking and
+/// episode-bounded so the next scheduled check reinstalls. Default
+/// [`Self::Unknown`] (no prefix, or delivery not proven) preserves today's
+/// blocking behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeliveredPrefixShim {
+    #[default]
+    Unknown,
+    Present,
+    Absent,
+}
+
+impl DeliveredPrefixShim {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Present => "present",
+            Self::Absent => "absent",
+        }
+    }
+}
+
+/// The ordinary-update install aim: the prefix to install INTO and the npm to
+/// RUN, chosen so HQ upgrades the copy the app will actually execute. Returned
+/// by [`user_prefix_aim_decision`] only when the executed copy sits in a
+/// drivable user-owned prefix that ships its own npm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserPrefixAim {
+    /// The prefix to pass to npm's `--prefix` — the executed copy's own prefix.
+    pub prefix: String,
+    /// The npm binary to RUN — the executed copy's own co-located npm, so build
+    /// ABI and execute ABI match and HQ's managed npm never writes here.
+    pub npm: String,
+}
+
+/// Pure core of the ordinary-update selector: choose to aim at the executed
+/// copy's own user-owned prefix (running that prefix's co-located npm) exactly
+/// when all three hold — a derivable hq prefix, that prefix is user-owned
+/// ([`paths::is_user_owned_prefix`]), and a co-located npm exists there. `None`
+/// means "no user aim": keep the managed / hq-derived prefix and the resolved
+/// npm, i.e. every case [`prefer_managed_prefix`] already handled. Pure over its
+/// inputs (the caller resolves ownership + existence) so the choice is
+/// unit-testable without touching the filesystem.
+pub fn user_prefix_aim_decision(
+    hq_derived_prefix: Option<&str>,
+    hq_prefix_is_user_owned: bool,
+    colocated_user_npm: Option<&str>,
+) -> Option<UserPrefixAim> {
+    match (
+        hq_derived_prefix,
+        hq_prefix_is_user_owned,
+        colocated_user_npm,
+    ) {
+        (Some(prefix), true, Some(npm)) if !prefix.is_empty() && !npm.is_empty() => {
+            Some(UserPrefixAim {
+                prefix: prefix.to_string(),
+                npm: npm.to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The npm binary co-located with a global prefix: `<prefix>/bin/npm` on unix,
+/// `<prefix>\npm.cmd` on Windows (npm writes its shims flat into the prefix).
+pub fn colocated_npm_path(prefix: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        prefix.join("npm.cmd")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        prefix.join("bin").join("npm")
+    }
+}
+
+/// The `hq` shim a global prefix should expose after a delivered install:
+/// `<prefix>/bin/hq` on unix, `<prefix>\hq.cmd` on Windows.
+fn prefix_hq_shim_path(prefix: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        prefix.join("hq.cmd")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        prefix.join("bin").join("hq")
+    }
+}
+
+/// Classify, against the copy the app EXECUTES after the install, whether HQ
+/// aimed this run at it in place. Touches the filesystem only to confirm the
+/// co-located npm exists, so it lives in the core crate where it is unit-testable
+/// with tempdirs (the app crate cannot be built on every host). See
+/// [`ExecutedCopyAim`] for how the result gates the durable ForeignManaged block.
+pub fn executed_copy_aim_for(
+    post_install_hq: &str,
+    aimed_prefix: Option<&str>,
+    installer_npm: &str,
+    managed_roots: &[PathBuf],
+    home: Option<&Path>,
+) -> ExecutedCopyAim {
+    // No derivable prefix behind the executed copy (an asdf-style shim dir, or
+    // the bare sentinel) means HQ cannot aim in place — undrivable.
+    let Some(executed_prefix) = npm_prefix_from_hq_bin(post_install_hq) else {
+        return ExecutedCopyAim::Undrivable;
+    };
+    let executed_prefix_path = Path::new(&executed_prefix);
+    let user_owned = paths::is_user_owned_prefix(executed_prefix_path, managed_roots, home);
+    let colocated = colocated_npm_path(executed_prefix_path);
+    if !user_owned || !colocated.exists() {
+        // A system/Homebrew prefix, a managed cross-root split, or a user prefix
+        // with no co-located npm: a residual ForeignManaged verdict is a genuine
+        // undrivable layout and blocks as before.
+        return ExecutedCopyAim::Undrivable;
+    }
+    // Drivable: did THIS run aim at exactly this copy's own prefix with its own
+    // co-located npm?
+    let aimed_here =
+        aimed_prefix == Some(executed_prefix.as_str()) && Path::new(installer_npm) == colocated;
+    if aimed_here {
+        ExecutedCopyAim::Aimed
+    } else {
+        ExecutedCopyAim::NotYetAimed
+    }
+}
+
+/// Whether the aimed prefix exposes its `hq` shim after a delivered install.
+/// Only meaningful once HQ aimed at a concrete prefix AND proved it delivered
+/// the target there; otherwise [`DeliveredPrefixShim::Unknown`]. Core-crate and
+/// filesystem-touching so it is locally unit-testable.
+pub fn delivered_prefix_shim_for(
+    aimed_prefix: Option<&str>,
+    delivered_version: Option<&str>,
+) -> DeliveredPrefixShim {
+    match (aimed_prefix, delivered_version) {
+        (Some(prefix), Some(_)) if !prefix.is_empty() => {
+            // Existence alone is not enough: a `bin/hq` that is a directory or a
+            // non-executable file is skipped by resolution, so the app still
+            // resolves a stale copy and the run reads ForeignManaged. Treating
+            // that as `Present` would permit the durable marker and suppress the
+            // retry that repairs the partial install, so require the same
+            // runnable-shim contract resolution uses.
+            if paths::is_runnable_shim(&prefix_hq_shim_path(Path::new(prefix))) {
+                DeliveredPrefixShim::Present
+            } else {
+                DeliveredPrefixShim::Absent
+            }
+        }
+        _ => DeliveredPrefixShim::Unknown,
+    }
+}
+
 /// Classify a failed convergence without guessing a prefix. A flat pnpm/asdf
 /// directory is intentionally foreign managed for the npm executor: npm has no
 /// safe prefix to pass and may write a valid package somewhere the app will
@@ -1613,6 +1804,15 @@ pub struct NonConvergentReport {
     /// achieved. `NotAttempted` for every other kind. Emitted as the closed
     /// `managed_shadow_repair` tag so the slice is self-diagnosing.
     pub managed_shadow_repair: ManagedShadowRepairOutcome,
+    /// Which resolution lane produced the executed `hq` — a closed, path-free
+    /// token ([`paths::ResolutionSource`]) emitted as `hq_bin_lane`. Names
+    /// settings-PATH parity vs a user/system/login-shell copy so a residual
+    /// occurrence identifies its own lane without another planning round.
+    pub hq_bin_lane: paths::ResolutionSource,
+    /// Whether the aimed prefix exposes its `hq` shim after a delivered install,
+    /// emitted as the closed `delivered_prefix_shim` tag. Distinguishes a
+    /// foreign layout HQ cannot drive from HQ's own incomplete install.
+    pub delivered_prefix_shim: DeliveredPrefixShim,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1816,6 +2016,20 @@ pub struct PostInstallContext<'a> {
     /// re-decides with the real outcome, which is what makes the managed-shadow
     /// blocking policy conditional (see [`ManagedShadowRepairOutcome`]).
     pub managed_shadow_repair: ManagedShadowRepairOutcome,
+    /// Whether HQ aimed this install at the copy the app now executes. Gates the
+    /// durable ForeignManaged block: a [`ExecutedCopyAim::NotYetAimed`] run stays
+    /// observable and episode-bounded so the corrected aim converges next cycle.
+    /// The `npm()` constructor defaults it to [`ExecutedCopyAim::Undrivable`], so
+    /// every existing caller keeps today's block-on-foreign behaviour.
+    pub executed_copy_aim: ExecutedCopyAim,
+    /// The resolution lane of the executed `hq`, for the `hq_bin_lane` tag.
+    /// Report-only; the `npm()` constructor defaults it to `NotResolved`.
+    pub hq_bin_lane: paths::ResolutionSource,
+    /// Whether the aimed prefix exposes its `hq` shim after a delivered install.
+    /// Gates the durable block for the partial-install shape (delivered but shim
+    /// absent stays non-blocking) AND rides the `delivered_prefix_shim` tag. The
+    /// `npm()` constructor defaults it to [`DeliveredPrefixShim::Unknown`].
+    pub delivered_prefix_shim: DeliveredPrefixShim,
 }
 
 impl<'a> PostInstallContext<'a> {
@@ -1858,6 +2072,13 @@ impl<'a> PostInstallContext<'a> {
             // the builders below.
             managed_roots: &[],
             managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+            // Defaults preserve today's behaviour exactly: a ForeignManaged
+            // verdict blocks (Undrivable), no resolution lane is asserted, and no
+            // shim state is known. The production finalize path threads the real
+            // values in via the builders below.
+            executed_copy_aim: ExecutedCopyAim::Undrivable,
+            hq_bin_lane: paths::ResolutionSource::NotResolved,
+            delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         }
     }
 
@@ -1865,6 +2086,26 @@ impl<'a> PostInstallContext<'a> {
     /// HQ-owned same-root shadow from a genuinely foreign layout.
     pub fn with_managed_roots(mut self, managed_roots: &'a [PathBuf]) -> Self {
         self.managed_roots = managed_roots;
+        self
+    }
+
+    /// Record whether HQ aimed this install at the copy the app now executes, so
+    /// the durable ForeignManaged block can stay conditional on a drivable aim.
+    pub fn with_executed_copy_aim(mut self, aim: ExecutedCopyAim) -> Self {
+        self.executed_copy_aim = aim;
+        self
+    }
+
+    /// Attach the executed `hq`'s resolution lane and the aimed prefix's shim
+    /// state — the two closed telemetry tokens that ride the non-convergent event
+    /// and (for the shim) gate the partial-install block.
+    pub fn with_resolution_telemetry(
+        mut self,
+        hq_bin_lane: paths::ResolutionSource,
+        delivered_prefix_shim: DeliveredPrefixShim,
+    ) -> Self {
+        self.hq_bin_lane = hq_bin_lane;
+        self.delivered_prefix_shim = delivered_prefix_shim;
         self
     }
 
@@ -1881,6 +2122,27 @@ impl<'a> PostInstallContext<'a> {
         self.nonblocking_episode_keys = keys;
         self
     }
+}
+
+/// Whether a ForeignManaged verdict may write the durable marker, given whether
+/// HQ aimed at the executed copy and whether the aimed prefix exposes its shim.
+/// Only ForeignManaged is gated — every other kind reaches its own branch in
+/// [`decide_post_install`] and is never routed through this, so they always read
+/// as "may block". A ForeignManaged run stays non-blocking (episode-bounded)
+/// when HQ did NOT yet aim at a drivable executed copy
+/// ([`ExecutedCopyAim::NotYetAimed`]) OR when it delivered into a prefix missing
+/// its shim ([`DeliveredPrefixShim::Absent`], HQ's own incomplete install). An
+/// aimed-and-still-foreign layout, or a genuinely undrivable one, blocks as
+/// before. Pure so the gate is unit-testable in isolation.
+fn foreign_verdict_may_block(
+    kind: NonConvergenceKind,
+    aim: ExecutedCopyAim,
+    shim: DeliveredPrefixShim,
+) -> bool {
+    if kind != NonConvergenceKind::ForeignManaged {
+        return true;
+    }
+    aim.foreign_verdict_may_block() && shim != DeliveredPrefixShim::Absent
 }
 
 /// Decide the observable outcome of an install after re-resolving `hq`.
@@ -1904,9 +2166,15 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         pnpm,
         managed_roots,
         managed_shadow_repair,
+        executed_copy_aim,
+        hq_bin_lane,
+        delivered_prefix_shim,
     } = ctx;
     let managed_roots = *managed_roots;
     let managed_shadow_repair = *managed_shadow_repair;
+    let executed_copy_aim = *executed_copy_aim;
+    let hq_bin_lane = *hq_bin_lane;
+    let delivered_prefix_shim = *delivered_prefix_shim;
     let (executor, before_bin, after_bin, latest, installer_bin, already_blocked) = (
         *executor,
         *before_bin,
@@ -2056,7 +2324,25 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         (None, first_episode, false, first_episode.then_some(episode_key))
     } else if kind.is_installer_targeted() {
         (Some(latest.to_string()), true, false, None)
+    } else if !foreign_verdict_may_block(kind, executed_copy_aim, delivered_prefix_shim) {
+        // ForeignManaged, but HQ did not yet aim at the drivable copy the app
+        // executes (the pre-install resolution did not identify it), or it
+        // delivered into a prefix that is missing its shim — HQ's OWN incomplete
+        // install, not a foreign layout HQ cannot drive. Stay observable and
+        // episode-bounded, write NO durable marker, so the corrected aim
+        // converges on the next cycle instead of wedging auto-update for this
+        // version. Uses the same non-blocking episode bound as a resolution
+        // shortfall so a persistent environment does not re-page every 6h.
+        let episode_key = non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
+        let first_episode =
+            !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
+        (None, first_episode, false, first_episode.then_some(episode_key))
     } else {
+        // ForeignManaged, aimed-or-undrivable: a layout HQ provably aimed at and
+        // could not move, or one it genuinely cannot drive in place — block
+        // exactly as before (one durable-record-gated capture per episode plus
+        // the marker), so a machine HQ cannot repair keeps its stop-paging
+        // behaviour.
         let first_episode = !already_blocked;
         (
             first_episode.then(|| latest.to_string()),
@@ -2077,6 +2363,8 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         delivered_version: delivered_version.map(str::to_owned),
         pnpm: pnpm.clone(),
         managed_shadow_repair,
+        hq_bin_lane,
+        delivered_prefix_shim,
     });
 
     PostInstallOutcome {
@@ -2360,6 +2648,19 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                 } else {
                     "false"
                 },
+            );
+            // Close the lane ambiguity permanently: which resolution lane
+            // produced the executed `hq` (settings-PATH parity vs a
+            // user/system/login-shell copy), and whether the aimed prefix
+            // exposed its `hq` shim after delivery. Both are closed, path-free
+            // tokens, so a residual occurrence names its own mechanism —
+            // settings-PATH parity versus a partial install — without another
+            // planning round. They ride the existing `before_send` scrubber
+            // contract; no raw path is ever added.
+            scope.set_tag("hq_bin_lane", report.hq_bin_lane.telemetry_value());
+            scope.set_tag(
+                "delivered_prefix_shim",
+                report.delivered_prefix_shim.telemetry_value(),
             );
             scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
             // Home-redacted: the install LAYOUT is the diagnostic
@@ -5689,6 +5990,9 @@ mod tests {
             nonblocking_episode_keys: &[],
             managed_roots: &[],
             managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+            executed_copy_aim: ExecutedCopyAim::Undrivable,
+            hq_bin_lane: paths::ResolutionSource::NotResolved,
+            delivered_prefix_shim: DeliveredPrefixShim::Unknown,
             pnpm: Some(pnpm.clone()),
         });
         assert_eq!(
@@ -5732,6 +6036,9 @@ mod tests {
                 nonblocking_episode_keys: &[],
                 managed_roots: &[],
                 managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+                executed_copy_aim: ExecutedCopyAim::Undrivable,
+                hq_bin_lane: paths::ResolutionSource::NotResolved,
+                delivered_prefix_shim: DeliveredPrefixShim::Unknown,
                 pnpm: Some(PnpmRunDiagnostics {
                     home_source,
                     home_env_present: false,
@@ -6033,6 +6340,374 @@ mod tests {
         );
         assert_eq!(outcome.record_non_convergent.as_deref(), Some("5.103.18"));
         assert!(outcome.capture_requires_durable_record);
+    }
+
+    // ---- Foreign-managed non-convergence, gated on whether HQ aimed at the
+    // ---- copy the app executes (the r3 fix for the nvm-under-managed-npm shape)
+
+    /// The live event fd8f0b5c inputs: npm delivered `latest` into HQ's managed
+    /// prefix, but the app executes an nvm copy one version behind. The managed
+    /// root and the managed prefix.
+    fn live_recurrence_ctx(aim: ExecutedCopyAim, already_blocked: bool) -> PostInstallOutcome {
+        let managed_root =
+            PathBuf::from("/Users/me/Library/Application Support/Indigo HQ/toolchain");
+        let roots = [managed_root];
+        decide_post_install(
+            &PostInstallContext::npm(
+                "/Users/me/.nvm/versions/node/v24.20.0/bin/hq",
+                "/Users/me/.nvm/versions/node/v24.20.0/bin/hq",
+                Some("5.103.26"),
+                Some("5.103.26"),
+                "5.103.27",
+                Some("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+                "/Users/me/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+                already_blocked,
+                Some("5.103.27"),
+            )
+            .with_managed_roots(&roots)
+            .with_executed_copy_aim(aim),
+        )
+    }
+
+    /// Gold (RED on the base commit, GREEN on the candidate): the exact live
+    /// nvm-under-managed-npm shape stays classified `ForeignManaged`, but with the
+    /// corrected aim NOT yet pointed at that drivable copy it writes NO durable
+    /// marker — so the next cycle's aim converges instead of the machine wedging
+    /// auto-update. On base ea307d53 this returned `record_non_convergent =
+    /// Some("5.103.27")`, which is exactly what wedged the recurrence.
+    #[test]
+    fn a_foreign_layout_not_yet_aimed_at_writes_no_durable_marker() {
+        let outcome = live_recurrence_ctx(ExecutedCopyAim::NotYetAimed, false);
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged),
+            "the executed nvm copy under a managed npm is still foreign-managed"
+        );
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "a drivable copy HQ has not yet aimed at must NOT write the durable marker"
+        );
+        assert!(
+            !outcome.capture_requires_durable_record,
+            "the non-blocking capture is not gated on a durable record"
+        );
+        // Still observable on its first episode, and episode-bounded so it does
+        // not re-page every 6h.
+        assert!(outcome.capture.is_some());
+        assert!(outcome.record_nonblocking_episode.is_some());
+    }
+
+    /// The companion proving the gold is not vacuous, and the stop-paging
+    /// guarantee for machines HQ genuinely cannot repair: the SAME live inputs
+    /// with an UNDRIVABLE aim still classify `ForeignManaged` AND still write the
+    /// durable marker on the first episode (exactly the base behaviour), then
+    /// stay suppressed on the repeat — once per episode.
+    #[test]
+    fn an_undrivable_foreign_layout_still_writes_the_marker_once_per_episode() {
+        let first = live_recurrence_ctx(ExecutedCopyAim::Undrivable, false);
+        assert_eq!(
+            first.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert_eq!(first.record_non_convergent.as_deref(), Some("5.103.27"));
+        assert!(first.capture_requires_durable_record);
+        assert!(first.capture.is_some());
+
+        // Already blocked (the marker is written): no second marker, no capture.
+        let repeat = live_recurrence_ctx(ExecutedCopyAim::Undrivable, true);
+        assert_eq!(repeat.record_non_convergent, None);
+        assert!(repeat.capture.is_none());
+    }
+
+    /// The partial-install sub-mechanism: HQ delivered `latest` into the aimed
+    /// prefix but that prefix exposes no `hq` shim, so the app resolves a foreign
+    /// copy. That is HQ's OWN incomplete install, not a layout HQ cannot drive —
+    /// so even with an undrivable aim it stays non-blocking and episode-bounded,
+    /// never writing the durable marker, and the next check reinstalls.
+    #[test]
+    fn a_delivered_prefix_with_no_shim_is_non_blocking_and_episode_bounded() {
+        let managed_root =
+            PathBuf::from("/Users/me/Library/Application Support/Indigo HQ/toolchain");
+        let roots = [managed_root];
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                "/Users/me/.nvm/versions/node/v24.20.0/bin/hq",
+                "/Users/me/.nvm/versions/node/v24.20.0/bin/hq",
+                Some("5.103.26"),
+                Some("5.103.26"),
+                "5.103.27",
+                Some("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+                "/Users/me/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+                false,
+                Some("5.103.27"),
+            )
+            .with_managed_roots(&roots)
+            // Undrivable aim would normally block, but a missing shim after a
+            // delivered install must never wedge auto-update.
+            .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+            .with_resolution_telemetry(
+                paths::ResolutionSource::LoginShell,
+                DeliveredPrefixShim::Absent,
+            ),
+        );
+        assert_eq!(
+            outcome.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "a delivered prefix missing its shim must not write the durable marker"
+        );
+        assert!(!outcome.capture_requires_durable_record);
+        assert!(outcome.record_nonblocking_episode.is_some());
+    }
+
+    /// The non-convergent event carries the two new closed lane/shim tokens, so
+    /// the next occurrence names its own mechanism (settings-PATH parity vs a
+    /// partial install) without another planning round.
+    #[test]
+    fn the_non_convergent_event_carries_the_resolution_lane_and_shim_tokens() {
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                "/Users/me/.nvm/versions/node/v24.20.0/bin/hq",
+                "/Users/me/.nvm/versions/node/v24.20.0/bin/hq",
+                Some("5.103.26"),
+                Some("5.103.26"),
+                "5.103.27",
+                Some("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+                "/Users/me/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+                false,
+                Some("5.103.27"),
+            )
+            .with_managed_roots(&[PathBuf::from(
+                "/Users/me/Library/Application Support/Indigo HQ/toolchain",
+            )])
+            .with_resolution_telemetry(
+                paths::ResolutionSource::SettingsPath,
+                DeliveredPrefixShim::Present,
+            ),
+        );
+        let report = outcome.capture.expect("a first foreign episode captures");
+        assert_eq!(report.hq_bin_lane, paths::ResolutionSource::SettingsPath);
+        assert_eq!(report.delivered_prefix_shim, DeliveredPrefixShim::Present);
+        // The telemetry tokens are drawn from closed vocabularies, never a path.
+        assert_eq!(report.hq_bin_lane.telemetry_value(), "settings_path");
+        assert_eq!(report.delivered_prefix_shim.telemetry_value(), "present");
+    }
+
+    /// The managed-shadow, pnpm, and bun arms are byte-for-byte unaffected by the
+    /// new aim/shim inputs: only a ForeignManaged verdict consults them.
+    #[test]
+    fn the_managed_shadow_pnpm_and_bun_arms_are_unchanged_by_the_new_aim() {
+        // A resolution shortfall (pnpm) with a NotYetAimed aim is still exactly a
+        // non-blocking shortfall — the foreign gate never runs for it.
+        let shortfall = decide_post_install(
+            &PostInstallContext {
+                executor: InstallExecutor::Pnpm,
+                before_bin: "/Users/me/Library/pnpm/hq",
+                after_bin: "/Users/me/Library/pnpm/hq",
+                before_version: Some("5.90.0"),
+                after_version: Some("5.90.0"),
+                latest: "5.103.27",
+                npm_prefix_passed: None,
+                delivered_version: None,
+                installer_bin: "/Users/me/Library/pnpm/pnpm",
+                already_blocked: false,
+                nonblocking_episode_keys: &[],
+                managed_roots: &[],
+                managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+                executed_copy_aim: ExecutedCopyAim::NotYetAimed,
+                hq_bin_lane: paths::ResolutionSource::UserPrefix,
+                delivered_prefix_shim: DeliveredPrefixShim::Absent,
+                pnpm: Some(PnpmRunDiagnostics {
+                    home_source: PnpmHomeSource::FlatPnpmDir,
+                    home_env_present: true,
+                    path_has_shim_dir: true,
+                    global_bin_dir_matches_shim_dir: Some(true),
+                    store_family: PnpmStoreFamily::V11,
+                    authoritative_query_ok: true,
+                    exit_status: "0".to_string(),
+                    output_len: 64,
+                }),
+            },
+        );
+        assert_eq!(
+            shortfall.non_convergence_kind,
+            Some(NonConvergenceKind::ResolutionShortfall)
+        );
+        assert_eq!(
+            shortfall.record_non_convergent, None,
+            "a shortfall never blocks, regardless of the aim/shim inputs"
+        );
+        assert!(!shortfall.capture_requires_durable_record);
+    }
+
+    #[test]
+    fn user_prefix_aim_decision_claims_only_a_drivable_prefix_with_a_colocated_npm() {
+        let prefix = "/Users/me/.nvm/versions/node/v24.20.0";
+        let npm = "/Users/me/.nvm/versions/node/v24.20.0/bin/npm";
+        // All three present -> aim at the user prefix, run its own npm.
+        assert_eq!(
+            user_prefix_aim_decision(Some(prefix), true, Some(npm)),
+            Some(UserPrefixAim {
+                prefix: prefix.to_string(),
+                npm: npm.to_string(),
+            })
+        );
+        // Not user-owned (a system/Homebrew or managed prefix) -> no user aim.
+        assert_eq!(user_prefix_aim_decision(Some("/opt/homebrew"), false, Some(npm)), None);
+        // User-owned but no co-located npm -> no user aim (ABI safety stays).
+        assert_eq!(user_prefix_aim_decision(Some(prefix), true, None), None);
+        // No derivable hq prefix -> no user aim.
+        assert_eq!(user_prefix_aim_decision(None, true, Some(npm)), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn executed_copy_aim_for_distinguishes_aimed_deferred_and_undrivable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let prefix = home.join(".nvm/versions/node/v24.20.0");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let hq = bin.join("hq");
+        let npm = bin.join("npm");
+        std::fs::write(&hq, "#!/bin/sh\n").unwrap();
+        std::fs::write(&npm, "#!/bin/sh\n").unwrap();
+        let managed_roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+        let prefix_str = prefix.to_string_lossy().to_string();
+        let hq_str = hq.to_string_lossy().to_string();
+        let npm_str = npm.to_string_lossy().to_string();
+
+        // Aimed at the executed copy's own prefix, running its own npm.
+        assert_eq!(
+            executed_copy_aim_for(&hq_str, Some(&prefix_str), &npm_str, &managed_roots, Some(home)),
+            ExecutedCopyAim::Aimed
+        );
+        // Drivable, but this run aimed at the managed prefix instead -> deferred.
+        assert_eq!(
+            executed_copy_aim_for(
+                &hq_str,
+                Some("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+                "/some/managed/npm",
+                &managed_roots,
+                Some(home),
+            ),
+            ExecutedCopyAim::NotYetAimed
+        );
+        // A user prefix with no co-located npm -> undrivable.
+        std::fs::remove_file(&npm).unwrap();
+        assert_eq!(
+            executed_copy_aim_for(&hq_str, Some(&prefix_str), &npm_str, &managed_roots, Some(home)),
+            ExecutedCopyAim::Undrivable
+        );
+        // A system prefix (outside home) -> undrivable.
+        assert_eq!(
+            executed_copy_aim_for(
+                "/opt/homebrew/bin/hq",
+                Some("/opt/homebrew"),
+                "/opt/homebrew/bin/npm",
+                &managed_roots,
+                Some(home),
+            ),
+            ExecutedCopyAim::Undrivable
+        );
+        // An asdf-style shim with no derivable prefix -> undrivable.
+        assert_eq!(
+            executed_copy_aim_for(
+                &home.join(".asdf/shims/hq").to_string_lossy(),
+                None,
+                "npm",
+                &managed_roots,
+                Some(home),
+            ),
+            ExecutedCopyAim::Undrivable
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn delivered_prefix_shim_for_reports_present_absent_and_unknown() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prefix = tmp.path().join("npm-global");
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        let prefix_str = prefix.to_string_lossy().to_string();
+        let shim = prefix.join("bin").join("hq");
+
+        // Delivered and the shim is a RUNNABLE executable -> present.
+        write_executable(&shim, "#!/bin/sh\n");
+        assert_eq!(
+            delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
+            DeliveredPrefixShim::Present
+        );
+        // Delivered but the shim is a NON-executable file: resolution skips it, so
+        // this is a partial install -> absent, never a false Present that would
+        // wedge the marker.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        assert_eq!(
+            delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
+            DeliveredPrefixShim::Absent
+        );
+        // Delivered but `bin/hq` is a DIRECTORY, not a file -> absent.
+        std::fs::remove_file(&shim).unwrap();
+        std::fs::create_dir(&shim).unwrap();
+        assert_eq!(
+            delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
+            DeliveredPrefixShim::Absent
+        );
+        // Delivered but the shim is missing entirely -> absent (the partial install).
+        std::fs::remove_dir(&shim).unwrap();
+        assert_eq!(
+            delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
+            DeliveredPrefixShim::Absent
+        );
+        // No prefix, or delivery not proven -> unknown.
+        assert_eq!(
+            delivered_prefix_shim_for(None, Some("5.103.27")),
+            DeliveredPrefixShim::Unknown
+        );
+        assert_eq!(
+            delivered_prefix_shim_for(Some(&prefix_str), None),
+            DeliveredPrefixShim::Unknown
+        );
+    }
+
+    #[test]
+    fn foreign_verdict_may_block_only_relaxes_the_foreign_kind() {
+        use NonConvergenceKind::*;
+        // Non-foreign kinds always "may block" — they never route through this.
+        for kind in [NpmTargeted, ResolutionShortfall, InstallerUnaimed, ManagedShadowed] {
+            assert!(foreign_verdict_may_block(
+                kind,
+                ExecutedCopyAim::NotYetAimed,
+                DeliveredPrefixShim::Absent
+            ));
+        }
+        // Foreign + not-yet-aimed OR shim-absent -> must NOT block.
+        assert!(!foreign_verdict_may_block(
+            ForeignManaged,
+            ExecutedCopyAim::NotYetAimed,
+            DeliveredPrefixShim::Unknown
+        ));
+        assert!(!foreign_verdict_may_block(
+            ForeignManaged,
+            ExecutedCopyAim::Undrivable,
+            DeliveredPrefixShim::Absent
+        ));
+        // Foreign + aimed/undrivable + shim present/unknown -> blocks as before.
+        assert!(foreign_verdict_may_block(
+            ForeignManaged,
+            ExecutedCopyAim::Aimed,
+            DeliveredPrefixShim::Present
+        ));
+        assert!(foreign_verdict_may_block(
+            ForeignManaged,
+            ExecutedCopyAim::Undrivable,
+            DeliveredPrefixShim::Unknown
+        ));
     }
 
     /// Regression (PR #512 review): a real hq-cli whose pnpm store sits beside a
@@ -7077,6 +7752,9 @@ mod tests {
                 nonblocking_episode_keys: &[],
                 managed_roots: &[],
                 managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+                executed_copy_aim: ExecutedCopyAim::Undrivable,
+                hq_bin_lane: paths::ResolutionSource::NotResolved,
+                delivered_prefix_shim: DeliveredPrefixShim::Unknown,
                 pnpm: Some(pnpm_field_diagnostics(matches)),
             });
             assert_eq!(
@@ -7121,6 +7799,9 @@ mod tests {
                 nonblocking_episode_keys: keys,
                 managed_roots: &[],
                 managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+                executed_copy_aim: ExecutedCopyAim::Undrivable,
+                hq_bin_lane: paths::ResolutionSource::NotResolved,
+                delivered_prefix_shim: DeliveredPrefixShim::Unknown,
                 pnpm: Some(pnpm_field_diagnostics(Some(false))),
             }
         }
@@ -7201,6 +7882,9 @@ mod tests {
             nonblocking_episode_keys: &[],
             managed_roots: &[],
             managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+            executed_copy_aim: ExecutedCopyAim::Undrivable,
+            hq_bin_lane: paths::ResolutionSource::NotResolved,
+            delivered_prefix_shim: DeliveredPrefixShim::Unknown,
             pnpm: Some(pnpm_field_diagnostics(Some(true))),
         });
         assert_eq!(

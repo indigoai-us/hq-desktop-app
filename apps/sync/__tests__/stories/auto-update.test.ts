@@ -256,6 +256,10 @@ describe('master automatic-updates switch', () => {
     expect(npmBranch.indexOf('fetch_latest()')).toBeLessThan(
       npmBranch.indexOf('install_argv(prefix.as_deref()'),
     );
+    // The ordinary update also AIMS at the copy the app will execute before it
+    // pins the version — a drivable user-owned prefix is upgraded in place with
+    // its own npm (the r3 fix for the nvm-under-managed-npm non-convergence).
+    expect(npmBranch).toContain('select_ordinary_install_aim(&hq, &managed_roots');
 
     // pnpm branch pins the same way, from the target already resolved for it,
     // AND forces pnpm's global bin dir at the directory holding the resolved

@@ -3,9 +3,10 @@ use std::sync::Arc;
 use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
-    reset_non_convergent_marker_unpersisted_capture_for_tests, InstallExecutor,
-    ManagedShadowRepairOutcome, NonConvergenceKind, PnpmHomeSource, PnpmRunDiagnostics,
-    PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, NON_CONVERGENT_ERROR_PREFIX,
+    reset_non_convergent_marker_unpersisted_capture_for_tests, DeliveredPrefixShim,
+    ExecutedCopyAim, InstallExecutor, ManagedShadowRepairOutcome, NonConvergenceKind,
+    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    ResolutionSource, NON_CONVERGENT_ERROR_PREFIX,
 };
 use std::path::PathBuf;
 use sentry::test::with_captured_events_options;
@@ -140,6 +141,9 @@ fn an_unaimed_pnpm_run_persists_no_marker() {
         nonblocking_episode_keys: &[],
         managed_roots: &[],
         managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+        executed_copy_aim: ExecutedCopyAim::Undrivable,
+        hq_bin_lane: ResolutionSource::NotResolved,
+        delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::Undetermined,
             home_env_present: false,
@@ -219,6 +223,80 @@ fn an_unresolved_hq_run_persists_no_marker() {
     assert_eq!(captures, 1, "it stays observable once");
 }
 
+/// The stop-paging guarantee survives the r3 relaxation: a genuinely undrivable
+/// foreign layout (the nvm copy under a managed npm, with an UNDRIVABLE aim)
+/// still classifies `ForeignManaged` and still persists its durable marker, so a
+/// machine HQ cannot repair keeps its stop-paging behaviour.
+#[test]
+fn an_undrivable_foreign_layout_still_persists_its_marker() {
+    let roots = [PathBuf::from(
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain",
+    )];
+    let ctx = PostInstallContext::npm(
+        "/Users/reviewer/.nvm/versions/node/v24.20.0/bin/hq",
+        "/Users/reviewer/.nvm/versions/node/v24.20.0/bin/hq",
+        Some("5.103.17"),
+        Some("5.103.17"),
+        "5.103.18",
+        Some("/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+        false,
+        Some("5.103.18"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+    .with_resolution_telemetry(ResolutionSource::LoginShell, DeliveredPrefixShim::Present);
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::ForeignManaged)
+    );
+    assert_eq!(
+        decide_post_install(&ctx).record_non_convergent.as_deref(),
+        Some("5.103.18")
+    );
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(
+        records, 1,
+        "an undrivable foreign layout still persists its marker"
+    );
+    assert_eq!(captures, 1);
+}
+
+/// The partial-install shape never wedges auto-update: HQ delivered `latest`
+/// into the aimed prefix but it exposes no `hq` shim, so the run stays
+/// non-blocking and persists NO durable marker — the next check reinstalls.
+#[test]
+fn a_delivered_prefix_with_no_shim_persists_no_marker() {
+    let roots = [PathBuf::from(
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain",
+    )];
+    let ctx = PostInstallContext::npm(
+        "/Users/reviewer/.nvm/versions/node/v24.20.0/bin/hq",
+        "/Users/reviewer/.nvm/versions/node/v24.20.0/bin/hq",
+        Some("5.103.17"),
+        Some("5.103.17"),
+        "5.103.18",
+        Some("/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+        false,
+        Some("5.103.18"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+    .with_resolution_telemetry(ResolutionSource::LoginShell, DeliveredPrefixShim::Absent);
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::ForeignManaged)
+    );
+    assert_eq!(decide_post_install(&ctx).record_non_convergent, None);
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(
+        records, 0,
+        "a delivered prefix missing its shim persists no marker"
+    );
+    assert_eq!(captures, 1, "it stays observable once");
+}
+
 /// The pnpm >=11 nested field layout. `matches` is now a native-resolution
 /// diagnostic only; the marker decision turns on delivery evidence. `'static` so
 /// the fixtures need no caller-side locals.
@@ -240,6 +318,9 @@ fn pnpm_marker_ctx(
         nonblocking_episode_keys: &[],
         managed_roots: &[],
         managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+        executed_copy_aim: ExecutedCopyAim::Undrivable,
+        hq_bin_lane: ResolutionSource::NotResolved,
+        delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,

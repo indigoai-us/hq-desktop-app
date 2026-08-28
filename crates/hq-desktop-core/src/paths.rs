@@ -271,6 +271,108 @@ pub fn both_within_same_managed_root(a: &Path, b: &Path, roots: &[PathBuf]) -> b
         .any(|root| path_is_within(a, root) && path_is_within(b, root))
 }
 
+/// System / package-manager prefixes HQ must NEVER install into, even if a
+/// pathological `$HOME` somehow contained one. `/usr` also covers `/usr/local`
+/// (Intel Homebrew) and `/usr/bin`; `/opt/homebrew` is Apple-Silicon Homebrew.
+/// Windows has no analogous user-writable global-prefix hazard here, so the list
+/// is unix-shaped and simply never matches a Windows path.
+const SYSTEM_OWNED_PREFIXES: &[&str] = &["/usr", "/opt/homebrew", "/bin", "/sbin"];
+
+/// Whether `prefix` is a user-owned Node/npm global prefix HQ may drive IN PLACE
+/// — i.e. one the updater can install INTO by running that prefix's own
+/// co-located npm, without ever pointing HQ's managed npm at a runtime it does
+/// not match. True only when the prefix is, all at once:
+///   * OUTSIDE every managed toolchain root — HQ's own managed prefixes route
+///     through the managed path, never this one; AND
+///   * INSIDE the user's home directory — an nvm / volta / asdf / user-npm
+///     prefix, never a shared location; AND
+///   * NOT a system or Homebrew prefix HQ must never write into (`/usr`,
+///     `/usr/local`, `/opt/homebrew`, `/bin`, `/sbin`).
+///
+/// Pure over its inputs (managed roots and home are passed in) so the boundary
+/// is unit-testable without touching process-global environment. A relative or
+/// empty prefix is never user-owned. This is the guard that keeps the new
+/// aim-at-the-executed-copy path from ever writing into Homebrew or a system
+/// prefix (see the updater's `select_ordinary_install_aim`).
+pub fn is_user_owned_prefix(prefix: &Path, managed_roots: &[PathBuf], home: Option<&Path>) -> bool {
+    if prefix.as_os_str().is_empty() || !prefix.is_absolute() {
+        return false;
+    }
+    // Resolve symlinks BEFORE the lexical containment checks. A prefix that
+    // reaches a system / package-manager location (e.g. `/opt/homebrew` or
+    // `/usr/local`) THROUGH a symlink under `$HOME` would otherwise pass the
+    // lexical `$HOME`-containment test and let the in-place aim run npm with
+    // `--prefix` pointing into that tree — the exact Homebrew-corruption hazard
+    // the boundary exists to prevent. A non-existent path (the pure unit
+    // fixtures) canonicalizes to itself, so the lexical semantics are unchanged.
+    let prefix = canonicalize_or_self(prefix);
+    let home = home.map(canonicalize_or_self);
+    let managed_roots: Vec<PathBuf> = managed_roots.iter().map(|r| canonicalize_or_self(r)).collect();
+
+    // HQ's own managed roots are driven by the managed path, never this one.
+    if managed_roots
+        .iter()
+        .any(|root| path_is_within(&prefix, root))
+    {
+        return false;
+    }
+    // Never a system / Homebrew / OS-owned prefix, regardless of home.
+    if SYSTEM_OWNED_PREFIXES
+        .iter()
+        .any(|sys| path_is_within(&prefix, Path::new(sys)))
+    {
+        return false;
+    }
+    // Must live inside the user's own home directory to be user-owned.
+    match home {
+        Some(home) if !home.as_os_str().is_empty() && home.is_absolute() => {
+            path_is_within(&prefix, &home)
+        }
+        _ => false,
+    }
+}
+
+/// Canonicalize `path`, falling back to the path itself when it cannot be
+/// resolved (it does not exist yet, or a permission error). Used by
+/// [`is_user_owned_prefix`] so a symlinked containment is resolved without
+/// changing the lexical semantics for non-existent fixture paths.
+fn canonicalize_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether `path` is a shim the resolver would actually run: a REGULAR FILE
+/// (never a directory), and on unix one with an execute bit set. A delivered
+/// install whose `bin/hq` is a directory or a non-executable file is skipped by
+/// resolution, so existence alone must not read as a usable shim.
+pub fn is_runnable_shim(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                meta.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        }
+        _ => false,
+    }
+}
+
+/// [`resolution_source_of`] for a resolved-bin STRING that may still be the
+/// unresolved bare sentinel (`"hq"` / `"npm"` / empty) after a failed
+/// resolution. Maps that sentinel to [`ResolutionSource::NotResolved`] instead of
+/// letting the login-shell catch-all mislabel it (mirrors
+/// [`crate::hq_cli_update::bin_resolution_source`]'s sentinel handling).
+pub fn resolution_source_of_bin(bin: &str) -> ResolutionSource {
+    if bin.is_empty() || bin == "hq" || bin == "npm" {
+        return ResolutionSource::NotResolved;
+    }
+    resolution_source_of(Path::new(bin))
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
@@ -856,6 +958,22 @@ pub enum ResolutionSource {
     UserPrefix,
     SystemPrefix,
     LoginShell,
+}
+
+impl ResolutionSource {
+    /// Closed, path-free token for the `hq_bin_lane` telemetry tag. Kept in
+    /// lockstep with the serde `snake_case` rendering so the tag vocabulary has a
+    /// single source of truth and can never carry a raw filesystem path.
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NotResolved => "not_resolved",
+            Self::SettingsPath => "settings_path",
+            Self::ManagedToolchain => "managed_toolchain",
+            Self::UserPrefix => "user_prefix",
+            Self::SystemPrefix => "system_prefix",
+            Self::LoginShell => "login_shell",
+        }
+    }
 }
 
 fn parent_in(path: &Path, dirs: &[PathBuf]) -> bool {
@@ -2523,6 +2641,131 @@ mod tests {
             Path::new("/opt/IndigoHQ/toolchain/node"),
             &[],
         ));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn the_user_owned_prefix_test_excludes_system_and_managed_roots() {
+        let managed_roots = vec![PathBuf::from(
+            "/Users/me/Library/Application Support/Indigo HQ/toolchain",
+        )];
+        let home = Path::new("/Users/me");
+
+        // The live shape: an nvm prefix inside the user's home, outside every
+        // managed root — HQ may drive it in place.
+        assert!(is_user_owned_prefix(
+            Path::new("/Users/me/.nvm/versions/node/v24.20.0"),
+            &managed_roots,
+            Some(home),
+        ));
+        // A plain user npm prefix inside home is also drivable.
+        assert!(is_user_owned_prefix(
+            Path::new("/Users/me/.npm-global"),
+            &managed_roots,
+            Some(home),
+        ));
+
+        // A managed prefix (HQ's own npm-global under the managed root) is NEVER
+        // user-owned — it routes through the managed path.
+        assert!(!is_user_owned_prefix(
+            Path::new("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+            &managed_roots,
+            Some(home),
+        ));
+
+        // System / Homebrew prefixes are excluded even though the risk-3 hazard
+        // is exactly HQ writing into one of them.
+        for system in [
+            "/opt/homebrew",
+            "/usr/local",
+            "/usr",
+            "/usr/bin",
+            "/bin",
+            "/sbin",
+        ] {
+            assert!(
+                !is_user_owned_prefix(Path::new(system), &managed_roots, Some(home)),
+                "{system} must not be treated as user-owned"
+            );
+        }
+
+        // A prefix outside the user's home is not user-owned (a shared /opt tool).
+        assert!(!is_user_owned_prefix(
+            Path::new("/opt/tools/node"),
+            &managed_roots,
+            Some(home),
+        ));
+        // A relative or empty prefix, or an unknown home, is never user-owned.
+        assert!(!is_user_owned_prefix(
+            Path::new("relative/prefix"),
+            &managed_roots,
+            Some(home),
+        ));
+        assert!(!is_user_owned_prefix(
+            Path::new("/Users/me/.nvm/versions/node/v24.20.0"),
+            &managed_roots,
+            None,
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_user_owned_prefix_resolves_symlinks_out_of_home() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let external = tmp.path().join("external");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(external.join("node")).unwrap();
+        // A symlink UNDER $HOME that escapes to a location outside it (the stand-in
+        // for `~/.nvm` -> `/opt/homebrew`). Lexically it is inside $HOME, but it
+        // resolves outside — so it must NOT read as user-owned.
+        let escape = home.join("escape");
+        std::os::unix::fs::symlink(&external, &escape).unwrap();
+        let managed_roots: Vec<PathBuf> = vec![];
+        assert!(!is_user_owned_prefix(
+            &escape.join("node"),
+            &managed_roots,
+            Some(&home),
+        ));
+        // A genuine directory under $HOME stays user-owned.
+        let real = home.join("nvm/versions/node/v24");
+        std::fs::create_dir_all(&real).unwrap();
+        assert!(is_user_owned_prefix(&real, &managed_roots, Some(&home)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_runnable_shim_requires_an_executable_regular_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let f = tmp.path().join("hq");
+        std::fs::write(&f, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_runnable_shim(&f), "a non-executable file is not runnable");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_runnable_shim(&f), "an executable regular file is runnable");
+        let d = tmp.path().join("dir");
+        std::fs::create_dir(&d).unwrap();
+        assert!(!is_runnable_shim(&d), "a directory is never a runnable shim");
+        assert!(!is_runnable_shim(&tmp.path().join("missing")));
+    }
+
+    #[test]
+    fn resolution_source_of_bin_maps_the_unresolved_sentinel_to_not_resolved() {
+        for sentinel in ["hq", "npm", ""] {
+            assert_eq!(
+                resolution_source_of_bin(sentinel),
+                ResolutionSource::NotResolved,
+                "the bare {sentinel:?} sentinel is not-resolved, never login-shell"
+            );
+        }
+        // A resolved absolute path outside every known dir set still classifies by
+        // lane (login-shell on unix), exactly as resolution_source_of does.
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(
+            resolution_source_of_bin("/opt/whatever/bin/hq"),
+            ResolutionSource::LoginShell
+        );
     }
 
     // ---- HQ-DESKTOP-3P: interpreter-hint PATH + version-manager widening ----
