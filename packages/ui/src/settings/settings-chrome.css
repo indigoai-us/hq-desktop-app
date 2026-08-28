@@ -1,0 +1,188 @@
+/* Shared V2 Settings field language (Profile + Companies + host panes). */
+
+.ss-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 640px;
+}
+
+.ss-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ss-section-label {
+  margin: 0 0 6px;
+  color: var(--t3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ss-lede {
+  margin: 0 0 8px;
+  color: var(--t3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ss-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.ss-field-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ss-field-label {
+  color: var(--t1);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ss-field-help {
+  color: var(--t3);
+  font-size: 12px;
+}
+
+.ss-field-value {
+  flex: 0 0 auto;
+  color: var(--t2);
+  font-size: 13px;
+}
+
+.ss-field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ss-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--ok, #34c759) 18%, transparent);
+  color: var(--ok-ink, var(--ok, #34c759));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ss-badge.muted {
+  background: var(--hover);
+  color: var(--t3);
+}
+
+.ss-badge.warn {
+  background: color-mix(in srgb, var(--warn, #d9584a) 16%, transparent);
+  color: var(--warn-ink, #d9584a);
+}
+
+.ss-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--btn-bg);
+  color: var(--t1);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ss-btn:hover {
+  border-color: var(--t3);
+}
+
+.ss-btn.ghost {
+  background: transparent;
+  color: var(--t2);
+}
+
+.ss-btn.danger {
+  color: var(--warn-ink, #d9584a);
+}
+
+.ss-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ss-empty {
+  margin: 0;
+  padding: 12px 0;
+  color: var(--t3);
+  font-size: 13px;
+}
+
+.ss-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--ice-ink);
+  color: var(--badge-fg);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ss-company-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ss-company-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ss-theme-options {
+  display: flex;
+  gap: 6px;
+}
+
+.ss-theme-option {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 6px 10px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--t2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ss-theme-option[aria-checked="true"] {
+  background: var(--sel);
+  color: var(--t1);
+  border-color: var(--line2);
+}

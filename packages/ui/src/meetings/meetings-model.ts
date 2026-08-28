@@ -1,0 +1,973 @@
+import type { ActiveMeeting } from "./active-meetings";
+
+export interface MeetingSignal {
+  type?: string;
+  kind?: string;
+  category?: string;
+  title?: string;
+  text?: string;
+  summary?: string;
+}
+
+export interface MeetingEvent {
+  id: string;
+  summary?: string;
+  start: { dateTime?: string; date?: string; timeZone?: string };
+  end: { dateTime?: string; date?: string; timeZone?: string };
+  recurringEventId?: string | null;
+  recurrence?: string[];
+  originalStartTime?: {
+    dateTime?: string;
+    date?: string;
+    timeZone?: string;
+  } | null;
+  status: string;
+  hangoutLink?: string;
+  meetingUrl?: string | null;
+  sourceCalendarId?: string;
+  sourceCompanyUid?: string;
+  sourceAccountId?: string;
+  signals?: unknown;
+}
+
+export interface ScheduledBot {
+  botId: string;
+  meetingUrl: string;
+  platform: string;
+  status: string;
+  calendarEventId?: string | null;
+  calendarSeriesId?: string | null;
+  recurringMeeting?: boolean;
+  meetingTitle?: string | null;
+  scheduledStartTime?: string | null;
+  autoScheduled: boolean;
+  errorMessage?: string | null;
+  /**
+   * US-010 — the real source-landed signal from hq-pro: true only when the
+   * transcript has actually been persisted to the vault as a queryable source
+   * (`GET /v1/bot/list` HEADs `sources/meetings/{botId}.md`). The "Done —
+   * transcript saved" row state is gated on this, NOT on `status ===
+   * 'completed'` alone — a completed bot whose per-company ingest hard-failed
+   * (the #240 KMS-drift symptom) arrives with `sourceLanded: false` and must
+   * keep showing the processing state, not a false "saved". Optional on the
+   * wire: a pre-US-010 server omits it (and the Rust client defaults it to
+   * `false`), so an older backend never produces a premature "saved".
+   */
+  sourceLanded?: boolean;
+}
+
+export interface GoogleAccount {
+  accountId: string;
+  email?: string | null;
+  scope?: string | null;
+  connectedAt?: string | null;
+  capabilities?: string[];
+}
+
+export interface GoogleCalendar {
+  id: string;
+  summary: string;
+  primary?: boolean;
+  accessRole?: string | null;
+}
+
+export interface CompanyMembership {
+  companyUid: string;
+  companyName?: string | null;
+  role?: string | null;
+  status: string;
+}
+
+export interface SignalCounts {
+  actions: number;
+  decisions: number;
+  risks: number;
+}
+
+export interface ConnectedCalendarRow {
+  key: string;
+  /** Google account id from listAccounts; empty for membership-only fallback rows. */
+  accountId: string;
+  email: string;
+  calendar: string;
+  routingTarget: string;
+  status: string;
+}
+
+export function eventStart(event: MeetingEvent): Date | null {
+  const raw = event.start.dateTime ?? event.start.date;
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+export function eventEnd(event: MeetingEvent): Date | null {
+  const raw = event.end.dateTime ?? event.end.date;
+  if (!raw) return eventStart(event);
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? eventStart(event) : date;
+}
+
+export function timeLabel(event: MeetingEvent): string {
+  const start = eventStart(event);
+  if (!start) return "Time pending";
+  return start.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+export function rangeLabel(event: MeetingEvent): string {
+  const start = eventStart(event);
+  const end = eventEnd(event);
+  if (!start) return "Time pending";
+  if (!end || end.getTime() === start.getTime()) return timeLabel(event);
+  return `${timeLabel(event)}-${end.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
+}
+
+/**
+ * Whole-minute duration between start and end. Returns null when either edge
+ * is unparseable or the span is non-positive (so the row can omit the "· Nm"
+ * suffix rather than render "· 0m"). Powers the design `.mtime` cell.
+ */
+export function durationMinutes(event: MeetingEvent): number | null {
+  const start = eventStart(event);
+  const end = eventEnd(event);
+  if (!start || !end) return null;
+  const mins = Math.round((end.getTime() - start.getTime()) / 60000);
+  return mins > 0 ? mins : null;
+}
+
+/**
+ * Display label for agenda / Up-next duration.
+ *
+ * Plausible single-meeting spans render as `Nm`. Missing/non-positive spans
+ * return null (caller omits the suffix). All-day (1440m), multi-day, and other
+ * implausible lengths return `duration unavailable` — never raw values like
+ * `21600m` or `1440m` (DESKTOP meetings native IA).
+ */
+const MAX_PLAUSIBLE_DURATION_MINUTES = 12 * 60;
+
+export function durationLabel(event: MeetingEvent): string | null {
+  const mins = durationMinutes(event);
+  if (mins == null) return null;
+  if (mins >= 24 * 60 || mins > MAX_PLAUSIBLE_DURATION_MINUTES) {
+    return "duration unavailable";
+  }
+  return `${mins}m`;
+}
+
+const GOOGLE_RECURRING_EVENT_ID_RE = /^(.*)_(?:\d{8}T\d{6}Z|\d{8})$/;
+
+export function recurringSeriesId(event: MeetingEvent): string | null {
+  const explicit = event.recurringEventId?.trim();
+  if (explicit) return explicit;
+  if (event.recurrence && event.recurrence.length > 0) return event.id;
+  return event.id.match(GOOGLE_RECURRING_EVENT_ID_RE)?.[1] ?? null;
+}
+
+export function isRecurringMeeting(event: MeetingEvent): boolean {
+  return recurringSeriesId(event) !== null;
+}
+
+export function isActiveBotStatus(status: string): boolean {
+  return (
+    status === "scheduled" ||
+    status === "joining" ||
+    status === "recording" ||
+    status === "processing" ||
+    status === "completed"
+  );
+}
+
+/**
+ * Conservatively normalize a supported meeting URL for identity matching
+ * (US-005). Strips non-identity query/fragment noise while keeping near-match
+ * meetings distinct:
+ *
+ * - Zoom: meeting number only (`/j/{id}`); region hosts collapse to zoom.us;
+ *   pwd/tracking query and fragments are dropped.
+ * - Google Meet: lowercase room code only; authuser/hs query dropped.
+ * - Teams: meetup-join path segment only; context/tenant query dropped.
+ *
+ * Returns null for unrecognized / unsupported URLs so callers never join bots
+ * across unrelated links. Webex is intentionally out of scope for identity.
+ */
+export function normalizeMeetingUrl(
+  raw: string | null | undefined,
+): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+
+  const host = url.hostname.toLowerCase();
+  // Drop trailing slashes so `/j/123/` and `/j/123` match.
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+
+  // Zoom: https://{region.}zoom.us/j/{meetingId}[?pwd=…]
+  if (/(?:^|\.)zoom\.us$/i.test(host)) {
+    const m = path.match(/^\/j\/(\d+)$/i);
+    if (!m) return null;
+    return `https://zoom.us/j/${m[1]}`;
+  }
+
+  // Google Meet: https://meet.google.com/{xxx-xxxx-xxx}
+  if (host === "meet.google.com") {
+    const m = path.match(/^\/([a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3})$/i);
+    if (!m) return null;
+    return `https://meet.google.com/${m[1].toLowerCase()}`;
+  }
+
+  // Teams: https://teams.microsoft.com/l/meetup-join/{id}[/…]
+  // Real calendar links often append `/0` (or similar) after the encoded
+  // meeting id — keep the identity segment, drop trailing path + query/hash.
+  if (host === "teams.microsoft.com" || host.endsWith(".teams.microsoft.com")) {
+    const m = path.match(/^\/l\/meetup-join\/([^/]+)(?:\/.*)?$/i);
+    if (!m) return null;
+    return `https://teams.microsoft.com/l/meetup-join/${m[1]}`;
+  }
+
+  return null;
+}
+
+/** True when both URLs normalize to the same supported meeting identity. */
+export function meetingUrlsMatch(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  const left = normalizeMeetingUrl(a);
+  const right = normalizeMeetingUrl(b);
+  return left !== null && right !== null && left === right;
+}
+
+/**
+ * Join bot state to a calendar event (US-005 priority order):
+ *   1. exact calendar event ID
+ *   2. recurring series ID
+ *   3. normalized meeting URL (covers missing/stale calendar IDs)
+ *
+ * Only active lifecycle statuses match so a failed/cancelled bot never blocks
+ * re-invite.
+ */
+export function botForEvent(
+  event: MeetingEvent,
+  botsByEventId: Map<string, ScheduledBot>,
+  scheduledBots: ScheduledBot[] = Array.from(botsByEventId.values()),
+): ScheduledBot | undefined {
+  const exact = botsByEventId.get(event.id);
+  if (exact && isActiveBotStatus(exact.status)) return exact;
+
+  const seriesId = recurringSeriesId(event);
+  if (seriesId) {
+    const seriesBot = scheduledBots.find((bot) => {
+      if (!isActiveBotStatus(bot.status)) return false;
+      return bot.calendarSeriesId?.trim() === seriesId;
+    });
+    if (seriesBot) return seriesBot;
+  }
+
+  const eventUrl = normalizeMeetingUrl(eventMeetingUrl(event));
+  if (!eventUrl) return undefined;
+
+  return scheduledBots.find((bot) => {
+    if (!isActiveBotStatus(bot.status)) return false;
+    return normalizeMeetingUrl(bot.meetingUrl) === eventUrl;
+  });
+}
+
+/**
+ * Optimistic bot row seeded on HTTP 409 invite conflicts so the agenda flips
+ * to "already invited" immediately while a background refresh reconciles the
+ * real bot id/status from the server.
+ */
+export function optimisticAlreadyInvitedBot(
+  event: MeetingEvent,
+  meetingUrl: string,
+): ScheduledBot {
+  return {
+    botId: `local-already-invited:${event.id}`,
+    meetingUrl,
+    platform: platformKeyFromUrl(meetingUrl),
+    status: "scheduled",
+    calendarEventId: event.id,
+    calendarSeriesId: recurringSeriesId(event),
+    meetingTitle: event.summary ?? null,
+    autoScheduled: false,
+  };
+}
+
+function platformKeyFromUrl(url: string): string {
+  const normalized = normalizeMeetingUrl(url) ?? url;
+  if (normalized.includes("zoom.us")) return "zoom";
+  if (normalized.includes("meet.google.com")) return "google_meet";
+  if (normalized.includes("teams.microsoft.com")) return "microsoft_teams";
+  return "unknown";
+}
+
+/**
+ * Visible attachment lifecycle for agenda rows (US-005 AC language).
+ * Maps the richer row-button kind onto the five user-facing states the list
+ * must distinguish before interaction, plus processing (in-flight ingest).
+ */
+export type BotAttachmentState =
+  | "available-to-invite"
+  | "invited"
+  | "joining"
+  | "recording"
+  | "processing"
+  | "completed";
+
+export function botAttachmentState(
+  bot: ScheduledBot | undefined,
+): BotAttachmentState {
+  switch (rowButtonKind(bot)) {
+    case "invite":
+      return "available-to-invite";
+    case "invited":
+      return "invited";
+    case "joining":
+      return "joining";
+    case "in-call":
+      return "recording";
+    case "processing":
+      return "processing";
+    case "done":
+      return "completed";
+  }
+}
+
+export function calendarEventIdsForBotLookup(events: MeetingEvent[]): string[] {
+  return Array.from(
+    new Set(
+      events
+        .map((event) => event.id?.trim())
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  );
+}
+
+export function mergeScheduledBots(
+  primary: ScheduledBot[],
+  secondary: ScheduledBot[],
+): ScheduledBot[] {
+  const byId = new Map<string, ScheduledBot>();
+  for (const bot of [...primary, ...secondary]) {
+    if (!byId.has(bot.botId)) byId.set(bot.botId, bot);
+  }
+  return Array.from(byId.values());
+}
+
+export function mergeScheduledBotLookups(
+  eventIds: string[],
+  eventBots: ScheduledBot[] | null,
+  fullBots: ScheduledBot[] | null,
+): ScheduledBot[] | null {
+  if (eventIds.length > 0) {
+    if (eventBots === null) return null;
+    return mergeScheduledBots(eventBots, fullBots ?? []);
+  }
+  return fullBots;
+}
+
+export function isToday(event: MeetingEvent, now = new Date()): boolean {
+  const start = eventStart(event);
+  if (!start) return false;
+  return (
+    start.getFullYear() === now.getFullYear() &&
+    start.getMonth() === now.getMonth() &&
+    start.getDate() === now.getDate()
+  );
+}
+
+export function sortByStart(a: MeetingEvent, b: MeetingEvent): number {
+  return (eventStart(a)?.getTime() ?? 0) - (eventStart(b)?.getTime() ?? 0);
+}
+
+export function pickUpNext(
+  events: MeetingEvent[],
+  now = new Date(),
+): MeetingEvent | null {
+  return (
+    events
+      .filter((event) => (eventEnd(event)?.getTime() ?? 0) >= now.getTime())
+      .sort(sortByStart)[0] ?? null
+  );
+}
+
+/** Row lifecycle state, mirrored from the Claude Design `.meeting-row` mock. */
+export type MeetingRowState = "live" | "next" | "past" | "scheduled";
+
+/**
+ * Resolve a row's display state. `live` wins when the event is the active
+ * detection/recording (matched by id against the live meeting's sourceEventId),
+ * then `next` for the up-next pick, then `past` once the event has ended, else
+ * `scheduled`. Pure + `now`-injectable so the agenda stays presentational.
+ */
+export function meetingState(
+  event: MeetingEvent,
+  opts: {
+    liveEventId?: string | null;
+    upNextId?: string | null;
+    now?: Date;
+  } = {},
+): MeetingRowState {
+  const { liveEventId = null, upNextId = null, now = new Date() } = opts;
+  if (liveEventId && event.id === liveEventId) return "live";
+  if (upNextId && event.id === upNextId) return "next";
+  const end = eventEnd(event);
+  if (end && end.getTime() < now.getTime()) return "past";
+  return "scheduled";
+}
+
+/**
+ * Subtitle label for a meeting row — the routed company name when known,
+ * falling back to a short UID, else "Personal" for un-routed calendars.
+ * The design row shows "{with} · {company}"; real events carry no attendee,
+ * so we surface company only.
+ */
+export function companyLabel(
+  event: MeetingEvent,
+  companyNames: Map<string, string>,
+): string {
+  const uid = event.sourceCompanyUid;
+  if (!uid) return "Personal";
+  // Never surface the raw cmp_… UID as a label — degrade to the generic name.
+  return companyNames.get(uid) ?? "Company";
+}
+
+export interface DayGroup {
+  label: string;
+  events: MeetingEvent[];
+}
+
+/**
+ * Human day label relative to `now` — "Today", "Tomorrow", else a short
+ * "Wed, Jun 3" style date. Ported from the classic MeetingsWindow so the alt
+ * window's multi-day agenda reads identically. `now` is injectable for tests.
+ */
+export function dayLabel(date: Date, now = new Date()): string {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const eventDay = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+  );
+  if (eventDay.getTime() === today.getTime()) return "Today";
+  if (eventDay.getTime() === tomorrow.getTime()) return "Tomorrow";
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/**
+ * Group events into chronological per-day buckets for the multi-day agenda.
+ * Events are sorted by start first, so both the day order and the within-day
+ * order come out chronological (Map preserves first-seen insertion order).
+ * Events with no parseable start are dropped — they can't be placed on a day.
+ */
+export function groupByDay(
+  events: MeetingEvent[],
+  now = new Date(),
+): DayGroup[] {
+  const byLabel = new Map<string, MeetingEvent[]>();
+  for (const event of [...events].sort(sortByStart)) {
+    const start = eventStart(event);
+    if (!start) continue;
+    const label = dayLabel(start, now);
+    const bucket = byLabel.get(label);
+    if (bucket) bucket.push(event);
+    else byLabel.set(label, [event]);
+  }
+  return Array.from(byLabel, ([label, eventsInDay]) => ({
+    label,
+    events: eventsInDay,
+  }));
+}
+
+export function pickLiveMeeting(
+  activeMeetings: ActiveMeeting[],
+): ActiveMeeting | null {
+  const priority: Record<ActiveMeeting["state"], number> = {
+    recording: 0,
+    starting: 1,
+    stopping: 2,
+    detected: 3,
+    error: 4,
+  };
+  return (
+    [...activeMeetings].sort((a, b) => {
+      const stateDelta = priority[a.state] - priority[b.state];
+      if (stateDelta !== 0) return stateDelta;
+      return Date.parse(b.detectedAt) - Date.parse(a.detectedAt);
+    })[0] ?? null
+  );
+}
+
+export function activeRecordingsFromScheduledBots(
+  events: MeetingEvent[],
+  botsByEventId: Map<string, ScheduledBot>,
+): ActiveMeeting[] {
+  const eventsById = new Map(events.map((event) => [event.id, event]));
+  const rows: ActiveMeeting[] = [];
+
+  for (const [eventId, bot] of botsByEventId) {
+    if (bot.status !== "recording") continue;
+    const event = eventsById.get(eventId);
+    rows.push({
+      windowId: `scheduled-bot:${bot.botId}`,
+      platform: bot.platform,
+      meetingUrl: bot.meetingUrl,
+      detectedAt:
+        bot.scheduledStartTime ??
+        event?.start.dateTime ??
+        event?.start.date ??
+        new Date(0).toISOString(),
+      state: "recording",
+      recordingId: bot.botId,
+      companyUid: event?.sourceCompanyUid ?? null,
+      summary: bot.meetingTitle ?? event?.summary,
+      sourceEventId: bot.calendarEventId ?? eventId,
+    });
+  }
+
+  return rows.sort(
+    (a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt),
+  );
+}
+
+export function totalSignalCounts(events: MeetingEvent[]): SignalCounts {
+  return events.reduce(
+    (totals, event) => {
+      const counts = signalCounts(event);
+      totals.actions += counts.actions;
+      totals.decisions += counts.decisions;
+      totals.risks += counts.risks;
+      return totals;
+    },
+    { actions: 0, decisions: 0, risks: 0 },
+  );
+}
+
+export function signalCounts(event: MeetingEvent): SignalCounts {
+  const signals = normalizeSignals(event.signals);
+  return {
+    actions: countSignalKind(signals, "action"),
+    decisions: countSignalKind(signals, "decision"),
+    risks: countSignalKind(signals, "risk"),
+  };
+}
+
+/**
+ * Compact, human signal summary for a meeting row — only non-zero kinds,
+ * pluralized, joined with " · " (e.g. "2 actions · 1 decision"). Empty string
+ * when the meeting has no extracted signals, so the `.msig` cell stays blank
+ * rather than rendering "0 actions · 0 decisions".
+ */
+export function signalSummary(counts: SignalCounts): string {
+  const parts: string[] = [];
+  if (counts.actions)
+    parts.push(`${counts.actions} action${counts.actions === 1 ? "" : "s"}`);
+  if (counts.decisions)
+    parts.push(
+      `${counts.decisions} decision${counts.decisions === 1 ? "" : "s"}`,
+    );
+  if (counts.risks)
+    parts.push(`${counts.risks} risk${counts.risks === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+export function extractedSignalLabels(event: MeetingEvent): string[] {
+  return normalizeSignals(event.signals)
+    .map(
+      (signal) =>
+        signal.title ??
+        signal.summary ??
+        signal.text ??
+        signal.type ??
+        signal.kind,
+    )
+    .filter(
+      (label): label is string =>
+        typeof label === "string" && label.trim().length > 0,
+    )
+    .slice(0, 3);
+}
+
+export function buildConnectedCalendarRows(
+  accounts: GoogleAccount[],
+  calendarsByAccount: Map<string, GoogleCalendar[]>,
+  enabledCalIdsByAccount: Map<string, Set<string>>,
+  events: MeetingEvent[],
+  memberships: CompanyMembership[],
+): ConnectedCalendarRow[] {
+  const membershipByUid = new Map(
+    memberships.map((row) => [row.companyUid, row]),
+  );
+  const companyByCalendar = new Map<string, string | null>();
+  for (const event of events) {
+    if (!event.sourceAccountId || !event.sourceCalendarId) continue;
+    companyByCalendar.set(
+      `${event.sourceAccountId}|${event.sourceCalendarId}`,
+      event.sourceCompanyUid ?? null,
+    );
+  }
+
+  const rows: ConnectedCalendarRow[] = [];
+  const hasCalendarInputs = accounts.some(
+    (account) =>
+      enabledCalIdsByAccount.has(account.accountId) ||
+      (calendarsByAccount.get(account.accountId)?.length ?? 0) > 0,
+  );
+  for (const account of accounts) {
+    const enabled = enabledCalIdsByAccount.get(account.accountId);
+    for (const calendar of calendarsByAccount.get(account.accountId) ?? []) {
+      if (enabled && !enabled.has(calendar.id)) continue;
+      const key = `${account.accountId}|${calendar.id}`;
+      const companyUid = companyByCalendar.get(key) ?? null;
+      const membership = companyUid
+        ? membershipByUid.get(companyUid)
+        : undefined;
+      rows.push({
+        key,
+        accountId: account.accountId,
+        email: account.email ?? account.accountId,
+        calendar: calendar.summary,
+        routingTarget:
+          membership?.companyName ?? (companyUid ? "Company" : "Personal"),
+        status: membership?.status ?? "active",
+      });
+    }
+  }
+
+  if (rows.length === 0 && !hasCalendarInputs) {
+    return memberships.map((membership) => ({
+      key: membership.companyUid,
+      accountId: "",
+      email: "Calendar routing",
+      calendar: membership.companyName ?? "Company",
+      routingTarget: membership.companyName ?? "Company",
+      status: membership.status,
+    }));
+  }
+
+  return rows.sort((a, b) =>
+    `${a.email}${a.calendar}`.localeCompare(`${b.email}${b.calendar}`),
+  );
+}
+
+/**
+ * Resolve a usable meeting URL for an event. Server-side extraction (BE-5)
+ * populates `meetingUrl` from hangoutLink/conferenceData/description; fall back
+ * to the raw `hangoutLink` for events served by a pre-BE-5 backend. Pure mirror
+ * of the classic MeetingsWindow helper so row actions resolve identically.
+ */
+export function eventMeetingUrl(e: MeetingEvent): string | null {
+  return e.meetingUrl ?? e.hangoutLink ?? null;
+}
+
+/**
+ * Human platform label for a meeting row — "Google Meet" / "Zoom" / "Teams" /
+ * "Webex", else empty string when the URL is missing or unrecognized.
+ */
+export function platformLabel(e: MeetingEvent): string {
+  const url = eventMeetingUrl(e) ?? "";
+  if (url.includes("meet.google.com")) return "Google Meet";
+  if (url.includes("zoom.us")) return "Zoom";
+  if (url.includes("teams.microsoft.com")) return "Teams";
+  if (url.includes("webex.com")) return "Webex";
+  return "";
+}
+
+/**
+ * True when `url` looks like a real join link for a supported platform
+ * (Zoom / Google Meet / Teams / Webex). Gates the row's invite/join affordances
+ * so we never schedule a bot against a bogus URL.
+ */
+export function isPlausibleMeetingUrl(url: string): boolean {
+  if (!url) return false;
+  return (
+    // Bare zoom.us and region hosts (us02web.zoom.us, …) — same surface as
+    // normalizeMeetingUrl. The previous `[^\s/]*\.zoom\.us` form rejected the
+    // common bare `https://zoom.us/j/…` paste and silently no-op'd URL invite.
+    /^https:\/\/(?:[^\s/]+\.)?zoom\.us\/j\/[^\s]+/i.test(url) ||
+    /^https:\/\/meet\.google\.com\/[a-z-]+/i.test(url) ||
+    /^https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s]+/i.test(url) ||
+    /^https:\/\/[^\s/]*\.webex\.com\/[^\s]+/i.test(url)
+  );
+}
+
+/**
+ * Human-readable destination for an ad-hoc URL-invite: the picked company's
+ * name, or "Personal" when no company is chosen (companyId null). Falls back to
+ * the generic "company" when the id has no name in the map. Mirrors the classic
+ * MeetingsWindow url-invite toast copy so both surfaces read identically.
+ */
+export function urlInviteDestinationLabel(
+  companyId: string | null,
+  companyNamesByUid: Map<string, string>,
+): string {
+  if (!companyId) return "Personal";
+  return companyNamesByUid.get(companyId) ?? "company";
+}
+
+/**
+ * Company attribution for bot invite/join payloads.
+ *
+ * Precedence: event `sourceCompanyUid` wins; only when the event carries no
+ * company does the settings default fill in. Security: the settings default
+ * must be a currently-known membership uid — a stale or foreign
+ * `recordingCompanyId` is treated as unset (null), never attributed.
+ */
+export function resolveInviteCompanyId(
+  eventSourceCompanyUid: string | null | undefined,
+  settingsRecordingCompanyId: string | null | undefined,
+  knownMembershipUids: { has(uid: string): boolean },
+): string | null {
+  if (eventSourceCompanyUid) return eventSourceCompanyUid;
+  const fallback =
+    typeof settingsRecordingCompanyId === "string" &&
+    settingsRecordingCompanyId.trim()
+      ? settingsRecordingCompanyId.trim()
+      : null;
+  if (fallback && knownMembershipUids.has(fallback)) return fallback;
+  return null;
+}
+
+/**
+ * Row action button lifecycle, driven by the scheduled bot's status:
+ *   no bot     → "invite"     (CTA)
+ *   scheduled  → "invited"    (click to cancel)
+ *   joining    → "joining"    (transient)
+ *   recording  → "in-call"    (live indicator, click to stop)
+ *   processing → "processing" (non-cancellable, transient)
+ *   completed  → "done" ONLY once the transcript has really landed as a vault
+ *                source (`sourceLanded`); a completed-but-not-yet-landed bot
+ *                stays "processing" — see below.
+ */
+export type RowButtonKind =
+  "invite" | "invited" | "joining" | "in-call" | "processing" | "done";
+
+/**
+ * US-010 — "Done — transcript saved" must reflect a transcript that ACTUALLY
+ * landed in the vault as a source, not merely a bot whose lifecycle status is
+ * "completed". hq-pro's bot status flips on the Recall webhook / retry path,
+ * but the per-company source write is a separate S3 PUT that can hard-fail
+ * (the 2026-06-02 KMS-grant drift dead-lettered transcripts for ~13 days while
+ * bots still read "completed"). hq-pro now exposes `sourceLanded` (a HEAD on
+ * the real meeting source object); we render `done` ONLY when it's true.
+ *
+ * A `completed` bot WITHOUT a confirmed source is shown as `processing`, not a
+ * false `done`: from the user's POV the transcript is still being finalised /
+ * recovered (the hourly retry-pipeline + dead-letter drainer re-drive it), so
+ * the honest state is "Processing", never "Done — transcript saved".
+ */
+export function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
+  if (!bot) return "invite";
+  switch (bot.status) {
+    case "scheduled":
+      return "invited";
+    case "joining":
+      return "joining";
+    case "recording":
+      return "in-call";
+    case "processing":
+      return "processing";
+    case "completed":
+      // Gate the terminal "done" on the real source-landed confirmation. Until
+      // hq-pro confirms the transcript persisted as a vault source, keep
+      // showing "processing" rather than a premature "Done — transcript saved".
+      return bot.sourceLanded === true ? "done" : "processing";
+    default:
+      // Defensive fallback — failed bots aren't in the active map, so hitting
+      // here means an unknown status. Render as Invite so the user can recover.
+      return "invite";
+  }
+}
+
+export function rowButtonLabel(kind: RowButtonKind, pending: boolean): string {
+  if (pending) return "…";
+  switch (kind) {
+    case "invite":
+      return "Invite";
+    case "invited":
+      return "Invited";
+    case "joining":
+      return "Joining…";
+    case "in-call":
+      return "In Call";
+    case "processing":
+      return "Processing";
+    case "done":
+      return "Done";
+  }
+}
+
+/**
+ * Map a raw invoke rejection to friendly, recoverable copy. Tries to parse a
+ * JSON `{ error | message }` payload first, then falls back to HTTP-status
+ * heuristics (409 already-scheduled, 401 re-auth, 403 forbidden, 5xx server),
+ * else the caller-supplied fallback. Mirrors the classic MeetingsWindow.
+ */
+export function friendlyError(err: unknown, fallback: string): string {
+  const raw = String(err ?? "").trim();
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart)) as {
+        error?: string;
+        message?: string;
+      };
+      if (typeof parsed.error === "string" && parsed.error.length > 0) {
+        return parsed.error;
+      }
+      if (typeof parsed.message === "string" && parsed.message.length > 0) {
+        return parsed.message;
+      }
+    } catch {
+      // Not JSON — fall through to HTTP-status heuristics below.
+    }
+  }
+  if (/\b409\b/.test(raw))
+    return "A bot is already scheduled for this meeting.";
+  if (/\b401\b/.test(raw)) return "You need to sign in again.";
+  if (/\b403\b/.test(raw)) return "You don't have permission for that.";
+  if (/\b5\d{2}\b/.test(raw)) return "Server hiccup — try again in a moment.";
+  return fallback;
+}
+
+export const MEETINGS_STALE_NOTICE_FAILURES = 4;
+
+/**
+ * Whether a refresh failure is an auth problem (vs. a transient/stale one).
+ * Single source of truth for the heuristic so the notice copy and the store's
+ * "is this reportable?" gate can't drift apart.
+ */
+export function isAuthError(err: unknown): boolean {
+  const raw = String(err ?? "");
+  return /\b401\b/.test(raw) || /auth/i.test(raw);
+}
+
+export interface MeetingsRefreshGate {
+  consecutiveFailures: number;
+  notice: string;
+  refreshBlocked: boolean;
+}
+
+/**
+ * Stale-grace reducer for poll-driven refreshes. Success resets the failure
+ * streak. Transient misses stay silent until the configured Nth consecutive
+ * failure, at which point the UI can show a muted stale-cache notice and offer
+ * "Report a problem" without hiding the cached agenda.
+ */
+export function meetingsRefreshGate(
+  previousFailures: number,
+  err: unknown | null,
+  staleAfterFailures = MEETINGS_STALE_NOTICE_FAILURES,
+): MeetingsRefreshGate {
+  if (err === null) {
+    return { consecutiveFailures: 0, notice: "", refreshBlocked: false };
+  }
+
+  const consecutiveFailures = Math.max(0, previousFailures) + 1;
+  if (isAuthError(err)) {
+    return {
+      consecutiveFailures,
+      notice: "Sign in again to load meetings.",
+      refreshBlocked: false,
+    };
+  }
+
+  if (consecutiveFailures >= Math.max(1, staleAfterFailures)) {
+    return {
+      consecutiveFailures,
+      notice: "Showing your last synced meetings — couldn’t refresh just now.",
+      refreshBlocked: true,
+    };
+  }
+
+  return { consecutiveFailures, notice: "", refreshBlocked: false };
+}
+
+export interface BugReport {
+  title: string;
+  body: string;
+}
+
+/**
+ * Build the title + body for a "Meetings won't refresh" bug report, filed via
+ * the `hq feedback` pathway when the agenda is genuinely blocked. Kept pure
+ * (the store/window just hands the result to `submit_bug_report`) so the exact
+ * copy + technical context are unit-testable.
+ */
+export function buildRefreshProblemReport(ctx: {
+  notice: string;
+  rawError: string;
+  meetingsShown: number;
+  connectedAccounts: number;
+}): BugReport {
+  const body = [
+    "The Meetings agenda could not refresh for several poll cycles and is",
+    "stuck showing the last synced view.",
+    "",
+    `Notice shown to user: ${ctx.notice || "(none)"}`,
+    `Last refresh error: ${ctx.rawError || "(none captured)"}`,
+    `Meetings currently shown: ${ctx.meetingsShown}`,
+    `Connected accounts: ${ctx.connectedAccounts}`,
+    "",
+    "Filed from the HQ Sync desktop app (Meetings -> Report a problem).",
+  ].join("\n");
+  return { title: "HQ Sync: Meetings won't refresh", body };
+}
+
+function normalizeSignals(raw: unknown): MeetingSignal[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter(isSignalLike);
+  if (typeof raw !== "object") return [];
+  const record = raw as Record<string, unknown>;
+  const fromBuckets = ["actions", "decisions", "risks", "actionItems"].flatMap(
+    (key) => {
+      const value = record[key];
+      if (!Array.isArray(value)) return [];
+      return value.map((item) =>
+        typeof item === "object" && item !== null
+          ? ({ ...item, type: key } as MeetingSignal)
+          : ({ title: String(item), type: key } as MeetingSignal),
+      );
+    },
+  );
+  if (fromBuckets.length > 0) return fromBuckets;
+  if (Array.isArray(record.signals)) return record.signals.filter(isSignalLike);
+  return [];
+}
+
+function countSignalKind(
+  signals: MeetingSignal[],
+  kind: "action" | "decision" | "risk",
+): number {
+  return signals.filter((signal) => {
+    const label =
+      `${signal.type ?? signal.kind ?? signal.category ?? ""}`.toLowerCase();
+    if (kind === "action") return label.includes("action");
+    if (kind === "decision") return label.includes("decision");
+    return label.includes("risk");
+  }).length;
+}
+
+function isSignalLike(value: unknown): value is MeetingSignal {
+  return typeof value === "object" && value !== null;
+}

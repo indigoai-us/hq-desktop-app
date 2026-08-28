@@ -236,6 +236,10 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['workspaces', 'memberships']));
       },
+      // Same REST route the web adapter uses (`WEB_PATHS.profile`); Sync has no
+      // native command for the global member profile, so it goes over hq_pro_fetch.
+      getProfile: () => hqProJson('GET', WEB_PATHS.profile),
+      updateProfile: (input) => hqProJson('PUT', WEB_PATHS.profile, input),
     },
 
     messaging: {
@@ -273,6 +277,9 @@ export function createSyncPlatformAdapter(
           channelId,
           personUids: [toPersonUid],
         }),
+      // Owner-only server-side (403 otherwise); Sync already exposes the command.
+      removeChannelMember: (channelId, personUid) =>
+        call('remove_channel_member', { channelId, personUid }),
       listContacts: async () => {
         const result = await call<unknown>('list_contacts');
         if (!result.ok) return result;
@@ -624,7 +631,12 @@ export function createSyncPlatformAdapter(
       setTrayState: (state) => call('set_tray_state', { state }),
       showMainWindow: () => call('show_main_window'),
       quitApp: () => call('quit_app'),
-      applyDockIcon: () => call('apply_dock_icon'),
+      // Upstream replaced `applyDockIcon` with `setDockVisible(visible)`. Like
+      // the widget and native banners, the Dock activation policy is a Sync
+      // surface with its own Settings toggle and its own launch/runtime split
+      // (`commands/dock.rs`), so the embedded UI must not drive a second one.
+      // Sync's `apply_dock_icon` command stays for Sync's own Settings pane.
+      setDockVisible: async () => HOST_OWNED,
       setAutostart: (enabled) =>
         call('set_autostart_enabled', { enabled }),
       consumePendingRoute: () => call('desktop_alt_consume_pending_route'),

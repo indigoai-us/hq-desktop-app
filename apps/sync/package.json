@@ -19,9 +19,9 @@
     "test:e2e:desktop-alt": "vitest run --config e2e/desktop-alt/vitest.config.ts"
   },
   "dependencies": {
-    "@hq/core": "file:../../../../hq-work-mono/hq-work-sync-handoff/packages/core",
-    "@hq/platform": "file:../../../../hq-work-mono/hq-work-sync-handoff/packages/platform",
-    "@hq/ui": "file:../../../../hq-work-mono/hq-work-sync-handoff/packages/ui",
+    "@hq/core": "workspace:*",
+    "@hq/platform": "workspace:*",
+    "@hq/ui": "workspace:*",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@fontsource-variable/inter": "^5.2.8",

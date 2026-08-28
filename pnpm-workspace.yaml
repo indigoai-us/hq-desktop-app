@@ -1,11 +1,12 @@
-# pnpm workspace for hq-desktop-app (single app: install-then-sync).
+# pnpm workspace for hq-desktop-app.
 #
-# Only the active app (apps/sync) participates. The port sources under imports/ are
-# intentionally NOT workspace members. apps/sync still carries its own pnpm lockfile
-# from import; root lockfile normalization happens as the app is finalized.
+# The port sources under imports/ are intentionally NOT workspace members.
 #
-# US-101: do not add hq-work-mono packages as workspace members (that would pull
-# them into turbo). Sync pins @hq/ui + @hq/platform + @hq/core via file: deps.
-# See apps/sync/docs/hq-work-ui-consume.md.
+# packages/{core,platform,ui} are vendored copies of the same-named packages in
+# indigoai-us/hq-work-mono — see packages/VENDORED.md. They are workspace
+# members so a plain `pnpm install` works on a bare checkout: the previous
+# `file:` pins pointed at a sibling hq-work-mono worktree that does not exist in
+# CI, which is why frontend CI could not install this repo at all.
 packages:
   - "apps/sync"
+  - "packages/*"

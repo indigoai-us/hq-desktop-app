@@ -1,0 +1,158 @@
+<script lang="ts">
+  /**
+   * LibraryPage — the root/shared Library surface (a top-level desktop-alt
+   * destination, ⌘4). Lists every shared/public worker plus root + personal
+   * skills across Skills / Workers / Installed / Profile tabs plus the routed
+   * Publish-a-pack footer surface (Marketplace is top-level now — US-007), with
+   * a text filter and a detail slide-over.
+   *
+   * Data is loaded from the local FS via get_library_root on mount and re-loaded
+   * on `refreshNonce` bumps. The shared LibraryBrowser owns the filter/toggle/
+   * list/detail UI. `subscribeLibraryRefresh` re-fetches when the window regains
+   * focus or a sync completes, so a worker created in another tool surfaces
+   * without leaving and returning to the page.
+   */
+  import type { PlatformAdapter } from "@hq/platform";
+  import { loadLibraryRoot, type LibraryItems } from "./library.js";
+  import {
+    subscribeLibraryRefresh,
+    type LibraryRefreshHost,
+    type UnlistenFn,
+  } from "./library-refresh.js";
+  import type { LibraryTab } from "./library-overlay-model.js";
+  import LibraryBrowser from "./LibraryBrowser.svelte";
+  import UnavailableNote from "../common/UnavailableNote.svelte";
+
+  interface Props {
+    /** Platform seam — `library.*` for data, plus the slices LibraryBrowser's
+     *  marketplace/installed/submit/profile tabs need. */
+    adapter: PlatformAdapter;
+    /** Optional host refresh signals (window focus / sync-complete). When
+     *  omitted, the page loads once per mount (web hosts may omit it). */
+    refreshHost?: LibraryRefreshHost | null;
+    /** Which library surface to show — driven by the sidebar route. */
+    tab?: LibraryTab;
+  }
+
+  let { adapter, refreshHost = null, tab = "skills" }: Props = $props();
+
+  /** Library data unavailable on this platform (web: needs-new-API). */
+  let unavailable = $state(false);
+
+  let items = $state<LibraryItems>({ workers: [], skills: [] });
+  let loading = $state(true);
+  let error = $state<string | null>(null);
+  /** Bumped by the focus / sync:complete refresh subscription to re-fetch. */
+  let refreshNonce = $state(0);
+
+  const HEADINGS: Record<LibraryTab, string> = {
+    skills: "Skills",
+    workers: "Workers",
+    installed: "Installed",
+    submit: "Publish a pack",
+    profile: "Profile",
+  };
+  const heading = $derived(HEADINGS[tab]);
+
+  const subtitle = $derived(
+    tab === "skills"
+      ? `${items.skills.length} ${items.skills.length === 1 ? "skill" : "skills"} available to you`
+      : tab === "workers"
+        ? `${items.workers.length} ${items.workers.length === 1 ? "worker" : "workers"} available to you`
+        : tab === "installed"
+          ? "Marketplace packs installed in your HQ"
+          : tab === "submit"
+            ? "Submit a local skill or worker for marketplace review"
+            : "Your HQ profile and published work",
+  );
+
+  $effect(() => {
+    // Re-run whenever the refresh subscription bumps the nonce.
+    refreshNonce;
+    loading = true;
+    error = null;
+    let cancelled = false;
+
+    void (async () => {
+      const result = await loadLibraryRoot(adapter.library);
+      if (cancelled) return;
+      if (result.ok) {
+        items = result.value;
+        unavailable = false;
+      } else if (result.reason === "unavailable") {
+        unavailable = true;
+        items = { workers: [], skills: [] };
+      } else {
+        console.error("loadLibraryRoot failed:", result.message);
+        error = "Library unavailable. Try again after a sync.";
+        items = { workers: [], skills: [] };
+      }
+      loading = false;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  // Re-fetch on window focus / sync:complete so a worker created elsewhere
+  // (e.g. `/newworker`) appears without remounting the page. Wired once.
+  $effect(() => {
+    const host = refreshHost;
+    if (!host) return;
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+
+    void subscribeLibraryRefresh(host, () => {
+      refreshNonce += 1;
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+</script>
+
+<section class="library-page" aria-labelledby="library-page-title">
+  <header class="page-header">
+    <h1 id="library-page-title">{heading}</h1>
+    <p>{subtitle}</p>
+  </header>
+
+  {#if unavailable}
+    <UnavailableNote
+      label="Library"
+      message="Not available here yet. Use the HQ desktop app to browse your library."
+      testid="library-unavailable"
+    />
+  {:else}
+    <LibraryBrowser {adapter} {items} {loading} {error} forcedFilter={tab} />
+  {/if}
+</section>
+
+<style>
+  .library-page {
+    display: grid;
+    gap: var(--v4-space-5);
+    font-family: var(--font-sans);
+  }
+
+  .page-header h1 {
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 1.15;
+  }
+
+  .page-header p {
+    margin: 5px 0 0;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    line-height: 1.4;
+  }
+</style>

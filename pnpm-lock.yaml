@@ -4,8 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-pnpmfileChecksum: sha256-lL1689gnZNGm3f+DkKI3Ephp8omchRJLzXoAjY0IpQI=
-
 importers:
 
   .:
@@ -35,14 +33,14 @@ importers:
         specifier: ^5.2.7
         version: 5.2.7
       '@hq/core':
-        specifier: file:../../../../hq-work-mono/hq-work-sync-handoff/packages/core
-        version: file:../../hq-work-mono/hq-work-sync-handoff/packages/core
+        specifier: workspace:*
+        version: link:../../packages/core
       '@hq/platform':
-        specifier: file:../../../../hq-work-mono/hq-work-sync-handoff/packages/platform
-        version: file:../../hq-work-mono/hq-work-sync-handoff/packages/platform
+        specifier: workspace:*
+        version: link:../../packages/platform
       '@hq/ui':
-        specifier: file:../../../../hq-work-mono/hq-work-sync-handoff/packages/ui
-        version: file:../../hq-work-mono/hq-work-sync-handoff/packages/ui
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@sentry/svelte':
         specifier: ^10.49.0
         version: 10.62.0(svelte@5.56.4)
@@ -86,6 +84,56 @@ importers:
       vite:
         specifier: ^6.0.0
         version: 6.4.3(@types/node@22.20.0)(tsx@4.23.0)
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.5)(happy-dom@20.10.6)(vite@6.4.3(@types/node@22.20.0)(tsx@4.23.0))
+
+  packages/core:
+    dependencies:
+      mqtt:
+        specifier: ^5.15.2
+        version: 5.15.2
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.5)(happy-dom@20.10.6)(vite@6.4.3(@types/node@22.20.0)(tsx@4.23.0))
+
+  packages/platform:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.5)(happy-dom@20.10.6)(vite@6.4.3(@types/node@22.20.0)(tsx@4.23.0))
+
+  packages/ui:
+    dependencies:
+      '@hq/core':
+        specifier: workspace:*
+        version: link:../core
+      '@hq/platform':
+        specifier: workspace:*
+        version: link:../platform
+    devDependencies:
+      '@sveltejs/vite-plugin-svelte':
+        specifier: ^5.0.0
+        version: 5.1.1(svelte@5.56.4)(vite@6.4.3(@types/node@22.20.0)(tsx@4.23.0))
+      happy-dom:
+        specifier: ^20.10.3
+        version: 20.10.6
+      svelte:
+        specifier: ^5.0.0
+        version: 5.56.4
+      svelte-check:
+        specifier: ^4.4.8
+        version: 4.7.1(picomatch@4.0.4)(svelte@5.56.4)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
       vitest:
         specifier: ^4.1.5
         version: 4.1.9(@types/node@22.20.0)(@vitest/coverage-v8@4.1.5)(happy-dom@20.10.6)(vite@6.4.3(@types/node@22.20.0)(tsx@4.23.0))
@@ -490,15 +538,6 @@ packages:
 
   '@fontsource-variable/inter@5.2.8':
     resolution: {integrity: sha512-kOfP2D+ykbcX/P3IFnokOhVRNoTozo5/JxhAIVYLpea/UBmCQ/YWPBfWIDuBImXX/15KH+eKh4xpEUyS2sQQGQ==}
-
-  '@hq/core@file:../../hq-work-mono/hq-work-sync-handoff/packages/core':
-    resolution: {directory: ../../hq-work-mono/hq-work-sync-handoff/packages/core, type: directory}
-
-  '@hq/platform@file:../../hq-work-mono/hq-work-sync-handoff/packages/platform':
-    resolution: {directory: ../../hq-work-mono/hq-work-sync-handoff/packages/platform, type: directory}
-
-  '@hq/ui@file:../../hq-work-mono/hq-work-sync-handoff/packages/ui':
-    resolution: {directory: ../../hq-work-mono/hq-work-sync-handoff/packages/ui, type: directory}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -1890,25 +1929,6 @@ snapshots:
   '@fontsource-variable/inter-tight@5.2.7': {}
 
   '@fontsource-variable/inter@5.2.8': {}
-
-  '@hq/core@file:../../hq-work-mono/hq-work-sync-handoff/packages/core':
-    dependencies:
-      mqtt: 5.15.2
-    transitivePeerDependencies:
-      - bufferutil
-      - supports-color
-      - utf-8-validate
-
-  '@hq/platform@file:../../hq-work-mono/hq-work-sync-handoff/packages/platform': {}
-
-  '@hq/ui@file:../../hq-work-mono/hq-work-sync-handoff/packages/ui':
-    dependencies:
-      '@hq/core': file:../../hq-work-mono/hq-work-sync-handoff/packages/core
-      '@hq/platform': file:../../hq-work-mono/hq-work-sync-handoff/packages/platform
-    transitivePeerDependencies:
-      - bufferutil
-      - supports-color
-      - utf-8-validate
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:

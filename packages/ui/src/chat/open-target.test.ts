@@ -1,0 +1,161 @@
+// @vitest-environment happy-dom
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  CHANNEL_QUERY_KEY,
+  DM_QUERY_KEY,
+  OPEN_CHANNEL_EVENT,
+  REPLY_QUERY_KEY,
+  conversationDeepLinkFromLocation,
+  conversationRowForDeepLink,
+  parseConversationDeepLink,
+  requestChannelOpen,
+  shouldOpenReplyDeepLink,
+  takePendingChannel,
+  takePendingChannelFocus,
+  takePendingChannelOpen,
+} from "./open-target";
+
+afterEach(() => {
+  takePendingChannelOpen();
+  takePendingChannelFocus();
+});
+
+describe("parseConversationDeepLink", () => {
+  it("reads ?channel= and ?reply= and ignores ?thread=", () => {
+    expect(
+      parseConversationDeepLink(
+        `?${CHANNEL_QUERY_KEY}=chn_proj&${REPLY_QUERY_KEY}=evt_root&thread=mesh_thread`,
+      ),
+    ).toEqual({
+      channelId: "chn_proj",
+      personUid: null,
+      replyRootEventId: "evt_root",
+    });
+    expect(
+      parseConversationDeepLink("/?channel=chn_proj&reply=evt_root"),
+    ).toEqual({
+      channelId: "chn_proj",
+      personUid: null,
+      replyRootEventId: "evt_root",
+    });
+    expect(parseConversationDeepLink("?thread=evt_root")).toEqual({
+      channelId: null,
+      personUid: null,
+      replyRootEventId: null,
+    });
+    expect(
+      parseConversationDeepLink(new URLSearchParams("dm=prs_ada&reply=evt_dm")),
+    ).toEqual({
+      channelId: null,
+      personUid: "prs_ada",
+      replyRootEventId: "evt_dm",
+    });
+    expect(parseConversationDeepLink("")).toEqual({
+      channelId: null,
+      personUid: null,
+      replyRootEventId: null,
+    });
+    expect(DM_QUERY_KEY).toBe("dm");
+    expect(REPLY_QUERY_KEY).toBe("reply");
+    expect(REPLY_QUERY_KEY).not.toBe("thread");
+  });
+
+  it("reads the same query from a location search string", () => {
+    expect(
+      conversationDeepLinkFromLocation({
+        search: "/?channel=chn_chat&reply=evt_root".replace(/^[^?]+/, ""),
+      }),
+    ).toEqual({
+      channelId: "chn_chat",
+      personUid: null,
+      replyRootEventId: "evt_root",
+    });
+    expect(
+      conversationDeepLinkFromLocation({ search: "?channel=chn_chat" }),
+    ).toEqual({
+      channelId: "chn_chat",
+      personUid: null,
+      replyRootEventId: null,
+    });
+  });
+});
+
+describe("requestChannelOpen replyRootEventId", () => {
+  it("stashes and takes an optional reply root with the channel", () => {
+    const seen: unknown[] = [];
+    const onOpen = (event: Event) => {
+      seen.push((event as CustomEvent).detail);
+    };
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    requestChannelOpen("chn_proj", {
+      messageId: "evt_root",
+      replyRootEventId: "evt_root",
+    });
+    window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    expect(seen).toEqual([
+      {
+        channelId: "chn_proj",
+        messageId: "evt_root",
+        createdAt: null,
+        replyRootEventId: "evt_root",
+      },
+    ]);
+    expect(takePendingChannelOpen()).toEqual({
+      channelId: "chn_proj",
+      messageId: "evt_root",
+      createdAt: null,
+      replyRootEventId: "evt_root",
+    });
+    expect(takePendingChannel()).toBeNull();
+  });
+});
+
+describe("conversationRowForDeepLink", () => {
+  it("prefers a matching directory row and stubs a missing channel", () => {
+    const existing = {
+      id: "ch:chn_proj",
+      kind: "channel" as const,
+      title: "launch",
+      companyUid: "cmp_acme",
+      unreadDot: false,
+      lastActivityAt: 1,
+      pinned: false,
+      channelId: "chn_proj",
+    };
+    expect(
+      conversationRowForDeepLink(
+        { channelId: "chn_proj", personUid: null, replyRootEventId: "evt" },
+        [existing],
+      ),
+    ).toBe(existing);
+    expect(
+      conversationRowForDeepLink({
+        channelId: "chn_missing",
+        personUid: null,
+        replyRootEventId: null,
+      }),
+    ).toMatchObject({
+      id: "ch:chn_missing",
+      kind: "channel",
+      channelId: "chn_missing",
+    });
+  });
+});
+
+describe("shouldOpenReplyDeepLink", () => {
+  it("opens only when the fetched root matches the requested id", () => {
+    expect(
+      shouldOpenReplyDeepLink("evt_root", { root: { eventId: "evt_root" } }),
+    ).toBe(true);
+    expect(shouldOpenReplyDeepLink("evt_root", { root: null })).toBe(false);
+    expect(shouldOpenReplyDeepLink("evt_root", null)).toBe(false);
+    expect(
+      shouldOpenReplyDeepLink("evt_root", { root: { eventId: "evt_other" } }),
+    ).toBe(false);
+    expect(shouldOpenReplyDeepLink("", { root: { eventId: "evt_root" } })).toBe(
+      false,
+    );
+  });
+});

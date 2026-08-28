@@ -1,0 +1,79 @@
+/* Messaging token bridge.
+ *
+ * The messaging leaf components (RunCompleteCard, ReactionBar, EmojiPicker,
+ * IdentityMark, SystemEventLine) and the ChannelConversation composition were
+ * ported verbatim from the hq-sync desktop source, where their `--pop-*`,
+ * `--c-*`, text-scale, and semantic tokens are supplied by desktop-alt.css /
+ * popover.css. Here they run inside `.chat-shell`, whose canonical ramp lives in
+ * chat-tokens.css (--t1/2/3, --line, --raised, --sel, --ok, --font-ui, …, with
+ * light + dark variants). This file maps the messaging aliases onto that ramp so
+ * the ported components inherit correct light AND dark styling for free, without
+ * re-importing the desktop stylesheet. Scoped to `.chat-shell` so it never leaks
+ * to the rest of the app. */
+
+.chat-shell {
+  /* Popover surface family (pills, pickers, bubbles). */
+  --pop-bg: var(--elevated);
+  --pop-hover: var(--raised);
+  --pop-border: var(--line2);
+  --pop-text: var(--t1);
+  --pop-muted: var(--t2);
+  --pop-highlight: rgba(255, 255, 255, 0.06);
+  --pop-shadow: var(--panel-shadow);
+
+  /* Field / secondary-button surfaces. */
+  --c-field-bg: var(--btn-bg);
+  --c-field-border: var(--line2);
+  --c-btn2-bg: var(--sel);
+  --c-bg: var(--elevated);
+  --row-hover: var(--hover);
+  --surface-raise: var(--raised);
+
+  /* Glass filters (soft variant for the emoji picker). */
+  --glass-filter-soft: blur(16px) saturate(112%) contrast(101%);
+
+  /* Text scale. */
+  --text-micro: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-lg: 15px;
+
+  /* Type + spacing aliases used by ported markup. */
+  --fg: var(--t1);
+  --muted: var(--t2);
+  --muted-2: var(--t3);
+  --border: var(--line);
+  --font-sans: var(--font-ui);
+  --font-display: var(--font-ui);
+  --accent: var(--vio-ink);
+  --accent-fg: var(--badge-fg);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --radius-sm: 6px;
+
+  /* Semantic states. */
+  --red: #f0616d;
+  --emerald: var(--ok-ink);
+}
+
+:root .chat-shell,
+:root[data-force-theme="light"] .chat-shell {
+  --pop-highlight: rgba(255, 255, 255, 0.7);
+  --red: #d9414d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root .chat-shell {
+    --pop-highlight: rgba(255, 255, 255, 0.06);
+    --red: #f0616d;
+  }
+}
+
+.dark .chat-shell,
+:root[data-force-theme="dark"] .chat-shell {
+  --pop-highlight: rgba(255, 255, 255, 0.06);
+  --red: #f0616d;
+}
