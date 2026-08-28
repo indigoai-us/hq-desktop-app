@@ -55,11 +55,17 @@ function readRepo(...parts: string[]): string {
   return readFileSync(resolve(repoRoot, ...parts), 'utf8');
 }
 
+/**
+ * Read a file out of the vendored HQ Work packages.
+ *
+ * This used to resolve `../../../../hq-work-mono/hq-work-sync-handoff` — a
+ * sibling checkout outside this repo. That made the suite non-hermetic: it
+ * passed only on a machine that happened to have that worktree at that exact
+ * path, and threw ENOENT everywhere else, CI included. The packages now live
+ * in this repo (see packages/VENDORED.md), so the path stays inside it.
+ */
 function readMono(...parts: string[]): string {
-  return readFileSync(
-    resolve(repoRoot, '../../../../hq-work-mono/hq-work-sync-handoff', ...parts),
-    'utf8',
-  );
+  return readFileSync(resolve(repoRoot, '..', '..', ...parts), 'utf8');
 }
 
 const WHOAMI = {
