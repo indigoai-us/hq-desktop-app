@@ -813,3 +813,43 @@ mod codex_desktop_tests {
         assert!(!codex_desktop_installed_in(&apps, None));
     }
 }
+
+#[cfg(all(test, not(windows)))]
+mod real_machine_probe {
+    use super::detect_ai_tools;
+
+    /// Diagnostic, not a gate. Runs the production detector against the real
+    /// machine and prints what the Ready screen would render, so "why is there
+    /// no Codex button?" can be answered from this machine's actual disk
+    /// rather than from the browser harness, whose answers are fixtures.
+    ///
+    /// `#[ignore]` because the result depends on what is installed. Run with:
+    ///   cargo test real_machine_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn report_what_the_ready_screen_would_show() {
+        let tools = detect_ai_tools();
+
+        let slot = |installed: bool, name: &str| {
+            if installed {
+                format!("Open in {name}")
+            } else {
+                format!("Install {name}")
+            }
+        };
+
+        println!("\n--- detected on this machine ---");
+        println!("  claude_cli     = {}", tools.claude_cli);
+        println!("  claude_desktop = {}", tools.claude_desktop);
+        println!("  codex_cli      = {}", tools.codex_cli);
+        println!("  codex_desktop  = {}", tools.codex_desktop);
+        println!("  grok_cli       = {}", tools.grok_cli);
+        println!("--- Ready screen would render ---");
+        println!(
+            "  [{}]  [{}]",
+            slot(tools.claude_cli || tools.claude_desktop, "Claude Code"),
+            slot(tools.codex_cli || tools.codex_desktop, "Codex"),
+        );
+        println!();
+    }
+}
