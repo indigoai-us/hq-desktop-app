@@ -205,6 +205,22 @@ export function createSyncPlatformAdapter(
     return ok(raw.value as T);
   }
 
+  /**
+   * `agency_root/<company>/<team>` is the on-disk layout, so every agency
+   * command takes a company. `AgencyApi` only passes a team, so the company
+   * comes from the desktop session scope the window already sets via
+   * `setActiveCompany` — the same scope the native Agency surface reads.
+   */
+  async function activeCompany(): AdapterPromise<string> {
+    const result = await call<string | null>('get_desktop_active_company');
+    if (!result.ok) return result;
+    const slug = (result.value ?? '').trim();
+    if (!slug) {
+      return failure('no-active-company', 'No active company is selected.');
+    }
+    return ok(slug);
+  }
+
   const adapter: PlatformAdapter = {
     kind: 'desktop',
     capabilities: TAURI_CAPABILITIES,
@@ -495,16 +511,19 @@ export function createSyncPlatformAdapter(
         call('list_marketplace_listings', { opts }),
       getListing: (id) => call('get_marketplace_listing', { id }),
       publishPack: (path) => call('publish_marketplace_pack', { path }),
-      recordInstall: (id, payload) =>
-        call('record_marketplace_install', { id, payload }),
-      yank: (id) => call('yank_marketplace_listing', { id }),
+      // Rust wants listing_id + a typed InstallScope; the contract passes an
+      // opaque payload with no scope, and yank requires a moderation reason
+      // the contract has no field for. Refuse rather than always-fail.
+      recordInstall: async () => NOT_MAPPED,
+      yank: async () => NOT_MAPPED,
       getCreatorProfile: (handle) =>
         call('get_creator_profile', { handle }),
       getMyCreator: () => call('get_my_creator'),
       claimHandle: (handle) => call('claim_creator_handle', { handle }),
       updateCreatorProfile: (p) => call('update_creator_profile', { p }),
-      uploadCreatorAvatar: (data) =>
-        call('upload_creator_avatar', { data }),
+      // Rust reads a file_path off disk; the contract hands over bytes. These
+      // are different transports, not a renamed argument.
+      uploadCreatorAvatar: async () => NOT_MAPPED,
       requestCreatorAccess: () => call('request_creator_access'),
       listCreatorApplications: () => call('list_creator_applications'),
       decideCreatorApplication: (id, decision) =>
@@ -512,8 +531,10 @@ export function createSyncPlatformAdapter(
       listModerationQueue: () => call('list_moderation_queue'),
       decideModerationListing: (id, decision) =>
         call('decide_moderation_listing', { id, decision }),
-      installPack: (listing) =>
-        call('install_marketplace_pack', { listing }),
+      // Rust needs slug + a typed InstallScope (Personal vs Company). The
+      // listing carries a slug, but scope is a user choice this contract does
+      // not express, and guessing "personal" would install to the wrong place.
+      installPack: async () => NOT_MAPPED,
     },
 
     company: {
@@ -534,23 +555,28 @@ export function createSyncPlatformAdapter(
 
     projects: {
       listProjects: () => call('get_local_projects'),
-      getGoals: (slug) => call('get_local_company_goals', { slug }),
-      getPrd: (path) => call('get_local_project_prd', { path }),
-      getReadme: (path) => call('get_local_project_readme', { path }),
-      setProjectStatus: (slug, status) =>
-        call('set_local_project_status', { slug, status }),
+      getGoals: (slug) =>
+        call('get_local_company_goals', { companySlug: slug }),
+      getPrd: (path) => call('get_local_project_prd', { prdPath: path }),
+      getReadme: (path) => call('get_local_project_readme', { prdPath: path }),
+      // `set_local_project_status` keys off board_path + project_id, which the
+      // ProjectsApi contract does not carry — it passes a company slug. Firing
+      // the call anyway fails in Tauri's argument deserialization before the
+      // handler runs, so refuse in a way the UI can render.
+      setProjectStatus: async () => NOT_MAPPED,
       setStoryPasses: (path, storyId, passes) =>
-        call('set_local_story_passes', { path, storyId, passes }),
+        call('set_local_story_passes', { prdPath: path, storyId, passes }),
       getProjectCreators: (slug) =>
         call('get_company_project_creators', { slug }),
     },
 
     library: {
       getRoot: () => call('get_library_root'),
-      getCompany: (slug) => call('get_library_company', { slug }),
+      getCompany: (slug) => call('get_library_company', { companySlug: slug }),
       getWorkerDetail: (path) =>
-        call('get_library_worker_detail', { path }),
-      getSkillDetail: (path) => call('get_library_skill_detail', { path }),
+        call('get_library_worker_detail', { workerPath: path }),
+      getSkillDetail: (path) =>
+        call('get_library_skill_detail', { skillPath: path }),
     },
 
     files: {
@@ -585,11 +611,37 @@ export function createSyncPlatformAdapter(
     agency: {
       listTeams: () => call('list_agency_teams'),
       listQuestions: () => call('list_agency_questions'),
-      listChat: (team) => call('list_agency_chat', { team }),
-      answerQuestion: (id, answer) =>
-        call('answer_agency_question', { id, answer }),
-      sendMessage: (team, message) =>
-        call('send_agency_message', { team, message }),
+      listChat: async (team) => {
+        const company = await activeCompany();
+        if (!company.ok) return company;
+        return call('list_agency_chat', { company: company.value, team });
+      },
+      answerQuestion: async (id, answer) => {
+        const company = await activeCompany();
+        if (!company.ok) return company;
+        // Rust takes team explicitly and `answer` as a plain string.
+        const rec = asRecord(answer) ?? {};
+        const team = String(rec.team ?? '');
+        if (!team) {
+          return failure('invalid-argument', 'answer payload is missing team');
+        }
+        return call('answer_agency_question', {
+          company: company.value,
+          team,
+          id,
+          answer: String(rec.answer ?? rec.text ?? ''),
+        });
+      },
+      sendMessage: async (team, message) => {
+        const company = await activeCompany();
+        if (!company.ok) return company;
+        const rec = asRecord(message) ?? {};
+        return call('send_agency_message', {
+          company: company.value,
+          team,
+          text: String(rec.text ?? rec.message ?? ''),
+        });
+      },
     },
 
     feedback: {
@@ -608,8 +660,19 @@ export function createSyncPlatformAdapter(
       getActivityLog: () => call('get_activity_log'),
       resolveConflict: (path, strategy) =>
         call('resolve_conflict', { path, strategy }),
-      restoreFromUpstream: (args) =>
-        call('restore_from_upstream', { args }),
+      restoreFromUpstream: async (args) => {
+        const rec = asRecord(args) ?? {};
+        const path = String(rec.path ?? '');
+        if (!path) {
+          return failure('invalid-argument', 'restore payload is missing path');
+        }
+        return call('restore_from_upstream', {
+          path,
+          expectedUpstreamSha: rec.expectedUpstreamSha ?? null,
+          targetRepo: rec.targetRepo ?? null,
+          targetRef: rec.targetRef ?? null,
+        });
+      },
       beginReauth: () => call('begin_reauth'),
       listSyncableWorkspaces: () => call('list_syncable_workspaces'),
     },
@@ -620,8 +683,15 @@ export function createSyncPlatformAdapter(
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
       launchClaudeCode: (path) => call('launch_claude_code', { path }),
-      launchCliInTerminal: (args) =>
-        call('launch_cli_in_terminal', { args }),
+      launchCliInTerminal: async (args) => {
+        const rec = asRecord(args) ?? {};
+        const path = String(rec.path ?? '');
+        const tool = String(rec.tool ?? '');
+        if (!path || !tool) {
+          return failure('invalid-argument', 'launch payload needs path and tool');
+        }
+        return call('launch_cli_in_terminal', { path, tool });
+      },
       detectAiTools: () => call('detect_ai_tools'),
       pickFolder: () => call('pick_folder'),
       pickFile: async () => NOT_MAPPED,
@@ -669,7 +739,18 @@ export function createSyncPlatformAdapter(
       replaceFromStaging: () => call('run_replace_from_staging'),
       checkCliUpdate: () => call('check_hq_cli_update'),
       installCliUpdate: () => call('install_hq_cli_update'),
-      dismissCliUpdate: () => call('set_hq_cli_update_dismissed'),
+      // Rust persists the dismissed release, so it needs the version. The
+      // contract passes nothing, so resolve the pending update first —
+      // otherwise the same notice reappears on every launch.
+      dismissCliUpdate: async () => {
+        const pending = await call<Json | null>('check_hq_cli_update');
+        if (!pending.ok) return pending;
+        const version = String(asRecord(pending.value)?.latest ?? '');
+        if (!version) {
+          return failure('no-pending-update', 'No CLI update to dismiss.');
+        }
+        return call('set_hq_cli_update_dismissed', { version });
+      },
       availableChannels: () => call('available_channels'),
     },
 

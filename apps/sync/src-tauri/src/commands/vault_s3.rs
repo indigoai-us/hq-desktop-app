@@ -13,32 +13,62 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
 
-fn host_from_https_url(url: &str) -> Result<String, String> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or_else(|| "vault S3 PUT requires https".to_string())?;
-    let hostport = rest.split('/').next().unwrap_or("");
-    let host = hostport.split(':').next().unwrap_or("").to_lowercase();
-    if host.is_empty() {
-        return Err("vault S3 PUT URL is missing a host".into());
+/// Host label test against the S3 endpoint shapes, applied to a *parsed* host.
+///
+/// `ends_with(".amazonaws.com")` alone is not enough on its own — it must be
+/// combined with the S3 prefix/infix check — and neither is safe unless the
+/// host came from a real parser (see [`is_allowed_s3_url`]).
+fn is_s3_host(host: &str) -> bool {
+    if !host.ends_with(".amazonaws.com") {
+        return false;
     }
-    Ok(host)
-}
-
-pub fn is_allowed_s3_url(url: &str) -> Result<(), String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return Err("vault S3 PUT URL is empty".into());
-    }
-    let host = host_from_https_url(url)?;
-    let ok = host == "s3.amazonaws.com"
+    host == "s3.amazonaws.com"
         || host.starts_with("s3.")
         || host.contains(".s3.")
-        || host.contains(".s3-");
-    if ok && host.ends_with(".amazonaws.com") {
+        || host.contains(".s3-")
+}
+
+/// Gate for the attachment hop: only presigned HTTPS S3 endpoints.
+///
+/// Parsed with `url::Url` rather than string slicing, because the allowlist
+/// has to describe the host `reqwest` will actually dial. A hand-rolled
+/// "take everything before the first `/`, then before the first `:`" parser
+/// reads `s3.amazonaws.com` out of
+/// `https://s3.amazonaws.com:443@evil.example/x` — that is userinfo, and the
+/// real host is `evil.example`. Both `vault_s3_put` and `vault_s3_get` would
+/// then ship attachment bytes and the forwarded `x-amz-*` signed headers to
+/// an attacker-chosen origin.
+///
+/// Rejected: any userinfo at all, any scheme but https, any non-default port,
+/// and any host that is not an S3 endpoint.
+pub fn is_allowed_s3_url(url: &str) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("vault S3 URL is empty".into());
+    }
+    let parsed = url::Url::parse(trimmed).map_err(|e| format!("vault S3 URL is unparseable: {e}"))?;
+
+    if parsed.scheme() != "https" {
+        return Err("vault S3 URL requires https".into());
+    }
+    // A presigned vault URL never carries credentials. Their only use here
+    // would be to move the real host past a naive check.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("refusing vault S3 URL that carries userinfo".into());
+    }
+    // `port()` is None for the scheme default, so this only trips on an
+    // explicit non-443 port.
+    if let Some(port) = parsed.port() {
+        return Err(format!("refusing vault S3 URL on port {port}"));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "vault S3 URL is missing a host".to_string())?
+        .to_lowercase();
+    if is_s3_host(&host) {
         Ok(())
     } else {
-        Err(format!("refusing vault S3 PUT to host {host}"))
+        Err(format!("refusing vault S3 request to host {host}"))
     }
 }
 
@@ -148,6 +178,53 @@ mod tests {
         assert!(is_allowed_s3_url("https://hqapi.getindigo.ai/v1/files").is_err());
         assert!(is_allowed_s3_url("https://evil.example/x").is_err());
         assert!(is_allowed_s3_url("").is_err());
+    }
+
+    /// The allowlist must validate the host `reqwest` will actually dial.
+    ///
+    /// A hand-rolled "everything before the first `/`, then before the first
+    /// `:`" parser reads `s3.amazonaws.com` out of
+    /// `https://s3.amazonaws.com:443@evil.example/x` and lets it through,
+    /// while a standards-compliant parser sees `s3.amazonaws.com:443` as
+    /// userinfo and `evil.example` as the host. That gap sent attachment
+    /// bytes and the forwarded `x-amz-*` signed headers to an attacker-chosen
+    /// origin on both PUT and GET.
+    #[test]
+    fn rejects_userinfo_that_hides_the_real_host() {
+        for url in [
+            "https://s3.amazonaws.com:443@evil.example/x",
+            "https://s3.amazonaws.com@evil.example/x",
+            "https://bucket.s3.amazonaws.com:443@evil.example/chat/a.pdf",
+            "https://user:pass@bucket.s3.amazonaws.com/key",
+            "https://evil.example#@bucket.s3.amazonaws.com/key",
+            "https://evil.example?@bucket.s3.amazonaws.com/key",
+        ] {
+            assert!(
+                is_allowed_s3_url(url).is_err(),
+                "must refuse userinfo-obscured host: {url}"
+            );
+        }
+    }
+
+    /// Look-alikes that a substring check would wave through.
+    #[test]
+    fn rejects_lookalike_hosts() {
+        for url in [
+            "https://s3.amazonaws.com.evil.example/x",
+            "https://bucket.s3.amazonaws.com.evil.example/x",
+            "https://not-amazonaws.com/s3.amazonaws.com/x",
+            "https://s3.evil.example/x",
+        ] {
+            assert!(is_allowed_s3_url(url).is_err(), "must refuse look-alike: {url}");
+        }
+    }
+
+    /// Only the default HTTPS port. A stray port is a different endpoint and
+    /// there is no legitimate presigned vault URL that carries one.
+    #[test]
+    fn rejects_non_default_ports() {
+        assert!(is_allowed_s3_url("https://bucket.s3.amazonaws.com:8443/key").is_err());
+        assert!(is_allowed_s3_url("https://bucket.s3.amazonaws.com:443/key").is_ok());
     }
 
     #[test]
