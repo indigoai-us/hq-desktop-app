@@ -840,6 +840,14 @@ pub enum RunnerErrorCause {
     Eacces,
     Enospc,
     Ebusy,
+    // Errnos this crate already treats as runner failures elsewhere but the
+    // cause axis would otherwise miss: `ENETDOWN` is a transient-network errno
+    // (`is_transient_network_error`, class NETWORK) and `EINVAL` is a per-file
+    // errno the runner-error tests exercise (`EINVAL: invalid argument, readlink
+    // …`, a recognised op). Named here so the cause axis is not blank for inputs
+    // the app explicitly handles on other axes.
+    Enetdown,
+    Einval,
     // ── Residual (never a nearest guess) ──────────────────────────────────────
     // A leading, uppercase-initial identity token was present but matched nothing
     // in the vocabulary above: a class hq-cloud added since the pin, or a
@@ -856,7 +864,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 91] = [
+    pub const ALL: [RunnerErrorCause; 93] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -946,6 +954,8 @@ impl RunnerErrorCause {
         Self::Eacces,
         Self::Enospc,
         Self::Ebusy,
+        Self::Enetdown,
+        Self::Einval,
         Self::UnknownNamed,
         Self::UnknownUnnamed,
     ];
@@ -1042,6 +1052,8 @@ impl RunnerErrorCause {
             Self::Eacces => "eacces",
             Self::Enospc => "enospc",
             Self::Ebusy => "ebusy",
+            Self::Enetdown => "enetdown",
+            Self::Einval => "einval",
             Self::UnknownNamed => "unknown_named",
             Self::UnknownUnnamed => "unknown_unnamed",
         }
@@ -1163,6 +1175,8 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "EACCES" => RunnerErrorCause::Eacces,
         "ENOSPC" => RunnerErrorCause::Enospc,
         "EBUSY" => RunnerErrorCause::Ebusy,
+        "ENETDOWN" => RunnerErrorCause::Enetdown,
+        "EINVAL" => RunnerErrorCause::Einval,
         _ => return None,
     })
 }
@@ -2425,6 +2439,8 @@ mod tests {
             ("EACCES", Eacces),
             ("ENOSPC", Enospc),
             ("EBUSY", Ebusy),
+            ("ENETDOWN", Enetdown),
+            ("EINVAL", Einval),
         ];
         for (errno, expected) in cases {
             let code_form =
@@ -2446,7 +2462,7 @@ mod tests {
                 "a listed errno identity must carry no signature: {errno:?}"
             );
         }
-        assert_eq!(cases.len(), 25, "the closed errno allow-list");
+        assert_eq!(cases.len(), 27, "the closed errno allow-list");
     }
 
     #[test]

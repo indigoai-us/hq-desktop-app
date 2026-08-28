@@ -935,6 +935,28 @@ impl RunnerErrorClass {
     }
 }
 
+/// True when `haystack` (already lowercased) contains `errno` as a bounded token
+/// — bordered by the start/end of the string or a non-alphanumeric byte on each
+/// side. `describeError` renders a Node errno as its own token (`EEXIST:`,
+/// `code=EEXIST`, ` EEXIST `), so a bounded match still catches every real
+/// rendering while refusing an errno spelled INSIDE an ordinary word — e.g.
+/// `eexist` inside `preexisting`, which a bare `contains` would misclassify.
+fn message_contains_errno_token(haystack_lower: &str, errno: &str) -> bool {
+    let bytes = haystack_lower.as_bytes();
+    let mut search_from = 0;
+    while let Some(offset) = haystack_lower[search_from..].find(errno) {
+        let index = search_from + offset;
+        let before_ok = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
+        let after = index + errno.len();
+        let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = index + 1;
+    }
+    false
+}
+
 /// Map an untrusted runner error message to a fixed telemetry class. This
 /// function deliberately returns no message text, so its output is safe to
 /// attach to Sentry as a tag.
@@ -948,13 +970,13 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
         RunnerErrorClass::Enospc
     } else if msg.contains("ebusy") {
         RunnerErrorClass::Ebusy
-    } else if msg.contains("enoent") {
+    } else if message_contains_errno_token(&msg, "enoent") {
         RunnerErrorClass::Enoent
-    } else if msg.contains("eexist") {
+    } else if message_contains_errno_token(&msg, "eexist") {
         RunnerErrorClass::Eexist
-    } else if msg.contains("enotempty") {
+    } else if message_contains_errno_token(&msg, "enotempty") {
         RunnerErrorClass::Enotempty
-    } else if msg.contains("exdev") {
+    } else if message_contains_errno_token(&msg, "exdev") {
         RunnerErrorClass::Exdev
     } else if is_transient_network_error(&msg) {
         RunnerErrorClass::Network
@@ -3269,6 +3291,27 @@ mod tests {
         assert_eq!(
             classify_runner_error_class("EXDEV: cross-device link not permitted, rename 'a' -> 'b'"),
             RunnerErrorClass::Exdev
+        );
+    }
+
+    #[test]
+    fn errno_class_requires_a_bounded_token_not_a_substring_of_a_word() {
+        // The new errno class checks match a bounded token, so an errno spelled
+        // INSIDE an ordinary word does not misclassify: "preexisting" contains the
+        // substring "eexist" but is not an EEXIST fault.
+        assert_eq!(
+            classify_runner_error_class("failed to load cmp_preexisting entity"),
+            RunnerErrorClass::Other
+        );
+        // A real describeError errno rendering still classifies …
+        assert_eq!(
+            classify_runner_error_class("code=EEXIST EEXIST: file already exists, mkdir 'x'"),
+            RunnerErrorClass::Eexist
+        );
+        // … including an errno as the bounded token at the end of the message.
+        assert_eq!(
+            classify_runner_error_class("conflict mirror index write failed: EEXIST"),
+            RunnerErrorClass::Eexist
         );
     }
 

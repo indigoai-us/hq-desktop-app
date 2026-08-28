@@ -181,6 +181,11 @@ describe('manual runner-exit attribution — shared classifier source', () => {
       ['EACCES', 'eacces'],
       ['ENOSPC', 'enospc'],
       ['EBUSY', 'ebusy'],
+      // Errnos the crate already handles on other axes (ENETDOWN via the
+      // transient-network class, EINVAL in the runner-error tests) — named on the
+      // cause axis so it is not blank for inputs the app explicitly handles.
+      ['ENETDOWN', 'enetdown'],
+      ['EINVAL', 'einval'],
     ]) {
       expect(shapeSource).toContain(`"${token}"`);
       expect(shapeSource).toContain(`"${code}" => RunnerErrorCause::`);

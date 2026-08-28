@@ -460,6 +460,8 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "eacces",
     "enospc",
     "ebusy",
+    "enetdown",
+    "einval",
     "unknown_named",
     "unknown_unnamed",
 ];
