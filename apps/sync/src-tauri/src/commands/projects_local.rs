@@ -50,11 +50,23 @@ fn authorize_project_target(
     Ok(target)
 }
 
+/// `Ok(Some(slug))` — authorized, and `companies/{slug}` exists on disk.
+/// `Ok(None)` — authorized, but the folder does not exist yet.
+///
+/// The `None` arm is the first-open case: a signed-in user whose initial sync
+/// has not materialized the company folder. The readers behind this gate
+/// (`read_company_goals`, `read_crm_projection`) already treat missing FILES
+/// as empty state, but `canonical_hq_relative_path` canonicalizes the
+/// DIRECTORY and `fs::canonicalize` fails on a path that does not exist — so
+/// every brand-new user's Home board opened on "Board unavailable. Try again
+/// after a sync." Membership is checked before touching the disk: a missing
+/// folder must never change an authorization verdict, only downgrade
+/// "present" to "empty".
 fn authorize_company_slug(
     hq_root: &Path,
     company_slug: &str,
     workspaces: &[Workspace],
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let slug = company_slug.trim();
     if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
         return Err(format!("invalid company_slug: {company_slug:?}"));
@@ -63,14 +75,20 @@ fn authorize_company_slug(
     if company_slug_for_hq_path(&relative)?.as_deref() != Some(slug) {
         return Err(format!("invalid company_slug: {company_slug:?}"));
     }
+    if !workspace_grants_company_file_access(workspaces, slug) {
+        return Err(format!("company projects are not authorized: {slug:?}"));
+    }
+    // Symlink-metadata rather than exists(): a dangling or outward-pointing
+    // symlink is present-but-suspect and must fall through to the canonical
+    // check below, not masquerade as the innocent empty state.
+    if std::fs::symlink_metadata(hq_root.join(&relative)).is_err() {
+        return Ok(None);
+    }
     let canonical = canonical_hq_relative_path(hq_root, &relative, false)?;
     if canonical != relative {
         return Err("company path resolves to a different canonical company".to_string());
     }
-    if !workspace_grants_company_file_access(workspaces, slug) {
-        return Err(format!("company projects are not authorized: {slug:?}"));
-    }
-    Ok(slug.to_string())
+    Ok(Some(slug.to_string()))
 }
 
 fn authorize_project_identity_path(
@@ -156,7 +174,9 @@ pub async fn get_local_company_goals(company_slug: String) -> Result<CompanyGoal
         return Err("goals reader requires a signed-in user".to_string());
     }
     let (hq, workspaces) = hydrated_project_context().await?;
-    let slug = authorize_company_slug(&hq, &company_slug, &workspaces)?;
+    let Some(slug) = authorize_company_slug(&hq, &company_slug, &workspaces)? else {
+        return Ok(CompanyGoals::default());
+    };
     read_company_goals(&hq, &slug)
 }
 
@@ -166,7 +186,9 @@ pub async fn get_company_crm_projection(company_slug: String) -> Result<serde_js
         return Err("CRM projection reader requires a signed-in user".to_string());
     }
     let (hq, workspaces) = hydrated_project_context().await?;
-    let slug = authorize_company_slug(&hq, &company_slug, &workspaces)?;
+    let Some(slug) = authorize_company_slug(&hq, &company_slug, &workspaces)? else {
+        return Ok(serde_json::Value::Null);
+    };
     read_crm_projection(&hq, &slug)
 }
 
@@ -241,6 +263,51 @@ mod tests {
             branding_enabled: false,
             brand: None,
         }
+    }
+
+    #[test]
+    fn a_missing_company_folder_is_empty_state_not_an_error() {
+        // First open: the user signed in moments ago and the initial sync has
+        // not materialized `companies/personal` yet. The Home board loads
+        // immediately and asks for personal goals. This must be the empty
+        // state — the same verdict read_company_goals gives a missing
+        // board.json — not the red "Board unavailable" banner every new user
+        // saw on their first launch.
+        let temp = tempfile::tempdir().unwrap();
+        let workspaces = vec![project_workspace("personal", WorkspaceState::LocalOnly, None, None)];
+
+        let verdict = authorize_company_slug(temp.path(), "personal", &workspaces)
+            .expect("an authorized slug with no folder yet must not error");
+        assert_eq!(verdict, None);
+    }
+
+    #[test]
+    fn a_missing_folder_does_not_bypass_membership_denial() {
+        // The empty-state shortcut must sit BEHIND the membership check: a
+        // revoked company whose folder is gone is still "not authorized",
+        // never "authorized and empty".
+        let temp = tempfile::tempdir().unwrap();
+        let workspaces = vec![project_workspace(
+            "revoked",
+            WorkspaceState::Synced,
+            Some("revoked"),
+            Some("cmp_revoked"),
+        )];
+
+        let err = authorize_company_slug(temp.path(), "revoked", &workspaces)
+            .expect_err("revoked membership must stay denied even with no folder");
+        assert!(err.contains("not authorized"), "{err}");
+    }
+
+    #[test]
+    fn a_present_company_folder_still_authorizes_by_canonical_path() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("companies/local")).unwrap();
+        let workspaces = vec![project_workspace("local", WorkspaceState::LocalOnly, None, None)];
+
+        let verdict = authorize_company_slug(temp.path(), "local", &workspaces)
+            .expect("present + authorized folder resolves");
+        assert_eq!(verdict.as_deref(), Some("local"));
     }
 
     #[test]
@@ -395,12 +462,16 @@ mod tests {
         ];
 
         assert_eq!(
-            authorize_company_slug(root, "active", &workspaces).unwrap(),
-            "active",
+            authorize_company_slug(root, "active", &workspaces)
+                .unwrap()
+                .as_deref(),
+            Some("active"),
         );
         assert_eq!(
-            authorize_company_slug(root, "local", &workspaces).unwrap(),
-            "local",
+            authorize_company_slug(root, "local", &workspaces)
+                .unwrap()
+                .as_deref(),
+            Some("local"),
         );
         assert!(authorize_company_slug(root, "pending", &workspaces).is_err());
         assert!(authorize_company_slug(root, "../active", &workspaces).is_err());
