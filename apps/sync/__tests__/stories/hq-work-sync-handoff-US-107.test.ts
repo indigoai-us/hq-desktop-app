@@ -39,10 +39,36 @@ describe('US-107: Single-app E2E smoke checklist on a real machine', () => {
     expect(smoke).not.toMatch(/desktop view moved/i);
   });
 
-  it('has a live Results table that starts unexecuted', () => {
+  /**
+   * Was "starts unexecuted" — a guard against filling Results in before the
+   * live run. That run happened (2026-08-28), so the same guard now points the
+   * other way: a recorded run must be complete, not half-filled. Leaving a
+   * scenario box unticked or a placeholder field in place fails here.
+   */
+  it('has a live Results table recording a completed run', () => {
     const smoke = readRepo('docs/hq-work-embedded-smoke.md');
     expect(smoke).toContain('## Results (live machine)');
-    expect(smoke).toContain('**not executed**');
+    expect(smoke).not.toContain('**not executed**');
+    // No placeholder rows left behind.
+    expect(smoke).not.toMatch(/_YYYY-MM-DD_/);
+    // Every scenario is ticked.
+    expect(smoke).not.toMatch(/^- \[ \] Pass —/m);
+    expect(smoke.match(/^- \[x\] Pass —/gm) ?? []).toHaveLength(5);
+    // Bundle provenance is a real sha256, not prose.
+    expect(smoke).toMatch(/\b[0-9a-f]{64}\b/);
+  });
+
+  /**
+   * The updater installs over the bundle it is running from, so a worktree
+   * HQ.app is replaced by the released build ~10s after launch unless
+   * autoUpdate is off. A run made without that step tests the release, not the
+   * embed — the checklist has to say so.
+   */
+  it('warns that autoUpdate must be off or the run tests the released build', () => {
+    const smoke = readRepo('docs/hq-work-embedded-smoke.md');
+    expect(smoke).toMatch(/autoUpdate/);
+    expect(smoke).toMatch(/setup_update_checker/);
+    expect(smoke).toMatch(/download_and_install/);
   });
 
   it('desktop-alt entry avoids top-level await (safari13 vite target)', () => {

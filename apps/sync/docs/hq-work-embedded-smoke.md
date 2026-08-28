@@ -17,9 +17,10 @@ Rollout, bake, rollback, updater budget:
 macOS only. Tray popover, widget, and sync engine stay in Sync. No second
 app, no co-install, no account or data migration. Flag **defaults off**.
 
-This file is the script. The **Results** section is blank until an operator
-records a live run against a **this-branch** bundle (not the stale pre-embed
-`HQ.app` under `target/release/bundle`).
+Executed once on a real machine — see [Results](#results-live-machine).
+Re-record that section from scratch for any later run; it must always describe a
+**this-branch** bundle, never the stale pre-embed `HQ.app` under
+`target/release/bundle` and never a bundle the updater has replaced.
 
 ## Flag file and logs
 
@@ -54,17 +55,59 @@ Do not paste `~/.hq/cognito-tokens.json` into Results.
 
 ## Prerequisites (every scenario)
 
-- This-branch HQ.app (or debug bundle) whose inner `Contents/MacOS` binary
-  contains a distinctive embed string (`HqWorkDesktopShell` or
-  `createSyncPlatformAdapter`) and whose mtime matches the build just run.
+- **Turn `autoUpdate` off in `~/.hq/menubar.json` before the first launch, and
+  restore it afterwards.** This is not optional hygiene — it is the difference
+  between a valid run and a fictional one. `setup_update_checker` waits 10 s
+  after launch and, when `auto_update_enabled()` is true, calls
+  `download_and_install` + `handle.restart()`. The Tauri updater replaces the
+  bundle it is *running from*, so a worktree `HQ.app` is silently overwritten
+  by the released build within ~10 s of `open`, and every scenario after that
+  exercises the release — which has no embed at all. Observed on the first
+  attempt of the 2026-08-28 run: the worktree binary became byte-identical to
+  `/Applications/HQ.app` (same sha256, same 87 MB, same mtime) and flag-on kept
+  serving the legacy shell. Scenario 5's "do not install a production update"
+  instruction is not self-enforcing; this flag is what enforces it.
+
+  ```bash
+  python3 -c 'import json,sys
+  from pathlib import Path
+  p = Path.home()/".hq"/"menubar.json"
+  d = json.loads(p.read_text())
+  d["autoUpdate"] = sys.argv[1].lower() == "true"
+  p.write_text(json.dumps(d, indent=2)+"\n")
+  print("autoUpdate", d["autoUpdate"])
+  ' false
+  ```
+
+- This-branch HQ.app (or debug bundle) proven by **all three** of:
+  1. `shasum -a 256 …/HQ.app/Contents/MacOS/hq-sync-menubar` differs from
+     `/Applications/HQ.app/Contents/MacOS/hq-sync-menubar`, and its mtime
+     matches the build just run. Re-check this **after** each launch — that is
+     what catches the updater overwrite above.
+  2. The desktop window title bar reads the branch's `App v<x.y.z>`
+     (`__APP_VERSION__`, compiled from `apps/sync/package.json`). A release
+     version there means you are looking at the release build.
+  3. `grep -l hq-work-embedded-shell apps/sync/dist/assets/*.js` matches the
+     content-hashed asset name embedded in the binary
+     (`strings -a <binary> | grep -o 'desktopAlt-[A-Za-z0-9_-]*\.js'`).
+
+  Do **not** try to `strings` the binary for `HqWorkDesktopShell` or
+  `createSyncPlatformAdapter` as earlier drafts of this file suggested. Tauri
+  compresses embedded frontend assets, so component names never appear as
+  plain text and the check returns 0 hits for a perfectly good bundle. Only
+  the asset *filenames* survive as plain strings.
+
   Stale `target/release/bundle/macos/HQ.app` from before US-101 is **not**
-  valid proof (custom-protocol assets are compiled into the binary).
+  valid proof.
 - Signed-in HQ Sync session (canonical `vault-users-*` Cognito). Alpha
   operator: `@getindigo.ai`.
 - Kill any other `ai.indigo.hq-sync-menubar` process before launching the
   worktree bundle so AX / tray clicks hit this binary.
-- Restore `hqWorkHandoff` and the production `/Applications/HQ.app` after
-  the run.
+- The screen must be **unlocked**. At the macOS lock screen the tray, the
+  `Opt+Shift+O` global shortcut, and AX queries all silently no-op: the app
+  runs, but no window is ever created and nothing reports an error.
+- Restore `hqWorkHandoff`, `autoUpdate`, and the production
+  `/Applications/HQ.app` after the run.
 
 Merge helper:
 
@@ -106,9 +149,17 @@ No embed, no extra handoff probes.
 - Boot resolved `'legacy'` (`boot.ts` / `resolveDesktopAltShell`).
 - No new `[handoff] launched` / `card_shown` / `co_installed`.
 
-- [ ] Pass — Scenario 1: Cold start, flag off (legacy)
+- [x] Pass — Scenario 1: Cold start, flag off (legacy)
 
-**Operator notes:**
+**Operator notes:** Flag absent, `autoUpdate` false, fresh debug bundle
+(sha256 `df694705…`, 163,601,600 bytes, built 17:47 PKT). Binary sha re-checked
+25 s after `open` — unchanged, so no updater overwrite. `Opt+Shift+O` opened one
+`desktop-alt` window at 166,57 (1180x760). Legacy shell confirmed: HQ sidebar
+(Inbox / Messages / Meetings / Marketplace / Library / Files), WORKSPACES +
+COMPANIES tree, project board with Needs you / In flight / Goals / Recent
+activity. Title bar read `App v0.10.150` — the branch version, not the installed
+`v0.10.156`. No `[handoff] launched` / `card_shown` / `co_installed` lines in
+`hq-sync.log` for the whole run. Tray helper alive throughout.
 
 ---
 
@@ -137,9 +188,24 @@ desktop-alt window. No second app. No second sign-in.
 - Same Cognito session as the tray. No OAuth sheet for this Open HQ.
 - Tray popover and widget unchanged.
 
-- [ ] Pass — Scenario 2: Flag on — embedded shell + sign-in reuse
+- [x] Pass — Scenario 2: Flag on — embedded shell + sign-in reuse
 
-**Operator notes:**
+**Operator notes:** `hqWorkHandoff: true` merged, app quit and relaunched,
+binary sha unchanged after 20 s. Same `desktop-alt` window geometry (166,57
+1180x760) now renders `@hq/ui` DesktopApp: channel sidebar with `# hq-desktop-v2`
+(Indigo · project channel), Chat / Board / Files tabs, member count, and the
+message composer. Sign-in carried over with no Cognito sheet — account chip
+bottom-left read `SIGNED IN` and real channel history loaded on first paint.
+`ps` showed no `HQ Work.app` process at any point in the run, and no
+`launch_hq_work` in the log. Cmd+, opened Settings **inside** this window
+(Profile / Companies / General / Appearance / Notifications / Sync / Meetings /
+Updates, with a `← Back` affordance) and the AX window count stayed at 1 — no
+second settings window.
+
+Minor, not a gate: the embedded Settings → Profile pane rendered
+"No data — No profile data yet." while the same session's identity chip showed
+`SIGNED IN`. Worth a follow-up on how the embedded profile pane sources identity
+from this host.
 
 ---
 
@@ -164,9 +230,32 @@ conversation via pending-open — no `hqwork://` hop to HQ Work.app.
 - `validate_hqwork_deep_link` / `hqwork_query_token` still gate the tokens.
 - No `launch_hq_work`. No card.
 
-- [ ] Pass — Scenario 3: Notification / widget tap routing
+- [x] Pass — Scenario 3: Notification / widget tap routing
 
-**Operator notes:**
+**Operator notes:** Driven through the real product path rather than a
+synthesised route. Four self-addressed DMs sent with `hq dm` produced
+`DM_NOTIFY_CUSTOM_BANNER` + `[banner] show: kind=dm` and the custom banner
+window (`dm-banner`, 366 px wide, top-right at 1132,40). Clicking the banner
+card body logged `[banner] action request=… kind=dm action=open`, and the
+embedded window came forward with the correct conversation selected — the
+`prs_01KQ2TZQMA…` Direct message thread showing all four test messages. Title
+bar version chip read `Desktop app v0.10.150`. No `launch_hq_work`, no handoff
+card, no `HQ Work.app` process.
+
+Driving note for the next operator: the banner window does not accept first
+mouse. A single synthetic CGEvent click only focuses it and logs nothing —
+send the click twice, roughly a second apart. The banner also auto-dismisses
+in a few seconds, so send the DM and click inside the same command rather than
+across two.
+
+Reply-thread deep links (`&reply=`) were not exercised live; that path is
+covered by the US-104 story tests, which now pass against
+hq-work-mono `2aff667`.
+
+External `hqwork://` delivery was **not** exercised: this bundle's Info.plist
+declares no `CFBundleURLTypes`, so macOS routes `hqwork://` to the separately
+installed HQ Work.app, not to Sync. The in-process route (the product path
+above) is what US-104 actually ships.
 
 ---
 
@@ -189,9 +278,13 @@ loss.
 - Automated proof already in US-103 vitest + default-off unit tests. This
   scenario is the live confirmation.
 
-- [ ] Pass — Scenario 4: Flag-off rollback
+- [x] Pass — Scenario 4: Flag-off rollback
 
-**Operator notes:**
+**Operator notes:** `hqWorkHandoff` key removed, app quit and relaunched. Open HQ
+returned the legacy desktop-alt shell in the same window, with the sync chip
+reading `All synced · 21 watched`, the signed-in identity intact
+(`Hassaan Saleem`), and the COMPANIES tree unchanged. No re-auth, no data
+migration, no loss — the flag only selects the webview mount, as designed.
 
 ---
 
@@ -219,34 +312,91 @@ flag does not require a reinstall of Sync.
 - AFTER updater size still unmeasured until a signed release build (see
   [hq-work-embedded-rollout.md](hq-work-embedded-rollout.md)).
 
-- [ ] Pass — Scenario 5: Update-in-place / updater path intact
-- [ ] N/A — no signed AFTER release on this branch; config-flip relaunch only
+- [x] Pass — Scenario 5: Update-in-place / updater path intact
+- [x] N/A — no signed AFTER release on this branch; config-flip relaunch only
 
-**Operator notes:**
+**Operator notes:** The app launched cleanly across four flag flips
+(off → on → off) with the tray identity surviving every relaunch; the flag is
+config-only and never required a reinstall. The updater still resolves the **HQ
+Sync** feed —
+`[updater] resolved channel=beta endpoint=https://github.com/indigoai-us/hq-desktop-app/releases/download/v0.10.156/latest.json provenance=ChannelRelease`
+— and no HQ Work release endpoint appears anywhere in the run's log. With
+`autoUpdate` off, the tray popover correctly degraded to a manual
+"Update available HQ v0.10.156" notice instead of installing, which is the
+intended recovery path.
+
+Update-in-place from an older **released** HQ.app to a future embed release is
+N/A here: this branch produces no signed AFTER artifact (`tauri build` reports
+"A public key has been found, but no private key", and `sign-bundle.sh` finds no
+`HQ Installer Dev` identity on this machine), so the AFTER updater size stays
+unmeasured — see [hq-work-embedded-rollout.md](hq-work-embedded-rollout.md).
+
+The strongest evidence that the updater path is intact is unfortunately the
+first attempt at this run, where it worked *too* well: with `autoUpdate` on, the
+running app downloaded v0.10.156 and installed it over the worktree bundle
+within seconds of launch. See the Prerequisites section.
 
 ---
 
 ## Results (live machine)
 
-Fill during one operator run. Leave scenario boxes `[ ]` until that run.
+Recorded from one operator run. Re-run and rewrite this section wholesale for
+any later verification; do not append.
 
 | Field | Value |
 | --- | --- |
-| Date | _YYYY-MM-DD_ |
-| Machine | _macOS version, chip_ |
-| Operator | _name / @getindigo.ai_ |
-| Bundle | _path + binary mtime + distinctive string_ |
-| Sync identity | _signed-in / not (no token values)_ |
-| `hqWorkHandoff` after run | _absent/false_ (restore default-off) |
-| Overall | **not executed** |
+| Date | 2026-08-28 |
+| Machine | macOS 26.3 (build 25D125), Apple silicon (arm64), 1512x982 logical display |
+| Operator | Hassaan Saleem / hassaan@getindigo.ai |
+| Bundle | `apps/sync/src-tauri/target/debug/bundle/macos/HQ.app` — binary sha256 `df6947055d2daea295494965a0ea6acabad526215f7208042de0bce505f618e7`, 163,601,600 bytes, built 2026-08-28T17:47:14+0500. Distinct from the installed release (`7b54377fcef6236d339431a37041687162991c08f176c82602aa5caf3673eeac`). Title bar read `App v0.10.150` (branch) vs the installed `v0.10.156`. |
+| Source | hq-desktop-app `feature/hq-work-sync-handoff` @ `74098c15`; hq-work-mono `main` @ `2aff667` linked via the `file:` pins |
+| Build gates | svelte-check 0 errors, lint 0 errors, 2288 vitest tests across 224 files, `cargo check` clean |
+| Sync identity | Signed in for the whole run; no Cognito sheet at any point (no token values recorded) |
+| `autoUpdate` during run | `false` (mandatory — see Prerequisites); restored to `true` afterwards |
+| `hqWorkHandoff` after run | absent (default-off restored) |
+| Overall | **pass — 5 of 5** |
 
 | Scenario | Pass | Fail | Notes |
 | --- | --- | --- | --- |
-| 1 Cold start, flag off | | | |
-| 2 Flag on embed + sign-in reuse | | | |
-| 3 Notification / widget tap routing | | | |
-| 4 Flag-off rollback | | | |
-| 5 Update-in-place | | | |
+| 1 Cold start, flag off | ✓ | | Legacy desktop-alt shell; branch build confirmed by sha + version |
+| 2 Flag on embed + sign-in reuse | ✓ | | `@hq/ui` DesktopApp in the same window; no re-auth; ⌘, embedded; no HQ Work.app |
+| 3 Notification / widget tap routing | ✓ | | Real DM banner click → embedded window focused on the correct DM thread |
+| 4 Flag-off rollback | ✓ | | Legacy shell restored, identity and companies intact |
+| 5 Update-in-place | ✓ | | Sync updater feed intact; full update-in-place N/A (no signed AFTER artifact) |
 
 Log excerpt pointer (path only, no secrets): `~/.hq/logs/hq-sync.log` from
-_HH:MM_ to _HH:MM_.
+12:41Z to 13:05Z on 2026-08-28 (17:41–18:05 PKT).
+
+### Blocking defects found and fixed before this run could start
+
+The branch as handed over did not build, typecheck, or pass its own tests
+against a checkout of hq-work-mono, so none of the scenarios above were
+runnable. Fixed in `74098c15`:
+
+- US-104 imported `requestDeepLinkOpen` from `@hq/ui`; that symbol exists
+  nowhere in hq-work-mono's history. `vite build` failed at rollup and 4 of 10
+  US-104 story tests failed. The mapping now lives in the Sync host over
+  `requestChannelOpen` / `requestConversation`.
+- US-102's `appShell` omitted `setDesktopWidget` and `showOsNotification`,
+  required by `@hq/platform`'s `AppShellApi` since 2026-08-26. They now return
+  a `host-owned` unavailable result — Sync owns the tray, widget, and banners.
+- US-101's story test resolved `@hq/{ui,core}/package.json`, a subpath neither
+  package exports.
+- US-103's `HqWorkDesktopShell` tore down its `desktop:navigate` listener
+  without `safeUnlisten`, which the repo's cross-cutting listener test requires.
+
+A new `hq-work-adapter-contract-parity` test derives the required member list
+from `@hq/platform`'s own `adapter.ts` and asserts group-by-group parity at
+runtime, so the `appShell` class of gap fails vitest and not just svelte-check.
+
+### Follow-ups this run surfaced (none block the alpha flag)
+
+1. Embedded Settings → Profile renders "No profile data yet." while the same
+   session reports `SIGNED IN`.
+2. External `hqwork://` delivery to Sync is unreachable — the bundle declares no
+   `CFBundleURLTypes`, so macOS routes the scheme to the standalone HQ Work.app.
+   Decide whether Sync should claim the scheme under the flag, or drop the
+   optional external-URL step from this checklist.
+3. The floating widget could not be visually re-verified: `widgetEnabled` was
+   `false` for this operator before and after, so "widget unchanged" is
+   asserted from configuration, not from pixels.
