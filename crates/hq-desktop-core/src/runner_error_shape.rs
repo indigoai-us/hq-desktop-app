@@ -1208,23 +1208,17 @@ fn leading_errno_token(first: &str) -> Option<&str> {
 /// [`runner_error_cause_signature`]) and [`RunnerErrorCause::UnknownUnnamed`]
 /// otherwise.
 pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
-    // 1) The leading name token, e.g. `AccessDenied` or `EntityPermissionError`.
-    // Skipped when the first token is a `key=value` (`describeError` omits the
-    // name for a plain `Error`), so a `code=…` is never misread as a name.
-    if let Some(first) = message.split_whitespace().next() {
+    let first = message.split_whitespace().next();
+    // 1) The leading NAME identity token, e.g. `AccessDenied` or
+    // `EntityPermissionError`. Skipped when the first token is a `key=value`
+    // (`describeError` omits the name for a plain `Error`), so a `code=…` is
+    // never misread as a name. A leading bare `ERRNO:` token is NOT resolved
+    // here — a recognized keyed identity below must win over an errno, so the
+    // errno is deferred to step 2b (this reopen's review fix).
+    if let Some(first) = first {
         if !first.contains('=') {
             if let Some(matched) = cause_from_identifier(first) {
                 return matched;
-            }
-            // A leading bare `ERRNO:` token (a plain Node error whose name was
-            // suppressed, rendered `ENOENT: <text>, <op> <path>`): consulted
-            // AFTER the hq-cloud/AWS identity lookup so a domain identity always
-            // wins first. `leading_errno_token` refuses anything but a bare
-            // uppercase errno, so free prose is never read.
-            if let Some(errno) = leading_errno_token(first) {
-                if let Some(matched) = cause_from_errno(errno) {
-                    return matched;
-                }
             }
         }
     }
@@ -1246,13 +1240,22 @@ pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
             return matched;
         }
     }
-    // 2b) Node/libuv errno from the SAME `code=`/`cause=`/`syscall=` values,
-    // consulted only after every identity lookup so an hq-cloud/AWS name in
-    // `code=`/`cause=` still wins. Only a genuine uppercase errno spelling
-    // matches, so a `syscall=rename` value contributes nothing. This is the seam
-    // that makes the cause axis name a `code=ENOENT …` fault the class and op
-    // axes already parse from the same message.
-    for candidate in [code_value, cause_value, syscall_value].into_iter().flatten() {
+    // 2b) Node/libuv errno, resolved ONLY after EVERY identity lookup — the
+    // leading name AND the code=/cause=/syscall= values — so an hq-cloud/AWS
+    // domain identity always wins over an errno (e.g. `ENOENT: … cause=AccessDenied`
+    // reports access_denied, not enoent). The candidates are the
+    // code=/cause=/syscall= values and a leading bare `ERRNO:` token; only a
+    // genuine uppercase errno spelling matches, so a `syscall=rename` value
+    // contributes nothing and free prose is never read. This is the seam that
+    // makes the cause axis name a `code=ENOENT …` fault the class and op axes
+    // already parse from the same message.
+    let leading_errno = first
+        .filter(|token| !token.contains('='))
+        .and_then(leading_errno_token);
+    for candidate in [code_value, cause_value, syscall_value, leading_errno]
+        .into_iter()
+        .flatten()
+    {
         if let Some(matched) = cause_from_errno(candidate) {
             return matched;
         }
@@ -2540,6 +2543,35 @@ mod tests {
         assert_eq!(leading_errno_token("EAI_AGAIN:"), Some("EAI_AGAIN"));
         assert_eq!(leading_errno_token("'/path'"), None);
         assert_eq!(leading_errno_token("Enoent"), None); // not all-uppercase
+    }
+
+    #[test]
+    fn leading_errno_defers_to_a_recognized_nested_identity() {
+        // Review fix (this reopen): a leading bare `ERRNO:` token is a fallback,
+        // resolved only AFTER every identity lookup — so a recognized hq-cloud/AWS
+        // identity in a code=/cause= value wins over the leading errno, honouring
+        // the stated precedence 'domain identities win over errno'.
+        use RunnerErrorCause::*;
+        assert_eq!(
+            classify_runner_error_cause(
+                "ENOENT: no such file or directory, open x cause=AccessDenied"
+            ),
+            AccessDenied,
+        );
+        assert_eq!(
+            classify_runner_error_cause("ENOENT: open failed code=VaultNotFoundError"),
+            VaultNotFound,
+        );
+        // With no nested identity, the leading errno is still named.
+        assert_eq!(
+            classify_runner_error_cause("ENOENT: no such file or directory, open x"),
+            Enoent,
+        );
+        // A code= errno with no identity anywhere is still named from the value.
+        assert_eq!(
+            classify_runner_error_cause("code=ENOENT ENOENT: no such file, rename a to b"),
+            Enoent,
+        );
     }
 
     #[test]

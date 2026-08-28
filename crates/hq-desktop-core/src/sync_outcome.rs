@@ -934,6 +934,23 @@ impl RunnerErrorClass {
     }
 }
 
+/// True when the lowercase `errno` (e.g. `"enoent"`) appears in `msg` as a
+/// bounded token — its neighbours on both sides are non-alphanumeric or a string
+/// edge — so an errno embedded inside an ordinary word is not mistaken for the
+/// Node errno. In particular `"eexist"` inside `"preexisting"` no longer records
+/// `EEXIST`. Used only for the filesystem errno classes added this reopen; the
+/// pre-existing eperm/eacces/enospc/ebusy arms keep their exact prior matching so
+/// their grouping and history are untouched.
+fn message_has_errno_token(msg: &str, errno: &str) -> bool {
+    let bytes = msg.as_bytes();
+    msg.match_indices(errno).any(|(index, _)| {
+        let before_ok = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
+        let after = index + errno.len();
+        let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        before_ok && after_ok
+    })
+}
+
 /// Map an untrusted runner error message to a fixed telemetry class. This
 /// function deliberately returns no message text, so its output is safe to
 /// attach to Sentry as a tag.
@@ -947,13 +964,13 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
         RunnerErrorClass::Enospc
     } else if msg.contains("ebusy") {
         RunnerErrorClass::Ebusy
-    } else if msg.contains("enoent") {
+    } else if message_has_errno_token(&msg, "enoent") {
         RunnerErrorClass::Enoent
-    } else if msg.contains("eexist") {
+    } else if message_has_errno_token(&msg, "eexist") {
         RunnerErrorClass::Eexist
-    } else if msg.contains("enotempty") {
+    } else if message_has_errno_token(&msg, "enotempty") {
         RunnerErrorClass::Enotempty
-    } else if msg.contains("exdev") {
+    } else if message_has_errno_token(&msg, "exdev") {
         RunnerErrorClass::Exdev
     } else if is_transient_network_error(&msg) {
         RunnerErrorClass::Network
@@ -3285,6 +3302,45 @@ mod tests {
         rollup.record("ENOENT: no such file or directory, rename 'a' -> 'b'");
         assert!(!rollup.is_exclusively_disk_full());
         assert!(rollup.has_non_disk_full_error());
+    }
+
+    #[test]
+    fn new_errno_classes_require_token_boundaries_and_never_match_inside_a_word() {
+        // Review fix (this reopen): the new errno class arms require token
+        // boundaries, so an errno substring inside an ordinary word — the
+        // canonical case is `eexist` inside `preexisting` — is NOT recorded as
+        // that class. A confident wrong class here would also mis-drive the
+        // runner-exit fingerprint. These messages genuinely EMBED the errno
+        // substring, so they would misclassify under a naive `contains`.
+        for message in [
+            "download skipped: a preexisting lock is held for this company", // 'eexist'
+            "conflict mirror skipped: preexistence check failed",            // 'eexist'
+        ] {
+            assert_eq!(
+                classify_runner_error_class(message),
+                RunnerErrorClass::Other,
+                "an errno embedded inside an ordinary word must not classify: {message:?}"
+            );
+        }
+        // The genuine bounded errno renderings still classify.
+        for (message, expected) in [
+            ("EEXIST: file already exists, mkdir '/x'", RunnerErrorClass::Eexist),
+            (
+                "code=ENOENT ENOENT: no such file or directory, rename a to b",
+                RunnerErrorClass::Enoent,
+            ),
+            ("EXDEV: cross-device link not permitted, rename a to b", RunnerErrorClass::Exdev),
+            ("ENOTEMPTY: directory not empty, rmdir /x", RunnerErrorClass::Enotempty),
+        ] {
+            assert_eq!(classify_runner_error_class(message), expected, "message: {message:?}");
+        }
+        // The helper itself, exercised directly at the boundary: an embedded
+        // occurrence is refused, a bounded one is accepted.
+        assert!(!message_has_errno_token("preexisting", "eexist")); // embedded → refused
+        assert!(!message_has_errno_token("xenoentx", "enoent")); // embedded → refused
+        assert!(message_has_errno_token("code=enoent enoent: x", "enoent")); // bounded → matched
+        assert!(message_has_errno_token("eexist: file exists", "eexist")); // leading → matched
+        assert!(message_has_errno_token("failed with exdev", "exdev")); // trailing → matched
     }
 
     #[test]

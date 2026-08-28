@@ -3361,9 +3361,13 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
 /// in a Sentry fingerprint through a manually-constructed context.
 fn safe_runner_error_fingerprint_token(candidate: &'static str) -> &'static str {
     match candidate {
-        "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other" | "none" => {
-            candidate
-        }
+        // The seven original classes plus the filesystem errno classes added with
+        // the cause/class vocabulary re-derivation. Kept in lockstep with
+        // RunnerErrorClass::fingerprint_token so a watcher exit fingerprints on the
+        // same dominant class as the manual seam (parity); anything unknown still
+        // fails closed to "none".
+        "eperm" | "eacces" | "enospc" | "ebusy" | "enoent" | "eexist" | "enotempty" | "exdev"
+        | "network" | "auth" | "other" | "none" => candidate,
         _ => "none",
     }
 }
@@ -7440,6 +7444,50 @@ mod tests {
         assert_eq!(
             recorded_number_extra(&effects.captures[1], "runner_error_companies"),
             2
+        );
+    }
+
+    #[test]
+    fn watcher_fingerprint_allowlist_carries_the_new_errno_classes_at_parity() {
+        // Review fix (this reopen): safe_runner_error_fingerprint_token must accept
+        // the new filesystem-errno class tokens, or a watcher exit whose dominant
+        // class is ENOENT/EEXIST/ENOTEMPTY/EXDEV would fingerprint as "none" while
+        // the manual seam (which uses the raw fingerprint_token) keeps the class —
+        // breaking the both-seams parity this lane claims. Fail-closed for unknown.
+        for token in ["enoent", "eexist", "enotempty", "exdev"] {
+            assert_eq!(
+                safe_runner_error_fingerprint_token(token),
+                token,
+                "new errno fingerprint token must pass the watcher allowlist: {token}"
+            );
+        }
+        assert_eq!(safe_runner_error_fingerprint_token("not_a_class"), "none");
+
+        // End-to-end: the watcher route fingerprints an ENOENT-dominant exit on
+        // `enoent`, exactly as the manual route does from the same shared source.
+        let enoent_context = WatcherExitCaptureContext {
+            runner_error_class: "enoent",
+            runner_error_ops: Some("rename:6".to_string()),
+            runner_error_companies: 1,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &enoent_context,
+        );
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.captures[0].fingerprint.last().map(String::as_str),
+            Some("enoent"),
+            "watcher exit lost the new dominant-class grouping"
         );
     }
 
