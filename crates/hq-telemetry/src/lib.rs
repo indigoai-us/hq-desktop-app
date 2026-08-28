@@ -414,6 +414,7 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "cognito_identity_refresh",
     "dangling_symlink_parent",
     "windows_symlink_privilege",
+    "child_process_sync_worker",
     "access_denied",
     "no_such_key",
     "no_such_bucket",
@@ -423,6 +424,42 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "expired_identity",
     "invalid_identity",
     "unknown_error",
+    // ECMAScript / Node built-in error identities (this reopen).
+    "range_error",
+    "type_error",
+    "syntax_error",
+    "reference_error",
+    "eval_error",
+    "uri_error",
+    "aggregate_error",
+    "abort_error",
+    "system_error",
+    // Node / libuv errno codes (this reopen).
+    "enoent",
+    "eexist",
+    "enotempty",
+    "exdev",
+    "eisdir",
+    "enotdir",
+    "eloop",
+    "enametoolong",
+    "emfile",
+    "enfile",
+    "erofs",
+    "eio",
+    "eagain",
+    "epipe",
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "enotfound",
+    "ehostunreach",
+    "enetunreach",
+    "eai_again",
+    "eperm",
+    "eacces",
+    "enospc",
+    "ebusy",
     "unknown_named",
     "unknown_unnamed",
 ];
@@ -747,7 +784,20 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
         // accepted so in-flight older clients still emitting it remain sendable.
         matches!(
             value,
-            "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "identity" | "other"
+            "eperm"
+                | "eacces"
+                | "enospc"
+                | "ebusy"
+                // Filesystem errno classes added this reopen; breadcrumb spelling
+                // equals the fingerprint_token for these (no denylist collision).
+                | "enoent"
+                | "eexist"
+                | "enotempty"
+                | "exdev"
+                | "network"
+                | "auth"
+                | "identity"
+                | "other"
         )
     };
     let is_fatal_class = |value: &str| {
@@ -1741,6 +1791,43 @@ mod tests {
         let filtered = before_send(leaky).expect("event remains sendable");
         assert_eq!(filtered.tags["runner_error_causes"], "[Filtered]");
         assert_eq!(filtered.tags["runner_error_cause_signature"], "[Filtered]");
+    }
+
+    #[test]
+    fn new_cause_and_class_tokens_survive_egress_and_lookalikes_fail_closed() {
+        // This reopen's new tokens: the built-in identity family, the errno cause
+        // family, and the re-derived child_process_sync_worker must all pass the
+        // runner_error_causes egress guard so a real recurrence is not blanked …
+        let realistic =
+            "range_error:1,enoent:6,child_process_sync_worker:1,vault_client:1,unknown_unnamed:2";
+        let mut event = Event::default();
+        event.tags.insert("runner_error_causes".into(), realistic.into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            survived.tags["runner_error_causes"], realistic,
+            "a real recurrence carrying the new cause tokens must not be [Filtered]"
+        );
+
+        // … and the new filesystem-errno class breadcrumb tokens must pass the
+        // content-safe stderr allowlist (they equal their fingerprint spelling).
+        for class in ["enoent", "eexist", "enotempty", "exdev"] {
+            assert!(
+                is_content_safe_runner_stderr_message(
+                    Some("runner.stderr"),
+                    Some(&format!("runner stderr #1 ({class};none)"))
+                ),
+                "new class breadcrumb token rejected by allowlist: {class}"
+            );
+        }
+
+        // Fail-closed: a lookalike cause token (a raw fragment shaped like a
+        // token) still degrades to [Filtered] rather than shipping a runner byte.
+        let mut leaky = Event::default();
+        leaky
+            .tags
+            .insert("runner_error_causes".into(), "enoent:1,/private/secret.env:1".into());
+        let filtered = before_send(leaky).expect("event remains sendable");
+        assert_eq!(filtered.tags["runner_error_causes"], "[Filtered]");
     }
 
     #[test]

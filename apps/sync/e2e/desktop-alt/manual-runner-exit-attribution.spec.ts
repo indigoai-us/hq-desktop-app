@@ -145,6 +145,102 @@ describe('manual runner-exit attribution — shared classifier source', () => {
   });
 });
 
+describe('manual runner-exit attribution — regression reopen (HQ-DESKTOP-4T r2)', () => {
+  it('re-derives the cause vocabulary to the ~6.15.79 pin and adds the child-process identity', () => {
+    // The reopen root cause #1: HQ_CLOUD_VERSION moved to ~6.15.79 (PR #533) but
+    // the cause vocabulary stayed pinned to ~6.15.37, turning main red. The pin
+    // is now re-derived, and the one identity the current hq-cloud source adds —
+    // ChildProcessSyncWorkerError — is a named cause.
+    expect(shapeSource).toContain('pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.79"');
+    expect(shapeSource).toContain('"ChildProcessSyncWorkerError" => RunnerErrorCause::ChildProcessSyncWorker');
+    expect(shapeSource).toContain('"child_process_sync_worker"');
+  });
+
+  it('moves the vocabulary-drift guard to a compile-time assertion (earlier, not weaker)', () => {
+    // Root cause #1 fix: the prior guard was a #[test] a branch cut before the
+    // fix never ran. A compile-time const assertion fails cargo build/check on
+    // ANY branch and target the instant the pin drifts.
+    expect(shapeSource).toContain('const fn const_str_eq(');
+    expect(shapeSource).toMatch(
+      /const _: \(\) = assert!\(\s*const_str_eq\(CAUSE_VOCABULARY_SOURCE_VERSION, crate::hq_cloud::HQ_CLOUD_VERSION\)/,
+    );
+  });
+
+  it('names the ECMAScript/Node built-in identity family (the RangeError recurrence)', () => {
+    // Root cause #2: describeError emits e.name verbatim, but the built-in family
+    // was absent, so the production RangeError fell to unknown_named + a
+    // signature (93c5a7a535cb == sha256("RangeError")[..12]). Each is now named
+    // with a denylist-free token.
+    for (const [name, token] of [
+      ['RangeError', 'range_error'],
+      ['TypeError', 'type_error'],
+      ['SyntaxError', 'syntax_error'],
+      ['ReferenceError', 'reference_error'],
+      ['EvalError', 'eval_error'],
+      ['URIError', 'uri_error'],
+      ['AggregateError', 'aggregate_error'],
+      ['AbortError', 'abort_error'],
+      ['SystemError', 'system_error'],
+    ] as const) {
+      expect(shapeSource).toContain(`"${name}" => RunnerErrorCause::`);
+      expect(shapeSource).toContain(`"${token}"`);
+    }
+  });
+
+  it('names the Node/libuv errno vocabulary on the cause axis, denylist-free', () => {
+    // Root cause #3: a plain-Error per-file fault carried its errno only in the
+    // `code=`/leading `ERRNO:` grammar, so the cause axis collapsed it to
+    // unknown_unnamed even while the op axis parsed `rename` from the same
+    // message. The closed errno vocabulary is now consulted from both seams.
+    expect(shapeSource).toContain('fn cause_from_errno(');
+    expect(shapeSource).toContain('fn leading_errno_token(');
+    for (const token of ['enoent', 'eexist', 'enotempty', 'exdev', 'etimedout', 'econnreset', 'eai_again']) {
+      expect(shapeSource).toContain(`"${token}"`);
+      for (const denied of DENYLIST) {
+        expect(token).not.toContain(denied);
+      }
+    }
+  });
+
+  it('adds the filesystem errno CLASS variants without moving pre-existing grouping', () => {
+    // Root cause #3, class axis: ENOENT/EEXIST/ENOTEMPTY/EXDEV are now named
+    // classes rather than OTHER, added ADDITIVELY so the pre-existing
+    // tag_name/fingerprint_token strings — and therefore Sentry grouping and
+    // history — are unchanged.
+    for (const [tag, fingerprint] of [
+      ['ENOENT', 'enoent'],
+      ['EEXIST', 'eexist'],
+      ['ENOTEMPTY', 'enotempty'],
+      ['EXDEV', 'exdev'],
+    ] as const) {
+      expect(coreSource).toContain(`Self::${tag[0]}${tag.slice(1).toLowerCase()} => "${tag}"`);
+      expect(coreSource).toContain(`=> "${fingerprint}"`);
+    }
+    // Pre-existing grouping tokens stay byte-identical (attribution only ADDS).
+    expect(coreSource).toContain('Self::Eperm => "EPERM"');
+    expect(coreSource).toContain('Self::Other => "OTHER"');
+  });
+
+  it('accepts every new cause and class token at the hq-telemetry egress guard', () => {
+    // Both new families and the new class breadcrumb tokens must pass egress, or
+    // a real recurrence carrying them is silently [Filtered] — the exact
+    // HQ-DESKTOP-4T loss this lane exists to prevent.
+    for (const token of ['range_error', 'enoent', 'child_process_sync_worker', 'etimedout']) {
+      expect(telemetrySource).toContain(`"${token}"`);
+    }
+    // The class breadcrumb allowlist accepts the new filesystem-errno tokens.
+    const allowlist = sliceBetween(
+      telemetrySource,
+      'fn is_content_safe_runner_stderr_message(',
+      'fn scrub_sensitive_in_value(',
+      'is_content_safe_runner_stderr_message',
+    );
+    for (const token of ['enoent', 'eexist', 'enotempty', 'exdev']) {
+      expect(allowlist).toContain(`"${token}"`);
+    }
+  });
+});
+
 describe('manual runner-exit attribution — manual capture seam (commands::sync)', () => {
   const telemetryContext = sliceBetween(
     syncSource,

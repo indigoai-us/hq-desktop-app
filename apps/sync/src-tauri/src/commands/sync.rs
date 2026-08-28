@@ -4263,6 +4263,143 @@ mod tests {
     }
 
     #[test]
+    fn real_child_recurrence_field_signature_is_fully_attributed_and_content_safe() {
+        // The regression reopen replayed through the PRODUCTION capture path. The
+        // recurring event ran the fixed binary (build_commit b95346d8) yet still
+        // carried the all-unknown signature: runner_error_causes=unknown_*,
+        // runner_error_rollup=OTHER, while runner_error_ops parsed `rename` — the
+        // cause/class axes lacked the built-in and errno vocabularies the op axis
+        // implicitly had. This test reproduces the observed field shape and
+        // asserts it is now FULLY attributed with no unknown_* residual and no
+        // leaked byte.
+        let secret_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
+        let mut lines: Vec<String> = Vec::new();
+        // Company-scope: the production RangeError recurrence (decoded from the
+        // fix's own signature 93c5a7a535cb == sha256("RangeError")[..12]) …
+        for _ in 0..2 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": "(company)",
+                    "message": "RangeError Maximum call stack size exceeded",
+                })
+                .to_string(),
+            );
+        }
+        // … and the one already-covered company identity that worked on base.
+        lines.push(
+            serde_json::json!({
+                "type": "error",
+                "company": "acme",
+                "path": "(company)",
+                "message": "VaultClientError vault client request failed for company acme",
+            })
+            .to_string(),
+        );
+        // Per-file: six Node errno faults rendered exactly as describeError emits
+        // a plain Error — `code=<ERRNO> <ERRNO>: <text>, <op> <path>` — carrying a
+        // secret-looking path that must never surface.
+        for index in 0..6 {
+            lines.push(
+                serde_json::json!({
+                    "type": "error",
+                    "company": "acme",
+                    "path": format!("knowledge/secret-{index}.md"),
+                    "message": format!(
+                        "code=ENOENT ENOENT: no such file or directory, rename '{secret_path}.hq-tmp-{index}' -> '{secret_path}'"
+                    ),
+                })
+                .to_string(),
+            );
+        }
+        let spawn = error_flood_spawn_args(&lines);
+
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut sequence = 0_u32;
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-recurrence", &spawn, |event| match event {
+                ProcessEvent::Stderr(line) => {
+                    sequence = sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line,
+                    );
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+                ProcessEvent::Stdout(_) => {}
+            })
+            .expect("real fake runner should run");
+
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let context =
+                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(2), None, false)));
+        assert_eq!(sequence, 9);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("recurrence event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // Fully attributed — every fault is named, with NO unknown_* residual.
+        // (top-3 bounded: enoent:6, range_error:2, vault_client:1)
+        assert_eq!(
+            event.tags["runner_error_causes"],
+            "enoent:6,range_error:2,vault_client:1"
+        );
+        // The class axis names the dominant errno instead of collapsing to OTHER;
+        // the two company identities remain OTHER on the class axis but are named
+        // on the cause axis above.
+        assert_eq!(event.tags["runner_error_rollup"], "ENOENT:6,OTHER:3");
+        // The op axis still parses `rename` from the same messages …
+        assert_eq!(event.tags["runner_error_ops"], "rename:6,other:3");
+        assert_eq!(
+            event.extra["runner_error_scope"],
+            sentry::protocol::Value::String("company:3,file:6".to_string())
+        );
+        // The now-listed RangeError needs no signature — the axis attaches no tag.
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_cause_signature"));
+
+        // Content safety: not one byte of the child's stderr — path, host, or
+        // message fragment — reaches any tag, extra, or breadcrumb.
+        for forbidden in [
+            "secret-plan.md",
+            "no such file or directory",
+            "hq-tmp",
+            "Maximum call stack",
+            "vault client request",
+            "personal",
+            "Ada",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "recurrence event leaked seeded runner content: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn manual_runner_exit_capture_is_content_safe_and_keeps_context_and_grouping() {
         let private_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
         let raw_messages = [

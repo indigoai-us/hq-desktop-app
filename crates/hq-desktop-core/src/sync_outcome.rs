@@ -849,6 +849,15 @@ pub enum RunnerErrorClass {
     Eacces,
     Enospc,
     Ebusy,
+    // Filesystem errno classes (this reopen). A plain-Error per-file fault
+    // (`ENOENT: …, rename …`) previously collapsed to OTHER on the class axis
+    // even while the op axis parsed `rename` from the same message. These are
+    // ADDITIVE — only NEW variants, never a rename/re-map/re-order of the
+    // pre-existing ones, so Sentry grouping and history survive.
+    Enoent,
+    Eexist,
+    Enotempty,
+    Exdev,
     Network,
     Auth,
     Other,
@@ -857,11 +866,15 @@ pub enum RunnerErrorClass {
 impl RunnerErrorClass {
     /// Every variant, so content-safety tests can enumerate the emitter's own
     /// token set instead of a hand-copied list.
-    pub const ALL: [RunnerErrorClass; 7] = [
+    pub const ALL: [RunnerErrorClass; 11] = [
         Self::Eperm,
         Self::Eacces,
         Self::Enospc,
         Self::Ebusy,
+        Self::Enoent,
+        Self::Eexist,
+        Self::Enotempty,
+        Self::Exdev,
         Self::Network,
         Self::Auth,
         Self::Other,
@@ -873,6 +886,10 @@ impl RunnerErrorClass {
             Self::Eacces => "EACCES",
             Self::Enospc => "ENOSPC",
             Self::Ebusy => "EBUSY",
+            Self::Enoent => "ENOENT",
+            Self::Eexist => "EEXIST",
+            Self::Enotempty => "ENOTEMPTY",
+            Self::Exdev => "EXDEV",
             Self::Network => "NETWORK",
             Self::Auth => "AUTH",
             Self::Other => "OTHER",
@@ -885,6 +902,10 @@ impl RunnerErrorClass {
             Self::Eacces => "eacces",
             Self::Enospc => "enospc",
             Self::Ebusy => "ebusy",
+            Self::Enoent => "enoent",
+            Self::Eexist => "eexist",
+            Self::Enotempty => "enotempty",
+            Self::Exdev => "exdev",
             Self::Network => "network",
             Self::Auth => "auth",
             Self::Other => "other",
@@ -902,6 +923,10 @@ impl RunnerErrorClass {
             Self::Eacces => "eacces",
             Self::Enospc => "enospc",
             Self::Ebusy => "ebusy",
+            Self::Enoent => "enoent",
+            Self::Eexist => "eexist",
+            Self::Enotempty => "enotempty",
+            Self::Exdev => "exdev",
             Self::Network => "network",
             Self::Auth => "identity",
             Self::Other => "other",
@@ -922,6 +947,14 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
         RunnerErrorClass::Enospc
     } else if msg.contains("ebusy") {
         RunnerErrorClass::Ebusy
+    } else if msg.contains("enoent") {
+        RunnerErrorClass::Enoent
+    } else if msg.contains("eexist") {
+        RunnerErrorClass::Eexist
+    } else if msg.contains("enotempty") {
+        RunnerErrorClass::Enotempty
+    } else if msg.contains("exdev") {
+        RunnerErrorClass::Exdev
     } else if is_transient_network_error(&msg) {
         RunnerErrorClass::Network
     } else if ["auth", "unauthorized", "forbidden", "cognito", "token"]
@@ -1439,6 +1472,10 @@ pub struct RunnerErrorRollup {
     eacces: u32,
     enospc: u32,
     ebusy: u32,
+    enoent: u32,
+    eexist: u32,
+    enotempty: u32,
+    exdev: u32,
     network: u32,
     auth: u32,
     other: u32,
@@ -1451,6 +1488,10 @@ impl RunnerErrorRollup {
             RunnerErrorClass::Eacces => &mut self.eacces,
             RunnerErrorClass::Enospc => &mut self.enospc,
             RunnerErrorClass::Ebusy => &mut self.ebusy,
+            RunnerErrorClass::Enoent => &mut self.enoent,
+            RunnerErrorClass::Eexist => &mut self.eexist,
+            RunnerErrorClass::Enotempty => &mut self.enotempty,
+            RunnerErrorClass::Exdev => &mut self.exdev,
             RunnerErrorClass::Network => &mut self.network,
             RunnerErrorClass::Auth => &mut self.auth,
             RunnerErrorClass::Other => &mut self.other,
@@ -1475,6 +1516,10 @@ impl RunnerErrorRollup {
         self.eperm > 0
             || self.eacces > 0
             || self.ebusy > 0
+            || self.enoent > 0
+            || self.eexist > 0
+            || self.enotempty > 0
+            || self.exdev > 0
             || self.network > 0
             || self.auth > 0
             || self.other > 0
@@ -1488,6 +1533,10 @@ impl RunnerErrorRollup {
             (RunnerErrorClass::Eacces, self.eacces),
             (RunnerErrorClass::Enospc, self.enospc),
             (RunnerErrorClass::Ebusy, self.ebusy),
+            (RunnerErrorClass::Enoent, self.enoent),
+            (RunnerErrorClass::Eexist, self.eexist),
+            (RunnerErrorClass::Enotempty, self.enotempty),
+            (RunnerErrorClass::Exdev, self.exdev),
             (RunnerErrorClass::Network, self.network),
             (RunnerErrorClass::Auth, self.auth),
             (RunnerErrorClass::Other, self.other),
@@ -1509,6 +1558,10 @@ impl RunnerErrorRollup {
             (RunnerErrorClass::Eacces, self.eacces),
             (RunnerErrorClass::Enospc, self.enospc),
             (RunnerErrorClass::Ebusy, self.ebusy),
+            (RunnerErrorClass::Enoent, self.enoent),
+            (RunnerErrorClass::Eexist, self.eexist),
+            (RunnerErrorClass::Enotempty, self.enotempty),
+            (RunnerErrorClass::Exdev, self.exdev),
             (RunnerErrorClass::Network, self.network),
             (RunnerErrorClass::Auth, self.auth),
             (RunnerErrorClass::Other, self.other),
@@ -3165,7 +3218,10 @@ mod tests {
     #[test]
     fn runner_error_class_group_tokens_are_pinned() {
         // fingerprint_token drives Sentry grouping; tag_name drives the tag value.
-        // The Auth breadcrumb-token rename must not have touched either.
+        // The Auth breadcrumb-token rename must not have touched either. The four
+        // filesystem errno classes added this reopen are ADDITIVE — the seven
+        // pre-existing tokens below stay byte-identical so grouping/history for
+        // every existing runner-exit issue survives.
         for (class, tag, fingerprint) in [
             (RunnerErrorClass::Eperm, "EPERM", "eperm"),
             (RunnerErrorClass::Eacces, "EACCES", "eacces"),
@@ -3174,10 +3230,61 @@ mod tests {
             (RunnerErrorClass::Network, "NETWORK", "network"),
             (RunnerErrorClass::Auth, "AUTH", "auth"),
             (RunnerErrorClass::Other, "OTHER", "other"),
+            // New errno classes (this reopen) — named, not re-mapped onto OTHER.
+            (RunnerErrorClass::Enoent, "ENOENT", "enoent"),
+            (RunnerErrorClass::Eexist, "EEXIST", "eexist"),
+            (RunnerErrorClass::Enotempty, "ENOTEMPTY", "enotempty"),
+            (RunnerErrorClass::Exdev, "EXDEV", "exdev"),
         ] {
             assert_eq!(class.tag_name(), tag);
             assert_eq!(class.fingerprint_token(), fingerprint);
         }
+    }
+
+    #[test]
+    fn errno_class_names_a_rename_fault_while_the_op_axis_still_parses_rename() {
+        // The second untouched path this reopen closes: an ENOENT per-file rename
+        // fault reported OTHER on the class axis even though the op axis parsed
+        // `rename` from the SAME message. The class axis now names it ENOENT, the
+        // cause axis names `enoent`, and the op axis still reports `rename` — the
+        // three axes finally agree, and runner_error_path_roots is unchanged.
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "knowledge/a.md".to_string(),
+            message: "code=ENOENT ENOENT: no such file or directory, rename 'a' -> 'b'".to_string(),
+        });
+        assert_eq!(totals.runner_error_rollup.tag_value().as_deref(), Some("ENOENT:1"));
+        assert_eq!(totals.runner_error_ops.tag_value().as_deref(), Some("rename:1"));
+        assert_eq!(totals.runner_error_causes.tag_value().as_deref(), Some("enoent:1"));
+        assert_eq!(totals.runner_error_path_roots.tag_value().as_deref(), Some("knowledge:1"));
+        // A bare-leading ENOENT rendering agrees on the class axis too.
+        let mut bare = RunnerErrorRollup::default();
+        bare.record("ENOENT: no such file or directory, rename 'a' -> 'b'");
+        assert_eq!(bare.tag_value().as_deref(), Some("ENOENT:1"));
+        // EXDEV / EEXIST / ENOTEMPTY are named rather than OTHER.
+        for (message, tag) in [
+            ("EXDEV: cross-device link not permitted, rename 'a' -> 'b'", "EXDEV:1"),
+            ("EEXIST: file already exists, mkdir '/x'", "EEXIST:1"),
+            ("ENOTEMPTY: directory not empty, rmdir '/x'", "ENOTEMPTY:1"),
+        ] {
+            let mut rollup = RunnerErrorRollup::default();
+            rollup.record(message);
+            assert_eq!(rollup.tag_value().as_deref(), Some(tag));
+        }
+    }
+
+    #[test]
+    fn new_errno_classes_are_non_disk_full_so_the_suppression_gate_is_unchanged() {
+        // is_exclusively_disk_full gates ENOSPC-only suppression. A new errno
+        // class must count as a non-disk-full error so an ENOENT+ENOSPC mix never
+        // suppresses — the alerting behaviour the plan declares off-limits.
+        let mut rollup = RunnerErrorRollup::default();
+        rollup.record("ENOSPC: no space left on device, write '/x'");
+        assert!(rollup.is_exclusively_disk_full());
+        rollup.record("ENOENT: no such file or directory, rename 'a' -> 'b'");
+        assert!(!rollup.is_exclusively_disk_full());
+        assert!(rollup.has_non_disk_full_error());
     }
 
     #[test]
