@@ -85,7 +85,8 @@ pub use hq_desktop_core::hq_cli_update::{
     install_executor_for_first_install, install_executor_for_hq_bin,
     installed_hq_cli_version_in_bun_global,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
-    is_cli_update_dismissed, is_npm_bin_collision, is_pnpm_global_shim,
+    is_cli_update_dismissed, is_missing_global_install_target, is_npm_bin_collision,
+    is_pnpm_global_shim,
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
     non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
@@ -105,7 +106,7 @@ pub use hq_desktop_core::hq_cli_update::{
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
-    ManagedShadowRepairAction, ManagedShadowRepairOutcome,
+    ManagedShadowRepairAction, ManagedShadowRepairOutcome, MissingTargetState,
     NonConvergenceKind, NonConvergentReport, NpmLatest,
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
@@ -398,6 +399,86 @@ fn clean_partial_hq_cli_install_scope(scope: &Path) {
     }
 }
 
+/// Resolve the `@indigoai-us` install-scope directory to CREATE for an ENOENT
+/// missing-global-install-target failure (HQ-DESKTOP-5K), with the retry rung label
+/// alongside it. Prefer the resolved install prefix
+/// ([`partial_install_scope_dir_for`], both layouts selectable so the split is
+/// testable off-platform); when none resolved — the same prefix-less state as the
+/// ENOTEMPTY recovery — recover the scope from the ABSOLUTE path npm itself named
+/// ([`partial_install_scope_from_npm_path`]), which fail-closes to `None` on any
+/// ambiguity (a relative path, a missing marker, an `@indigoai-usx`-style near-miss).
+/// Pure — no filesystem access — so scope resolution is unit-testable exactly like
+/// the ENOTEMPTY recovery's.
+fn missing_install_target_scope(
+    prefix: Option<&str>,
+    detail: &str,
+    windows_layout: bool,
+) -> Option<(PathBuf, &'static str)> {
+    prefix
+        .map(|target_prefix| {
+            (
+                partial_install_scope_dir_for(target_prefix, windows_layout),
+                "mkdir-plain",
+            )
+        })
+        .or_else(|| {
+            partial_install_scope_from_npm_path(detail)
+                .map(|scope| (PathBuf::from(scope), "mkdir-plain-npm-path"))
+        })
+}
+
+/// Pure mapping from the install scope's ancestor existence to the diagnostic
+/// [`MissingTargetState`], so it is unit-testable without touching the filesystem.
+/// A present `scope` means nothing in the probed chain was actually missing (npm's
+/// failing `mkdir` targeted a deeper path), which the create+retry records as
+/// `CreatedAndRetried`; otherwise it names the deepest missing ancestor.
+fn missing_target_state_from_existence(
+    scope_exists: bool,
+    node_modules_exists: bool,
+    root_exists: bool,
+) -> MissingTargetState {
+    if scope_exists {
+        MissingTargetState::CreatedAndRetried
+    } else if node_modules_exists {
+        MissingTargetState::ScopeMissing
+    } else if root_exists {
+        MissingTargetState::NodeModulesMissing
+    } else {
+        MissingTargetState::PrefixRootMissing
+    }
+}
+
+/// Probe the derived install scope's ancestor chain, then `create_dir_all` the
+/// scope and every absent ancestor. Returns the closed-enumeration state naming
+/// which ancestor was missing, or [`MissingTargetState::CreateFailed`] when the
+/// directory itself could not be created (an unreachable or permission-denied
+/// parent — a dead mapped drive, an offline redirected UNC path). CREATION-ONLY: it
+/// never deletes, so its blast radius is strictly smaller than the ENOTEMPTY
+/// cleanup. The caller retries the plain install once on any state except
+/// `CreateFailed`.
+fn create_missing_install_scope(scope: &Path) -> MissingTargetState {
+    let node_modules = scope.parent();
+    let root = node_modules.and_then(Path::parent);
+    let probed = missing_target_state_from_existence(
+        scope.exists(),
+        node_modules.is_some_and(|dir| dir.exists()),
+        root.is_some_and(|dir| dir.exists()),
+    );
+    match std::fs::create_dir_all(scope) {
+        Ok(()) => probed,
+        Err(e) => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "failed to create missing install scope {}: {e}",
+                    scope.display()
+                ),
+            );
+            MissingTargetState::CreateFailed
+        }
+    }
+}
+
 /// Spawn `npm <args>` on the blocking pool with the beefed-up child PATH and
 /// collect its Output. Errors map to a String (join / spawn failures only —
 /// a non-zero npm exit is a successful run that returns a failing status).
@@ -442,6 +523,12 @@ struct NpmInstallRun {
     /// the run itself, not just the on-disk side effects.
     #[allow(dead_code)]
     rungs: Vec<&'static str>,
+    /// For a missing-global-install-target failure (HQ-DESKTOP-5K), which ancestor
+    /// of the install scope the mkdir remedy found missing and how its creation
+    /// went. Carried out to the caller so it can attach the closed-enumeration
+    /// diagnostic to the reported event. [`MissingTargetState::Unknown`] whenever the
+    /// remedy did not run.
+    missing_target_state: MissingTargetState,
 }
 
 async fn run_recorded_npm_install_attempt(
@@ -522,6 +609,9 @@ async fn run_npm_install_with_retries(
     base_args: Vec<String>,
 ) -> Result<NpmInstallRun, String> {
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
+    // Set by the mkdir remedy below (HQ-DESKTOP-5K) and carried out to the caller so
+    // it can tag the reported event. `Unknown` whenever that remedy did not run.
+    let mut missing_target_state = MissingTargetState::Unknown;
 
     // First attempt: a plain (non-forced) global install.
     let mut output = run_recorded_npm_install_attempt(
@@ -647,6 +737,97 @@ async fn run_npm_install_with_retries(
         }
     }
 
+    // ENOENT missing-global-install-target recovery (HQ-DESKTOP-5K): on a machine
+    // whose npm global prefix directory chain does not exist, npm's own `mkdir` of
+    // the install target fails ENOENT and every 6-hourly auto-update dies before it
+    // can lay the package down, so the user's `hq` silently never updates. This is
+    // the mirror image of the ENOTEMPTY cleanup above, but CREATION-ONLY: derive the
+    // same `@indigoai-us` scope dir (from the resolved prefix when known, else the
+    // absolute path npm itself named — fail-closed to None on any ambiguity),
+    // `create_dir_all` it plus every absent ancestor, and retry the plain install
+    // ONCE. It never deletes, so its blast radius is strictly smaller than the
+    // ENOTEMPTY cleanup. When neither source yields a scope, or the creation itself
+    // fails, nothing changes and the failure is reported exactly as today.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        if is_missing_global_install_target(&detail, prefix) {
+            if let Some((scope, rung)) =
+                missing_install_target_scope(prefix, &detail, cfg!(target_os = "windows"))
+            {
+                // Probe + create OFF the async runtime: on an offline UNC prefix, a
+                // dead mapped drive, or a redirected network profile these metadata
+                // calls plus `create_dir_all` can block on an OS network timeout, so
+                // keep the Tokio worker free (the surrounding npm work already runs on
+                // the blocking pool). A join failure fails closed to `CreateFailed`.
+                let scope_for_create = scope.clone();
+                let state = tauri::async_runtime::spawn_blocking(move || {
+                    create_missing_install_scope(&scope_for_create)
+                })
+                .await
+                .unwrap_or(MissingTargetState::CreateFailed);
+                missing_target_state = state;
+                if state == MissingTargetState::CreateFailed {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "install hit ENOENT missing global install target but creating {} failed; skipping retry: {detail}",
+                            scope.display()
+                        ),
+                    );
+                } else if ledger.len() < MAX_NPM_INSTALL_ATTEMPTS {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "install hit ENOENT missing global install target; created {} and retrying: {detail}",
+                            scope.display()
+                        ),
+                    );
+                    output = run_recorded_npm_install_attempt(
+                        npm,
+                        path,
+                        npm_cache,
+                        prefix,
+                        base_args.clone(),
+                        rung,
+                        false,
+                        &mut ledger,
+                    )
+                    .await?;
+
+                    // Creating the scope lets npm advance to bin-linking; on a machine
+                    // that had BOTH a missing scope AND a pre-existing stale `hq` shim,
+                    // that step can now fail EEXIST. The earlier `--force` rung already
+                    // ran, so re-arm npm's supported collision remedy once here —
+                    // mirroring the ENOTEMPTY cleanup rung above — still within the hard
+                    // attempt cap.
+                    if !output.status.success()
+                        && is_bin_exists_failure(&npm_output_detail(&output), prefix)
+                        && ledger.len() < MAX_NPM_INSTALL_ATTEMPTS
+                    {
+                        let mut forced = base_args.clone();
+                        forced.push("--force".to_string());
+                        output = run_recorded_npm_install_attempt(
+                            npm,
+                            path,
+                            npm_cache,
+                            prefix,
+                            forced,
+                            "mkdir-forced-bin-collision",
+                            true,
+                            &mut ledger,
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                log(
+                    "hq-cli-update",
+                    "install hit ENOENT missing global install target but no resolved prefix or npm-reported scope; skipping mkdir retry",
+                );
+            }
+        }
+    }
+
     // Windows EPERM locked-binary recovery (HQ-DESKTOP-3N): npm could not
     // replace the `hq` executable because it was locked or in use — a running
     // hq/terminal process, or antivirus holding the file. This is almost always
@@ -689,6 +870,7 @@ async fn run_npm_install_with_retries(
         output,
         final_attempt_forced,
         rungs,
+        missing_target_state,
     })
 }
 
@@ -795,6 +977,9 @@ async fn probe_install_environment(
         } else {
             ManagedRetryOutcome::NotArmed
         },
+        // Defaults to `Unknown`; `install_hq_cli` overrides it with the mkdir
+        // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
+        missing_target_state: MissingTargetState::Unknown,
     }
 }
 
@@ -1623,6 +1808,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // retry.
         let mut install_env =
             probe_install_environment(&npm, &path, /* managed_toolchain_retry */ false).await;
+        // Carry the mkdir remedy's diagnostic (HQ-DESKTOP-5K) onto the reported
+        // event: which ancestor of the install scope was missing and how its
+        // creation went. `Unknown` (→ no tag emitted) whenever that remedy did not
+        // run, so a non-missing-target failure's tag set is unchanged.
+        install_env.missing_target_state = install_run.missing_target_state;
         let failing_node_abi = install_env
             .node_abi
             .as_deref()
@@ -1772,11 +1962,14 @@ fn install_failure_earns_managed_retry(
     cause: &str,
     failing_node_abi: Option<u32>,
 ) -> bool {
-    // Both repairable shapes share these two runtime conditions: only the user's
-    // own toolchain is worth replacing, and a run already on HQ's managed ABI
-    // gains nothing from provisioning it again.
-    let repairable_runtime =
-        source == NpmToolchainSource::UserPath && failing_node_abi != Some(MANAGED_NODE_ABI);
+    // Only the user's OWN toolchain is ever worth replacing with HQ's managed one;
+    // a run already under the managed toolchain cannot be improved by installing it
+    // again. Shared by all three repairable shapes.
+    let is_user_path = source == NpmToolchainSource::UserPath;
+    // Shapes 1 & 2 ADDITIONALLY require a runtime whose ABI differs from HQ's
+    // managed one: a lifecycle/prebuild fault or a too-old runtime cannot be fixed
+    // by re-provisioning the same ABI. An UNKNOWN ABI is treated as not-managed.
+    let repairable_runtime = is_user_path && failing_node_abi != Some(MANAGED_NODE_ABI);
     // Shape 1 (HQ-DESKTOP-4V/4W): a third-party native-build lifecycle failure
     // whose diagnosed cause a different runtime can actually fix.
     let repairable_lifecycle = kind == InstallFailureKind::UnexpectedLifecycle
@@ -1786,7 +1979,16 @@ fn install_failure_earns_managed_retry(
     // no lifecycle cause to consult; installing HQ's managed Node 22 is the exact
     // repair, and a converged retry emits no event.
     let unsupported_node = kind == InstallFailureKind::UnsupportedNode;
-    repairable_runtime && (repairable_lifecycle || unsupported_node)
+    // Shape 3 (HQ-DESKTOP-5K): npm could not create its OWN global install-target
+    // directory. This is a broken/absent npm PREFIX chain, not a runtime-version or
+    // prebuild fault, so the `failing_node_abi != Some(MANAGED_NODE_ABI)` clause
+    // deliberately does NOT apply — a run on the identical managed ABI still repairs
+    // the machine, because `managed_toolchain_retry` rebuilds argv against
+    // `paths::managed_npm_prefix_in`, a prefix HQ itself owns and CREATES. Its only
+    // runtime condition is that the failing run used the user's own toolchain.
+    let missing_global_install_target = kind == InstallFailureKind::MissingGlobalInstallTarget;
+    (repairable_runtime && (repairable_lifecycle || unsupported_node))
+        || (is_user_path && missing_global_install_target)
 }
 
 /// Pure selection of the ordinary install prefix from the RUNTIME of the resolved
@@ -2455,7 +2657,18 @@ async fn managed_retry_converged(
 /// runtime: HQ already retried under its OWN managed Node, so that advice cannot
 /// change the runtime or ABI. Provenance-aware wording, plus a copyable-command
 /// escape hatch and a support-facing next step.
-fn managed_retry_failure_detail(exit_code: Option<i32>, raw_detail: &str) -> String {
+fn managed_retry_failure_detail(
+    exit_code: Option<i32>,
+    raw_detail: &str,
+    prefix: Option<&str>,
+) -> String {
+    // If the managed retry ALSO hit a missing install target (HQ-DESKTOP-5K) — npm
+    // could not create even HQ's own managed install folder, e.g. a broken/offline
+    // filesystem — the failure is NOT a dependency build, so never tell the user a
+    // build failed or that changing Node cannot help. Give the missing-folder copy.
+    if is_missing_global_install_target(raw_detail, prefix) {
+        return "HQ retried this update under its own managed toolchain, but npm's install folder still could not be created on this computer. Run the copied command in a terminal to finish the update; if that folder lives on a network or removed drive, reconnect it first.".to_string();
+    }
     let lead = "HQ retried this update under its own managed Node and the dependency build still failed. Because that retry already used a supported Node, installing a different Node version will not change the result.";
     let trimmed = raw_detail.trim();
     if trimmed.is_empty() {
@@ -2651,7 +2864,11 @@ async fn managed_toolchain_retry(
     // provenance-aware user-facing wording that never re-blames the user's own
     // runtime.
     let raw_detail = npm_output_detail(&retry_run.output);
-    let detail = managed_retry_failure_detail(retry_run.output.status.code(), &raw_detail);
+    let detail = managed_retry_failure_detail(
+        retry_run.output.status.code(),
+        &raw_detail,
+        Some(managed_prefix.as_str()),
+    );
     log(
         "hq-cli-update",
         &format!(
@@ -2659,12 +2876,16 @@ async fn managed_toolchain_retry(
             retry_run.output.status.code()
         ),
     );
-    let install_env = probe_install_environment(
+    let mut install_env = probe_install_environment(
         &managed_npm,
         &managed_path,
         /* managed_toolchain_retry */ true,
     )
     .await;
+    // Carry the managed retry's OWN mkdir diagnostic (HQ-DESKTOP-5K) onto this
+    // managed-provenance event too, so `npm_missing_target_state` is not lost when
+    // the managed attempt itself ran the mkdir rung and still failed.
+    install_env.missing_target_state = retry_run.missing_target_state;
     let reported_episode_keys = install_failure_episode_markers();
     persist_reported_episode(report_install_failure_episode(
         retry_run.output.status.code(),
@@ -3079,6 +3300,55 @@ mod tests {
     }
 
     #[test]
+    fn missing_global_install_target_arms_the_managed_retry_on_any_user_path_abi() {
+        // HQ-DESKTOP-5K: a missing npm global install-target directory is a broken
+        // PREFIX chain, not a runtime/prebuild fault, so `managed_toolchain_retry` —
+        // which installs into HQ's OWN managed prefix — repairs it EVEN at the
+        // identical managed ABI. So, unlike the lifecycle/unsupported-node shapes, it
+        // arms regardless of the failing ABI; its only runtime condition is UserPath.
+        for abi in [Some(MANAGED_NODE_ABI), Some(115), Some(127), None] {
+            assert!(
+                install_failure_earns_managed_retry(
+                    InstallFailureKind::MissingGlobalInstallTarget,
+                    NpmToolchainSource::UserPath,
+                    "unknown",
+                    abi,
+                ),
+                "missing-target under user-path must arm the managed retry at ABI {abi:?}"
+            );
+        }
+        // The `cause` argument is irrelevant for this shape (npm never ran a build),
+        // so even a disk-space/network cause still arms — those only gate the
+        // lifecycle shape.
+        for cause in ["", "disk-space", "network", "toolchain-missing"] {
+            assert!(install_failure_earns_managed_retry(
+                InstallFailureKind::MissingGlobalInstallTarget,
+                NpmToolchainSource::UserPath,
+                cause,
+                Some(MANAGED_NODE_ABI),
+            ));
+        }
+        // A managed or unknown SOURCE never arms — only the user's own toolchain is
+        // worth replacing.
+        for source in [NpmToolchainSource::Managed, NpmToolchainSource::Unknown] {
+            assert!(!install_failure_earns_managed_retry(
+                InstallFailureKind::MissingGlobalInstallTarget,
+                source,
+                "unknown",
+                Some(115),
+            ));
+        }
+        // Arming the new shape must NOT relax the lifecycle shape's ABI gate: a
+        // lifecycle failure already on HQ's managed ABI still does not arm.
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::UnexpectedLifecycle,
+            NpmToolchainSource::UserPath,
+            "unknown",
+            Some(MANAGED_NODE_ABI),
+        ));
+    }
+
+    #[test]
     fn managed_retry_argv_targets_the_managed_prefix_with_the_pinned_version() {
         // The retry rebuilds its argv against HQ's managed prefix and the SAME
         // pinned version — never the user's prefix, never a re-resolved @latest.
@@ -3338,7 +3608,7 @@ mod tests {
     #[test]
     fn managed_retry_failure_detail_is_provenance_aware_and_never_reblames_node() {
         let detail =
-            managed_retry_failure_detail(Some(1), "npm error code 1\ngyp ERR! build error");
+            managed_retry_failure_detail(Some(1), "npm error code 1\ngyp ERR! build error", None);
         let lower = detail.to_lowercase();
         // Provenance-aware: says HQ already retried under its managed Node.
         assert!(lower.contains("managed node"));
@@ -3353,11 +3623,24 @@ mod tests {
 
         // Empty raw output still yields provenance-aware, actionable copy with no
         // Node-version advice.
-        let empty = managed_retry_failure_detail(None, "   ");
+        let empty = managed_retry_failure_detail(None, "   ", None);
         let empty_lower = empty.to_lowercase();
         assert!(empty_lower.contains("managed node"));
         assert!(empty.contains("copied command"));
         assert!(!empty.contains("version 22"));
+
+        // A managed retry that ALSO hit a missing install target (HQ-DESKTOP-5K)
+        // gets the missing-folder copy, never the "a dependency build failed /
+        // changing Node won't help" wording.
+        let missing = managed_retry_failure_detail(
+            Some(-4058),
+            "npm error code ENOENT\nnpm error syscall mkdir\nnpm error path /managed/npm-global/lib/node_modules/@indigoai-us/hq-cli",
+            Some("/managed/npm-global"),
+        );
+        let missing_lower = missing.to_lowercase();
+        assert!(missing_lower.contains("install folder"));
+        assert!(!missing_lower.contains("dependency build"));
+        assert!(missing.contains("copied command"));
     }
 
     #[test]
@@ -4053,6 +4336,91 @@ exit 0
                 "C:/Users/mike/AppData/Local/IndigoHQ/toolchain/npm-prefix/node_modules/@indigoai-us"
             )
         );
+    }
+
+    #[test]
+    fn missing_install_target_scope_resolves_prefix_then_npm_path_and_fails_closed() {
+        // Prefix-known → the prefix-derived scope, for BOTH layouts, with the
+        // prefix-derived rung label. No filesystem access — pure resolution.
+        assert_eq!(
+            missing_install_target_scope(Some("/Users/me/.npm-global"), "", false),
+            Some((
+                PathBuf::from("/Users/me/.npm-global/lib/node_modules/@indigoai-us"),
+                "mkdir-plain"
+            ))
+        );
+        assert_eq!(
+            missing_install_target_scope(Some("C:/Users/me/AppData/Roaming/npm"), "", true),
+            Some((
+                PathBuf::from("C:/Users/me/AppData/Roaming/npm/node_modules/@indigoai-us"),
+                "mkdir-plain"
+            ))
+        );
+        // Prefix-less → recovered from the ABSOLUTE path npm itself named (case
+        // preserved, backslashes normalised), with the npm-path rung label.
+        let detail = "npm error code ENOENT\n\
+            npm error syscall mkdir\n\
+            npm error path C:\\Users\\U\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
+        assert_eq!(
+            missing_install_target_scope(None, detail, true),
+            Some((
+                PathBuf::from("C:/Users/U/AppData/Roaming/npm/node_modules/@indigoai-us"),
+                "mkdir-plain-npm-path"
+            ))
+        );
+        // Prefix-less AND ambiguous/relative/near-miss/marker-less → no scope, so the
+        // remedy performs no filesystem call at all and reports the failure as today.
+        for ambiguous in [
+            "npm error path relative/node_modules/@indigoai-us/hq-cli",
+            "npm error path /var/tmp/node_modules/@indigoai-usx/hq-cli",
+            "npm error code ENOENT\nnpm error syscall mkdir",
+            "totally unstructured failure",
+        ] {
+            assert_eq!(missing_install_target_scope(None, ambiguous, false), None);
+        }
+    }
+
+    #[test]
+    fn missing_target_state_from_existence_names_the_deepest_missing_ancestor() {
+        // Nothing in the probed chain missing → the create was a no-op; recorded as
+        // created-and-retried.
+        assert_eq!(
+            missing_target_state_from_existence(true, true, true),
+            MissingTargetState::CreatedAndRetried
+        );
+        // node_modules present, scope absent → scope-missing.
+        assert_eq!(
+            missing_target_state_from_existence(false, true, true),
+            MissingTargetState::ScopeMissing
+        );
+        // the level above node_modules present, node_modules absent → node-modules-missing.
+        assert_eq!(
+            missing_target_state_from_existence(false, false, true),
+            MissingTargetState::NodeModulesMissing
+        );
+        // even the top of the probed chain absent → prefix-root-missing.
+        assert_eq!(
+            missing_target_state_from_existence(false, false, false),
+            MissingTargetState::PrefixRootMissing
+        );
+    }
+
+    #[test]
+    fn create_missing_install_scope_creates_the_chain_and_reports_the_missing_ancestor() {
+        use std::fs;
+        let base = std::env::temp_dir().join(format!("hq-cli-mkdir-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        // Seed the prefix root plus its `lib` level, but NOT `node_modules`, so the
+        // remedy has a concrete missing ancestor to name.
+        fs::create_dir_all(base.join("lib")).unwrap();
+        let scope = partial_install_scope_dir_for(base.to_str().unwrap(), false);
+        assert!(!scope.exists());
+        let state = create_missing_install_scope(&scope);
+        // Creation only: the scope and every absent ancestor now exist...
+        assert!(scope.exists(), "the scope and its ancestors must be created");
+        // ...and the reported state names which ancestor was missing.
+        assert_eq!(state, MissingTargetState::NodeModulesMissing);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
