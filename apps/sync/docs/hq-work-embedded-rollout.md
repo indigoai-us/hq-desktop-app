@@ -9,13 +9,25 @@ This file is the source of truth for the combined-app rollout
 (launch HQ Work / co-install / card) is superseded and kept only because
 existing tests source-contract it.
 
-**Default is off.** Broader default-on is a config change, not a leap. Do not
-flip the compiled default until this doc's bake checklist is done.
+**Default is ON for `@getindigo.ai`, OFF for everyone else.** Going wider than
+the cohort is still a config change, not a leap — do not touch the compiled
+defaults until this doc's bake checklist is done.
 
 ONE flag only. JSON key `hqWorkHandoff` in `~/.hq/menubar.json`. Rust field
-`hq_work_handoff`. TS helper `hqWorkHandoffEnabled(flag)` is `flag === true`
-(null/undefined → false). Missing file, missing key, parse failure → false.
-No Settings toggle — do not add one. Do not invent a second flag.
+`hq_work_handoff`. No Settings toggle — do not add one. Do not invent a second
+flag.
+
+`config::get_hq_work_handoff` resolves
+`is_indigo_user() AND (choice defaulting to true)`, where "choice" is the
+tri-state `hq_work_handoff_choice`: missing file, missing key, and parse
+failure all mean *no explicit choice*, not an opt-out. An explicit `false` is
+the opt-out, and it is the only thing that turns the embed off for a cohort
+member.
+
+The bool readers (`hq_work_handoff_enabled`, `hq_work_handoff_from_json`,
+`hqWorkHandoffEnabled`) still collapse absent and false into `false`. They
+answer "is it explicitly enabled" for the retained two-app paths and cannot
+express the cohort default — do not route the boot decision through them.
 
 Flag on: the same desktop-alt window mounts `@hq/ui` DesktopApp via
 `HqWorkDesktopShell` + `createSyncPlatformAdapter` (US-103). Flag off:
@@ -42,7 +54,25 @@ that one command, so there is a single chokepoint. It reuses the same
 `is_indigo_user` the updater uses for pre-release channels; do not hand-roll a
 second domain check.
 
-Enable per machine (as an `@getindigo.ai` user):
+**The embed is ON by default for the cohort.** An `@getindigo.ai` user gets it
+with no setup: `hqWorkHandoff` absent means "no explicit choice", and that
+resolves to on inside the cohort. Everyone else is off no matter what the file
+says. Nothing to distribute, and no Terminal step for the alpha team — which
+was the practical problem with an opt-in that has no Settings toggle.
+
+To opt a machine back out (this is what Scenario 1 of the smoke checklist
+needs — for a cohort member, *absent* is now on, so the rollback scenario has
+to write an explicit `false`):
+
+```json
+{
+  "hqWorkHandoff": false
+}
+```
+
+Quit and relaunch after editing; the value is read at boot.
+
+Enable explicitly (redundant for the cohort, kept for completeness):
 
 1. Merge `{"hqWorkHandoff": true}` into `~/.hq/menubar.json` (do not
    overwrite other keys):
@@ -64,9 +94,13 @@ Enable per machine (as an `@getindigo.ai` user):
 Existing installs without the key keep the legacy shell. Tray popover,
 widget, and sync engine are unchanged.
 
-## Default stays false (do not flip in this release)
+## Default-off sites that are still default-off
 
-This embed reuses the same flag as the two-app doc. Copy-lockstep:
+The cohort default lives entirely in `get_hq_work_handoff` +
+`hq_work_handoff_visible`. Everything below is deliberately untouched, so
+non-cohort users and the retained two-app readers stay off. Flipping any of
+these would take the embed past the cohort — that is the bake step, not this
+one.
 
 | Site | Default-off |
 | --- | --- |

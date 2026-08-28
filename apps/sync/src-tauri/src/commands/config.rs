@@ -132,41 +132,73 @@ pub fn hq_work_handoff_from_json(contents: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Compose the on-disk flag with cohort membership.
+/// The user's explicit choice, or `None` when they have not made one.
 ///
-/// `~/.hq/menubar.json` is a plain user-writable file, so the flag on its own
-/// is an opt-in, never an authorisation. The embedded HQ Work window is alpha
-/// and stays inside the `@getindigo.ai` cohort until it graduates, so both
-/// have to be true. Pure so the composition is unit-testable without a
-/// Cognito fixture.
-pub fn hq_work_handoff_visible(flag: bool, is_indigo: bool) -> bool {
-    flag && is_indigo
+/// [`hq_work_handoff_from_json`] collapses "absent" and "explicitly false"
+/// into `false`, which is right for the two-app readers that still use it but
+/// cannot express default-on: the cohort default and an opt-out would be
+/// indistinguishable. Typed prefs first, untyped fallback second, so unrelated
+/// schema drift cannot hide the key. Unparseable input is "no choice", never a
+/// silent opt-out.
+pub fn hq_work_handoff_choice(contents: &str) -> Option<bool> {
+    if let Ok(prefs) = serde_json::from_str::<MenubarPrefs>(contents) {
+        if let Some(explicit) = prefs.hq_work_handoff {
+            return Some(explicit);
+        }
+    }
+    serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|v| v.get("hqWorkHandoff").and_then(|b| b.as_bool()))
 }
 
-/// Missing file or missing key = false. Parse failure is not a setup trigger.
+/// Compose the user's choice with cohort membership.
 ///
-/// Also false for anyone outside the `@getindigo.ai` cohort, whatever the file
-/// says. Every consumer of the flag — the desktop-alt boot in `main.ts`, the
+/// **On by default inside the `@getindigo.ai` cohort.** The embed is the
+/// product direction, and the alpha cohort should not have to hand-edit
+/// `~/.hq/menubar.json` to see it — there is deliberately no Settings toggle.
+///
+/// Outside the cohort it is off no matter what the file says. `menubar.json`
+/// is a plain user-writable file, so the key is a preference, never an
+/// authorisation: writing `"hqWorkHandoff": true` outside the cohort still
+/// gets nothing, and default-on does not leak past the cohort either.
+///
+/// An explicit `false` remains an opt-out for cohort members. Without that
+/// there would be no way back to the legacy window short of signing out, and
+/// the US-107 rollback scenario would have nothing to exercise.
+///
+/// Pure, so the composition is unit-testable without a Cognito fixture.
+pub fn hq_work_handoff_visible(choice: Option<bool>, is_indigo: bool) -> bool {
+    is_indigo && choice.unwrap_or(true)
+}
+
+/// On by default for `@getindigo.ai`; off for everyone else, whatever the
+/// file says. An explicit `false` opts a cohort member out.
+///
+/// A missing or unreadable `menubar.json` is "no explicit choice", not an
+/// opt-out — a fresh install by a cohort member gets the embed, same as an
+/// existing one that has never touched the key.
+///
+/// Every consumer of the flag — the desktop-alt boot in `main.ts`, the
 /// `hqwork://` internal route, and the retained two-app probe — reads it
-/// through this one command, so gating here covers all of them. Uses the same
+/// through this one command, so this is the whole policy. Uses the same
 /// `feature_gate` the updater's pre-release channels use, so "who is Indigo"
 /// has exactly one definition.
 #[tauri::command]
 pub async fn get_hq_work_handoff() -> Result<bool, String> {
     let path = paths::menubar_json_path()?;
-    if !path.exists() {
-        return Ok(false);
-    }
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Ok(false);
+    let choice = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| hq_work_handoff_choice(&contents))
+    } else {
+        None
     };
-    let flag = hq_work_handoff_from_json(&contents);
-    // Short-circuit: a user with the flag off costs no gate evaluation.
-    if !flag {
+    // Short-circuit an explicit opt-out: no gate evaluation, no token read.
+    if choice == Some(false) {
         return Ok(false);
     }
     Ok(hq_work_handoff_visible(
-        flag,
+        choice,
         hq_desktop_core::feature_gate::is_indigo_user().await,
     ))
 }
@@ -210,42 +242,68 @@ mod hq_work_handoff_tests {
     // canonical `is_allowed_email` helper, and the wiring of the real command
     // onto it is source-contracted in the US-108 story test.
 
-    fn visible_for(flag: bool, email: Option<&str>) -> bool {
+    fn visible_for(choice: Option<bool>, email: Option<&str>) -> bool {
         hq_work_handoff_visible(
-            flag,
+            choice,
             hq_desktop_core::feature_gate::is_allowed_email(email),
         )
     }
 
     #[test]
-    fn handoff_needs_both_the_flag_and_an_indigo_account() {
-        assert!(visible_for(true, Some("hassaan@getindigo.ai")));
-        assert!(visible_for(true, Some("HASSAAN@GETINDIGO.AI")));
+    fn handoff_is_on_for_indigo_accounts_by_default() {
+        // The cohort gets the embed without touching menubar.json — an
+        // explicit `true` and no key at all mean the same thing for them.
+        assert!(visible_for(None, Some("hassaan@getindigo.ai")));
+        assert!(visible_for(None, Some("HASSAAN@GETINDIGO.AI")));
+        assert!(visible_for(Some(true), Some("hassaan@getindigo.ai")));
     }
 
     #[test]
-    fn handoff_flag_alone_does_not_admit_a_non_indigo_account() {
-        // The exact escalation this gate exists to stop: a user outside the
-        // cohort writes `"hqWorkHandoff": true` into their own menubar.json.
-        assert!(!visible_for(true, Some("someone@gmail.com")));
-        assert!(!visible_for(true, Some("qa@example.com")));
-        // Signed out — no claim at all.
-        assert!(!visible_for(true, None));
-        assert!(!visible_for(true, Some("")));
+    fn explicit_false_still_opts_an_indigo_account_out() {
+        // Default-on must stay overridable, or there is no way back to the
+        // legacy window without signing out — and Scenario 4 of the US-107
+        // checklist (flag-off rollback) would have nothing to exercise.
+        assert!(!visible_for(Some(false), Some("hassaan@getindigo.ai")));
     }
 
     #[test]
-    fn handoff_rejects_look_alike_domains_even_with_the_flag_on() {
-        assert!(!visible_for(true, Some("attacker@forgetindigo.ai")));
-        assert!(!visible_for(true, Some("attacker@notgetindigo.ai")));
-        assert!(!visible_for(true, Some("getindigo.ai")));
+    fn handoff_never_admits_a_non_indigo_account() {
+        // The escalation this gate exists to stop: someone outside the cohort
+        // writes `"hqWorkHandoff": true` into their own menubar.json. Default-on
+        // must not leak past the cohort either, so absent is false for them too.
+        for email in [Some("someone@gmail.com"), Some("qa@example.com"), None, Some("")] {
+            assert!(!visible_for(Some(true), email), "explicit true: {email:?}");
+            assert!(!visible_for(None, email), "default: {email:?}");
+        }
     }
 
     #[test]
-    fn handoff_stays_off_for_indigo_accounts_until_the_flag_is_set() {
-        // Cohort membership must not silently enable the alpha; the flag is
-        // still the opt-in, and it still defaults off.
-        assert!(!visible_for(false, Some("hassaan@getindigo.ai")));
+    fn handoff_rejects_look_alike_domains() {
+        for email in [
+            Some("attacker@forgetindigo.ai"),
+            Some("attacker@notgetindigo.ai"),
+            Some("getindigo.ai"),
+        ] {
+            assert!(!visible_for(Some(true), email), "explicit true: {email:?}");
+            assert!(!visible_for(None, email), "default: {email:?}");
+        }
+    }
+
+    #[test]
+    fn choice_distinguishes_absent_from_explicit_false() {
+        // The whole default-on behaviour rests on telling these apart, which
+        // the bool-returning readers cannot do.
+        assert_eq!(hq_work_handoff_choice(r#"{"hqWorkHandoff":true}"#), Some(true));
+        assert_eq!(hq_work_handoff_choice(r#"{"hqWorkHandoff":false}"#), Some(false));
+        assert_eq!(hq_work_handoff_choice(r#"{"hqPath":"/tmp/HQ"}"#), None);
+        assert_eq!(hq_work_handoff_choice("{}"), None);
+        // Unparseable is "no explicit choice", never a silent opt-out.
+        assert_eq!(hq_work_handoff_choice("not-json"), None);
+        // Untyped fallback, so unrelated schema drift cannot hide the key.
+        assert_eq!(
+            hq_work_handoff_choice(r#"{"hqWorkHandoff":false,"unknownFuture":{"x":1}}"#),
+            Some(false)
+        );
     }
 
     #[test]

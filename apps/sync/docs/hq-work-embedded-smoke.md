@@ -15,7 +15,11 @@ Rollout, bake, rollback, updater budget:
 (not a live Mac): [hq-work-embedded-qa.md](hq-work-embedded-qa.md).
 
 macOS only. Tray popover, widget, and sync engine stay in Sync. No second
-app, no co-install, no account or data migration. Flag **defaults off**.
+app, no co-install, no account or data migration.
+
+The flag **defaults ON for `@getindigo.ai`** and off for everyone else. For an
+operator running this checklist that inverts Scenario 1: *absent* no longer
+means off, so the flag-off scenario must write an explicit `false`.
 
 Executed once on a real machine — see [Results](#results-live-machine).
 Re-record that section from scratch for any later run; it must always describe a
@@ -32,12 +36,13 @@ Flag (merge; do not overwrite other keys): `~/.hq/menubar.json`
 }
 ```
 
-**The flag is an opt-in, not an authorisation.** `~/.hq/menubar.json` is a
+**The key is a preference, not an authorisation.** `~/.hq/menubar.json` is a
 plain user-writable file, so `get_hq_work_handoff` resolves
-`flag AND feature_gate::is_indigo_user()` — the embedded window stays inside
-the `@getindigo.ai` cohort until it graduates, and hand-editing the file
-outside that cohort changes nothing. `set_hq_work_handoff(true)` refuses
-outright rather than writing a flag the reader would ignore. This is the same
+`is_indigo_user() AND (choice defaulting to true)`. Inside the
+`@getindigo.ai` cohort the embed is on unless the user writes an explicit
+`false`; outside it, the embed is off no matter what the file says, so writing
+`"hqWorkHandoff": true` there still gets nothing. `set_hq_work_handoff(true)`
+refuses outright rather than writing a key the reader would ignore. Same
 `is_indigo_user` gate the updater uses for pre-release channels, so "who is
 Indigo" has one definition.
 
@@ -125,19 +130,32 @@ Do not paste `~/.hq/cognito-tokens.json` into Results.
 
 Merge helper:
 
+Merge helper. Note it writes an explicit `false` rather than deleting the key:
+for an `@getindigo.ai` operator, deleting it means *default on*, so the old
+delete-to-disable helper would have silently made Scenario 1 test the wrong
+thing.
+
 ```bash
 python3 -c 'import json,sys; from pathlib import Path
-flag = sys.argv[1].lower()=="true"
 p = Path.home()/".hq"/"menubar.json"
 p.parent.mkdir(parents=True, exist_ok=True)
 data = json.loads(p.read_text()) if p.exists() else {}
-if flag:
-    data["hqWorkHandoff"] = True
-else:
-    data.pop("hqWorkHandoff", None)
+data["hqWorkHandoff"] = sys.argv[1].lower()=="true"
 p.write_text(json.dumps(data, indent=2)+"\n")
 print("hqWorkHandoff", data.get("hqWorkHandoff"))
 ' true
+```
+
+To clear the key entirely afterwards (back to the cohort default), remove it:
+
+```bash
+python3 -c 'import json; from pathlib import Path
+p = Path.home()/".hq"/"menubar.json"
+data = json.loads(p.read_text())
+data.pop("hqWorkHandoff", None)
+p.write_text(json.dumps(data, indent=2)+"\n")
+print("hqWorkHandoff", data.get("hqWorkHandoff"))
+'
 ```
 
 ---
@@ -149,7 +167,8 @@ No embed, no extra handoff probes.
 
 ### Steps
 
-1. Ensure `hqWorkHandoff` is absent or false. Quit HQ fully.
+1. Set `hqWorkHandoff` to an explicit `false` — for an `@getindigo.ai`
+   operator, absent now resolves to ON. Quit HQ fully.
 2. Launch the this-branch bundle. Wait until the tray icon is up.
 3. Open HQ (tray Open HQ / Opt+Shift+O).
 4. Confirm the **legacy** desktop-alt shell (projects / board / v4 chrome),
@@ -165,7 +184,11 @@ No embed, no extra handoff probes.
 
 - [x] Pass — Scenario 1: Cold start, flag off (legacy)
 
-**Operator notes:** Flag absent, `autoUpdate` false, fresh debug bundle
+**Operator notes:** *(Recorded before the embed became default-on for the
+cohort. At the time, "flag absent" was the off state; an operator repeating
+this scenario today must write an explicit `false` instead. The observed
+behaviour — legacy shell for the resolved-off case — is unchanged.)*
+Flag absent, `autoUpdate` false, fresh debug bundle
 (sha256 `df694705…`, 163,601,600 bytes, built 17:47 PKT). Binary sha re-checked
 25 s after `open` — unchanged, so no updater overwrite. `Opt+Shift+O` opened one
 `desktop-alt` window at 166,57 (1180x760). Legacy shell confirmed: HQ sidebar

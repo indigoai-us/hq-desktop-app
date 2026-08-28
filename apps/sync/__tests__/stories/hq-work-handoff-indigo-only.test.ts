@@ -45,13 +45,23 @@ describe('embedded HQ Work window is Indigo-only', () => {
     );
   });
 
-  it('composes with AND — cohort membership cannot be skipped', () => {
+  it('makes cohort membership a hard AND, with the choice defaulting on', () => {
     const body = config.slice(
       config.indexOf('pub fn hq_work_handoff_visible('),
-      config.indexOf('/// Missing file or missing key = false'),
+      config.indexOf('/// On by default for'),
     );
-    expect(body).toContain('flag && is_indigo');
+    // `is_indigo &&` first: default-on applies INSIDE the cohort only. An
+    // `||` here would hand the embed to everyone.
+    expect(body).toContain('is_indigo && choice.unwrap_or(true)');
     expect(body).not.toContain('||');
+  });
+
+  it('keeps an explicit opt-out for cohort members', () => {
+    // Default-on without a way back would leave no route to the legacy
+    // window short of signing out, and the US-107 rollback scenario would
+    // have nothing to exercise.
+    expect(config).toContain('choice == Some(false)');
+    expect(config).toContain('pub fn hq_work_handoff_choice(');
   });
 
   it('refuses to persist the flag for a non-Indigo account', () => {
