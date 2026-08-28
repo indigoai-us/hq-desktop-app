@@ -3143,7 +3143,11 @@ mod tests {
     /// inside `$HOME`, outside every managed root, that ships its own co-located
     /// npm — is aimed at IN PLACE, installing into the nvm prefix and running the
     /// nvm npm, so the copy the app executes is upgraded and resolution converges.
+    /// Scoped to unix because the live shape is a unix/nvm layout
+    /// (`<prefix>/bin/{hq,npm}`); Windows uses the flat `<prefix>\*.cmd` layout,
+    /// and its negative selector paths are covered by the sibling tests below.
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn the_install_targets_the_executed_copys_own_prefix_and_npm() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
