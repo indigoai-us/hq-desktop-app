@@ -29,7 +29,20 @@ No migration, no second sign-in, no token sharing.
 ## Alpha enable (`@getindigo.ai`)
 
 Internal team is the alpha cohort (`@getindigo.ai`). There is no Settings
-toggle for this flag — do not add one. Enable per machine:
+toggle for this flag — do not add one.
+
+The cohort is **enforced**, not conventional. `menubar.json` is user-writable,
+so the flag alone is an opt-in and never an authorisation:
+`config::get_hq_work_handoff` resolves
+`flag AND hq_desktop_core::feature_gate::is_indigo_user()`, and
+`set_hq_work_handoff(true)` refuses outside the cohort rather than persisting a
+flag the reader would ignore. Every consumer — desktop-alt boot, the
+`hqwork://` internal route, and the notification/DM intercepts — reads through
+that one command, so there is a single chokepoint. It reuses the same
+`is_indigo_user` the updater uses for pre-release channels; do not hand-roll a
+second domain check.
+
+Enable per machine (as an `@getindigo.ai` user):
 
 1. Merge `{"hqWorkHandoff": true}` into `~/.hq/menubar.json` (do not
    overwrite other keys):

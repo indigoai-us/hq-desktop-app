@@ -132,9 +132,27 @@ pub fn hq_work_handoff_from_json(contents: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Compose the on-disk flag with cohort membership.
+///
+/// `~/.hq/menubar.json` is a plain user-writable file, so the flag on its own
+/// is an opt-in, never an authorisation. The embedded HQ Work window is alpha
+/// and stays inside the `@getindigo.ai` cohort until it graduates, so both
+/// have to be true. Pure so the composition is unit-testable without a
+/// Cognito fixture.
+pub fn hq_work_handoff_visible(flag: bool, is_indigo: bool) -> bool {
+    flag && is_indigo
+}
+
 /// Missing file or missing key = false. Parse failure is not a setup trigger.
+///
+/// Also false for anyone outside the `@getindigo.ai` cohort, whatever the file
+/// says. Every consumer of the flag — the desktop-alt boot in `main.ts`, the
+/// `hqwork://` internal route, and the retained two-app probe — reads it
+/// through this one command, so gating here covers all of them. Uses the same
+/// `feature_gate` the updater's pre-release channels use, so "who is Indigo"
+/// has exactly one definition.
 #[tauri::command]
-pub fn get_hq_work_handoff() -> Result<bool, String> {
+pub async fn get_hq_work_handoff() -> Result<bool, String> {
     let path = paths::menubar_json_path()?;
     if !path.exists() {
         return Ok(false);
@@ -142,12 +160,27 @@ pub fn get_hq_work_handoff() -> Result<bool, String> {
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Ok(false);
     };
-    Ok(hq_work_handoff_from_json(&contents))
+    let flag = hq_work_handoff_from_json(&contents);
+    // Short-circuit: a user with the flag off costs no gate evaluation.
+    if !flag {
+        return Ok(false);
+    }
+    Ok(hq_work_handoff_visible(
+        flag,
+        hq_desktop_core::feature_gate::is_indigo_user().await,
+    ))
 }
 
 /// Persist the handoff flag via untyped merge so unrelated keys survive.
+///
+/// Refuses outside the cohort rather than writing a flag that
+/// [`get_hq_work_handoff`] would then ignore — a toggle that silently does
+/// nothing is worse than one that says why.
 #[tauri::command]
-pub fn set_hq_work_handoff(enabled: bool) -> Result<(), String> {
+pub async fn set_hq_work_handoff(enabled: bool) -> Result<(), String> {
+    if enabled && !hq_desktop_core::feature_gate::is_indigo_user().await {
+        return Err("The embedded HQ Work window is limited to @getindigo.ai accounts.".into());
+    }
     let path = paths::menubar_json_path()?;
     hq_desktop_core::first_run::merge_menubar_flags(
         &path,
@@ -163,6 +196,56 @@ mod hq_work_handoff_tests {
         let mut prefs: MenubarPrefs = serde_json::from_str("{}").unwrap();
         prefs.hq_work_handoff = flag;
         prefs
+    }
+
+    // ── Indigo-only cohort gate ────────────────────────────────────────────
+    //
+    // The embedded HQ Work window is alpha and must stay inside the
+    // @getindigo.ai cohort. The menubar.json flag alone is NOT sufficient:
+    // any user can hand-edit that file. The effective answer is
+    // `flag AND is_indigo_user()`, composed by `hq_work_handoff_visible`.
+    //
+    // The async gate itself needs a Cognito fixture, so — mirroring
+    // `feature_gate`'s own tests — the composition is proved here over the
+    // canonical `is_allowed_email` helper, and the wiring of the real command
+    // onto it is source-contracted in the US-108 story test.
+
+    fn visible_for(flag: bool, email: Option<&str>) -> bool {
+        hq_work_handoff_visible(
+            flag,
+            hq_desktop_core::feature_gate::is_allowed_email(email),
+        )
+    }
+
+    #[test]
+    fn handoff_needs_both_the_flag_and_an_indigo_account() {
+        assert!(visible_for(true, Some("hassaan@getindigo.ai")));
+        assert!(visible_for(true, Some("HASSAAN@GETINDIGO.AI")));
+    }
+
+    #[test]
+    fn handoff_flag_alone_does_not_admit_a_non_indigo_account() {
+        // The exact escalation this gate exists to stop: a user outside the
+        // cohort writes `"hqWorkHandoff": true` into their own menubar.json.
+        assert!(!visible_for(true, Some("someone@gmail.com")));
+        assert!(!visible_for(true, Some("qa@example.com")));
+        // Signed out — no claim at all.
+        assert!(!visible_for(true, None));
+        assert!(!visible_for(true, Some("")));
+    }
+
+    #[test]
+    fn handoff_rejects_look_alike_domains_even_with_the_flag_on() {
+        assert!(!visible_for(true, Some("attacker@forgetindigo.ai")));
+        assert!(!visible_for(true, Some("attacker@notgetindigo.ai")));
+        assert!(!visible_for(true, Some("getindigo.ai")));
+    }
+
+    #[test]
+    fn handoff_stays_off_for_indigo_accounts_until_the_flag_is_set() {
+        // Cohort membership must not silently enable the alpha; the flag is
+        // still the opt-in, and it still defaults off.
+        assert!(!visible_for(false, Some("hassaan@getindigo.ai")));
     }
 
     #[test]

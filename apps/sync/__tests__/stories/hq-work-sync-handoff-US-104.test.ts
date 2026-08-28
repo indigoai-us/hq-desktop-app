@@ -160,11 +160,11 @@ describe('US-104 internal notification + deep-link routing', () => {
   it('flag-on intercepts open this window, never launch_hq_work', () => {
     const hq = readRepo('src-tauri/src/commands/hq_work.rs');
     const conversation = hq.slice(
-      hq.indexOf('pub fn maybe_intercept_conversation_open'),
-      hq.indexOf('pub fn maybe_intercept_dm_open'),
+      hq.indexOf('fn maybe_intercept_conversation_open'),
+      hq.indexOf('fn maybe_intercept_dm_open'),
     );
     const dm = hq.slice(
-      hq.indexOf('pub fn maybe_intercept_dm_open'),
+      hq.indexOf('fn maybe_intercept_dm_open'),
       hq.indexOf('fn hide_compact_popover'),
     );
     expect(conversation).toContain('spawn_embedded_desktop_open');

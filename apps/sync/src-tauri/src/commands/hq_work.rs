@@ -496,7 +496,9 @@ pub async fn open_hqwork_deep_link(app: AppHandle, url: String) -> Result<(), St
         return Ok(());
     };
     if !should_route_notification_to_embedded(
-        crate::commands::config::get_hq_work_handoff().unwrap_or(false),
+        crate::commands::config::get_hq_work_handoff()
+            .await
+            .unwrap_or(false),
     ) {
         crate::util::logfile::log("hq-work", "ignoring hqwork URL while handoff flag is off");
         return Ok(());
@@ -636,8 +638,10 @@ pub fn mark_hq_work_handoff_card_shown() -> Result<(), String> {
 }
 
 #[allow(dead_code)] // retained two-app probe; live intercept must not call this (finding-6)
-fn handoff_inputs() -> (bool, bool, bool) {
-    let enabled = crate::commands::config::get_hq_work_handoff().unwrap_or(false);
+async fn handoff_inputs() -> (bool, bool, bool) {
+    let enabled = crate::commands::config::get_hq_work_handoff()
+        .await
+        .unwrap_or(false);
     let installed = hq_work_installed();
     let shown = get_hq_work_handoff_card_shown().unwrap_or(false);
     // Once per intercept (user action), not on cache hits / app-activate.
@@ -704,13 +708,15 @@ pub fn maybe_intercept_desktop_alt_handoff(
 /// Intercept `open_communications_window` when the handoff flag is on.
 /// US-104: open THIS desktop-alt window on the validated conversation route.
 /// Never launch HQ Work. Flag-off keeps the compact communications window.
-pub fn maybe_intercept_conversation_open(
+pub async fn maybe_intercept_conversation_open(
     app: &AppHandle,
     channel_id: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
     if !should_route_notification_to_embedded(
-        crate::commands::config::get_hq_work_handoff().unwrap_or(false),
+        crate::commands::config::get_hq_work_handoff()
+            .await
+            .unwrap_or(false),
     ) {
         return Ok(false);
     }
@@ -723,13 +729,15 @@ pub fn maybe_intercept_conversation_open(
 /// Intercept `open_dm_detail` when the handoff flag is on.
 /// US-104: open THIS desktop-alt window on the validated person route.
 /// Never launch HQ Work. Flag-off keeps the compact DM window.
-pub fn maybe_intercept_dm_open(
+pub async fn maybe_intercept_dm_open(
     app: &AppHandle,
     person_uid: Option<&str>,
     reply: Option<&str>,
 ) -> Result<bool, String> {
     if !should_route_notification_to_embedded(
-        crate::commands::config::get_hq_work_handoff().unwrap_or(false),
+        crate::commands::config::get_hq_work_handoff()
+            .await
+            .unwrap_or(false),
     ) {
         return Ok(false);
     }

@@ -2961,7 +2961,7 @@ pub async fn open_communications_window(
     let channel_id = channel.as_ref().map(|c| c.channel_id.as_str());
     // US-104: flag-on steals this compact window into the embedded desktop
     // (validated channel/reply tokens → pending-open). Flag-off is unchanged.
-    if crate::commands::hq_work::maybe_intercept_conversation_open(&app, channel_id, None)? {
+    if crate::commands::hq_work::maybe_intercept_conversation_open(&app, channel_id, None).await? {
         return Ok(());
     }
 
@@ -2999,7 +2999,7 @@ pub async fn open_communications_window(
 pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String> {
     let person = event.from_person_uid.as_str();
     // US-104: flag-on opens the embedded desktop on this person; never launch_hq_work.
-    if crate::commands::hq_work::maybe_intercept_dm_open(&app, Some(person), None)? {
+    if crate::commands::hq_work::maybe_intercept_dm_open(&app, Some(person), None).await? {
         return Ok(());
     }
 

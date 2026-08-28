@@ -196,7 +196,7 @@ pub async fn open_messages_window(
         .as_ref()
         .map(|t| t.person_uid.as_str())
         .filter(|s| !s.is_empty());
-    if crate::commands::hq_work::maybe_intercept_dm_open(&app, person, None)? {
+    if crate::commands::hq_work::maybe_intercept_dm_open(&app, person, None).await? {
         return Ok(());
     }
     if let Some(ref t) = target {

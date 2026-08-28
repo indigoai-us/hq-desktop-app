@@ -55,11 +55,11 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
     });
 
     it('get_hq_work_handoff missing file is Ok(false)', () => {
-      const idx = config.indexOf('pub fn get_hq_work_handoff');
+      const idx = config.indexOf('fn get_hq_work_handoff');
       expect(idx).toBeGreaterThan(-1);
       const body = config.slice(
         idx,
-        config.indexOf('pub fn set_hq_work_handoff', idx),
+        config.indexOf('fn set_hq_work_handoff', idx),
       );
       expect(body).toContain('if !path.exists()');
       expect(body).toContain('return Ok(false)');

@@ -32,6 +32,20 @@ Flag (merge; do not overwrite other keys): `~/.hq/menubar.json`
 }
 ```
 
+**The flag is an opt-in, not an authorisation.** `~/.hq/menubar.json` is a
+plain user-writable file, so `get_hq_work_handoff` resolves
+`flag AND feature_gate::is_indigo_user()` — the embedded window stays inside
+the `@getindigo.ai` cohort until it graduates, and hand-editing the file
+outside that cohort changes nothing. `set_hq_work_handoff(true)` refuses
+outright rather than writing a flag the reader would ignore. This is the same
+`is_indigo_user` gate the updater uses for pre-release channels, so "who is
+Indigo" has one definition.
+
+Practical consequence for this checklist: **run it signed in as
+`@getindigo.ai`**. Signed in as anyone else, every scenario below correctly
+shows the legacy shell, and Scenario 2 will look like a failure when it is the
+gate doing its job.
+
 Same write path as `set_hq_work_handoff(true)`. Inspect without dumping
 secrets:
 
