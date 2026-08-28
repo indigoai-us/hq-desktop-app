@@ -539,6 +539,7 @@ fn main() {
             commands::lifecycle::get_setup_status,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
+            commands::session_end_latch::session_end_latch_status,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
             commands::workspaces::claim_pending_company_invite,
@@ -833,10 +834,18 @@ fn main() {
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
             #[cfg(target_os = "windows")]
             {
+                // Prime the durable session-end latch's monotonic origin before
+                // any write can land inside a window procedure, and give the
+                // tracker the production sink so a committed WM_ENDSESSION / WTS
+                // logoff is made durable (HQ-DESKTOP r3).
+                commands::session_end_latch::init();
                 let tracker = std::sync::Arc::new(
-                    commands::session_end_observer::SessionEndTracker::new(std::sync::Arc::new(
-                        commands::session_end_observer::ProcessStartClock::new(),
-                    )),
+                    commands::session_end_observer::SessionEndTracker::with_latch(
+                        std::sync::Arc::new(
+                            commands::session_end_observer::ProcessStartClock::new(),
+                        ),
+                        std::sync::Arc::new(commands::session_end_latch::GlobalSessionEndLatch),
+                    ),
                 );
                 app.manage(commands::session_end_observer::SessionEndObserverHandle::start(
                     tracker,
@@ -1274,6 +1283,20 @@ fn main() {
                     || {
                         use commands::session_end_observer::SessionEndObserverHandle;
                         use hq_desktop_core::sync_outcome::WindowsTerminatorAttribution;
+
+                        // FIRST, before anything else in the session-end teardown:
+                        // reaching this arm is unambiguous OS evidence that the
+                        // session is ending (tao raises `RunEvent::Exit` without a
+                        // preceding `ExitRequested` only on `WM_ENDSESSION`). Make
+                        // that durable in the process-global latch BEFORE the
+                        // one-shot `drop_pending_session_end_captures` sweep runs,
+                        // so a watcher capture built microseconds later — after the
+                        // sweep, during its own grace — still sees positive
+                        // evidence at resolution and suppresses (HQ-DESKTOP r3).
+                        // Bounded, allocation-free and panic-free: one monotonic
+                        // read and one atomic store, safe inside this window
+                        // procedure.
+                        commands::session_end_latch::note_windows_session_end();
 
                         hq_telemetry::record_native_panic_seam(
                             hq_telemetry::NativePanicSeam::AppSessionEndExit,

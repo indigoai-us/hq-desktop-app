@@ -9,15 +9,23 @@
  * default @password:filter scrubber because the app spelled its own token
  * `auth`.
  *
+ * HQ-DESKTOP-5H later showed the SAME both-seams invariant had a hole: the
+ * content-safe unmatched-stderr structural rollup (runner_unmatched_stderr_shapes)
+ * was wired ONLY on the watcher route, so a manual-route runner that exited
+ * non-zero after emitting one unrecognised plain-stderr line and no ndjson error
+ * records reached Sentry with every attribution axis empty. This spec now also
+ * pins that axis at BOTH seams.
+ *
  * The Rust suites pin the seam from the inside (crates/hq-desktop-core,
- * crates/hq-telemetry, and a real-child artifact test in commands::sync that
- * drives the production capture path end to end). This spec pins the same
- * property at the *source-contract* level, following the fixture-backed pattern
- * of watcher-stall-teardown-attribution.spec.ts: the additive attribution must
- * be wired at BOTH capture seams from the one shared hq-desktop-core source, and
- * the breadcrumb renderer must not emit a denylist-colliding token. Every
- * assertion slices the exact function that ships, so deleting or relocating an
- * emission fails here — the guard is not vacuous.
+ * crates/hq-telemetry, and real-child artifact tests in commands::sync that
+ * drive the production capture path end to end — including the exact
+ * 16-stdout/1-unrecognised-stderr/exit-1 shape of the reported event). This spec
+ * pins the same properties at the *source-contract* level, following the
+ * fixture-backed pattern of watcher-stall-teardown-attribution.spec.ts: the
+ * additive attribution must be wired at BOTH capture seams from the one shared
+ * hq-desktop-core source, and the breadcrumb renderer must not emit a
+ * denylist-colliding token. Every assertion slices the exact function that ships,
+ * so deleting or relocating an emission fails here — the guard is not vacuous.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -94,16 +102,125 @@ describe('manual runner-exit attribution — shared classifier source', () => {
     const causeTokens = sliceBetween(
       shapeSource,
       'Self::EntityNotFound => "entity_not_found",',
-      'Self::Unknown => "unknown",',
+      'Self::UnknownUnnamed => "unknown_unnamed",',
       'RunnerErrorCause tokens',
     );
     for (const denied of DENYLIST) {
       expect(httpTokens).not.toMatch(new RegExp(`"[^"]*${denied}[^"]*"`));
       expect(causeTokens).not.toMatch(new RegExp(`"[^"]*${denied}[^"]*"`));
     }
-    // The identity-adjacent causes use the safe spelling, never *_token/*_auth.
+    // The identity-adjacent causes use the safe spelling, never *_token/*_auth —
+    // including the Cognito identities, spelled cognito_identity, never *_auth.
     expect(causeTokens).toContain('"expired_identity"');
     expect(causeTokens).toContain('"vault_identity"');
+    expect(causeTokens).toContain('"cognito_identity"');
+    expect(causeTokens).toContain('"cognito_identity_refresh"');
+  });
+
+  it('completes the cause vocabulary against the real identity set and pins it', () => {
+    // The reopen: the vocabulary now covers hq-cloud's REAL identity set, not the
+    // 16-name sample — the Vault*/StateStore*/Cursor/BaseVersion families the
+    // prior fix collapsed to `unknown` are now named tokens.
+    for (const token of [
+      'vault_not_found',
+      'vault_permission_denied',
+      'state_store_corruption',
+      'cursor_retired',
+      'base_version_unavailable',
+      'rate_limited',
+      'source_not_found',
+    ]) {
+      expect(shapeSource).toContain(`"${token}"`);
+    }
+    // The flat residual is split so a future unlisted identity stays describable,
+    // and only the named side is correlatable by signature.
+    expect(shapeSource).toContain('"unknown_named"');
+    expect(shapeSource).toContain('"unknown_unnamed"');
+    expect(shapeSource).toContain('pub fn runner_error_cause_signature(');
+    expect(shapeSource).toContain('pub struct RunnerErrorCauseSignatureRollup');
+    // The staleness pin: the vocabulary source version is asserted equal to the
+    // runner pin, so bumping the runner without re-deriving fails the build.
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION');
+    expect(shapeSource).toContain('crate::hq_cloud::HQ_CLOUD_VERSION');
+  });
+
+  it('re-pins the built-in JS + errno cause families, the errno classes, and the compile-time drift guard (r2)', () => {
+    // The regression reopen (HQ-DESKTOP-4T r2): the production recurrence decoded
+    // to a JavaScript RangeError, and per-file faults carried Node errno codes the
+    // vocabulary did not know. Both families are now named.
+
+    // (1) The ECMAScript/Node built-in identity family — emitted tokens and their
+    // producer-name mappings. RangeError is the decoded recurrence.
+    for (const [name, token] of [
+      ['RangeError', 'range_error'],
+      ['TypeError', 'type_error'],
+      ['SyntaxError', 'syntax_error'],
+      ['ReferenceError', 'reference_error'],
+      ['EvalError', 'eval_error'],
+      ['URIError', 'uri_error'],
+      ['AggregateError', 'aggregate_error'],
+      ['AbortError', 'abort_error'],
+      ['SystemError', 'system_error'],
+    ]) {
+      expect(shapeSource).toContain(`"${token}"`);
+      expect(shapeSource).toContain(`"${name}" => RunnerErrorCause::`);
+    }
+
+    // (2) The closed Node/libuv errno vocabulary, read from a `code=` value or a
+    // leading bare `ERRNO:` token — including the four the class axis knows so the
+    // cause and class axes agree on the same message.
+    for (const [code, token] of [
+      ['ENOENT', 'enoent'],
+      ['EEXIST', 'eexist'],
+      ['ENOTEMPTY', 'enotempty'],
+      ['EXDEV', 'exdev'],
+      ['ETIMEDOUT', 'etimedout'],
+      ['ECONNRESET', 'econnreset'],
+      ['EAI_AGAIN', 'eai_again'],
+      ['EPERM', 'eperm'],
+      ['EACCES', 'eacces'],
+      ['ENOSPC', 'enospc'],
+      ['EBUSY', 'ebusy'],
+      // Errnos the crate already handles on other axes (ENETDOWN via the
+      // transient-network class, EINVAL in the runner-error tests) — named on the
+      // cause axis so it is not blank for inputs the app explicitly handles.
+      ['ENETDOWN', 'enetdown'],
+      ['EINVAL', 'einval'],
+    ]) {
+      expect(shapeSource).toContain(`"${token}"`);
+      expect(shapeSource).toContain(`"${code}" => RunnerErrorCause::`);
+    }
+
+    // (3) The one hq-cloud identity the ~6.15.79 pin added.
+    expect(shapeSource).toContain('"child_process_sync_worker"');
+    expect(shapeSource).toContain(
+      '"ChildProcessSyncWorkerError" => RunnerErrorCause::ChildProcessSyncWorker',
+    );
+
+    // (4) The pin now matches the runner floor, AND the guard fires at COMPILE
+    // time (a const assertion, not only a #[test]) so a pin bump on ANY branch —
+    // including one cut before the guard existed, the PR #533 defect — fails the
+    // build instead of silently merging a mismatch.
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.79"');
+    expect(shapeSource).toMatch(/const _: \(\) = assert!\(\s*const_str_eq\(/);
+
+    // (5) The new filesystem errno CLASSES (sync_outcome), added as new variants so
+    // a rename fault reports a real class instead of OTHER while the op axis keeps
+    // reporting rename. Pre-existing class tokens stay byte-identical (pinned below).
+    for (const [variant, tag] of [
+      ['Enoent', 'ENOENT'],
+      ['Eexist', 'EEXIST'],
+      ['Enotempty', 'ENOTEMPTY'],
+      ['Exdev', 'EXDEV'],
+    ]) {
+      expect(coreSource).toContain(`Self::${variant} => "${tag}"`);
+    }
+
+    // (6) The egress mirror (hq-telemetry) accepts the new cause tokens and the new
+    // class breadcrumb tokens, so nothing the producer now emits is [Filtered].
+    expect(telemetrySource).toContain('"range_error"');
+    expect(telemetrySource).toContain('"enoent"');
+    expect(telemetrySource).toContain('"child_process_sync_worker"');
   });
 });
 
@@ -122,11 +239,13 @@ describe('manual runner-exit attribution — manual capture seam (commands::sync
     expect(telemetryContext).toContain('"runner_error_path_roots"');
   });
 
-  it('emits the HTTP-status and cause rollups from the shared RunTotals source', () => {
+  it('emits the HTTP-status, cause, and cause-signature rollups from the shared source', () => {
     expect(telemetryContext).toContain('totals.runner_error_http.tag_value()');
     expect(telemetryContext).toContain('"runner_error_http"');
     expect(telemetryContext).toContain('totals.runner_error_causes.tag_value()');
     expect(telemetryContext).toContain('"runner_error_causes"');
+    expect(telemetryContext).toContain('totals.runner_error_cause_signature.tag_value()');
+    expect(telemetryContext).toContain('"runner_error_cause_signature"');
   });
 
   it('attaches runner provenance so the npx-resolved runner is identifiable', () => {
@@ -143,6 +262,28 @@ describe('manual runner-exit attribution — manual capture seam (commands::sync
     expect(telemetryContext).toContain('context.stderr_line_count');
     expect(telemetryContext).toContain('totals.runner_error_scope()');
     expect(telemetryContext).toContain('"runner_error_scope"');
+  });
+
+  it('records the unmatched-stderr rollup on every line and attaches it at the manual seam', () => {
+    // HQ-DESKTOP-5H: a manual-route non-zero exit whose only evidence was one
+    // unrecognised stderr line reached Sentry with this axis empty, because the
+    // rollup was wired ONLY on the watcher route. The manual run loop must now feed
+    // the shared hq-desktop-core recorder on every stderr line and carry the
+    // rendered value onto the exit context, and the capture builder must push the
+    // tag — exactly as the watcher route does. Deleting any leg fails here.
+    const runLoop = sliceBetween(
+      syncSource,
+      'let mut runner_stderr_sequence = 0_u32;',
+      'apply_runner_exit_disposition(',
+      'manual run loop',
+    );
+    expect(runLoop).toContain('UnmatchedStderrShapeRollup::default()');
+    expect(runLoop).toContain('runner_unmatched_stderr.record_if_unmatched(&line)');
+    expect(runLoop).toContain('exit_context.runner_unmatched_stderr_shapes');
+    expect(runLoop).toContain('runner_unmatched_stderr.tag_value()');
+    // The capture builder pushes the tag from the rendered value, absent-safe.
+    expect(telemetryContext).toContain('context.runner_unmatched_stderr_shapes');
+    expect(telemetryContext).toContain('"runner_unmatched_stderr_shapes"');
   });
 
   it('renders the breadcrumb class through the denylist-safe single source', () => {
@@ -211,6 +352,11 @@ describe('manual runner-exit attribution — content-safe allowlist (hq-telemetr
     );
     expect(telemetrySource).toContain('RUNNER_ERROR_SHAPE_TOKENS');
     expect(telemetrySource).toContain('RUNNER_ERROR_PATH_ROOT_TOKENS');
+    // The cause-signature axis has its own egress arm: only a bare hex12:count
+    // entry survives, so a producer bug degrades to [Filtered].
+    expect(telemetrySource).toContain(
+      '"runner_error_cause_signature" => Some(is_runner_error_cause_signature_rollup(',
+    );
   });
 });
 
@@ -226,11 +372,12 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     expect(captureContext).toContain('totals.runner_error_path_roots.tag_value()');
     expect(captureContext).toContain('totals.runner_error_http.tag_value()');
     expect(captureContext).toContain('totals.runner_error_causes.tag_value()');
+    expect(captureContext).toContain('totals.runner_error_cause_signature.tag_value()');
     expect(captureContext).toContain('totals.runner_error_scope()');
     expect(captureContext).toContain('classify_runner_stack_input(stderr_tail)');
   });
 
-  it('emits the shape, path-root, HTTP-status, and cause tags alongside the class/op rollups', () => {
+  it('emits the shape, path-root, HTTP, cause, and cause-signature tags alongside class/op', () => {
     const tagAssembly = sliceBetween(
       daemonSource,
       'if let Some(rollup) = &context.runner_error_rollup {',
@@ -241,6 +388,7 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     expect(tagAssembly).toContain('"runner_error_path_roots"');
     expect(tagAssembly).toContain('"runner_error_http"');
     expect(tagAssembly).toContain('"runner_error_causes"');
+    expect(tagAssembly).toContain('"runner_error_cause_signature"');
   });
 
   it('emits the stack-input and scope extras', () => {
@@ -252,5 +400,26 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     );
     expect(extras).toContain('"runner_stack_input"');
     expect(extras).toContain('"runner_error_scope"');
+  });
+
+  it('records and attaches the SAME unmatched-stderr axis, so both seams carry it', () => {
+    // Both-seams invariant for the unmatched-stderr axis (HQ-DESKTOP-5H): the
+    // watcher route feeds the same shared recorder and pushes the same tag, so an
+    // unrecognised-line exit is attributed identically on both seams. This is the
+    // axis the manual seam was missing; pinning it here proves the parity holds
+    // from the one shared hq-desktop-core source, not two hand-rolled copies.
+    expect(daemonSource).toContain('.record_if_unmatched(&line)');
+    expect(daemonSource).toContain(
+      'exit_context.runner_unmatched_stderr_shapes = process_unmatched_stderr',
+    );
+    const watcherUnmatchedPush = sliceBetween(
+      daemonSource,
+      'if let Some(shapes) = &context.runner_unmatched_stderr_shapes {',
+      'if let (Some(code), Some(termination))',
+      'watcher unmatched-stderr push',
+    );
+    expect(watcherUnmatchedPush).toContain(
+      'tags.push(("runner_unmatched_stderr_shapes", shapes.clone()))',
+    );
   });
 });

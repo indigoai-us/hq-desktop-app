@@ -131,10 +131,35 @@ policy above cannot catch that, because such a tag is legitimately contained
 in `main`.
 
 The `validate` job therefore inspects the tag's own tree and fails the release
-if `apps/sync/src/desktop-alt/chat/` exists, or if the v1 sidebars
-(`v4/V4Sidebar.svelte`, `v4/V4SecondarySidebar.svelte`) are absent. If you are
-deliberately shipping a new desktop shell from this repo, update that step and
+if `apps/sync/src/desktop-alt/chat/` exists, or if any path listed in
+`scripts/release-required-surfaces.txt` is absent. If you are deliberately
+shipping a new desktop shell from this repo, update that step and
 `scripts/release-workflow.test.ts` in the same change — do not bypass it.
+
+### The required-surfaces manifest
+
+Checking only for the presence of the v1 sidebars proved too narrow. The
+revert that removed the V2 shell (#454) reset the whole
+`apps/sync/src/desktop-alt` tree to its v0.10.109 shape and silently took the
+"Finish setting up HQ" card (#432) with it. Nothing failed — a whole-tree
+revert deletes a surface's tests along with the surface, so the suite stayed
+green — and unfinished installs rendered a blank Home in every release from
+v0.10.114 to v0.10.150 before anyone noticed (#525).
+
+`scripts/release-required-surfaces.txt` is the fix: one repo-relative path per
+line, `#` comments allowed. The release guard asserts every entry exists in
+the tag's tree, and `scripts/release-workflow.test.ts` asserts every entry
+exists in the working tree — so a stale line fails in an ordinary PR run
+rather than at release time.
+
+**Add a line when you ship a surface that would be silently lost if someone
+reset its directory to an older tree.** Removing a surface on purpose means
+deleting its line in the same change; that keeps the removal a visible
+decision instead of a quiet regression.
+
+The guard fails closed when the manifest itself is missing. A `workflow_dispatch`
+retry of a tag cut before the manifest landed will therefore fail — cut a fresh
+tag rather than working around the check.
 
 Unlike the branch policy, this guard also applies to `workflow_dispatch`
 retries: a retry re-publishes that tag's artifacts to stable, so retrying any

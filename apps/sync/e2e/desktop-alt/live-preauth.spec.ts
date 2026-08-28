@@ -144,6 +144,19 @@ describe('desktop-alt live pre-auth smoke (Windows)', () => {
     expect(status, `teardown probe reported ${status} on a healthy runner`).toBe('no');
   });
 
+  it('reports the durable session-end latch as unset on a healthy runner (HQ-DESKTOP r3)', async () => {
+    // The r3 durable latch is written ONLY from positive OS session-end evidence
+    // (a committed WM_ENDSESSION / WTS logoff, or the app's own session-end exit
+    // branch). On a healthy runner where no session end was delivered, the real
+    // built binary must report the latch as NOT set — proving the read-only
+    // surface is wired into the shipped invoke handler and that nothing short of
+    // a real session end can make it read `latched`. The value is always one of
+    // the three fixed, content-safe tokens.
+    const status = await app.invokeCommand<string>('session_end_latch_status');
+    expect(['latched', 'absent', 'unavailable'], `latch reported ${status}`).toContain(status);
+    expect(status, `latch reported ${status} without a session end`).not.toBe('latched');
+  });
+
   it('refuses to open the desktop window for a signed-out user', async () => {
     // `desktop_alt_enabled` is what App.svelte, the tray and the notification
     // deep-links consult before offering the surface at all.

@@ -89,7 +89,8 @@ pub use hq_desktop_core::hq_cli_update::{
     is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
     non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
-    non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
+    managed_retry_start_decision, non_convergent_episode_reported, npm_install_attempt_summary,
+    npm_lifecycle_cause,
     npm_prefix_from_hq_bin, partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path,
     pnpm_global_env,
     pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
@@ -101,7 +102,8 @@ pub use hq_desktop_core::hq_cli_update::{
     should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
-    LocalVersionProbeResult, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
+    LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
+    ManagedShadowRepairAction, ManagedShadowRepairOutcome,
     NonConvergenceKind, NonConvergentReport, NpmLatest,
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
@@ -782,6 +784,15 @@ async fn probe_install_environment(
         npm_version,
         toolchain_source: npm_toolchain_source(npm),
         managed_toolchain_retry,
+        // A probe with `managed_toolchain_retry` set is, by construction, a retry
+        // that RAN under HQ's managed toolchain, so it carries `Ran`. A user-path
+        // probe starts `NotArmed`; the caller overrides it with the declined branch
+        // when a self-heal was armed but did not run.
+        managed_retry_outcome: if managed_toolchain_retry {
+            ManagedRetryOutcome::Ran
+        } else {
+            ManagedRetryOutcome::NotArmed
+        },
     }
 }
 
@@ -1569,7 +1580,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // is what lets an unsupported-runtime failure be told apart from a generic
         // one. `false`: this describes the user's own toolchain, never HQ's managed
         // retry.
-        let install_env =
+        let mut install_env =
             probe_install_environment(&npm, &path, /* managed_toolchain_retry */ false).await;
         let failing_node_abi = install_env
             .node_abi
@@ -1622,17 +1633,20 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 // Converged under HQ's managed toolchain — the normal cleared /
                 // convergence path already ran inside the finalize step. Emit NO
                 // install-failure event; the self-heal worked.
-                Some(Ok(info)) => return Ok(info),
+                ManagedRetryAttempt::Converged(info) => return Ok(info),
                 // The retry ran but did not converge (npm failed under the managed
                 // toolchain, or exited 0 into an unreachable prefix). It already
                 // reported exactly once — with managed provenance for a failure,
                 // or as non-convergence for a shadowed exit-0 — so surface its
                 // detail without a second capture.
-                Some(Err(detail)) => return Err(detail),
-                // No retry happened (repair on cooldown, provisioning failed, or
-                // the managed toolchain could not be resolved). Fall through and
-                // report the ORIGINAL user-path failure exactly as today.
-                None => {}
+                ManagedRetryAttempt::RanAndReported(detail) => return Err(detail),
+                // The retry did not run. Record WHICH branch declined on the
+                // user-path event so the next occurrence is self-diagnosing (the
+                // HQ-DESKTOP-5E evidence gap), then fall through and report the
+                // ORIGINAL user-path failure.
+                ManagedRetryAttempt::Declined(outcome) => {
+                    install_env.managed_retry_outcome = outcome;
+                }
             }
         }
 
@@ -2185,7 +2199,16 @@ fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
         "npm"
     };
     let managed_npm = bin_dir.join(npm_name);
-    if !managed_npm.exists() {
+    // A usable managed toolchain needs BOTH the managed npm AND the managed Node it
+    // must run under — not npm alone. An incomplete provision can leave npm behind
+    // without node (e.g. a Failed fresh provision that got partway), and the managed
+    // PATH puts this bin dir FIRST but then falls through to the user's Node: running
+    // that npm would build native dependencies for the USER's ABI inside the managed
+    // prefix, pass convergence under the user's Node, and persist the managed prefix
+    // to the shell — only to break once the managed Node is later repaired to a
+    // different ABI. Require the node executable too, so a "managed" retry is always
+    // genuinely managed (HQ-DESKTOP-5E review follow-up).
+    if !managed_npm.exists() || !node_exe.exists() {
         return None;
     }
     let sep = if cfg!(target_os = "windows") {
@@ -2384,19 +2407,26 @@ fn configure_managed_shell_path(app: &AppHandle, managed_prefix: &str) {
     }
 }
 
+/// The disposition of a single, bounded managed-toolchain self-heal attempt,
+/// communicated back to the caller so the reported user-path failure can name why
+/// the retry did or did not run (HQ-DESKTOP-4V / 4W / 5E).
+enum ManagedRetryAttempt {
+    /// HQ's managed toolchain was used and the pinned install converged (delivery +
+    /// managed-prefix resolution + a live executable probe); NO Sentry event was
+    /// emitted — the self-heal worked.
+    Converged(HqCliUpdateInfo),
+    /// The retry RAN under HQ's managed toolchain but did not converge; it already
+    /// reported exactly once (managed-provenance failure, or non-convergence), with
+    /// provenance-aware wording that never re-blames the user's runtime. The caller
+    /// surfaces this detail without a second capture.
+    RanAndReported(String),
+    /// No retry ran. The caller reports the original user-path failure, tagging this
+    /// closed-enumeration outcome so the next occurrence names which branch declined.
+    Declined(ManagedRetryOutcome),
+}
+
 /// Bounded, one-shot managed-toolchain self-heal for a third-party native-build
-/// lifecycle failure under the user's own Node (HQ-DESKTOP-4V / HQ-DESKTOP-4W).
-///
-/// Returns:
-///   * `Some(Ok(info))`    — HQ's managed Node was provisioned and the pinned
-///     install converged (delivery + managed-prefix resolution + a live executable
-///     probe) under it; NO Sentry event was emitted.
-///   * `Some(Err(detail))` — the retry ran but did not converge; it already
-///     reported exactly once (managed-provenance failure, or non-convergence), with
-///     provenance-aware wording that never re-blames the user's runtime.
-///   * `None`              — no retry happened (repair on cooldown, provisioning
-///     failed, or the managed toolchain could not be resolved); the caller
-///     reports the original user-path failure unchanged.
+/// lifecycle failure under the user's own Node (HQ-DESKTOP-4V / 4W / 5E).
 ///
 /// Provisioning goes through the shared `sync::repair_managed_node` seam — never
 /// the lower-level Node installer directly — so the shared repair cooldown and the
@@ -2405,6 +2435,18 @@ fn configure_managed_shell_path(app: &AppHandle, managed_prefix: &str) {
 /// user's), reusing the already-pinned `latest` — never `fetch_latest` again, so the
 /// post-publish registry race commit 13ef8859 closed cannot reopen here. Exactly one
 /// provision attempt and one re-run: there is no loop.
+///
+/// The HQ-DESKTOP-5E fix lives in the START decision. `repair_managed_node` reports
+/// whether a FRESH provision happened, NOT whether a managed toolchain EXISTS: its
+/// slot is a process-global single-flight shared with the sync/daemon/Connect lanes,
+/// so a cooldown `Skipped` or a `Failed` disposition can occur on a machine that
+/// already has HQ's managed Node installed and usable. The old code returned "no
+/// retry" on `Skipped`/`Failed` before ever consulting the managed npm — abandoning
+/// the one-shot retry, then blaming the user's toolchain in the UI for a repair it
+/// never attempted. [`managed_retry_start_decision`] (pure, in hq-desktop-core,
+/// tested on every platform) now PROCEEDS whenever a managed npm resolves, regardless
+/// of the disposition, and declines only when none is resolvable — naming which
+/// disposition left it absent.
 async fn managed_toolchain_retry(
     app: &AppHandle,
     hq: &str,
@@ -2412,35 +2454,45 @@ async fn managed_toolchain_retry(
     npm_cache: &Path,
     before_version: Option<&str>,
     already_blocked: bool,
-) -> Option<Result<HqCliUpdateInfo, String>> {
-    // Provision through the shared seam. Only a fresh, successful provision earns
-    // the retry; a cooldown-Skipped or a Failed repair falls straight through so
-    // the caller still reports the original failure.
-    match request_managed_node_repair(app).await {
-        ToolchainRepair::Repaired => {}
-        ToolchainRepair::Skipped => {
-            log(
-                "hq-cli-update",
-                "managed-toolchain retry skipped — a Node repair was attempted too recently",
-            );
-            return None;
-        }
+) -> ManagedRetryAttempt {
+    // Provision through the shared seam, then reduce its outcome to the disposition
+    // the START decision turns on. A Failed provision still logs its reason (used
+    // nowhere else) before being collapsed.
+    let disposition = match request_managed_node_repair(app).await {
+        ToolchainRepair::Repaired => ManagedRepairDisposition::Repaired,
+        ToolchainRepair::Skipped => ManagedRepairDisposition::Deferred,
         ToolchainRepair::Failed(reason) => {
             log(
                 "hq-cli-update",
-                &format!(
-                    "managed-toolchain retry unavailable — Node provisioning failed: {reason}"
-                ),
+                &format!("managed-toolchain retry: a fresh Node provision failed: {reason}"),
             );
-            return None;
+            ManagedRepairDisposition::Failed
         }
-    }
+    };
 
-    let (managed_npm, managed_path, managed_prefix) = managed_toolchain_npm_and_path()?;
+    // Consult the managed npm REGARDLESS of the disposition — a cooldown deferral or
+    // a failed fresh provision is not evidence the managed toolchain is absent
+    // (`install_node_macos` is idempotent and returns Ok when it already exists). The
+    // pure decision proceeds whenever a managed npm resolves, and names which
+    // disposition left it absent otherwise.
+    let (managed_npm, managed_path, managed_prefix) =
+        match managed_retry_start_decision(disposition, managed_toolchain_npm_and_path()) {
+            ManagedRetryStart::Proceed { npm, path, prefix } => (npm, path, prefix),
+            ManagedRetryStart::Decline(outcome) => {
+                log(
+                    "hq-cli-update",
+                    &format!(
+                        "managed-toolchain retry declined ({}) — reporting the user-path failure",
+                        outcome.tag_value()
+                    ),
+                );
+                return ManagedRetryAttempt::Declined(outcome);
+            }
+        };
 
     log(
         "hq-cli-update",
-        "managed Node provisioned — retrying the pinned install once under HQ's managed toolchain, into HQ's managed npm prefix",
+        "managed npm available — retrying the pinned install once under HQ's managed toolchain, into HQ's managed npm prefix",
     );
 
     // Rebuild the argv against HQ's MANAGED prefix (never the user's), reusing the
@@ -2463,7 +2515,7 @@ async fn managed_toolchain_retry(
                 "hq-cli-update",
                 &format!("managed-toolchain retry could not spawn npm: {e}"),
             );
-            return None;
+            return ManagedRetryAttempt::Declined(ManagedRetryOutcome::SpawnFailed);
         }
     };
 
@@ -2482,20 +2534,26 @@ async fn managed_toolchain_retry(
             already_blocked,
         )
         .await;
-        if converged.is_ok() {
-            // Only NOW — with a managed CLI proven installed AND runnable — make its
-            // bin dir reachable from the user's interactive shell. Deferring the
-            // persistent PATH change until convergence means a FAILED retry never
-            // shadows the user's still-working CLI under a mismatched Node.
-            configure_managed_shell_path(app, &managed_prefix);
-        }
-        return Some(converged);
+        return match converged {
+            Ok(info) => {
+                // Only NOW — with a managed CLI proven installed AND runnable — make
+                // its bin dir reachable from the user's interactive shell. Deferring
+                // the persistent PATH change until convergence means a FAILED retry
+                // never shadows the user's still-working CLI under a mismatched Node.
+                configure_managed_shell_path(app, &managed_prefix);
+                ManagedRetryAttempt::Converged(info)
+            }
+            // Ran under the managed toolchain but did not converge; the non-convergent
+            // path already reported exactly once.
+            Err(detail) => ManagedRetryAttempt::RanAndReported(detail),
+        };
     }
 
     // The retry failed under the managed toolchain. Report exactly once, carrying
-    // managed provenance (npm_managed_toolchain_retry=true, toolchain_source=
-    // managed) through the same repeat-guard, with provenance-aware user-facing
-    // wording that never re-blames the user's own runtime.
+    // managed provenance (npm_managed_toolchain_retry=true, toolchain_source=managed,
+    // npm_managed_retry_outcome=ran) through the same repeat-guard, with
+    // provenance-aware user-facing wording that never re-blames the user's own
+    // runtime.
     let raw_detail = npm_output_detail(&retry_run.output);
     let detail = managed_retry_failure_detail(retry_run.output.status.code(), &raw_detail);
     log(
@@ -2521,7 +2579,7 @@ async fn managed_toolchain_retry(
         latest,
         &reported_episode_keys,
     ));
-    Some(Err(detail))
+    ManagedRetryAttempt::RanAndReported(detail)
 }
 
 /// Persist the `latest` that installed cleanly but did not move the detected
@@ -2777,7 +2835,12 @@ mod tests {
         // the user's OWN Node 20 (ABI 115), for a cause a different runtime can fix.
         // HQ-DESKTOP-4V's cause='unknown' and 4W's cause='toolchain-missing' MUST
         // both arm.
-        for cause in ["unknown", "toolchain-missing", "prebuild-unavailable"] {
+        for cause in [
+            "unknown",
+            "toolchain-missing",
+            "prebuild-unavailable",
+            "postinstall-script",
+        ] {
             assert!(
                 install_failure_earns_managed_retry(
                     InstallFailureKind::UnexpectedLifecycle,
@@ -2788,6 +2851,21 @@ mod tests {
                 "cause {cause:?} on user-path Node 20 must arm the managed retry"
             );
         }
+
+        // The exact HQ-DESKTOP-5E tuple: node-llama-cpp's postinstall script failing
+        // under the user's OWN Node 24.14.0 (ABI 137). Its cause is `postinstall-script`
+        // and its failing ABI (137) differs from HQ's managed ABI (127), so the
+        // self-heal MUST arm — pinning that the shape which produced this issue is
+        // exactly the shape the retry is meant to run for.
+        assert!(
+            install_failure_earns_managed_retry(
+                InstallFailureKind::UnexpectedLifecycle,
+                NpmToolchainSource::UserPath,
+                "postinstall-script",
+                Some(137),
+            ),
+            "the reported HQ-DESKTOP-5E tuple (postinstall-script, ABI 137, user-path) must arm the managed retry"
+        );
 
         // A cause a NEW runtime cannot repair must NOT arm — provisioning a Node
         // would only waste a ~50MB download, and a full disk can be made worse.
@@ -3494,6 +3572,46 @@ exit 0
             ),
             InstallFailureKind::Unexpected
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_toolchain_npm_and_path_requires_node_not_just_npm() {
+        use std::fs;
+        // Serialize HOME mutation against every other env/home-touching test.
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _restore_home = HomeEnvRestore(std::env::var_os("HOME"));
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp.path());
+
+        // The unix managed layout: <HOME>/Library/Application Support/Indigo HQ/
+        // toolchain/node/bin/{node,npm}.
+        let bin = temp
+            .path()
+            .join("Library/Application Support/Indigo HQ/toolchain/node/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("npm"), "#!/bin/sh\nexit 0\n").unwrap();
+
+        // npm present but the managed Node ABSENT is an INCOMPLETE toolchain — not
+        // usable, because the managed PATH would fall through to the user's Node.
+        // The HQ-DESKTOP-5E retry must not proceed on it (review follow-up).
+        assert!(
+            managed_toolchain_npm_and_path().is_none(),
+            "npm without a managed node next to it is not a usable managed toolchain"
+        );
+
+        // Once the managed Node exists too, it resolves.
+        fs::write(bin.join("node"), "#!/bin/sh\nexit 0\n").unwrap();
+        let (resolved_npm, resolved_path, _prefix) = managed_toolchain_npm_and_path()
+            .expect("npm + node present must resolve a usable managed toolchain");
+        let expected_npm = bin.join("npm").to_string_lossy().into_owned();
+        let bin_str = bin.to_string_lossy().into_owned();
+        assert_eq!(resolved_npm, expected_npm);
+        assert!(resolved_path.starts_with(bin_str.as_str()));
     }
 
     #[cfg(unix)]

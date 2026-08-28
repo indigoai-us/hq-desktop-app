@@ -405,7 +405,12 @@
 /// Long sync passes can outlive their 15-minute STS session; 6.15.29 forces a
 /// credential refresh and retries the rejected S3 operation exactly once.
 /// Moving the floor changes the npx cache key so existing desktops adopt it.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.29";
+///
+/// `~6.15.79`: floor the runner at the event-sync subscribe retry and
+/// journal-lock crash fixes. The exact spec change deliberately invalidates
+/// npx's old cache key, so existing desktops cannot remain on an earlier
+/// runner that stays poll-only after a transient subscribe failure.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.79";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -472,7 +477,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.29");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.79");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry

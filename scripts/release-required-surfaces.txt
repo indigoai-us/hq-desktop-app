@@ -1,0 +1,35 @@
+# Surfaces that must exist in a release tag's own tree.
+#
+# Why this file exists: #454 reverted apps/sync/src/desktop-alt wholesale to
+# the v0.10.109 shape to unwind the V2 chat shell, and silently took the
+# "Finish setting up HQ" card (#432) with it. Nothing failed — a whole-tree
+# revert deletes a surface's tests along with the surface, so the suite stays
+# green — and the regression shipped in every release from v0.10.114 to
+# v0.10.150 before a human noticed (#525).
+#
+# The release guard's original two markers only proved the v1 shell was
+# present. They said nothing about anything built after v0.10.109, which is
+# exactly the class of thing a revert-to-an-old-tree destroys. This manifest
+# closes that gap: the guard asserts every path below exists in the tag being
+# built, and scripts/release-workflow.test.ts asserts every path below exists
+# in the working tree, so a stale entry fails fast instead of rotting.
+#
+# Add a line when you ship a surface that would be silently lost if someone
+# reset its directory to an older tree. Paths are repo-relative. Blank lines
+# and lines starting with # are ignored.
+
+# --- v1 desktop shell ---------------------------------------------------
+apps/sync/src/desktop-alt/v4/V4Sidebar.svelte
+apps/sync/src/desktop-alt/v4/V4SecondarySidebar.svelte
+
+# --- "Finish setting up HQ" card (#432, restored in #525) ---------------
+# Backed by get_setup_status in src-tauri, which survived #454 precisely
+# because src-tauri was out of scope for that revert. The frontend did not.
+apps/sync/src/desktop-alt/components/SetupIncompleteCard.svelte
+apps/sync/src/desktop-alt/lib/setup-launch.ts
+
+# --- installer launch path (#281, #452) ---------------------------------
+# The onboarding wizard's ready screen and the deep link both the wizard and
+# the card above dispatch through.
+apps/sync/src/lib/onboarding-summary.ts
+apps/sync/src/lib/claude-code-link.ts

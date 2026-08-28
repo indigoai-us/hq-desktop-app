@@ -372,6 +372,7 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "entity_not_found",
     "entity_permission",
     "entity_resolution",
+    "source_not_found",
     "operation_locked",
     "operation_lock_unwritable",
     "scope_shrink_blocked",
@@ -380,11 +381,40 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "multipart_source_changed",
     "multipart_abort",
     "realtime_conflict",
+    "realtime_enrollment_unavailable",
+    "sync_mutation_not_enrolled",
     "unreachable_push_paths",
+    "server_owned_push_paths",
     "push_event_decode",
     "local_snapshot_changed",
     "rescue_path_changed",
+    "cursor_retired",
+    "base_version_unavailable",
+    "durable_apply",
+    "durable_apply_recovery",
+    "journal_checkpoint",
+    "premature_journal_entry",
+    "snapshot_client",
+    "state_store_corruption",
+    "state_store_lock",
+    "state_store_reducer",
     "vault_identity",
+    "vault_client",
+    "vault_conflict",
+    "vault_not_found",
+    "vault_permission_denied",
+    "vend_denied",
+    "rate_limited",
+    "presign_precondition_missing",
+    "outpost_http",
+    "tombstone_fetch",
+    "unregistered_company_skill",
+    "refresh_lock_timeout",
+    "cognito_identity",
+    "cognito_identity_refresh",
+    "dangling_symlink_parent",
+    "windows_symlink_privilege",
+    "child_process_sync_worker",
     "access_denied",
     "no_such_key",
     "no_such_bucket",
@@ -394,7 +424,46 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "expired_identity",
     "invalid_identity",
     "unknown_error",
-    "unknown",
+    // ECMAScript / Node built-in error identities (r2).
+    "range_error",
+    "type_error",
+    "syntax_error",
+    "reference_error",
+    "eval_error",
+    "uri_error",
+    "aggregate_error",
+    "abort_error",
+    "system_error",
+    // Node/libuv errno codes (r2).
+    "enoent",
+    "eexist",
+    "enotempty",
+    "exdev",
+    "eisdir",
+    "enotdir",
+    "eloop",
+    "enametoolong",
+    "emfile",
+    "enfile",
+    "erofs",
+    "eio",
+    "eagain",
+    "epipe",
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "enotfound",
+    "ehostunreach",
+    "enetunreach",
+    "eai_again",
+    "eperm",
+    "eacces",
+    "enospc",
+    "ebusy",
+    "enetdown",
+    "einval",
+    "unknown_named",
+    "unknown_unnamed",
 ];
 const RUNNER_ERROR_SHAPE_TOKENS: &[&str] = &[
     "containment_escape",
@@ -425,6 +494,28 @@ fn is_closed_vocab_count_rollup(value: &str, vocabulary: &[&str]) -> bool {
         && value.split(',').all(|entry| {
             entry.split_once(':').is_some_and(|(token, count)| {
                 vocabulary.contains(&token)
+                    && !count.is_empty()
+                    && count.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+}
+
+/// A `sig:count(,sig:count)*` rollup where each `sig` is a fixed 12-char
+/// lowercase-hex SHA-256 prefix (the `runner_error_cause_signature` axis) and
+/// each count is a bare integer. Mirrors the producer's
+/// `RunnerErrorCauseSignatureRollup`; the independent egress check that refuses a
+/// raw identifier, path, host, or message fragment — only `[0-9a-f]{12}` keys and
+/// bare-integer counts pass, so a producer bug degrades to `[Filtered]` instead
+/// of shipping a runner byte.
+fn is_runner_error_cause_signature_rollup(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.split(',').all(|entry| {
+            entry.split_once(':').is_some_and(|(signature, count)| {
+                signature.len() == 12
+                    && signature
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
                     && !count.is_empty()
                     && count.bytes().all(|byte| byte.is_ascii_digit())
             })
@@ -552,6 +643,12 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_error_path_roots" => {
             Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_PATH_ROOT_TOKENS))
         }
+        // The cause-signature axis (this reopen): a bounded `hex12:count` rollup
+        // correlating an `unknown_named` residual across machines. The producer
+        // emits only a fixed-length lowercase-hex digest of a gated identifier, so
+        // this independent egress check refuses anything else — a raw identifier,
+        // path, or message fragment degrades to `[Filtered]` instead of shipping.
+        "runner_error_cause_signature" => Some(is_runner_error_cause_signature_rollup(value)),
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
         // these independent egress checks degrade a producer bug to `[Filtered]`
@@ -585,6 +682,12 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "user32_1074" | "kernel_general_13" | "kernel_power_109" | "none" | "unavailable"
         )),
+        // Durable session-end latch (HQ-DESKTOP r3). The producer emits only the
+        // three fixed tokens from `SessionEndLatchReading::class_name`; this
+        // independent egress check degrades a producer bug that shipped a raw
+        // timestamp, host name, or identifier to `[Filtered]` instead of leaking
+        // it — the same discipline as the pull-based probe extras above.
+        "session_end_latch" => Some(matches!(value, "latched" | "absent" | "unavailable")),
         _ => None,
     }
 }
@@ -683,7 +786,18 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
         // accepted so in-flight older clients still emitting it remain sendable.
         matches!(
             value,
-            "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "identity" | "other"
+            "eperm"
+                | "eacces"
+                | "enospc"
+                | "ebusy"
+                | "enoent"
+                | "eexist"
+                | "enotempty"
+                | "exdev"
+                | "network"
+                | "auth"
+                | "identity"
+                | "other"
         )
     };
     let is_fatal_class = |value: &str| {
@@ -1345,7 +1459,8 @@ mod tests {
     #[test]
     fn every_windows_teardown_probe_token_survives_and_lookalikes_fail_closed() {
         use hq_desktop_core::sync_outcome::{
-            TeardownLogClass, TeardownLogReading, TeardownShuttingDown, WindowsTeardownVerdict,
+            SessionEndLatchReading, TeardownLogClass, TeardownLogReading, TeardownShuttingDown,
+            WindowsTeardownVerdict,
         };
         // Drive the accepted set from the producer's OWN vocabulary so the egress
         // check can never drift behind a newly-added token and blank a real value.
@@ -1385,13 +1500,29 @@ mod tests {
             );
         }
 
+        // Durable session-end latch (HQ-DESKTOP r3): every producer token must
+        // survive egress, driven from the producer's OWN vocabulary so the check
+        // can never fall behind a newly-added state.
+        for token in [
+            SessionEndLatchReading::Latched.class_name(),
+            SessionEndLatchReading::Absent.class_name(),
+            SessionEndLatchReading::Unavailable.class_name(),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("session_end_latch", token),
+                Some(true),
+                "latch token {token:?} must survive egress"
+            );
+        }
+
         // Raw event-log text — the exact leak the allowlist exists to stop — must
-        // fail closed on every one of the three probe keys.
+        // fail closed on every one of the probe keys AND the latch key.
         let leak = r"1074: shutdown.exe (DESKTOP-QOH7J4N) by Ada at C:\Windows";
         for key in [
             "windows_teardown_probe_verdict",
             "windows_teardown_probe_shuttingdown",
             "windows_teardown_probe_log",
+            "session_end_latch",
         ] {
             assert_eq!(
                 valid_runner_diagnostic_field(key, leak),
@@ -1552,6 +1683,16 @@ mod tests {
             }
         }
 
+        // The cause-signature axis is a `hex12:count` rollup, not a closed
+        // vocabulary — a valid lowercase-12-hex signature survives egress.
+        for good in ["1a2b3c4d5e6f:7", "00ff11ee22dd:1,abcdefabcdef:9"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_error_cause_signature", good),
+                Some(true),
+                "valid cause-signature rollup must survive egress: {good:?}"
+            );
+        }
+
         // Fail-closed: an off-vocabulary token, a non-numeric count, a raw path
         // or message fragment, and an over-length value must all be rejected so a
         // producer bug degrades to [Filtered] instead of shipping runner bytes.
@@ -1560,9 +1701,18 @@ mod tests {
             ("runner_error_http", "http_403:12,not_a_status:1"),
             ("runner_error_http", "http_403:x"),
             ("runner_error_causes", "access_denied:1,/Users/Ada/secret:1"),
+            ("runner_error_causes", "unknown:1"), // the retired flat residual is no longer emitted
             ("runner_error_shapes", "presigned_get_failed:9,knowledge/a.md:1"),
             ("runner_error_path_roots", "companies:1,cognito-abc:1"),
             ("runner_error_http", overlong.as_str()),
+            // Signature axis: only a bare lowercase-12-hex key is permitted, so a
+            // raw identity, an uppercase digest, a wrong length, or a bad count
+            // must all fail closed rather than ship a runner byte.
+            ("runner_error_cause_signature", "VaultNotFoundError:1"),
+            ("runner_error_cause_signature", "1A2B3C4D5E6F:1"),
+            ("runner_error_cause_signature", "1a2b3c:1"),
+            ("runner_error_cause_signature", "1a2b3c4d5e6f7:1"),
+            ("runner_error_cause_signature", "1a2b3c4d5e6f:x"),
         ] {
             assert_eq!(
                 valid_runner_diagnostic_field(key, value),
@@ -1609,23 +1759,38 @@ mod tests {
             }
         }
 
-        // A realistic multi-token value on each axis survives together.
+        // A realistic multi-token value on each axis survives together — including
+        // the completed cause vocabulary's residual tokens and the signature axis.
         let mut event = Event::default();
         event.tags.insert("runner_error_http".into(), "http_500:40,http_403:8".into());
-        event.tags.insert("runner_error_causes".into(), "unknown:160,access_denied:8".into());
+        event
+            .tags
+            .insert("runner_error_causes".into(), "unknown_unnamed:160,vault_not_found:8".into());
         event.tags.insert("runner_error_shapes".into(), "containment_escape:120,unknown:8".into());
         event.tags.insert("runner_error_path_roots".into(), "knowledge:120,repos:40".into());
+        event
+            .tags
+            .insert("runner_error_cause_signature".into(), "1a2b3c4d5e6f:9,00ff11ee22dd:2".into());
         let survived = before_send(event).expect("event remains sendable");
         assert_eq!(survived.tags["runner_error_http"], "http_500:40,http_403:8");
-        assert_eq!(survived.tags["runner_error_causes"], "unknown:160,access_denied:8");
+        assert_eq!(survived.tags["runner_error_causes"], "unknown_unnamed:160,vault_not_found:8");
         assert_eq!(survived.tags["runner_error_shapes"], "containment_escape:120,unknown:8");
         assert_eq!(survived.tags["runner_error_path_roots"], "knowledge:120,repos:40");
+        assert_eq!(
+            survived.tags["runner_error_cause_signature"],
+            "1a2b3c4d5e6f:9,00ff11ee22dd:2"
+        );
 
-        // An off-vocabulary value degrades to [Filtered] instead of shipping.
+        // An off-vocabulary value degrades to [Filtered] instead of shipping, on
+        // both the cause axis and the signature axis.
         let mut leaky = Event::default();
         leaky.tags.insert("runner_error_causes".into(), "not_a_cause:1".into());
+        leaky
+            .tags
+            .insert("runner_error_cause_signature".into(), "VaultNotFoundError:1".into());
         let filtered = before_send(leaky).expect("event remains sendable");
         assert_eq!(filtered.tags["runner_error_causes"], "[Filtered]");
+        assert_eq!(filtered.tags["runner_error_cause_signature"], "[Filtered]");
     }
 
     #[test]
