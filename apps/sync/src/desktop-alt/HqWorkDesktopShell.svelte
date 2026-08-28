@@ -43,6 +43,16 @@
   let self = $state<SelfIdentity | null>(null);
   let companies = $state<Workspace[] | null>(null);
   let version = $state('0.0.0');
+  /**
+   * `DesktopApp` snapshots `settingsProfile` into its own state at mount, so
+   * mounting before `whoami` resolves bakes in the empty profile derived from
+   * `self === null` — the Settings → Profile pane then reads "No profile data
+   * yet" for a signed-in user, which the US-107 live run recorded. Mount once
+   * the identity attempt has SETTLED, not once it succeeded: a failed or
+   * signed-out probe must still paint the shell rather than hang on a
+   * spinner forever.
+   */
+  let identitySettled = $state(false);
 
   onMount(() => {
     let cancelled = false;
@@ -68,6 +78,8 @@
         version = ver;
       } catch {
         /* DesktopApp still paints; identity chrome stays empty. */
+      } finally {
+        if (!cancelled) identitySettled = true;
       }
     })();
 
@@ -92,20 +104,22 @@
 </script>
 
 <div class="hq-work-embedded" data-testid="hq-work-embedded-shell">
-  <DesktopApp
-    {adapter}
-    {version}
-    {sidebarApi}
-    {notificationsApi}
-    {wakes}
-    {companies}
-    {self}
-    settingsProfile={settingsProfileFromSelf(self)}
-    hydrateLiveMessages={true}
-    coreFixtures={false}
-    putAttachmentObject={putVaultObject}
-    getAttachmentObject={getVaultObject}
-  />
+  {#if identitySettled}
+    <DesktopApp
+      {adapter}
+      {version}
+      {sidebarApi}
+      {notificationsApi}
+      {wakes}
+      {companies}
+      {self}
+      settingsProfile={settingsProfileFromSelf(self)}
+      hydrateLiveMessages={true}
+      coreFixtures={false}
+      putAttachmentObject={putVaultObject}
+      getAttachmentObject={getVaultObject}
+    />
+  {/if}
 </div>
 
 <style>

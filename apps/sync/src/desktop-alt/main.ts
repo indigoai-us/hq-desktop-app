@@ -11,7 +11,6 @@ import { installAppearancePreferences } from '../lib/appearancePreferences';
 import { getHqWorkHandoff } from '../lib/hq-work';
 import { bootDesktopAltWindow } from './boot';
 import DesktopApp from './DesktopApp.svelte';
-import HqWorkDesktopShell from './HqWorkDesktopShell.svelte';
 
 const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
@@ -40,7 +39,13 @@ const app = bootDesktopAltWindow({
       props: { component: DesktopApp, windowLabel },
     });
   },
-  mountHqWork: () => {
+  // Dynamic import: the embedded shell pulls the entire @hq/ui DesktopApp
+  // graph, and the flag is default-off. Loading it statically would charge
+  // every legacy user for a bundle they never mount.
+  mountHqWork: async () => {
+    const { default: HqWorkDesktopShell } = await import(
+      './HqWorkDesktopShell.svelte'
+    );
     mount(GlobalErrorBoundary, {
       target,
       props: { component: HqWorkDesktopShell, windowLabel },

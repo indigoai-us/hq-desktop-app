@@ -17,14 +17,20 @@ export async function resolveDesktopAltShell(
   }
 }
 
+/**
+ * `mountHqWork` may return a promise so the caller can `import()` the embedded
+ * shell lazily. A static import would pull the whole `@hq/ui` DesktopApp graph
+ * into the desktop-alt entry chunk, making the default flag-off population pay
+ * its download, parse, and memory cost for code that is never mounted.
+ */
 export async function bootDesktopAltWindow(deps: {
   getHandoff: () => Promise<boolean>;
   mountLegacy: () => void;
-  mountHqWork: () => void;
+  mountHqWork: () => void | Promise<void>;
 }): Promise<DesktopAltShell> {
   const shell = await resolveDesktopAltShell(deps.getHandoff);
   if (shell === 'hq-work') {
-    deps.mountHqWork();
+    await deps.mountHqWork();
   } else {
     deps.mountLegacy();
   }

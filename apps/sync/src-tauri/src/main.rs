@@ -469,9 +469,15 @@ fn main() {
                     });
                 }
             }
-            if let tauri::WindowEvent::Focused(true) = event {
-                std::thread::spawn(commands::hq_work::refresh_hq_work_install_cache);
-            }
+            // No eager standalone-install probe here. `refresh_hq_work_install_cache`
+            // force-probes with no TTL — on macOS that falls through to a fresh
+            // `mdfind` process — and this fired on EVERY window focus, for every
+            // user including the default flag-off population, overlapping as the
+            // tray and desktop windows traded focus. The combined app never
+            // consumes the standalone-install cache on the open path (US-103
+            // mounts in-process; `should_probe_install_on_desktop_alt_open` is
+            // hard `false`). Anything that still needs the state calls
+            // `hq_work_installed`, which probes lazily behind its own TTL.
             // Windows: reapply Mica/Acrylic when the OS theme flips so light
             // mode never keeps a forced-dark backdrop (US-003). Theme is left
             // unset on window builders so ThemeChanged keeps firing.
@@ -1348,7 +1354,7 @@ fn main() {
             // enabled (the default on macOS).
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
-                std::thread::spawn(commands::hq_work::refresh_hq_work_install_cache);
+                // Same reason as the focus handler above: no eager force-probe.
                 let _ = commands::desktop_alt::activation_policy(
                     commands::desktop_alt::ActivationSource::DockIconClick,
                 );
