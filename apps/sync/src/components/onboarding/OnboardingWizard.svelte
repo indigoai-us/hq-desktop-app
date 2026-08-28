@@ -23,10 +23,13 @@
   import {
     NO_AI_TOOLS,
     availableLaunches,
+    installUrlFor,
+    launchEntries,
     markToolUnavailable,
     readyCommandFor,
     selectPrimaryLaunch,
     type AiTools,
+    type LaunchEntry,
     type LaunchKind,
     type PrimaryLaunch,
   } from '../../lib/onboarding-summary';
@@ -263,6 +266,15 @@
   );
   const manualCommand = $derived(readyCommandFor(userFacingInstallPath, aiTools));
   const launchOptions = $derived(availableLaunches(aiTools));
+  const launchSlots = $derived<LaunchEntry[]>(launchEntries(aiTools));
+  // With nothing installed every slot is an install link, so there is no
+  // launch button to carry `btn-primary`. Promote the Claude install — it is
+  // the path that starts the readiness watch, and leaving the row with no
+  // primary at all reads as "no next step" on the one screen that most needs
+  // one.
+  const noToolInstalled = $derived(
+    launchSlots.length > 0 && launchSlots.every((slot) => !slot.installed),
+  );
   const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
     showManualTools || Boolean(launchEscape || detectionFailed || needsAttention),
@@ -346,6 +358,7 @@
     currentSignInCall += 1;
     clearTransitionTimers();
     stopClaudeWatch();
+    stopToolWatch();
     cancelSetupRun();
   });
 
@@ -1254,6 +1267,55 @@
     }, 3000);
   }
 
+  // Re-probe after sending someone off to install a tool that has no
+  // dedicated readiness command (Claude has `pollClaudeReady`; Codex and Grok
+  // do not). Bounded so a browser tab left open on the install page cannot
+  // leave an interval running for the life of the window.
+  const TOOL_WATCH_INTERVAL_MS = 3000;
+  const TOOL_WATCH_MAX_MS = 5 * 60 * 1000;
+  let toolWatchInterval: number | null = null;
+  let toolWatchStartedAt = 0;
+
+  function stopToolWatch() {
+    if (toolWatchInterval !== null) {
+      window.clearInterval(toolWatchInterval);
+      toolWatchInterval = null;
+    }
+  }
+
+  function startToolWatch(kind: LaunchKind) {
+    if (toolWatchInterval !== null) return;
+    toolWatchStartedAt = Date.now();
+    toolWatchInterval = window.setInterval(() => {
+      if (Date.now() - toolWatchStartedAt > TOOL_WATCH_MAX_MS) {
+        stopToolWatch();
+        return;
+      }
+      void probeAiTools().then(() => {
+        if (launchEntries(aiTools).some((slot) => slot.kind === kind && slot.installed)) {
+          stopToolWatch();
+        }
+      });
+    }, TOOL_WATCH_INTERVAL_MS);
+  }
+
+  async function handleInstallTool(kind: LaunchKind) {
+    // Claude keeps its dedicated path: `handleDownloadClaude` also starts the
+    // logged-in watch, which the generic re-probe cannot replicate.
+    if (kind === 'claude') {
+      await handleDownloadClaude();
+      return;
+    }
+    launchEscape = null;
+    try {
+      await openExternal(installUrlFor(kind));
+      startToolWatch(kind);
+    } catch (err) {
+      launchEscape = escapeForLaunch('download', errorMessage(err));
+      showManualTools = true;
+    }
+  }
+
   async function handleDownloadClaude() {
     launchEscape = null;
     const watching = claudeWatchInterval !== null;
@@ -1998,7 +2060,11 @@
             {/if}
           {/if}
           <div class="btns" data-testid="onboarding-launchers">
-            {#if launchOptions.length === 0}
+            <!-- `launchSlots` is empty only while detection is still in flight;
+                 once it resolves it always carries Claude Code and Codex, so a
+                 machine with neither installed gets two install links rather
+                 than the old Claude-only dead end. -->
+            {#if launchSlots.length === 0}
               <button
                 class="btn btn-primary"
                 type="button"
@@ -2016,21 +2082,38 @@
                     : 'Download Claude'}
               </button>
             {:else}
-              {#each launchOptions as launch (launch.kind)}
-                <button
-                  class="btn {launch.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
-                  type="button"
-                  data-testid="onboarding-launch-{launch.kind}"
-                  disabled={finishing || (launching !== null && launching !== 'watching')}
-                  aria-busy={finishing || launching === launch.kind}
-                  onclick={() => void handleLaunch(launch.kind)}
-                >
-                  {finishing && launch.kind === primaryLaunch.kind
-                    ? 'Finishing…'
-                    : launching === launch.kind
-                      ? 'Opening…'
-                      : launch.label}
-                </button>
+              {#each launchSlots as slot (slot.kind)}
+                {#if slot.installed}
+                  <button
+                    class="btn {slot.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
+                    type="button"
+                    data-testid="onboarding-launch-{slot.kind}"
+                    disabled={finishing || (launching !== null && launching !== 'watching')}
+                    aria-busy={finishing || launching === slot.kind}
+                    onclick={() => void handleLaunch(slot.kind)}
+                  >
+                    {finishing && slot.kind === primaryLaunch.kind
+                      ? 'Finishing…'
+                      : launching === slot.kind
+                        ? 'Opening…'
+                        : slot.label}
+                  </button>
+                {:else}
+                  <button
+                    class="btn {noToolInstalled && slot.kind === 'claude'
+                      ? 'btn-primary'
+                      : 'btn-ghost'}"
+                    type="button"
+                    data-testid="onboarding-install-{slot.kind}"
+                    disabled={finishing}
+                    aria-busy={launching === 'watching' && slot.kind === 'claude'}
+                    onclick={() => void handleInstallTool(slot.kind)}
+                  >
+                    {launching === 'watching' && slot.kind === 'claude'
+                      ? 'Waiting for Claude…'
+                      : slot.installLabel}
+                  </button>
+                {/if}
               {/each}
             {/if}
           </div>
@@ -2308,6 +2391,15 @@
   .btn:active:not(:disabled) { transform:scale(.97); }
   .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
   .btn-secondary { background:var(--c-btn2-bg); color:var(--c-btn2-fg); }
+  /* Not-installed slot: present and clickable, but visually subordinate to the
+     tool that can actually launch right now. */
+  .btn-ghost {
+    background: transparent;
+    color: var(--c-btn2-fg);
+    border: 1px solid var(--c-btn2-bg);
+    opacity: 0.75;
+  }
+  .btn-ghost:hover:not(:disabled) { opacity: 1; }
   .btn:hover:not(:disabled) { opacity:.88; }
   .btn:focus-visible,
   .choose:focus-visible,

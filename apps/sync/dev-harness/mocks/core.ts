@@ -1063,17 +1063,26 @@ This final paragraph verifies spacing after a thematic break.
     harnessScenario() === 'permission-denied' ? 'denied' : 'prompt',
   notification_request_permission: () => 'granted',
   resolve_hq_path: () => '/Users/corey/Documents/HQ',
-  detect_ai_tools: () => ({
-    claude_cli: true,
-    claude_desktop: true,
-    codex_cli: true,
-    codex_desktop: true,
-    grok_cli: false,
-    claude_last_used_ms: 1_700_000_000_000,
-    codex_last_used_ms: 1_699_000_000_000,
-    grok_last_used_ms: null,
-    any: true,
-  }),
+  // Scenarios let the Ready screen be inspected in every machine state the
+  // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
+  // case that has only Claude Code), `?scenario=tools-codex-only`, and
+  // `?scenario=tools-none` (nothing installed at all).
+  detect_ai_tools: () => {
+    const scenario = harnessScenario();
+    const claude = scenario !== 'tools-codex-only' && scenario !== 'tools-none';
+    const codex = scenario !== 'tools-claude-only' && scenario !== 'tools-none';
+    return {
+      claude_cli: claude,
+      claude_desktop: claude,
+      codex_cli: codex,
+      codex_desktop: codex,
+      grok_cli: false,
+      claude_last_used_ms: claude ? 1_700_000_000_000 : null,
+      codex_last_used_ms: codex ? 1_699_000_000_000 : null,
+      grok_last_used_ms: null,
+      any: claude || codex,
+    };
+  },
   detect_claude_ready: () => ({
     installed: true,
     desktop_installed: true,

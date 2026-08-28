@@ -424,15 +424,34 @@ fn claude_desktop_installed_in(local: Option<&Path>, program_files: Option<&Path
     in_local || in_program_files
 }
 
+/// Bundle names that ship desktop Codex on macOS.
+///
+/// Codex desktop is distributed inside the ChatGPT app — `/Applications/
+/// ChatGPT.app`, bundle id `com.openai.codex`, registering the `codex://`
+/// scheme. Probing only for `Codex.app` therefore reports "not installed" on
+/// a machine that has Codex and can launch it: `launch_codex_desktop` runs
+/// `open -a Codex`, which LaunchServices resolves to that same bundle. The
+/// detector was the only half that went by filename.
+///
+/// Both names are kept: `Codex.app` for anyone carrying the standalone build,
+/// `ChatGPT.app` for the current distribution.
+#[cfg(not(windows))]
+const CODEX_DESKTOP_BUNDLES: [&str; 2] = ["Codex.app", "ChatGPT.app"];
+
 #[cfg(not(windows))]
 fn codex_desktop_installed() -> bool {
-    if std::path::Path::new("/Applications/Codex.app").exists() {
-        return true;
-    }
+    codex_desktop_installed_in(
+        std::path::Path::new("/Applications"),
+        dirs::home_dir().map(|home| home.join("Applications")).as_deref(),
+    )
+}
 
-    dirs::home_dir()
-        .map(|home| home.join("Applications/Codex.app").exists())
-        .unwrap_or(false)
+#[cfg(not(windows))]
+fn codex_desktop_installed_in(system: &Path, user: Option<&Path>) -> bool {
+    CODEX_DESKTOP_BUNDLES.iter().any(|bundle| {
+        system.join(bundle).exists()
+            || user.is_some_and(|user_dir| user_dir.join(bundle).exists())
+    })
 }
 
 #[cfg(windows)]
@@ -746,5 +765,51 @@ mod tests {
         );
         assert!(!tools.claude_cli);
         assert!(!tools.any);
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod codex_desktop_tests {
+    use super::codex_desktop_installed_in;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Regression: desktop Codex ships as ChatGPT.app (bundle id
+    /// com.openai.codex). Probing only for Codex.app reported "not installed"
+    /// on a machine that has it, so the Ready screen offered an install link
+    /// for a tool the user already had — while `open -a Codex` would have
+    /// launched it fine.
+    #[test]
+    fn finds_codex_shipped_inside_the_chatgpt_app() {
+        let dir = tempdir().unwrap();
+        let apps = dir.path().join("Applications");
+        fs::create_dir_all(apps.join("ChatGPT.app")).unwrap();
+        assert!(codex_desktop_installed_in(&apps, None));
+    }
+
+    #[test]
+    fn still_finds_the_standalone_codex_app() {
+        let dir = tempdir().unwrap();
+        let apps = dir.path().join("Applications");
+        fs::create_dir_all(apps.join("Codex.app")).unwrap();
+        assert!(codex_desktop_installed_in(&apps, None));
+    }
+
+    #[test]
+    fn finds_a_user_installed_bundle() {
+        let dir = tempdir().unwrap();
+        let system = dir.path().join("Applications");
+        let user = dir.path().join("home/Applications");
+        fs::create_dir_all(&system).unwrap();
+        fs::create_dir_all(user.join("ChatGPT.app")).unwrap();
+        assert!(codex_desktop_installed_in(&system, Some(&user)));
+    }
+
+    #[test]
+    fn reports_absent_when_neither_bundle_exists() {
+        let dir = tempdir().unwrap();
+        let apps = dir.path().join("Applications");
+        fs::create_dir_all(apps.join("Safari.app")).unwrap();
+        assert!(!codex_desktop_installed_in(&apps, None));
     }
 }

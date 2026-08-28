@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   NO_AI_TOOLS,
   availableLaunches,
+  installUrlFor,
+  launchEntries,
   markToolUnavailable,
   readyCommandFor,
   selectPrimaryLaunch,
@@ -106,6 +108,61 @@ describe('onboarding summary launch state', () => {
       kind: 'copy-command',
       label: 'Copy command',
     });
+  });
+});
+
+describe('onboarding ready-screen slots', () => {
+  it('offers Claude Code and Codex even when neither is installed', () => {
+    // The old screen collapsed to a single "Download Claude" here, so a fresh
+    // machine was never told Codex was an option.
+    const entries = launchEntries(NO_AI_TOOLS);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['claude', 'codex']);
+    expect(entries.every((entry) => !entry.installed)).toBe(true);
+  });
+
+  it('marks a detected tool installed and leaves the other as an install link', () => {
+    const entries = launchEntries({
+      ...NO_AI_TOOLS,
+      claude_cli: true,
+      any: true,
+    });
+
+    expect(entries.find((entry) => entry.kind === 'claude')?.installed).toBe(true);
+    expect(entries.find((entry) => entry.kind === 'codex')?.installed).toBe(false);
+  });
+
+  it('treats the ChatGPT-bundled Codex desktop as installed', () => {
+    // codex_desktop is what the Rust detector reports for ChatGPT.app
+    // (bundle id com.openai.codex).
+    const entries = launchEntries({
+      ...NO_AI_TOOLS,
+      codex_desktop: true,
+      any: true,
+    });
+
+    expect(entries.find((entry) => entry.kind === 'codex')?.installed).toBe(true);
+  });
+
+  it('keeps Grok detection-only so dead slots do not bury the live one', () => {
+    expect(launchEntries(NO_AI_TOOLS).some((entry) => entry.kind === 'grok')).toBe(false);
+    expect(
+      launchEntries({ ...NO_AI_TOOLS, grok_cli: true, any: true }).some(
+        (entry) => entry.kind === 'grok',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns nothing while detection is still in flight', () => {
+    // Callers keep their "still checking" fallback rather than flashing two
+    // install links at someone who has both tools.
+    expect(launchEntries(null)).toEqual([]);
+  });
+
+  it('sends a missing Codex to the ChatGPT download, which is how it ships', () => {
+    const codex = launchEntries(NO_AI_TOOLS).find((entry) => entry.kind === 'codex');
+    expect(codex?.installUrl).toBe('https://chatgpt.com/download');
+    expect(installUrlFor('claude')).toBe('https://claude.ai/download');
   });
 });
 
