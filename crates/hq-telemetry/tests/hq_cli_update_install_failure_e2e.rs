@@ -5,8 +5,8 @@ use hq_desktop_core::hq_cli_update::{
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
     DeliveredPrefixShim, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
-    ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport, NpmToolchainSource,
-    ResolutionSource,
+    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
+    NpmToolchainSource, ResolutionSource,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -501,6 +501,86 @@ fn a_post_remedy_enotempty_still_captures_a_path_safe_error() {
     assert_path_safe(
         &event,
         &["/Users/", "mike", "Indigo HQ", "npm error", ".hq-cli-"],
+    );
+}
+
+/// HQ-DESKTOP-5K (Sentry issue 7691444052): `npm i -g @indigoai-us/hq-cli@latest`
+/// on a Windows machine whose npm global prefix directory chain does not exist, so
+/// npm's own `mkdir` of the install target fails ENOENT and the user's CLI silently
+/// never updates. After HQ's own mkdir + managed-toolchain repair has been attempted
+/// and declined, the failure is captured at WARNING under its OWN bounded group,
+/// carrying the closed-enumeration missing-target diagnostic — and, run through the
+/// shipped `before_send` scrubber, leaks no Windows path, drive letter, user name,
+/// or raw npm stderr into message, tags, fingerprint, or extra.
+#[test]
+fn missing_global_install_target_captures_a_path_safe_warning_with_the_diagnostic() {
+    let missing_target = "npm error code ENOENT\n\
+        npm error syscall mkdir\n\
+        npm error path C:\\Users\\U\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli\n\
+        npm error errno -4058";
+    let env = InstallEnvironment {
+        node_version: Some("22.20.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.3".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        managed_toolchain_retry: false,
+        // The mkdir remedy created the scope and retried; it still did not converge,
+        // and the managed-toolchain escalation then declined, so the failure is
+        // reported carrying this closed-enumeration state.
+        missing_target_state: MissingTargetState::CreatedAndRetried,
+        ..Default::default()
+    };
+    // Exit -4058 (libuv UV_ENOENT on Windows), prefix None — the recorded event.
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(-4058), missing_target, None, false, &env)
+    }));
+    // A local-machine condition (a broken npm prefix), not an updater defect, so it
+    // stays observable WITHOUT paging at Error.
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some(
+            "[hq-cli-update] install failed (missing-global-install-target:global-lib-node-modules)"
+        )
+    );
+    // Its OWN bounded fingerprint — it has left the `unexpected` catch-all group.
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "missing-global-install-target",
+            "missing-global-install-target:global-lib-node-modules"
+        ]
+    );
+    for (key, value) in [
+        ("install_failure_kind", "missing-global-install-target"),
+        ("npm_error_code", "ENOENT"),
+        ("npm_syscall", "mkdir"),
+        ("npm_path_shape", "global-lib-node-modules"),
+        ("npm_prefix_known", "false"),
+        ("eacces", "false"),
+        ("npm_lifecycle_failed", "false"),
+        ("npm_toolchain_source", "user-path"),
+        // The new closed-enumeration instrumentation tag.
+        ("npm_missing_target_state", "created-and-retried"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    // The diagnostic extra carries the same closed state, never a path.
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(text)) => text.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        diagnostics.contains("missing_target_state=created-and-retried"),
+        "npm_diagnostics dropped the missing-target state: {diagnostics}"
+    );
+    // Nothing about the Windows machine leaks through the shipped before_send
+    // scrubber — no drive letter, user directory, path component, or raw npm stderr.
+    assert_path_safe(
+        &event,
+        &["C:\\", "Users", "AppData", "Roaming", "node_modules", "npm error"],
     );
 }
 
@@ -1063,6 +1143,7 @@ fn environment_aware_capture_carries_the_previously_missing_provenance() {
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        missing_target_state: MissingTargetState::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1244,6 +1325,7 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        missing_target_state: MissingTargetState::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1434,6 +1516,7 @@ fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        missing_target_state: MissingTargetState::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1687,6 +1770,7 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
         managed_retry_outcome: ManagedRetryOutcome::ProvisionDeferred,
+        missing_target_state: MissingTargetState::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1768,6 +1852,7 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         toolchain_source: NpmToolchainSource::UserPath,
         managed_toolchain_retry: false,
         managed_retry_outcome: ManagedRetryOutcome::ProvisionDeferred,
+        missing_target_state: MissingTargetState::Unknown,
     };
     let user_key = "5.103.22|node-llama-cpp|postinstall-script".to_string();
 
@@ -1820,6 +1905,7 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         toolchain_source: NpmToolchainSource::Managed,
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
+        missing_target_state: MissingTargetState::Unknown,
     };
     let managed_events = captured_events(|| {
         assert!(matches!(

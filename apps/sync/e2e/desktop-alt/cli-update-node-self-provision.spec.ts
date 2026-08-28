@@ -359,3 +359,96 @@ describe('hq-CLI version probe recovers an unreadable CLI through the managed No
     expect(recoverAt).toBeLessThan(reportAt);
   });
 });
+
+/**
+ * HQ-DESKTOP-5K — the same auto-updater path, a new failure leg: on a Windows
+ * machine whose npm global prefix directory chain does not exist,
+ * `npm i -g @indigoai-us/hq-cli@latest` dies with `code ENOENT` / `syscall mkdir`
+ * at a global-install path before it can lay the package down, so the user's CLI
+ * silently never updates and the failure self-suppresses under the `unexpected`
+ * repeat-guard. HQ now (1) classifies the shape under its OWN bounded group at
+ * Warning, (2) CREATES the missing install-target directory and retries once
+ * (creation-only, the mirror image of the ENOTEMPTY cleanup), and (3) escalates to
+ * the SAME one-shot managed-toolchain retry — which installs into HQ's own managed
+ * prefix — before ever blaming the user's toolchain.
+ *
+ * Source-contract harness, same style as the specs above.
+ */
+describe('hq-CLI updater creates a missing npm global install target and escalates to the managed prefix (HQ-DESKTOP-5K)', () => {
+  const cli = readRepoFile('src-tauri/src/commands/hq_cli_update.rs');
+  const core = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
+
+  const occurrences = (haystack: string, needle: string) =>
+    haystack.split(needle).length - 1;
+
+  // The mkdir remedy block inside run_npm_install_with_retries, sliced so the
+  // "creates and never deletes / bounded to one retry" assertions cannot be
+  // satisfied by unrelated code (the ENOTEMPTY cleaner above legitimately deletes).
+  const mkdirRemedy = cli.slice(
+    cli.indexOf('// ENOENT missing-global-install-target recovery (HQ-DESKTOP-5K)'),
+    cli.indexOf('// Windows EPERM locked-binary recovery (HQ-DESKTOP-3N)'),
+  );
+
+  it('classifies the shape on npm`s own code + syscall, under its own bounded group', () => {
+    // A narrow predicate keyed on npm's OWN structured signals — never a bare
+    // `detail.contains("ENOENT")` — so it cannot swallow a lifecycle build failure.
+    expect(core).toContain('pub fn is_missing_global_install_target(');
+    expect(core).toContain('npm_error_code(detail) == "ENOENT"');
+    expect(core).toContain('npm_syscall(detail) == "mkdir"');
+    expect(core).toContain('!has_npm_lifecycle_failure_marker(detail)');
+    // Its own fingerprint component — it leaves the `unexpected` catch-all group.
+    expect(core).toContain(
+      'Self::MissingGlobalInstallTarget => "missing-global-install-target"',
+    );
+  });
+
+  it('creates the missing install-target directory off the async runtime and retries — creation only, no delete, no loop', () => {
+    // The remedy is armed by the same predicate and derives its scope through the
+    // shared fail-closed helpers (resolved prefix first, else npm's own path).
+    expect(mkdirRemedy).toContain('is_missing_global_install_target(&detail, prefix)');
+    expect(mkdirRemedy).toContain(
+      'missing_install_target_scope(prefix, &detail, cfg!(target_os = "windows"))',
+    );
+    // The probe + create runs OFF the Tokio worker (an offline UNC / dead drive can
+    // block the metadata calls), on the blocking pool like the surrounding npm work.
+    expect(mkdirRemedy).toContain('spawn_blocking');
+    expect(mkdirRemedy).toContain('create_missing_install_scope(&scope_for_create)');
+    // CREATION ONLY: the remedy never deletes (its blast radius is strictly smaller
+    // than the ENOTEMPTY cleanup), and it never loops.
+    expect(mkdirRemedy).not.toContain('remove_dir_all');
+    expect(mkdirRemedy).not.toMatch(/\b(loop|while)\b/);
+    // Bounded: a plain retry after creating the scope, plus — only if that newly
+    // exposes a stale-shim EEXIST — one --force collision retry, mirroring the
+    // ENOTEMPTY rung. Both attempts are gated by the hard MAX_NPM_INSTALL_ATTEMPTS cap.
+    expect(occurrences(mkdirRemedy, 'run_recorded_npm_install_attempt(')).toBe(2);
+    expect(mkdirRemedy).toContain('is_bin_exists_failure(&npm_output_detail(&output), prefix)');
+    expect(mkdirRemedy).toContain('"mkdir-forced-bin-collision"');
+    expect(occurrences(mkdirRemedy, 'ledger.len() < MAX_NPM_INSTALL_ATTEMPTS')).toBe(2);
+
+    // The scope resolver is pure (prefix-derived, else the fail-closed npm-path
+    // helper) and the creator uses create_dir_all and never a deletion.
+    expect(cli).toContain('fn missing_install_target_scope(');
+    expect(cli).toContain('partial_install_scope_dir_for(target_prefix, windows_layout)');
+    expect(cli).toContain('partial_install_scope_from_npm_path(detail)');
+    expect(cli).toContain('"mkdir-plain-npm-path"');
+    const createScope = cli.slice(
+      cli.indexOf('fn create_missing_install_scope('),
+      cli.indexOf('/// Spawn `npm <args>` on the blocking pool'),
+    );
+    expect(createScope).toContain('std::fs::create_dir_all(scope)');
+    expect(createScope).not.toContain('remove_dir_all');
+  });
+
+  it('escalates to the SAME one-shot managed-toolchain retry — no second installer', () => {
+    // The new kind arms the existing managed retry, gated only on user-path (the
+    // ABI clause deliberately does not apply — the managed retry installs into HQ's
+    // OWN prefix, so it repairs the machine even at the identical managed ABI).
+    expect(cli).toContain('kind == InstallFailureKind::MissingGlobalInstallTarget');
+    expect(cli).toContain('is_user_path && missing_global_install_target');
+    // Still exactly one provision call in the whole updater module — the escalation
+    // REUSES managed_toolchain_retry; it does not add a second installer.
+    expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
+    // And that retry still routes into HQ's own managed npm prefix.
+    expect(cli).toContain('paths::managed_npm_prefix_in(&root)');
+  });
+});

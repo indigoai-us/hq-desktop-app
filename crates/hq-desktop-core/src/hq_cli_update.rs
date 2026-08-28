@@ -3798,6 +3798,18 @@ pub enum InstallFailureKind {
     /// `Unexpected`, applied only when the probed environment proves the runtime
     /// is too old.
     UnsupportedNode,
+    /// npm could not create its OWN global install-target directory: on a machine
+    /// whose npm global prefix directory chain does not exist, `npm install -g
+    /// @indigoai-us/hq-cli@latest` dies with `code ENOENT` / `syscall mkdir` at a
+    /// global-install path before it can lay the package down, so the user's CLI
+    /// silently never updates (HQ-DESKTOP-5K). A broken/absent LOCAL npm prefix,
+    /// not an updater defect — but it stops the update dead, so (unlike the other
+    /// expected local conditions) it stays observable at Warning under its own
+    /// bounded group, and only AFTER HQ's own mkdir + managed-toolchain repair have
+    /// been attempted and declined. A strict refinement of `Unexpected`, applied
+    /// only when npm's own structured code/syscall/path shape prove this exact
+    /// shape and no lifecycle failure was reported.
+    MissingGlobalInstallTarget,
 }
 
 /// A bin collision is expected only when npm's documented `--force` remedy
@@ -3805,6 +3817,61 @@ pub enum InstallFailureKind {
 /// failure. A bare EEXIST token elsewhere in stderr remains reportable.
 pub fn is_npm_bin_collision(detail: &str, prefix: Option<&str>) -> bool {
     npm_error_code(detail) == "EEXIST" && npm_path_shape(detail, prefix) == NpmPathShape::BinHq
+}
+
+/// Whether a failed npm install is the "npm's own global install target directory
+/// does not exist" condition (HQ-DESKTOP-5K): npm's `mkdir` of the install target
+/// fails `ENOENT` because the machine's npm global prefix directory chain is
+/// absent, so `npm install -g @indigoai-us/hq-cli@latest` dies before it can
+/// create the package and the user's CLI silently never updates.
+///
+/// Keyed on npm's OWN structured signals exactly as [`is_disk_exhaustion_failure`]
+/// keys on `ENOSPC` and [`is_npm_bin_collision`] keys on `EEXIST` — never a bare
+/// `detail.contains("ENOENT")`, which would swallow both the better-sqlite3
+/// lifecycle fixture (`code ENOENT` WITH `command failed`) and any unrelated defect
+/// whose stderr merely mentions `ENOENT`. It requires ALL of:
+///   * npm's `code ENOENT` AND `syscall mkdir` (the exact make-the-target-dir shape);
+///   * a global-install path shape — the top of the install tree, either
+///     [`NpmPathShape::GlobalLibNodeModules`] (no prefix resolved) or
+///     [`NpmPathShape::SelectedPrefixNodeModules`] (a resolved prefix);
+///   * the ABSENCE of BOTH lifecycle signals, so a third-party native build that
+///     happens to `mkdir`-fail keeps its own per-package lifecycle attribution and
+///     is never collapsed into this bucket.
+///
+/// Disjoint by construction from every other classifier arm: `ENOSPC`/`EACCES`/
+/// `EPERM`/`EEXIST`/`EIDLETIMEOUT` all carry a different `code`, and a genuine
+/// lifecycle failure carries a lifecycle marker this predicate excludes.
+pub fn is_missing_global_install_target(detail: &str, prefix: Option<&str>) -> bool {
+    npm_error_code(detail) == "ENOENT"
+        && npm_syscall(detail) == "mkdir"
+        && matches!(
+            npm_path_shape(detail, prefix),
+            NpmPathShape::GlobalLibNodeModules | NpmPathShape::SelectedPrefixNodeModules
+        )
+        && npm_reported_path_is_global_install_root(detail)
+        && !has_npm_lifecycle_failure_marker(detail)
+        && !npm_lifecycle_failure(detail).failed
+}
+
+/// Whether npm's reported path terminates AT the global install root — the
+/// `@indigoai-us` scope directory, or the `@indigoai-us/hq-cli` package directory
+/// itself — rather than some DEEPER path inside an already-created package (e.g.
+/// `.../@indigoai-us/hq-cli/node_modules/foo/cache`). The HQ-DESKTOP-5K shape is a
+/// missing directory at the TOP of the global install tree; a `mkdir` ENOENT deeper
+/// than the package root means the prefix chain already exists and is a DIFFERENT
+/// failure, which must not be misfiled as a missing prefix and then subjected to a
+/// no-op mkdir, needless managed-Node provisioning, a Warning downgrade, and
+/// repeat-suppression. `npm_path_shape` alone matches any path CONTAINING the
+/// selected prefix's `node_modules` (or `/node_modules/@indigoai-us/hq-cli`), so
+/// this terminal check narrows the classifier to the actual root. Keyed on the
+/// normalized path's exact terminal components (never a substring).
+fn npm_reported_path_is_global_install_root(detail: &str) -> bool {
+    let Some(path) = normalized_npm_path(detail) else {
+        return false;
+    };
+    let path = path.trim_end_matches('/');
+    path.ends_with("/node_modules/@indigoai-us")
+        || path.ends_with("/node_modules/@indigoai-us/hq-cli")
 }
 
 pub fn classify_install_failure(
@@ -3848,6 +3915,14 @@ pub fn classify_install_failure_with_final_attempt(
         InstallFailureKind::ExpectedBinCollision
     } else if is_third_party_npm_lifecycle_failure(detail) {
         InstallFailureKind::UnexpectedLifecycle
+    } else if is_missing_global_install_target(detail, prefix) {
+        // Placed AFTER the lifecycle arm so a third-party build failure keeps its
+        // per-package attribution; the predicate additionally excludes both
+        // lifecycle signals, so the ordering is belt-and-suspenders. npm could not
+        // create its own global install-target dir — a broken local npm prefix,
+        // reported at Warning under its own bounded group once HQ's own repair
+        // (mkdir + managed toolchain) has been attempted and declined.
+        InstallFailureKind::MissingGlobalInstallTarget
     } else {
         InstallFailureKind::Unexpected
     }
@@ -3922,6 +3997,7 @@ impl InstallFailureKind {
             Self::UnexpectedLifecycle => "unexpected-lifecycle",
             Self::Unexpected => "unexpected",
             Self::UnsupportedNode => "unsupported-node",
+            Self::MissingGlobalInstallTarget => "missing-global-install-target",
         }
     }
 }
@@ -3973,6 +4049,18 @@ fn install_failure_signature(
         let package = package.as_deref().unwrap_or("unrecognized");
         let cause = npm_lifecycle_cause(detail);
         return format!("lifecycle:{package}:{cause}");
+    }
+    if kind == InstallFailureKind::MissingGlobalInstallTarget {
+        // Its OWN bounded group, so it leaves the `unexpected` catch-all. The
+        // predicate already fixed `code == ENOENT` and `syscall == mkdir`, so those
+        // carry no discriminating power here; the only varying closed dimension is
+        // WHICH global-install path shape npm named (a resolved-prefix target vs. a
+        // prefix-less one), which is kept. Mirrors the `unsupported-node:<major>`
+        // precedent: `<fingerprint-component>:<closed-discriminator>`.
+        return format!(
+            "missing-global-install-target:{}",
+            npm_path_shape(detail, prefix).tag_value(),
+        );
     }
     format!(
         "{}:{}:{}",
@@ -4079,6 +4167,14 @@ pub fn install_failure_detail_with_environment(
         // the passthrough below would otherwise surface.
         return DISK_FULL_DETAIL.to_string();
     }
+    if kind == InstallFailureKind::MissingGlobalInstallTarget {
+        // npm's own global install folder does not exist on this machine and HQ's
+        // automatic repair could not create it. Name the condition and hand the
+        // user the copy-the-command escape hatch — never the raw npm stderr, which
+        // carries the machine's filesystem path. Placed BEFORE the non-empty-stderr
+        // passthrough so the path is never surfaced verbatim.
+        return "hq could not update because npm's global install folder is missing on this computer and it couldn't be created automatically. Run the copied command in a terminal to finish the update; if that folder lives on a network or removed drive, reconnect it first.".to_string();
+    }
     if npm_lifecycle_failure(detail).failed {
         // Cause-specific, actionable wording. Every branch keeps the copyable
         // command escape hatch ("copied command") so the UI fallback is intact
@@ -4115,11 +4211,13 @@ pub fn install_failure_detail_with_environment(
         // Unreachable in practice — `ExpectedDiskFull` returns early above,
         // before the empty-stderr fallback — but the match must stay exhaustive.
         InstallFailureKind::ExpectedDiskFull => DISK_FULL_DETAIL.to_string(),
-        // `UnsupportedNode` returns its actionable copy early above; this arm
-        // keeps the match exhaustive without ever being reached for it.
+        // `UnsupportedNode` and `MissingGlobalInstallTarget` return their actionable
+        // copy early above; these arms keep the match exhaustive without ever being
+        // reached for them.
         InstallFailureKind::Unexpected
         | InstallFailureKind::UnexpectedLifecycle
-        | InstallFailureKind::UnsupportedNode => format!(
+        | InstallFailureKind::UnsupportedNode
+        | InstallFailureKind::MissingGlobalInstallTarget => format!(
             "npm install exited with status {}",
             exit_code
                 .map(|code| code.to_string())
@@ -4192,7 +4290,8 @@ pub fn install_failure_report_with_environment(
         }
         InstallFailureKind::Unexpected
         | InstallFailureKind::UnexpectedLifecycle
-        | InstallFailureKind::UnsupportedNode => {}
+        | InstallFailureKind::UnsupportedNode
+        | InstallFailureKind::MissingGlobalInstallTarget => {}
         InstallFailureKind::ExpectedPrefixPermission
         | InstallFailureKind::ExpectedWindowsAbort
         | InstallFailureKind::ExpectedWindowsLockedBinary
@@ -4268,6 +4367,53 @@ impl ManagedRetryOutcome {
             Self::ProvisionDeferred => "provision-deferred",
             Self::ProvisionFailed => "provision-failed",
             Self::SpawnFailed => "spawn-failed",
+        }
+    }
+}
+
+/// Which ancestor of the derived `@indigoai-us` install scope the mkdir remedy
+/// (HQ-DESKTOP-5K) found missing, and how its creation went — the evidence that
+/// makes a non-converging occurrence self-diagnosing without the unreachable local
+/// `hq-sync.log`. A CLOSED enumeration carried on [`InstallEnvironment`] and, like
+/// [`ManagedRetryOutcome`], emitted ONLY as a tag and an `npm_diagnostics` key —
+/// never a fingerprint, signature, or repeat-guard component — so grouping is
+/// untouched. Every value maps to a fixed `&'static str`; no filesystem path ever
+/// reaches Sentry through it. The default [`Self::Unknown`] means the remedy did not
+/// run (the failure was not this shape, or no scope resolved), so an
+/// `InstallEnvironment` that never considered the remedy tags itself honestly and is
+/// emitted as no extra tag at all (see `report_install_failure_with_environment`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MissingTargetState {
+    /// The remedy did not run: the failure was not the missing-target shape, or no
+    /// install scope could be resolved to create. The default.
+    #[default]
+    Unknown,
+    /// The resolved install prefix root itself did not exist.
+    PrefixRootMissing,
+    /// The prefix existed but its `[lib/]node_modules` directory did not.
+    NodeModulesMissing,
+    /// `node_modules` existed but the `@indigoai-us` scope directory did not.
+    ScopeMissing,
+    /// The scope (and every absent ancestor) was created successfully and the plain
+    /// install was retried. Reported when nothing in the probed ancestor chain was
+    /// actually missing — npm's failing `mkdir` targeted some deeper path — so the
+    /// creation was a no-op and the retry still ran.
+    CreatedAndRetried,
+    /// `create_dir_all` of the scope itself failed (an unreachable or permission-
+    /// denied parent — a dead mapped drive, an offline redirected UNC path); nothing
+    /// was changed and the failure fell through to reporting.
+    CreateFailed,
+}
+
+impl MissingTargetState {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::PrefixRootMissing => "prefix-root-missing",
+            Self::NodeModulesMissing => "node-modules-missing",
+            Self::ScopeMissing => "scope-missing",
+            Self::CreatedAndRetried => "created-and-retried",
+            Self::CreateFailed => "create-failed",
         }
     }
 }
@@ -4353,6 +4499,13 @@ pub struct InstallEnvironment {
     /// component), defaulting to [`ManagedRetryOutcome::NotArmed`] so every existing
     /// caller reproduces today's grouping and only gains the new descriptive tag.
     pub managed_retry_outcome: ManagedRetryOutcome,
+    /// For a missing-global-install-target failure (HQ-DESKTOP-5K), which ancestor
+    /// of the install scope the mkdir remedy found missing and how its creation
+    /// went. A pure tag/diagnostic addition (never a fingerprint, signature, or
+    /// repeat-guard component), defaulting to [`MissingTargetState::Unknown`] — which
+    /// is emitted as NO tag at all — so every existing caller reproduces today's
+    /// grouping AND today's exact tag set and `npm_diagnostics` string.
+    pub missing_target_state: MissingTargetState,
 }
 
 /// Reduce a caller-supplied node/npm version or Node ABI to a strictly bounded
@@ -4493,7 +4646,7 @@ pub fn report_install_failure_with_environment(
     let node_abi = sanitized_version_token(env.node_abi.as_deref());
     let npm_version = sanitized_version_token(env.npm_version.as_deref());
     let toolchain_source = env.toolchain_source.tag_value();
-    let npm_diagnostics = format!(
+    let mut npm_diagnostics = format!(
         "{} {}",
         npm_diagnostics_summary(
             exit_str.as_str(),
@@ -4512,6 +4665,15 @@ pub fn report_install_failure_with_environment(
             env.managed_retry_outcome.tag_value(),
         ),
     );
+    // Append the missing-target diagnostic ONLY when the mkdir remedy actually ran
+    // (state != Unknown). The default keeps every existing event's `npm_diagnostics`
+    // string byte-identical, so no pre-existing exact-string assertion changes.
+    if env.missing_target_state != MissingTargetState::Unknown {
+        npm_diagnostics.push_str(&format!(
+            " missing_target_state={}",
+            env.missing_target_state.tag_value()
+        ));
+    }
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
@@ -4573,6 +4735,17 @@ pub fn report_install_failure_with_environment(
                 "npm_managed_retry_outcome",
                 env.managed_retry_outcome.tag_value(),
             );
+            // Which ancestor of the install scope was missing and how the mkdir
+            // remedy went (HQ-DESKTOP-5K). Like `npm_managed_retry_outcome`, a tag
+            // and `npm_diagnostics` key only — never a fingerprint, signature, or
+            // repeat-guard component. Emitted ONLY when the remedy ran, so an event
+            // that never considered it keeps its exact existing tag set.
+            if env.missing_target_state != MissingTargetState::Unknown {
+                scope.set_tag(
+                    "npm_missing_target_state",
+                    env.missing_target_state.tag_value(),
+                );
+            }
             scope.set_tag(
                 "npm_prefix_known",
                 if npm_prefix_known { "true" } else { "false" },
@@ -4591,12 +4764,17 @@ pub fn report_install_failure_with_environment(
             scope.set_extra("npm_diagnostics", npm_diagnostics.into());
         },
         || {
-            // A local-runtime condition, not an updater defect: an unsupported
-            // Node is downgraded alongside the post-force bin collision, so it
-            // stays observable without paging at Error.
+            // A local-machine condition, not an updater defect: an unsupported
+            // Node and a missing npm global install target are downgraded alongside
+            // the post-force bin collision, so they stay observable without paging
+            // at Error. The missing-target shape is only ever reported AFTER HQ's own
+            // mkdir + managed-toolchain repair has been attempted and declined, so at
+            // report time it genuinely describes a broken local npm prefix.
             let level = if matches!(
                 kind,
-                InstallFailureKind::ExpectedBinCollision | InstallFailureKind::UnsupportedNode
+                InstallFailureKind::ExpectedBinCollision
+                    | InstallFailureKind::UnsupportedNode
+                    | InstallFailureKind::MissingGlobalInstallTarget
             ) {
                 sentry::Level::Warning
             } else {
@@ -4712,6 +4890,25 @@ pub fn install_failure_episode_key_with_environment(
             return None;
         }
         let key = format!("{latest}|unexpected|{code}|{syscall}|{path_shape}");
+        return Some(if env.managed_toolchain_retry {
+            format!("{key}|managed")
+        } else {
+            key
+        });
+    }
+    if kind == InstallFailureKind::MissingGlobalInstallTarget {
+        // A broken/absent local npm prefix recurs identically on every 6-hourly
+        // check once HQ's own mkdir + managed-toolchain repair has declined, so page
+        // it ONCE per published CLI version rather than forever — the same treatment
+        // as the `Unexpected` and `UnsupportedNode` shapes. Key on the SAME closed
+        // path shape the group already uses (`code`/`syscall` are definitionally
+        // `ENOENT`/`mkdir` for this kind, so they add nothing); the predicate makes a
+        // fully shapeless `none` impossible, so — unlike the `Unexpected` branch — no
+        // shapeless-carve-out is needed. The `|managed` discriminator matches the
+        // other shapes so a managed-retry event never collides with its user-path
+        // predecessor.
+        let path_shape = npm_path_shape(detail, prefix).tag_value();
+        let key = format!("{latest}|missing-global-install-target|{path_shape}");
         return Some(if env.managed_toolchain_retry {
             format!("{key}|managed")
         } else {
@@ -12251,6 +12448,7 @@ mod tests {
             toolchain_source: NpmToolchainSource::UserPath,
             managed_toolchain_retry: false,
             managed_retry_outcome: ManagedRetryOutcome::NotArmed,
+            missing_target_state: MissingTargetState::Unknown,
         };
         let mut declined = base.clone();
         declined.managed_retry_outcome = ManagedRetryOutcome::ProvisionDeferred;
@@ -12516,6 +12714,244 @@ mod tests {
                 Some("/usr/local"),
                 false,
                 latest,
+                &InstallEnvironment::default(),
+            ),
+            None
+        );
+    }
+
+    // ---- HQ-DESKTOP-5K: npm's own global install-target directory is missing ----
+
+    /// The exact reconstructed production input behind HQ-DESKTOP-5K (Sentry issue
+    /// 7691444052): `npm i -g @indigoai-us/hq-cli@latest` on a Windows machine whose
+    /// npm global prefix directory chain does not exist, so npm's own `mkdir` fails
+    /// ENOENT at a global-install path with NO prefix resolved. Byte-for-byte the
+    /// structured lines the event recorded: code ENOENT, syscall mkdir, a
+    /// global-lib-node-modules path shape, errno -4058, and no lifecycle marker.
+    const MISSING_TARGET_STDERR: &str = "npm error code ENOENT\n\
+        npm error syscall mkdir\n\
+        npm error path C:\\Users\\U\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli\n\
+        npm error errno -4058";
+
+    #[test]
+    fn missing_global_install_target_reconstructed_hq_desktop_5k_classifies_and_groups() {
+        // On the UNMODIFIED base this exact input classified as `Unexpected`, titled
+        // its report `... (ENOENT:mkdir:global-lib-node-modules)`, and minted episode
+        // key `<latest>|unexpected|ENOENT|mkdir|global-lib-node-modules` (the planner's
+        // executed byte-identical reproduction). On the candidate it earns its own
+        // kind, fingerprint, and bounded signature and leaves the `unexpected` group.
+        assert!(is_missing_global_install_target(MISSING_TARGET_STDERR, None));
+        assert_eq!(
+            classify_install_failure(Some(-4058), MISSING_TARGET_STDERR, None),
+            InstallFailureKind::MissingGlobalInstallTarget,
+            "the reconstructed HQ-DESKTOP-5K input must no longer fall through to Unexpected"
+        );
+        assert_eq!(
+            InstallFailureKind::MissingGlobalInstallTarget.fingerprint_component(),
+            "missing-global-install-target"
+        );
+        // The report title carries the NEW bounded signature — no longer
+        // `ENOENT:mkdir:global-lib-node-modules` under the unexpected kind.
+        assert_eq!(
+            install_failure_report(Some(-4058), MISSING_TARGET_STDERR, None),
+            Some(
+                "[hq-cli-update] install failed (missing-global-install-target:global-lib-node-modules)"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::MissingGlobalInstallTarget,
+                MISSING_TARGET_STDERR,
+                None,
+                &InstallEnvironment::default(),
+            ),
+            "missing-global-install-target:global-lib-node-modules"
+        );
+    }
+
+    #[test]
+    fn missing_global_install_target_repeat_guard_pages_once_per_version_with_managed_discriminator() {
+        let latest = "0.10.157";
+        let key = install_failure_episode_key_with_environment(
+            Some(-4058),
+            MISSING_TARGET_STDERR,
+            None,
+            false,
+            latest,
+            &InstallEnvironment::default(),
+        )
+        .expect("missing-global-install-target mints an episode key");
+        assert_eq!(
+            key,
+            "0.10.157|missing-global-install-target|global-lib-node-modules"
+        );
+        // An identical repeat for the same published version is suppressed, so the
+        // wedge stops re-paging every 6-hourly check.
+        assert!(install_failure_episode_blocked(&[key.clone()], &key));
+        // A newly published CLI version mints a fresh key and pages a first occurrence
+        // again — the key still VARIES with the published version.
+        let next = install_failure_episode_key_with_environment(
+            Some(-4058),
+            MISSING_TARGET_STDERR,
+            None,
+            false,
+            "0.10.158",
+            &InstallEnvironment::default(),
+        );
+        assert_eq!(
+            next.as_deref(),
+            Some("0.10.158|missing-global-install-target|global-lib-node-modules")
+        );
+        // A managed-retry event carries the `|managed` provenance discriminator so it
+        // never collides with its user-path predecessor.
+        let managed = install_failure_episode_key_with_environment(
+            Some(-4058),
+            MISSING_TARGET_STDERR,
+            None,
+            false,
+            latest,
+            &InstallEnvironment {
+                managed_toolchain_retry: true,
+                ..InstallEnvironment::default()
+            },
+        );
+        assert_eq!(
+            managed.as_deref(),
+            Some("0.10.157|missing-global-install-target|global-lib-node-modules|managed")
+        );
+    }
+
+    #[test]
+    fn missing_global_install_target_predicate_is_disjoint_from_lifecycle_and_siblings() {
+        // 1. A genuine third-party lifecycle failure (ELIFECYCLE + command failed)
+        //    keeps its `UnexpectedLifecycle` kind — the code is not ENOENT, and the
+        //    predicate also excludes the lifecycle marker.
+        let lifecycle = "npm error code ELIFECYCLE\n\
+            npm error command failed\n\
+            npm error path /Users/alice/.npm-global/lib/node_modules/better-sqlite3";
+        assert!(!is_missing_global_install_target(
+            lifecycle,
+            Some("/Users/alice/.npm-global")
+        ));
+        assert_eq!(
+            classify_install_failure(Some(1), lifecycle, Some("/Users/alice/.npm-global")),
+            InstallFailureKind::UnexpectedLifecycle
+        );
+        // 2. The better-sqlite3 `ENOENT`-WITH-`command failed` shape (the :8379 fixture
+        //    family): npm's own parser does NOT treat it as a lifecycle failure
+        //    (ENOENT is not a lifecycle code), so on base it is `Unexpected`. The new
+        //    predicate must ALSO leave it untouched — it has no `syscall mkdir` line
+        //    AND carries a lifecycle marker, so BOTH guards exclude it.
+        let enoent_command_failed = "npm error code ENOENT\nnpm error command failed\nnpm error path /tmp/lib/node_modules/better-sqlite3";
+        assert!(!npm_lifecycle_failure(enoent_command_failed).failed);
+        assert!(!is_missing_global_install_target(enoent_command_failed, None));
+        assert_eq!(
+            classify_install_failure(Some(1), enoent_command_failed, None),
+            InstallFailureKind::Unexpected
+        );
+        // 3. An ENOENT/mkdir whose path shape is NOT a global-install target (here the
+        //    npm cache) stays `Unexpected`.
+        let cache_enoent = "npm error code ENOENT\n\
+            npm error syscall mkdir\n\
+            npm error path /Users/alice/.npm/_cacache/tmp/abc";
+        assert!(!is_missing_global_install_target(cache_enoent, None));
+        assert_eq!(
+            classify_install_failure(Some(-4058), cache_enoent, None),
+            InstallFailureKind::Unexpected
+        );
+        // 4. A bare `ENOENT` token with no structured code/syscall lines never matches
+        //    (keyed on npm's OWN code + syscall, never a substring).
+        assert!(!is_missing_global_install_target(
+            "gyp ERR! stack Error: ENOENT while running the build",
+            None
+        ));
+        // 5. The selected-prefix layout ALSO qualifies (a resolved prefix whose
+        //    node_modules chain is missing), so both global-install shapes are caught.
+        let selected = "npm error code ENOENT\n\
+            npm error syscall mkdir\n\
+            npm error path /Users/alice/.npm-global/lib/node_modules/@indigoai-us";
+        assert!(is_missing_global_install_target(
+            selected,
+            Some("/Users/alice/.npm-global")
+        ));
+        assert_eq!(
+            classify_install_failure(Some(-4058), selected, Some("/Users/alice/.npm-global")),
+            InstallFailureKind::MissingGlobalInstallTarget
+        );
+        // 6. A DEEPER mkdir ENOENT INSIDE an already-created package (the global
+        //    prefix chain exists; only a nested dependency dir failed) must NOT be
+        //    misfiled as a missing install root — it stays `Unexpected` so it is not
+        //    needlessly self-healed, downgraded, and repeat-suppressed.
+        let deep = "npm error code ENOENT\n\
+            npm error syscall mkdir\n\
+            npm error path /Users/alice/.npm-global/lib/node_modules/@indigoai-us/hq-cli/node_modules/foo/cache";
+        assert!(!is_missing_global_install_target(
+            deep,
+            Some("/Users/alice/.npm-global")
+        ));
+        assert_eq!(
+            classify_install_failure(Some(-4058), deep, Some("/Users/alice/.npm-global")),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn adding_missing_target_kind_leaves_existing_group_keys_byte_identical() {
+        // The ENOTDIR global-target shape (HQ-DESKTOP-4J) still groups as `Unexpected`
+        // with its exact prior signature and repeat-guard key — the new arm is placed
+        // after lifecycle and requires code ENOENT, so it never intercepts ENOTDIR.
+        let enotdir = "npm error code ENOTDIR\n\
+            npm error syscall mkdir\n\
+            npm error errno -20\n\
+            npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            classify_install_failure(Some(236), enotdir, None),
+            InstallFailureKind::Unexpected
+        );
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                enotdir,
+                None,
+                &InstallEnvironment::default(),
+            ),
+            "ENOTDIR:mkdir:global-lib-node-modules"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(236),
+                enotdir,
+                None,
+                false,
+                "0.10.157",
+                &InstallEnvironment::default(),
+            )
+            .as_deref(),
+            Some("0.10.157|unexpected|ENOTDIR|mkdir|global-lib-node-modules")
+        );
+        // The new instrumentation state is never a grouping component: the same input
+        // with a non-default `missing_target_state` yields the SAME signature.
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                enotdir,
+                None,
+                &InstallEnvironment {
+                    missing_target_state: MissingTargetState::CreatedAndRetried,
+                    ..InstallEnvironment::default()
+                },
+            ),
+            "ENOTDIR:mkdir:global-lib-node-modules"
+        );
+        // A fully shapeless failure still mints NO repeat-guard key.
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                "some unstructured failure with no npm markers",
+                None,
+                false,
+                "0.10.157",
                 &InstallEnvironment::default(),
             ),
             None
