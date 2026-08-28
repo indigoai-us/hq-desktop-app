@@ -540,6 +540,8 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                 UpdateAnnouncement::PersistentOnly,
             )
             .await?;
+            // Best-effort HQ Work co-install; do not block the Sync update on it.
+            crate::commands::hq_work::spawn_maybe_co_install_hq_work();
             // Download and install
             update
                 .download_and_install(|_, _| {}, || {})
@@ -547,6 +549,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             // On macOS, download_and_install typically terminates the process before reaching
             // this line. restart() is retained as a safety net for platforms where it returns.
+            crate::commands::hq_work::spawn_maybe_co_install_hq_work();
             app.restart();
         }
         Ok(None) => {
@@ -645,6 +648,8 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                             info.version
                                                         ),
                                                     );
+                                                    // Non-blocking: Sync update must not wait on HQ Work download.
+                                                    crate::commands::hq_work::spawn_maybe_co_install_hq_work();
                                                     match update
                                                         .download_and_install(|_, _| {}, || {})
                                                         .await
@@ -654,6 +659,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                                 "updater",
                                                                 "automatic update installed — restarting",
                                                             );
+                                                            crate::commands::hq_work::spawn_maybe_co_install_hq_work();
                                                             handle.restart();
                                                         }
                                                         Err(error) => {

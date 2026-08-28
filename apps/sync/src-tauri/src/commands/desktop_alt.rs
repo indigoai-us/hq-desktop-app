@@ -659,6 +659,13 @@ pub async fn open_desktop_alt_window_inner(
         return Err("desktop-alt requires a signed-in user".to_string());
     }
 
+    // US-103: intercept is a no-op (always false). Combined-app embed still
+    // opens THIS desktop-alt window; the webview mounts @hq/ui DesktopApp when
+    // hq_work_handoff is on. Flag-off must not probe install or log (finding-6).
+    if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app, route)? {
+        return Ok(());
+    }
+
     // One HQ window at a time: opening the desktop view hides the classic
     // popover (whether summoned via shortcut, menu, or the popover's own
     // "Open desktop view" button).

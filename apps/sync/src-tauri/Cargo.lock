@@ -2760,6 +2760,7 @@ dependencies = [
  "ignore",
  "libc",
  "mac-notification-sys",
+ "minisign-verify",
  "nix 0.29.0",
  "notify",
  "objc2",

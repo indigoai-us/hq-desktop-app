@@ -25,6 +25,15 @@ export default defineConfig({
   server: {
     port: 1421,
     strictPort: true,
+    fs: {
+      allow: [
+        rootDir,
+        resolve(rootDir, '../../../../hq-work-mono/hq-work-sync-handoff'),
+      ],
+    },
+  },
+  optimizeDeps: {
+    exclude: ['@hq/ui', '@hq/platform', '@hq/core'],
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
@@ -48,5 +57,12 @@ export default defineConfig({
       // vitest's default exclude, so this only matches our own bridge tests.
       "sidecar/recall-sdk-bridge/**/*.test.mjs",
     ],
+    // Linked hq-work-mono packages ship TypeScript source, not JS. Vitest 4
+    // will not strip types under node_modules unless we inline them.
+    server: {
+      deps: {
+        inline: [/@hq\/(ui|platform|core)($|\/)/],
+      },
+    },
   },
 });

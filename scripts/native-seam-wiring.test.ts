@@ -121,7 +121,12 @@ const boundaryContracts: BoundaryContract[] = [
     file: "main",
     hook: "surface_existing_instance(app);",
     startMarker:
-      ".plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {",
+      // `argv` is bound, not `_argv`: US-104 reads it in this closure via
+      // `hqwork_url_from_argv` so a hqwork:// URL delivered to a second
+      // process routes internally instead of stealing the popover. That
+      // commit renamed the binding and left this marker stale, which failed
+      // every `pnpm test:scripts` run on the branch.
+      ".plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {",
     endMarker: ".plugin(tauri_plugin_shell::init())",
   },
   {

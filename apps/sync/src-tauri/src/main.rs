@@ -345,7 +345,14 @@ fn main() {
         // Launch Services by bundle id, which would otherwise start a duplicate
         // menubar process. Here the callback surfaces the existing instance and
         // the second process exits instead of becoming a ghost duplicate.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // US-104: if the OS delivered a hqwork:// URL to THIS process,
+            // route it internally. Do not steal the popover for a deep link.
+            if let Some(url) = commands::hq_work::hqwork_url_from_argv(&argv) {
+                commands::hq_work::spawn_open_hqwork_deep_link(app, url);
+                return;
+            }
+
             // US-004 WindowRouter: taskbar / second-process activation always
             // shows the compact notification popover — never auto-focuses the
             // full desktop. Desktop opens only via explicit Open HQ / shortcut.
@@ -462,6 +469,15 @@ fn main() {
                     });
                 }
             }
+            // No eager standalone-install probe here. `refresh_hq_work_install_cache`
+            // force-probes with no TTL — on macOS that falls through to a fresh
+            // `mdfind` process — and this fired on EVERY window focus, for every
+            // user including the default flag-off population, overlapping as the
+            // tray and desktop windows traded focus. The combined app never
+            // consumes the standalone-install cache on the open path (US-103
+            // mounts in-process; `should_probe_install_on_desktop_alt_open` is
+            // hard `false`). Anything that still needs the state calls
+            // `hq_work_installed`, which probes lazily behind its own TTL.
             // Windows: reapply Mica/Acrylic when the OS theme flips so light
             // mode never keeps a forced-dark backdrop (US-003). Theme is left
             // unset on window builders so ThemeChanged keeps firing.
@@ -494,11 +510,22 @@ fn main() {
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
+            commands::hq_pro::hq_pro_fetch,
+            commands::vault_s3::vault_s3_put,
+            commands::vault_s3::vault_s3_get,
             commands::auth::has_stored_token,
             commands::auth::begin_reauth,
             commands::auth::refresh_tokens,
             commands::auth::sign_out,
             commands::config::get_config,
+            commands::hq_work::hq_work_installed,
+            commands::hq_work::launch_hq_work,
+            commands::hq_work::open_hqwork_deep_link,
+            commands::hq_work::install_hq_work,
+            commands::hq_work::get_hq_work_handoff_card_shown,
+            commands::hq_work::mark_hq_work_handoff_card_shown,
+            commands::config::get_hq_work_handoff,
+            commands::config::set_hq_work_handoff,
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
@@ -833,6 +860,13 @@ fn main() {
             let launch_kind = commands::first_run::classify_launch(app.handle());
             commands::lifecycle::setup_lifecycle(app.handle());
 
+            // US-104: cold-start hqwork:// on argv (if the OS delivered one).
+            // Not an OS-scheme registration — only handle what we were given.
+            let startup_args: Vec<String> = std::env::args().collect();
+            if let Some(url) = commands::hq_work::hqwork_url_from_argv(&startup_args) {
+                commands::hq_work::spawn_open_hqwork_deep_link(app.handle(), url);
+            }
+
             // One-shot migration of any legacy `/deploy`-skill stub at
             // ~/.hq/config.json. Runs first so subsequent prewarm /
             // daemon / sync calls see a clean HqConfig (when a personal
@@ -1072,6 +1106,11 @@ fn main() {
             // download. No-ops if the cache is already warm. See
             // `commands::prewarm` for the rationale.
             commands::prewarm::spawn_prewarm();
+
+            // US-004: silent HQ Work co-install after a Sync update. Canonical
+            // path is next launch — macOS download_and_install often kills the
+            // process before post-install hooks run.
+            commands::hq_work::spawn_maybe_co_install_hq_work();
 
             // Auto-start the watcher when either flag is on:
             //   - `autostart_daemon` (V2-prep devtools flag, default OFF)
@@ -1338,6 +1377,7 @@ fn main() {
             // enabled (the default on macOS).
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
+                // Same reason as the focus handler above: no eager force-probe.
                 let _ = commands::desktop_alt::activation_policy(
                     commands::desktop_alt::ActivationSource::DockIconClick,
                 );

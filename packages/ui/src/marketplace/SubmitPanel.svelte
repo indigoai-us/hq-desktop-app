@@ -1,0 +1,662 @@
+<script lang="ts">
+  /**
+   * SubmitPanel — the desktop-alt **Submit** tab body (US-013).
+   *
+   * Lets a creator pick a local skill/worker directory and submit it to the
+   * marketplace via the US-004 `hq publish` flow (shelled out by the Rust
+   * `publish_marketplace_pack` command). It renders:
+   *   • a native folder picker (`pick_pack_directory`) + Submit button,
+   *   • streaming publish progress lines (`marketplace:publish-progress`),
+   *   • inline validation errors (AC2), and the resulting `pending_review`
+   *     listing id on success (AC2),
+   *   • a request-access prompt for UNVERIFIED users (AC3).
+   *
+   * Verification gate (architecture note): hq-pro exposes NO cheap "am I a
+   * verified creator?" GET — only an admin grant/revoke and a request-access
+   * POST (US-011). So this panel is OPTIMISTIC: it always shows the Submit form,
+   * runs the publish, and renders the server's not-verified outcome (the publish
+   * 403 → `NOT_VERIFIED_CREATOR`, surfaced by the CLI as a clear error and
+   * classified by the Rust command's `notVerified` flag) as the request-access
+   * prompt. The prompt's button calls `request_creator_access` so the affordance
+   * is actionable from this same surface. The server is the real authority — the
+   * UI never claims verification it can't prove.
+   *
+   * Mirrors MarketplacePanel/ModerationPanel conventions: Svelte 5 runes, the
+   * shared desktop-alt CSS variables, and explicit idle/busy/error/success states.
+   */
+  import type { PlatformAdapter } from "@hq/platform";
+  import { onMount } from "svelte";
+  import { safeUnlisten, type UnlistenFn } from "../library/library-refresh.js";
+  import UnavailableNote from "../common/UnavailableNote.svelte";
+  import {
+    looksApplicationPending,
+    pickPackDirectory,
+    publishMarketplacePack,
+    requestCreatorAccess,
+    toPublishError,
+    type PublishResult,
+  } from "./marketplace.js";
+
+  /** Optional host stream of `marketplace:publish-progress` lines. */
+  export interface PublishProgressEvents {
+    subscribe(onLine: (line: string) => void): Promise<UnlistenFn>;
+  }
+
+  interface Props {
+    /** Platform seam: `marketplace.publishPack` (cloud via local CLI on
+     *  desktop) + `shell.pickFolder` (desktop-only folder picker). */
+    adapter: PlatformAdapter;
+    /** Optional desktop publish-progress stream. */
+    publishEvents?: PublishProgressEvents | null;
+  }
+
+  let { adapter, publishEvents = null }: Props = $props();
+
+  /** Publishing needs the local folder picker + CLI — desktop-only. */
+  const canPublish = $derived(adapter.isAvailable("canLaunchApps"));
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let selectedPath = $state<string | null>(null);
+  let choosing = $state(false);
+  let submitting = $state(false);
+  let progress = $state<string[]>([]);
+  /** Success outcome (listing id + pending_review status). */
+  let result = $state<PublishResult | null>(null);
+  /** Inline error for an ordinary validation / network failure (AC2). */
+  let errorMessage = $state<string | null>(null);
+  /** True when the failure is the verified-creator gate → show request-access. */
+  let notVerified = $state(false);
+
+  // Creator-application sub-flow state (AC3). The 403 NOT_VERIFIED_CREATOR
+  // affordance is a small application form: a required pitch + an optional handle.
+  let requesting = $state(false);
+  /** Server confirmation message after a successful application submit. */
+  let requestSuccess = $state<string | null>(null);
+  /** Inline error for the application submit (non-409 failures). */
+  let requestError = $state<string | null>(null);
+  /** True when the applicant already has a pending application (409). */
+  let alreadyPending = $state(false);
+  /** The applicant's pitch (required) + optional desired handle. */
+  let applicationReason = $state("");
+  let applicationHandle = $state("");
+
+  const canSubmit = $derived(!!selectedPath && !choosing && !submitting);
+  const canSubmitApplication = $derived(
+    applicationReason.trim().length > 0 && !requesting,
+  );
+
+  function resetOutcome(): void {
+    result = null;
+    errorMessage = null;
+    notVerified = false;
+    requestSuccess = null;
+    requestError = null;
+    alreadyPending = false;
+    progress = [];
+  }
+
+  async function choose(): Promise<void> {
+    if (choosing || submitting) return;
+    choosing = true;
+    errorMessage = null;
+    const picked = await pickPackDirectory(adapter.shell);
+    if (picked.ok) {
+      if (picked.value) {
+        selectedPath = picked.value;
+        resetOutcome();
+      }
+    } else if (picked.reason !== "unavailable") {
+      // A picker failure is non-fatal — surface it inline so the user can retry.
+      errorMessage = picked.message ?? "Could not open the folder picker.";
+    }
+    choosing = false;
+  }
+
+  async function submit(): Promise<void> {
+    if (!selectedPath || submitting) return;
+    submitting = true;
+    resetOutcome();
+    const res = await publishMarketplacePack(adapter.marketplace, selectedPath);
+    if (res.ok) {
+      result = res.value;
+    } else {
+      const pe = toPublishError(res);
+      if (pe.notVerified) {
+        notVerified = true;
+      } else {
+        errorMessage = pe.message;
+      }
+    }
+    submitting = false;
+  }
+
+  async function submitApplication(): Promise<void> {
+    if (!canSubmitApplication) return;
+    requesting = true;
+    requestError = null;
+    requestSuccess = null;
+    alreadyPending = false;
+    const res = await requestCreatorAccess(
+      adapter.marketplace,
+      applicationReason.trim(),
+      applicationHandle.trim() || null,
+    );
+    if (res.ok) {
+      requestSuccess = res.value;
+    } else {
+      const msg = `${res.code ?? ""} ${res.message ?? ""}`;
+      if (looksApplicationPending(msg)) {
+        // 409 duplicate — render the calm "already pending" state, not an error.
+        alreadyPending = true;
+      } else {
+        requestError = res.message ?? "Could not submit the application.";
+      }
+    }
+    requesting = false;
+  }
+
+  // Stream publish progress lines for live feedback when the host provides
+  // the event seam (desktop wires the Tauri `marketplace:publish-progress`).
+  onMount(() => {
+    if (!publishEvents) return;
+    let unlisten: UnlistenFn | undefined;
+    void publishEvents
+      .subscribe((line) => {
+        if (line) progress = [...progress, line];
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => safeUnlisten(unlisten)();
+  });
+
+  /** Short, friendly basename for the selected path (full path shown as title). */
+  const selectedName = $derived(
+    selectedPath
+      ? (selectedPath.split("/").filter(Boolean).pop() ?? selectedPath)
+      : null,
+  );
+</script>
+
+<div class="submit" data-testid="submit-panel">
+  <header class="submit-head">
+    <h2 class="submit-title">Submit a pack</h2>
+    <p class="submit-sub">
+      Publish one of your local skills or workers to the marketplace.
+      Submissions enter review before they appear publicly.
+    </p>
+  </header>
+
+  {#if !canPublish}
+    <UnavailableNote
+      label="Publishing"
+      message="Publishing a local pack needs the HQ desktop app."
+      testid="submit-unavailable"
+    />
+  {:else}
+    <!-- Picker + Submit (AC1) -->
+    <section class="picker" data-testid="submit-picker">
+      <div class="picker-row">
+        <button
+          type="button"
+          class="btn btn-secondary"
+          data-testid="submit-choose"
+          onclick={choose}
+          disabled={choosing || submitting}
+          aria-busy={choosing}
+        >
+          {choosing
+            ? "Choosing…"
+            : selectedPath
+              ? "Change folder…"
+              : "Choose folder…"}
+        </button>
+
+        {#if selectedPath}
+          <span class="chosen" data-testid="submit-chosen" title={selectedPath}>
+            {selectedName}
+          </span>
+        {:else}
+          <span class="chosen muted">No folder selected</span>
+        {/if}
+      </div>
+
+      <button
+        type="button"
+        class="btn btn-primary"
+        data-testid="submit-publish"
+        onclick={submit}
+        disabled={!canSubmit}
+        aria-busy={submitting}
+      >
+        {submitting ? "Submitting…" : "Submit for review"}
+      </button>
+    </section>
+
+    <!-- Live progress -->
+    {#if submitting && progress.length > 0}
+      <section
+        class="progress"
+        data-testid="submit-progress"
+        aria-live="polite"
+      >
+        <pre>{progress.join("\n")}</pre>
+      </section>
+    {/if}
+
+    <!-- Success: pending_review listing (AC2) -->
+    {#if result}
+      <section class="state-success" data-testid="submit-success" role="status">
+        <p class="success-line">
+          Submitted — listing
+          <code data-testid="submit-listing-id">{result.listingId}</code>
+          is now
+          <span class="pill status-pending" data-testid="submit-status"
+            >{result.status}</span
+          >.
+        </p>
+        <p class="success-sub">An Indigo moderator will review it shortly.</p>
+      </section>
+    {/if}
+
+    <!-- Inline validation / generic error (AC2) -->
+    {#if errorMessage}
+      <section class="state-error" data-testid="submit-error" role="alert">
+        <p class="error-title">Couldn’t submit</p>
+        <p class="error-body">{errorMessage}</p>
+      </section>
+    {/if}
+
+    <!-- Creator-application form for unverified users (AC3) -->
+    {#if notVerified}
+      <section
+        class="request-access"
+        data-testid="submit-request-access"
+        role="alert"
+      >
+        <h3 class="ra-title">Verified creators only</h3>
+        <p class="ra-body">
+          Publishing to the marketplace is limited to verified creators right
+          now. Tell us why you'd like access — an Indigo admin will review your
+          application.
+        </p>
+
+        {#if requestSuccess}
+          <p class="ra-note" data-testid="submit-request-note" role="status">
+            Application submitted — an Indigo admin will review it.
+          </p>
+        {:else if alreadyPending}
+          <p
+            class="ra-pending"
+            data-testid="submit-request-pending"
+            role="status"
+          >
+            You already have a pending application.
+          </p>
+        {:else}
+          <label class="ra-label" for="submit-application-reason">
+            Why do you want creator access?
+          </label>
+          <textarea
+            id="submit-application-reason"
+            class="ra-textarea"
+            rows="3"
+            placeholder="Tell us about the skills or workers you'd like to publish…"
+            data-testid="submit-application-reason"
+            bind:value={applicationReason}
+            disabled={requesting}
+          ></textarea>
+
+          <label class="ra-label" for="submit-application-handle">
+            Desired handle (optional)
+          </label>
+          <input
+            id="submit-application-handle"
+            class="ra-input"
+            type="text"
+            placeholder="e.g. corey"
+            autocomplete="off"
+            spellcheck="false"
+            data-testid="submit-application-handle"
+            bind:value={applicationHandle}
+            disabled={requesting}
+          />
+
+          {#if requestError}
+            <p class="ra-error" data-testid="submit-request-error" role="alert">
+              {requestError}
+            </p>
+          {/if}
+
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-testid="submit-request-access-button"
+            onclick={submitApplication}
+            disabled={!canSubmitApplication}
+            aria-busy={requesting}
+          >
+            {requesting ? "Submitting…" : "Submit application"}
+          </button>
+        {/if}
+      </section>
+    {/if}
+  {/if}
+</div>
+
+<style>
+  .submit {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-4);
+    min-width: 0;
+  }
+
+  .submit-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-1);
+  }
+
+  .submit-title {
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--text-lg, 18px);
+    font-weight: 600;
+  }
+
+  .submit-sub {
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    max-width: 56ch;
+  }
+
+  /* ---- picker row -------------------------------------------------------- */
+  .picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--v4-space-3);
+    padding: var(--v4-space-3) 0 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .picker-row {
+    display: flex;
+    align-items: center;
+    gap: var(--v4-space-2);
+    min-width: 0;
+  }
+
+  .chosen {
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 280px;
+  }
+
+  .chosen.muted {
+    color: var(--v4-text-3);
+    font-weight: 500;
+  }
+
+  /* ---- buttons ----------------------------------------------------------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 var(--v4-space-3);
+    border-radius: var(--v4-radius-button);
+    border: 1px solid var(--v4-hairline);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      opacity 140ms ease;
+  }
+
+  .btn:hover:not(:disabled) {
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 2px;
+  }
+
+  .btn-primary {
+    border-color: transparent;
+    background: var(--v4-primary-bg);
+    color: var(--v4-primary-fg);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--v4-primary-bg);
+    filter: brightness(0.92);
+  }
+
+  .btn-secondary {
+    background: var(--v4-raised);
+  }
+
+  /* ---- progress ---------------------------------------------------------- */
+  .progress {
+    padding: var(--v4-space-2) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    max-height: 220px;
+    overflow: auto;
+  }
+
+  .progress pre {
+    margin: 0;
+    color: var(--v4-text-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro, 13px);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* ---- success ----------------------------------------------------------- */
+  .state-success {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-1);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .success-line {
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+  }
+
+  .success-line code {
+    padding: 1px 5px;
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro, 13px);
+  }
+
+  .success-sub {
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: var(--text-micro, 13px);
+    font-weight: 600;
+  }
+
+  .status-pending {
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+  }
+
+  /* ---- error ------------------------------------------------------------- */
+  .state-error {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-1);
+    padding: var(--v4-space-3) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-rowline);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .error-title {
+    margin: 0;
+    color: var(--v4-error);
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  .error-body {
+    margin: 0;
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* ---- request access (unverified) -------------------------------------- */
+  .request-access {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-2);
+    align-items: stretch;
+    padding: var(--v4-space-4) 0;
+    border: 0;
+    border-top: 1px solid var(--v4-hairline);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .request-access .btn-primary {
+    align-self: flex-start;
+  }
+
+  .ra-title {
+    margin: 0;
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  .ra-body {
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    max-width: 56ch;
+  }
+
+  .ra-note {
+    margin: 0;
+    color: var(--v4-ok);
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  .ra-pending {
+    margin: 0;
+    color: var(--v4-text-2);
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  .ra-label {
+    margin-top: var(--v4-space-1);
+    color: var(--v4-text-3);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .ra-textarea,
+  .ra-input {
+    width: 100%;
+    padding: var(--v4-space-2) var(--v4-space-3);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--text-base);
+  }
+
+  .ra-textarea {
+    min-height: 64px;
+    resize: vertical;
+    line-height: 1.5;
+  }
+
+  .ra-input {
+    height: 32px;
+  }
+
+  .ra-textarea::placeholder,
+  .ra-input::placeholder {
+    color: var(--v4-text-3);
+  }
+
+  .ra-textarea:focus-visible,
+  .ra-input:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 1px;
+  }
+
+  .ra-textarea:disabled,
+  .ra-input:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .ra-error {
+    margin: 0;
+    color: var(--v4-error);
+    font-size: var(--text-base);
+    overflow-wrap: anywhere;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn {
+      transition: none;
+    }
+  }
+</style>

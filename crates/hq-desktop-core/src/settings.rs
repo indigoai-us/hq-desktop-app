@@ -72,6 +72,7 @@ mod tests {
             widget_enabled: None,
             widget_display: None,
             dock_icon: None,
+            hq_work_handoff: None,
         }
     }
 
@@ -110,6 +111,8 @@ mod tests {
             // Dock icon defaults ON when absent (existing installs gain the
             // Dock icon on upgrade; explicit `false` is the only opt-out).
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
+            // HQ Work handoff defaults OFF so existing installs keep desktop-alt.
+            hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false)),
         }
     }
 
@@ -143,6 +146,8 @@ mod tests {
         // Widget defaults ON when absent; display stays None (primary).
         assert_eq!(result.widget_enabled, Some(true));
         assert_eq!(result.widget_display, None);
+        // HQ Work handoff defaults OFF when absent.
+        assert_eq!(result.hq_work_handoff, Some(false));
     }
 
     #[test]
@@ -187,6 +192,7 @@ mod tests {
             widget_enabled: Some(false),
             widget_display: Some("DELL U2720Q".to_string()),
             dock_icon: Some(false),
+            hq_work_handoff: Some(true),
         };
 
         let result = apply_defaults(prefs);
@@ -215,6 +221,8 @@ mod tests {
         // explicit dock_icon false survives the default-on coercion — the
         // menubar-only opt-out must not be silently re-enabled on every save
         assert_eq!(result.dock_icon, Some(false));
+        // explicit hq_work_handoff true survives the default-off coercion
+        assert_eq!(result.hq_work_handoff, Some(true));
     }
 
     #[test]
@@ -243,6 +251,7 @@ mod tests {
             widget_enabled: Some(true),
             widget_display: Some("Built-in Retina Display".to_string()),
             dock_icon: Some(true),
+            hq_work_handoff: Some(false),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -509,5 +518,21 @@ mod tests {
         assert_eq!(v["widgetEnabled"], false);
         assert_eq!(v["widgetDisplay"], "DELL U2720Q");
         assert_eq!(v["machineId"], "mid-keep");
+    }
+
+    #[test]
+    fn test_hq_work_handoff_defaults_false() {
+        let result = apply_defaults(empty_prefs());
+        assert_eq!(result.hq_work_handoff, Some(false));
+    }
+
+    #[test]
+    fn test_explicit_hq_work_handoff_true_preserved() {
+        let prefs = MenubarPrefs {
+            hq_work_handoff: Some(true),
+            ..empty_prefs()
+        };
+        let result = apply_defaults(prefs);
+        assert_eq!(result.hq_work_handoff, Some(true));
     }
 }

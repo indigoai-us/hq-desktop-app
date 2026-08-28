@@ -2958,6 +2958,13 @@ pub async fn open_communications_window(
 ) -> Result<(), String> {
     log(LOG_TAG, "COMMUNICATIONS_WINDOW_OPEN");
 
+    let channel_id = channel.as_ref().map(|c| c.channel_id.as_str());
+    // US-104: flag-on steals this compact window into the embedded desktop
+    // (validated channel/reply tokens → pending-open). Flag-off is unchanged.
+    if crate::commands::hq_work::maybe_intercept_conversation_open(&app, channel_id, None).await? {
+        return Ok(());
+    }
+
     // A prior notification may have stashed a single DM for the ready
     // handshake. Clear it before opening the general communications surface so
     // a cold window cannot unexpectedly reopen that stale conversation.
@@ -2990,6 +2997,12 @@ pub async fn open_communications_window(
 /// Invoked by App.svelte's `notification:dm-action` listener on the "open" action.
 #[tauri::command]
 pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String> {
+    let person = event.from_person_uid.as_str();
+    // US-104: flag-on opens the embedded desktop on this person; never launch_hq_work.
+    if crate::commands::hq_work::maybe_intercept_dm_open(&app, Some(person), None).await? {
+        return Ok(());
+    }
+
     clear_pending_communications_target();
     if let Some(state) = app.try_state::<PendingDmEvents>() {
         *state.0.lock().unwrap_or_else(|p| p.into_inner()) = vec![event.clone()];

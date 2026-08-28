@@ -8,6 +8,8 @@ import '../styles/design-system.css';
 import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
 import { installDesktopZoom } from '../lib/desktopZoom';
 import { installAppearancePreferences } from '../lib/appearancePreferences';
+import { getHqWorkHandoff } from '../lib/hq-work';
+import { bootDesktopAltWindow } from './boot';
 import DesktopApp from './DesktopApp.svelte';
 
 const windowLabel = getCurrentWindow().label;
@@ -28,9 +30,27 @@ if (!target) {
   throw new Error('Missing desktop-alt mount target');
 }
 
-const app = mount(GlobalErrorBoundary, {
-  target,
-  props: { component: DesktopApp, windowLabel },
+// No top-level await: vite `target: safari13` cannot transpile TLA in this entry.
+const app = bootDesktopAltWindow({
+  getHandoff: () => getHqWorkHandoff(),
+  mountLegacy: () => {
+    mount(GlobalErrorBoundary, {
+      target,
+      props: { component: DesktopApp, windowLabel },
+    });
+  },
+  // Dynamic import: the embedded shell pulls the entire @hq/ui DesktopApp
+  // graph, and the flag is default-off. Loading it statically would charge
+  // every legacy user for a bundle they never mount.
+  mountHqWork: async () => {
+    const { default: HqWorkDesktopShell } = await import(
+      './HqWorkDesktopShell.svelte'
+    );
+    mount(GlobalErrorBoundary, {
+      target,
+      props: { component: HqWorkDesktopShell, windowLabel },
+    });
+  },
 });
 
 export default app;

@@ -192,6 +192,13 @@ pub async fn open_messages_window(
     app: AppHandle,
     target: Option<MessagesTarget>,
 ) -> Result<(), String> {
+    let person = target
+        .as_ref()
+        .map(|t| t.person_uid.as_str())
+        .filter(|s| !s.is_empty());
+    if crate::commands::hq_work::maybe_intercept_dm_open(&app, person, None).await? {
+        return Ok(());
+    }
     if let Some(ref t) = target {
         if let Some(state) = app.try_state::<PendingMessagesTarget>() {
             *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
