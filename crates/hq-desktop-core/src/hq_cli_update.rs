@@ -1430,7 +1430,13 @@ pub fn delivered_prefix_shim_for(
 ) -> DeliveredPrefixShim {
     match (aimed_prefix, delivered_version) {
         (Some(prefix), Some(_)) if !prefix.is_empty() => {
-            if prefix_hq_shim_path(Path::new(prefix)).exists() {
+            // Existence alone is not enough: a `bin/hq` that is a directory or a
+            // non-executable file is skipped by resolution, so the app still
+            // resolves a stale copy and the run reads ForeignManaged. Treating
+            // that as `Present` would permit the durable marker and suppress the
+            // retry that repairs the partial install, so require the same
+            // runnable-shim contract resolution uses.
+            if paths::is_runnable_shim(&prefix_hq_shim_path(Path::new(prefix))) {
                 DeliveredPrefixShim::Present
             } else {
                 DeliveredPrefixShim::Absent
@@ -6626,15 +6632,34 @@ mod tests {
         let prefix = tmp.path().join("npm-global");
         std::fs::create_dir_all(prefix.join("bin")).unwrap();
         let prefix_str = prefix.to_string_lossy().to_string();
+        let shim = prefix.join("bin").join("hq");
 
-        // Delivered and the shim exists -> present.
-        std::fs::write(prefix.join("bin").join("hq"), "#!/bin/sh\n").unwrap();
+        // Delivered and the shim is a RUNNABLE executable -> present.
+        write_executable(&shim, "#!/bin/sh\n");
         assert_eq!(
             delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
             DeliveredPrefixShim::Present
         );
-        // Delivered but the shim is missing -> absent (the partial install).
-        std::fs::remove_file(prefix.join("bin").join("hq")).unwrap();
+        // Delivered but the shim is a NON-executable file: resolution skips it, so
+        // this is a partial install -> absent, never a false Present that would
+        // wedge the marker.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        assert_eq!(
+            delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
+            DeliveredPrefixShim::Absent
+        );
+        // Delivered but `bin/hq` is a DIRECTORY, not a file -> absent.
+        std::fs::remove_file(&shim).unwrap();
+        std::fs::create_dir(&shim).unwrap();
+        assert_eq!(
+            delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
+            DeliveredPrefixShim::Absent
+        );
+        // Delivered but the shim is missing entirely -> absent (the partial install).
+        std::fs::remove_dir(&shim).unwrap();
         assert_eq!(
             delivered_prefix_shim_for(Some(&prefix_str), Some("5.103.27")),
             DeliveredPrefixShim::Absent

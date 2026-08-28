@@ -1193,7 +1193,7 @@ async fn install_hq_cli_update_via_pnpm(
         // pnpm never reaches the ForeignManaged arm, so the aim/shim gate is
         // never consulted; the resolution lane still rides the event honestly.
         executed_copy_aim: ExecutedCopyAim::Undrivable,
-        hq_bin_lane: paths::resolution_source_of(Path::new(&post_install_hq)),
+        hq_bin_lane: paths::resolution_source_of_bin(&post_install_hq),
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
@@ -1336,7 +1336,7 @@ async fn install_hq_cli_update_via_bun(
         // Bun never reaches the ForeignManaged arm, so the aim/shim gate is never
         // consulted; the resolution lane still rides the event honestly.
         executed_copy_aim: ExecutedCopyAim::Undrivable,
-        hq_bin_lane: paths::resolution_source_of(Path::new(&post_install_hq)),
+        hq_bin_lane: paths::resolution_source_of_bin(&post_install_hq),
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: None,
     });
@@ -1958,7 +1958,7 @@ async fn finalize_convergence(
     // `hq` shim after delivery. All three ride the closed-token contract — never a
     // raw path — and a ForeignManaged verdict now writes the durable marker only
     // when HQ either aimed at the executed copy or genuinely could not.
-    let hq_bin_lane = paths::resolution_source_of(Path::new(&post_install_hq));
+    let hq_bin_lane = paths::resolution_source_of_bin(&post_install_hq);
     let executed_copy_aim = executed_copy_aim_for(
         &post_install_hq,
         prefix,
