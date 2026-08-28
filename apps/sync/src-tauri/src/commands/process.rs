@@ -964,6 +964,100 @@ pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
 #[cfg(not(target_os = "windows"))]
 pub fn sample_watcher_job_pids_for_generation(_handle: &str, _generation: u64) {}
 
+/// Best-effort working-set (KB) of one live PID via `OpenProcess` +
+/// `GetProcessMemoryInfo`. Read-only: it opens the process for limited query,
+/// reads `WorkingSetSize`, and closes the handle on every path. `None` when the
+/// PID cannot be opened or queried (already exited, or access denied) — absence,
+/// never a guess. Mirrors the daemon supervisor's single-PID sampler so the summed
+/// and the fallback numbers carry the same unit.
+#[cfg(target_os = "windows")]
+fn sample_pid_working_set_kb(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    };
+    // SAFETY: standard open-query-close; the handle is closed on every path and the
+    // counters struct is sized before the call.
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            pid,
+        )
+        .ok()?;
+        let mut counters = PROCESS_MEMORY_COUNTERS::default();
+        let sample = GetProcessMemoryInfo(
+            handle,
+            &mut counters,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+        .ok()
+        .map(|_| counters.WorkingSetSize as u64 / 1024);
+        let _ = CloseHandle(handle);
+        sample
+    }
+}
+
+/// Sample the working set of every live PID in the EXACT `generation`'s retained
+/// Job Object (HQ-DESKTOP-4M). Resolved by generation exactly like
+/// [`watcher_job_accounting_for_generation`] — the active entry only while it still
+/// owns the handle at this generation, else the retired entry — so a replacement
+/// watcher's job is never returned. The live-PID list is read while the registry
+/// lock is held (so a concurrent `deregister`/`close_process_entry` cannot close
+/// the job between lookup and query); the lock is then DROPPED before any
+/// per-process `OpenProcess` work. Each entry is `(pid, Some(working_set_kb))`, or
+/// `(pid, None)` when that one PID could not be read. Strictly diagnostic and
+/// read-only: it never closes, terminates, duplicates, or takes the Job Object
+/// handle, and never mutates registry/containment/lifecycle state. `None` when the
+/// exact generation is absent, carries no job handle, the job query fails, or the
+/// platform is not Windows — the caller then falls back to a single-PID sample.
+#[cfg(target_os = "windows")]
+pub fn watcher_job_working_set_samples(
+    handle: &str,
+    generation: u64,
+) -> Option<Vec<(u32, Option<u64>)>> {
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let job = registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
+        .and_then(|entry| entry.job_handle);
+    let Some(job) = job else {
+        return None;
+    };
+    // SAFETY: `job` is this app's own retained Job Object handle and the registry
+    // lock is held for the duration of the read, so it cannot be closed here. The
+    // query is read-only; it never closes, terminates, or duplicates the handle.
+    let pids = unsafe { query_job_live_pids(job) };
+    drop(registry);
+    let pids = pids?;
+    // Per-process reads happen OUTSIDE the registry lock, matching
+    // `sample_watcher_job_pids_for_generation`'s lock discipline exactly.
+    Some(
+        pids.into_iter()
+            .map(|pid| (pid, sample_pid_working_set_kb(pid)))
+            .collect(),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn watcher_job_working_set_samples(
+    _handle: &str,
+    _generation: u64,
+) -> Option<Vec<(u32, Option<u64>)>> {
+    None
+}
+
 /// The production horizon for the deferred fault read, exposed cross-platform so
 /// the daemon's deferred-capture worker can name it without touching the
 /// windows-only constant. On non-Windows it is nominal and unused (no fault-exit
@@ -4995,6 +5089,69 @@ mod windows_job_attachment_failure_tests {
         assert!(
             watcher_job_accounting_for_generation("watcher-job-accounting-absent", fixture.generation)
                 .is_none()
+        );
+
+        let attempt = cancel_process_for_generation(
+            &fixture.handle,
+            fixture.generation,
+            SyncCancelCause::UserStop,
+            Duration::ZERO,
+        );
+        assert!(attempt.executed, "the exact generation must be cancellable");
+        assert_tree_gone(&fixture);
+        let _ = join_runner(fixture);
+    }
+
+    #[test]
+    fn watcher_job_working_set_sums_the_live_tree_and_is_generation_scoped() {
+        let fixture = start_fixture_with_real_job("watcher-job-working-set");
+
+        let samples = watcher_job_working_set_samples(&fixture.handle, fixture.generation)
+            .expect("a live job must yield working-set samples");
+        // The job holds the cmd.exe shim root AND its ping descendant, so the live
+        // sample carries at least two PIDs — the exact tree the single-PID sampler
+        // cannot see past. This is the memory evidence HQ-DESKTOP-4M withheld.
+        assert!(
+            samples.len() >= 2,
+            "job sample must include the shim and its descendant, got {}",
+            samples.len()
+        );
+        // The registered root is present, so the caller's root-must-be-present
+        // guard resolves to a real sum rather than falling back.
+        assert!(
+            samples.iter().any(|(pid, _)| *pid == fixture.root_pid),
+            "the registered root pid must be in the job's live-pid sample"
+        );
+        // The summed working set over the whole tree is strictly larger than the
+        // registered child's own single-PID working set — the number the shipped
+        // Windows sampler could not see past the shim.
+        let summed: u64 = samples.iter().map(|&(_, kb)| kb.unwrap_or(0)).sum();
+        let root_single = sample_pid_working_set_kb(fixture.root_pid)
+            .expect("the live root must report a single-PID working set");
+        assert!(
+            summed > root_single,
+            "tree sum {summed}KB must exceed the shim's own {root_single}KB"
+        );
+
+        // Generation-scoped (matching the accounting read): a different generation
+        // for the same handle, and an absent handle, both resolve to no sample — a
+        // replacement watcher's job can never be attributed to this generation.
+        assert!(watcher_job_working_set_samples(
+            &fixture.handle,
+            fixture.generation.wrapping_add(4096)
+        )
+        .is_none());
+        assert!(watcher_job_working_set_samples(
+            "watcher-job-working-set-absent",
+            fixture.generation
+        )
+        .is_none());
+
+        // The working-set read closed nothing: the job is still queryable, so the
+        // accounting read that runs at the real exit boundary still succeeds.
+        assert!(
+            watcher_job_accounting_for_generation(&fixture.handle, fixture.generation).is_some(),
+            "the working-set read must not have closed the job handle"
         );
 
         let attempt = cancel_process_for_generation(

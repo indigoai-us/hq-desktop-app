@@ -4091,17 +4091,29 @@ fn reset_crash_state_if_recovered() {
     }
 }
 
-/// Best-effort scoped RSS sample of the registered watcher (HQ-DESKTOP-55).
+/// Best-effort scoped RSS sample of the registered watcher (HQ-DESKTOP-55,
+/// HQ-DESKTOP-4M).
 ///
 /// On Unix it sums the registered PID AND its transitive descendants — the Node
 /// runner that the npx launcher spawns — via ONE `ps -eo pid=,ppid=,rss=`, so the
 /// reported footprint is the runner's, tagged `Tree`. On ANY failure (spawn,
 /// parse, or the root PID missing from the table) it falls back to today's
 /// single-PID sample tagged `Single`, so the failure mode is the status quo, never
-/// a mislabeled number. Windows keeps its single-PID sampler (the Job Object
-/// already carries whole-tree memory), reported `Single`. Best-effort throughout —
-/// it never changes whether a crash is captured. One `ps` spawn per supervisor
-/// tick, replacing (not adding to) the existing one.
+/// a mislabeled number.
+///
+/// On Windows the registered child is the `cmd.exe` batch shim (`npx.cmd`), whose
+/// own ~5-8MB working set hides the Node runner living beside it inside the job.
+/// So it sums each live PID's working set across the CURRENT generation's retained
+/// Job Object — requiring the observed PID to be in that live set — and reports the
+/// runner-inclusive total as `Tree`; on any failure it degrades to today's exact
+/// single-PID working-set sample tagged `Single`, which for the shim is WITHHELD
+/// (`unattributed:shim`) rather than mislabeled. A summed working set double-counts
+/// pages shared between the shim, `node.exe` and its workers, so like the Unix `ps`
+/// RSS sum it is an upper bound — both platforms carry the same `tree` semantics
+/// and stay comparable. Best-effort throughout — it never changes whether a crash
+/// is captured, spawns no process (unlike the Unix `ps`), and issues at most one
+/// job query plus the job's live-PID count of working-set reads per supervisor
+/// tick.
 #[cfg(not(target_os = "windows"))]
 fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
     match sample_pid_tree_rss_kb(pid) {
@@ -4112,7 +4124,73 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
 
 #[cfg(target_os = "windows")]
 fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
+    // Prefer the runner-inclusive job-object working-set sum for the CURRENT
+    // generation. `sum_job_working_set_kb` requires the observed `pid` to be
+    // present in the job's live-PID list, so a racing generation handoff can never
+    // attribute a replacement watcher's job to this observation — a mismatch
+    // returns None and degrades below.
+    if let Some(sum) = generation_for_handle(DAEMON_HANDLE)
+        .and_then(|generation| {
+            crate::commands::process::watcher_job_working_set_samples(DAEMON_HANDLE, generation)
+        })
+        .and_then(|samples| sum_job_working_set_kb(&samples, pid))
+    {
+        return Some((sum, RssSampleKind::Tree));
+    }
+    // ANY failure — no generation, no job handle, query failure, the observed root
+    // PID absent from the live list, an empty sample, or ONLY the shim readable
+    // (every descendant raced out of its per-PID read) — falls back to today's
+    // exact single-PID sample so a shim footprint stays WITHHELD as
+    // `unattributed:shim`, never reported as the runner's.
     sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single))
+}
+
+/// Sum working-set (KB) over the sampled live PIDs of the watcher's Job Object,
+/// requiring `root` (the observed registered child, i.e. the shim) to be present
+/// so a stale or foreign job is never reported as this watcher's. Mirrors the
+/// discipline of [`sum_pid_tree_rss_kb`]: `None` when `root` is absent; each PID
+/// counted at most once; saturating add. An unreadable per-PID sample (`None`)
+/// contributes 0 — it exited between the live-PID query and its read, so it now
+/// holds no working set — rather than aborting the whole sum on ordinary worker
+/// churn (this cluster's job reached 155 processes).
+///
+/// It also requires at least one readable member OTHER than `root`: without a
+/// measured descendant the "tree" would be only the ~5-8MB shim (the runner raced
+/// out of its own per-PID read), and reporting that as the complete tree footprint
+/// would defeat the small-process-vs-runner-OOM distinction this fix exists to
+/// draw — so it returns `None` and the caller withholds via the single-PID
+/// fallback instead. A wrong number is never reported in place of honest
+/// withholding.
+///
+/// Pure so it is compiled and unit-tested on every CI lane, including the
+/// off-Windows builds of its Windows-only caller — hence the dead-code allowance.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn sum_job_working_set_kb(samples: &[(u32, Option<u64>)], root: u32) -> Option<u64> {
+    use std::collections::HashSet;
+    if !samples.iter().any(|(pid, _)| *pid == root) {
+        return None;
+    }
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut total = 0_u64;
+    let mut measured_descendant = false;
+    for &(pid, kb) in samples {
+        if !seen.insert(pid) {
+            continue;
+        }
+        if let Some(kb) = kb {
+            if pid != root {
+                measured_descendant = true;
+            }
+            total = total.saturating_add(kb);
+        }
+    }
+    // Only the shim was readable — the runner and any other descendants raced out
+    // of their reads — so this is not a tree, it is the shim alone. Withhold.
+    if measured_descendant {
+        Some(total)
+    } else {
+        None
+    }
 }
 
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
@@ -9548,6 +9626,81 @@ mod tests {
         assert_eq!(resolve_rss_scope(None, "/opt/homebrew/bin/npx"), "launcher");
         // Only a command whose registered child IS the runner keeps `runner`.
         assert_eq!(resolve_rss_scope(Some(RssSampleKind::Single), "node"), "runner");
+    }
+
+    #[test]
+    fn sum_job_working_set_kb_requires_root_counts_once_and_saturates() {
+        // Root absent from the sample -> None, so the Windows caller falls back to
+        // the single-PID sample rather than reporting a foreign/stale job's memory.
+        assert_eq!(
+            sum_job_working_set_kb(&[(200, Some(10)), (300, Some(20))], 100),
+            None
+        );
+        // Root present -> the summed working set over the whole live tree.
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(10)), (200, Some(20)), (300, Some(30))], 100),
+            Some(60)
+        );
+        // A duplicated PID is counted once (the live-PID list is unique in
+        // practice, but the sum must never double a repeated id).
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(10)), (100, Some(10)), (200, Some(5))], 100),
+            Some(15)
+        );
+        // An unreadable member contributes 0 rather than aborting the sum, as long
+        // as some OTHER descendant was measured: one worker racing out of its read
+        // never withholds the whole tree's footprint.
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(10)), (200, None), (300, Some(5))], 100),
+            Some(15)
+        );
+        // Only the root (shim) was readable — the runner/descendants all raced out
+        // of their per-PID reads — so the "tree" would be just the ~6MB shim.
+        // Withhold (None) instead of mislabeling the shim as the complete tree.
+        assert_eq!(sum_job_working_set_kb(&[(100, Some(6144)), (200, None)], 100), None);
+        assert_eq!(sum_job_working_set_kb(&[(100, Some(6144))], 100), None);
+        // A single readable descendant is enough to trust the tree even when other
+        // members raced out — no over-withholding on worker churn.
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(6144)), (200, Some(1500)), (300, None)], 100),
+            Some(7644)
+        );
+        // Saturating add: a pathological pair cannot overflow into a tiny wrong sum.
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(u64::MAX)), (200, Some(10))], 100),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn windows_shim_tree_sample_renders_a_real_number_else_withholds_the_shim() {
+        // Once the Windows job sum succeeds, the cmd_shim command still yields a
+        // `tree` scope (Tree wins over the command-derived `shim`), so the withheld
+        // `unattributed:shim` is replaced by a real number.
+        assert_eq!(
+            resolve_rss_scope(Some(RssSampleKind::Tree), r"C:\p\npx.cmd"),
+            "tree"
+        );
+        assert_eq!(
+            render_last_rss(312 * 1024, Some(Duration::from_secs(17)), "tree"),
+            "last_rss=312MB (tree, sampled 17s before exit)"
+        );
+        // Fallback preservation: when the job sample fails, the cmd_shim child's
+        // single-PID sample stays byte-identical to the shipped HQ-DESKTOP-4M
+        // suffix — an honest withholding, never a wrong number.
+        assert_eq!(
+            resolve_rss_scope(Some(RssSampleKind::Single), r"C:\p\npx.cmd"),
+            "shim"
+        );
+        assert_eq!(
+            exit_diagnostic_suffix(
+                Some(Duration::from_secs(1607)),
+                Some(6 * 1024),
+                Some(Duration::from_secs(17)),
+                "shim",
+            ),
+            " [uptime=26m47s; last_rss=unattributed:shim (sampled 17s before exit)]"
+        );
     }
 
     #[cfg(unix)]
