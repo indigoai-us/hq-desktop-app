@@ -61,7 +61,45 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// rather than silently collapsing to a flat `unknown`. The pin forces
 /// re-derivation on a coarse bump; the signature axis absorbs the fine drift in
 /// between.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.37";
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.79";
+
+/// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
+/// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
+/// dependency) so the guard can fire during `cargo build`/`cargo check` rather
+/// than only under `cargo test`.
+const fn const_str_eq(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// The vocabulary-drift guard, moved EARLIER than the prior `#[test]`: a
+/// compile-time assertion that [`CAUSE_VOCABULARY_SOURCE_VERSION`] still equals
+/// [`crate::hq_cloud::HQ_CLOUD_VERSION`]. The prior fix relied only on the
+/// `#[test]` (kept below as the message-carrying layer), but a branch cut before
+/// that test existed — PR #533 — bumped the runner pin and merged a combination
+/// its CI never ran, silently disarming the guard on `main`. A `const`
+/// assertion instead fails `cargo build`/`cargo check` on EVERY branch and
+/// target (including the required Windows `cargo check` job), so a runner-pin
+/// bump can no longer reach `main` without the cause vocabulary re-derived here.
+const _: () = assert!(
+    const_str_eq(
+        CAUSE_VOCABULARY_SOURCE_VERSION,
+        crate::hq_cloud::HQ_CLOUD_VERSION
+    ),
+    "hq-cloud runner pin changed: re-derive the RunnerErrorCause vocabulary and \
+     the test's HQ_CLOUD_IDENTITIES from the new hq-cloud source, then set \
+     CAUSE_VOCABULARY_SOURCE_VERSION equal to HQ_CLOUD_VERSION",
+);
 
 /// Length of a `runner_error_cause_signature` token: the first 12 lowercase hex
 /// chars of the SHA-256 of a gated leading identity. Long enough that a collision
@@ -740,6 +778,10 @@ pub enum RunnerErrorCause {
     CognitoIdentityRefresh,
     DanglingSymlinkParent,
     WindowsSymlinkPrivilege,
+    // Added when the runner pin moved to ~6.15.79: hq-cloud 6.15.79 introduced
+    // `ChildProcessSyncWorkerError` (src/sync/child-process-sync-worker.ts), the
+    // one identity the prior vocabulary was missing at the new pin.
+    ChildProcessSyncWorker,
     // ── AWS S3/STS error names ────────────────────────────────────────────────
     AccessDenied,
     NoSuchKey,
@@ -750,6 +792,62 @@ pub enum RunnerErrorCause {
     ExpiredIdentity,
     InvalidIdentity,
     UnknownError,
+    // ── ECMAScript / Node built-in error identities ───────────────────────────
+    // `describeError` emits `e.name` verbatim as the leading token for any
+    // non-`Error` name, so a JS built-in is a first-class producer input. This
+    // family is defined by the language and Node — NOT by hq-cloud — so it is
+    // pinned by its own enumerating test, not by CAUSE_VOCABULARY_SOURCE_VERSION.
+    // `RangeError` is the production recurrence that reopened this cluster
+    // (sha256("RangeError")[..12] == "93c5a7a535cb", the observed tag value).
+    RangeError,
+    TypeError,
+    SyntaxError,
+    ReferenceError,
+    EvalError,
+    UriError,
+    AggregateError,
+    AbortError,
+    SystemError,
+    // ── Node/libuv errno codes ────────────────────────────────────────────────
+    // A plain Node system error renders `code=<ERRNO> <ERRNO>: <text>, <op>
+    // <path>`; the errno is read from the `code=` value or a leading bare
+    // `ERRNO:` token, never from free prose. Closed allow-list, so an errno
+    // mentioned inside a message can never leak. Includes the four the class axis
+    // already knows (EPERM/EACCES/ENOSPC/EBUSY) so the cause and class axes agree
+    // on the same message.
+    Enoent,
+    Eexist,
+    Enotempty,
+    Exdev,
+    Eisdir,
+    Enotdir,
+    Eloop,
+    Enametoolong,
+    Emfile,
+    Enfile,
+    Erofs,
+    Eio,
+    Eagain,
+    Epipe,
+    Etimedout,
+    Econnreset,
+    Econnrefused,
+    Enotfound,
+    Ehostunreach,
+    Enetunreach,
+    EaiAgain,
+    Eperm,
+    Eacces,
+    Enospc,
+    Ebusy,
+    // Errnos this crate already treats as runner failures elsewhere but the
+    // cause axis would otherwise miss: `ENETDOWN` is a transient-network errno
+    // (`is_transient_network_error`, class NETWORK) and `EINVAL` is a per-file
+    // errno the runner-error tests exercise (`EINVAL: invalid argument, readlink
+    // …`, a recognised op). Named here so the cause axis is not blank for inputs
+    // the app explicitly handles on other axes.
+    Enetdown,
+    Einval,
     // ── Residual (never a nearest guess) ──────────────────────────────────────
     // A leading, uppercase-initial identity token was present but matched nothing
     // in the vocabulary above: a class hq-cloud added since the pin, or a
@@ -766,7 +864,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 56] = [
+    pub const ALL: [RunnerErrorCause; 93] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -812,6 +910,7 @@ impl RunnerErrorCause {
         Self::CognitoIdentityRefresh,
         Self::DanglingSymlinkParent,
         Self::WindowsSymlinkPrivilege,
+        Self::ChildProcessSyncWorker,
         Self::AccessDenied,
         Self::NoSuchKey,
         Self::NoSuchBucket,
@@ -821,6 +920,42 @@ impl RunnerErrorCause {
         Self::ExpiredIdentity,
         Self::InvalidIdentity,
         Self::UnknownError,
+        Self::RangeError,
+        Self::TypeError,
+        Self::SyntaxError,
+        Self::ReferenceError,
+        Self::EvalError,
+        Self::UriError,
+        Self::AggregateError,
+        Self::AbortError,
+        Self::SystemError,
+        Self::Enoent,
+        Self::Eexist,
+        Self::Enotempty,
+        Self::Exdev,
+        Self::Eisdir,
+        Self::Enotdir,
+        Self::Eloop,
+        Self::Enametoolong,
+        Self::Emfile,
+        Self::Enfile,
+        Self::Erofs,
+        Self::Eio,
+        Self::Eagain,
+        Self::Epipe,
+        Self::Etimedout,
+        Self::Econnreset,
+        Self::Econnrefused,
+        Self::Enotfound,
+        Self::Ehostunreach,
+        Self::Enetunreach,
+        Self::EaiAgain,
+        Self::Eperm,
+        Self::Eacces,
+        Self::Enospc,
+        Self::Ebusy,
+        Self::Enetdown,
+        Self::Einval,
         Self::UnknownNamed,
         Self::UnknownUnnamed,
     ];
@@ -873,6 +1008,7 @@ impl RunnerErrorCause {
             Self::CognitoIdentityRefresh => "cognito_identity_refresh",
             Self::DanglingSymlinkParent => "dangling_symlink_parent",
             Self::WindowsSymlinkPrivilege => "windows_symlink_privilege",
+            Self::ChildProcessSyncWorker => "child_process_sync_worker",
             Self::AccessDenied => "access_denied",
             Self::NoSuchKey => "no_such_key",
             Self::NoSuchBucket => "no_such_bucket",
@@ -882,6 +1018,42 @@ impl RunnerErrorCause {
             Self::ExpiredIdentity => "expired_identity",
             Self::InvalidIdentity => "invalid_identity",
             Self::UnknownError => "unknown_error",
+            Self::RangeError => "range_error",
+            Self::TypeError => "type_error",
+            Self::SyntaxError => "syntax_error",
+            Self::ReferenceError => "reference_error",
+            Self::EvalError => "eval_error",
+            Self::UriError => "uri_error",
+            Self::AggregateError => "aggregate_error",
+            Self::AbortError => "abort_error",
+            Self::SystemError => "system_error",
+            Self::Enoent => "enoent",
+            Self::Eexist => "eexist",
+            Self::Enotempty => "enotempty",
+            Self::Exdev => "exdev",
+            Self::Eisdir => "eisdir",
+            Self::Enotdir => "enotdir",
+            Self::Eloop => "eloop",
+            Self::Enametoolong => "enametoolong",
+            Self::Emfile => "emfile",
+            Self::Enfile => "enfile",
+            Self::Erofs => "erofs",
+            Self::Eio => "eio",
+            Self::Eagain => "eagain",
+            Self::Epipe => "epipe",
+            Self::Etimedout => "etimedout",
+            Self::Econnreset => "econnreset",
+            Self::Econnrefused => "econnrefused",
+            Self::Enotfound => "enotfound",
+            Self::Ehostunreach => "ehostunreach",
+            Self::Enetunreach => "enetunreach",
+            Self::EaiAgain => "eai_again",
+            Self::Eperm => "eperm",
+            Self::Eacces => "eacces",
+            Self::Enospc => "enospc",
+            Self::Ebusy => "ebusy",
+            Self::Enetdown => "enetdown",
+            Self::Einval => "einval",
             Self::UnknownNamed => "unknown_named",
             Self::UnknownUnnamed => "unknown_unnamed",
         }
@@ -949,6 +1121,8 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "CognitoRefreshError" => RunnerErrorCause::CognitoIdentityRefresh,
         "DanglingSymlinkParentError" => RunnerErrorCause::DanglingSymlinkParent,
         "WindowsSymlinkPrivilegeError" => RunnerErrorCause::WindowsSymlinkPrivilege,
+        // Added at the ~6.15.79 pin (src/sync/child-process-sync-worker.ts).
+        "ChildProcessSyncWorkerError" => RunnerErrorCause::ChildProcessSyncWorker,
         // AWS S3/STS error names (surfaced as `e.name` by the SDK, or as a
         // `code=`/`cause=` value by older wrappers). hq-cloud's own
         // `AccessDeniedError` class shares the `access_denied` identity.
@@ -961,8 +1135,61 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "ExpiredToken" | "ExpiredTokenException" => RunnerErrorCause::ExpiredIdentity,
         "InvalidToken" | "InvalidIdentityToken" => RunnerErrorCause::InvalidIdentity,
         "UnknownError" => RunnerErrorCause::UnknownError,
+        // ECMAScript / Node built-in error names, emitted verbatim as `e.name`
+        // by describeError. `URIError` is spelled with the leading `URI` acronym
+        // exactly as the language names it.
+        "RangeError" => RunnerErrorCause::RangeError,
+        "TypeError" => RunnerErrorCause::TypeError,
+        "SyntaxError" => RunnerErrorCause::SyntaxError,
+        "ReferenceError" => RunnerErrorCause::ReferenceError,
+        "EvalError" => RunnerErrorCause::EvalError,
+        "URIError" => RunnerErrorCause::UriError,
+        "AggregateError" => RunnerErrorCause::AggregateError,
+        "AbortError" => RunnerErrorCause::AbortError,
+        "SystemError" => RunnerErrorCause::SystemError,
+        // Node/libuv errno codes, read from a `code=`/`cause=`/`syscall=` value or
+        // a leading bare `ERRNO:` token (never free prose). The exact producer
+        // spellings are uppercase.
+        "ENOENT" => RunnerErrorCause::Enoent,
+        "EEXIST" => RunnerErrorCause::Eexist,
+        "ENOTEMPTY" => RunnerErrorCause::Enotempty,
+        "EXDEV" => RunnerErrorCause::Exdev,
+        "EISDIR" => RunnerErrorCause::Eisdir,
+        "ENOTDIR" => RunnerErrorCause::Enotdir,
+        "ELOOP" => RunnerErrorCause::Eloop,
+        "ENAMETOOLONG" => RunnerErrorCause::Enametoolong,
+        "EMFILE" => RunnerErrorCause::Emfile,
+        "ENFILE" => RunnerErrorCause::Enfile,
+        "EROFS" => RunnerErrorCause::Erofs,
+        "EIO" => RunnerErrorCause::Eio,
+        "EAGAIN" => RunnerErrorCause::Eagain,
+        "EPIPE" => RunnerErrorCause::Epipe,
+        "ETIMEDOUT" => RunnerErrorCause::Etimedout,
+        "ECONNRESET" => RunnerErrorCause::Econnreset,
+        "ECONNREFUSED" => RunnerErrorCause::Econnrefused,
+        "ENOTFOUND" => RunnerErrorCause::Enotfound,
+        "EHOSTUNREACH" => RunnerErrorCause::Ehostunreach,
+        "ENETUNREACH" => RunnerErrorCause::Enetunreach,
+        "EAI_AGAIN" => RunnerErrorCause::EaiAgain,
+        "EPERM" => RunnerErrorCause::Eperm,
+        "EACCES" => RunnerErrorCause::Eacces,
+        "ENOSPC" => RunnerErrorCause::Enospc,
+        "EBUSY" => RunnerErrorCause::Ebusy,
+        "ENETDOWN" => RunnerErrorCause::Enetdown,
+        "EINVAL" => RunnerErrorCause::Einval,
         _ => return None,
     })
+}
+
+/// True when `token` is a bare identifier — non-empty and every byte ASCII
+/// alphanumeric or `_` (so `EAI_AGAIN` qualifies). Used to gate the leading
+/// `ERRNO:` lookup so only a clean errno token reaches the closed allow-list; a
+/// token carrying a path, URL, quote, or `=`/`:` separator is refused.
+fn is_bare_identifier_token(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 /// Map an untrusted runner error message to a fixed cause token. Reads ONLY the
@@ -981,6 +1208,19 @@ pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
         if !first.contains('=') {
             if let Some(matched) = cause_from_identifier(first) {
                 return matched;
+            }
+            // A leading bare `ERRNO:` token — `describeError`'s plain-Node
+            // rendering `ENOENT: no such file …, rename …`. Trim at most ONE
+            // trailing ':' and retry, but only when the trimmed token is a bare
+            // identifier: a token carrying any other separator (a path, URL, or
+            // already-`key=value` token) is left untouched, so nothing outside
+            // the closed errno allow-list can match.
+            if let Some(stripped) = first.strip_suffix(':') {
+                if is_bare_identifier_token(stripped) {
+                    if let Some(matched) = cause_from_identifier(stripped) {
+                        return matched;
+                    }
+                }
             }
         }
     }
@@ -1675,18 +1915,24 @@ mod tests {
             ("Error code=SlowDown request throttled", SlowDown),
             ("WrapperError cause=InternalError upstream failed", InternalError),
             ("StsError code=ExpiredToken the security token expired", ExpiredIdentity),
+            // A `code=<ERRNO>` value classifies to the matching errno cause; the
+            // leading sentinel `Error` is not a name and `syscall=` is ignored,
+            // and `code=` wins the key-value precedence.
+            ("Error syscall=unlink code=EPERM permission denied", Eperm),
             // ── Residual split (never a nearest guess) ────────────────────────
-            // A syscall/errno value is never a cause identity; the leading token
-            // is the sentinel `Error`, which describeError never emits as a name,
-            // so this is unnamed.
-            ("Error syscall=unlink code=EPERM permission denied", UnknownUnnamed),
             // Unmodelled uppercase-initial leading name → named (still hashable).
             ("KaboomError the sky is falling", UnknownNamed),
             ("UndiciHeadersTimeoutError request timed out", UnknownNamed),
             // Lower-cased per-file pull-leg prose is not a class name → unnamed.
             ("presigned GET failed for knowledge/a.md: 403 Forbidden", UnknownUnnamed),
-            // A leading key=value (a plain Node system error) → unnamed.
-            ("code=ENOENT syscall=open no such file", UnknownUnnamed),
+            // A leading `code=<ERRNO>` (a plain Node system error) is read from
+            // the `code=` value → the matching errno cause.
+            ("code=ENOENT syscall=open no such file", Enoent),
+            // A leading bare `ERRNO:` token (describeError's plain-Node rendering)
+            // is read by trimming one trailing ':' → the matching errno cause.
+            ("ENOENT: no such file or directory, rename 'a' -> 'b'", Enoent),
+            // An unrecognised `code=<value>` is still never a nearest guess.
+            ("code=EWEIRD syscall=open unrecognised errno", UnknownUnnamed),
             // A leading path/quote can never be a name → unnamed (and unhashable).
             ("'/vault/secret.env' could not be read", UnknownUnnamed),
         ] {
@@ -1800,6 +2046,7 @@ mod tests {
     const HQ_CLOUD_IDENTITIES: &[&str] = &[
         "AccessDeniedError",
         "AuthoritativeBaseVersionUnavailableError",
+        "ChildProcessSyncWorkerError",
         "CognitoAuthError",
         "CognitoRefreshError",
         "CursorRetiredError",
@@ -1849,10 +2096,12 @@ mod tests {
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
         // Completeness over the FULL derived identity set (not a sample): every
         // hq-cloud this.name must classify as a specific, non-residual cause, and
-        // the 45 identities must map to 45 DISTINCT tokens — the exact property
+        // the 46 identities must map to 46 DISTINCT tokens — the exact property
         // the prior 16-name sample violated, collapsing every out-of-sample
-        // company fault to the flat residual and reopening this lane.
-        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 45);
+        // company fault to the flat residual and reopening this lane. The set
+        // grew from 45 to 46 when the runner pin moved to ~6.15.79, which added
+        // ChildProcessSyncWorkerError.
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 46);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {
             // A realistic describeError rendering: the leading class name + prose.
@@ -1878,7 +2127,7 @@ mod tests {
                 cause.as_str()
             );
         }
-        assert_eq!(tokens.len(), 45, "expected 45 distinct cause tokens");
+        assert_eq!(tokens.len(), 46, "expected 46 distinct cause tokens");
     }
 
     #[test]
@@ -1898,7 +2147,7 @@ mod tests {
         );
 
         for unnamed in [
-            "code=ENOENT syscall=open no such file",        // leading key=value
+            "code=EWEIRD syscall=open unrecognised errno",  // leading key=value, unlisted errno
             "presigned GET failed for knowledge/a.md: 403", // lower-cased prose
             "Error the generic error name is suppressed",   // literal Error
             "'/vault/secret.env' unreadable",               // leading quote/path
@@ -2099,5 +2348,140 @@ mod tests {
         }
         let value = rollup.tag_value().expect("nonzero rollup renders a tag");
         assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
+    }
+
+    // ── Built-in JS identities, errno vocabulary, and the recurrence (r2) ──────
+
+    #[test]
+    fn built_in_javascript_error_identities_are_named_causes() {
+        use RunnerErrorCause::*;
+        // describeError emits `e.name` verbatim, so a JS built-in leads the
+        // message. Each maps to its own distinct token, and — being listed — none
+        // is signed (the signature axis is only for UNLISTED identities). This
+        // family is pinned here, NOT by CAUSE_VOCABULARY_SOURCE_VERSION, because
+        // it is defined by the language/Node rather than by hq-cloud.
+        let cases = [
+            ("RangeError", RangeError, "range_error"),
+            ("TypeError", TypeError, "type_error"),
+            ("SyntaxError", SyntaxError, "syntax_error"),
+            ("ReferenceError", ReferenceError, "reference_error"),
+            ("EvalError", EvalError, "eval_error"),
+            ("URIError", UriError, "uri_error"),
+            ("AggregateError", AggregateError, "aggregate_error"),
+            ("AbortError", AbortError, "abort_error"),
+            ("SystemError", SystemError, "system_error"),
+        ];
+        let mut tokens = std::collections::BTreeSet::new();
+        for (name, expected, token) in cases {
+            let message = format!("{name} something failed inside the runner");
+            let cause = classify_runner_error_cause(&message);
+            assert_eq!(cause, expected, "built-in {name:?} did not classify");
+            assert_eq!(cause.as_str(), token, "wrong token for {name:?}");
+            assert_eq!(
+                runner_error_cause_signature(&message),
+                None,
+                "a listed built-in identity must carry no signature: {name:?}"
+            );
+            assert!(tokens.insert(token), "duplicate token for {name:?}");
+        }
+        assert_eq!(tokens.len(), 9, "nine distinct built-in tokens");
+    }
+
+    #[test]
+    fn the_production_recurrence_signature_now_resolves_to_a_named_cause() {
+        // The reopening event carried runner_error_cause_signature=93c5a7a535cb,
+        // which is sha256("RangeError")[..12] — proof the unattributed recurrence
+        // was a JavaScript RangeError. On the completed vocabulary it is a NAMED
+        // cause and therefore no longer needs a signature.
+        let digest = format!("{:x}", Sha256::digest(b"RangeError"));
+        assert_eq!(&digest[..SIGNATURE_HEX_LEN], "93c5a7a535cb");
+        let message = "RangeError Maximum call stack size exceeded";
+        assert_eq!(
+            classify_runner_error_cause(message),
+            RunnerErrorCause::RangeError
+        );
+        assert_eq!(
+            runner_error_cause_signature(message),
+            None,
+            "RangeError is now listed, so the recurrence no longer signs"
+        );
+    }
+
+    #[test]
+    fn node_errno_codes_are_named_from_both_the_code_key_and_a_leading_errno_token() {
+        use RunnerErrorCause::*;
+        // Every errno in the closed allow-list, in BOTH producer renderings: the
+        // `code=<ERRNO>` describeError header and the leading bare `<ERRNO>:`
+        // tail. A listed errno identity is named and carries no signature.
+        let cases = [
+            ("ENOENT", Enoent),
+            ("EEXIST", Eexist),
+            ("ENOTEMPTY", Enotempty),
+            ("EXDEV", Exdev),
+            ("EISDIR", Eisdir),
+            ("ENOTDIR", Enotdir),
+            ("ELOOP", Eloop),
+            ("ENAMETOOLONG", Enametoolong),
+            ("EMFILE", Emfile),
+            ("ENFILE", Enfile),
+            ("EROFS", Erofs),
+            ("EIO", Eio),
+            ("EAGAIN", Eagain),
+            ("EPIPE", Epipe),
+            ("ETIMEDOUT", Etimedout),
+            ("ECONNRESET", Econnreset),
+            ("ECONNREFUSED", Econnrefused),
+            ("ENOTFOUND", Enotfound),
+            ("EHOSTUNREACH", Ehostunreach),
+            ("ENETUNREACH", Enetunreach),
+            ("EAI_AGAIN", EaiAgain),
+            ("EPERM", Eperm),
+            ("EACCES", Eacces),
+            ("ENOSPC", Enospc),
+            ("EBUSY", Ebusy),
+            ("ENETDOWN", Enetdown),
+            ("EINVAL", Einval),
+        ];
+        for (errno, expected) in cases {
+            let code_form =
+                format!("code={errno} {errno}: some operation failed, rename 'a' -> 'b'");
+            assert_eq!(
+                classify_runner_error_cause(&code_form),
+                expected,
+                "code= form did not classify {errno:?}"
+            );
+            let lead_form = format!("{errno}: some operation failed, rename 'a' -> 'b'");
+            assert_eq!(
+                classify_runner_error_cause(&lead_form),
+                expected,
+                "leading token form did not classify {errno:?}"
+            );
+            assert_eq!(
+                runner_error_cause_signature(&lead_form),
+                None,
+                "a listed errno identity must carry no signature: {errno:?}"
+            );
+        }
+        assert_eq!(cases.len(), 27, "the closed errno allow-list");
+    }
+
+    #[test]
+    fn errno_lookup_never_reads_free_prose_or_the_host_value() {
+        // An errno mentioned only in free prose, or carried in the `host=` value
+        // (which the cause classifier never reads), must NOT be read as a cause —
+        // the fault stays unnamed. Only a leading bare `ERRNO:` token or a
+        // `code=`/`cause=`/`syscall=` value is ever consulted.
+        for prose in [
+            "the download failed with ENOENT somewhere in the middle",
+            "retrying after a transient ETIMEDOUT during pull",
+            "Error host=enoent.internal.example.com connection dropped",
+        ] {
+            assert_eq!(
+                classify_runner_error_cause(prose),
+                RunnerErrorCause::UnknownUnnamed,
+                "free-prose / host errno must not classify: {prose:?}"
+            );
+            assert_eq!(runner_error_cause_signature(prose), None);
+        }
     }
 }

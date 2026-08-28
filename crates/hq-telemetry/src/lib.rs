@@ -414,6 +414,7 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "cognito_identity_refresh",
     "dangling_symlink_parent",
     "windows_symlink_privilege",
+    "child_process_sync_worker",
     "access_denied",
     "no_such_key",
     "no_such_bucket",
@@ -423,6 +424,44 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "expired_identity",
     "invalid_identity",
     "unknown_error",
+    // ECMAScript / Node built-in error identities (r2).
+    "range_error",
+    "type_error",
+    "syntax_error",
+    "reference_error",
+    "eval_error",
+    "uri_error",
+    "aggregate_error",
+    "abort_error",
+    "system_error",
+    // Node/libuv errno codes (r2).
+    "enoent",
+    "eexist",
+    "enotempty",
+    "exdev",
+    "eisdir",
+    "enotdir",
+    "eloop",
+    "enametoolong",
+    "emfile",
+    "enfile",
+    "erofs",
+    "eio",
+    "eagain",
+    "epipe",
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "enotfound",
+    "ehostunreach",
+    "enetunreach",
+    "eai_again",
+    "eperm",
+    "eacces",
+    "enospc",
+    "ebusy",
+    "enetdown",
+    "einval",
     "unknown_named",
     "unknown_unnamed",
 ];
@@ -747,7 +786,18 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
         // accepted so in-flight older clients still emitting it remain sendable.
         matches!(
             value,
-            "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "identity" | "other"
+            "eperm"
+                | "eacces"
+                | "enospc"
+                | "ebusy"
+                | "enoent"
+                | "eexist"
+                | "enotempty"
+                | "exdev"
+                | "network"
+                | "auth"
+                | "identity"
+                | "other"
         )
     };
     let is_fatal_class = |value: &str| {

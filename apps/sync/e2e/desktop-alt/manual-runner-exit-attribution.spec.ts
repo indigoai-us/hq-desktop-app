@@ -143,6 +143,85 @@ describe('manual runner-exit attribution — shared classifier source', () => {
     expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION');
     expect(shapeSource).toContain('crate::hq_cloud::HQ_CLOUD_VERSION');
   });
+
+  it('re-pins the built-in JS + errno cause families, the errno classes, and the compile-time drift guard (r2)', () => {
+    // The regression reopen (HQ-DESKTOP-4T r2): the production recurrence decoded
+    // to a JavaScript RangeError, and per-file faults carried Node errno codes the
+    // vocabulary did not know. Both families are now named.
+
+    // (1) The ECMAScript/Node built-in identity family — emitted tokens and their
+    // producer-name mappings. RangeError is the decoded recurrence.
+    for (const [name, token] of [
+      ['RangeError', 'range_error'],
+      ['TypeError', 'type_error'],
+      ['SyntaxError', 'syntax_error'],
+      ['ReferenceError', 'reference_error'],
+      ['EvalError', 'eval_error'],
+      ['URIError', 'uri_error'],
+      ['AggregateError', 'aggregate_error'],
+      ['AbortError', 'abort_error'],
+      ['SystemError', 'system_error'],
+    ]) {
+      expect(shapeSource).toContain(`"${token}"`);
+      expect(shapeSource).toContain(`"${name}" => RunnerErrorCause::`);
+    }
+
+    // (2) The closed Node/libuv errno vocabulary, read from a `code=` value or a
+    // leading bare `ERRNO:` token — including the four the class axis knows so the
+    // cause and class axes agree on the same message.
+    for (const [code, token] of [
+      ['ENOENT', 'enoent'],
+      ['EEXIST', 'eexist'],
+      ['ENOTEMPTY', 'enotempty'],
+      ['EXDEV', 'exdev'],
+      ['ETIMEDOUT', 'etimedout'],
+      ['ECONNRESET', 'econnreset'],
+      ['EAI_AGAIN', 'eai_again'],
+      ['EPERM', 'eperm'],
+      ['EACCES', 'eacces'],
+      ['ENOSPC', 'enospc'],
+      ['EBUSY', 'ebusy'],
+      // Errnos the crate already handles on other axes (ENETDOWN via the
+      // transient-network class, EINVAL in the runner-error tests) — named on the
+      // cause axis so it is not blank for inputs the app explicitly handles.
+      ['ENETDOWN', 'enetdown'],
+      ['EINVAL', 'einval'],
+    ]) {
+      expect(shapeSource).toContain(`"${token}"`);
+      expect(shapeSource).toContain(`"${code}" => RunnerErrorCause::`);
+    }
+
+    // (3) The one hq-cloud identity the ~6.15.79 pin added.
+    expect(shapeSource).toContain('"child_process_sync_worker"');
+    expect(shapeSource).toContain(
+      '"ChildProcessSyncWorkerError" => RunnerErrorCause::ChildProcessSyncWorker',
+    );
+
+    // (4) The pin now matches the runner floor, AND the guard fires at COMPILE
+    // time (a const assertion, not only a #[test]) so a pin bump on ANY branch —
+    // including one cut before the guard existed, the PR #533 defect — fails the
+    // build instead of silently merging a mismatch.
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.79"');
+    expect(shapeSource).toMatch(/const _: \(\) = assert!\(\s*const_str_eq\(/);
+
+    // (5) The new filesystem errno CLASSES (sync_outcome), added as new variants so
+    // a rename fault reports a real class instead of OTHER while the op axis keeps
+    // reporting rename. Pre-existing class tokens stay byte-identical (pinned below).
+    for (const [variant, tag] of [
+      ['Enoent', 'ENOENT'],
+      ['Eexist', 'EEXIST'],
+      ['Enotempty', 'ENOTEMPTY'],
+      ['Exdev', 'EXDEV'],
+    ]) {
+      expect(coreSource).toContain(`Self::${variant} => "${tag}"`);
+    }
+
+    // (6) The egress mirror (hq-telemetry) accepts the new cause tokens and the new
+    // class breadcrumb tokens, so nothing the producer now emits is [Filtered].
+    expect(telemetrySource).toContain('"range_error"');
+    expect(telemetrySource).toContain('"enoent"');
+    expect(telemetrySource).toContain('"child_process_sync_worker"');
+  });
 });
 
 describe('manual runner-exit attribution — manual capture seam (commands::sync)', () => {
