@@ -44,6 +44,18 @@ const NOT_MAPPED = unavailable(
   'This capability is not yet mapped on the Sync host.',
 );
 
+/**
+ * Distinct from NOT_MAPPED: the Sync host already owns this surface natively
+ * (tray, floating widget, notification banners) and the embedded HQ Work UI
+ * must not drive a second one. Project non-goal: "Porting the sync engine,
+ * tray, or widget anywhere". Refusing loudly beats a silent `ok()`, which
+ * would make the embedded settings toggle look effective while nothing moved.
+ */
+const HOST_OWNED = unavailable(
+  'host-owned',
+  'The Sync host owns this surface natively; the embedded UI does not drive it.',
+);
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -627,6 +639,12 @@ export function createSyncPlatformAdapter(
         call('notification_permission_state'),
       requestNotificationPermission: () =>
         call('notification_request_permission'),
+      // Sync's own tray/widget settings own the floating widget, and its
+      // DM/share pollers own native banners. Both stay unchanged under the
+      // handoff flag, so the embedded UI gets an explicit host-owned refusal
+      // rather than a second, competing implementation.
+      setDesktopWidget: async () => HOST_OWNED,
+      showOsNotification: async () => HOST_OWNED,
     },
 
     updates: {

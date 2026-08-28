@@ -42,7 +42,7 @@ importers:
         version: file:../../hq-work-mono/hq-work-sync-handoff/packages/platform
       '@hq/ui':
         specifier: file:../../../../hq-work-mono/hq-work-sync-handoff/packages/ui
-        version: file:../../hq-work-mono/hq-work-sync-handoff/packages/ui(svelte@5.56.4)
+        version: file:../../hq-work-mono/hq-work-sync-handoff/packages/ui
       '@sentry/svelte':
         specifier: ^10.49.0
         version: 10.62.0(svelte@5.56.4)
@@ -499,8 +499,6 @@ packages:
 
   '@hq/ui@file:../../hq-work-mono/hq-work-sync-handoff/packages/ui':
     resolution: {directory: ../../hq-work-mono/hq-work-sync-handoff/packages/ui, type: directory}
-    peerDependencies:
-      svelte: ^5.0.0
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -1903,11 +1901,10 @@ snapshots:
 
   '@hq/platform@file:../../hq-work-mono/hq-work-sync-handoff/packages/platform': {}
 
-  '@hq/ui@file:../../hq-work-mono/hq-work-sync-handoff/packages/ui(svelte@5.56.4)':
+  '@hq/ui@file:../../hq-work-mono/hq-work-sync-handoff/packages/ui':
     dependencies:
       '@hq/core': file:../../hq-work-mono/hq-work-sync-handoff/packages/core
       '@hq/platform': file:../../hq-work-mono/hq-work-sync-handoff/packages/platform
-      svelte: 5.56.4
     transitivePeerDependencies:
       - bufferutil
       - supports-color

@@ -10,7 +10,8 @@ import type { AdapterResult, PlatformAdapter } from '@hq/platform';
 import {
   normalizeDirectoryFeed,
   OPEN_SETTINGS_EVENT,
-  requestDeepLinkOpen,
+  requestChannelOpen,
+  requestConversation,
   type Channel,
   type ChannelsResponse,
   type ChatSidebarApi,
@@ -18,7 +19,7 @@ import {
   type MessageSearchResult,
   type RequestsResponse,
 } from '@hq/ui';
-import { parseHqWorkOpenUrl } from '../lib/hq-work';
+import { parseHqWorkOpenUrl, type HqWorkOpenTarget } from '../lib/hq-work';
 
 function unwrap<T>(result: AdapterResult<T>): T {
   if (result.ok) return result.value;
@@ -97,6 +98,35 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
       );
     },
   };
+}
+
+/**
+ * Feed a validated deep-link target into DesktopApp's pending-open path.
+ *
+ * @hq/ui deliberately exposes two narrower stashes — `requestChannelOpen` for
+ * channels and `requestConversation` for 1:1 DMs — so this host owns the
+ * channel-wins-over-person precedence rather than adding a Sync-shaped helper
+ * to the platform-pure package.
+ *
+ * A deep link only carries a person uid, so `email` / `displayName` are left
+ * empty: MessagesShell resolves the peer from the directory by uid, and the
+ * empty-email path is the same one the sidebar uses for an unresolved peer.
+ */
+export function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
+  if (target.channelId) {
+    requestChannelOpen(target.channelId, {
+      replyRootEventId: target.replyRootEventId,
+    });
+    return;
+  }
+  if (target.personUid) {
+    requestConversation({
+      personUid: target.personUid,
+      email: '',
+      displayName: '',
+      replyRootEventId: target.replyRootEventId,
+    });
+  }
 }
 
 /** Map a desktop-alt pending route onto the embedded DesktopApp. */

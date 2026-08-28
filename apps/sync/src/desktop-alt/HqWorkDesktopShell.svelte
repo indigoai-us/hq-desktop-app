@@ -24,6 +24,7 @@
     type SyncInvokeFn,
   } from '../lib/hq-work-adapter';
   import { applyDesktopAltRoute, createHqWorkSidebarApi } from './hq-work-host';
+  import { safeUnlisten } from '../lib/listener-registry';
   import { getVaultObject, putVaultObject } from './vault-s3-put';
 
   interface Props {
@@ -83,7 +84,9 @@
 
     return () => {
       cancelled = true;
-      void unlistenPromise.then((unlisten) => unlisten());
+      // Shared teardown boundary: idempotent, and a throw here can never
+      // escape into Svelte's cleanup pass.
+      void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
     };
   });
 </script>

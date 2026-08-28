@@ -22,8 +22,20 @@ function readRepo(...parts: string[]): string {
   return readFileSync(resolve(repoRoot, ...parts), 'utf8');
 }
 
+/**
+ * @hq/ui and @hq/core do not list "./package.json" in `exports`, so resolving
+ * that subpath throws ERR_PACKAGE_PATH_NOT_EXPORTED. Resolve the package entry
+ * (".") instead and walk up to the directory that owns its package.json.
+ */
 function packageDir(name: string): string {
-  return dirname(requireFromSync.resolve(`${name}/package.json`));
+  let dir = dirname(requireFromSync.resolve(name));
+  for (let hop = 0; hop < 8; hop += 1) {
+    if (existsSync(join(dir, 'package.json'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(`could not locate the package root for ${name}`);
 }
 
 describe('US-101 consume @hq/ui + platform contracts', () => {
