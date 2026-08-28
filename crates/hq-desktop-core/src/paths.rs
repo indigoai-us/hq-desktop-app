@@ -271,6 +271,56 @@ pub fn both_within_same_managed_root(a: &Path, b: &Path, roots: &[PathBuf]) -> b
         .any(|root| path_is_within(a, root) && path_is_within(b, root))
 }
 
+/// System / package-manager prefixes HQ must NEVER install into, even if a
+/// pathological `$HOME` somehow contained one. `/usr` also covers `/usr/local`
+/// (Intel Homebrew) and `/usr/bin`; `/opt/homebrew` is Apple-Silicon Homebrew.
+/// Windows has no analogous user-writable global-prefix hazard here, so the list
+/// is unix-shaped and simply never matches a Windows path.
+const SYSTEM_OWNED_PREFIXES: &[&str] = &["/usr", "/opt/homebrew", "/bin", "/sbin"];
+
+/// Whether `prefix` is a user-owned Node/npm global prefix HQ may drive IN PLACE
+/// — i.e. one the updater can install INTO by running that prefix's own
+/// co-located npm, without ever pointing HQ's managed npm at a runtime it does
+/// not match. True only when the prefix is, all at once:
+///   * OUTSIDE every managed toolchain root — HQ's own managed prefixes route
+///     through the managed path, never this one; AND
+///   * INSIDE the user's home directory — an nvm / volta / asdf / user-npm
+///     prefix, never a shared location; AND
+///   * NOT a system or Homebrew prefix HQ must never write into (`/usr`,
+///     `/usr/local`, `/opt/homebrew`, `/bin`, `/sbin`).
+///
+/// Pure over its inputs (managed roots and home are passed in) so the boundary
+/// is unit-testable without touching process-global environment. A relative or
+/// empty prefix is never user-owned. This is the guard that keeps the new
+/// aim-at-the-executed-copy path from ever writing into Homebrew or a system
+/// prefix (see the updater's `select_ordinary_install_aim`).
+pub fn is_user_owned_prefix(prefix: &Path, managed_roots: &[PathBuf], home: Option<&Path>) -> bool {
+    if prefix.as_os_str().is_empty() || !prefix.is_absolute() {
+        return false;
+    }
+    // HQ's own managed roots are driven by the managed path, never this one.
+    if managed_roots
+        .iter()
+        .any(|root| path_is_within(prefix, root))
+    {
+        return false;
+    }
+    // Never a system / Homebrew / OS-owned prefix, regardless of home.
+    if SYSTEM_OWNED_PREFIXES
+        .iter()
+        .any(|sys| path_is_within(prefix, Path::new(sys)))
+    {
+        return false;
+    }
+    // Must live inside the user's own home directory to be user-owned.
+    match home {
+        Some(home) if !home.as_os_str().is_empty() && home.is_absolute() => {
+            path_is_within(prefix, home)
+        }
+        _ => false,
+    }
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
@@ -856,6 +906,22 @@ pub enum ResolutionSource {
     UserPrefix,
     SystemPrefix,
     LoginShell,
+}
+
+impl ResolutionSource {
+    /// Closed, path-free token for the `hq_bin_lane` telemetry tag. Kept in
+    /// lockstep with the serde `snake_case` rendering so the tag vocabulary has a
+    /// single source of truth and can never carry a raw filesystem path.
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NotResolved => "not_resolved",
+            Self::SettingsPath => "settings_path",
+            Self::ManagedToolchain => "managed_toolchain",
+            Self::UserPrefix => "user_prefix",
+            Self::SystemPrefix => "system_prefix",
+            Self::LoginShell => "login_shell",
+        }
+    }
 }
 
 fn parent_in(path: &Path, dirs: &[PathBuf]) -> bool {
@@ -2522,6 +2588,71 @@ mod tests {
             Path::new("/opt/IndigoHQ/toolchain/npm-prefix"),
             Path::new("/opt/IndigoHQ/toolchain/node"),
             &[],
+        ));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn the_user_owned_prefix_test_excludes_system_and_managed_roots() {
+        let managed_roots = vec![PathBuf::from(
+            "/Users/me/Library/Application Support/Indigo HQ/toolchain",
+        )];
+        let home = Path::new("/Users/me");
+
+        // The live shape: an nvm prefix inside the user's home, outside every
+        // managed root — HQ may drive it in place.
+        assert!(is_user_owned_prefix(
+            Path::new("/Users/me/.nvm/versions/node/v24.20.0"),
+            &managed_roots,
+            Some(home),
+        ));
+        // A plain user npm prefix inside home is also drivable.
+        assert!(is_user_owned_prefix(
+            Path::new("/Users/me/.npm-global"),
+            &managed_roots,
+            Some(home),
+        ));
+
+        // A managed prefix (HQ's own npm-global under the managed root) is NEVER
+        // user-owned — it routes through the managed path.
+        assert!(!is_user_owned_prefix(
+            Path::new("/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+            &managed_roots,
+            Some(home),
+        ));
+
+        // System / Homebrew prefixes are excluded even though the risk-3 hazard
+        // is exactly HQ writing into one of them.
+        for system in [
+            "/opt/homebrew",
+            "/usr/local",
+            "/usr",
+            "/usr/bin",
+            "/bin",
+            "/sbin",
+        ] {
+            assert!(
+                !is_user_owned_prefix(Path::new(system), &managed_roots, Some(home)),
+                "{system} must not be treated as user-owned"
+            );
+        }
+
+        // A prefix outside the user's home is not user-owned (a shared /opt tool).
+        assert!(!is_user_owned_prefix(
+            Path::new("/opt/tools/node"),
+            &managed_roots,
+            Some(home),
+        ));
+        // A relative or empty prefix, or an unknown home, is never user-owned.
+        assert!(!is_user_owned_prefix(
+            Path::new("relative/prefix"),
+            &managed_roots,
+            Some(home),
+        ));
+        assert!(!is_user_owned_prefix(
+            Path::new("/Users/me/.nvm/versions/node/v24.20.0"),
+            &managed_roots,
+            None,
         ));
     }
 

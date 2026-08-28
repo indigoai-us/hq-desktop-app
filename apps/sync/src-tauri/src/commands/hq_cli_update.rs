@@ -91,6 +91,8 @@ pub use hq_desktop_core::hq_cli_update::{
     non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
     managed_retry_start_decision, non_convergent_episode_reported, npm_install_attempt_summary,
     npm_lifecycle_cause,
+    colocated_npm_path, delivered_prefix_shim_for, executed_copy_aim_for, user_prefix_aim_decision,
+    DeliveredPrefixShim, ExecutedCopyAim, UserPrefixAim,
     npm_prefix_from_hq_bin, partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path,
     pnpm_global_env,
     pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
@@ -1188,6 +1190,11 @@ async fn install_hq_cli_update_via_pnpm(
         // pnpm never produces the npm same-root managed-shadow shape.
         managed_roots: &[],
         managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+        // pnpm never reaches the ForeignManaged arm, so the aim/shim gate is
+        // never consulted; the resolution lane still rides the event honestly.
+        executed_copy_aim: ExecutedCopyAim::Undrivable,
+        hq_bin_lane: paths::resolution_source_of(Path::new(&post_install_hq)),
+        delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present,
@@ -1326,6 +1333,11 @@ async fn install_hq_cli_update_via_bun(
         // Bun never produces the npm same-root managed-shadow shape.
         managed_roots: &[],
         managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+        // Bun never reaches the ForeignManaged arm, so the aim/shim gate is never
+        // consulted; the resolution lane still rides the event honestly.
+        executed_copy_aim: ExecutedCopyAim::Undrivable,
+        hq_bin_lane: paths::resolution_source_of(Path::new(&post_install_hq)),
+        delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         pnpm: None,
     });
     log("hq-cli-update", &outcome.log_line);
@@ -1530,6 +1542,35 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     } else {
         hq_cli_install_prefix(&npm, &hq)
     };
+    // Aim the ordinary update at the copy the app will actually EXECUTE. When the
+    // resolved `hq` sits in a drivable user-owned prefix that ships its own npm,
+    // install INTO that prefix and run THAT npm, so resolution finds the upgrade
+    // in place instead of a managed copy the app never runs — the foreign-managed
+    // non-convergence this closes. A managed npm never touches a user prefix (ABI
+    // stays matched), and a FIRST install keeps aiming at HQ's own managed prefix.
+    // Otherwise this is a no-op: the managed / hq-derived prefix and the resolved
+    // npm stand exactly as before.
+    let (prefix, npm, path) =
+        match select_ordinary_install_aim(&hq, &managed_roots, paths::home_dir().as_deref()) {
+            Some(aim) if !first_install => {
+                // Prepend the aimed npm's own bin dir so its co-located Node
+                // resolves (the shim is a `#!/usr/bin/env node` script), keeping
+                // build runtime matched to execute runtime.
+                let path = match Path::new(&aim.npm).parent() {
+                    Some(hint) => paths::path_with_interpreter_hint(&path, hint),
+                    None => path,
+                };
+                log(
+                    "hq-cli-update",
+                    &format!(
+                        "aiming ordinary update at the executed copy's own prefix (npm={})",
+                        redact_home(&aim.npm)
+                    ),
+                );
+                (Some(aim.prefix), aim.npm, path)
+            }
+            _ => (prefix, npm, path),
+        };
     // Pin the target BEFORE building the install argv. The app resolved `latest`
     // from the registry's /latest endpoint; it must ask npm for THAT EXACT
     // version, not the `@latest` dist-tag. npm re-resolves that tag through its
@@ -1794,6 +1835,44 @@ fn hq_cli_install_prefix(npm: &str, hq: &str) -> Option<String> {
     prefer_managed_prefix(npm_is_managed, managed_prefix, npm_prefix_from_hq_bin(hq))
 }
 
+/// Aim the ORDINARY update at the copy the app will actually EXECUTE. When the
+/// resolved `hq` sits in a drivable user-owned prefix — outside every managed
+/// root, inside `$HOME`, and not a system/Homebrew prefix
+/// ([`paths::is_user_owned_prefix`]) — that ships its own co-located npm
+/// (`<prefix>/bin/npm` on unix, `<prefix>\npm.cmd` on Windows), install INTO that
+/// prefix and run THAT npm, so the very copy resolution returns is upgraded in
+/// place instead of a managed copy the app never runs. That is what converges the
+/// live nvm-under-managed-npm shape.
+///
+/// The ABI guarantee stays intact by construction: this only ever runs the
+/// user's OWN co-located npm against the user's OWN prefix (matched runtimes), so
+/// HQ's managed npm is never pointed at a user prefix. Returns `None` — keep the
+/// managed / hq-derived prefix and the resolved npm, exactly as
+/// [`prefer_managed_prefix`] already did — in every other case (a managed or
+/// system prefix, a hand-rolled `hq` with no derivable prefix, or a user prefix
+/// with no co-located npm). The filesystem is touched only to confirm the
+/// co-located npm exists; the choice itself is the pure, core-tested
+/// [`user_prefix_aim_decision`]. `home` is injected so the boundary is
+/// unit-testable with a tempdir as `$HOME`.
+fn select_ordinary_install_aim(
+    hq: &str,
+    managed_roots: &[PathBuf],
+    home: Option<&Path>,
+) -> Option<UserPrefixAim> {
+    let hq_prefix = npm_prefix_from_hq_bin(hq)?;
+    let hq_prefix_path = Path::new(&hq_prefix);
+    let user_owned = paths::is_user_owned_prefix(hq_prefix_path, managed_roots, home);
+    let colocated = colocated_npm_path(hq_prefix_path);
+    let colocated_user_npm = colocated
+        .exists()
+        .then(|| colocated.to_string_lossy().to_string());
+    user_prefix_aim_decision(
+        Some(hq_prefix.as_str()),
+        user_owned,
+        colocated_user_npm.as_deref(),
+    )
+}
+
 /// Whether the resolved `npm` lives inside one of HQ's managed toolchain roots —
 /// i.e. it is HQ's own managed npm rather than a user (or unresolved) one. An
 /// unresolved bare `npm` never starts with an absolute root, so it reads as not
@@ -1873,6 +1952,21 @@ async fn finalize_convergence(
     } else {
         non_convergent_episode_markers()
     };
+    // Close the lane ambiguity and gate the durable block on a drivable aim: name
+    // the resolution lane of the executed `hq`, whether HQ aimed THIS run at that
+    // copy in place (with its own npm), and whether the aimed prefix exposes its
+    // `hq` shim after delivery. All three ride the closed-token contract — never a
+    // raw path — and a ForeignManaged verdict now writes the durable marker only
+    // when HQ either aimed at the executed copy or genuinely could not.
+    let hq_bin_lane = paths::resolution_source_of(Path::new(&post_install_hq));
+    let executed_copy_aim = executed_copy_aim_for(
+        &post_install_hq,
+        prefix,
+        installer_npm,
+        &managed_roots,
+        paths::home_dir().as_deref(),
+    );
+    let delivered_prefix_shim = delivered_prefix_shim_for(prefix, delivered_version.as_deref());
     let outcome = decide_post_install(
         &PostInstallContext::npm(
             before_bin,
@@ -1886,7 +1980,9 @@ async fn finalize_convergence(
             delivered_version.as_deref(),
         )
         .with_managed_roots(&managed_roots)
-        .with_nonblocking_episode_keys(&nonblocking_episode_keys),
+        .with_nonblocking_episode_keys(&nonblocking_episode_keys)
+        .with_executed_copy_aim(executed_copy_aim)
+        .with_resolution_telemetry(hq_bin_lane, delivered_prefix_shim),
     );
 
     // Managed shadow: HQ owns BOTH copies (on Windows, `<root>\npm-prefix` was
@@ -3013,6 +3109,14 @@ mod tests {
         assert!(argv.iter().all(|arg| !arg.contains(user_prefix)));
     }
 
+    /// The ABI-safe FALLBACK contract, paired with the new executed-copy aim.
+    /// `select_ordinary_install_aim` may aim the ordinary update at a drivable
+    /// user prefix, but only ever runs THAT prefix's own co-located npm — so
+    /// `prefer_managed_prefix` remains the guarantee that HQ's MANAGED npm is
+    /// never pointed at a user prefix (the ABI-127-into-a-Node-20-prefix
+    /// corruption). This case must stay green: a managed npm still routes to the
+    /// managed prefix, a user-path npm still derives from `hq`, and no `--prefix`
+    /// stays None.
     #[test]
     fn ordinary_install_prefix_follows_the_npm_runtime_not_hq_alone() {
         let managed = "/managed/toolchain/npm-global".to_string();
@@ -3032,6 +3136,104 @@ mod tests {
         );
         // npm's default prefix (no `--prefix`) stays None on the user path.
         assert_eq!(prefer_managed_prefix(false, Some(managed), None), None);
+    }
+
+    /// Gold for the app-crate selector (RED on base ea307d53, which had no such
+    /// selector; GREEN on the candidate): the exact live shape — an nvm prefix
+    /// inside `$HOME`, outside every managed root, that ships its own co-located
+    /// npm — is aimed at IN PLACE, installing into the nvm prefix and running the
+    /// nvm npm, so the copy the app executes is upgraded and resolution converges.
+    #[test]
+    fn the_install_targets_the_executed_copys_own_prefix_and_npm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let prefix = home.join(".nvm/versions/node/v24.20.0");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("hq"), "#!/bin/sh\n").unwrap();
+        std::fs::write(bin.join("npm"), "#!/bin/sh\n").unwrap();
+        let managed_roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+
+        let aim = select_ordinary_install_aim(
+            &bin.join("hq").to_string_lossy(),
+            &managed_roots,
+            Some(home),
+        );
+        assert_eq!(
+            aim,
+            Some(UserPrefixAim {
+                prefix: prefix.to_string_lossy().to_string(),
+                npm: bin.join("npm").to_string_lossy().to_string(),
+            }),
+            "the ordinary update aims at the executed nvm copy's own prefix and npm"
+        );
+    }
+
+    /// A system/Homebrew prefix is never user-owned, so the selector declines and
+    /// the managed / hq-derived prefix + resolved npm stand exactly as before.
+    #[test]
+    fn a_system_or_homebrew_prefix_still_routes_to_the_managed_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let managed_roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+        for hq in ["/opt/homebrew/bin/hq", "/usr/local/bin/hq", "/usr/bin/hq"] {
+            assert_eq!(
+                select_ordinary_install_aim(hq, &managed_roots, Some(home)),
+                None,
+                "{hq} is a system prefix and must not be aimed at"
+            );
+        }
+        // And the managed-npm ABI guarantee is unchanged.
+        let managed = "/managed/toolchain/npm-global".to_string();
+        assert_eq!(
+            prefer_managed_prefix(true, Some(managed.clone()), Some("/opt/homebrew".to_string())),
+            Some(managed)
+        );
+    }
+
+    /// A user-owned prefix with NO co-located npm cannot be driven in place, so
+    /// the selector declines (ABI safety: HQ never runs the managed npm here).
+    #[test]
+    fn a_user_prefix_without_a_colocated_npm_still_routes_to_the_managed_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let prefix = home.join(".nvm/versions/node/v24.20.0");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // Only `hq`, no co-located `npm`.
+        std::fs::write(bin.join("hq"), "#!/bin/sh\n").unwrap();
+        let managed_roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+        assert_eq!(
+            select_ordinary_install_aim(
+                &bin.join("hq").to_string_lossy(),
+                &managed_roots,
+                Some(home),
+            ),
+            None
+        );
+    }
+
+    /// An `hq` already inside a managed root is not user-owned, so the new
+    /// selector never claims it — the managed path handles it exactly as before.
+    #[test]
+    fn an_hq_already_inside_a_managed_root_is_unaffected_by_the_new_selector() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let root = home.join("Library/Application Support/Indigo HQ/toolchain");
+        let bin = root.join("npm-global/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("hq"), "#!/bin/sh\n").unwrap();
+        std::fs::write(bin.join("npm"), "#!/bin/sh\n").unwrap();
+        let managed_roots = [root];
+        assert_eq!(
+            select_ordinary_install_aim(
+                &bin.join("hq").to_string_lossy(),
+                &managed_roots,
+                Some(home),
+            ),
+            None,
+            "a managed-root hq is driven by the managed path, not the new selector"
+        );
     }
 
     /// The Kevin recurrence fix: a FIRST install is aimed at HQ's OWN managed npm

@@ -179,6 +179,14 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     // managed prefix helper — never a user-derived prefix under a managed npm.
     expect(cli).toContain('Path::new(npm).starts_with(&root)');
     expect(cli).toContain('paths::managed_npm_prefix_in(&root)');
+    // The ordinary path now ALSO aims at the copy the app will EXECUTE: a drivable
+    // user-owned prefix that ships its own npm is upgraded in place, running THAT
+    // prefix's own npm (never HQ's managed npm), which converges the live
+    // nvm-under-managed-npm shape without breaking the ABI guarantee above.
+    expect(cli).toContain('select_ordinary_install_aim(&hq, &managed_roots');
+    expect(cli).toContain('fn select_ordinary_install_aim(');
+    expect(cli).toContain('paths::is_user_owned_prefix(');
+    expect(cli).toContain('user_prefix_aim_decision(');
   });
 
   it('emits no Sentry event on a converged retry, and reports a failed retry with managed provenance', () => {
