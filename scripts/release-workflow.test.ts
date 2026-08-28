@@ -14,9 +14,10 @@ let windowsCheckWorkflow = "";
 let versionsToml = "";
 let syncCargoToml = "";
 let releaseDocs = "";
+let requiredSurfaces = "";
 
 beforeAll(async () => {
-  [workflow, clientClassifier, windowsConfig, windowsCheckWorkflow, versionsToml, syncCargoToml, releaseDocs] = await Promise.all([
+  [workflow, clientClassifier, windowsConfig, windowsCheckWorkflow, versionsToml, syncCargoToml, releaseDocs, requiredSurfaces] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
     readFile(resolve(rootDir, "crates/hq-desktop-core/src/release_channel.rs"), "utf8"),
     readFile(resolve(rootDir, "apps/sync/src-tauri/tauri.windows.conf.json"), "utf8"),
@@ -24,8 +25,21 @@ beforeAll(async () => {
     readFile(resolve(rootDir, "versions.toml"), "utf8"),
     readFile(resolve(rootDir, "apps/sync/src-tauri/Cargo.toml"), "utf8"),
     readFile(resolve(rootDir, "docs/RELEASE.md"), "utf8"),
+    readFile(resolve(rootDir, "scripts/release-required-surfaces.txt"), "utf8"),
   ]);
 });
+
+/**
+ * Mirrors the workflow's own manifest parsing: strip `#` comments, trim, drop
+ * blanks. Kept in step with the `while IFS= read -r surface` loop in the
+ * "Enforce v1 desktop shell" step.
+ */
+function parseRequiredSurfaces(manifest: string): string[] {
+  return manifest
+    .split("\n")
+    .map((line) => line.split("#")[0].trim())
+    .filter((line) => line.length > 0);
+}
 
 function jobBody(name: string): string {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -166,11 +180,18 @@ describe("release workflow channel contract", () => {
     expect(validate).toContain("this tag carries the V2 chat shell");
 
     // Negative check alone is not enough — an empty desktop-alt tree would
-    // pass it. The v1 sidebars must positively be present.
+    // pass it. Required surfaces must positively be present, and the list of
+    // them lives in a manifest rather than inline here, so shipping a new
+    // surface and protecting it are the same edit.
     expect(validate).toContain(
-      "for marker in v4/V4Sidebar.svelte v4/V4SecondarySidebar.svelte; do",
+      'MANIFEST="scripts/release-required-surfaces.txt"',
     );
-    expect(validate).toContain("the v1 desktop shell is not intact");
+    expect(validate).toContain("a required surface is absent from this tag's tree");
+    // A tag cut before the manifest existed must fail loudly, not skip the
+    // whole check because the file it reads happens to be absent.
+    expect(validate).toContain(
+      "the release guard cannot verify this tag's surfaces",
+    );
   });
 
   it("applies the shell guard to workflow_dispatch retries too", () => {
@@ -194,6 +215,39 @@ describe("release workflow channel contract", () => {
     for (const marker of ["v4/V4Sidebar.svelte", "v4/V4SecondarySidebar.svelte"]) {
       await expect(stat(resolve(shellDir, marker))).resolves.toBeDefined();
     }
+  });
+
+  it("keeps every surface named in the release manifest present on disk", async () => {
+    // The guard reads this manifest against a tag's tree at release time,
+    // where a missing path is a failed release. Checking it here instead
+    // means a stale entry surfaces in an ordinary PR run.
+    const surfaces = parseRequiredSurfaces(requiredSurfaces);
+
+    expect(surfaces.length).toBeGreaterThan(0);
+
+    for (const surface of surfaces) {
+      await expect(
+        stat(resolve(rootDir, surface)),
+        `${surface} is listed in scripts/release-required-surfaces.txt but does not exist`,
+      ).resolves.toBeDefined();
+    }
+  });
+
+  it("covers the surfaces a whole-tree revert has actually destroyed", () => {
+    // #454 reset apps/sync/src/desktop-alt to an older tree and took the
+    // "Finish setting up HQ" card with it; the guard's two sidebar markers
+    // waved 36 releases through without it. Pinning these entries stops the
+    // manifest being quietly emptied back to a shell-only check.
+    const surfaces = parseRequiredSurfaces(requiredSurfaces);
+
+    expect(surfaces).toContain(
+      "apps/sync/src/desktop-alt/components/SetupIncompleteCard.svelte",
+    );
+    expect(surfaces).toContain("apps/sync/src/desktop-alt/lib/setup-launch.ts");
+    expect(surfaces).toContain("apps/sync/src/desktop-alt/v4/V4Sidebar.svelte");
+    expect(surfaces).toContain(
+      "apps/sync/src/desktop-alt/v4/V4SecondarySidebar.svelte",
+    );
   });
 
   it("allows an equal stable rerun but rejects a rollback below public latest", () => {
