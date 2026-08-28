@@ -4272,7 +4272,6 @@ mod tests {
         // implicitly had. This test reproduces the observed field shape and
         // asserts it is now FULLY attributed with no unknown_* residual and no
         // leaked byte.
-        let secret_path = r"C:\Users\Ada\hq\companies\personal\secret-plan.md";
         let mut lines: Vec<String> = Vec::new();
         // Company-scope: the production RangeError recurrence (decoded from the
         // fix's own signature 93c5a7a535cb == sha256("RangeError")[..12]) …
@@ -4297,17 +4296,18 @@ mod tests {
             })
             .to_string(),
         );
-        // Per-file: six Node errno faults rendered exactly as describeError emits
-        // a plain Error — `code=<ERRNO> <ERRNO>: <text>, <op> <path>` — carrying a
-        // secret-looking path that must never surface.
+        // Per-file: six Node errno faults rendered as describeError emits a plain
+        // Error — `code=<ERRNO> <ERRNO>: <text>, <op> <path>`. Kept quote-free
+        // (the fake-runner harness single-quotes each emitted line) while still
+        // carrying a secret-looking path segment that must never surface.
         for index in 0..6 {
             lines.push(
                 serde_json::json!({
                     "type": "error",
                     "company": "acme",
-                    "path": format!("knowledge/secret-{index}.md"),
+                    "path": format!("knowledge/topsecret-{index}.md"),
                     "message": format!(
-                        "code=ENOENT ENOENT: no such file or directory, rename '{secret_path}.hq-tmp-{index}' -> '{secret_path}'"
+                        "code=ENOENT ENOENT: no such file or directory, rename knowledge/topsecret-{index}.md.hqtmp -> knowledge/topsecret-{index}.md"
                     ),
                 })
                 .to_string(),
@@ -4384,13 +4384,11 @@ mod tests {
         // Content safety: not one byte of the child's stderr — path, host, or
         // message fragment — reaches any tag, extra, or breadcrumb.
         for forbidden in [
-            "secret-plan.md",
+            "topsecret",
             "no such file or directory",
-            "hq-tmp",
+            "hqtmp",
             "Maximum call stack",
             "vault client request",
-            "personal",
-            "Ada",
         ] {
             assert!(
                 !serialized.contains(forbidden),
