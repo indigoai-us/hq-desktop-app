@@ -6,8 +6,8 @@
 | | |
 | --- | --- |
 | Source | `indigoai-us/hq-work-mono` `packages/{core,platform,ui}` |
-| Copied from | `3ff1d15639d7480a9369441153c5b33ea3359737` (main) |
-| Copied on | 2026-08-28 |
+| Copied from | `f85dfb6407d467c44de3133791b40158cfe16ef9` (main) |
+| Copied on | 2026-08-29 |
 
 ## Why they live here
 

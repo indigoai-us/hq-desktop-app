@@ -698,6 +698,20 @@
     return map;
   });
 
+  /** personUid → live display name from the channel roster (the profile
+   *  display-name override), so chat/thread show the current name instead of
+   *  the full name baked into each message at send time. */
+  const displayNameByUid = $derived.by(() => {
+    const map: Record<string, string> = {};
+    const roster =
+      channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
+    for (const m of roster) {
+      const name = m.displayName?.trim();
+      if (name && m.personUid) map[m.personUid] = name;
+    }
+    return map;
+  });
+
   const profilePanelAvatarUrl = $derived(
     openProfileMember && isSelf(openProfileMember.personUid, self)
       ? selfAvatarUrl
@@ -2009,6 +2023,7 @@
                   vaultCompanyUid={attachmentCompanyUid(selectedRow)}
                   {replyPreviewByRoot}
                   {avatarByUid}
+                  {displayNameByUid}
                   activeRootEventId={openReplyRootId}
                   loading={timelineHydrating && timeline.length === 0}
                 />
@@ -2050,6 +2065,8 @@
                     onclose={closeReply}
                     onreplycount={onReplyCount}
                     {avatarByUid}
+                    {displayNameByUid}
+                    onopenprofile={openProfileForAuthor}
                   />
                 </div>
               {/if}
