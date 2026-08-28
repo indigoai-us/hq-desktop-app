@@ -224,11 +224,37 @@ describe('onboarding launch handoff', () => {
     );
   });
 
-  it('keeps Download Claude when no AI tool is installed', async () => {
+  it('offers both Claude Code and Codex when no AI tool is installed', async () => {
+    // Previously this screen offered "Download Claude" alone, so a machine
+    // with neither agent was never told Codex was an option — HQ read as
+    // single-vendor at exactly the moment someone picks a tool.
     mountWizard(vi.fn(), 4);
     await flush();
-    expect(primaryButton().textContent).toBe('Download Claude');
-    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] button')).toHaveLength(1);
+
+    expect(host.querySelectorAll('[data-testid="onboarding-launchers"] button')).toHaveLength(2);
+    expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-install-codex"]')).not.toBeNull();
+
+    // Claude keeps the primary slot: it is the path that starts the readiness
+    // watch, and the row still needs one obvious next step.
+    expect(primaryButton().textContent).toBe('Install Claude Code');
+  });
+
+  it('shows Codex as installed when only the ChatGPT-bundled desktop app is present', async () => {
+    // Desktop Codex ships inside ChatGPT.app; the detector reports that as
+    // codex_desktop, and the Ready screen must offer to launch it rather than
+    // to install something the machine already has.
+    mountWizard(vi.fn(), 4, {
+      ...NO_AI_TOOLS,
+      codex_desktop: true,
+      any: true,
+    });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-codex"]')),
+    );
+
+    expect(host.querySelector('[data-testid="onboarding-install-codex"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
   });
 
   it('opens Codex from its own button when Claude is also installed', async () => {

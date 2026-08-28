@@ -15,6 +15,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
+  import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import Conversation, {
@@ -231,10 +232,15 @@
   const bannerKind = params.get('kind') ?? 'share';
   const scenario = params.get('scenario');
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
+  // Bound by the wizard's real step count rather than a hand-written ceiling.
+  // The literal `3` this replaced predated every step added after Consent, so
+  // `?step=4` upward — including this harness's own default entry point, and
+  // the Ready screen at 5 — silently fell back to Welcome.
+  const LAST_ONBOARDING_STEP = WIZARD_STEPS[WIZARD_STEPS.length - 1].index;
   const onboardingStep =
     Number.isInteger(requestedOnboardingStep) &&
     requestedOnboardingStep >= 0 &&
-    requestedOnboardingStep <= 3
+    requestedOnboardingStep <= LAST_ONBOARDING_STEP
       ? requestedOnboardingStep
       : 0;
   // ?state=error renders the "Sync initialized" notice banner.

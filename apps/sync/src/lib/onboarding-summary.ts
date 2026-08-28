@@ -28,31 +28,98 @@ export type PrimaryLaunchKind = LaunchKind | 'download';
 export interface PrimaryLaunch { kind: PrimaryLaunchKind; label: string }
 export interface AvailableLaunch { kind: LaunchKind; label: string }
 
+/**
+ * A slot on the Ready screen. `installed: false` entries are the point of
+ * `alwaysOffer` below: they render as an install link rather than being
+ * hidden, so a fresh machine can see that HQ drives either agent.
+ */
+export interface LaunchEntry {
+  kind: LaunchKind;
+  label: string;
+  installLabel: string;
+  installed: boolean;
+  installUrl: string;
+}
+
+export const CLAUDE_INSTALL_URL = 'https://claude.ai/download';
+/**
+ * Desktop Codex ships inside the ChatGPT app — the download page states
+ * "Existing Codex app users can update to ChatGPT and open Codex" — so this
+ * is the one download that yields a working "Open in Codex" button without
+ * making someone install a CLI first.
+ */
+export const CODEX_INSTALL_URL = 'https://chatgpt.com/download';
+export const GROK_INSTALL_URL = 'https://x.ai/';
+
 const LAUNCH_CANDIDATES: Array<{
   kind: LaunchKind;
   label: string;
+  installLabel: string;
+  installUrl: string;
+  /**
+   * Show the slot even when the tool is absent. Claude Code and Codex are the
+   * two agents HQ is documented to drive, so hiding whichever one a fresh
+   * machine happens not to have makes HQ look single-vendor. Grok stays
+   * detection-only — offering three slots where two are dead links buries the
+   * one button that actually works.
+   */
+  alwaysOffer: boolean;
   isAvailable: (tools: AiTools) => boolean;
   lastUsed: (tools: AiTools) => number | null;
 }> = [
   {
     kind: 'claude',
     label: 'Open in Claude Code',
+    installLabel: 'Install Claude Code',
+    installUrl: CLAUDE_INSTALL_URL,
+    alwaysOffer: true,
     isAvailable: (tools) => tools.claude_cli || tools.claude_desktop,
     lastUsed: (tools) => tools.claude_last_used_ms,
   },
   {
     kind: 'codex',
     label: 'Open in Codex',
+    installLabel: 'Install Codex',
+    installUrl: CODEX_INSTALL_URL,
+    alwaysOffer: true,
     isAvailable: (tools) => tools.codex_cli || tools.codex_desktop,
     lastUsed: (tools) => tools.codex_last_used_ms,
   },
   {
     kind: 'grok',
     label: 'Open in Grok',
+    installLabel: 'Install Grok',
+    installUrl: GROK_INSTALL_URL,
+    alwaysOffer: false,
     isAvailable: (tools) => tools.grok_cli,
     lastUsed: (tools) => tools.grok_last_used_ms,
   },
 ];
+
+/**
+ * Every slot the Ready screen should render, in candidate order.
+ *
+ * Returns `[]` while detection is still in flight (`tools === null`) so the
+ * caller keeps its existing "still checking" fallback rather than flashing
+ * two install links at someone who has both tools installed.
+ */
+export function launchEntries(tools: AiTools | null): LaunchEntry[] {
+  if (!tools) return [];
+  return LAUNCH_CANDIDATES.filter(
+    (candidate) => candidate.alwaysOffer || candidate.isAvailable(tools),
+  ).map(({ kind, label, installLabel, installUrl, isAvailable }) => ({
+    kind,
+    label,
+    installLabel,
+    installUrl,
+    installed: isAvailable(tools),
+  }));
+}
+
+export function installUrlFor(kind: LaunchKind): string {
+  const candidate = LAUNCH_CANDIDATES.find((entry) => entry.kind === kind);
+  return candidate ? candidate.installUrl : CLAUDE_INSTALL_URL;
+}
 
 export type SummaryLaunchState =
   | { kind: 'checking'; label: string }

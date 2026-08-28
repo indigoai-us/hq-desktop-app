@@ -1,0 +1,15 @@
+# Paths the `tauri dev` file watcher must not treat as source changes.
+#
+# build.rs compiles the Swift menu-bar helper on every build and publishes it
+# atomically: build_support/tray_helper.rs stages the binary at
+# `helper/.hq-tray-helper.<pid>.tmp`, then renames it over
+# `helper/hq-tray-helper`. Both paths sit inside the watched tree, so without
+# these entries the watcher sees its own build output land, restarts the
+# build, produces a new PID-named temp file, and restarts again — `tauri dev`
+# never reaches a running app on macOS. The staging file needs a rule of its
+# own; the published-binary rule does not match a dotted, PID-suffixed name.
+#
+# Keep this narrow. helper/hq-tray-helper.swift and helper/tests are real
+# sources and must still trigger a rebuild when edited.
+helper/hq-tray-helper
+helper/.hq-tray-helper.*.tmp
