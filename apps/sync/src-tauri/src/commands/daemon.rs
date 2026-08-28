@@ -4138,20 +4138,32 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
         return Some((sum, RssSampleKind::Tree));
     }
     // ANY failure — no generation, no job handle, query failure, the observed root
-    // PID absent from the live list, or an empty sample — falls back to today's
+    // PID absent from the live list, an empty sample, or ONLY the shim readable
+    // (every descendant raced out of its per-PID read) — falls back to today's
     // exact single-PID sample so a shim footprint stays WITHHELD as
     // `unattributed:shim`, never reported as the runner's.
     sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single))
 }
 
 /// Sum working-set (KB) over the sampled live PIDs of the watcher's Job Object,
-/// requiring `root` (the observed registered PID) to be present so a stale or
-/// foreign job is never reported as this watcher's. Mirrors the discipline of
-/// [`sum_pid_tree_rss_kb`]: `None` when `root` is absent from the sample; each PID
-/// counted at most once; an unreadable per-PID sample (`None`) contributes 0
-/// rather than aborting the sum; saturating add. Pure so it is compiled and
-/// unit-tested on every CI lane, including the off-Windows builds of its
-/// Windows-only caller — hence the off-Windows dead-code allowance.
+/// requiring `root` (the observed registered child, i.e. the shim) to be present
+/// so a stale or foreign job is never reported as this watcher's. Mirrors the
+/// discipline of [`sum_pid_tree_rss_kb`]: `None` when `root` is absent; each PID
+/// counted at most once; saturating add. An unreadable per-PID sample (`None`)
+/// contributes 0 — it exited between the live-PID query and its read, so it now
+/// holds no working set — rather than aborting the whole sum on ordinary worker
+/// churn (this cluster's job reached 155 processes).
+///
+/// It also requires at least one readable member OTHER than `root`: without a
+/// measured descendant the "tree" would be only the ~5-8MB shim (the runner raced
+/// out of its own per-PID read), and reporting that as the complete tree footprint
+/// would defeat the small-process-vs-runner-OOM distinction this fix exists to
+/// draw — so it returns `None` and the caller withholds via the single-PID
+/// fallback instead. A wrong number is never reported in place of honest
+/// withholding.
+///
+/// Pure so it is compiled and unit-tested on every CI lane, including the
+/// off-Windows builds of its Windows-only caller — hence the dead-code allowance.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn sum_job_working_set_kb(samples: &[(u32, Option<u64>)], root: u32) -> Option<u64> {
     use std::collections::HashSet;
@@ -4160,13 +4172,25 @@ fn sum_job_working_set_kb(samples: &[(u32, Option<u64>)], root: u32) -> Option<u
     }
     let mut seen: HashSet<u32> = HashSet::new();
     let mut total = 0_u64;
+    let mut measured_descendant = false;
     for &(pid, kb) in samples {
         if !seen.insert(pid) {
             continue;
         }
-        total = total.saturating_add(kb.unwrap_or(0));
+        if let Some(kb) = kb {
+            if pid != root {
+                measured_descendant = true;
+            }
+            total = total.saturating_add(kb);
+        }
     }
-    Some(total)
+    // Only the shim was readable — the runner and any other descendants raced out
+    // of their reads — so this is not a tree, it is the shim alone. Withhold.
+    if measured_descendant {
+        Some(total)
+    } else {
+        None
+    }
 }
 
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
@@ -9623,11 +9647,23 @@ mod tests {
             sum_job_working_set_kb(&[(100, Some(10)), (100, Some(10)), (200, Some(5))], 100),
             Some(15)
         );
-        // An unreadable per-PID sample contributes 0 rather than aborting: one
-        // denied OpenProcess never withholds the whole tree's footprint.
+        // An unreadable member contributes 0 rather than aborting the sum, as long
+        // as some OTHER descendant was measured: one worker racing out of its read
+        // never withholds the whole tree's footprint.
         assert_eq!(
             sum_job_working_set_kb(&[(100, Some(10)), (200, None), (300, Some(5))], 100),
             Some(15)
+        );
+        // Only the root (shim) was readable — the runner/descendants all raced out
+        // of their per-PID reads — so the "tree" would be just the ~6MB shim.
+        // Withhold (None) instead of mislabeling the shim as the complete tree.
+        assert_eq!(sum_job_working_set_kb(&[(100, Some(6144)), (200, None)], 100), None);
+        assert_eq!(sum_job_working_set_kb(&[(100, Some(6144))], 100), None);
+        // A single readable descendant is enough to trust the tree even when other
+        // members raced out — no over-withholding on worker churn.
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(6144)), (200, Some(1500)), (300, None)], 100),
+            Some(7644)
         );
         // Saturating add: a pathological pair cannot overflow into a tiny wrong sum.
         assert_eq!(

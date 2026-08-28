@@ -106,7 +106,7 @@ describe('watcher shim RSS attribution — source contracts', () => {
     expect(unixArm).toContain('RssSampleKind::Tree');
   });
 
-  it('pure sum requires the observed root PID and saturates', () => {
+  it('pure sum requires the root, a measured descendant, and saturates', () => {
     expect(daemonSource).toContain(
       'fn sum_job_working_set_kb(samples: &[(u32, Option<u64>)], root: u32) -> Option<u64>',
     );
@@ -120,6 +120,10 @@ describe('watcher shim RSS attribution — source contracts', () => {
     // saturating add (so a pathological pair cannot wrap to a tiny wrong sum).
     expect(sumFn).toContain('samples.iter().any(|(pid, _)| *pid == root)');
     expect(sumFn).toContain('saturating_add');
+    // A measured descendant is required: if only the shim (root) is readable, the
+    // "tree" is just the shim — withhold rather than mislabel it as tree-complete.
+    expect(sumFn).toContain('measured_descendant');
+    expect(sumFn).toContain('if pid != root');
   });
 
   it('the process helper is generation-scoped and closes nothing', () => {
