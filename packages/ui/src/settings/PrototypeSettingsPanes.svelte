@@ -152,19 +152,35 @@
     if (adapter) void adapter.appShell.setAutostart(next);
   }
 
-  function toggleDock(): void {
-    const next = !prefs.showInDock;
+  async function toggleDock(): Promise<void> {
+    const previous = prefs.showInDock;
+    const next = !previous;
     dockVisibilityChanged = true;
     patch({ showInDock: next });
     // Apply both directions — hiding the Dock icon must take effect too.
-    if (adapter) void adapter.appShell.setDockVisible(next);
+    if (!adapter) return;
+    const result = await adapter.appShell.setDockVisible(next);
+    if (!result.ok && result.reason === "error" && prefs.showInDock === next) {
+      dockVisibilityChanged = false;
+      patch({ showInDock: previous });
+    }
   }
 
-  function toggleDesktopWidget(): void {
-    const next = !prefs.desktopWidget;
+  async function toggleDesktopWidget(): Promise<void> {
+    const previous = prefs.desktopWidget;
+    const next = !previous;
     desktopWidgetChanged = true;
     patch({ desktopWidget: next });
-    if (adapter) void adapter.appShell.setDesktopWidget(next);
+    if (!adapter) return;
+    const result = await adapter.appShell.setDesktopWidget(next);
+    if (
+      !result.ok &&
+      result.reason === "error" &&
+      prefs.desktopWidget === next
+    ) {
+      desktopWidgetChanged = false;
+      patch({ desktopWidget: previous });
+    }
   }
 
   function togglePlatform(name: string): void {
@@ -480,7 +496,7 @@
           role="switch"
           aria-checked={prefs.showInDock}
           aria-label="Show in Dock"
-          onclick={() => toggleDock()}
+          onclick={() => void toggleDock()}
         ></button>
       </div>
       <div class="set-row">
@@ -512,7 +528,7 @@
           role="switch"
           aria-checked={prefs.desktopWidget}
           aria-label="Desktop widget"
-          onclick={() => toggleDesktopWidget()}
+          onclick={() => void toggleDesktopWidget()}
         ></button>
       </div>
     {/if}
