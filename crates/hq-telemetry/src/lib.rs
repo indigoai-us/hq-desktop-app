@@ -482,6 +482,20 @@ const RUNNER_ERROR_PATH_ROOT_TOKENS: &[&str] = &[
     "knowledge", "projects", "repos", "sources", "signals", "data", "settings", "workers",
     "registry", "clients", "core", "companies", "personal", "workspace", "other",
 ];
+// The runner-error SITE vocabulary (HQ-DESKTOP-5M): every non-file sentinel plus
+// `file`. Kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; the `#[cfg(test)]` drift check drives every
+// `RunnerErrorSite::ALL` variant through this list, so a producer that adds a site
+// without updating this mirror fails CI instead of blanking a live tag.
+const RUNNER_ERROR_SITE_TOKENS: &[&str] = &[
+    "company",
+    "discovery",
+    "local_state",
+    "runner",
+    "scope",
+    "auth",
+    "file",
+];
 
 /// A `token:count(,token:count)*` rollup whose tokens are drawn from a closed
 /// `vocabulary` and whose counts are bare integers. Bounded like
@@ -643,6 +657,11 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_error_path_roots" => {
             Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_PATH_ROOT_TOKENS))
         }
+        // The runner-error SITE axis (HQ-DESKTOP-5M): a `token:count` rollup over the
+        // closed `RunnerErrorSite` vocabulary. Same egress discipline as the axes
+        // above — an off-vocabulary token or non-digit count degrades to `[Filtered]`
+        // rather than shipping the runner's raw `path` sentinel or a file fragment.
+        "runner_error_sites" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SITE_TOKENS)),
         // The cause-signature axis (this reopen): a bounded `hex12:count` rollup
         // correlating an `unknown_named` residual across machines. The producer
         // emits only a fixed-length lowercase-hex digest of a gated identifier, so
@@ -1658,7 +1677,7 @@ mod tests {
     #[test]
     fn every_runner_error_rollup_token_survives_and_lookalikes_fail_closed() {
         use hq_desktop_core::runner_error_shape::{
-            RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerPathRoot,
+            RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerErrorSite, RunnerPathRoot,
         };
         // Cross-crate anti-drift: enumerate each producer's OWN token set and
         // assert every rendered `token:count` survives the independent egress
@@ -1668,11 +1687,13 @@ mod tests {
         let causes: Vec<&str> = RunnerErrorCause::ALL.iter().map(|c| c.as_str()).collect();
         let shapes: Vec<&str> = RunnerErrorShape::ALL.iter().map(|s| s.as_str()).collect();
         let path_roots: Vec<&str> = RunnerPathRoot::ALL.iter().map(|p| p.as_str()).collect();
+        let sites: Vec<&str> = RunnerErrorSite::ALL.iter().map(|s| s.as_str()).collect();
         for (key, tokens) in [
             ("runner_error_http", &http),
             ("runner_error_causes", &causes),
             ("runner_error_shapes", &shapes),
             ("runner_error_path_roots", &path_roots),
+            ("runner_error_sites", &sites),
         ] {
             for token in tokens.iter() {
                 assert_eq!(
@@ -1704,6 +1725,10 @@ mod tests {
             ("runner_error_causes", "unknown:1"), // the retired flat residual is no longer emitted
             ("runner_error_shapes", "presigned_get_failed:9,knowledge/a.md:1"),
             ("runner_error_path_roots", "companies:1,cognito-abc:1"),
+            // The site axis: the raw producer `path` sentinel (parens, hyphen) is
+            // NOT an as_str token, so it must fail closed rather than ship a byte.
+            ("runner_error_sites", "file:1,(runner):1"),
+            ("runner_error_sites", "local-state:1"),
             ("runner_error_http", overlong.as_str()),
             // Signature axis: only a bare lowercase-12-hex key is permitted, so a
             // raw identity, an uppercase digest, a wrong length, or a bad count
@@ -1752,6 +1777,37 @@ mod tests {
         assert_eq!(rollup.fingerprint_token(), "vault_permission_denied");
         assert!(allowed.contains(rollup.fingerprint_token()));
         assert_eq!(RunnerErrorCauseRollup::default().fingerprint_token(), "none");
+    }
+
+    #[test]
+    fn site_rollup_fingerprint_tokens_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::{RunnerErrorSite, RunnerErrorSiteRollup};
+        // HQ-DESKTOP-5M: RunnerErrorSiteRollup::fingerprint_token is a NEW producer
+        // of the sixth Sentry group token. It returns RunnerErrorSite::as_str of the
+        // dominant site, so its full emit domain is exactly RunnerErrorSite::ALL's
+        // as_str set — every one of which the independent runner_error_sites egress
+        // mirror must accept. Pinning it fails a future site that slips the mirror.
+        let allowed: std::collections::HashSet<&str> =
+            RUNNER_ERROR_SITE_TOKENS.iter().copied().collect();
+        for site in RunnerErrorSite::ALL {
+            let token = site.as_str();
+            assert!(
+                allowed.contains(token),
+                "site fingerprint token {token:?} is missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_error_sites", &format!("{token}:3")),
+                Some(true),
+                "site fingerprint token {token:?} must survive egress"
+            );
+        }
+        // The producer path: a concrete rollup's dominant token is an allow-listed
+        // value, and the empty-rollup sentinel is the fixed literal "none".
+        let mut rollup = RunnerErrorSiteRollup::default();
+        rollup.record("(local-state)");
+        assert_eq!(rollup.fingerprint_token(), "local_state");
+        assert!(allowed.contains(rollup.fingerprint_token()));
+        assert_eq!(RunnerErrorSiteRollup::default().fingerprint_token(), "none");
     }
 
     #[test]
