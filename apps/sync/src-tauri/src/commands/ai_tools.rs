@@ -59,6 +59,18 @@ pub fn detect_ai_tools() -> AiTools {
         None,
         CLI_PROBE_TIMEOUT,
     );
+    // The login-shell probe misses a codex the app provisioned itself when
+    // the shell profile lacks the managed npm-global PATH block (fresh
+    // machine, custom shell). The managed bin is our own install — its
+    // existence IS codex_cli.
+    if !tools.codex_cli {
+        if let Some(bin) = crate::commands::ensure_codex::managed_codex_bin() {
+            if bin.exists() {
+                tools.codex_cli = true;
+                tools.any = true;
+            }
+        }
+    }
     if let Some(home) = dirs::home_dir() {
         tools.claude_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "claude"));
         tools.codex_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "codex"));

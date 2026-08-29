@@ -13,6 +13,7 @@ pub mod conflicts;
 pub mod content;
 pub mod daemon;
 pub mod desktop_alt;
+pub mod ensure_codex;
 pub mod dm_mqtt;
 pub mod dm_notify;
 pub mod dock;

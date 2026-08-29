@@ -201,12 +201,26 @@ pub fn launch_codex_workspace(path: String) -> Result<(), String> {
             target.display()
         ));
     }
-    let escaped = target.to_string_lossy().replace('\'', "'\\''");
-    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-    let output = Command::new(shell)
-        .args(["-lc", &format!("codex app '{escaped}'")])
-        .output()
-        .map_err(|e| format!("failed to run codex app: {e}"))?;
+    // Prefer the app-provisioned codex by absolute path — it exists even
+    // when the user's shell profile lacks the managed PATH block. Fall back
+    // to login-shell resolution for user-managed installs (pnpm home,
+    // homebrew, npm global).
+    let output = match crate::commands::ensure_codex::managed_codex_bin()
+        .filter(|bin| bin.exists())
+    {
+        Some(bin) => Command::new(bin)
+            .args(["app", &target.to_string_lossy()])
+            .env("PATH", crate::commands::install_deps::extended_search_path())
+            .output(),
+        None => {
+            let escaped = target.to_string_lossy().replace('\'', "'\\''");
+            let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+            Command::new(shell)
+                .args(["-lc", &format!("codex app '{escaped}'")])
+                .output()
+        }
+    }
+    .map_err(|e| format!("failed to run codex app: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(

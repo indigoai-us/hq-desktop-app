@@ -1090,6 +1090,11 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
+            // Ships the Codex CLI with the app: `codex app <path>` is the only
+            // way "Open in Codex" can hand the desktop app a workspace, so a
+            // machine without the CLI gets one installed into the managed
+            // npm-global prefix (one attempt per launch, master-toggle gated).
+            commands::ensure_codex::setup_codex_provisioner(app.handle());
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 
