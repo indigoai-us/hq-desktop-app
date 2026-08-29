@@ -410,7 +410,14 @@
 /// journal-lock crash fixes. The exact spec change deliberately invalidates
 /// npx's old cache key, so existing desktops cannot remain on an earlier
 /// runner that stays poll-only after a transient subscribe failure.
-pub const HQ_CLOUD_VERSION: &str = "~6.15.79";
+///
+/// `~6.15.79` -> `~6.15.95`: floor the runner at pull-apply echo suppression:
+/// a pulled file's content hash is recorded in the publish-suppression ledger,
+/// so the applying device's watcher cannot re-announce it (hq-cloud#456). Also
+/// picks up the producer-declared `sizeBytes` fast-lane routing fixes from
+/// 6.15.94 (hq-cloud#453–#455). Raising the floor changes the npx cache key, so
+/// cached older resolutions cannot keep serving the echoing runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.15.95";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -477,7 +484,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.15.79");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.15.95");
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
