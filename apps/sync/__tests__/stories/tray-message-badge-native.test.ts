@@ -96,7 +96,7 @@ describe('native HQ menu-bar badge verification', () => {
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
     }
-  });
+  }, COMPILE_TIMEOUT_MS);
 
   nativeIt(
     'builds a universal macOS 13 helper through the production build support',

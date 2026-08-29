@@ -14,7 +14,11 @@
   import PromptAttachment from "./PromptAttachment.svelte";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
-  import { applyMentionMarkup, type MentionTarget } from "../mentions.js";
+  import {
+    applyMentionMarkup,
+    storedMentionType,
+    type MentionTarget,
+  } from "../mentions.js";
   import { parseMessageAttachments } from "./channelMessageModels";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import {
@@ -143,7 +147,7 @@
   ): MentionTarget[] {
     return (msg?.mentions ?? []).map((row) => ({
       participantUid: row.participantUid,
-      participantType: row.participantType === "agent" ? "agent" : "human",
+      participantType: storedMentionType(row),
       displayName: row.displayName,
     }));
   }
@@ -903,6 +907,14 @@
     pointer-events: auto;
   }
 
+  /* Touch input has no hover state, so a hover-only toolbar is unreachable. */
+  @media (hover: none) {
+    .reply-quick-react-root {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
   /* Root sits at the panel top — anchor its toolbar inside the row, not above. */
   .reply-quick-react-root {
     top: 8px;
@@ -1058,6 +1070,13 @@
   .reply-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  @media (hover: none) {
+    .reply-quick-react {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 
   .reply-quick-react-picker-wrap {

@@ -34,6 +34,9 @@
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") {
       e.preventDefault();
+      // Consume it: the picker is the innermost layer, so an outer Escape
+      // handler (reply panel, modal) must not also close on the same key.
+      e.stopPropagation();
       onclose();
     }
   }

@@ -234,31 +234,91 @@ export function mentionSegments(
   return out;
 }
 
+/** Resolve a stored mention row's participant type.
+ *  The wire field is optional, so fall back to the uid prefix rather than
+ *  assuming "human" — an agent must never get a clickable profile link. */
+export function storedMentionType(row: {
+  participantUid: string;
+  participantType?: string | null;
+}): MentionParticipantType {
+  const declared = row.participantType?.trim().toLowerCase();
+  if (declared === "agent") return "agent";
+  if (declared === "human") return "human";
+  return mentionTypeForUid(row.participantUid ?? "");
+}
+
+interface MentionToken {
+  token: string;
+  target: MentionTarget;
+}
+
+/** Wrap mention tokens inside one run of message text (never inside a tag).
+ *  Single left-to-right pass: inserted markup is not re-scanned, so a name
+ *  that is a prefix of another can't be wrapped twice. */
+function decorateMentionText(
+  text: string,
+  tokens: readonly MentionToken[],
+): string {
+  if (!text.includes("@")) return text;
+  let out = "";
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text[cursor] === "@") {
+      const hit = tokens.find(({ token }) => text.startsWith(token, cursor));
+      if (hit) {
+        const attrs =
+          hit.target.participantType === "human" && hit.target.participantUid
+            ? ` data-person-uid="${escapeHtml(hit.target.participantUid)}" data-person-type="human" role="button" tabindex="0"`
+            : "";
+        out += `<span class="inline-mention"${attrs}>${hit.token}</span>`;
+        cursor += hit.token.length;
+        continue;
+      }
+    }
+    out += text[cursor];
+    cursor += 1;
+  }
+  return out;
+}
+
 /** Highlight stored @names inside already-rendered markdown HTML.
  *  Human mentions carry `data-person-uid`/`data-person-type` so the shell can
- *  open the mentioned person's profile panel on click (agents get no uid). */
+ *  open the mentioned person's profile panel on click (agents get no uid).
+ *  Tags are copied through verbatim: a name that also appears in an href or
+ *  a title attribute must not have a <span> spliced into the markup. */
 export function applyMentionMarkup(
   html: string,
   mentions: readonly MentionTarget[],
 ): string {
-  let next = html;
   // First target per display name wins the click target.
   const byName = new Map<string, MentionTarget>();
   for (const m of mentions) {
     const name = m.displayName.trim();
     if (name && !byName.has(name)) byName.set(name, m);
   }
-  const names = [...byName.keys()].sort((a, b) => b.length - a.length);
-  for (const name of names) {
-    const target = byName.get(name)!;
-    const token = `@${escapeHtml(name)}`;
-    const attrs =
-      target.participantType === "human" && target.participantUid
-        ? ` data-person-uid="${escapeHtml(target.participantUid)}" data-person-type="human" role="button" tabindex="0"`
-        : "";
-    next = next
-      .split(token)
-      .join(`<span class="inline-mention"${attrs}>${token}</span>`);
+  if (byName.size === 0) return html;
+  // Longest name first so "@Ada Lovelace" beats "@Ada" at the same position.
+  const tokens: MentionToken[] = [...byName.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((name) => ({
+      token: `@${escapeHtml(name)}`,
+      target: byName.get(name)!,
+    }));
+
+  let out = "";
+  let cursor = 0;
+  while (cursor < html.length) {
+    const tagStart = html.indexOf("<", cursor);
+    const textEnd = tagStart === -1 ? html.length : tagStart;
+    out += decorateMentionText(html.slice(cursor, textEnd), tokens);
+    if (tagStart === -1) break;
+    const tagEnd = html.indexOf(">", tagStart);
+    if (tagEnd === -1) {
+      out += html.slice(tagStart);
+      break;
+    }
+    out += html.slice(tagStart, tagEnd + 1);
+    cursor = tagEnd + 1;
   }
-  return next;
+  return out;
 }

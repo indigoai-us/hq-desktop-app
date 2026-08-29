@@ -53,6 +53,7 @@
     mentionTextForTarget,
     mergeMentionTargets,
     replaceActiveMention,
+    storedMentionType,
     type MentionTarget,
   } from "../mentions.js";
 
@@ -272,7 +273,7 @@
   function storedMentions(msg: ConversationMessageWire): MentionTarget[] {
     return (msg.mentions ?? []).map((row) => ({
       participantUid: row.participantUid,
-      participantType: row.participantType === "agent" ? "agent" : "human",
+      participantType: storedMentionType(row),
       displayName: row.displayName,
     }));
   }
@@ -1786,6 +1787,14 @@
   .dm-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  /* Touch input has no hover state, so a hover-only toolbar is unreachable. */
+  @media (hover: none) {
+    .dm-quick-react {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 
   .dm-quick-react-picker-wrap {

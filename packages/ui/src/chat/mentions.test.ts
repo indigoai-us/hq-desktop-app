@@ -9,6 +9,7 @@ import {
   mentionTargetsFromContactsPayload,
   mentionTypeForUid,
   replaceActiveMention,
+  storedMentionType,
 } from "./mentions.js";
 
 describe("channel mentions", () => {
@@ -138,6 +139,94 @@ describe("channel mentions", () => {
     ]);
     expect(applyMentionMarkup("<p>ping @Deacon</p>", roster)).toBe(
       '<p>ping <span class="inline-mention">@Deacon</span></p>',
+    );
+  });
+});
+
+describe("stored mention type", () => {
+  it("infers an agent from the uid when the wire omits participantType", () => {
+    expect(
+      storedMentionType({ participantUid: "agt_01KTX6WQ6SYH3TZGF3DSDRPGGD" }),
+    ).toBe("agent");
+    expect(
+      storedMentionType({ participantUid: "prs_01KQ2RY9VB1S105X2GZ2EPHKWY" }),
+    ).toBe("human");
+  });
+
+  it("trusts an explicit wire participantType over the uid prefix", () => {
+    expect(
+      storedMentionType({
+        participantUid: "prs_shared_agent_seat",
+        participantType: "agent",
+      }),
+    ).toBe("agent");
+    expect(
+      storedMentionType({ participantUid: "agt_x", participantType: "human" }),
+    ).toBe("human");
+  });
+
+  it("ignores a blank or unknown participantType and falls back to the uid", () => {
+    expect(
+      storedMentionType({ participantUid: "agt_x", participantType: "  " }),
+    ).toBe("agent");
+    expect(
+      storedMentionType({ participantUid: "agt_x", participantType: null }),
+    ).toBe("agent");
+    expect(
+      storedMentionType({ participantUid: "agt_x", participantType: "bot" }),
+    ).toBe("agent");
+  });
+});
+
+describe("applyMentionMarkup markup safety", () => {
+  const deacon = mentionTargetsFromContacts([
+    { personUid: "prs_deacon", displayName: "Deacon" },
+  ]);
+
+  it("leaves an @name that appears inside a link href or title untouched", () => {
+    const html =
+      '<p><a href="https://example.test/@Deacon" title="@Deacon">docs</a></p>';
+    // Only the tag holds the name, so nothing is decorated and the href
+    // survives byte-for-byte — splicing a <span> in would break the link.
+    expect(applyMentionMarkup(html, deacon)).toBe(html);
+  });
+
+  it("decorates the text run but not the attribute in the same message", () => {
+    const out = applyMentionMarkup(
+      '<p><a href="/u/@Deacon">profile</a> ping @Deacon</p>',
+      deacon,
+    );
+    expect(out).toContain('href="/u/@Deacon"');
+    expect(out.match(/inline-mention/g)).toHaveLength(1);
+    expect(out).toContain(
+      '<span class="inline-mention" data-person-uid="prs_deacon" data-person-type="human" role="button" tabindex="0">@Deacon</span></p>',
+    );
+  });
+
+  it("wraps the longest matching name once when one name prefixes another", () => {
+    const roster = mentionTargetsFromContacts([
+      { personUid: "prs_ada", displayName: "Ada" },
+      { personUid: "prs_ada_l", displayName: "Ada Lovelace" },
+    ]);
+    const out = applyMentionMarkup("<p>hi @Ada Lovelace</p>", roster);
+    expect(out.match(/inline-mention/g)).toHaveLength(1);
+    expect(out).toContain(
+      '<span class="inline-mention" data-person-uid="prs_ada_l" data-person-type="human" role="button" tabindex="0">@Ada Lovelace</span>',
+    );
+  });
+
+  it("does not re-scan the markup it just inserted", () => {
+    const roster = mentionTargetsFromContacts([
+      { personUid: "prs_deacon", displayName: "Deacon" },
+      { personUid: "prs_d", displayName: "D" },
+    ]);
+    const out = applyMentionMarkup("<p>@Deacon</p>", roster);
+    expect(out.match(/inline-mention/g)).toHaveLength(1);
+  });
+
+  it("returns the html unchanged when there are no mentions", () => {
+    expect(applyMentionMarkup("<p>hey @Deacon</p>", [])).toBe(
+      "<p>hey @Deacon</p>",
     );
   });
 });
