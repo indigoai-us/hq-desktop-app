@@ -33,3 +33,7 @@ apps/sync/src/desktop-alt/lib/setup-launch.ts
 # the card above dispatch through.
 apps/sync/src/lib/onboarding-summary.ts
 apps/sync/src/lib/claude-code-link.ts
+
+# --- title bar launch cluster -------------------------------------------
+apps/sync/src/desktop-alt/components/TitleBarLaunch.svelte
+apps/sync/src/desktop-alt/components/WorkHappensExplainer.svelte

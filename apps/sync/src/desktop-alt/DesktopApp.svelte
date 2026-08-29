@@ -27,6 +27,7 @@
   } from '../lib/brand';
   import HomePage from './pages/HomePage.svelte';
   import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';
+  import WorkHappensExplainer from './components/WorkHappensExplainer.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
@@ -1738,6 +1739,7 @@
       </div>
       <main class="desktop-main" aria-label="Desktop content">
         <div class="desktop-main-scroll">
+        <WorkHappensExplainer folder={hqFolderPath ?? ''} />
         {#key routeKey}
           {#if route.kind === 'home'}
             <div class="page">

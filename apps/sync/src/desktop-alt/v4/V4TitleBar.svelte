@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import type { SyncState } from '../lib/sync-model';
+  import TitleBarLaunch from '../components/TitleBarLaunch.svelte';
   import type { SettingsTab } from '../route';
   import VersionPopout from '../components/VersionPopout.svelte';
   import CopyPromptButton from '../../components/CopyPromptButton.svelte';
@@ -238,6 +239,7 @@
   <div class="v4-drag-pad v4-drag-flex" data-tauri-drag-region aria-hidden="true"></div>
 
   <div class="v4-title-actions">
+    <TitleBarLaunch folder={hqFolderPath ?? ''} />
     {#if actionError}
       <span class="v4-action-error" role="alert" title={actionErrorDetail}>
         {actionError}

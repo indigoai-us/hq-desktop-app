@@ -699,7 +699,7 @@
       {:else if companyProjects.length === 0}
         <div class="empty-state" data-testid="empty-projects-state">
           <span>No projects yet</span>
-          <p>Projects will appear here after they sync into the local workspace.</p>
+          <p>Start a project in Claude Code or Codex — it syncs here as it takes shape.</p>
         </div>
       {:else if filteredCompanyProjects.length === 0}
         <div class="empty-state" data-testid="filtered-projects-empty-state">
