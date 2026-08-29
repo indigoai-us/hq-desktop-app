@@ -351,14 +351,10 @@ export async function yankMarketplaceListing(
   id: string,
   reason: string,
 ): Promise<AdapterResult<YankResult>> {
-  // ADAPTER GAP: `MarketplaceApi.yank(id)` does not carry the audit `reason`;
-  // the UI still requires a non-empty reason (kept in the signature) and the
-  // server records the actor. `yank` resolves void-ish on this surface, so a
-  // minimal YankResult is synthesised for the panel.
   if (!reason.trim()) {
     return { ok: false, reason: "error", message: "A reason is required." };
   }
-  const res = await api.yank(id);
+  const res = await api.yank(id, reason);
   if (!res.ok) return res;
   return {
     ok: true,

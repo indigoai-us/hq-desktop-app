@@ -457,7 +457,7 @@ export interface MarketplaceApi {
   getListing(id: string): AdapterPromise<Json>;
   publishPack(path: string): AdapterPromise<Json>;
   recordInstall(id: string, payload?: Json): AdapterPromise<void>;
-  yank(id: string): AdapterPromise<void>;
+  yank(id: string, reason: string): AdapterPromise<void>;
   getCreatorProfile(handle: string): AdapterPromise<Json>;
   getMyCreator(): AdapterPromise<Json>;
   claimHandle(handle: string): AdapterPromise<Json>;

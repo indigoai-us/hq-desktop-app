@@ -604,7 +604,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     publishPack: async () => DESKTOP_ONLY,
     recordInstall: (id, payload) =>
       this.post(WEB_PATHS.recordInstall(id), payload ?? { scope: "personal" }),
-    yank: (id) => this.post(WEB_PATHS.yank(id)),
+    yank: (id, reason) => this.post(WEB_PATHS.yank(id), { reason }),
     getCreatorProfile: (handle) => this.get(WEB_PATHS.creatorProfile(handle)),
     getMyCreator: () => this.get(WEB_PATHS.myCreator),
     claimHandle: (handle) => this.post(WEB_PATHS.claimHandle, { handle }),

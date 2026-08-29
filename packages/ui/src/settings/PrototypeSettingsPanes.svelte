@@ -89,6 +89,12 @@
   let cliVersion = $state<string | null>(null);
   let hqFolder = $state<string | null>(null);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  let dockVisibilityChanged = false;
+  let desktopWidgetChanged = false;
+  let dockWriteSeq = 0;
+  let desktopWidgetWriteSeq = 0;
+  let dockAuthoritativeValue: boolean | undefined;
+  let desktopWidgetAuthoritativeValue: boolean | undefined;
 
   const calendarConnectPending = $derived(meetingsStore.connectPending);
 
@@ -150,17 +156,67 @@
     if (adapter) void adapter.appShell.setAutostart(next);
   }
 
-  function toggleDock(): void {
+  async function toggleDock(): Promise<void> {
     const next = !prefs.showInDock;
+    const writeSeq = ++dockWriteSeq;
+    dockVisibilityChanged = true;
     patch({ showInDock: next });
     // Apply both directions — hiding the Dock icon must take effect too.
-    if (adapter) void adapter.appShell.setDockVisible(next);
+    if (!adapter) return;
+    const result = await adapter.appShell.setDockVisible(next);
+    if (writeSeq !== dockWriteSeq) return;
+    if (result.ok) {
+      dockAuthoritativeValue = next;
+      return;
+    }
+    if (result.reason !== "error") return;
+    const settings = await adapter.settings.getSettings();
+    if (writeSeq !== dockWriteSeq) return;
+    dockVisibilityChanged = false;
+    if (!settings.ok) {
+      if (dockAuthoritativeValue !== undefined) {
+        patch({ showInDock: dockAuthoritativeValue });
+      }
+      return;
+    }
+    const dockIcon = readHostBooleanSetting(settings.value, "dockIcon");
+    if (dockIcon !== undefined) {
+      dockAuthoritativeValue = dockIcon;
+      patch({ showInDock: dockIcon });
+    } else if (dockAuthoritativeValue !== undefined) {
+      patch({ showInDock: dockAuthoritativeValue });
+    }
   }
 
-  function toggleDesktopWidget(): void {
+  async function toggleDesktopWidget(): Promise<void> {
     const next = !prefs.desktopWidget;
+    const writeSeq = ++desktopWidgetWriteSeq;
+    desktopWidgetChanged = true;
     patch({ desktopWidget: next });
-    if (adapter) void adapter.appShell.setDesktopWidget(next);
+    if (!adapter) return;
+    const result = await adapter.appShell.setDesktopWidget(next);
+    if (writeSeq !== desktopWidgetWriteSeq) return;
+    if (result.ok) {
+      desktopWidgetAuthoritativeValue = next;
+      return;
+    }
+    if (result.reason !== "error") return;
+    const settings = await adapter.settings.getSettings();
+    if (writeSeq !== desktopWidgetWriteSeq) return;
+    desktopWidgetChanged = false;
+    if (!settings.ok) {
+      if (desktopWidgetAuthoritativeValue !== undefined) {
+        patch({ desktopWidget: desktopWidgetAuthoritativeValue });
+      }
+      return;
+    }
+    const widgetEnabled = readHostBooleanSetting(settings.value, "widgetEnabled");
+    if (widgetEnabled !== undefined) {
+      desktopWidgetAuthoritativeValue = widgetEnabled;
+      patch({ desktopWidget: widgetEnabled });
+    } else if (desktopWidgetAuthoritativeValue !== undefined) {
+      patch({ desktopWidget: desktopWidgetAuthoritativeValue });
+    }
   }
 
   function togglePlatform(name: string): void {
@@ -240,6 +296,32 @@
       if (typeof value === "string" && value.trim()) return value.trim();
     }
     return null;
+  }
+
+  function readHostBooleanSetting(
+    raw: unknown,
+    key: "dockIcon" | "widgetEnabled",
+  ): boolean | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const value = (raw as Record<string, unknown>)[key];
+    return typeof value === "boolean" ? value : undefined;
+  }
+
+  function hydrateHostBackedToggles(raw: unknown): void {
+    const next: Partial<
+      Pick<ShellSettingsPrefs, "showInDock" | "desktopWidget">
+    > = {};
+    const dockIcon = readHostBooleanSetting(raw, "dockIcon");
+    if (dockIcon !== undefined) {
+      dockAuthoritativeValue = dockIcon;
+      if (!dockVisibilityChanged) next.showInDock = dockIcon;
+    }
+    const widgetEnabled = readHostBooleanSetting(raw, "widgetEnabled");
+    if (widgetEnabled !== undefined) {
+      desktopWidgetAuthoritativeValue = widgetEnabled;
+      if (!desktopWidgetChanged) next.desktopWidget = widgetEnabled;
+    }
+    if (Object.keys(next).length > 0) patch(next);
   }
 
   function ensureMeetingsApi(): boolean {
@@ -404,10 +486,20 @@
         }
       });
     }
-    if (adapter.isAvailable("canSync")) {
+    const canReadSettings =
+      adapter.isAvailable("canSync") || adapter.isAvailable("trayAndWindow");
+    if (canReadSettings) {
       void adapter.settings.getSettings().then((res) => {
-        if (res.ok) hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
+        if (!res.ok) return;
+        if (adapter.isAvailable("canSync")) {
+          hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
+        }
+        if (adapter.isAvailable("trayAndWindow")) {
+          hydrateHostBackedToggles(res.value);
+        }
       });
+    }
+    if (adapter.isAvailable("canSync")) {
       void adapter.settings.getConfig().then((res) => {
         if (res.ok) hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
       });
@@ -448,7 +540,7 @@
           role="switch"
           aria-checked={prefs.showInDock}
           aria-label="Show in Dock"
-          onclick={() => toggleDock()}
+          onclick={() => void toggleDock()}
         ></button>
       </div>
       <div class="set-row">
@@ -480,7 +572,7 @@
           role="switch"
           aria-checked={prefs.desktopWidget}
           aria-label="Desktop widget"
-          onclick={() => toggleDesktopWidget()}
+          onclick={() => void toggleDesktopWidget()}
         ></button>
       </div>
     {/if}

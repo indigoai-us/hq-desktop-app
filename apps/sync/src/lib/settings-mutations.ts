@@ -12,18 +12,21 @@ const defaultSettingsInvoker: SettingsInvoker = (command, args) => invoke(comman
 
 /**
  * Serializes settings patches and merges each patch over the latest persisted
- * preferences immediately before saving.
+ * preferences immediately before saving. Callers may provide an invoker for an
+ * individual mutation; the process-wide queue still orders that operation with
+ * mutations using this instance's default invoker.
  */
 export class SettingsMutationQueue {
   private tail: Promise<void> = Promise.resolve();
 
   constructor(private readonly invokeSettings: SettingsInvoker = defaultSettingsInvoker) {}
 
-  update(patch: SettingsPatch): Promise<void> {
+  update(patch: SettingsPatch, invoker?: SettingsInvoker): Promise<void> {
     const capturedPatch = { ...patch };
+    const operationInvoker = invoker ?? this.invokeSettings;
     const operation = this.tail.then(async () => {
-      const current = await this.invokeSettings<SettingsPrefs>('get_settings');
-      await this.invokeSettings<void>('save_settings', {
+      const current = await operationInvoker<SettingsPrefs>('get_settings');
+      await operationInvoker<void>('save_settings', {
         prefs: { ...current, ...capturedPatch },
       });
     });
@@ -37,7 +40,14 @@ export class SettingsMutationQueue {
 
 const sharedSettingsMutations = new SettingsMutationQueue();
 
-/** Persist a minimal settings patch through the process-wide frontend queue. */
-export function updateSettings(patch: SettingsPatch): Promise<void> {
-  return sharedSettingsMutations.update(patch);
+/**
+ * Persist a minimal settings patch through the process-wide frontend queue.
+ * An optional per-call invoker lets injected host adapters share that ordering
+ * without bypassing their own invocation boundary.
+ */
+export function updateSettings(
+  patch: SettingsPatch,
+  invoker?: SettingsInvoker,
+): Promise<void> {
+  return sharedSettingsMutations.update(patch, invoker);
 }

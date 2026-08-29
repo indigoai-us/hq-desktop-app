@@ -538,16 +538,10 @@ describe('US-102 Sync PlatformAdapter', () => {
     });
   });
 
-  it('unmapped groups return unavailable instead of throwing', async () => {
+  it('the remaining unmapped work-mesh snapshot returns unavailable', async () => {
     const { adapter, fetchCalls } = makeAdapter();
     const snapshot = await adapter.workMesh.readLocalSnapshot();
     expect(snapshot).toMatchObject({
-      ok: false,
-      reason: 'unavailable',
-      code: 'not-yet-mapped',
-    });
-    const pick = await adapter.shell.pickFile('image');
-    expect(pick).toMatchObject({
       ok: false,
       reason: 'unavailable',
       code: 'not-yet-mapped',

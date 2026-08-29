@@ -130,6 +130,41 @@ describe('SettingsMutationQueue', () => {
     });
   });
 
+  it('uses a per-operation invoker while sharing ordering with the default invoker', async () => {
+    const harness = createHarness(
+      { dockIcon: true, widgetEnabled: false },
+      { blockFirstSave: true },
+    );
+    const defaultCalls: string[] = [];
+    const explicitCalls: string[] = [];
+    const defaultInvoker: SettingsInvoker = (command, args) => {
+      defaultCalls.push(command);
+      return harness.invokeSettings(command, args);
+    };
+    const explicitInvoker: SettingsInvoker = (command, args) => {
+      explicitCalls.push(command);
+      return harness.invokeSettings(command, args);
+    };
+    const queue = new SettingsMutationQueue(defaultInvoker);
+
+    const dockSave = settle(queue.update({ dockIcon: false }, explicitInvoker));
+    const widgetSave = settle(queue.update({ widgetEnabled: true }));
+
+    await vi.waitFor(() => expect(harness.savedSnapshots).toHaveLength(1));
+    expect(explicitCalls).toEqual(['get_settings', 'save_settings']);
+    expect(defaultCalls).toEqual([]);
+    expect(harness.maxInFlightSaves()).toBe(1);
+    harness.releaseFirstSave();
+
+    expect(await dockSave).toEqual({ ok: true });
+    expect(await widgetSave).toEqual({ ok: true });
+    expect(defaultCalls).toEqual(['get_settings', 'save_settings']);
+    expect(harness.savedSnapshots[1]).toEqual({
+      dockIcon: false,
+      widgetEnabled: true,
+    });
+  });
+
   it('routes the exported shared helper through the default Tauri adapter', async () => {
     let persisted: SettingsPrefs = { notifications: true, autoUpdate: true };
     tauriInvoke.mockImplementation(

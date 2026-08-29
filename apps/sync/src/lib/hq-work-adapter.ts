@@ -24,6 +24,7 @@ import {
   validateFetchReplyThread,
   validateSendReply,
 } from '@hq/platform';
+import { updateSettings, type SettingsInvoker } from './settings-mutations';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -203,6 +204,29 @@ export function createSyncPlatformAdapter(
       }
     }
     return ok(raw.value as T);
+  }
+
+  /**
+   * Prototype settings handlers fire these writes without awaiting them, so
+   * persist through the process-wide queue to preserve concurrent patches from
+   * every settings surface. The native apply commands re-read menubar.json, so
+   * invoke them only after the requested value is persisted.
+   */
+  async function persistThenApplyAppShellPreference(
+    key: 'dockIcon' | 'widgetEnabled',
+    value: boolean,
+    applyCommand: 'apply_dock_icon' | 'apply_widget_settings',
+  ): AdapterPromise<void> {
+    const settingsInvoker: SettingsInvoker = <T>(
+      command: string,
+      args?: Record<string, unknown>,
+    ) => invokeFn(command, args) as Promise<T>;
+    try {
+      await updateSettings({ [key]: value }, settingsInvoker);
+    } catch (err) {
+      return invokeError(err);
+    }
+    return call<void>(applyCommand);
   }
 
   /**
@@ -511,19 +535,40 @@ export function createSyncPlatformAdapter(
         call('list_marketplace_listings', { opts }),
       getListing: (id) => call('get_marketplace_listing', { id }),
       publishPack: (path) => call('publish_marketplace_pack', { path }),
-      // Rust wants listing_id + a typed InstallScope; the contract passes an
-      // opaque payload with no scope, and yank requires a moderation reason
-      // the contract has no field for. Refuse rather than always-fail.
-      recordInstall: async () => NOT_MAPPED,
-      yank: async () => NOT_MAPPED,
+      recordInstall: (listingId, payload) => {
+        const details = asRecord(payload);
+        const scope = details?.scope;
+        if (scope === 'personal') {
+          return call('record_marketplace_install', {
+            listingId,
+            scope: { kind: 'personal' },
+          });
+        }
+        if (scope === 'company' && typeof details?.companySlug === 'string') {
+          return call('record_marketplace_install', {
+            listingId,
+            scope: { kind: 'company', slug: details.companySlug },
+          });
+        }
+        return Promise.resolve(
+          failure('invalid-argument', 'Marketplace install scope is required.'),
+        );
+      },
+      yank: (id, reason) => call('yank_marketplace_listing', { id, reason }),
       getCreatorProfile: (handle) =>
         call('get_creator_profile', { handle }),
       getMyCreator: () => call('get_my_creator'),
       claimHandle: (handle) => call('claim_creator_handle', { handle }),
       updateCreatorProfile: (p) => call('update_creator_profile', { p }),
-      // Rust reads a file_path off disk; the contract hands over bytes. These
-      // are different transports, not a renamed argument.
-      uploadCreatorAvatar: async () => NOT_MAPPED,
+      uploadCreatorAvatar: (filePath) =>
+        typeof filePath === 'string'
+          ? call('upload_creator_avatar', { filePath })
+          : Promise.resolve(
+              failure(
+                'invalid-argument',
+                'Sync avatar uploads require a file path.',
+              ),
+            ),
       requestCreatorAccess: () => call('request_creator_access'),
       listCreatorApplications: () => call('list_creator_applications'),
       decideCreatorApplication: (id, decision) =>
@@ -531,10 +576,19 @@ export function createSyncPlatformAdapter(
       listModerationQueue: () => call('list_moderation_queue'),
       decideModerationListing: (id, decision) =>
         call('decide_moderation_listing', { id, decision }),
-      // Rust needs slug + a typed InstallScope (Personal vs Company). The
-      // listing carries a slug, but scope is a user choice this contract does
-      // not express, and guessing "personal" would install to the wrong place.
-      installPack: async () => NOT_MAPPED,
+      installPack: (payload) => {
+        const pack = asRecord(payload);
+        if (typeof pack?.slug !== 'string' || !pack.scope) {
+          return Promise.resolve(
+            failure('invalid-argument', 'Marketplace pack slug and scope are required.'),
+          );
+        }
+        return call('install_marketplace_pack', {
+          slug: pack.slug,
+          version: pack.version,
+          scope: pack.scope,
+        });
+      },
     },
 
     company: {
@@ -559,11 +613,30 @@ export function createSyncPlatformAdapter(
         call('get_local_company_goals', { companySlug: slug }),
       getPrd: (path) => call('get_local_project_prd', { prdPath: path }),
       getReadme: (path) => call('get_local_project_readme', { prdPath: path }),
-      // `set_local_project_status` keys off board_path + project_id, which the
-      // ProjectsApi contract does not carry — it passes a company slug. Firing
-      // the call anyway fails in Tauri's argument deserialization before the
-      // handler runs, so refuse in a way the UI can render.
-      setProjectStatus: async () => NOT_MAPPED,
+      setProjectStatus: (projectRef, status) => {
+        let identity: Record<string, unknown>;
+        try {
+          identity = JSON.parse(projectRef) as Record<string, unknown>;
+        } catch {
+          return Promise.resolve(
+            failure('invalid-argument', 'Project identity must be JSON-encoded.'),
+          );
+        }
+        if (
+          typeof identity.boardPath !== 'string' ||
+          typeof identity.projectId !== 'string'
+        ) {
+          return Promise.resolve(
+            failure('invalid-argument', 'Project identity is missing boardPath or projectId.'),
+          );
+        }
+        return call('set_local_project_status', {
+          boardPath: identity.boardPath,
+          projectId: identity.projectId,
+          prdPath: typeof identity.prdPath === 'string' ? identity.prdPath : null,
+          status,
+        });
+      },
       setStoryPasses: (path, storyId, passes) =>
         call('set_local_story_passes', { prdPath: path, storyId, passes }),
       getProjectCreators: (slug) =>
@@ -694,19 +767,27 @@ export function createSyncPlatformAdapter(
       },
       detectAiTools: () => call('detect_ai_tools'),
       pickFolder: () => call('pick_folder'),
-      pickFile: async () => NOT_MAPPED,
+      pickFile: (kind) =>
+        kind === 'image'
+          ? call('pick_avatar_file')
+          : Promise.resolve(
+              unavailable(
+                'unsupported-file-kind',
+                'Sync only provides a native image picker for creator avatars.',
+              ),
+            ),
     },
 
     appShell: {
       setTrayState: (state) => call('set_tray_state', { state }),
       showMainWindow: () => call('show_main_window'),
       quitApp: () => call('quit_app'),
-      // Upstream replaced `applyDockIcon` with `setDockVisible(visible)`. Like
-      // the widget and native banners, the Dock activation policy is a Sync
-      // surface with its own Settings toggle and its own launch/runtime split
-      // (`commands/dock.rs`), so the embedded UI must not drive a second one.
-      // Sync's `apply_dock_icon` command stays for Sync's own Settings pane.
-      setDockVisible: async () => HOST_OWNED,
+      setDockVisible: (visible) =>
+        persistThenApplyAppShellPreference(
+          'dockIcon',
+          visible,
+          'apply_dock_icon',
+        ),
       setAutostart: (enabled) =>
         call('set_autostart_enabled', { enabled }),
       consumePendingRoute: () => call('desktop_alt_consume_pending_route'),
@@ -721,11 +802,12 @@ export function createSyncPlatformAdapter(
         call('notification_permission_state'),
       requestNotificationPermission: () =>
         call('notification_request_permission'),
-      // Sync's own tray/widget settings own the floating widget, and its
-      // DM/share pollers own native banners. Both stay unchanged under the
-      // handoff flag, so the embedded UI gets an explicit host-owned refusal
-      // rather than a second, competing implementation.
-      setDesktopWidget: async () => HOST_OWNED,
+      setDesktopWidget: (enabled) =>
+        persistThenApplyAppShellPreference(
+          'widgetEnabled',
+          enabled,
+          'apply_widget_settings',
+        ),
       showOsNotification: async () => HOST_OWNED,
     },
 

@@ -131,7 +131,7 @@ describe("yankMarketplaceListing — US-022 emergency kill switch", () => {
       await yankMarketplaceListing(api, "lst_1", "DMCA takedown"),
     );
 
-    expect(api.yank).toHaveBeenCalledWith("lst_1");
+    expect(api.yank).toHaveBeenCalledWith("lst_1", "DMCA takedown");
     expect(result.status).toBe("yanked");
     expect(result.note).toMatch(
       /already-installed users are not auto-removed/i,
