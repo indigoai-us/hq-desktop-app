@@ -155,8 +155,7 @@
   }
 
   async function toggleDock(): Promise<void> {
-    const previous = prefs.showInDock;
-    const next = !previous;
+    const next = !prefs.showInDock;
     const writeSeq = ++dockWriteSeq;
     dockVisibilityChanged = true;
     patch({ showInDock: next });
@@ -164,25 +163,36 @@
     if (!adapter) return;
     const result = await adapter.appShell.setDockVisible(next);
     if (writeSeq !== dockWriteSeq) return;
-    if (!result.ok && result.reason === "error") {
-      dockVisibilityChanged = false;
-      patch({ showInDock: previous });
+    if (result.ok || result.reason !== "error") return;
+    const settings = await adapter.settings.getSettings();
+    if (writeSeq !== dockWriteSeq) return;
+    dockVisibilityChanged = false;
+    if (!settings.ok) {
+      // No authoritative value is available; a later successful read can hydrate it.
+      return;
     }
+    const dockIcon = readHostBooleanSetting(settings.value, "dockIcon");
+    if (dockIcon !== undefined) patch({ showInDock: dockIcon });
   }
 
   async function toggleDesktopWidget(): Promise<void> {
-    const previous = prefs.desktopWidget;
-    const next = !previous;
+    const next = !prefs.desktopWidget;
     const writeSeq = ++desktopWidgetWriteSeq;
     desktopWidgetChanged = true;
     patch({ desktopWidget: next });
     if (!adapter) return;
     const result = await adapter.appShell.setDesktopWidget(next);
     if (writeSeq !== desktopWidgetWriteSeq) return;
-    if (!result.ok && result.reason === "error") {
-      desktopWidgetChanged = false;
-      patch({ desktopWidget: previous });
+    if (result.ok || result.reason !== "error") return;
+    const settings = await adapter.settings.getSettings();
+    if (writeSeq !== desktopWidgetWriteSeq) return;
+    desktopWidgetChanged = false;
+    if (!settings.ok) {
+      // No authoritative value is available; a later successful read can hydrate it.
+      return;
     }
+    const widgetEnabled = readHostBooleanSetting(settings.value, "widgetEnabled");
+    if (widgetEnabled !== undefined) patch({ desktopWidget: widgetEnabled });
   }
 
   function togglePlatform(name: string): void {
@@ -264,20 +274,26 @@
     return null;
   }
 
+  function readHostBooleanSetting(
+    raw: unknown,
+    key: "dockIcon" | "widgetEnabled",
+  ): boolean | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const value = (raw as Record<string, unknown>)[key];
+    return typeof value === "boolean" ? value : undefined;
+  }
+
   function hydrateHostBackedToggles(raw: unknown): void {
-    if (!raw || typeof raw !== "object") return;
-    const settings = raw as Record<string, unknown>;
     const next: Partial<
       Pick<ShellSettingsPrefs, "showInDock" | "desktopWidget">
     > = {};
-    if (typeof settings.dockIcon === "boolean" && !dockVisibilityChanged) {
-      next.showInDock = settings.dockIcon;
+    const dockIcon = readHostBooleanSetting(raw, "dockIcon");
+    if (dockIcon !== undefined && !dockVisibilityChanged) {
+      next.showInDock = dockIcon;
     }
-    if (
-      typeof settings.widgetEnabled === "boolean" &&
-      !desktopWidgetChanged
-    ) {
-      next.desktopWidget = settings.widgetEnabled;
+    const widgetEnabled = readHostBooleanSetting(raw, "widgetEnabled");
+    if (widgetEnabled !== undefined && !desktopWidgetChanged) {
+      next.desktopWidget = widgetEnabled;
     }
     if (Object.keys(next).length > 0) patch(next);
   }
