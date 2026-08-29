@@ -274,7 +274,14 @@ mod tests {
         // board.json — not the red "Board unavailable" banner every new user
         // saw on their first launch.
         let temp = tempfile::tempdir().unwrap();
-        let workspaces = vec![project_workspace("personal", WorkspaceState::LocalOnly, None, None)];
+        // The REAL personal-row shape (state Personal, cloud_uid set) — the
+        // LocalOnly fixture this replaced passed while every actual user's
+        // personal board was denied one layer below, in
+        // workspace_grants_company_file_access.
+        let mut personal = project_workspace("personal", WorkspaceState::Personal, None, Some("prs_abc"));
+        personal.kind = WorkspaceKind::Personal;
+        personal.role = None;
+        let workspaces = vec![personal];
 
         let verdict = authorize_company_slug(temp.path(), "personal", &workspaces)
             .expect("an authorized slug with no folder yet must not error");

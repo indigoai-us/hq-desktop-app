@@ -1558,6 +1558,19 @@ pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str
         return false;
     };
 
+    // The signed-in user's own personal vault. The row is assembled locally
+    // (list_syncable_workspaces §3) with a hardcoded "personal" slug and this
+    // machine's HQ root as its folder — it is never derived from remote data,
+    // and it has no membership to hydrate: membership_status is always None
+    // and cloud_uid is the user's own person uid. The membership match below
+    // therefore has no arm that can ever admit it, which denied every
+    // signed-in user their own personal board, files, and library — the
+    // "Board unavailable. Try again after a sync." every fresh install
+    // opened on.
+    if workspace.state == WorkspaceState::Personal {
+        return true;
+    }
+
     match workspace.membership_status.as_deref() {
         Some("active") => true,
         // A genuinely local-only company is authored on this machine and has
@@ -4317,6 +4330,72 @@ mod tests {
             branding_enabled: false,
             brand: None,
             }
+        }
+
+        #[test]
+        fn the_signed_in_personal_vault_is_always_authorized() {
+            // The REAL personal row, exactly as list_syncable_workspaces
+            // assembles it: state Personal, membership None, cloud_uid = the
+            // user's own person uid, local folder = the HQ root. The previous
+            // fixture that "covered" personal used state LocalOnly with no
+            // cloud_uid — a shape the assembler never produces — so the tests
+            // passed while every real user's personal board showed
+            // "Board unavailable".
+            let personal = Workspace {
+                slug: "personal".to_string(),
+                display_name: "Jacob Posel".to_string(),
+                kind: WorkspaceKind::Personal,
+                state: WorkspaceState::Personal,
+                cloud_uid: Some("prs_abc123".to_string()),
+                bucket_name: Some("bucket-prs_abc123".to_string()),
+                has_local_folder: true,
+                local_path: Some("/Users/jacob/Documents/HQ".to_string()),
+                membership_status: None,
+                role: None,
+                sync_enabled: true,
+                last_synced_at: None,
+                broken_reason: None,
+                invited_by: None,
+                invited_at: None,
+                branding_enabled: false,
+                brand: None,
+            };
+            let workspaces = vec![personal];
+
+            assert!(workspace_grants_company_file_access(&workspaces, "personal"));
+            assert!(workspace_grants_company_file_read_access(&workspaces, "personal"));
+        }
+
+        #[test]
+        fn a_personal_state_row_without_a_local_folder_still_fails_closed() {
+            // The slug+has_local_folder lookup runs before the Personal arm;
+            // a personal row with no folder on this machine has nothing to
+            // authorize.
+            let mut personal = Workspace {
+                slug: "personal".to_string(),
+                display_name: "Personal".to_string(),
+                kind: WorkspaceKind::Personal,
+                state: WorkspaceState::Personal,
+                cloud_uid: None,
+                bucket_name: None,
+                has_local_folder: false,
+                local_path: None,
+                membership_status: None,
+                role: None,
+                sync_enabled: true,
+                last_synced_at: None,
+                broken_reason: None,
+                invited_by: None,
+                invited_at: None,
+                branding_enabled: false,
+                brand: None,
+            };
+            assert!(!workspace_grants_company_file_access(
+                &[personal.clone()],
+                "personal"
+            ));
+            personal.has_local_folder = true;
+            assert!(workspace_grants_company_file_access(&[personal], "personal"));
         }
 
         #[test]
