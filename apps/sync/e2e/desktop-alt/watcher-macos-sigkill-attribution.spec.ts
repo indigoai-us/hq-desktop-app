@@ -92,10 +92,14 @@ describe('macOS SIGKILL alerting cap — source contracts', () => {
     // longer reports "consecutive failure #1" as its whole story.
     expect(daemonSource).toContain('(episode failure #{policy_consecutive})');
     expect(daemonSource).toContain('consecutive failure #{consecutive}{episode_suffix}{diag}');
-    // The fingerprint inputs are untouched (message text is not a fingerprint
-    // input), so grouping does not move.
+    // The fingerprint inputs are untouched by the episode-message work (message
+    // text is not a fingerprint input), so grouping does not move. The token is
+    // computed by the evidence-gated helper, which for an evidence-free SIGKILL
+    // falls through to the host token unchanged (a force-quit stays signal:9).
     expect(daemonSource).toContain('let fingerprint = [');
-    expect(daemonSource).toContain('termination_fingerprint_token_for_host(code, signal, host)');
+    expect(daemonSource).toContain(
+      'watcher_termination_fingerprint_token(code, signal, host, memory_evidence)',
+    );
   });
 
   it('leaves the respawn cadence — consecutive, backoff, supervisor interval — unchanged', () => {

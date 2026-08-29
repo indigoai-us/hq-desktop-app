@@ -593,6 +593,16 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_heap_used_mb" | "runner_heap_total_mb" | "runner_oom_frame_count" => {
             Some(value.is_empty() || value.parse::<u64>().is_ok())
         }
+        // Declared runner V8 old-space ceiling (auto-sync watcher unbounded-memory
+        // cluster): a bare integer MB, plus the fixed-vocabulary provenance of where
+        // the ceiling came from. Registered here so the ceiling in force reaches
+        // Sentry rather than being silently dropped by this closed allow-list — a
+        // footprint is only interpretable against the ceiling that bounded it.
+        "runner_heap_ceiling_mb" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
+        "runner_heap_ceiling_source" => Some(matches!(
+            value,
+            "declared_default" | "env_override" | "user_node_options"
+        )),
         // Windows fault provenance (HQ-DESKTOP-4X). The producer already emits
         // fixed vocabulary and bare integers; these independent checks make a
         // future producer bug that shipped a path, product string, or raw record
@@ -2328,6 +2338,10 @@ mod tests {
             ("watcher_job_process_count", "2 processes /Users/Ada"),
             ("watcher_child_kind", "launcher:/Users/Ada"),
             ("rss_scope", "shim/secret"),
+            // The runner heap-ceiling channels: a non-integer MB or an
+            // out-of-vocabulary provenance must degrade to `[Filtered]`.
+            ("runner_heap_ceiling_mb", "2048 /Users/Ada"),
+            ("runner_heap_ceiling_source", "unbounded"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -2363,6 +2377,11 @@ mod tests {
             ("rss_scope", "shim"),
             ("rss_scope", "launcher"),
             ("rss_scope", "runner"),
+            ("runner_heap_ceiling_mb", "2048"),
+            ("runner_heap_ceiling_mb", "6144"),
+            ("runner_heap_ceiling_source", "declared_default"),
+            ("runner_heap_ceiling_source", "env_override"),
+            ("runner_heap_ceiling_source", "user_node_options"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());

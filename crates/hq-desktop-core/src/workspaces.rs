@@ -1098,13 +1098,19 @@ companies:
         )
         .unwrap();
 
+        let prior_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
         write_workspace_sync_enabled("acme", false).expect("first toggle");
         write_workspace_sync_enabled("acme", true).expect("second toggle over existing file");
         write_workspace_sync_enabled("zeta", false).expect("add second slug");
         let map = read_workspace_sync_enabled_map();
         let disabled = disabled_workspace_sync_slugs();
-        std::env::remove_var("HOME");
+        // Restore HOME rather than leaving it unset: other tests in this binary
+        // (e.g. paths::tests) depend on ambient HOME.
+        match prior_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
 
         assert_eq!(map.get("acme"), Some(&true));
         assert_eq!(map.get("zeta"), Some(&false));

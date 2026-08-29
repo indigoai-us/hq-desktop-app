@@ -2326,6 +2326,54 @@ pub fn termination_fingerprint_token_for_host(
     }
 }
 
+/// Fixed, content-safe fingerprint token for an auto-sync watcher death that is
+/// ATTRIBUTED to runner memory exhaustion. One mechanism — the runner's unbounded
+/// mid-pull growth — reaches three host encodings (a SIGKILL, a SIGABRT heap
+/// abort, and a Windows fault), so without convergence it emits three
+/// fingerprints and groups as three issues. When memory exhaustion is PROVEN,
+/// every encoding collapses to this one token. The raw host token is retained in
+/// the `termination_status_raw` extra, so nothing is lost.
+pub const RUNNER_MEMORY_EXHAUSTION_TOKEN: &str = "runner:memory-exhausted";
+
+/// Evidence that a watcher exit was caused by runner memory exhaustion. Any ONE
+/// is sufficient. Attribution is EVIDENCE-GATED on purpose: a bare SIGKILL, a
+/// force-quit, an app teardown, or a cancellation with none of these keeps its
+/// own termination token — a force-quit must never be relabelled an OOM.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemoryExhaustionEvidence {
+    /// The runner's own stderr proved a V8 heap OOM (`RunnerFatalClass::HeapOom`).
+    pub heap_oom_class: bool,
+    /// The last COMPARABLE (whole-tree / job) footprint sample was at or above the
+    /// declared ceiling. A shim/withheld sample never sets this.
+    pub footprint_at_or_above_ceiling: bool,
+    /// The app's supervisor pre-empted the runner at its footprint ceiling.
+    pub supervisor_preempt: bool,
+}
+
+impl MemoryExhaustionEvidence {
+    /// True when at least one evidence source proves memory exhaustion.
+    pub fn is_attributed(self) -> bool {
+        self.heap_oom_class || self.footprint_at_or_above_ceiling || self.supervisor_preempt
+    }
+}
+
+/// Evidence-gated watcher fingerprint token. When memory exhaustion is proven,
+/// collapse every host encoding to [`RUNNER_MEMORY_EXHAUSTION_TOKEN`]; otherwise
+/// fall through to [`termination_fingerprint_token_for_host`] UNCHANGED, so an
+/// exit with no memory evidence produces exactly today's token (a bare SIGKILL
+/// stays `signal:9`).
+pub fn watcher_termination_fingerprint_token(
+    code: Option<i32>,
+    signal: Option<i32>,
+    host: TerminationHost,
+    memory_evidence: MemoryExhaustionEvidence,
+) -> String {
+    if memory_evidence.is_attributed() {
+        return RUNNER_MEMORY_EXHAUSTION_TOKEN.to_string();
+    }
+    termination_fingerprint_token_for_host(code, signal, host)
+}
+
 /// Render a process termination as a human-readable string. When `code` is
 /// `Some(N)`, the process called `exit(N)`. When `signal` is `Some(N)`, the
 /// OS killed it with that signal — name it (SIGKILL=9, SIGTERM=15, SIGSEGV=11,
@@ -4150,6 +4198,104 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn memory_evidence_is_attributed_only_with_a_source() {
+        assert!(!MemoryExhaustionEvidence::default().is_attributed());
+        assert!(MemoryExhaustionEvidence {
+            heap_oom_class: true,
+            ..Default::default()
+        }
+        .is_attributed());
+        assert!(MemoryExhaustionEvidence {
+            footprint_at_or_above_ceiling: true,
+            ..Default::default()
+        }
+        .is_attributed());
+        assert!(MemoryExhaustionEvidence {
+            supervisor_preempt: true,
+            ..Default::default()
+        }
+        .is_attributed());
+    }
+
+    #[test]
+    fn watcher_memory_token_converges_the_three_host_encodings_when_evidenced() {
+        // The three deaths in this cluster (a SIGKILL, a SIGABRT heap abort, and a
+        // Windows fault) each carry a DISTINCT host token before convergence.
+        let encodings = [
+            (None, Some(9), TerminationHost::Posix, "signal:9"),
+            (
+                None,
+                Some(SIGABRT_SIGNAL),
+                TerminationHost::Posix,
+                "abort:sigabrt",
+            ),
+            (
+                Some(0xC000_0409u32 as i32),
+                None,
+                TerminationHost::Windows,
+                "windows:fault:0xC0000409",
+            ),
+        ];
+        // Each evidence source, on its own, collapses every encoding to one token.
+        let evidences = [
+            MemoryExhaustionEvidence {
+                heap_oom_class: true,
+                ..Default::default()
+            },
+            MemoryExhaustionEvidence {
+                footprint_at_or_above_ceiling: true,
+                ..Default::default()
+            },
+            MemoryExhaustionEvidence {
+                supervisor_preempt: true,
+                ..Default::default()
+            },
+        ];
+        for (code, signal, host, raw) in encodings {
+            // Sanity: the pre-convergence token really is the distinct host token.
+            assert_eq!(
+                termination_fingerprint_token_for_host(code, signal, host),
+                raw
+            );
+            for evidence in evidences {
+                assert_eq!(
+                    watcher_termination_fingerprint_token(code, signal, host, evidence),
+                    RUNNER_MEMORY_EXHAUSTION_TOKEN,
+                    "evidenced {raw} must converge on the memory token"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn watcher_memory_token_preserves_evidence_free_terminations_byte_for_byte() {
+        // With NO memory evidence the gated token equals today's host token exactly,
+        // so a force-quit is never relabelled an OOM and unrelated exits never
+        // regroup. A bare SIGKILL stays signal:9.
+        let none = MemoryExhaustionEvidence::default();
+        for host in [TerminationHost::Posix, TerminationHost::Windows] {
+            for (code, signal) in [
+                (None, Some(9)),
+                (None, Some(15)),
+                (Some(1), None),
+                (Some(0xC000_0409u32 as i32), None),
+                (None, Some(SIGABRT_SIGNAL)),
+                (None, None),
+            ] {
+                assert_eq!(
+                    watcher_termination_fingerprint_token(code, signal, host, none),
+                    termination_fingerprint_token_for_host(code, signal, host)
+                );
+            }
+        }
+        // The named example the cluster owes: an evidence-free SIGKILL stays signal:9.
+        assert_eq!(
+            watcher_termination_fingerprint_token(None, Some(9), TerminationHost::Posix, none),
+            "signal:9"
+        );
     }
 
     #[test]
