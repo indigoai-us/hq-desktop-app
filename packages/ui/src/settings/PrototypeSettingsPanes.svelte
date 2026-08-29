@@ -89,6 +89,8 @@
   let cliVersion = $state<string | null>(null);
   let hqFolder = $state<string | null>(null);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  let dockVisibilityChanged = false;
+  let desktopWidgetChanged = false;
 
   const calendarConnectPending = $derived(meetingsStore.connectPending);
 
@@ -152,6 +154,7 @@
 
   function toggleDock(): void {
     const next = !prefs.showInDock;
+    dockVisibilityChanged = true;
     patch({ showInDock: next });
     // Apply both directions — hiding the Dock icon must take effect too.
     if (adapter) void adapter.appShell.setDockVisible(next);
@@ -159,6 +162,7 @@
 
   function toggleDesktopWidget(): void {
     const next = !prefs.desktopWidget;
+    desktopWidgetChanged = true;
     patch({ desktopWidget: next });
     if (adapter) void adapter.appShell.setDesktopWidget(next);
   }
@@ -240,6 +244,24 @@
       if (typeof value === "string" && value.trim()) return value.trim();
     }
     return null;
+  }
+
+  function hydrateHostBackedToggles(raw: unknown): void {
+    if (!raw || typeof raw !== "object") return;
+    const settings = raw as Record<string, unknown>;
+    const next: Partial<
+      Pick<ShellSettingsPrefs, "showInDock" | "desktopWidget">
+    > = {};
+    if (typeof settings.dockIcon === "boolean" && !dockVisibilityChanged) {
+      next.showInDock = settings.dockIcon;
+    }
+    if (
+      typeof settings.widgetEnabled === "boolean" &&
+      !desktopWidgetChanged
+    ) {
+      next.desktopWidget = settings.widgetEnabled;
+    }
+    if (Object.keys(next).length > 0) patch(next);
   }
 
   function ensureMeetingsApi(): boolean {
@@ -404,10 +426,20 @@
         }
       });
     }
-    if (adapter.isAvailable("canSync")) {
+    const canReadSettings =
+      adapter.isAvailable("canSync") || adapter.isAvailable("trayAndWindow");
+    if (canReadSettings) {
       void adapter.settings.getSettings().then((res) => {
-        if (res.ok) hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
+        if (!res.ok) return;
+        if (adapter.isAvailable("canSync")) {
+          hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
+        }
+        if (adapter.isAvailable("trayAndWindow")) {
+          hydrateHostBackedToggles(res.value);
+        }
       });
+    }
+    if (adapter.isAvailable("canSync")) {
       void adapter.settings.getConfig().then((res) => {
         if (res.ok) hqFolder = readFolderFromSettings(res.value) ?? hqFolder;
       });

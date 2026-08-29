@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import * as Sentry from '@sentry/svelte';
+  import { updateSettings } from '../../lib/settings-mutations';
 
   /**
    * Per-workspace sync controls for the V4 sidebar row chrome.
@@ -100,13 +101,7 @@
 
   async function persistEnabled(next: boolean) {
     if (isPersonal) {
-      const prefs = await invoke<Record<string, unknown>>('get_settings').catch(() => ({}));
-      await invoke('save_settings', {
-        prefs: {
-          ...prefs,
-          personalSyncEnabled: next,
-        },
-      });
+      await updateSettings({ personalSyncEnabled: next });
       window.dispatchEvent(
         new CustomEvent('hq:workspace-sync-enabled-changed', {
           detail: { slug: 'personal', enabled: next },
