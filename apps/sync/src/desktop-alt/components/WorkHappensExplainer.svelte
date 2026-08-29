@@ -94,10 +94,12 @@
     launching = 'codex';
     launchError = null;
     try {
-      if (tools?.codex_desktop) {
-        await invoke('launch_codex_desktop');
-      } else {
+      // CLI first — the only Codex launch that lands in the HQ folder; the
+      // desktop app cannot be handed a project (see TitleBarLaunch).
+      if (tools?.codex_cli) {
         await invoke('launch_cli_in_terminal', { path: folder, tool: 'codex' });
+      } else {
+        await invoke('launch_codex_desktop');
       }
       dismiss();
     } catch (err) {

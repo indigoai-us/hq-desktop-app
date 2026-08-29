@@ -34,6 +34,24 @@ describe('title bar launch cluster', () => {
     expect(launch).toContain('buildClaudeCodeUrl');
   });
 
+  it('prefers the Codex CLI over the desktop app, which cannot open a folder', () => {
+    // The desktop app has no folder deep link and ignores a folder passed as
+    // an open-document — it opens on "Choose project" (verified on a real
+    // machine). Only the CLI lands in the HQ folder, so it must win whenever
+    // it is installed; the desktop app is the no-CLI fallback only.
+    for (const source of [
+      launch,
+      readRepoFile('src/desktop-alt/components/WorkHappensExplainer.svelte'),
+    ]) {
+      const cli = source.indexOf("codex_cli");
+      const cliLaunch = source.indexOf("tool: 'codex'");
+      const desktopLaunch = source.indexOf("invoke('launch_codex_desktop')");
+      expect(cli).toBeGreaterThan(-1);
+      expect(cliLaunch).toBeGreaterThan(-1);
+      expect(desktopLaunch).toBeGreaterThan(cliLaunch);
+    }
+  });
+
   it('renders only detected tools and never launches without a folder', () => {
     // A configured machine's title bar is a launch surface, not an install
     // advert — undetected tools stay hidden (unlike the onboarding Ready
