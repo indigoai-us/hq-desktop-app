@@ -1463,9 +1463,8 @@ fn is_node_too_old(major: u32) -> bool {
     major < MIN_NODE_MAJOR
 }
 
-/// Clear, non-technical message when the user's Node is too old to run the
-/// runner — names the floor, their current major, where it came from, and the
-/// single fix.
+/// Last-ditch message when the runner itself died because Node was too old —
+/// used only after HQ already failed to put its own runtime in front.
 fn node_too_old_message(current_major: u32, node_path: Option<&str>) -> String {
     let found = match node_path {
         Some(path) => format!(" (Node {current_major} at {path})"),
@@ -1474,6 +1473,20 @@ fn node_too_old_message(current_major: u32, node_path: Option<&str>) -> String {
     format!(
         "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this computer is running Node {current_major}{found}. \
          Please update Node (https://nodejs.org), then try Sync again."
+    )
+}
+
+/// Preflight message when the machine has a Node, but it is below the floor
+/// and HQ has never installed its own. HQ can repair this the same way it
+/// repairs a missing Node — do not send the user to nodejs.org first.
+fn node_too_old_provisioning_message(current_major: u32, node_path: Option<&str>) -> String {
+    let found = match node_path {
+        Some(path) => format!(" (Node {current_major} at {path})"),
+        None => format!(" (Node {current_major})"),
+    };
+    format!(
+        "HQ Sync found Node {current_major}{found}, which is too old to sync. \
+         Installing HQ's Node {MIN_NODE_MAJOR}+ runtime so sync can start."
     )
 }
 
@@ -1667,6 +1680,8 @@ pub(crate) enum NodePreflight {
     /// instruction to install Node manually.
     NodeUnprovisioned,
     /// HQ never managed a Node here and the machine's own Node is too old.
+    /// Repairable: HQ still ships a managed runtime and should install it
+    /// rather than asking the user to upgrade Node by hand.
     TooOld { major: u32, path: Option<String> },
 }
 
@@ -1762,6 +1777,7 @@ pub(crate) enum PreflightFailure {
     /// Neither HQ nor the machine has a runtime. HQ can provision this state.
     NodeUnprovisioned,
     /// The machine's Node is below the floor and HQ never managed one here.
+    /// Repairable by the same managed-Node installer as `NodeUnprovisioned`.
     NodeTooOld,
     /// Neither node nor npx resolves at all — a machine setup gap.
     RunnerUnresolvable,
@@ -1794,7 +1810,7 @@ impl NodePreflight {
                 failure: PreflightFailure::NodeUnprovisioned,
             }),
             NodePreflight::TooOld { major, path } => Some(PreflightBail {
-                message: node_too_old_message(major, path.as_deref()),
+                message: node_too_old_provisioning_message(major, path.as_deref()),
                 failure: PreflightFailure::NodeTooOld,
             }),
         }
@@ -2187,11 +2203,24 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             log("sync", "managed Node runtime provisioned — continuing");
         }
         NodePreflight::TooOld { major, path } => {
-            log("sync", &format!("BAIL: node too old (v{major})"));
-            #[cfg(debug_assertions)]
-            eprintln!("[sync] BAIL: node too old (v{major})");
-            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
-            return Err(node_too_old_message(major, path.as_deref()));
+            log(
+                "sync",
+                &format!(
+                    "too old — provisioning HQ managed Node (found v{major}{})",
+                    path.as_deref()
+                        .map(|p| format!(" at {p}"))
+                        .unwrap_or_default()
+                ),
+            );
+            let (attempt, provisioned_major) =
+                provision_unprovisioned_node_with_major(&app).await;
+            if let Err(message) = attempt.into_start_sync_result() {
+                log("sync", &format!("BAIL: {message}"));
+                let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
+                return Err(message);
+            }
+            runner_node_major = provisioned_major;
+            log("sync", "managed Node runtime provisioned — continuing");
         }
     }
     if let Some(msg) = preflight_runner_unresolvable() {
@@ -5371,7 +5400,10 @@ mod tests {
     }
 
     #[test]
-    fn an_old_node_without_a_managed_toolchain_is_the_users_to_fix() {
+    fn an_old_node_without_a_managed_toolchain_is_classified_too_old() {
+        // Classification stays TooOld. The repair happens at the start_sync /
+        // daemon call sites so we still distinguish "no Node" from "old Node"
+        // in telemetry, without asking the user to upgrade by hand.
         assert_eq!(
             classify_node_preflight(
                 &ManagedToolchain::NotProvisioned,
@@ -5385,6 +5417,36 @@ mod tests {
                 path: None
             }
         );
+    }
+
+    #[test]
+    fn too_old_preflight_asks_hq_to_install_not_the_user() {
+        let msg = node_too_old_provisioning_message(14, None);
+        assert!(
+            msg.contains("Node 14"),
+            "message must name the current major: {msg}"
+        );
+        assert!(
+            msg.contains("Installing HQ's Node"),
+            "message must say HQ is installing its runtime: {msg}"
+        );
+        assert!(
+            !msg.contains("nodejs.org"),
+            "a state HQ can repair must not send the user to nodejs.org: {msg}"
+        );
+        let with_path = node_too_old_provisioning_message(14, Some("/usr/bin/node"));
+        assert!(
+            with_path.contains("/usr/bin/node"),
+            "message should name the binary that answered: {with_path}"
+        );
+        let bail = NodePreflight::TooOld {
+            major: 14,
+            path: None,
+        }
+        .into_bail()
+        .unwrap();
+        assert_eq!(bail.failure, PreflightFailure::NodeTooOld);
+        assert!(!bail.message.contains("nodejs.org"));
     }
 
     #[test]
