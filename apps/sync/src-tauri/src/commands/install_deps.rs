@@ -754,52 +754,263 @@ fn unique_sibling_path(target: &Path, suffix: &str) -> Result<PathBuf, String> {
     Ok(parent.join(format!(".{name}.{suffix}.{}", Uuid::new_v4())))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Bounded retry for the managed-toolchain directory swap (HQ-DESKTOP-5N / 5P)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// atomic_replace_dir / atomic_replace_file rename the freshly staged,
+// checksum- and version-verified toolchain into place. On Windows a single
+// ERROR_ACCESS_DENIED (os error 5) — an AV/EDR or Search-indexer scan of the
+// just-extracted tree, a process whose CWD is inside it, Controlled Folder
+// Access, or a still-mapped node.exe image — used to be terminal on the FIRST
+// try: no retry, no fallback. That turned a transient handle into a 15-minute
+// NodeUnprovisioned outage plus an #hq-alerts page (HQ-DESKTOP-5N), and a
+// backup that could not be deleted AFTER the new tree was already live turned a
+// COMPLETED install into the same paging failure (HQ-DESKTOP-5P).
+//
+// These give every swap rename the same bounded retry the download leg already
+// has. NOT platform-gated: the macOS/Linux Node and managed-git activation path
+// uses the identical helpers, so the resilience — and the portable tests that
+// prove it in the rust-macos lane — cover every platform.
+
+/// How many times each swap filesystem step is attempted before giving up.
+const SWAP_ATTEMPTS: u32 = 5;
+
+/// Fixed backoff before the retry after attempt N (index 0 -> after attempt 1).
+/// Fixed, not exponential: the repair slot is short and the goal is to ride out
+/// a brief handle, not to be polite. Holds at least `SWAP_ATTEMPTS - 1` entries
+/// (asserted in `the_swap_budget_stays_inside_the_repair_slot`). Total worst-
+/// case backoff is 15s, well inside the 15-minute repair slot.
+const SWAP_BACKOFF: [Duration; 4] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+];
+
+/// The backoff to sleep before the attempt after `attempt_index` (0-based).
+/// Hermetic by default in test builds (unit tests never sleep 1-8s), mirroring
+/// `download_backoff`; production (never compiled with cfg(test)) always uses
+/// the real table. The Windows real-handle artifact E2E opts into a genuine
+/// backoff window via `HQ_SWAP_TEST_BACKOFF_MS` so a handle a thread releases
+/// mid-budget is actually ridden out.
+fn swap_backoff(attempt_index: usize) -> Duration {
+    if cfg!(test) {
+        return std::env::var("HQ_SWAP_TEST_BACKOFF_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::ZERO);
+    }
+    SWAP_BACKOFF
+        .get(attempt_index)
+        .copied()
+        .unwrap_or(Duration::from_secs(8))
+}
+
+/// Which filesystem step of the swap a failure came from, for attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwapPhase {
+    Backup,
+    Activate,
+    Restore,
+    Cleanup,
+}
+
+impl SwapPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            SwapPhase::Backup => "backup",
+            SwapPhase::Activate => "activate",
+            SwapPhase::Restore => "restore",
+            SwapPhase::Cleanup => "cleanup",
+        }
+    }
+}
+
+/// True for an OS error that a directory rename/remove can plausibly recover
+/// from on a retry: a held handle or a lock that clears once the AV / indexer /
+/// other process lets go. Built to be fed REAL `std::io::Error` values.
+///
+/// Windows raw codes: 5 ERROR_ACCESS_DENIED, 32 ERROR_SHARING_VIOLATION,
+/// 33 ERROR_LOCK_VIOLATION, 145 ERROR_DIR_NOT_EMPTY (a concurrent scanner
+/// re-creating entries under a directory being removed). `PermissionDenied`
+/// also covers unix EACCES so the same predicate is meaningful in the portable
+/// tests. `NotFound` is never retryable — the source is simply gone.
+fn is_retryable_swap_error(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        return false;
+    }
+    if err.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    matches!(
+        err.raw_os_error(),
+        Some(5) | Some(32) | Some(33) | Some(145)
+    )
+}
+
+/// A terminal swap-step failure carrying the evidence the single-shot version
+/// could not: which phase failed, the raw OS error code, how many attempts ran,
+/// and how long the retry budget took.
+struct SwapError {
+    phase: SwapPhase,
+    err: std::io::Error,
+    attempts: u32,
+    elapsed: Duration,
+}
+
+impl SwapError {
+    /// Render the io error followed by the structured attribution suffix. The
+    /// caller prepends its existing leading shape (e.g. `backup existing X -> Y
+    /// failed: `) so the Sentry fingerprint's head stays stable while the suffix
+    /// makes the next occurrence self-diagnosing. `target_state` is the observed
+    /// occupant of the target path (dir | file | symlink | absent | ...).
+    fn describe(&self, target_state: &str) -> String {
+        format!(
+            "{} [phase={} os_error={} attempts={} of {} elapsed_ms={} target_state={}]",
+            self.err,
+            self.phase.as_str(),
+            self.err
+                .raw_os_error()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.attempts,
+            SWAP_ATTEMPTS,
+            self.elapsed.as_millis(),
+            target_state,
+        )
+    }
+}
+
+/// Run one filesystem step up to `SWAP_ATTEMPTS` times, retrying ONLY errors
+/// `is_retryable_swap_error` accepts (a `NotFound` or any other terminal error
+/// fails on the first attempt). `op` is a closure so the retry/attribution
+/// logic is proven hermetically against real `io::Error`s, exactly the way
+/// `fetch_asset_with` proves the download retry.
+fn retry_swap_op<F>(phase: SwapPhase, mut op: F) -> Result<(), SwapError>
+where
+    F: FnMut() -> std::io::Result<()>,
+{
+    let started = std::time::Instant::now();
+    let mut attempts = 0u32;
+    let mut last: Option<std::io::Error> = None;
+    for attempt in 1..=SWAP_ATTEMPTS {
+        attempts = attempt;
+        match op() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let retryable = is_retryable_swap_error(&e);
+                last = Some(e);
+                if !retryable || attempt == SWAP_ATTEMPTS {
+                    break;
+                }
+                std::thread::sleep(swap_backoff((attempt - 1) as usize));
+            }
+        }
+    }
+    Err(SwapError {
+        phase,
+        err: last.expect("a completed loop only breaks with an error; Ok returns early"),
+        attempts,
+        elapsed: started.elapsed(),
+    })
+}
+
+/// Classify the current occupant of a path WITHOUT following a symlink, for the
+/// attribution suffix. A dangling reparse point reads as `symlink`, not
+/// `absent`, which is exactly the state the single-shot message could not tell
+/// apart from a real directory.
+fn describe_target_state(target: &Path) -> String {
+    match std::fs::symlink_metadata(target) {
+        Ok(m) if m.is_dir() => "dir".to_string(),
+        Ok(m) if m.file_type().is_symlink() => "symlink".to_string(),
+        Ok(m) if m.is_file() => "file".to_string(),
+        Ok(_) => "other".to_string(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_string(),
+        Err(e) => format!("metadata-error:{:?}", e.kind()),
+    }
+}
+
+/// Remove a stray non-directory entry at `path`: a plain file or a symlink is
+/// `remove_file`; a directory symlink / reparse point needs `remove_dir`.
+fn remove_non_directory_entry(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(_) => std::fs::remove_dir(path),
+    }
+}
+
+/// Debug logger available on every platform (the download leg's `debug_log` is
+/// Windows-only). Gated on the same `HQ_INSTALLER_DEBUG_DEPS` switch.
+fn swap_debug_log(msg: &str) {
+    if is_deps_debug_enabled() {
+        eprintln!("[hq-deps] {msg}");
+    }
+}
+
 fn atomic_replace_file(staged: &Path, target: &Path) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
 
     if !target.exists() {
-        return std::fs::rename(staged, target).map_err(|e| {
-            format!(
-                "rename {} -> {} failed: {e}",
-                staged.display(),
-                target.display()
-            )
-        });
+        return retry_swap_op(SwapPhase::Activate, || std::fs::rename(staged, target)).map_err(
+            |se| {
+                format!(
+                    "rename {} -> {} failed: {}",
+                    staged.display(),
+                    target.display(),
+                    se.describe("absent")
+                )
+            },
+        );
     }
 
     let backup = unique_sibling_path(target, "bak")?;
-    std::fs::rename(target, &backup).map_err(|e| {
+    retry_swap_op(SwapPhase::Backup, || std::fs::rename(target, &backup)).map_err(|se| {
         format!(
-            "backup existing {} -> {} failed: {e}",
+            "backup existing {} -> {} failed: {}",
             target.display(),
-            backup.display()
+            backup.display(),
+            se.describe(&describe_target_state(target))
         )
     })?;
 
-    match std::fs::rename(staged, target) {
+    match retry_swap_op(SwapPhase::Activate, || std::fs::rename(staged, target)) {
         Ok(()) => {
-            std::fs::remove_file(&backup)
-                .map_err(|e| format!("remove backup {} failed: {e}", backup.display()))?;
+            // The new file is live by construction. Removing the old copy is
+            // cleanup, NEVER a success criterion (HQ-DESKTOP-5P): retry it, and
+            // if it still fails, log the orphan and return Ok anyway.
+            if let Err(se) = retry_swap_op(SwapPhase::Cleanup, || std::fs::remove_file(&backup)) {
+                swap_debug_log(&format!(
+                    "activation succeeded but backup {} could not be removed; left for sweep: {}",
+                    backup.display(),
+                    se.describe("file")
+                ));
+            }
             Ok(())
         }
-        Err(rename_err) => {
-            let restore_result = std::fs::rename(&backup, target);
-            Err(match restore_result {
-                Ok(()) => format!(
-                    "rename {} -> {} failed: {rename_err}",
-                    staged.display(),
-                    target.display()
-                ),
-                Err(restore_err) => format!(
-                    "rename {} -> {} failed: {rename_err}; restore {} -> {} failed: {restore_err}",
+        Err(activate_se) => {
+            // Roll back to the pre-existing file; the restore rename is retried
+            // too so a transient handle does not lose the old copy.
+            match retry_swap_op(SwapPhase::Restore, || std::fs::rename(&backup, target)) {
+                Ok(()) => Err(format!(
+                    "rename {} -> {} failed: {}",
                     staged.display(),
                     target.display(),
+                    activate_se.describe("restored")
+                )),
+                Err(restore_se) => Err(format!(
+                    "rename {} -> {} failed: {}; restore {} -> {} failed: {}",
+                    staged.display(),
+                    target.display(),
+                    activate_se.describe("restore-failed"),
                     backup.display(),
-                    target.display()
-                ),
-            })
+                    target.display(),
+                    restore_se.describe("restore-failed")
+                )),
+            }
         }
     }
 }
@@ -809,48 +1020,178 @@ fn atomic_replace_dir(staged: &Path, target: &Path) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
 
-    if !target.exists() {
-        return std::fs::rename(staged, target).map_err(|e| {
-            format!(
-                "rename {} -> {} failed: {e}",
-                staged.display(),
-                target.display()
-            )
-        });
+    // Classify the current occupant of the target path WITHOUT following a
+    // symlink, so a dangling reparse point is handled as an entry rather than as
+    // "absent" (which would let the activate rename collide with it).
+    match std::fs::symlink_metadata(target) {
+        // Nothing there: a single retried activate rename is the whole job.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return retry_swap_op(SwapPhase::Activate, || std::fs::rename(staged, target)).map_err(
+                |se| {
+                    format!(
+                        "rename {} -> {} failed: {}",
+                        staged.display(),
+                        target.display(),
+                        se.describe("absent")
+                    )
+                },
+            );
+        }
+        // A stray file / symlink / reparse point is NOT a managed toolchain and
+        // must never be preserved as a backup. Removing it without a backup is
+        // the one sanctioned exception to the never-delete-without-a-successful-
+        // backup invariant (a non-directory cannot be a Node/git install), then
+        // activate. Removal + activation are each retried.
+        Ok(meta) if !meta.is_dir() => {
+            let state = if meta.file_type().is_symlink() {
+                "symlink"
+            } else {
+                "file"
+            };
+            retry_swap_op(SwapPhase::Backup, || remove_non_directory_entry(target)).map_err(
+                |se| {
+                    format!(
+                        "remove stray non-directory {} failed: {}",
+                        target.display(),
+                        se.describe(state)
+                    )
+                },
+            )?;
+            return retry_swap_op(SwapPhase::Activate, || std::fs::rename(staged, target)).map_err(
+                |se| {
+                    format!(
+                        "rename {} -> {} failed: {}",
+                        staged.display(),
+                        target.display(),
+                        se.describe(&describe_target_state(target))
+                    )
+                },
+            );
+        }
+        // A real directory, or an entry we could not stat: take the
+        // backup -> activate -> cleanup path, preserving whatever is there.
+        _ => {}
     }
 
     let backup = unique_sibling_path(target, "bak")?;
-    std::fs::rename(target, &backup).map_err(|e| {
+    retry_swap_op(SwapPhase::Backup, || std::fs::rename(target, &backup)).map_err(|se| {
         format!(
-            "backup existing {} -> {} failed: {e}",
+            "backup existing {} -> {} failed: {}",
             target.display(),
-            backup.display()
+            backup.display(),
+            se.describe(&describe_target_state(target))
         )
     })?;
 
-    match std::fs::rename(staged, target) {
+    match retry_swap_op(SwapPhase::Activate, || std::fs::rename(staged, target)) {
         Ok(()) => {
-            std::fs::remove_dir_all(&backup)
-                .map_err(|e| format!("remove backup {} failed: {e}", backup.display()))?;
+            // The new tree is live by construction. Removing the old copy is
+            // cleanup, NEVER a success criterion (HQ-DESKTOP-5P): retry it, and
+            // if it still fails, log the orphan for the next sweep and return Ok.
+            if let Err(se) = retry_swap_op(SwapPhase::Cleanup, || std::fs::remove_dir_all(&backup))
+            {
+                swap_debug_log(&format!(
+                    "activation succeeded but backup {} could not be removed; left for sweep: {}",
+                    backup.display(),
+                    se.describe("dir")
+                ));
+            }
             Ok(())
         }
-        Err(rename_err) => {
-            let restore_result = std::fs::rename(&backup, target);
-            Err(match restore_result {
-                Ok(()) => format!(
-                    "rename {} -> {} failed: {rename_err}",
-                    staged.display(),
-                    target.display()
-                ),
-                Err(restore_err) => format!(
-                    "rename {} -> {} failed: {rename_err}; restore {} -> {} failed: {restore_err}",
+        Err(activate_se) => {
+            // Roll back to the pre-existing install; the restore rename is
+            // retried too so a transient handle does not lose the old copy.
+            match retry_swap_op(SwapPhase::Restore, || std::fs::rename(&backup, target)) {
+                Ok(()) => Err(format!(
+                    "rename {} -> {} failed: {}",
                     staged.display(),
                     target.display(),
+                    activate_se.describe("restored")
+                )),
+                Err(restore_se) => Err(format!(
+                    "rename {} -> {} failed: {}; restore {} -> {} failed: {}",
+                    staged.display(),
+                    target.display(),
+                    activate_se.describe("restore-failed"),
                     backup.display(),
-                    target.display()
-                ),
-            })
+                    target.display(),
+                    restore_se.describe("restore-failed")
+                )),
+            }
         }
+    }
+}
+
+/// Activate a freshly staged managed directory, and — unlike a bare
+/// `atomic_replace_dir(...)?` — clean up the staged tree if the swap fails
+/// terminally, so a failed repair never strands the ~35 MB extracted payload as
+/// a `.node-install-<uuid>` sibling in the toolchain root. Every earlier error
+/// arm of `install_managed_node` already removes its staged dir; this closes
+/// the one arm that did not. Platform-neutral so the macOS/Linux Node and
+/// managed-git paths get the same guarantee and the portable test proves it in
+/// the rust-macos lane.
+fn activate_staged_dir(staged: &Path, target: &Path) -> Result<(), String> {
+    match atomic_replace_dir(staged, target) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(staged);
+            Err(e)
+        }
+    }
+}
+
+/// True when a usable managed Node already sits at `node_exe` — a concurrently
+/// provisioned target we should accept rather than fight to overwrite. The
+/// repair slot is a process-local static and cannot serialize two HQ processes,
+/// so a target that appeared between preflight and the swap is a real, reachable
+/// state. Gated on the SAME version check the staged tree had to pass
+/// (`version_ok`), so a stale, corrupt, or wrong-version install is NOT waved
+/// through. `version_ok` is injected so the decision is testable off-Windows
+/// without a node.exe subprocess.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn managed_node_already_usable<F>(node_exe: &Path, version_ok: F) -> bool
+where
+    F: FnOnce(&Path) -> bool,
+{
+    node_exe.is_file() && version_ok(node_exe)
+}
+
+/// Name+age predicate for the stale-sibling sweep, split out so it is tested
+/// without depending on filesystem mtime timing. A `.node.bak.*` or
+/// `.node-install-*` entry is swept only when it is at least `min_age` old, so a
+/// concurrently running install's in-flight staged tree (always newer than one
+/// repair slot) is never removed.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_stale_toolchain_sibling(name: &str, age: Option<Duration>, min_age: Duration) -> bool {
+    if !(name.starts_with(".node.bak.") || name.starts_with(".node-install-")) {
+        return false;
+    }
+    matches!(age, Some(a) if a >= min_age)
+}
+
+/// Best-effort, never-fatal removal of stale `.node.bak.*` and `.node-install-*`
+/// siblings left by an earlier interrupted or denied swap, so repeated repairs
+/// cannot accumulate extracted Node trees in the toolchain root. Only entries
+/// older than `min_age` are touched (see `is_stale_toolchain_sibling`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sweep_stale_toolchain_siblings(toolchain_dir: &Path, min_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(toolchain_dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|mtime| now.duration_since(mtime).ok());
+        if !is_stale_toolchain_sibling(&name, age, min_age) {
+            continue;
+        }
+        let path = entry.path();
+        let _ = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
     }
 }
 
@@ -1938,7 +2279,7 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
         return Err(msg);
     }
 
-    atomic_replace_dir(&staged_dir, &node_dir).map_err(|e| {
+    activate_staged_dir(&staged_dir, &node_dir).map_err(|e| {
         let msg = format!("[node] failed to activate staged Node install: {e}");
         emit_preflight_line(&app, &msg);
         msg
@@ -3648,6 +3989,11 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
     let target = managed_toolchain_dir();
     std::fs::create_dir_all(&target).map_err(|e| format!("Failed to mkdir {target:?}: {e}"))?;
 
+    // Clear any staged/backup trees a previous interrupted or denied repair
+    // stranded here before we add our own, bounded so a concurrent install's
+    // in-flight tree is never swept.
+    sweep_stale_toolchain_siblings(&target, crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN);
+
     let node_dir = managed_node_dir();
     let staged_node_dir = target.join(format!(".node-install-{}", Uuid::new_v4()));
     emit_progress(app, &format!("Extracting Node into {staged_node_dir:?}..."));
@@ -3659,7 +4005,20 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
         let _ = std::fs::remove_dir_all(&staged_node_dir);
         return Err(e);
     }
-    atomic_replace_dir(&staged_node_dir, &node_dir)?;
+
+    // A usable managed Node may already be at the target — another HQ process
+    // won the race while we were downloading (the repair slot cannot serialize
+    // two processes). Accept it rather than fight an open-handle swap, but only
+    // if it passes the SAME version check the staged tree did.
+    let node_exe = node_dir.join("node.exe");
+    if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+        let _ = std::fs::remove_dir_all(&staged_node_dir);
+        append_user_path(&node_dir)?;
+        append_user_path(&managed_npm_bin())?;
+        return Ok(format!("Managed Node already present at {node_dir:?}"));
+    }
+
+    activate_staged_dir(&staged_node_dir, &node_dir)?;
 
     append_user_path(&node_dir)?;
     append_user_path(&managed_npm_bin())?;
@@ -3777,7 +4136,7 @@ async fn install_managed_git(app: &AppHandle) -> Result<String, String> {
         let _ = std::fs::remove_dir_all(&staged_git_dir);
         return Err(e);
     }
-    atomic_replace_dir(&staged_git_dir, &git_dir)?;
+    activate_staged_dir(&staged_git_dir, &git_dir)?;
 
     append_user_path(&managed_git_cmd())?;
     append_user_path(&managed_git_mingw_bin())?;
@@ -5382,6 +5741,21 @@ mod windows_tests {
             "download budget {worst_case:?} must stay under repair cooldown {:?}",
             crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN
         );
+
+        // The swap-retry budget is spent AFTER the download inside the SAME
+        // repair slot, so the combined worst case must also stay strictly under
+        // the cooldown (HQ-DESKTOP-5N).
+        assert!(
+            SWAP_BACKOFF.len() as u32 >= SWAP_ATTEMPTS - 1,
+            "need a swap backoff for every retry gap"
+        );
+        let swap_budget: Duration = SWAP_BACKOFF.iter().copied().sum();
+        assert!(
+            worst_case + swap_budget < crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN,
+            "download + swap budget {:?} must stay under repair cooldown {:?}",
+            worst_case + swap_budget,
+            crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN
+        );
     }
 
     #[test]
@@ -5741,5 +6115,510 @@ mod windows_tests {
 
         env.set_value("Path", &before)
             .expect("restore original PATH");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Managed-toolchain swap resilience (HQ-DESKTOP-5N / 5P)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every helper under test here is platform-neutral, so these run in the
+// rust-macos lane (`cargo test --locked`) and prove the retry/attribution/
+// cleanup logic that the shipped single-shot swap lacked. The real-handle proof
+// on Windows lives in `toolchain_swap_e2e_tests` below.
+#[cfg(test)]
+mod atomic_swap_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn is_retryable_swap_error_classifies_real_io_errors() {
+        // Built from REAL std::io::Error values, never a mock error type, so the
+        // predicate is exercised against the type it will actually see.
+        for code in [5, 32, 33, 145] {
+            assert!(
+                is_retryable_swap_error(&Error::from_raw_os_error(code)),
+                "windows code {code} (ACCESS_DENIED/SHARING/LOCK/DIR_NOT_EMPTY) is retryable"
+            );
+        }
+        // unix EACCES surfaces as PermissionDenied.
+        assert!(is_retryable_swap_error(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        // NotFound is terminal — the source is simply gone.
+        assert!(!is_retryable_swap_error(&Error::from(ErrorKind::NotFound)));
+        assert!(!is_retryable_swap_error(&Error::from_raw_os_error(2)));
+        // An unrelated OS code is not retryable.
+        assert!(!is_retryable_swap_error(&Error::from_raw_os_error(13_579)));
+    }
+
+    #[test]
+    fn the_swap_budget_stays_inside_the_repair_slot() {
+        assert!(
+            SWAP_BACKOFF.len() as u32 >= SWAP_ATTEMPTS - 1,
+            "need a backoff for every retry gap"
+        );
+        let swap_budget: Duration = SWAP_BACKOFF.iter().copied().sum();
+        assert!(
+            swap_budget < crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN,
+            "swap budget {swap_budget:?} must stay under the repair cooldown"
+        );
+    }
+
+    #[test]
+    fn retry_swap_op_rides_out_a_retryable_error_then_succeeds() {
+        let calls = Cell::new(0u32);
+        let result = retry_swap_op(SwapPhase::Backup, || {
+            let n = calls.get() + 1;
+            calls.set(n);
+            if n < 3 {
+                Err(Error::from_raw_os_error(5))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok(), "a transient denial should be ridden out");
+        assert_eq!(
+            calls.get(),
+            3,
+            "the first two attempts really ran and failed"
+        );
+    }
+
+    #[test]
+    fn retry_swap_op_stops_at_the_first_terminal_error() {
+        let calls = Cell::new(0u32);
+        let err = retry_swap_op(SwapPhase::Activate, || {
+            calls.set(calls.get() + 1);
+            Err(Error::from(ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        assert_eq!(
+            calls.get(),
+            1,
+            "NotFound is terminal and must not be retried"
+        );
+        assert_eq!(err.phase, SwapPhase::Activate);
+    }
+
+    #[test]
+    fn retry_swap_op_reports_attempts_phase_and_os_code_after_a_persistent_denial() {
+        let err =
+            retry_swap_op(SwapPhase::Restore, || Err(Error::from_raw_os_error(5))).unwrap_err();
+        assert_eq!(err.attempts, SWAP_ATTEMPTS);
+        let msg = err.describe("dir");
+        assert!(msg.contains("phase=restore"), "{msg}");
+        assert!(msg.contains("os_error=5"), "{msg}");
+        assert!(
+            msg.contains(&format!("attempts={SWAP_ATTEMPTS} of {SWAP_ATTEMPTS}")),
+            "{msg}"
+        );
+        assert!(msg.contains("target_state=dir"), "{msg}");
+    }
+
+    #[test]
+    fn an_already_provisioned_managed_node_short_circuits_the_swap() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node_exe = dir.path().join("node.exe");
+        // Absent -> never short-circuits (nothing to accept).
+        assert!(!managed_node_already_usable(&node_exe, |_| true));
+        std::fs::write(&node_exe, b"binary").unwrap();
+        // Present and passing the pinned version check -> accept.
+        assert!(managed_node_already_usable(&node_exe, |_| true));
+        // Present but wrong/corrupt version -> do NOT wave it through.
+        assert!(!managed_node_already_usable(&node_exe, |_| false));
+    }
+
+    #[test]
+    fn is_stale_toolchain_sibling_matches_only_aged_swap_debris() {
+        let min = Duration::from_secs(900);
+        assert!(is_stale_toolchain_sibling(
+            ".node.bak.abc",
+            Some(Duration::from_secs(1000)),
+            min
+        ));
+        assert!(is_stale_toolchain_sibling(
+            ".node-install-xyz",
+            Some(Duration::from_secs(901)),
+            min
+        ));
+        // A fresh entry is a concurrent install's in-flight tree -> keep it.
+        assert!(!is_stale_toolchain_sibling(
+            ".node-install-live",
+            Some(Duration::from_secs(1)),
+            min
+        ));
+        // Undatable -> keep (never delete what we cannot age).
+        assert!(!is_stale_toolchain_sibling(".node.bak.abc", None, min));
+        // Non-debris names are never swept, at any age.
+        assert!(!is_stale_toolchain_sibling(
+            "node",
+            Some(Duration::from_secs(99_999)),
+            min
+        ));
+        assert!(!is_stale_toolchain_sibling("git", None, min));
+    }
+
+    #[test]
+    fn describe_target_state_names_the_occupant() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(describe_target_state(&dir.path().join("nope")), "absent");
+        let d = dir.path().join("d");
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(describe_target_state(&d), "dir");
+        let f = dir.path().join("f");
+        std::fs::write(&f, b"x").unwrap();
+        assert_eq!(describe_target_state(&f), "file");
+    }
+
+    #[test]
+    fn atomic_replace_file_swaps_and_removes_the_backup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("f");
+        std::fs::write(&target, b"OLD").unwrap();
+        let staged = dir.path().join("staged");
+        std::fs::write(&staged, b"NEW").unwrap();
+        atomic_replace_file(&staged, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"NEW");
+        let leftover = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().contains(".f.bak."));
+        assert!(!leftover, "the backup must be removed after a clean swap");
+    }
+}
+
+// Real-filesystem swap orchestration proved with genuine OS rename denials
+// (chmod-based on unix). Runs in the rust-macos lane.
+#[cfg(all(test, unix))]
+mod atomic_swap_unix_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn set_mode(path: &Path, mode: u32) {
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(mode);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    fn has_bak_sibling(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with(".node.bak."))
+    }
+
+    #[test]
+    fn a_transient_rename_denial_is_retried_until_the_swap_succeeds() {
+        // A REAL OS rename denial (a read-only parent) that a real filesystem
+        // change lifts partway through the budget must be ridden out, not fail on
+        // the first try the way the shipped single-shot swap did.
+        let root = tempfile::TempDir::new().unwrap();
+        let parent = root.path().join("toolchain");
+        std::fs::create_dir_all(&parent).unwrap();
+        let staged = root.path().join("staged.txt");
+        std::fs::write(&staged, b"NEW").unwrap();
+        let target = parent.join("node");
+        set_mode(&parent, 0o555);
+
+        let attempts = Cell::new(0u32);
+        let result = retry_swap_op(SwapPhase::Activate, || {
+            let n = attempts.get() + 1;
+            attempts.set(n);
+            if n >= 3 {
+                set_mode(&parent, 0o755); // a real fs change lifts the denial
+            }
+            std::fs::rename(&staged, &target)
+        });
+        set_mode(&parent, 0o755);
+
+        assert!(result.is_ok(), "the transient denial should be ridden out");
+        assert!(attempts.get() >= 3, "the earlier attempts really failed");
+        assert_eq!(std::fs::read(&target).unwrap(), b"NEW");
+    }
+
+    #[test]
+    fn a_persistent_rename_denial_fails_terminally_within_the_budget() {
+        let root = tempfile::TempDir::new().unwrap();
+        let toolchain = root.path().join("toolchain");
+        std::fs::create_dir_all(&toolchain).unwrap();
+        let target = toolchain.join("node");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("VERSION"), b"OLD").unwrap();
+        let staged = root.path().join("staged");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("VERSION"), b"NEW").unwrap();
+        set_mode(&toolchain, 0o555); // deny the backup rename, persistently
+
+        let err = atomic_replace_dir(&staged, &target).unwrap_err();
+        set_mode(&toolchain, 0o755);
+
+        assert!(
+            err.starts_with("backup existing "),
+            "leading shape preserved: {err}"
+        );
+        assert!(err.contains("phase=backup"), "{err}");
+        assert!(
+            err.contains(&format!("attempts={SWAP_ATTEMPTS} of {SWAP_ATTEMPTS}")),
+            "{err}"
+        );
+        assert!(err.contains("target_state=dir"), "{err}");
+        // The pre-existing install is untouched.
+        assert_eq!(std::fs::read(target.join("VERSION")).unwrap(), b"OLD");
+    }
+
+    #[test]
+    fn a_failed_swap_never_strands_the_staged_install() {
+        // The toolchain dir is read-only (denying the swap) but the staged tree
+        // lives in a separate writable dir — exactly the real shape, where the
+        // toolchain is writable enough to drop the staged sibling and only the
+        // specific handle blocks the rename.
+        let root = tempfile::TempDir::new().unwrap();
+        let toolchain = root.path().join("toolchain");
+        std::fs::create_dir_all(&toolchain).unwrap();
+        let target = toolchain.join("node");
+        std::fs::create_dir_all(&target).unwrap();
+        let stage_area = root.path().join("stage");
+        std::fs::create_dir_all(&stage_area).unwrap();
+        let staged = stage_area.join(".node-install-abc");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("node"), b"NEW").unwrap();
+        set_mode(&toolchain, 0o555);
+
+        let err = activate_staged_dir(&staged, &target).unwrap_err();
+        set_mode(&toolchain, 0o755);
+
+        assert!(err.contains("phase=backup"), "{err}");
+        assert!(
+            !staged.exists(),
+            "the validated staged tree must be cleaned up, not stranded"
+        );
+    }
+
+    #[test]
+    fn a_backup_that_cannot_be_removed_does_not_fail_a_completed_install() {
+        // HQ-DESKTOP-5P: the activate rename succeeds, but the OLD copy (now the
+        // backup) contains an undeletable subtree — the unix stand-in for a
+        // still-mapped node.exe image that Windows lets you rename but not delete.
+        // A completed install must return Ok, not page.
+        let root = tempfile::TempDir::new().unwrap();
+        let toolchain = root.path().join("toolchain");
+        std::fs::create_dir_all(&toolchain).unwrap();
+        let target = toolchain.join("node");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("VERSION"), b"OLD").unwrap();
+        let locked = target.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("f"), b"x").unwrap();
+        set_mode(&locked, 0o000); // its contents cannot be removed
+        let staged = root.path().join("staged");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("VERSION"), b"NEW").unwrap();
+
+        let result = atomic_replace_dir(&staged, &target);
+
+        // Restore perms on the moved-away backup so the tempdir can be cleaned up.
+        for e in std::fs::read_dir(&toolchain).unwrap().flatten() {
+            if e.file_name().to_string_lossy().starts_with(".node.bak.") {
+                let _ = std::fs::set_permissions(
+                    e.path().join("locked"),
+                    std::fs::Permissions::from_mode(0o755),
+                );
+            }
+        }
+
+        assert!(
+            result.is_ok(),
+            "a cleanup-only failure must not fail the install: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(target.join("VERSION")).unwrap(),
+            b"NEW",
+            "the fresh payload is live at the target"
+        );
+    }
+
+    #[test]
+    fn a_non_directory_target_is_replaced_rather_than_backed_up_forever() {
+        let root = tempfile::TempDir::new().unwrap();
+        let toolchain = root.path().join("toolchain");
+        std::fs::create_dir_all(&toolchain).unwrap();
+        let target = toolchain.join("node");
+        std::fs::write(&target, b"stray file").unwrap(); // a non-directory occupant
+        let staged = root.path().join("staged");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("node.exe"), b"NEW").unwrap();
+
+        atomic_replace_dir(&staged, &target).unwrap();
+
+        assert!(
+            target.is_dir(),
+            "the staged directory now occupies the target"
+        );
+        assert_eq!(std::fs::read(target.join("node.exe")).unwrap(), b"NEW");
+        assert!(
+            !has_bak_sibling(&toolchain),
+            "a stray non-directory must be removed, never backed up"
+        );
+    }
+
+    #[test]
+    fn the_restore_path_is_retried_too() {
+        // Backup succeeds, activation fails persistently, and the restore rename
+        // (which rides the same retry driver) returns the original install to the
+        // target instead of losing it.
+        let root = tempfile::TempDir::new().unwrap();
+        let toolchain = root.path().join("toolchain");
+        std::fs::create_dir_all(&toolchain).unwrap();
+        let target = toolchain.join("node");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("VERSION"), b"OLD").unwrap();
+        let stage_area = root.path().join("stage");
+        std::fs::create_dir_all(&stage_area).unwrap();
+        let staged = stage_area.join("staged");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("VERSION"), b"NEW").unwrap();
+        // Deny moving the staged tree OUT of stage_area so ACTIVATE fails, while
+        // the toolchain stays writable so BACKUP and RESTORE both work.
+        set_mode(&stage_area, 0o555);
+
+        let err = atomic_replace_dir(&staged, &target).unwrap_err();
+        set_mode(&stage_area, 0o755);
+
+        assert!(err.starts_with("rename "), "{err}");
+        assert!(err.contains("phase=activate"), "{err}");
+        assert!(target.is_dir());
+        assert_eq!(
+            std::fs::read(target.join("VERSION")).unwrap(),
+            b"OLD",
+            "the original install is restored"
+        );
+        assert!(
+            !has_bak_sibling(&toolchain),
+            "the restore should have consumed the backup"
+        );
+    }
+
+    #[test]
+    fn describe_target_state_names_a_symlink() {
+        let root = tempfile::TempDir::new().unwrap();
+        let dest = root.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&dest, &link).unwrap();
+        assert_eq!(describe_target_state(&link), "symlink");
+    }
+
+    #[test]
+    fn sweep_removes_only_matching_debris() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bak = dir.path().join(".node.bak.old");
+        std::fs::create_dir_all(&bak).unwrap();
+        let install = dir.path().join(".node-install-old");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("f"), b"x").unwrap();
+        let keep = dir.path().join("node");
+        std::fs::create_dir_all(&keep).unwrap();
+
+        // min_age ZERO -> any age qualifies, so both debris trees are swept now
+        // while a real toolchain dir is left alone.
+        sweep_stale_toolchain_siblings(dir.path(), Duration::ZERO);
+
+        assert!(!bak.exists(), "a stale .node.bak.* is swept");
+        assert!(!install.exists(), "a stale .node-install-* is swept");
+        assert!(keep.exists(), "a real toolchain directory is kept");
+    }
+}
+
+// Real Win32 open-handle proof (HQ-DESKTOP-5N). #[ignore]-marked so the general
+// `cargo test --bins` run skips them; the dedicated windows-check step runs them
+// with --include-ignored --test-threads=1. A file opened without delete-share
+// reproduces the exact production ERROR_ACCESS_DENIED (os error 5) on the backup
+// rename; the File's Drop closes the handle even if an assertion panics.
+#[cfg(all(test, windows))]
+mod toolchain_swap_e2e_tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::sync::{Arc, Barrier};
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+
+    fn make_tree(root: &Path) -> (PathBuf, PathBuf) {
+        let toolchain = root.join("toolchain");
+        std::fs::create_dir_all(&toolchain).unwrap();
+        let node = toolchain.join("node");
+        std::fs::create_dir_all(&node).unwrap();
+        std::fs::write(node.join("node.exe"), b"OLD").unwrap();
+        let staged = toolchain.join(".node-install-e2e");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("node.exe"), b"NEW").unwrap();
+        (node, staged)
+    }
+
+    fn open_no_delete_share(file: &Path) -> std::fs::File {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ) // deliberately NO FILE_SHARE_DELETE
+            .open(file)
+            .expect("open a live handle inside node without delete-share")
+    }
+
+    #[test]
+    #[ignore = "real-handle artifact E2E; run explicitly in windows-check"]
+    fn a_real_open_handle_denies_the_swap_then_a_release_lets_it_complete() {
+        std::env::set_var("HQ_SWAP_TEST_BACKOFF_MS", "300");
+        let root = tempfile::TempDir::new().unwrap();
+        let (node, staged) = make_tree(root.path());
+
+        let opened = open_no_delete_share(&node.join("node.exe"));
+        let gate = Arc::new(Barrier::new(2));
+        let g2 = gate.clone();
+        let releaser = std::thread::spawn(move || {
+            g2.wait();
+            std::thread::sleep(Duration::from_millis(50));
+            drop(opened); // release the handle well inside the retry budget
+        });
+
+        gate.wait();
+        let result = atomic_replace_dir(&staged, &node);
+        releaser.join().unwrap();
+        std::env::remove_var("HQ_SWAP_TEST_BACKOFF_MS");
+
+        assert!(
+            result.is_ok(),
+            "a transient handle must be ridden out: {result:?}"
+        );
+        assert_eq!(std::fs::read(node.join("node.exe")).unwrap(), b"NEW");
+    }
+
+    #[test]
+    #[ignore = "real-handle artifact E2E; run explicitly in windows-check"]
+    fn a_handle_held_for_the_whole_budget_fails_terminally_and_cleans_up() {
+        std::env::set_var("HQ_SWAP_TEST_BACKOFF_MS", "0");
+        let root = tempfile::TempDir::new().unwrap();
+        let (node, staged) = make_tree(root.path());
+        let opened = open_no_delete_share(&node.join("node.exe"));
+
+        let err = activate_staged_dir(&staged, &node).unwrap_err();
+        drop(opened);
+
+        assert!(err.starts_with("backup existing "), "{err}");
+        assert!(err.contains("phase=backup"), "{err}");
+        assert!(err.contains("os_error="), "{err}");
+        assert!(
+            err.contains(&format!("attempts={SWAP_ATTEMPTS} of {SWAP_ATTEMPTS}")),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read(node.join("node.exe")).unwrap(),
+            b"OLD",
+            "the pre-existing install is intact"
+        );
+        assert!(
+            !staged.exists(),
+            "the staged tree must be cleaned up, not stranded"
+        );
     }
 }
