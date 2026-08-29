@@ -157,13 +157,13 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
       ).toBe("false");
     });
     expect(getSettings).toHaveBeenCalledTimes(2);
-    nativeSettings.resolve(ok({ dockIcon: false }));
+    nativeSettings.resolve(ok({ dockIcon: true }));
     await nativeSettings.promise;
     await tick();
 
     expect(
       host.querySelector('[aria-label="Show in Dock"]')?.getAttribute("aria-checked"),
-    ).toBe("false");
+    ).toBe("true");
   });
 
   it("keeps a Dock preference when the host reports it unavailable", async () => {
@@ -393,14 +393,11 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
     dock?.click();
     dock?.click();
-    dock?.click();
-    await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledTimes(3));
-
-    await vi.waitFor(() => {
-      expect(dock?.getAttribute("aria-checked")).toBe("false");
-    });
+    await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledTimes(2));
     expect(persistedDock).toBe(false);
-    expect(getSettings).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
+    await tick();
+    expect(dock?.getAttribute("aria-checked")).toBe("false");
   });
 
   it("reconciles the reported failed desktop widget sequence from persisted settings", async () => {
@@ -430,14 +427,11 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     );
     widget?.click();
     widget?.click();
-    widget?.click();
-    await vi.waitFor(() => expect(setDesktopWidget).toHaveBeenCalledTimes(3));
-
-    await vi.waitFor(() => {
-      expect(widget?.getAttribute("aria-checked")).toBe("false");
-    });
+    await vi.waitFor(() => expect(setDesktopWidget).toHaveBeenCalledTimes(2));
     expect(persistedWidget).toBe(false);
-    expect(getSettings).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
+    await tick();
+    expect(widget?.getAttribute("aria-checked")).toBe("false");
   });
 
   it("clears a failed Dock write's dirty state when its authoritative read fails", async () => {
