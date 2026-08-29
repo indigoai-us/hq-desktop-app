@@ -30,6 +30,11 @@
   let { folder }: Props = $props();
 
   let dismissed = $state(true);
+  /** Setup gate: this card's launches open a session in the HQ folder and
+   *  hard-error when the folder is not ready. On an unfinished machine the
+   *  right teacher is SetupIncompleteCard (its buttons pre-enter /setup),
+   *  so this card stays hidden until the root is valid. */
+  let hqReady = $state(false);
   let tools = $state<AiTools | null>(null);
   let launching = $state<'claude' | 'codex' | null>(null);
   let launchError = $state<string | null>(null);
@@ -49,6 +54,14 @@
       dismissed = false;
     }
     if (dismissed) return;
+    try {
+      const status = await invoke<{ hqRootValid: boolean }>('get_setup_status');
+      hqReady = Boolean(status?.hqRootValid);
+    } catch {
+      // Status unavailable — stay hidden; SetupIncompleteCard owns ambiguity.
+      hqReady = false;
+    }
+    if (!hqReady) return;
     try {
       tools = await invoke<AiTools>('detect_ai_tools');
     } catch {
@@ -108,7 +121,7 @@
   }
 </script>
 
-{#if !dismissed}
+{#if !dismissed && hqReady}
   <div
     class="explainer"
     role="region"
@@ -200,7 +213,7 @@
   .explainer-error {
     margin: 6px 0 0;
     font-size: var(--type-metadata, 10px);
-    color: var(--v4-error, #e5484d);
+    color: var(--v4-text-2, inherit);
   }
 
   .explainer-actions {

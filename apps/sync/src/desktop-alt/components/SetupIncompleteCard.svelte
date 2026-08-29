@@ -203,7 +203,7 @@
   .setup-error {
     margin: var(--space-1) 0 0;
     font-size: var(--text-base);
-    color: var(--red, #e5484d);
+    color: var(--v4-text-2, inherit);
   }
 
   .setup-actions {

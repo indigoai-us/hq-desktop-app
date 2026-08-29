@@ -262,10 +262,10 @@
     if (error || boardState.error) {
       cards.push({
         id: 'board-error',
-        title: 'Company board could not refresh',
-        sub: error || boardState.error || 'Try again after a sync',
-        tone: 'error',
-        actions: [{ id: 'inspect', label: 'Inspect', kind: 'secondary' }],
+        title: 'Board data needs a retry',
+        sub: error || boardState.error || 'The last load did not complete',
+        tone: 'warn',
+        actions: [{ id: 'inspect', label: 'Retry', kind: 'secondary' }],
       });
     }
     if (connectionIssue) {
@@ -364,7 +364,7 @@
       } catch (err) {
         console.error('CompanyBoardPanel load failed:', err);
         if (!cancelled) {
-          error = 'Board unavailable. Try again after a sync.';
+          error = "Couldn't load board data.";
           projects = [];
           objectives = [];
         }
@@ -938,13 +938,18 @@
     min-width: 0;
   }
 
+  /* Deliberately NOT red. First-open and not-set-up machines hit this state
+     through no fault of their own, and a full-width red stripe reads as
+     "the product is broken". It is a quiet inline note; the Needs-you card
+     carries the Retry action. Keep it visible — hiding failures entirely
+     just moves the confusion to "where is my data". */
   .board-error {
     padding: 10px 0;
     border: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--v4-error) 28%, var(--v4-rowline));
+    border-bottom: 1px solid var(--v4-rowline);
     border-radius: 0;
     background: transparent;
-    color: var(--v4-error);
+    color: var(--v4-text-2);
     font-size: var(--type-body, var(--text-base));
     font-weight: 400;
     line-height: 1.35;

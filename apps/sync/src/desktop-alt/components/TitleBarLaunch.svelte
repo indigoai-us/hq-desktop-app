@@ -185,7 +185,7 @@
   .launch-error {
     max-width: 220px;
     overflow: hidden;
-    color: var(--v4-error, #e5484d);
+    color: var(--v4-text-2, inherit);
     font-size: var(--type-metadata, 10px);
     font-weight: 550;
     line-height: 1;

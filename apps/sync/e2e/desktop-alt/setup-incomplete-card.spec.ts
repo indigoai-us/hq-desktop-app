@@ -20,19 +20,20 @@ describe('Finish setting up HQ card', () => {
   const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const card = readRepoFile('src/desktop-alt/components/SetupIncompleteCard.svelte');
 
-  it('is mounted on the Home route', () => {
+  it('is mounted above the router, where every landing route sees it', () => {
     expect(desktopApp).toContain(
       "import SetupIncompleteCard from './components/SetupIncompleteCard.svelte';",
     );
 
-    const home = desktopApp.indexOf("route.kind === 'home'");
+    // The landing route is a company page whenever any company exists
+    // (getDesktopLandingRoute) — a home-only mount left "Core not detected"
+    // machines staring at a board with no setup affordance at all.
+    const scroll = desktopApp.indexOf('class="desktop-main-scroll"');
     const mount = desktopApp.indexOf('<SetupIncompleteCard />');
-    const homePage = desktopApp.indexOf('<HomePage', home);
-
-    expect(home).toBeGreaterThan(-1);
-    expect(mount).toBeGreaterThan(home);
-    // Above HomePage: the card is the reason an unset-up Home isn't empty.
-    expect(mount).toBeLessThan(homePage);
+    const router = desktopApp.indexOf('{#key routeKey}');
+    expect(scroll).toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(scroll);
+    expect(mount).toBeLessThan(router);
   });
 
   it('offers both launch paths and a copyable prompt', () => {

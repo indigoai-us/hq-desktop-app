@@ -74,6 +74,15 @@ describe('work-happens explainer', () => {
     expect(explainer).toContain('data-testid="explainer-dismiss"');
   });
 
+  it('yields to the setup card on machines whose HQ root is not ready', () => {
+    // Its launches open a session in the HQ folder and hard-error on an
+    // unfinished machine ("HQ folder is not ready…"). SetupIncompleteCard
+    // owns that state with /setup pre-entered; this card waits for a valid
+    // root. Both are mounted above the router and are mutually exclusive.
+    expect(explainer).toContain("invoke<{ hqRootValid: boolean }>('get_setup_status')");
+    expect(explainer).toContain('{#if !dismissed && hqReady}');
+  });
+
   it('shows once per device and goes quiet after any launch or dismissal', () => {
     expect(explainer).toContain("localStorage.getItem(DISMISS_KEY) === '1'");
     // Launching a tool IS the lesson landing — both paths dismiss.

@@ -1739,11 +1739,17 @@
       </div>
       <main class="desktop-main" aria-label="Desktop content">
         <div class="desktop-main-scroll">
+        <!-- Above the router: the landing route is a company page whenever any
+             company exists, so route-scoped mounts teach almost nobody. The
+             two cards split by setup state and are mutually exclusive: an
+             unfinished machine needs /setup (SetupIncompleteCard), a ready
+             machine gets the shared-memory explainer — whose plain launches
+             REQUIRE a ready folder and error on an unfinished one. -->
+        <SetupIncompleteCard />
         <WorkHappensExplainer folder={hqFolderPath ?? ''} />
         {#key routeKey}
           {#if route.kind === 'home'}
             <div class="page">
-              <SetupIncompleteCard />
               <HomePage
                 {syncState}
                 {ready}
