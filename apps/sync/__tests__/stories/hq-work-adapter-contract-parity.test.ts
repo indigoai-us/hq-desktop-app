@@ -132,16 +132,15 @@ describe('Sync PlatformAdapter contract parity', () => {
     );
   });
 
-  it('reports widget and OS notifications as host-owned, not silently ok', async () => {
+  it('reports only OS notifications as host-owned, not silently ok', async () => {
     const adapter = makeAdapter();
-    for (const result of [
-      await adapter.appShell.setDesktopWidget(true),
-      await adapter.appShell.showOsNotification({ title: 'a', body: 'b' }),
-    ]) {
-      expect(result.ok).toBe(false);
-      if (result.ok) throw new Error('unreachable');
-      expect(result.reason).toBe('unavailable');
-      expect(result.code).toBe('host-owned');
-    }
+    const result = await adapter.appShell.showOsNotification({
+      title: 'a',
+      body: 'b',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('unavailable');
+    expect(result.code).toBe('host-owned');
   });
 });

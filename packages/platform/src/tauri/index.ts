@@ -252,7 +252,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     publishPack: (path) => this.call("publish_pack", { path }),
     recordInstall: (id, payload) =>
       this.call("record_install", { id, payload }),
-    yank: (id) => this.call("yank_listing", { id }),
+    yank: (id, reason) => this.call("yank_listing", { id, reason }),
     getCreatorProfile: (handle) => this.call("get_creator_profile", { handle }),
     getMyCreator: () => this.call("get_my_creator"),
     claimHandle: (handle) => this.call("claim_handle", { handle }),
