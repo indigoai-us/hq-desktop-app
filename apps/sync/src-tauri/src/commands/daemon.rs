@@ -49,10 +49,12 @@ use hq_desktop_core::sync_outcome::{
     runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
     spawn_failure_capture_policy,
     spawn_failure_fingerprint_token, termination_fingerprint_token,
-    termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
+    termination_fingerprint_token_for_host, termination_fingerprint_token_for_memory,
+    watcher_exit_attributed_to_app_teardown,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
     windows_exit_status_hex, windows_fault_symbol, windows_teardown_verdict,
-    DeferredSessionEndOutcome, SessionEndLatchReading, SpawnFailureCapturePolicy, SyncCancelCause,
+    DeferredSessionEndOutcome, MemoryExhaustionEvidence, SessionEndLatchReading,
+    SpawnFailureCapturePolicy, SyncCancelCause,
     TeardownLogReading, TeardownShuttingDown, TerminationHost, WatcherExitCapturePolicy,
     WindowsTeardownProbeReading, WindowsTeardownVerdict, WindowsTermination,
     WindowsTerminatorAttribution, SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
@@ -1382,6 +1384,12 @@ struct WatcherExitCaptureContext {
     runner_heap_used_mb: Option<u64>,
     runner_heap_total_mb: Option<u64>,
     runner_oom_frame_count: Option<u32>,
+    /// The V8 old-space ceiling (MB) the app declared for the runner and where it
+    /// came from, recomputed at the exit boundary from the stable process env.
+    /// This is the fact that makes a footprint interpretable: without the ceiling
+    /// in force, a 5.9 GB tree sample cannot be compared against anything.
+    runner_heap_ceiling_mb: u64,
+    runner_heap_ceiling_source: String,
     windows_terminator: Option<WindowsTerminatorAttribution>,
     /// The durable session-end latch read at the exit boundary, consulted ONLY on
     /// the session-terminate/no-signal shape (`Unavailable` otherwise). A
@@ -1528,6 +1536,8 @@ impl Default for WatcherExitCaptureContext {
             runner_heap_used_mb: None,
             runner_heap_total_mb: None,
             runner_oom_frame_count: None,
+            runner_heap_ceiling_mb: 0,
+            runner_heap_ceiling_source: "declared_default".to_string(),
             windows_terminator: None,
             session_end_latch: SessionEndLatchReading::Unavailable,
             cancellation_record_present: false,
@@ -1631,6 +1641,9 @@ fn watcher_exit_capture_context(
         process_generation,
     );
     finish_watcher_generation(generation);
+    // Recompute the runner heap ceiling from the stable process env — the same
+    // resolution the spawn used, so this is the ceiling that was in force.
+    let ceiling = hq_desktop_core::daemon::current_runner_heap_ceiling();
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
         app_quit_in_progress: app_exit_requested(),
@@ -1690,6 +1703,8 @@ fn watcher_exit_capture_context(
         runner_heap_used_mb: totals.runner_heap_used_total_mb().map(|(used, _)| used),
         runner_heap_total_mb: totals.runner_heap_used_total_mb().map(|(_, total)| total),
         runner_oom_frame_count: totals.runner_heap_oom_frame_count(),
+        runner_heap_ceiling_mb: ceiling.ceiling_mb,
+        runner_heap_ceiling_source: ceiling.source.as_str().to_string(),
         windows_terminator,
         session_end_latch,
         cancellation_record_present: cancellation_record.is_some(),
@@ -3081,20 +3096,9 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let resolved_rss_scope = resolve_rss_scope(rss_kind, watcher_command);
     let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age, resolved_rss_scope);
     let raw_fingerprint_token = termination_fingerprint_token(code, signal);
-    let fingerprint_token = termination_fingerprint_token_for_host(code, signal, host);
-    let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
-    // Fifth element, mirroring the manual seam (HQ-DESKTOP-4T r3): the dominant
-    // cause token, validated against the enum so a plumbing slip can never place a
-    // runner byte in the fingerprint (and never silently degrade to "none" the way
-    // the hand-written class allow-list once did for enoent/eexist/enotempty/exdev).
-    let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);
-    let fingerprint = [
-        "sync",
-        "auto-sync-watcher-termination",
-        fingerprint_token.as_str(),
-        runner_error_class,
-        runner_error_cause,
-    ];
+    // `fingerprint_token` + the `fingerprint` array are computed below, after the
+    // runner fatal class is resolved, so an evidence-gated memory attribution can
+    // converge the token across signal 9 / SIGABRT / a Windows fault.
     let windows_termination = code
         .map(classify_windows_exit_status)
         .filter(|termination| termination.is_windows_status());
@@ -3178,6 +3182,35 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             ),
         };
 
+    // Evidence-gated memory attribution. A V8 heap-OOM class or a last comparable
+    // whole-tree footprint at or above the declared ceiling converges this exit
+    // onto one memory fingerprint across signal 9 / SIGABRT / a Windows fault. A
+    // bare kill with neither keeps its host token, so a force-quit is never
+    // relabelled an OOM. The raw token is preserved in the `termination_status_raw`
+    // extra below, so nothing is lost.
+    let memory_evidence = MemoryExhaustionEvidence {
+        heap_oom_class: context.runner_oom_banner.is_some() || runner_fatal_class == "heap_oom",
+        footprint_at_or_above_ceiling: hq_desktop_core::daemon::footprint_sample_over_high_water(
+            rss_kb.map(|kb| kb / 1024),
+            matches!(rss_kind, Some(RssSampleKind::Tree)),
+            hq_desktop_core::daemon::watch_runner_footprint_high_water_mb(),
+        ),
+    };
+    let fingerprint_token =
+        termination_fingerprint_token_for_memory(code, signal, host, memory_evidence);
+    let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
+    // Fifth element, mirroring the manual seam (HQ-DESKTOP-4T r3): the dominant
+    // cause token, validated against the enum so a plumbing slip can never place a
+    // runner byte in the fingerprint (and never silently degrade to "none").
+    let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);
+    let fingerprint = [
+        "sync",
+        "auto-sync-watcher-termination",
+        fingerprint_token.as_str(),
+        runner_error_class,
+        runner_error_cause,
+    ];
+
     let mut tags = vec![
         ("runner_fatal_class", runner_fatal_class),
         ("sync_route", "watcher".to_string()),
@@ -3222,6 +3255,13 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         watcher_child_kind(watcher_command).to_string(),
     ));
     tags.push(("rss_scope", resolved_rss_scope.to_string()));
+    // Where the runner's declared heap ceiling came from — present on every exit
+    // so a footprint is interpretable against the ceiling that was in force
+    // (declared default vs a user override vs an inherited NODE_OPTIONS value).
+    tags.push((
+        "runner_heap_ceiling_source",
+        context.runner_heap_ceiling_source.clone(),
+    ));
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this pass retained one. A
     // fixed constant; absent otherwise so absence never renders as evidence.
     if let Some(banner) = context.runner_oom_banner {
@@ -3317,7 +3357,11 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             sentry::protocol::Value::Number(line.into()),
         ));
     }
-    if normalized_abort.is_some() {
+    // Preserve the raw host termination token whenever the emitted fingerprint
+    // diverged from it — the SIGABRT/Node-abort normalization, or an
+    // evidence-gated memory attribution — so grouping converges without ever
+    // losing what the process actually reported.
+    if normalized_abort.is_some() || memory_evidence.is_attributed() {
         extras.push((
             "termination_status_raw",
             sentry::protocol::Value::String(raw_fingerprint_token),
@@ -3459,6 +3503,13 @@ fn watcher_exit_context_extras(
         (
             "runner_phase_elapsed_bucket",
             sentry::protocol::Value::String(context.runner_phase_elapsed_bucket.clone()),
+        ),
+        // The declared runner heap ceiling (MB) in force for this generation,
+        // present on EVERY exit so a recorded footprint is always interpretable
+        // against the bound the app declared. Bounded integer.
+        (
+            "runner_heap_ceiling_mb",
+            sentry::protocol::Value::Number(context.runner_heap_ceiling_mb.into()),
         ),
         // Mirrors the manual route: stdout (protocol) line count and the runner's
         // Node major, so "died before any work" and the runtime provenance land
@@ -4482,8 +4533,13 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // force-clear (SIGKILL) a healthy watcher.
                 note_daemon_guard_alive();
                 // Sample the live watcher's RSS so if it is later killed by
-                // signal=9, the crash capture can report the footprint it had
-                // shortly before death (jetsam/OOM vs kill -9). Scoped to the
+                // signal=9 (or aborts), the crash capture can weigh the footprint
+                // it had shortly before death against the declared ceiling and
+                // converge a genuine out-of-memory death onto the memory token.
+                // `--max-old-space-size` bounds V8's old space only; external/Buffer
+                // memory sits outside it, so a tree footprint can outrun the heap
+                // ceiling (the 5.9 GB SIGKILL did) — the last comparable whole-tree
+                // sample is the evidence that attributes such a death. Scoped to the
                 // whole descendant tree so the runner's real footprint is seen
                 // through the npx launcher, with an honest single-PID fallback.
                 // Best-effort.
@@ -9982,7 +10038,7 @@ mod tests {
     }
 
     #[test]
-    fn heap_oom_watcher_capture_emits_banner_and_extras_without_moving_fingerprint() {
+    fn heap_oom_watcher_capture_emits_banner_extras_and_converges_the_memory_fingerprint() {
         let with_heap = WatcherExitCaptureContext {
             runner_oom_banner: Some("reached_heap_limit"),
             runner_heap_used_mb: Some(48),
@@ -10048,15 +10104,21 @@ mod tests {
             .iter()
             .all(|(k, _)| k != "runner_heap_used_mb"));
 
-        // Grouping is message-independent: the fingerprint is byte-identical with
-        // and without heap evidence (the retitled RSS/heap lines cannot regroup).
-        assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
+        // The heap-OOM banner/extras still attach exactly as before, but the
+        // auto-sync memory-ceiling fix now converges an EVIDENCED memory death:
+        // a heap-OOM class maps the fingerprint token to memory:runner-exhaustion,
+        // while the baseline SIGABRT with no memory evidence keeps abort:sigabrt.
+        // Heap evidence therefore regroups intentionally (this is the memory
+        // dedup), so the two fingerprints now differ.
         assert_eq!(heap_capture.fingerprint.len(), 5);
         assert_eq!(heap_capture.fingerprint[0], "sync");
         assert_eq!(
             heap_capture.fingerprint[1],
             "auto-sync-watcher-termination"
         );
+        assert_eq!(heap_capture.fingerprint[2], "memory:runner-exhaustion");
+        assert_eq!(base_capture.fingerprint[2], "abort:sigabrt");
+        assert_ne!(heap_capture.fingerprint, base_capture.fingerprint);
     }
 
     fn assert_signed_out_entry_point_records_origin(

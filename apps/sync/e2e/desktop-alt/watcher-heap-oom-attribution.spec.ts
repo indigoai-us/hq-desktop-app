@@ -138,6 +138,17 @@ describe('watcher heap-OOM attribution — source contracts', () => {
     );
   });
 
+  it('also declares + records the runner heap ceiling carried on this exit', () => {
+    // The auto-sync memory-ceiling fix: a declared ceiling merged into
+    // NODE_OPTIONS, recorded on every watcher exit and registered at egress.
+    const coreDaemon = readRepoFile('../../crates/hq-desktop-core/src/daemon.rs');
+    expect(coreDaemon).toContain('WATCH_RUNNER_MAX_OLD_SPACE_MB');
+    expect(coreDaemon).toContain('pub fn merge_runner_node_options(');
+    expect(daemonSource).toContain('"runner_heap_ceiling_mb"');
+    expect(daemonSource).toContain('"runner_heap_ceiling_source"');
+    expect(telemetrySource).toContain('"runner_heap_ceiling_source" => Some(matches!(');
+  });
+
   it('keeps the stack-token vocabulary identical across producer and validator', () => {
     for (const token of [
       'node_oom_handler',
@@ -405,6 +416,11 @@ function simulateHeapOomEnvelope(
       extras.runner_heap_total_mb = evidence.usedTotal[1];
     }
     lastRss = renderLastRss(rss, resolvedScope);
+    // The declared runner heap ceiling now rides every watcher exit (the
+    // auto-sync memory-ceiling fix), so a footprint is always interpretable
+    // against the bound the app declared. Present here too; content-safe.
+    extras.runner_heap_ceiling_mb = 2048;
+    tags.runner_heap_ceiling_source = 'declared_default';
   }
 
   return {
@@ -436,6 +452,9 @@ describe('watcher heap-OOM attribution — shipped Sentry envelope', () => {
     expect(event.tags.rss_scope).toBe('tree');
     expect(event.message).toContain('last_rss=48MB (tree, sampled 8s before exit)');
     expect(event.message).not.toMatch(/last_rss=\d+KB \(sampled/);
+    // Now also carries the declared runner heap ceiling (auto-sync memory fix).
+    expect(event.extras.runner_heap_ceiling_mb).toBe(2048);
+    expect(event.tags.runner_heap_ceiling_source).toBe('declared_default');
     assertContentSafeDiagnostics(event);
   });
 

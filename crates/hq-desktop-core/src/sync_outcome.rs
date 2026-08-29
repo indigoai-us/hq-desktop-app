@@ -2326,6 +2326,56 @@ pub fn termination_fingerprint_token_for_host(
     }
 }
 
+/// The single fingerprint token an evidence-attributed runner memory exhaustion
+/// converges onto, across signal 9 / SIGABRT / a Windows fault. One mechanism —
+/// the runner outgrowing its memory bound mid-pull — must group as one Sentry
+/// issue regardless of which lethal event the host raised.
+pub const MEMORY_EXHAUSTION_FINGERPRINT_TOKEN: &str = "memory:runner-exhaustion";
+
+/// Evidence that a watcher exit was caused by the runner exhausting its memory
+/// bound. Attribution is strictly evidence-gated: a bare SIGKILL (force-quit,
+/// app teardown, external kill) with neither field set is NEVER relabelled as an
+/// OOM. Any single true field is sufficient — the two are independent readings
+/// of the same mechanism, weighed at the natural-death boundary (app-initiated
+/// teardowns take the silent cancellation seam and never reach this attribution).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemoryExhaustionEvidence {
+    /// V8 aborted on a heap OOM this pass (a retained heap-OOM banner or a
+    /// `heap_oom` fatal class). This is the definitive in-runner signal.
+    pub heap_oom_class: bool,
+    /// The last comparable whole-tree footprint sample sat at or above the
+    /// declared footprint ceiling — total RSS the heap flag cannot bound. This is
+    /// what attributes a host OOM kill (the 5.9 GB SIGKILL) that left no in-runner
+    /// heap evidence.
+    pub footprint_at_or_above_ceiling: bool,
+}
+
+impl MemoryExhaustionEvidence {
+    /// True iff at least one independent memory-exhaustion reading is present.
+    pub fn is_attributed(&self) -> bool {
+        self.heap_oom_class || self.footprint_at_or_above_ceiling
+    }
+}
+
+/// Watcher-only fingerprint token that folds an evidence-attributed runner
+/// memory exhaustion onto a single token across every host encoding, while
+/// delegating byte-for-byte to [`termination_fingerprint_token_for_host`] when
+/// there is no memory evidence — so a force-quit SIGKILL stays `signal:9` and an
+/// idle-phase Windows fault stays `windows:fault:…`. The raw termination token
+/// is preserved separately by the caller, so nothing is lost.
+pub fn termination_fingerprint_token_for_memory(
+    code: Option<i32>,
+    signal: Option<i32>,
+    host: TerminationHost,
+    evidence: MemoryExhaustionEvidence,
+) -> String {
+    if evidence.is_attributed() {
+        MEMORY_EXHAUSTION_FINGERPRINT_TOKEN.to_string()
+    } else {
+        termination_fingerprint_token_for_host(code, signal, host)
+    }
+}
+
 /// Render a process termination as a human-readable string. When `code` is
 /// `Some(N)`, the process called `exit(N)`. When `signal` is `Some(N)`, the
 /// OS killed it with that signal — name it (SIGKILL=9, SIGTERM=15, SIGSEGV=11,
@@ -4108,6 +4158,97 @@ mod tests {
         ] {
             assert_eq!(normalized_abort_description(code, signal, host), None);
         }
+    }
+
+    #[test]
+    fn memory_evidence_converges_every_host_encoding_onto_one_token() {
+        // The shipped deaths are one mechanism: a SIGABRT heap-OOM, and a signal-9
+        // or Windows-fault kill whose last tree footprint breached the ceiling.
+        // With evidence, all converge on one token.
+        let heap = MemoryExhaustionEvidence {
+            heap_oom_class: true,
+            ..Default::default()
+        };
+        let footprint = MemoryExhaustionEvidence {
+            footprint_at_or_above_ceiling: true,
+            ..Default::default()
+        };
+
+        for host in [TerminationHost::Posix, TerminationHost::Windows] {
+            assert_eq!(
+                termination_fingerprint_token_for_memory(None, Some(SIGABRT_SIGNAL), host, heap),
+                MEMORY_EXHAUSTION_FINGERPRINT_TOKEN
+            );
+        }
+        assert_eq!(
+            termination_fingerprint_token_for_memory(
+                None,
+                Some(9),
+                TerminationHost::Posix,
+                footprint
+            ),
+            MEMORY_EXHAUSTION_FINGERPRINT_TOKEN
+        );
+        assert_eq!(
+            termination_fingerprint_token_for_memory(
+                Some(0xC000_0409u32 as i32),
+                None,
+                TerminationHost::Windows,
+                footprint
+            ),
+            MEMORY_EXHAUSTION_FINGERPRINT_TOKEN
+        );
+    }
+
+    #[test]
+    fn memory_token_never_relabels_an_evidence_free_exit() {
+        let none = MemoryExhaustionEvidence::default();
+        assert!(!none.is_attributed());
+        // A bare force-quit SIGKILL keeps signal:9 — never relabelled memory.
+        assert_eq!(
+            termination_fingerprint_token_for_memory(None, Some(9), TerminationHost::Posix, none),
+            "signal:9"
+        );
+        // An idle-phase Windows fault with no memory evidence stays a Windows fault.
+        assert_eq!(
+            termination_fingerprint_token_for_memory(
+                Some(0xC000_0409u32 as i32),
+                None,
+                TerminationHost::Windows,
+                none
+            ),
+            "windows:fault:0xC0000409"
+        );
+        // Delegation is byte-for-byte with the host contract for every shape.
+        for host in [TerminationHost::Posix, TerminationHost::Windows] {
+            for (code, signal) in [
+                (Some(0), None),
+                (Some(2), None),
+                (None, Some(15)),
+                (None, Some(11)),
+                (None, None),
+            ] {
+                assert_eq!(
+                    termination_fingerprint_token_for_memory(code, signal, host, none),
+                    termination_fingerprint_token_for_host(code, signal, host)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn memory_evidence_is_attributed_on_any_single_reading() {
+        assert!(MemoryExhaustionEvidence {
+            heap_oom_class: true,
+            ..Default::default()
+        }
+        .is_attributed());
+        assert!(MemoryExhaustionEvidence {
+            footprint_at_or_above_ceiling: true,
+            ..Default::default()
+        }
+        .is_attributed());
+        assert!(!MemoryExhaustionEvidence::default().is_attributed());
     }
 
     #[test]

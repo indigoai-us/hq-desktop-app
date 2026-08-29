@@ -593,6 +593,16 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_heap_used_mb" | "runner_heap_total_mb" | "runner_oom_frame_count" => {
             Some(value.is_empty() || value.parse::<u64>().is_ok())
         }
+        // Declared runner heap ceiling (the auto-sync memory-ceiling fix). The MB
+        // is a bounded integer extra present on every watcher exit (reaches this
+        // check as `""` for a non-string `Value`, type-safe by construction); the
+        // source is a fixed-vocabulary tag. A producer bug that shipped raw text
+        // degrades to `[Filtered]` instead of leaking it.
+        "runner_heap_ceiling_mb" => Some(value.is_empty() || value.parse::<u64>().is_ok()),
+        "runner_heap_ceiling_source" => Some(matches!(
+            value,
+            "declared_default" | "user_override" | "inherited_node_options"
+        )),
         // Windows fault provenance (HQ-DESKTOP-4X). The producer already emits
         // fixed vocabulary and bare integers; these independent checks make a
         // future producer bug that shipped a path, product string, or raw record
@@ -1454,6 +1464,48 @@ mod tests {
             ),
             Some(false)
         );
+    }
+
+    #[test]
+    fn runner_heap_ceiling_fields_survive_egress_and_lookalikes_fail_closed() {
+        use hq_desktop_core::daemon::RunnerHeapCeilingSource;
+        // The provenance tag: every emitter token survives; out-of-vocabulary or a
+        // raw path/argv fragment fails closed.
+        for source in [
+            RunnerHeapCeilingSource::DeclaredDefault,
+            RunnerHeapCeilingSource::UserOverride,
+            RunnerHeapCeilingSource::InheritedNodeOptions,
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_heap_ceiling_source", source.as_str()),
+                Some(true),
+                "ceiling source {:?} must survive egress",
+                source.as_str()
+            );
+        }
+        for bad in ["", "host_derived", "/Users/Ada/HQ", "--max-old-space-size=2048"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_heap_ceiling_source", bad),
+                Some(false),
+                "out-of-vocabulary ceiling source {bad:?} must fail closed"
+            );
+        }
+        // The MB extra: a bare integer (or the type-safe `""` a numeric Value
+        // reaches this check as) survives; raw text degrades to [Filtered].
+        for ok in ["", "0", "2048", "4096"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_heap_ceiling_mb", ok),
+                Some(true),
+                "bounded integer {ok:?} must survive egress"
+            );
+        }
+        for bad in ["2048MB", "/tmp/x", "two-thousand"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_heap_ceiling_mb", bad),
+                Some(false),
+                "non-integer ceiling mb {bad:?} must fail closed"
+            );
+        }
     }
 
     #[test]

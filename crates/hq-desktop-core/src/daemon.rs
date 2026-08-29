@@ -121,6 +121,205 @@ pub fn event_push_eligible() -> bool {
     false
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-sync runner memory ceiling
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Declared V8 old-space ceiling (MB) for the auto-sync watch runner.
+///
+/// The runner is a background menubar helper, not the user's foreground work, so
+/// its heap is capped well below every lethal footprint observed in the field: a
+/// V8 heap-OOM abort at 3662 MB-of-3802 MB and a 5.9 GB OS SIGKILL both sat far
+/// above this. Sized so a genuinely large workspace still completes, while a
+/// runaway pull aborts here — inside a bound the app declares — instead of
+/// growing until the host derives a ceiling from physical RAM. Raise it without a
+/// rebuild via [`RUNNER_MAX_OLD_SPACE_ENV`].
+pub const WATCH_RUNNER_MAX_OLD_SPACE_MB: u64 = 2048;
+
+/// Env escape hatch to raise (or lower) the runner's old-space ceiling without a
+/// rebuild. An explicit `--max-old-space-size` a user already carries in
+/// NODE_OPTIONS always wins over the declared default regardless of this
+/// variable.
+pub const RUNNER_MAX_OLD_SPACE_ENV: &str = "HQ_SYNC_RUNNER_MAX_OLD_SPACE_MB";
+
+/// Footprint high-water mark (MB) for the whole runner descendant tree, read at
+/// the exit boundary to attribute a genuine out-of-memory death.
+/// `--max-old-space-size` bounds V8's old space only; external/Buffer memory sits
+/// outside it, so a tree RSS can outrun the heap ceiling (the 5.9 GB SIGKILL did).
+/// Set above the heap ceiling and above healthy peaks but below the observed
+/// OS-kill point, so a last comparable whole-tree sample at or above this mark is
+/// strong evidence the death was out-of-memory rather than an unrelated kill.
+/// Raise via [`RUNNER_FOOTPRINT_CEILING_ENV`].
+pub const WATCH_RUNNER_FOOTPRINT_HIGH_WATER_MB: u64 = 4096;
+
+/// Env escape hatch for the footprint high-water mark.
+pub const RUNNER_FOOTPRINT_CEILING_ENV: &str = "HQ_SYNC_WATCHER_FOOTPRINT_CEILING_MB";
+
+/// Where the runner's declared heap ceiling came from. Fixed vocabulary, emitted
+/// as a content-safe tag so a recorded footprint is interpretable against the
+/// ceiling that was actually in force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerHeapCeilingSource {
+    /// The compiled-in [`WATCH_RUNNER_MAX_OLD_SPACE_MB`] default.
+    DeclaredDefault,
+    /// A user raised it via [`RUNNER_MAX_OLD_SPACE_ENV`].
+    UserOverride,
+    /// The inherited NODE_OPTIONS already carried a `--max-old-space-size`; the
+    /// app preserved it verbatim and declared nothing of its own.
+    InheritedNodeOptions,
+}
+
+impl RunnerHeapCeilingSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DeclaredDefault => "declared_default",
+            Self::UserOverride => "user_override",
+            Self::InheritedNodeOptions => "inherited_node_options",
+        }
+    }
+}
+
+/// The resolved runner heap ceiling: the value in force (MB) and its provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunnerHeapCeiling {
+    pub ceiling_mb: u64,
+    pub source: RunnerHeapCeilingSource,
+}
+
+/// Result of merging the runner's memory ceiling into an inherited NODE_OPTIONS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedNodeOptions {
+    /// The NODE_OPTIONS value to hand the child. Empty means "set nothing".
+    pub node_options: String,
+    /// The ceiling in force and where it came from.
+    pub ceiling: RunnerHeapCeiling,
+    /// True when the app injected its own flag (so the dev `node` path may also
+    /// pass it in argv); false when an inherited user flag was preserved.
+    pub injected: bool,
+}
+
+/// Pure: resolve the declared old-space ceiling from an optional env override.
+/// A parseable, non-zero override wins and is reported as a user override; any
+/// other input falls back to the declared default.
+pub fn resolve_runner_max_old_space_mb(override_env: Option<&str>) -> (u64, bool) {
+    match override_env.map(str::trim).and_then(|v| v.parse::<u64>().ok()) {
+        Some(mb) if mb > 0 => (mb, true),
+        _ => (WATCH_RUNNER_MAX_OLD_SPACE_MB, false),
+    }
+}
+
+/// Pure: does an already-present NODE_OPTIONS string carry a max-old-space flag?
+/// Recognises both `--max-old-space-size` and the underscore spelling, in either
+/// the `=N` or space-separated form. Outer `None` means the flag is absent; the
+/// inner value is the parsed MB, or `None` when the flag was present but its
+/// argument was unreadable.
+fn inherited_max_old_space_mb(node_options: &str) -> Option<Option<u64>> {
+    let mut tokens = node_options.split_whitespace().peekable();
+    while let Some(tok) = tokens.next() {
+        let flag = tok.split('=').next().unwrap_or(tok);
+        if flag == "--max-old-space-size" || flag == "--max_old_space_size" {
+            if let Some((_, eq_val)) = tok.split_once('=') {
+                return Some(eq_val.trim().parse::<u64>().ok());
+            }
+            if let Some(next) = tokens.peek() {
+                return Some(next.trim().parse::<u64>().ok());
+            }
+            return Some(None);
+        }
+    }
+    None
+}
+
+/// Pure: merge the runner memory ceiling into an inherited NODE_OPTIONS without
+/// ever clobbering a user's own `--max-old-space-size`.
+///
+/// - An inherited flag is preserved verbatim and reported as
+///   [`RunnerHeapCeilingSource::InheritedNodeOptions`] (`injected=false`).
+/// - Otherwise the resolved ceiling is appended after every inherited option,
+///   preserving them verbatim, and reported as a declared default or user
+///   override (`injected=true`).
+pub fn merge_runner_node_options(
+    inherited_node_options: Option<&str>,
+    override_env: Option<&str>,
+) -> MergedNodeOptions {
+    let inherited = inherited_node_options.map(str::trim).unwrap_or("");
+    let (resolved_mb, is_user_override) = resolve_runner_max_old_space_mb(override_env);
+
+    if !inherited.is_empty() {
+        if let Some(parsed) = inherited_max_old_space_mb(inherited) {
+            // User already declared a ceiling — preserve NODE_OPTIONS verbatim.
+            return MergedNodeOptions {
+                node_options: inherited.to_string(),
+                ceiling: RunnerHeapCeiling {
+                    ceiling_mb: parsed.unwrap_or(resolved_mb),
+                    source: RunnerHeapCeilingSource::InheritedNodeOptions,
+                },
+                injected: false,
+            };
+        }
+    }
+
+    let flag = format!("--max-old-space-size={resolved_mb}");
+    let node_options = if inherited.is_empty() {
+        flag
+    } else {
+        format!("{inherited} {flag}")
+    };
+    MergedNodeOptions {
+        node_options,
+        ceiling: RunnerHeapCeiling {
+            ceiling_mb: resolved_mb,
+            source: if is_user_override {
+                RunnerHeapCeilingSource::UserOverride
+            } else {
+                RunnerHeapCeilingSource::DeclaredDefault
+            },
+        },
+        injected: true,
+    }
+}
+
+/// Resolve the merged NODE_OPTIONS + ceiling from the current process env. Used
+/// at spawn to configure the child and at the watcher's exit boundary to record
+/// the ceiling that was in force (the env is stable across the process lifetime,
+/// so both reads agree).
+pub fn current_runner_node_options() -> MergedNodeOptions {
+    let inherited = std::env::var("NODE_OPTIONS").ok();
+    let override_env = std::env::var(RUNNER_MAX_OLD_SPACE_ENV).ok();
+    merge_runner_node_options(inherited.as_deref(), override_env.as_deref())
+}
+
+/// The runner heap ceiling in force for this process, for exit-boundary
+/// diagnostics.
+pub fn current_runner_heap_ceiling() -> RunnerHeapCeiling {
+    current_runner_node_options().ceiling
+}
+
+/// Pure: resolve the supervisor footprint high-water mark from its env override.
+pub fn resolve_footprint_high_water_mb(override_env: Option<&str>) -> u64 {
+    override_env
+        .map(str::trim)
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|mb| *mb > 0)
+        .unwrap_or(WATCH_RUNNER_FOOTPRINT_HIGH_WATER_MB)
+}
+
+/// The supervisor footprint high-water mark in force for this process.
+pub fn watch_runner_footprint_high_water_mb() -> u64 {
+    resolve_footprint_high_water_mb(std::env::var(RUNNER_FOOTPRINT_CEILING_ENV).ok().as_deref())
+}
+
+/// Pure: is a footprint sample at or above the high-water mark, and comparable?
+/// Only a whole-tree sample is comparable to the runner's real footprint, so a
+/// withheld sample (`None`) or a non-tree scope never counts as over.
+pub fn footprint_sample_over_high_water(
+    sample_mb: Option<u64>,
+    scope_is_tree: bool,
+    high_water_mb: u64,
+) -> bool {
+    scope_is_tree && sample_mb.is_some_and(|mb| mb >= high_water_mb)
+}
+
 pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     use crate::hq_cloud::{
         HQ_CLOUD_PACKAGE, HQ_CLOUD_RUNNER_CAPABILITIES, HQ_CLOUD_VERSION, RUNNER_BIN,
@@ -144,6 +343,19 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     }
     // Bandwidth governor: tell the runner what share of the link it may use.
     crate::bandwidth::apply_bandwidth_env(&mut env, crate::bandwidth::prefs_bandwidth_percent());
+
+    // Declare a V8 old-space ceiling so the runner's mid-pull growth is bounded
+    // by a limit the app owns, not by whatever each host derives from physical
+    // RAM. Merged into any inherited NODE_OPTIONS so a user's own options —
+    // including an explicit --max-old-space-size — are never clobbered. Applied
+    // identically on both spawn paths below.
+    let node_options = current_runner_node_options();
+    if !node_options.node_options.is_empty() {
+        env.insert(
+            "NODE_OPTIONS".to_string(),
+            node_options.node_options.clone(),
+        );
+    }
 
     let mut runner_args = vec![
         "--companies".to_string(),
@@ -178,7 +390,18 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // to npm; production falls through to the npx-pinned path below.
     if let Ok(local_runner) = std::env::var("HQ_CLOUD_LOCAL_RUNNER") {
         if !local_runner.is_empty() {
-            let mut args = vec![local_runner];
+            let mut args = Vec::new();
+            // We own argv on the dev `node` path, so pass the ceiling directly
+            // too — but only when we injected our own. Never override a user's
+            // inherited --max-old-space-size (NODE_OPTIONS already carries it);
+            // a command-line flag would win over their NODE_OPTIONS value.
+            if node_options.injected {
+                args.push(format!(
+                    "--max-old-space-size={}",
+                    node_options.ceiling.ceiling_mb
+                ));
+            }
+            args.push(local_runner);
             args.extend(runner_args);
             return SpawnArgs {
                 cmd: paths::resolve_bin("node"),
@@ -945,6 +1168,156 @@ mod tests {
         );
         assert!(args.args.contains(&"-y".to_string()));
         assert!(args.args.contains(&"hq-sync-runner".to_string()));
+    }
+
+    // ── runner memory ceiling ─────────────────────────────────────────────
+
+    #[test]
+    fn merge_injects_declared_default_when_node_options_absent() {
+        let merged = merge_runner_node_options(None, None);
+        assert!(merged.injected);
+        assert_eq!(
+            merged.node_options,
+            format!("--max-old-space-size={WATCH_RUNNER_MAX_OLD_SPACE_MB}")
+        );
+        assert_eq!(merged.ceiling.ceiling_mb, WATCH_RUNNER_MAX_OLD_SPACE_MB);
+        assert_eq!(
+            merged.ceiling.source,
+            RunnerHeapCeilingSource::DeclaredDefault
+        );
+    }
+
+    #[test]
+    fn merge_appends_to_inherited_without_clobbering_other_options() {
+        let merged = merge_runner_node_options(Some("--enable-source-maps --no-warnings"), None);
+        assert!(merged.injected);
+        assert_eq!(
+            merged.node_options,
+            format!(
+                "--enable-source-maps --no-warnings --max-old-space-size={WATCH_RUNNER_MAX_OLD_SPACE_MB}"
+            )
+        );
+        // Every inherited option is preserved verbatim, ahead of the appended flag.
+        assert!(merged
+            .node_options
+            .starts_with("--enable-source-maps --no-warnings"));
+    }
+
+    #[test]
+    fn merge_preserves_an_inherited_user_ceiling_verbatim() {
+        // A user's explicit --max-old-space-size always wins: no clobber, no
+        // duplicate flag, provenance recorded as inherited.
+        let merged = merge_runner_node_options(Some("--max-old-space-size=8192"), None);
+        assert!(!merged.injected);
+        assert_eq!(merged.node_options, "--max-old-space-size=8192");
+        assert_eq!(merged.ceiling.ceiling_mb, 8192);
+        assert_eq!(
+            merged.ceiling.source,
+            RunnerHeapCeilingSource::InheritedNodeOptions
+        );
+        assert_eq!(
+            merged.node_options.matches("--max-old-space-size").count(),
+            1,
+            "must not duplicate the flag"
+        );
+    }
+
+    #[test]
+    fn merge_recognises_underscore_and_space_separated_inherited_ceilings() {
+        for opts in [
+            "--max_old_space_size=1234",
+            "--max-old-space-size 1234",
+            "--stack-size=2000 --max-old-space-size=1234 --no-warnings",
+        ] {
+            let merged = merge_runner_node_options(Some(opts), None);
+            assert!(!merged.injected, "should not inject over {opts:?}");
+            assert_eq!(merged.node_options, opts, "must preserve {opts:?} verbatim");
+            assert_eq!(merged.ceiling.ceiling_mb, 1234, "parsed from {opts:?}");
+            assert_eq!(
+                merged.ceiling.source,
+                RunnerHeapCeilingSource::InheritedNodeOptions
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_env_override_wins_and_is_reported_as_user_override() {
+        assert_eq!(resolve_runner_max_old_space_mb(Some("3000")), (3000, true));
+        // Invalid / zero / empty fall back to the declared default.
+        for bad in ["0", "", "  ", "not-a-number", "-5"] {
+            assert_eq!(
+                resolve_runner_max_old_space_mb(Some(bad)),
+                (WATCH_RUNNER_MAX_OLD_SPACE_MB, false),
+                "input {bad:?} must fall back to default"
+            );
+        }
+        // A user env override merges as user_override, still appended (not clobbered).
+        let merged = merge_runner_node_options(Some("--no-warnings"), Some("3000"));
+        assert!(merged.injected);
+        assert_eq!(merged.ceiling.ceiling_mb, 3000);
+        assert_eq!(merged.ceiling.source, RunnerHeapCeilingSource::UserOverride);
+        assert_eq!(merged.node_options, "--no-warnings --max-old-space-size=3000");
+    }
+
+    #[test]
+    fn build_watch_runner_args_declares_the_ceiling_in_node_options() {
+        // Both spawn paths merge the ceiling into NODE_OPTIONS. The pinned npx
+        // path (the default here) carries it in the child env; the flag is always
+        // present regardless of any ambient NODE_OPTIONS.
+        let args = build_watch_runner_args("/Users/test/HQ");
+        let node_options = args
+            .env
+            .as_ref()
+            .and_then(|env| env.get("NODE_OPTIONS"))
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            node_options.contains("--max-old-space-size"),
+            "NODE_OPTIONS must declare a heap ceiling, got: {node_options:?}"
+        );
+    }
+
+    #[test]
+    fn ceiling_source_tokens_are_fixed_vocabulary() {
+        assert_eq!(
+            RunnerHeapCeilingSource::DeclaredDefault.as_str(),
+            "declared_default"
+        );
+        assert_eq!(
+            RunnerHeapCeilingSource::UserOverride.as_str(),
+            "user_override"
+        );
+        assert_eq!(
+            RunnerHeapCeilingSource::InheritedNodeOptions.as_str(),
+            "inherited_node_options"
+        );
+    }
+
+    #[test]
+    fn footprint_over_high_water_only_counts_a_comparable_tree_sample() {
+        let hw = 4096;
+        // At or above, whole-tree → over.
+        assert!(footprint_sample_over_high_water(Some(4096), true, hw));
+        assert!(footprint_sample_over_high_water(Some(5900), true, hw));
+        // Under → not over.
+        assert!(!footprint_sample_over_high_water(Some(4095), true, hw));
+        // Withheld sample → never over.
+        assert!(!footprint_sample_over_high_water(None, true, hw));
+        // Non-tree scope is not comparable → never over, even when large.
+        assert!(!footprint_sample_over_high_water(Some(9000), false, hw));
+    }
+
+    #[test]
+    fn footprint_high_water_resolves_env_override() {
+        assert_eq!(resolve_footprint_high_water_mb(Some("5000")), 5000);
+        assert_eq!(
+            resolve_footprint_high_water_mb(None),
+            WATCH_RUNNER_FOOTPRINT_HIGH_WATER_MB
+        );
+        assert_eq!(
+            resolve_footprint_high_water_mb(Some("0")),
+            WATCH_RUNNER_FOOTPRINT_HIGH_WATER_MB
+        );
     }
 
     #[test]
