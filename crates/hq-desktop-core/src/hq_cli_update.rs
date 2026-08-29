@@ -3244,6 +3244,200 @@ fn is_expected_transient_registry_failure(detail: &str) -> bool {
     )
 }
 
+// --- E404 registry attribution (HQ-DESKTOP-5Q) -------------------------------
+//
+// An npm E404 means the package or version was absent from the registry npm
+// actually queried. npm emits neither a `syscall` nor a `path` line for a 404,
+// so the generic `symbolic_code:syscall:path_shape` signature degenerates to
+// `E404:unknown:none` and the event names neither the registry nor the spec. The
+// two closed enums below recover the ONLY attribution npm's own 404 line carries
+// — which registry origin it named and which resource it was fetching. The
+// parsed host and URL are consumed ONLY to derive those enums and are never
+// stored, returned, logged into telemetry, or tagged: only the enum value ever
+// crosses the Sentry boundary, so the scrub-safety guarantee is identical to the
+// other closed-enumeration tags (npm_error_code, npm_syscall, npm_path_shape).
+
+/// Which registry npm resolved through for a 404, as a CLOSED enumeration
+/// derived ONLY from npm's own `404 Not Found - GET <url>` error line. The host
+/// is compared against `registry.npmjs.org` and then discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpmRegistryOrigin {
+    Npmjs,
+    Foreign,
+    Unknown,
+}
+
+impl NpmRegistryOrigin {
+    fn tag_value(self) -> &'static str {
+        match self {
+            Self::Npmjs => "npmjs",
+            Self::Foreign => "foreign",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Which resource npm's 404 named, as a CLOSED enumeration derived ONLY from the
+/// same `404 ... GET <url>` line's path: the package document (`packument`), a
+/// `/-/…​.tgz` tarball (`tarball`), any other parseable path (`other`), or no
+/// parseable 404 line at all (`none`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Npm404Resource {
+    Packument,
+    Tarball,
+    Other,
+    None,
+}
+
+impl Npm404Resource {
+    fn tag_value(self) -> &'static str {
+        match self {
+            Self::Packument => "packument",
+            Self::Tarball => "tarball",
+            Self::Other => "other",
+            Self::None => "none",
+        }
+    }
+}
+
+/// The URL npm named in its `404 Not Found - GET <url>` line, if any. Uses the
+/// same line-prefix discipline as [`npm_error_code`] / [`npm_syscall`]: a trimmed
+/// line whose lowercase form starts with `npm error 404 ` or `npm err! 404 ` and
+/// contains ` - get http`. Kept private and transient — the borrowed slice is
+/// consumed only to derive the closed enums above and never reaches Sentry.
+fn npm_404_get_url(detail: &str) -> Option<&str> {
+    detail.lines().find_map(|raw_line| {
+        let line = raw_line.trim();
+        let lower = line.to_ascii_lowercase();
+        if !(lower.starts_with("npm error 404 ") || lower.starts_with("npm err! 404 ")) {
+            return None;
+        }
+        // Locate " - get " case-insensitively. Byte indices align between `lower`
+        // and `line` because `to_ascii_lowercase` is length-preserving, so the
+        // index is valid in the original-case slice; take the next whitespace
+        // token and require an http(s) scheme.
+        let idx = lower.find(" - get ")?;
+        let token = line[idx + " - get ".len()..].split_whitespace().next()?;
+        let lower_token = token.to_ascii_lowercase();
+        (lower_token.starts_with("https://") || lower_token.starts_with("http://"))
+            .then_some(token)
+    })
+}
+
+/// The lowercased host (authority with any userinfo/port stripped) of an http(s)
+/// URL, or None. Transient: used only to compare against `registry.npmjs.org`.
+fn url_host_lower(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    let after_scheme = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))?;
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host);
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// npm's registry origin for a 404 (see [`NpmRegistryOrigin`]). A host that
+/// parses to exactly `registry.npmjs.org` is `Npmjs`; any other host is
+/// `Foreign`; a 404 line that is absent or unparseable is `Unknown` (fail-loud —
+/// an Unknown-origin E404 keeps its Error level).
+fn npm_registry_origin(detail: &str) -> NpmRegistryOrigin {
+    let Some(url) = npm_404_get_url(detail) else {
+        return NpmRegistryOrigin::Unknown;
+    };
+    match url_host_lower(url) {
+        Some(host) if host == "registry.npmjs.org" => NpmRegistryOrigin::Npmjs,
+        Some(_) => NpmRegistryOrigin::Foreign,
+        None => NpmRegistryOrigin::Unknown,
+    }
+}
+
+/// Which resource npm's 404 named (see [`Npm404Resource`]).
+fn npm_404_resource(detail: &str) -> Npm404Resource {
+    let Some(url) = npm_404_get_url(detail) else {
+        return Npm404Resource::None;
+    };
+    let lower = url.to_ascii_lowercase();
+    let Some(after_scheme) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return Npm404Resource::None;
+    };
+    // The path component: strip the authority, drop any query/fragment.
+    let path = match after_scheme.find('/') {
+        Some(idx) => &after_scheme[idx..],
+        None => return Npm404Resource::Other,
+    };
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    // A tarball request: npm's `/-/` tarball path ending in `.tgz`.
+    if path.contains("/-/") && path.ends_with(".tgz") {
+        return Npm404Resource::Tarball;
+    }
+    // A packument request names the package document itself. A scoped package
+    // carries the encoded `%2f` scope separator in that final segment
+    // (`/@indigoai-us%2fhq-cli`, even behind a foreign registry's path prefix);
+    // an unscoped packument is a single bare path segment. Anything deeper (e.g. a
+    // per-version metadata document) is `Other`.
+    let last = path.rsplit('/').find(|part| !part.is_empty()).unwrap_or("");
+    let trimmed = path.trim_matches('/');
+    if last.contains("%2f") || (!trimmed.is_empty() && !trimmed.contains('/')) {
+        return Npm404Resource::Packument;
+    }
+    Npm404Resource::Other
+}
+
+/// The (origin, resource) pair shared by BOTH an E404 install failure's Sentry
+/// signature and its repeat-guard episode key, so the group and the key can never
+/// name different attribution. Both components are closed enumerations.
+fn e404_discriminator(detail: &str) -> (NpmRegistryOrigin, Npm404Resource) {
+    (npm_registry_origin(detail), npm_404_resource(detail))
+}
+
+/// The bounded signature for a foreign-registry E404
+/// (`foreign-registry-404:<resource>`): its origin is definitionally `Foreign`,
+/// so only WHICH resource npm's 404 named varies. Derived from the shared
+/// [`e404_discriminator`] so the Sentry group and the episode key agree.
+fn foreign_registry_404_signature(detail: &str) -> String {
+    format!(
+        "foreign-registry-404:{}",
+        e404_discriminator(detail).1.tag_value()
+    )
+}
+
+/// The bounded signature for an E404 that stayed `Unexpected`
+/// (`E404:<origin>:<resource>`) — a npmjs- or unknown-origin 404 that keeps its
+/// Error level. Distinct from the foreign-registry group above, so the two E404
+/// populations can never share a Sentry issue; `syscall`/`path_shape` are
+/// definitionally `unknown`/`none` for a 404 and carry no discriminating power.
+/// Derived from the shared [`e404_discriminator`] so the group and the episode
+/// key agree.
+fn unexpected_e404_signature(detail: &str) -> String {
+    let (origin, resource) = e404_discriminator(detail);
+    format!("E404:{}:{}", origin.tag_value(), resource.tag_value())
+}
+
+/// Whether a failed npm install is the "this machine's npm resolves the
+/// `@indigoai-us` scope through a registry that does not carry hq-cli" condition:
+/// an E404 whose own 404 line names a non-npmjs host, with no lifecycle failure.
+/// A permanent LOCAL registry misconfiguration — a corporate mirror, an
+/// air-gapped proxy, or an auth-gated 403 masked as a 404 — that no updater code
+/// change can install through, so it is reported at Warning under its own
+/// attributed group.
+///
+/// Keyed on npm's OWN structured signals and disjoint from every other arm: no
+/// other classifier arm matches `code == E404` today, and the lifecycle
+/// exclusion keeps a third-party build failure whose stderr merely mentions 404
+/// on its own per-package lifecycle attribution.
+fn is_foreign_registry_package_missing(detail: &str) -> bool {
+    npm_error_code(detail) == "E404"
+        && npm_registry_origin(detail) == NpmRegistryOrigin::Foreign
+        && !has_npm_lifecycle_failure_marker(detail)
+        && !npm_lifecycle_failure(detail).failed
+}
+
+// --- end E404 registry attribution -------------------------------------------
+
 fn npm_syscall(detail: &str) -> &'static str {
     let syscall = detail.lines().find_map(|line| {
         let line = line.trim().to_ascii_lowercase();
@@ -3810,6 +4004,16 @@ pub enum InstallFailureKind {
     /// only when npm's own structured code/syscall/path shape prove this exact
     /// shape and no lifecycle failure was reported.
     MissingGlobalInstallTarget,
+    /// npm resolved the `@indigoai-us` scope through a registry that does not
+    /// carry `@indigoai-us/hq-cli`, so `npm install -g @indigoai-us/hq-cli@<v>`
+    /// dies with `code E404` naming a non-npmjs host (HQ-DESKTOP-5Q). A permanent
+    /// LOCAL registry misconfiguration — a corporate mirror, an air-gapped proxy,
+    /// or an auth-gated 403 the registry masks as a 404 — that no updater code
+    /// change can install through, so (like the other permanent local conditions)
+    /// it stays observable at Warning under its own attributed group. A strict
+    /// refinement of `Unexpected`, applied only when npm's own 404 line proves a
+    /// non-npmjs registry origin and no lifecycle failure was reported.
+    ForeignRegistryPackageMissing,
 }
 
 /// A bin collision is expected only when npm's documented `--force` remedy
@@ -3915,6 +4119,15 @@ pub fn classify_install_failure_with_final_attempt(
         InstallFailureKind::ExpectedBinCollision
     } else if is_third_party_npm_lifecycle_failure(detail) {
         InstallFailureKind::UnexpectedLifecycle
+    } else if is_foreign_registry_package_missing(detail) {
+        // Placed AFTER the lifecycle arm so a third-party build failure whose
+        // stderr mentions 404 keeps its per-package attribution, and BEFORE the
+        // missing-global-install-target arm — the same placement rationale that arm
+        // documents. npm resolved the `@indigoai-us` scope through a registry that
+        // does not carry the package: a permanent local registry misconfiguration,
+        // reported at Warning under its own attributed group. Disjoint from every
+        // other arm because no other arm matches `code == E404`.
+        InstallFailureKind::ForeignRegistryPackageMissing
     } else if is_missing_global_install_target(detail, prefix) {
         // Placed AFTER the lifecycle arm so a third-party build failure keeps its
         // per-package attribution; the predicate additionally excludes both
@@ -3998,6 +4211,7 @@ impl InstallFailureKind {
             Self::Unexpected => "unexpected",
             Self::UnsupportedNode => "unsupported-node",
             Self::MissingGlobalInstallTarget => "missing-global-install-target",
+            Self::ForeignRegistryPackageMissing => "foreign-registry-404",
         }
     }
 }
@@ -4061,6 +4275,22 @@ fn install_failure_signature(
             "missing-global-install-target:{}",
             npm_path_shape(detail, prefix).tag_value(),
         );
+    }
+    if kind == InstallFailureKind::ForeignRegistryPackageMissing {
+        // Its OWN bounded group, so it leaves the `unexpected` catch-all. The
+        // predicate already fixed origin == Foreign, so only WHICH resource npm's
+        // 404 named varies (at most four values). Mirrors the
+        // `missing-global-install-target:<shape>` precedent.
+        return foreign_registry_404_signature(detail);
+    }
+    if kind == InstallFailureKind::Unexpected && npm_error_code(detail) == "E404" {
+        // An E404 that stayed `Unexpected` (npmjs- or unknown-origin): give it an
+        // attributed signature distinct from the foreign-registry group, so the two
+        // E404 populations can never share a Sentry issue. This is an INTENTIONAL
+        // fingerprint change for E404 only (HQ-DESKTOP-5Q) — the old
+        // `E404:unknown:none` group goes quiet and any recurrence opens a new,
+        // attributed group. Every non-E404 signature stays byte-identical.
+        return unexpected_e404_signature(detail);
     }
     format!(
         "{}:{}:{}",
@@ -4175,6 +4405,14 @@ pub fn install_failure_detail_with_environment(
         // passthrough so the path is never surfaced verbatim.
         return "hq could not update because npm's global install folder is missing on this computer and it couldn't be created automatically. Run the copied command in a terminal to finish the update; if that folder lives on a network or removed drive, reconnect it first.".to_string();
     }
+    if kind == InstallFailureKind::ForeignRegistryPackageMissing {
+        // This machine's npm resolves the @indigoai-us scope through a registry that
+        // does not carry hq. Name the condition and the fix; never echo the registry
+        // host or the raw npm stderr (which carries the URL). Placed BEFORE the
+        // non-empty-stderr passthrough so the host is never surfaced verbatim, and it
+        // keeps the "copied command" escape hatch every other arm keeps.
+        return "hq could not update because this computer's npm is set to use a package registry that does not carry hq. Point npm at the public npm registry for the @indigoai-us scope (or reconnect to your company VPN if it uses an internal mirror), then run the copied command in a terminal.".to_string();
+    }
     if npm_lifecycle_failure(detail).failed {
         // Cause-specific, actionable wording. Every branch keeps the copyable
         // command escape hatch ("copied command") so the UI fallback is intact
@@ -4211,13 +4449,14 @@ pub fn install_failure_detail_with_environment(
         // Unreachable in practice — `ExpectedDiskFull` returns early above,
         // before the empty-stderr fallback — but the match must stay exhaustive.
         InstallFailureKind::ExpectedDiskFull => DISK_FULL_DETAIL.to_string(),
-        // `UnsupportedNode` and `MissingGlobalInstallTarget` return their actionable
-        // copy early above; these arms keep the match exhaustive without ever being
-        // reached for them.
+        // `UnsupportedNode`, `MissingGlobalInstallTarget`, and
+        // `ForeignRegistryPackageMissing` return their actionable copy early above;
+        // these arms keep the match exhaustive without ever being reached for them.
         InstallFailureKind::Unexpected
         | InstallFailureKind::UnexpectedLifecycle
         | InstallFailureKind::UnsupportedNode
-        | InstallFailureKind::MissingGlobalInstallTarget => format!(
+        | InstallFailureKind::MissingGlobalInstallTarget
+        | InstallFailureKind::ForeignRegistryPackageMissing => format!(
             "npm install exited with status {}",
             exit_code
                 .map(|code| code.to_string())
@@ -4291,7 +4530,8 @@ pub fn install_failure_report_with_environment(
         InstallFailureKind::Unexpected
         | InstallFailureKind::UnexpectedLifecycle
         | InstallFailureKind::UnsupportedNode
-        | InstallFailureKind::MissingGlobalInstallTarget => {}
+        | InstallFailureKind::MissingGlobalInstallTarget
+        | InstallFailureKind::ForeignRegistryPackageMissing => {}
         InstallFailureKind::ExpectedPrefixPermission
         | InstallFailureKind::ExpectedWindowsAbort
         | InstallFailureKind::ExpectedWindowsLockedBinary
@@ -4322,6 +4562,30 @@ impl NpmToolchainSource {
         match self {
             Self::Managed => "managed",
             Self::UserPath => "user-path",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Whether the failing `npm install` pinned an exact CLI version or asked for the
+/// `latest` dist-tag, as a CLOSED enumeration carried on [`InstallEnvironment`]
+/// and tagged on the reported event. TAG ONLY — never a fingerprint, signature,
+/// or episode-key component. Defaults to [`RequestedSpecKind::Unknown`], which is
+/// emitted as NO tag at all, so every existing caller reproduces today's exact
+/// tag set until it opts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestedSpecKind {
+    PinnedVersion,
+    LatestTag,
+    #[default]
+    Unknown,
+}
+
+impl RequestedSpecKind {
+    pub fn tag_value(self) -> &'static str {
+        match self {
+            Self::PinnedVersion => "pinned-version",
+            Self::LatestTag => "latest-tag",
             Self::Unknown => "unknown",
         }
     }
@@ -4506,6 +4770,34 @@ pub struct InstallEnvironment {
     /// is emitted as NO tag at all — so every existing caller reproduces today's
     /// grouping AND today's exact tag set and `npm_diagnostics` string.
     pub missing_target_state: MissingTargetState,
+    /// The exact CLI version the failing `npm install` targeted (the `@<version>`
+    /// [`install_argv`] pinned), so an operator can see WHICH version npm was asked
+    /// for (HQ-DESKTOP-5Q). Reduced to a bounded token by [`sanitized_version_token`]
+    /// before it is tagged as `hq_cli_target_version`. TAG/EXTRA ONLY — never a
+    /// fingerprint, signature, or episode-key component, because a new CLI version
+    /// publishes most days and would make grouping unbounded. Defaults to `None`,
+    /// emitted as NO tag, so every existing caller reproduces today's exact tag set.
+    pub target_version: Option<String>,
+    /// Whether the failing install pinned an exact version or asked for the `latest`
+    /// dist-tag. TAG ONLY, defaulting to [`RequestedSpecKind::Unknown`] (emitted as
+    /// NO tag), so every existing caller's tag set is unchanged until it opts in.
+    pub requested_spec_kind: RequestedSpecKind,
+}
+
+impl InstallEnvironment {
+    /// Record that the failing `npm install` pinned this EXACT resolved CLI version
+    /// (HQ-DESKTOP-5Q). The updater resolves `latest` from the registry's `/latest`
+    /// endpoint and pins that string into `install_argv`, so a reported failure —
+    /// an E404 in particular — should name the exact version npm was asked for, not
+    /// the mutable `@latest` tag. Sets [`RequestedSpecKind::PinnedVersion`]; the
+    /// version is a pure tag (reduced by [`sanitized_version_token`] at report
+    /// time), never a fingerprint, signature, or episode-key component. Shared by
+    /// the two apps/sync report sites so their attribution can never drift.
+    pub fn with_pinned_target_version(mut self, version: &str) -> Self {
+        self.target_version = Some(version.to_string());
+        self.requested_spec_kind = RequestedSpecKind::PinnedVersion;
+        self
+    }
 }
 
 /// Reduce a caller-supplied node/npm version or Node ABI to a strictly bounded
@@ -4646,6 +4938,30 @@ pub fn report_install_failure_with_environment(
     let node_abi = sanitized_version_token(env.node_abi.as_deref());
     let npm_version = sanitized_version_token(env.npm_version.as_deref());
     let toolchain_source = env.toolchain_source.tag_value();
+    // E404 registry attribution (HQ-DESKTOP-5Q). Derive the closed enums ONLY when
+    // npm reported an E404, from the SAME shared discriminator the signature and
+    // episode key use, so the tags, the Sentry group, and the repeat-guard key can
+    // never disagree. A non-E404 event is untouched.
+    let npm_error_is_e404 = npm_error_code == "E404";
+    let (e404_origin_tag, e404_resource_tag) = if npm_error_is_e404 {
+        let (origin, resource) = e404_discriminator(detail);
+        (Some(origin.tag_value()), Some(resource.tag_value()))
+    } else {
+        (None, None)
+    };
+    // The exact version npm was asked to install, and whether it was pinned or the
+    // `latest` tag. Tag-only (never a grouping component) and emitted ONLY when the
+    // caller opted in (a non-default value), so a default InstallEnvironment keeps
+    // today's exact tag set.
+    let hq_cli_target_version: Option<String> = env
+        .target_version
+        .as_deref()
+        .map(|version| sanitized_version_token(Some(version)));
+    let requested_spec_kind_tag = if env.requested_spec_kind != RequestedSpecKind::Unknown {
+        Some(env.requested_spec_kind.tag_value())
+    } else {
+        None
+    };
     let mut npm_diagnostics = format!(
         "{} {}",
         npm_diagnostics_summary(
@@ -4674,6 +4990,14 @@ pub fn report_install_failure_with_environment(
             env.missing_target_state.tag_value()
         ));
     }
+    // Attribute the E404 in the diagnostic extra too (closed enums only, never the
+    // host or URL). Appended ONLY for an E404, so every non-E404 event's
+    // `npm_diagnostics` string stays byte-identical.
+    if let (Some(origin), Some(resource)) = (e404_origin_tag, e404_resource_tag) {
+        npm_diagnostics.push_str(&format!(
+            " registry_origin={origin} npm_404_resource={resource}"
+        ));
+    }
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
@@ -4684,6 +5008,16 @@ pub fn report_install_failure_with_environment(
             scope.set_tag("npm_error_code", npm_error_code.as_str());
             scope.set_tag("npm_syscall", npm_syscall(detail));
             scope.set_tag("npm_path_shape", npm_path_shape.tag_value());
+            // E404 registry attribution (HQ-DESKTOP-5Q): which registry origin npm's
+            // own 404 line named and which resource it was fetching. Closed enums
+            // only — never the host or URL. Present ONLY for an E404, so a non-E404
+            // event's tag set is unchanged.
+            if let Some(origin) = e404_origin_tag {
+                scope.set_tag("npm_registry_origin", origin);
+            }
+            if let Some(resource) = e404_resource_tag {
+                scope.set_tag("npm_404_resource", resource);
+            }
             scope.set_tag("npm_bin_target", npm_bin_target);
             scope.set_tag(
                 "npm_final_attempt_forced",
@@ -4720,6 +5054,16 @@ pub fn report_install_failure_with_environment(
             scope.set_tag("node_abi", node_abi.as_str());
             scope.set_tag("npm_version", npm_version.as_str());
             scope.set_tag("npm_toolchain_source", toolchain_source);
+            // The exact version npm was asked for, and whether it was pinned or the
+            // `latest` tag (HQ-DESKTOP-5Q). Tag-only, never a grouping component;
+            // present only when the caller opted in, so a default InstallEnvironment
+            // keeps today's exact tag set.
+            if let Some(target_version) = hq_cli_target_version.as_deref() {
+                scope.set_tag("hq_cli_target_version", target_version);
+            }
+            if let Some(spec_kind) = requested_spec_kind_tag {
+                scope.set_tag("npm_requested_spec_kind", spec_kind);
+            }
             scope.set_tag(
                 "npm_managed_toolchain_retry",
                 if env.managed_toolchain_retry {
@@ -4765,16 +5109,21 @@ pub fn report_install_failure_with_environment(
         },
         || {
             // A local-machine condition, not an updater defect: an unsupported
-            // Node and a missing npm global install target are downgraded alongside
-            // the post-force bin collision, so they stay observable without paging
-            // at Error. The missing-target shape is only ever reported AFTER HQ's own
-            // mkdir + managed-toolchain repair has been attempted and declined, so at
-            // report time it genuinely describes a broken local npm prefix.
+            // Node, a missing npm global install target, and a foreign-registry E404
+            // are downgraded alongside the post-force bin collision, so they stay
+            // observable without paging at Error. The missing-target shape is only
+            // ever reported AFTER HQ's own mkdir + managed-toolchain repair has been
+            // attempted and declined, so at report time it genuinely describes a
+            // broken local npm prefix; the foreign-registry downgrade fires ONLY when
+            // npm's own 404 line names a non-npmjs host, so a npmjs- or unknown-origin
+            // E404 stays at Error (see report_install_failure_with_environment's E404
+            // arm and install_failure_signature).
             let level = if matches!(
                 kind,
                 InstallFailureKind::ExpectedBinCollision
                     | InstallFailureKind::UnsupportedNode
                     | InstallFailureKind::MissingGlobalInstallTarget
+                    | InstallFailureKind::ForeignRegistryPackageMissing
             ) {
                 sentry::Level::Warning
             } else {
@@ -4877,6 +5226,22 @@ pub fn install_failure_episode_key_with_environment(
         // first occurrence again. The `|managed` discriminator matches the other
         // shapes so a managed-retry event never collides with its user-path
         // predecessor.
+        //
+        // An E404 that stayed `Unexpected` (npmjs- or unknown-origin) keys on the
+        // SAME attributed signature its Sentry group now uses, derived from the
+        // shared `e404_discriminator`, so the group and this key can never disagree.
+        // This preserves today's once-per-published-version cadence for E404 (the
+        // reported HQ-DESKTOP-5Q count was bounded that way) while carrying the new
+        // origin/resource attribution. E404 is never the shapeless `none` shape, so
+        // the carve-out below cannot swallow it.
+        if npm_error_code(detail) == "E404" {
+            let key = format!("{latest}|unexpected|{}", unexpected_e404_signature(detail));
+            return Some(if env.managed_toolchain_retry {
+                format!("{key}|managed")
+            } else {
+                key
+            });
+        }
         let code = symbolic_npm_error_code(detail);
         let syscall = npm_syscall(detail);
         let path_shape = npm_path_shape(detail, prefix).tag_value();
@@ -4909,6 +5274,26 @@ pub fn install_failure_episode_key_with_environment(
         // predecessor.
         let path_shape = npm_path_shape(detail, prefix).tag_value();
         let key = format!("{latest}|missing-global-install-target|{path_shape}");
+        return Some(if env.managed_toolchain_retry {
+            format!("{key}|managed")
+        } else {
+            key
+        });
+    }
+    if kind == InstallFailureKind::ForeignRegistryPackageMissing {
+        // A permanent local registry misconfiguration recurs identically on every
+        // scheduled check, so page it ONCE per published CLI version — the same
+        // treatment as the `Unexpected`, `UnsupportedNode`, and
+        // `MissingGlobalInstallTarget` shapes. Key on the SAME closed 404-resource
+        // discriminator the group uses (origin is definitionally `Foreign` for this
+        // kind), derived from the shared `e404_discriminator` so the Sentry group and
+        // this key can never disagree. Without this arm the kind would fall through to
+        // `install_failure_episode_key_with_provenance`, return `None` for a
+        // non-lifecycle failure, and re-page on every ~6-hourly check.
+        let key = format!(
+            "{latest}|foreign-registry-404|{}",
+            e404_discriminator(detail).1.tag_value()
+        );
         return Some(if env.managed_toolchain_retry {
             format!("{key}|managed")
         } else {
@@ -12449,6 +12834,8 @@ mod tests {
             managed_toolchain_retry: false,
             managed_retry_outcome: ManagedRetryOutcome::NotArmed,
             missing_target_state: MissingTargetState::Unknown,
+            target_version: None,
+            requested_spec_kind: RequestedSpecKind::Unknown,
         };
         let mut declined = base.clone();
         declined.managed_retry_outcome = ManagedRetryOutcome::ProvisionDeferred;
@@ -12956,5 +13343,336 @@ mod tests {
             ),
             None
         );
+    }
+
+    // --- E404 registry attribution (HQ-DESKTOP-5Q) ------------------------------
+
+    /// A foreign-registry E404: npm's own 404 line names a non-npmjs host and the
+    /// requested scoped packument (the `%2f` scope separator survives even behind a
+    /// registry path prefix), plus the "not in this registry" tail. Parameterised on
+    /// the line prefix so both the modern `npm error` and legacy `npm err!` npm
+    /// spellings are covered.
+    fn foreign_e404_stderr(prefix: &str) -> String {
+        format!(
+            "{prefix} code E404\n\
+             {prefix} 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us%2fhq-cli - Not found\n\
+             {prefix} 404\n\
+             {prefix} 404  '@indigoai-us/hq-cli@5.103.27' is not in this registry."
+        )
+    }
+
+    /// The same shape but resolved through npmjs itself — a genuine "we asked npmjs
+    /// for something absent" defect that must stay loud.
+    fn npmjs_e404_stderr(prefix: &str) -> String {
+        format!(
+            "{prefix} code E404\n\
+             {prefix} 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli - Not found\n\
+             {prefix} 404\n\
+             {prefix} 404  '@indigoai-us/hq-cli@5.103.27' is not in this registry."
+        )
+    }
+
+    #[test]
+    fn npm_registry_origin_and_404_resource_tag_values_are_closed_stable_sets() {
+        assert_eq!(NpmRegistryOrigin::Npmjs.tag_value(), "npmjs");
+        assert_eq!(NpmRegistryOrigin::Foreign.tag_value(), "foreign");
+        assert_eq!(NpmRegistryOrigin::Unknown.tag_value(), "unknown");
+        assert_eq!(Npm404Resource::Packument.tag_value(), "packument");
+        assert_eq!(Npm404Resource::Tarball.tag_value(), "tarball");
+        assert_eq!(Npm404Resource::Other.tag_value(), "other");
+        assert_eq!(Npm404Resource::None.tag_value(), "none");
+    }
+
+    #[test]
+    fn npm_registry_origin_and_404_resource_parse_only_npms_own_404_line() {
+        for prefix in ["npm error", "npm err!"] {
+            let foreign = foreign_e404_stderr(prefix);
+            assert_eq!(
+                npm_registry_origin(&foreign),
+                NpmRegistryOrigin::Foreign,
+                "{prefix}: foreign host must resolve to Foreign"
+            );
+            assert_eq!(
+                npm_404_resource(&foreign),
+                Npm404Resource::Packument,
+                "{prefix}: scoped packument GET"
+            );
+            let npmjs = npmjs_e404_stderr(prefix);
+            assert_eq!(
+                npm_registry_origin(&npmjs),
+                NpmRegistryOrigin::Npmjs,
+                "{prefix}: registry.npmjs.org must resolve to Npmjs"
+            );
+            assert_eq!(npm_404_resource(&npmjs), Npm404Resource::Packument);
+        }
+        // A tarball GET (contains `/-/` and ends `.tgz`) -> Tarball, foreign origin.
+        let tarball = "npm error code E404\n\
+            npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us/hq-cli/-/hq-cli-5.103.27.tgz - Not found";
+        assert_eq!(npm_registry_origin(tarball), NpmRegistryOrigin::Foreign);
+        assert_eq!(npm_404_resource(tarball), Npm404Resource::Tarball);
+        // No parseable 404 GET line -> Unknown origin, None resource (fail-loud: a
+        // shapeless E404 stays at Error).
+        let no_line = "npm error code E404\nnpm error 404 Not Found";
+        assert_eq!(npm_registry_origin(no_line), NpmRegistryOrigin::Unknown);
+        assert_eq!(npm_404_resource(no_line), Npm404Resource::None);
+        // A deeper per-version metadata path is neither packument nor tarball.
+        let per_version = "npm error code E404\n\
+            npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/5.103.99 - Not found";
+        assert_eq!(npm_404_resource(per_version), Npm404Resource::Other);
+    }
+
+    #[test]
+    fn foreign_registry_e404_classifies_only_for_a_foreign_origin_without_lifecycle() {
+        // Foreign-origin E404, no lifecycle -> the new kind, for both line prefixes.
+        for prefix in ["npm error", "npm err!"] {
+            assert_eq!(
+                classify_install_failure_with_environment(
+                    Some(1),
+                    &foreign_e404_stderr(prefix),
+                    None,
+                    false,
+                    &InstallEnvironment::default(),
+                ),
+                InstallFailureKind::ForeignRegistryPackageMissing,
+                "{prefix}"
+            );
+        }
+        // An npmjs-origin E404 stays Unexpected (a genuine "asked npmjs for something
+        // absent" defect) and an unknown-origin E404 does too.
+        for stderr in [
+            npmjs_e404_stderr("npm error"),
+            "npm error code E404\nnpm error 404 Not Found".to_string(),
+        ] {
+            assert_eq!(
+                classify_install_failure_with_environment(
+                    Some(1),
+                    &stderr,
+                    None,
+                    false,
+                    &InstallEnvironment::default(),
+                ),
+                InstallFailureKind::Unexpected
+            );
+        }
+        // A third-party native-build lifecycle failure whose stderr ALSO carries a
+        // 404 GET line keeps its per-package lifecycle attribution — the classifier
+        // order (lifecycle arm first) protects it.
+        let lifecycle_with_404 = "npm error code 1\n\
+            npm error path /Users/alice/.npm-global/lib/node_modules/better-sqlite3\n\
+            npm error command failed\n\
+            npm error command sh -c prebuild-install || node-gyp rebuild\n\
+            prebuild-install warn install No prebuilt binaries found\n\
+            npm error 404 Not Found - GET https://npm.internal.example.com/@some%2fdep - Not found";
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                lifecycle_with_404,
+                None,
+                false,
+                &InstallEnvironment::default(),
+            ),
+            InstallFailureKind::UnexpectedLifecycle
+        );
+        // An E404 that ALSO carries a lifecycle marker is excluded from the new kind
+        // by the `!has_npm_lifecycle_failure_marker` clause and stays Unexpected —
+        // the exclusion is load-bearing, not incidental to the code check.
+        let e404_with_lifecycle_marker = "npm error code E404\n\
+            npm error command failed\n\
+            npm error 404 Not Found - GET https://npm.internal.example.com/@indigoai-us%2fhq-cli - Not found";
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                e404_with_lifecycle_marker,
+                None,
+                false,
+                &InstallEnvironment::default(),
+            ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn foreign_registry_e404_pages_once_per_version_via_its_episode_key() {
+        let e404 = foreign_e404_stderr("npm error");
+        let base = InstallEnvironment {
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..Default::default()
+        };
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                &e404,
+                None,
+                false,
+                "5.103.27",
+                &base,
+            ),
+            Some("5.103.27|foreign-registry-404|packument".to_string())
+        );
+        // A managed-retry event mints a distinct key, so it never collides with the
+        // user-path predecessor.
+        let mut managed = base.clone();
+        managed.managed_toolchain_retry = true;
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                &e404,
+                None,
+                false,
+                "5.103.27",
+                &managed,
+            ),
+            Some("5.103.27|foreign-registry-404|packument|managed".to_string())
+        );
+        // A newer published version resets the bound (different `latest|` prefix).
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                &e404,
+                None,
+                false,
+                "5.103.28",
+                &base,
+            ),
+            Some("5.103.28|foreign-registry-404|packument".to_string())
+        );
+    }
+
+    #[test]
+    fn e404_signature_and_episode_key_are_produced_by_the_same_helper() {
+        // For every E404 shape the Sentry signature and the repeat-guard key must
+        // name the SAME origin and resource — both flow through `e404_discriminator`,
+        // so they can never disagree.
+        for e404 in [
+            foreign_e404_stderr("npm error"),
+            foreign_e404_stderr("npm err!"),
+            npmjs_e404_stderr("npm error"),
+            "npm error code E404\nnpm error 404 Not Found".to_string(),
+        ] {
+            let kind = classify_install_failure_with_environment(
+                Some(1),
+                &e404,
+                None,
+                false,
+                &InstallEnvironment::default(),
+            );
+            let signature = install_failure_signature(kind, &e404, None);
+            let key = install_failure_episode_key_with_environment(
+                Some(1),
+                &e404,
+                None,
+                false,
+                "5.103.27",
+                &InstallEnvironment::default(),
+            )
+            .expect("every E404 mints an episode key");
+            let (origin, resource) = e404_discriminator(&e404);
+            assert!(
+                signature.contains(resource.tag_value()) && key.contains(resource.tag_value()),
+                "resource disagrees between group and key: sig={signature} key={key}"
+            );
+            assert!(
+                signature.contains(origin.tag_value()) && key.contains(origin.tag_value()),
+                "origin disagrees between group and key: sig={signature} key={key}"
+            );
+        }
+    }
+
+    #[test]
+    fn target_version_and_spec_kind_are_never_grouping_components() {
+        // Pinning the target version must not move an event between Sentry issues:
+        // neither the signature nor the repeat-guard key may read it. Two envs that
+        // differ ONLY in target_version/requested_spec_kind group identically.
+        let e404 = foreign_e404_stderr("npm error");
+        let base = InstallEnvironment {
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..Default::default()
+        };
+        let pinned = base.clone().with_pinned_target_version("5.103.27");
+        let kind_base = classify_install_failure_with_environment(
+            Some(1),
+            &e404,
+            None,
+            false,
+            &base,
+        );
+        let kind_pinned = classify_install_failure_with_environment(
+            Some(1),
+            &e404,
+            None,
+            false,
+            &pinned,
+        );
+        assert_eq!(kind_base, kind_pinned);
+        assert_eq!(
+            install_failure_signature_with_environment(kind_base, &e404, None, &base),
+            install_failure_signature_with_environment(kind_pinned, &e404, None, &pinned),
+            "target_version must never change the install-failure signature"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                &e404,
+                None,
+                false,
+                "5.103.27",
+                &base,
+            ),
+            install_failure_episode_key_with_environment(
+                Some(1),
+                &e404,
+                None,
+                false,
+                "5.103.27",
+                &pinned,
+            ),
+            "target_version must never change the repeat-guard key"
+        );
+        // Non-vacuous: the shared key is genuinely minted.
+        assert!(install_failure_episode_key_with_environment(
+            Some(1),
+            &e404,
+            None,
+            false,
+            "5.103.27",
+            &base,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn foreign_registry_detail_names_the_condition_without_leaking_host_or_stderr() {
+        let e404 = foreign_e404_stderr("npm error");
+        let detail = install_failure_detail_with_environment(
+            Some(1),
+            &e404,
+            None,
+            false,
+            &InstallEnvironment::default(),
+        );
+        assert!(
+            detail.contains("registry that does not carry hq"),
+            "detail must name the condition: {detail}"
+        );
+        assert!(
+            detail.contains("terminal"),
+            "detail must keep the copy-the-command escape hatch: {detail}"
+        );
+        for leak in [
+            "npm.internal.example.com",
+            "npm error",
+            "%2f",
+            "GET http",
+            "5.103.27",
+        ] {
+            assert!(!detail.contains(leak), "detail leaked {leak:?}: {detail}");
+        }
+    }
+
+    #[test]
+    fn with_pinned_target_version_records_the_exact_pinned_spec() {
+        let env = InstallEnvironment::default().with_pinned_target_version("5.103.27");
+        assert_eq!(env.target_version.as_deref(), Some("5.103.27"));
+        assert_eq!(env.requested_spec_kind, RequestedSpecKind::PinnedVersion);
     }
 }
