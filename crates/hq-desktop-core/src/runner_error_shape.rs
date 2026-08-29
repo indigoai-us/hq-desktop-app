@@ -83,7 +83,7 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// rather than silently collapsing to a flat `unknown`. The pin forces
 /// re-derivation on a coarse bump; the signature axis absorbs the fine drift in
 /// between.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.79";
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.95";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
