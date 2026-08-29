@@ -503,6 +503,7 @@ fn main() {
             commands::ai_tools::import_claude_desktop_connectors,
             commands::launch::launch_claude_code,
             commands::launch::launch_cli_in_terminal,
+            commands::launch::launch_codex_workspace,
             commands::launch::reveal_folder,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,

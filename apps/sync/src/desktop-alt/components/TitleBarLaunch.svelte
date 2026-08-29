@@ -81,14 +81,13 @@
     if (!folder || launching) return;
     launching = 'codex';
     try {
-      // CLI first: it is the only Codex launch that actually lands in the
-      // HQ folder. The desktop app has no folder deep link (its codex://
-      // scheme handles only settings/threads) and ignores a folder passed as
-      // an open-document — verified empirically; it opens on "Choose
-      // project". Desktop stays as the no-CLI fallback: an app without your
+      // `codex app <folder>` opens the DESKTOP app with the folder loaded —
+      // the only launch that does (verified: the bare codex:// deep link and
+      // folder-as-open-document both leave the app on "Choose project").
+      // Bare desktop open stays as the no-CLI fallback: an app without your
       // project beats nothing at all.
       if (tools?.codex_cli) {
-        await invoke('launch_cli_in_terminal', { path: folder, tool: 'codex' });
+        await invoke('launch_codex_workspace', { path: folder });
       } else {
         await invoke('launch_codex_desktop');
       }

@@ -176,6 +176,77 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+/// Open the Codex DESKTOP app with `path` loaded as the workspace, via
+/// `codex app <path>` in a login shell.
+///
+/// This is the only launch that lands the desktop app in a folder. Verified
+/// empirically before this existed: the app's `codex://` scheme has no folder
+/// route usable from outside (`codex://threads/new?cwd=…` is dispatched by
+/// the CLI but does not open the workspace when fired bare), and a folder
+/// passed as an open-document (`open -a Codex <dir>`) is ignored — the app
+/// sits on "Choose project". The CLI's `app` subcommand is the sanctioned
+/// bridge, and it even opens the app installer when the desktop app is
+/// missing.
+///
+/// Login shell (`$SHELL -lc`) for the same reason the detection probe uses
+/// one: GUI apps inherit launchd's minimal PATH, and codex commonly lives in
+/// a shell-profile-managed prefix (pnpm home, homebrew, ~/.local/bin).
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn launch_codex_workspace(path: String) -> Result<(), String> {
+    let target = expand_home_path(&path)?;
+    if !target.is_dir() {
+        return Err(format!(
+            "workspace folder does not exist: {}",
+            target.display()
+        ));
+    }
+    let escaped = target.to_string_lossy().replace('\'', "'\\''");
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+    let output = Command::new(shell)
+        .args(["-lc", &format!("codex app '{escaped}'")])
+        .output()
+        .map_err(|e| format!("failed to run codex app: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "codex app failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Windows counterpart: `cmd /C codex app <path>` through the extended
+/// search path the other CLI probes use.
+#[cfg(windows)]
+#[tauri::command]
+pub fn launch_codex_workspace(path: String) -> Result<(), String> {
+    let target = expand_home_path(&path)?;
+    if !target.is_dir() {
+        return Err(format!(
+            "workspace folder does not exist: {}",
+            target.display()
+        ));
+    }
+    let comspec = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+    let output = Command::new(comspec)
+        .args(["/C", "codex", "app", &target.to_string_lossy()])
+        .env("PATH", crate::commands::install_deps::extended_search_path())
+        .output()
+        .map_err(|e| format!("failed to run codex app: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "codex app failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
 /// Open a new Terminal window at `path` and auto-run `claude`.
 #[cfg(not(windows))]
 #[tauri::command]
