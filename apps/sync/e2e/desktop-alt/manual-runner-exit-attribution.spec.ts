@@ -517,3 +517,150 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     expect(coreSource).toContain('Self::Auth => "identity"');
   });
 });
+
+describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-DESKTOP-5M)', () => {
+  it('declares the full six-sentinel vocabulary against hq-cloud’s emitter set', () => {
+    // hq-cloud’s runner emits six error-event `path` sentinels; the desktop knew
+    // only the first two. All six are now named constants + a closed RunnerErrorSite
+    // enum, so an unknown sentinel is no longer misrouted through the per-file arm.
+    for (const sentinel of ['(company)', '(discovery)', '(local-state)', '(runner)', '(scope)', '(auth)']) {
+      expect(shapeSource).toContain(`= "${sentinel}";`);
+    }
+    expect(shapeSource).toContain('pub enum RunnerErrorSite');
+    expect(shapeSource).toContain('pub fn classify_runner_error_site(');
+    // The site tokens (as_str) are underscore-normalised, never the raw sentinel. The
+    // (auth) site is spelled `identity`, never `auth`, so Sentry's @password:filter
+    // cannot eat the tag (the same reason the class breadcrumb uses `identity`).
+    for (const token of ['"company"', '"discovery"', '"local_state"', '"runner"', '"scope"', '"identity"', '"file"']) {
+      expect(shapeSource).toContain(token);
+    }
+    // No site token carries a Sentry denylist substring, or its attribution would be
+    // silently scrubbed in production — the failure this whole change fights.
+    const siteTokens = sliceBetween(
+      shapeSource,
+      'Self::Company => "company",',
+      'Self::File => "file",',
+      'RunnerErrorSite tokens',
+    );
+    for (const denied of DENYLIST) {
+      expect(siteTokens).not.toMatch(new RegExp(`"[^"]*${denied}[^"]*"`));
+    }
+    // The enum→sentinel map is EXHAUSTIVE with no wildcard arm, so a future site is
+    // a compile error until wired — the discipline class_for_named_cause established.
+    expect(shapeSource).toMatch(/fn sentinel\(self\)[\s\S]*?Self::File => None,/);
+  });
+
+  it('routes each sentinel away from the per-file arm and adds the site rollup', () => {
+    // record_error switches on the site: only File feeds the path-root rollup; every
+    // sentinel is counted by the site rollup, and a (runner) record’s embedded stack
+    // is shaped. No sentinel is fed to classify_runner_path_root any more.
+    const recordError = sliceBetween(
+      coreSource,
+      'pub fn record_error(',
+      'pub fn runner_error_company_count(',
+      'record_error',
+    );
+    expect(recordError).toContain('classify_runner_error_site(&err.path)');
+    expect(recordError).toContain('RunnerErrorSite::File => self.runner_error_path_roots.record(&err.path)');
+    expect(recordError).toContain('RunnerErrorSite::Runner => self.record_runner_embedded_stack(&err.message)');
+    expect(recordError).toContain('self.runner_error_sites.record(&err.path)');
+    // The scope split keeps its company/file prefix and appends per-site segments.
+    const scope = sliceBetween(
+      coreSource,
+      'pub fn runner_error_scope(',
+      'fn record_runner_embedded_stack(',
+      'runner_error_scope',
+    );
+    expect(scope).toContain('format!("company:{company},file:{file}")');
+    for (const label of ['"discovery"', '"local_state"', '"runner"', '"scope"', '"identity"']) {
+      expect(scope).toContain(label);
+    }
+    // The site rollup owns a fingerprint token (enum as_str or the "none" sentinel).
+    expect(shapeSource).toContain('impl RunnerErrorSiteRollup');
+    expect(shapeSource).toMatch(/pub fn fingerprint_token\(&self\)[\s\S]*?dominant/);
+  });
+
+  it('fixes the leading-identity gate to trim one trailing colon ONLY for real err.stacks', () => {
+    // The exit-1 gap: an err.stack first line `<Name>: <msg>` carries a trailing
+    // colon the describeError rendering does not; trimming one restores the signature.
+    const identity = sliceBetween(
+      shapeSource,
+      'fn leading_error_identity(',
+      'pub fn runner_error_cause_signature(',
+      'leading_error_identity',
+    );
+    expect(identity).toContain("first.strip_suffix(':').unwrap_or(first)");
+    // The trim is GATED on the message actually being a stack (a `    at …` frame
+    // line), so colon-terminated free prose (`AcmeCorp: …`) is never signed — the
+    // privacy gate the helper's docstring protects, since it runs for every message.
+    expect(identity).toContain('message_has_stack_frame(message)');
+    expect(shapeSource).toContain('fn message_has_stack_frame(');
+    // Every other rule is preserved: the literal Error, the uppercase-initial gate,
+    // the all-alphanumeric-rest gate, and the multi-hump requirement all remain.
+    expect(identity).toContain('if first == "Error"');
+    expect(identity).toContain('is_ascii_uppercase()');
+    expect(identity).toContain('has_inner_upper');
+  });
+
+  it('emits the site tag and the sixth fingerprint element at the manual seam', () => {
+    const telemetryContext = sliceBetween(
+      syncSource,
+      'fn runner_exit_telemetry_context(',
+      'fn capture_runner_exit_error(',
+      'runner_exit_telemetry_context',
+    );
+    expect(telemetryContext).toContain('totals.runner_error_sites.tag_value()');
+    expect(telemetryContext).toContain('"runner_error_sites"');
+    // The sixth fingerprint element is the dominant site token, appended after cause.
+    expect(syncSource).toContain('let error_site = totals.runner_error_sites.fingerprint_token();');
+    const manualFp = sliceBetween(
+      syncSource,
+      'let error_site = totals.runner_error_sites.fingerprint_token();',
+      '];',
+      'manual runner-termination fingerprint',
+    );
+    expect(manualFp).toContain('error_cause,');
+    expect(manualFp).toContain('error_site,');
+  });
+
+  it('emits the site tag and the sixth fingerprint element at the watcher seam, enum-validated', () => {
+    const captureContext = sliceBetween(
+      daemonSource,
+      'fn watcher_exit_capture_context(',
+      'saw_alertable_error: totals.saw_alertable_error,',
+      'watcher_exit_capture_context',
+    );
+    expect(captureContext).toContain('runner_error_site: totals.runner_error_sites.fingerprint_token()');
+    expect(captureContext).toContain('runner_error_sites: totals.runner_error_sites.tag_value()');
+    // The watcher validator is DERIVED from RunnerErrorSite::ALL (not a hand list),
+    // exactly the drift class PR #544 closed for the class/cause validators.
+    const siteValidator = sliceBetween(
+      daemonSource,
+      "fn safe_runner_error_site_fingerprint_token(candidate: &'static str) -> &'static str {",
+      '}',
+      'site validator',
+    );
+    expect(siteValidator).toContain('RunnerErrorSite::ALL');
+    expect(siteValidator).toContain('.as_str() == candidate');
+    expect(daemonSource).toContain(
+      'let runner_error_site = safe_runner_error_site_fingerprint_token(context.runner_error_site);',
+    );
+    const watcherFp = sliceBetween(
+      daemonSource,
+      'let runner_error_site = safe_runner_error_site_fingerprint_token(context.runner_error_site);',
+      '];',
+      'watcher runner-termination fingerprint',
+    );
+    expect(watcherFp).toContain('runner_error_cause,');
+    expect(watcherFp).toContain('runner_error_site,');
+    // The tag is pushed on the watcher route too, from the same shared rollup.
+    expect(daemonSource).toContain('tags.push(("runner_error_sites", sites.clone()))');
+  });
+
+  it('guards the site axis at egress (hq-telemetry)', () => {
+    // A `site:count` rollup over the closed vocabulary; an off-vocabulary token or
+    // the raw sentinel string degrades to [Filtered] instead of shipping a byte.
+    expect(telemetrySource).toContain('"runner_error_sites" => Some(is_closed_vocab_count_rollup(');
+    expect(telemetrySource).toContain('RUNNER_ERROR_SITE_TOKENS');
+  });
+});
