@@ -1723,6 +1723,38 @@ mod tests {
     }
 
     #[test]
+    fn cause_rollup_fingerprint_tokens_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::{RunnerErrorCause, RunnerErrorCauseRollup};
+        // The r3 fingerprint addition: RunnerErrorCauseRollup::fingerprint_token is
+        // a NEW producer of a Sentry group token. It returns RunnerErrorCause::as_str
+        // of the dominant cause, so the full domain of tokens it can emit is exactly
+        // RunnerErrorCause::ALL's as_str set — every one of which the independent
+        // runner_error_causes egress mirror must already accept. Pinning it here
+        // fails a future cause that slips the mirror instead of shipping a raw byte.
+        let allowed: std::collections::HashSet<&str> =
+            RUNNER_ERROR_CAUSE_TOKENS.iter().copied().collect();
+        for cause in RunnerErrorCause::ALL {
+            let token = cause.as_str();
+            assert!(
+                allowed.contains(token),
+                "cause fingerprint token {token:?} is missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_error_causes", &format!("{token}:3")),
+                Some(true),
+                "cause fingerprint token {token:?} must survive egress"
+            );
+        }
+        // The producer path: a concrete rollup's dominant token is an allow-listed
+        // value, and the empty-rollup sentinel is the fixed literal "none".
+        let mut rollup = RunnerErrorCauseRollup::default();
+        rollup.record("VaultPermissionDeniedError permission denied for the company prefix");
+        assert_eq!(rollup.fingerprint_token(), "vault_permission_denied");
+        assert!(allowed.contains(rollup.fingerprint_token()));
+        assert_eq!(RunnerErrorCauseRollup::default().fingerprint_token(), "none");
+    }
+
+    #[test]
     fn runner_error_rollups_survive_before_send_and_malformed_is_filtered() {
         use hq_desktop_core::runner_error_shape::{
             RunnerErrorCause, RunnerErrorHttpStatus, RunnerErrorShape, RunnerPathRoot,
