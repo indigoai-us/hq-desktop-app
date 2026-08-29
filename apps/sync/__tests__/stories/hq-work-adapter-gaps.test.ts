@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
@@ -156,6 +156,86 @@ describe('Sync PlatformAdapter mapped HQ Work actions', () => {
         args: { prefs: { untouched: true, widgetEnabled: true } },
       },
       { command: 'apply_widget_settings', args: undefined },
+    ]);
+  });
+
+  it('serializes concurrent dock and widget preference writes through the shared queue', async () => {
+    let persisted = { untouched: true, dockIcon: true, widgetEnabled: false };
+    let saveCount = 0;
+    let inFlightSaves = 0;
+    let maxInFlightSaves = 0;
+    let releaseFirstSave = () => {};
+    const firstSaveGate = new Promise<void>((resolve) => {
+      releaseFirstSave = resolve;
+    });
+    const savedSnapshots: Record<string, unknown>[] = [];
+    const calls: Invocation[] = [];
+    const invoke: SyncInvokeFn = async (command, args) => {
+      calls.push({ command, args });
+      if (command === 'get_settings') return { ...persisted };
+      if (command === 'save_settings') {
+        saveCount += 1;
+        inFlightSaves += 1;
+        maxInFlightSaves = Math.max(maxInFlightSaves, inFlightSaves);
+        const prefs = { ...((args?.prefs ?? {}) as Record<string, unknown>) };
+        savedSnapshots.push(prefs);
+        if (saveCount === 1) await firstSaveGate;
+        inFlightSaves -= 1;
+        persisted = prefs;
+        return undefined;
+      }
+      if (command === 'apply_dock_icon' || command === 'apply_widget_settings') {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    };
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    const dock = adapter.appShell.setDockVisible(false);
+    await vi.waitFor(() => expect(savedSnapshots).toHaveLength(1));
+    const widget = adapter.appShell.setDesktopWidget(true);
+
+    await vi.waitFor(() => expect(maxInFlightSaves).toBe(1));
+    expect(savedSnapshots).toHaveLength(1);
+    releaseFirstSave();
+
+    expectOk(await dock);
+    expectOk(await widget);
+    expect(persisted).toEqual({
+      untouched: true,
+      dockIcon: false,
+      widgetEnabled: true,
+    });
+    expect(savedSnapshots[1]).toEqual({
+      untouched: true,
+      dockIcon: false,
+      widgetEnabled: true,
+    });
+    expect(calls.filter(({ command }) => command.startsWith('apply_'))).toEqual([
+      { command: 'apply_dock_icon', args: undefined },
+      { command: 'apply_widget_settings', args: undefined },
+    ]);
+  });
+
+  it('returns an invoke failure without applying the stale app-shell preference', async () => {
+    const calls: Invocation[] = [];
+    const invoke: SyncInvokeFn = async (command, args) => {
+      calls.push({ command, args });
+      if (command === 'get_settings') return { dockIcon: true };
+      if (command === 'save_settings') throw new Error('disk unavailable');
+      throw new Error(`Unexpected command: ${command}`);
+    };
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    await expect(adapter.appShell.setDockVisible(false)).resolves.toMatchObject({
+      ok: false,
+      reason: 'error',
+      code: 'invoke',
+      message: 'disk unavailable',
+    });
+    expect(calls).toEqual([
+      { command: 'get_settings', args: undefined },
+      { command: 'save_settings', args: { prefs: { dockIcon: false } } },
     ]);
   });
 });

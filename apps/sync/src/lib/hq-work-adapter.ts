@@ -24,6 +24,7 @@ import {
   validateFetchReplyThread,
   validateSendReply,
 } from '@hq/platform';
+import { updateSettings, type SettingsInvoker } from './settings-mutations';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -206,21 +207,25 @@ export function createSyncPlatformAdapter(
   }
 
   /**
-   * The native apply commands re-read menubar.json, so persist the requested
-   * value before invoking them. `save_settings` merges typed preferences over
-   * the existing file; reading first also preserves the other typed fields.
+   * Prototype settings handlers fire these writes without awaiting them, so
+   * persist through the process-wide queue to preserve concurrent patches from
+   * every settings surface. The native apply commands re-read menubar.json, so
+   * invoke them only after the requested value is persisted.
    */
   async function persistThenApplyAppShellPreference(
     key: 'dockIcon' | 'widgetEnabled',
     value: boolean,
     applyCommand: 'apply_dock_icon' | 'apply_widget_settings',
   ): AdapterPromise<void> {
-    const current = await call<Json>('get_settings');
-    if (!current.ok) return current;
-    const saved = await call<void>('save_settings', {
-      prefs: { ...current.value, [key]: value },
-    });
-    if (!saved.ok) return saved;
+    const settingsInvoker: SettingsInvoker = <T>(
+      command: string,
+      args?: Record<string, unknown>,
+    ) => invokeFn(command, args) as Promise<T>;
+    try {
+      await updateSettings({ [key]: value }, settingsInvoker);
+    } catch (err) {
+      return invokeError(err);
+    }
     return call<void>(applyCommand);
   }
 
