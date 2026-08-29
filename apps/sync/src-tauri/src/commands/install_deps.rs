@@ -4973,8 +4973,42 @@ fn emit_install_handle_started<R: tauri::Runtime>(app: &AppHandle<R>, handle: &s
     );
 }
 
+/// Parse the major from `node --version` output (`v14.21.3` → `14`).
+/// Unparseable strings return `None` so we treat them as not meeting the floor
+/// rather than skipping a managed-Node install.
+fn parse_dep_node_major(version_output: &str) -> Option<u32> {
+    let s = version_output.trim();
+    let s = s.strip_prefix('v').unwrap_or(s);
+    s.split('.').next()?.parse::<u32>().ok()
+}
+
+fn node_version_meets_floor(version: Option<&str>) -> bool {
+    version
+        .and_then(parse_dep_node_major)
+        .is_some_and(|major| major >= hq_desktop_core::hq_cli_update::MIN_NODE_MAJOR)
+}
+
+/// Whether this dep can be skipped because a usable copy is already on PATH.
+///
+/// Node is special: presence is not enough. HQ's sync runner needs Node 20+,
+/// so a machine on Node 14 (or any unparseable version) still gets the
+/// managed toolchain instead of being waved through as "installed".
+fn dep_status_satisfies(dep: &DepDef, status: &DepStatus) -> bool {
+    if !status.installed {
+        return false;
+    }
+    if dep.id == "node" {
+        return node_version_meets_floor(status.version.as_deref());
+    }
+    true
+}
+
+fn dep_is_satisfied(dep: &DepDef) -> bool {
+    dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
-    if check_dep_impl(dep.binary, None).installed {
+    if dep_is_satisfied(dep) {
         return Ok(());
     }
 
@@ -4991,7 +5025,7 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    if check_dep_impl(dep.binary, None).installed {
+    if dep_is_satisfied(dep) {
         return Ok(());
     }
 
@@ -5135,6 +5169,70 @@ mod install_deps_planner_tests {
             status: DepInstallStatus::Failed,
             error: Some("boom".to_string()),
         }
+    }
+
+    #[test]
+    #[test]
+    fn parse_dep_node_major_reads_versions() {
+        assert_eq!(parse_dep_node_major("v14.21.3"), Some(14));
+        assert_eq!(parse_dep_node_major("v20.11.1\n"), Some(20));
+        assert_eq!(parse_dep_node_major("22.17.0"), Some(22));
+        assert_eq!(parse_dep_node_major(""), None);
+        assert_eq!(parse_dep_node_major("not-a-version"), None);
+    }
+
+    #[test]
+    fn an_old_system_node_does_not_satisfy_the_node_dep() {
+        // REGRESSION: the installer used to treat any `node` as installed, so a
+        // machine on Node 14 skipped HQ's managed Node 22 and later failed
+        // sync with "needs Node 20 or newer".
+        let node = dependency_defs()
+            .iter()
+            .find(|dep| dep.id == "node")
+            .unwrap();
+        let git = dependency_defs()
+            .iter()
+            .find(|dep| dep.id == "git")
+            .unwrap();
+        let old = DepStatus {
+            installed: true,
+            version: Some("v14.21.3".into()),
+            path: None,
+        };
+        let modern = DepStatus {
+            installed: true,
+            version: Some("v22.17.0".into()),
+            path: None,
+        };
+        let floor = DepStatus {
+            installed: true,
+            version: Some("v20.0.0".into()),
+            path: None,
+        };
+        let missing = DepStatus {
+            installed: false,
+            version: None,
+            path: None,
+        };
+        let unparseable = DepStatus {
+            installed: true,
+            version: Some("mystery".into()),
+            path: None,
+        };
+        assert!(
+            !dep_status_satisfies(node, &old),
+            "Node 14 must not skip the managed install"
+        );
+        assert!(dep_status_satisfies(node, &modern));
+        assert!(dep_status_satisfies(node, &floor));
+        assert!(!dep_status_satisfies(node, &missing));
+        assert!(
+            !dep_status_satisfies(node, &unparseable),
+            "an unreadable version must not skip the managed install"
+        );
+        // Non-node deps still only care about presence.
+        assert!(dep_status_satisfies(git, &old));
+        assert!(!dep_status_satisfies(git, &missing));
     }
 
     #[test]

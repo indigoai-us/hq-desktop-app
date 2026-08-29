@@ -902,10 +902,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     let node_preflight = crate::commands::sync::preflight_node_outcome();
     let watcher_node_major = node_preflight.node_major;
     if let Some(bail) = node_preflight.bail {
-        if bail.failure == PreflightFailure::NodeUnprovisioned {
+        if matches!(
+            bail.failure,
+            PreflightFailure::NodeUnprovisioned | PreflightFailure::NodeTooOld,
+        ) {
             // This command is synchronous, so do not hold its singleton guard
             // across a network install. The supervisor will retry on its next
-            // cadence after the shared repair slot completes.
+            // cadence after the shared repair slot completes. TooOld is the
+            // same repair as Unprovisioned: HQ never installed its runtime,
+            // and the machine's Node (if any) cannot run the sync engine.
             release_daemon_guard(daemon_generation, guard_generation);
             set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
             let provisioning_app = app.clone();
@@ -3936,13 +3941,13 @@ enum RunnerPreflightCapturePolicy {
 
 /// Which preflight refusals are worth a central alert.
 ///
-/// A machine with no Node, or an old Node HQ never installed, is a setup gap
-/// the user fixes; alerting on it flooded #hq-alerts, and with auto-sync
-/// retrying every 30 seconds that silence (`0cfae9cc`) has to stay. But it was
-/// applied to the whole preflight, which also silenced the case where HQ's
-/// *own* Node runtime disappeared. That one is an HQ defect, it is invisible to
-/// the user (the daemon just never completes a cycle), and it ran for days with
-/// nothing paging — so it alerts again, rate-limited exactly like a crash-loop.
+/// A leftover NodeTooOld / RunnerUnresolvable report is still a user-environment
+/// gap and must stay local-only: auto-sync retries every 30 seconds, and
+/// alerting on it flooded #hq-alerts (`0cfae9cc`). The daemon now *repairs*
+/// NodeTooOld the same way as NodeUnprovisioned (managed-Node install), so the
+/// initial TooOld bail never reaches this policy — only a path that still
+/// reports it without provisioning would. HQ-owned states (managed runtime
+/// disappeared, or a first-time install HQ failed) stay rate-limited captures.
 fn runner_preflight_capture_policy(failure: PreflightFailure) -> RunnerPreflightCapturePolicy {
     match failure {
         PreflightFailure::RunnerUnresolvable | PreflightFailure::NodeTooOld => {

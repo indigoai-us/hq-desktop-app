@@ -76,7 +76,9 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
 
   it('never holds the daemon singleton across a network install', () => {
     const arm = daemonRs.slice(
-      daemonRs.indexOf('if bail.failure == PreflightFailure::NodeUnprovisioned'),
+      daemonRs.indexOf(
+        'PreflightFailure::NodeUnprovisioned | PreflightFailure::NodeTooOld',
+      ),
       daemonRs.indexOf('report_preflight_bail(bail.failure, &bail.message);'),
     );
     expect(arm).toBeTruthy();
@@ -163,6 +165,19 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
     // The Rust regression proof of the deferral contract lives in this test.
     expect(daemonRs).toContain(
       'fn a_cooldown_deferral_is_not_a_preflight_failure_and_does_not_advance_the_streak',
+    );
+  });
+
+  it('self-provisions when the only Node is too old, not just when Node is missing', () => {
+    // Screenshot regression: Node 14 counted as "installed", so the installer
+    // skipped HQ's Node 22 and Sync bailed with "needs Node 20 or newer".
+    // TooOld is now the same repair as Unprovisioned.
+    expect(syncRs).toContain('too old — provisioning HQ managed Node');
+    expect(syncRs).toContain('fn too_old_preflight_asks_hq_to_install_not_the_user');
+    expect(syncRs).toContain('fn node_too_old_provisioning_message');
+    expect(installDepsRs).toContain('fn an_old_system_node_does_not_satisfy_the_node_dep');
+    expect(daemonRs).toContain(
+      'PreflightFailure::NodeUnprovisioned | PreflightFailure::NodeTooOld',
     );
   });
 
