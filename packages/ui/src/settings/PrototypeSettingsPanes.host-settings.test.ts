@@ -223,6 +223,41 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     expect(dock?.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("keeps the third Dock toggle and its dirty state when the first write fails", async () => {
+    const nativeSettings = deferred<ReturnType<typeof ok<Record<string, unknown>>>>();
+    const dockWrite = deferred<ReturnType<typeof failure>>();
+    const getSettings = vi.fn(() => nativeSettings.promise);
+    let dockWriteCount = 0;
+    const { adapter, setDockVisible } = trayAdapter(getSettings, {
+      setDockVisible: () => {
+        dockWriteCount += 1;
+        return dockWriteCount === 1 ? dockWrite.promise : Promise.resolve(ok(undefined));
+      },
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+
+    const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
+    dock?.click();
+    dock?.click();
+    dock?.click();
+    await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledTimes(3));
+    dockWrite.resolve(failure("save-settings"));
+    await dockWrite.promise;
+    await tick();
+
+    expect(dock?.getAttribute("aria-checked")).toBe("false");
+    nativeSettings.resolve(ok({ dockIcon: true }));
+    await nativeSettings.promise;
+    await tick();
+    expect(dock?.getAttribute("aria-checked")).toBe("false");
+  });
+
   it("reverts a failed desktop widget write", async () => {
     const getSettings = vi.fn(async () => ok({ widgetEnabled: true }));
     const { adapter, setDesktopWidget } = trayAdapter(getSettings, {
@@ -249,5 +284,84 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
         host.querySelector('[aria-label="Desktop widget"]')?.getAttribute("aria-checked"),
       ).toBe("true");
     });
+  });
+
+  it("keeps the third desktop widget toggle and its dirty state when the first write fails", async () => {
+    const nativeSettings = deferred<ReturnType<typeof ok<Record<string, unknown>>>>();
+    const widgetWrite = deferred<ReturnType<typeof failure>>();
+    const getSettings = vi.fn(() => nativeSettings.promise);
+    let widgetWriteCount = 0;
+    const { adapter, setDesktopWidget } = trayAdapter(getSettings, {
+      setDesktopWidget: () => {
+        widgetWriteCount += 1;
+        return widgetWriteCount === 1
+          ? widgetWrite.promise
+          : Promise.resolve(ok(undefined));
+      },
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+
+    const widget = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Desktop widget"]',
+    );
+    widget?.click();
+    widget?.click();
+    widget?.click();
+    await vi.waitFor(() => expect(setDesktopWidget).toHaveBeenCalledTimes(3));
+    widgetWrite.resolve(failure("save-settings"));
+    await widgetWrite.promise;
+    await tick();
+
+    expect(widget?.getAttribute("aria-checked")).toBe("false");
+    nativeSettings.resolve(ok({ widgetEnabled: true }));
+    await nativeSettings.promise;
+    await tick();
+    expect(widget?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("reconciles failed Dock and desktop widget writes independently", async () => {
+    const getSettings = vi.fn(async () =>
+      ok({ dockIcon: true, widgetEnabled: true }),
+    );
+    const dockWrite = deferred<ReturnType<typeof failure>>();
+    const widgetWrite = deferred<ReturnType<typeof failure>>();
+    const { adapter, setDockVisible, setDesktopWidget } = trayAdapter(
+      getSettings,
+      {
+        setDockVisible: () => dockWrite.promise,
+        setDesktopWidget: () => widgetWrite.promise,
+      },
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+
+    const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
+    const widget = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Desktop widget"]',
+    );
+    dock?.click();
+    widget?.click();
+    await vi.waitFor(() => {
+      expect(setDockVisible).toHaveBeenCalledWith(false);
+      expect(setDesktopWidget).toHaveBeenCalledWith(false);
+    });
+    dockWrite.resolve(failure("save-settings"));
+    widgetWrite.resolve(failure("save-settings"));
+    await Promise.all([dockWrite.promise, widgetWrite.promise]);
+    await tick();
+
+    expect(dock?.getAttribute("aria-checked")).toBe("true");
+    expect(widget?.getAttribute("aria-checked")).toBe("true");
   });
 });

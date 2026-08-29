@@ -91,6 +91,8 @@
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
   let dockVisibilityChanged = false;
   let desktopWidgetChanged = false;
+  let dockWriteSeq = 0;
+  let desktopWidgetWriteSeq = 0;
 
   const calendarConnectPending = $derived(meetingsStore.connectPending);
 
@@ -155,12 +157,14 @@
   async function toggleDock(): Promise<void> {
     const previous = prefs.showInDock;
     const next = !previous;
+    const writeSeq = ++dockWriteSeq;
     dockVisibilityChanged = true;
     patch({ showInDock: next });
     // Apply both directions — hiding the Dock icon must take effect too.
     if (!adapter) return;
     const result = await adapter.appShell.setDockVisible(next);
-    if (!result.ok && result.reason === "error" && prefs.showInDock === next) {
+    if (writeSeq !== dockWriteSeq) return;
+    if (!result.ok && result.reason === "error") {
       dockVisibilityChanged = false;
       patch({ showInDock: previous });
     }
@@ -169,15 +173,13 @@
   async function toggleDesktopWidget(): Promise<void> {
     const previous = prefs.desktopWidget;
     const next = !previous;
+    const writeSeq = ++desktopWidgetWriteSeq;
     desktopWidgetChanged = true;
     patch({ desktopWidget: next });
     if (!adapter) return;
     const result = await adapter.appShell.setDesktopWidget(next);
-    if (
-      !result.ok &&
-      result.reason === "error" &&
-      prefs.desktopWidget === next
-    ) {
+    if (writeSeq !== desktopWidgetWriteSeq) return;
+    if (!result.ok && result.reason === "error") {
       desktopWidgetChanged = false;
       patch({ desktopWidget: previous });
     }
