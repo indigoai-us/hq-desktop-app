@@ -844,10 +844,23 @@ fn is_retryable_swap_error(err: &std::io::Error) -> bool {
     if err.kind() == std::io::ErrorKind::PermissionDenied {
         return true;
     }
-    matches!(
-        err.raw_os_error(),
-        Some(5) | Some(32) | Some(33) | Some(145)
-    )
+    // These bare numbers are Windows sharing/lock violations. On macOS/Linux the
+    // SAME numbers mean unrelated, usually terminal errors (e.g. unix EIO=5,
+    // EPIPE=32), and this helper is shared with the non-Windows managed-toolchain
+    // paths — so off Windows we must rely only on the portable ErrorKind checks
+    // above and never retry a raw code, or a terminal FS failure would burn the
+    // whole 15s budget before failing.
+    #[cfg(windows)]
+    {
+        matches!(
+            err.raw_os_error(),
+            Some(5) | Some(32) | Some(33) | Some(145)
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 /// A terminal swap-step failure carrying the evidence the single-shot version
@@ -937,6 +950,12 @@ fn describe_target_state(target: &Path) -> String {
 fn remove_non_directory_entry(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
+        // Preserve a retryable error (a held handle's sharing/access violation)
+        // so retry_swap_op can still retry it; only fall back to remove_dir when
+        // remove_file's failure is that the entry is a directory (a directory
+        // symlink / reparse point). Masking the retryable error behind a
+        // remove_dir NotADirectory would defeat the retry (Codex review).
+        Err(e) if is_retryable_swap_error(&e) => Err(e),
         Err(_) => std::fs::remove_dir(path),
     }
 }
@@ -1048,15 +1067,24 @@ fn atomic_replace_dir(staged: &Path, target: &Path) -> Result<(), String> {
             } else {
                 "file"
             };
-            retry_swap_op(SwapPhase::Backup, || remove_non_directory_entry(target)).map_err(
-                |se| {
-                    format!(
-                        "remove stray non-directory {} failed: {}",
-                        target.display(),
-                        se.describe(state)
-                    )
-                },
-            )?;
+            // Remove by entry type: a plain FILE goes through remove_file so a
+            // held handle's retryable sharing/access error survives for
+            // retry_swap_op, instead of being masked by a remove_dir fallback.
+            let is_plain_file = meta.is_file();
+            retry_swap_op(SwapPhase::Backup, || {
+                if is_plain_file {
+                    std::fs::remove_file(target)
+                } else {
+                    remove_non_directory_entry(target)
+                }
+            })
+            .map_err(|se| {
+                format!(
+                    "remove stray non-directory {} failed: {}",
+                    target.display(),
+                    se.describe(state)
+                )
+            })?;
             return retry_swap_op(SwapPhase::Activate, || std::fs::rename(staged, target)).map_err(
                 |se| {
                     format!(
@@ -1163,7 +1191,14 @@ where
 /// repair slot) is never removed.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn is_stale_toolchain_sibling(name: &str, age: Option<Duration>, min_age: Duration) -> bool {
-    if !(name.starts_with(".node.bak.") || name.starts_with(".node-install-")) {
+    // Only staging trees are aged by mtime. A fresh extraction has a recent
+    // mtime, so a concurrent install's in-flight `.node-install-*` is never
+    // swept, and a stranded staging tree is never a restore source. A
+    // `.node.bak.*` backup is deliberately NOT swept: a rename preserves the OLD
+    // directory's mtime, so a concurrent swap's actively-used rollback backup
+    // would be misjudged as stale and deleted out from under its restore, losing
+    // the previous runtime (Codex review, PR #548).
+    if !name.starts_with(".node-install-") {
         return false;
     }
     matches!(age, Some(a) if a >= min_age)
@@ -4018,7 +4053,19 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
         return Ok(format!("Managed Node already present at {node_dir:?}"));
     }
 
-    activate_staged_dir(&staged_node_dir, &node_dir)?;
+    if let Err(e) = activate_staged_dir(&staged_node_dir, &node_dir) {
+        // Lost an activation race: another HQ process may have activated a valid
+        // managed Node into the target between our probe and our swap, so our
+        // rename collided with a now-present destination. Re-check with the SAME
+        // version validation before reporting failure and paging — a correctly
+        // versioned live Node is success, not a repair failure (Codex review).
+        if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+            append_user_path(&node_dir)?;
+            append_user_path(&managed_npm_bin())?;
+            return Ok(format!("Managed Node already present at {node_dir:?}"));
+        }
+        return Err(e);
+    }
 
     append_user_path(&node_dir)?;
     append_user_path(&managed_npm_bin())?;
@@ -6136,21 +6183,33 @@ mod atomic_swap_tests {
     fn is_retryable_swap_error_classifies_real_io_errors() {
         // Built from REAL std::io::Error values, never a mock error type, so the
         // predicate is exercised against the type it will actually see.
-        for code in [5, 32, 33, 145] {
-            assert!(
-                is_retryable_swap_error(&Error::from_raw_os_error(code)),
-                "windows code {code} (ACCESS_DENIED/SHARING/LOCK/DIR_NOT_EMPTY) is retryable"
-            );
-        }
-        // unix EACCES surfaces as PermissionDenied.
+        //
+        // Portable signals hold on every platform: PermissionDenied (unix EACCES)
+        // is retryable, NotFound is terminal.
         assert!(is_retryable_swap_error(&Error::from(
             ErrorKind::PermissionDenied
         )));
-        // NotFound is terminal — the source is simply gone.
         assert!(!is_retryable_swap_error(&Error::from(ErrorKind::NotFound)));
         assert!(!is_retryable_swap_error(&Error::from_raw_os_error(2)));
-        // An unrelated OS code is not retryable.
         assert!(!is_retryable_swap_error(&Error::from_raw_os_error(13_579)));
+
+        // The bare sharing/lock codes are retryable ONLY on Windows; on other
+        // platforms those numbers mean unrelated, usually terminal errors (unix
+        // EIO=5, EPIPE=32) and must NOT be retried by the shared swap paths.
+        #[cfg(windows)]
+        for code in [5, 32, 33, 145] {
+            assert!(
+                is_retryable_swap_error(&Error::from_raw_os_error(code)),
+                "windows code {code} is retryable"
+            );
+        }
+        #[cfg(not(windows))]
+        for code in [5, 32, 33, 145] {
+            assert!(
+                !is_retryable_swap_error(&Error::from_raw_os_error(code)),
+                "off Windows, raw code {code} must not be a sharing/lock match"
+            );
+        }
     }
 
     #[test]
@@ -6173,7 +6232,9 @@ mod atomic_swap_tests {
             let n = calls.get() + 1;
             calls.set(n);
             if n < 3 {
-                Err(Error::from_raw_os_error(5))
+                // PermissionDenied is the portable retryable signal (raw codes
+                // are retryable only on Windows).
+                Err(Error::from(ErrorKind::PermissionDenied))
             } else {
                 Ok(())
             }
@@ -6204,12 +6265,22 @@ mod atomic_swap_tests {
 
     #[test]
     fn retry_swap_op_reports_attempts_phase_and_os_code_after_a_persistent_denial() {
-        let err =
-            retry_swap_op(SwapPhase::Restore, || Err(Error::from_raw_os_error(5))).unwrap_err();
+        // A retryable denial that ALSO carries a raw OS code, chosen per platform
+        // so it maps to PermissionDenied everywhere (unix EACCES=13, Windows
+        // ERROR_ACCESS_DENIED=5) — proving both the retry count and that the raw
+        // code is surfaced in the attribution.
+        #[cfg(windows)]
+        const DENIAL_CODE: i32 = 5;
+        #[cfg(not(windows))]
+        const DENIAL_CODE: i32 = 13;
+        let err = retry_swap_op(SwapPhase::Restore, || {
+            Err(Error::from_raw_os_error(DENIAL_CODE))
+        })
+        .unwrap_err();
         assert_eq!(err.attempts, SWAP_ATTEMPTS);
         let msg = err.describe("dir");
         assert!(msg.contains("phase=restore"), "{msg}");
-        assert!(msg.contains("os_error=5"), "{msg}");
+        assert!(msg.contains(&format!("os_error={DENIAL_CODE}")), "{msg}");
         assert!(
             msg.contains(&format!("attempts={SWAP_ATTEMPTS} of {SWAP_ATTEMPTS}")),
             "{msg}"
@@ -6233,24 +6304,27 @@ mod atomic_swap_tests {
     #[test]
     fn is_stale_toolchain_sibling_matches_only_aged_swap_debris() {
         let min = Duration::from_secs(900);
-        assert!(is_stale_toolchain_sibling(
-            ".node.bak.abc",
-            Some(Duration::from_secs(1000)),
-            min
-        ));
+        // An aged staging tree is swept.
         assert!(is_stale_toolchain_sibling(
             ".node-install-xyz",
             Some(Duration::from_secs(901)),
             min
         ));
-        // A fresh entry is a concurrent install's in-flight tree -> keep it.
+        // A backup is NEVER aged by mtime — a rename preserves the old dir's
+        // mtime, so an actively-used rollback backup could be misjudged as old.
+        assert!(!is_stale_toolchain_sibling(
+            ".node.bak.abc",
+            Some(Duration::from_secs(1000)),
+            min
+        ));
+        // A fresh staging tree is a concurrent install's in-flight tree -> keep.
         assert!(!is_stale_toolchain_sibling(
             ".node-install-live",
             Some(Duration::from_secs(1)),
             min
         ));
         // Undatable -> keep (never delete what we cannot age).
-        assert!(!is_stale_toolchain_sibling(".node.bak.abc", None, min));
+        assert!(!is_stale_toolchain_sibling(".node-install-x", None, min));
         // Non-debris names are never swept, at any age.
         assert!(!is_stale_toolchain_sibling(
             "node",
@@ -6526,8 +6600,9 @@ mod atomic_swap_unix_tests {
         // while a real toolchain dir is left alone.
         sweep_stale_toolchain_siblings(dir.path(), Duration::ZERO);
 
-        assert!(!bak.exists(), "a stale .node.bak.* is swept");
         assert!(!install.exists(), "a stale .node-install-* is swept");
+        // A backup is left alone — it could be a concurrent swap's live rollback.
+        assert!(bak.exists(), "a .node.bak.* backup is never swept");
         assert!(keep.exists(), "a real toolchain directory is kept");
     }
 }

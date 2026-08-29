@@ -83,7 +83,7 @@ describe('The managed-toolchain swap rides out a transient handle instead of dyi
     // which cleans up on terminal failure like every other error arm.
     expect(installDepsRs).not.toContain('atomic_replace_dir(&staged_node_dir, &node_dir)?');
     expect(installDepsRs).toContain('fn activate_staged_dir(');
-    expect(installDepsRs).toContain('activate_staged_dir(&staged_node_dir, &node_dir)?');
+    expect(installDepsRs).toContain('activate_staged_dir(&staged_node_dir, &node_dir)');
     // A best-effort, age-bounded sweep so repeated repairs cannot accumulate.
     expect(installDepsRs).toContain('fn sweep_stale_toolchain_siblings(');
     expect(installDepsRs).toContain('fn is_stale_toolchain_sibling(');
