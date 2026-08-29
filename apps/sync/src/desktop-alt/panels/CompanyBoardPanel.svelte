@@ -797,7 +797,7 @@
                 {/each}
               </div>
             {:else if inFlightProjects.length === 0}
-              <p class="empty-inline">Nothing in flight</p>
+              <p class="empty-inline">Nothing in flight — start a project in Claude Code or Codex and it appears here</p>
             {:else}
               <div class="work-list" data-testid="inflight-list">
                 {#each visibleInFlightProjects as project (projectIdentity(project))}
@@ -880,7 +880,7 @@
             {:else if objectives.length === 0}
               <div class="empty-inline" data-testid="empty-goals-state">
                 <span>No goals yet</span>
-                <p>Company goals will appear here after the next board sync.</p>
+                <p>Ask your agent to set goals in Claude Code or Codex — they sync here.</p>
               </div>
             {:else}
               <div class="goals-list">
