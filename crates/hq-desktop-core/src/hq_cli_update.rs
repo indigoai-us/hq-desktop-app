@@ -3417,21 +3417,57 @@ fn unexpected_e404_signature(detail: &str) -> String {
     format!("E404:{}:{}", origin.tag_value(), resource.tag_value())
 }
 
+/// Whether npm's 404 GET line names the requested `@indigoai-us/hq-cli`
+/// PACKUMENT document itself — not a tarball, a transitive dependency, or a
+/// deeper resource. A missing PACKUMENT for the exact package the updater asked
+/// for is strong evidence that the registry npm resolved through does not carry
+/// hq; a missing tarball or dependency on a foreign host, by contrast, can be a
+/// broken published release artifact that must stay loud at Error. Matches the
+/// percent-encoded scope form npm emits (`@indigoai-us%2fhq-cli`) and the
+/// unencoded fallback, case-insensitively. The parsed path is consumed only for
+/// this boolean and never reaches Sentry.
+fn npm_404_names_hq_cli_packument(detail: &str) -> bool {
+    let Some(url) = npm_404_get_url(detail) else {
+        return false;
+    };
+    let lower = url.to_ascii_lowercase();
+    let Some(after_scheme) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let Some(slash) = after_scheme.find('/') else {
+        return false;
+    };
+    let path = after_scheme[slash..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    path.ends_with("/@indigoai-us%2fhq-cli") || path.ends_with("/@indigoai-us/hq-cli")
+}
+
 /// Whether a failed npm install is the "this machine's npm resolves the
 /// `@indigoai-us` scope through a registry that does not carry hq-cli" condition:
-/// an E404 whose own 404 line names a non-npmjs host, with no lifecycle failure.
-/// A permanent LOCAL registry misconfiguration — a corporate mirror, an
-/// air-gapped proxy, or an auth-gated 403 masked as a 404 — that no updater code
-/// change can install through, so it is reported at Warning under its own
-/// attributed group.
+/// an E404 whose own 404 line names a non-npmjs host AND the requested
+/// `@indigoai-us/hq-cli` PACKUMENT, with no lifecycle failure. A permanent LOCAL
+/// registry misconfiguration — a corporate mirror, an air-gapped proxy, or an
+/// auth-gated 403 masked as a 404 — that no updater code change can install
+/// through, so it is reported at Warning under its own attributed group.
 ///
 /// Keyed on npm's OWN structured signals and disjoint from every other arm: no
 /// other classifier arm matches `code == E404` today, and the lifecycle
 /// exclusion keeps a third-party build failure whose stderr merely mentions 404
-/// on its own per-package lifecycle attribution.
+/// on its own per-package lifecycle attribution. The packument gate is
+/// deliberately narrow: a foreign-host 404 for a TARBALL or a transitive
+/// DEPENDENCY (rather than the hq-cli package document itself) is NOT proof the
+/// configured registry lacks hq — it can be a broken published artifact — so it
+/// stays `Unexpected` at Error under its own `E404:foreign:<resource>` signature.
 fn is_foreign_registry_package_missing(detail: &str) -> bool {
     npm_error_code(detail) == "E404"
         && npm_registry_origin(detail) == NpmRegistryOrigin::Foreign
+        && npm_404_names_hq_cli_packument(detail)
         && !has_npm_lifecycle_failure_marker(detail)
         && !npm_lifecycle_failure(detail).failed
 }
@@ -4822,6 +4858,32 @@ fn sanitized_version_token(raw: Option<&str>) -> String {
     }
 }
 
+/// Reduce the requested CLI target version to a bounded token that PRESERVES a
+/// valid SemVer prerelease/build identifier (for example `6.0.0-beta.1`), unlike
+/// [`sanitized_version_token`] — which accepts only digits and dots and is the
+/// scrub boundary for the PROBED node/npm versions and must stay unchanged. The
+/// target version is a published npm version string the updater resolved from the
+/// registry's dist-tag, so it can legitimately carry `-`, `+`, and alphanumeric
+/// prerelease identifiers; bound it to the SemVer character set (`[0-9A-Za-z.+-]`)
+/// and a safe length, requiring at least one digit, so no free text, path, or
+/// space can reach Sentry. Anything else collapses to `unknown`.
+fn sanitized_target_version_token(raw: Option<&str>) -> String {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "unknown".to_string();
+    };
+    let value = raw.strip_prefix('v').unwrap_or(raw);
+    if (1..=48).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        && value.bytes().any(|byte| byte.is_ascii_digit())
+    {
+        value.to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
 /// The provenance segment appended to `npm_diagnostics`. Its shape is constant
 /// (always these six keys) so the extra stays trivially assertable; each value
 /// is already a closed enumeration or a `sanitized_version_token` output.
@@ -4956,7 +5018,7 @@ pub fn report_install_failure_with_environment(
     let hq_cli_target_version: Option<String> = env
         .target_version
         .as_deref()
-        .map(|version| sanitized_version_token(Some(version)));
+        .map(|version| sanitized_target_version_token(Some(version)));
     let requested_spec_kind_tag = if env.requested_spec_kind != RequestedSpecKind::Unknown {
         Some(env.requested_spec_kind.tag_value())
     } else {
@@ -13488,6 +13550,67 @@ mod tests {
                 &InstallEnvironment::default(),
             ),
             InstallFailureKind::Unexpected
+        );
+        // A foreign-host 404 for a TARBALL (not the hq-cli packument document) is NOT
+        // the new kind — a missing tarball can be a broken published artifact, so it
+        // stays Unexpected/Error rather than being downgraded to a registry
+        // misconfiguration. The packument gate is what excludes it.
+        let foreign_tarball = "npm error code E404\n\
+            npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us/hq-cli/-/hq-cli-5.103.27.tgz - Not found";
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                foreign_tarball,
+                None,
+                false,
+                &InstallEnvironment::default(),
+            ),
+            InstallFailureKind::Unexpected
+        );
+        // As is a foreign-host packument 404 for a DIFFERENT package (a transitive
+        // dependency) — only the requested hq-cli packument earns the downgrade.
+        let foreign_dependency = "npm error code E404\n\
+            npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@some%2fdep - Not found";
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                foreign_dependency,
+                None,
+                false,
+                &InstallEnvironment::default(),
+            ),
+            InstallFailureKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn sanitized_target_version_token_preserves_valid_prereleases_but_rejects_free_text() {
+        // A stable version passes through unchanged.
+        assert_eq!(sanitized_target_version_token(Some("5.103.27")), "5.103.27");
+        // Valid SemVer prereleases / build metadata survive (the P2 fix): the
+        // digits-and-dots-only sanitizer would have collapsed these to `unknown`.
+        assert_eq!(
+            sanitized_target_version_token(Some("v6.0.0-beta.1")),
+            "6.0.0-beta.1"
+        );
+        assert_eq!(
+            sanitized_target_version_token(Some("6.0.0-rc.2+build.5")),
+            "6.0.0-rc.2+build.5"
+        );
+        // Anything without a digit, empty, over-long, or carrying an unsafe byte
+        // (path separator, whitespace) collapses to `unknown` — no free text reaches
+        // Sentry.
+        assert_eq!(sanitized_target_version_token(None), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("")), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("latest")), "unknown");
+        assert_eq!(
+            sanitized_target_version_token(Some("../../etc/passwd")),
+            "unknown"
+        );
+        assert_eq!(sanitized_target_version_token(Some("6.0 0")), "unknown");
+        assert_eq!(
+            sanitized_target_version_token(Some(&"9".repeat(49))),
+            "unknown"
         );
     }
 

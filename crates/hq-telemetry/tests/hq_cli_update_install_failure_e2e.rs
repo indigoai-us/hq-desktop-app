@@ -2094,20 +2094,47 @@ fn unparseable_e404_degrades_fail_loud_to_unknown_origin_at_error() {
 }
 
 #[test]
-fn foreign_registry_e404_tarball_pins_the_second_bounded_discriminator() {
+fn a_foreign_registry_tarball_404_stays_a_loud_error_not_a_registry_downgrade() {
+    // A missing TARBALL on a non-npmjs host can be a broken published artifact, not
+    // proof the configured registry lacks hq — so it stays Unexpected at Error under
+    // its own attributed signature rather than being downgraded to the
+    // registry-misconfiguration Warning. The resource discriminator is still pinned.
     let tarball = "npm error code E404\n\
         npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us/hq-cli/-/hq-cli-5.103.27.tgz - Not found";
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(Some(1), tarball, None, false, &e404_env())
     }));
-    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(event.level, sentry::Level::Error);
     assert_eq!(
         event.message.as_deref(),
-        Some("[hq-cli-update] install failed (foreign-registry-404:tarball)")
+        Some("[hq-cli-update] install failed (E404:foreign:tarball)")
     );
-    assert_eq!(tag(&event, "install_failure_kind"), Some("foreign-registry-404"));
+    assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
     assert_eq!(tag(&event, "npm_registry_origin"), Some("foreign"));
     assert_eq!(tag(&event, "npm_404_resource"), Some("tarball"));
+}
+
+#[test]
+fn a_prerelease_target_version_survives_as_an_attributed_tag() {
+    // A valid SemVer prerelease that the updater pinned and requested must survive as
+    // the attribution tag, not collapse to `unknown` (P2).
+    let env = InstallEnvironment {
+        toolchain_source: NpmToolchainSource::UserPath,
+        target_version: Some("6.0.0-beta.1".to_string()),
+        requested_spec_kind: RequestedSpecKind::PinnedVersion,
+        ..Default::default()
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            FOREIGN_REGISTRY_E404_STDERR,
+            None,
+            false,
+            &env,
+        )
+    }));
+    assert_eq!(tag(&event, "hq_cli_target_version"), Some("6.0.0-beta.1"));
+    assert_eq!(tag(&event, "npm_requested_spec_kind"), Some("pinned-version"));
 }
 
 #[test]
