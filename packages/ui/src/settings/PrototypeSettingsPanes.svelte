@@ -93,6 +93,8 @@
   let desktopWidgetChanged = false;
   let dockWriteSeq = 0;
   let desktopWidgetWriteSeq = 0;
+  let dockAuthoritativeValue: boolean | undefined;
+  let desktopWidgetAuthoritativeValue: boolean | undefined;
 
   const calendarConnectPending = $derived(meetingsStore.connectPending);
 
@@ -163,16 +165,27 @@
     if (!adapter) return;
     const result = await adapter.appShell.setDockVisible(next);
     if (writeSeq !== dockWriteSeq) return;
-    if (result.ok || result.reason !== "error") return;
+    if (result.ok) {
+      dockAuthoritativeValue = next;
+      return;
+    }
+    if (result.reason !== "error") return;
     const settings = await adapter.settings.getSettings();
     if (writeSeq !== dockWriteSeq) return;
     dockVisibilityChanged = false;
     if (!settings.ok) {
-      // No authoritative value is available; a later successful read can hydrate it.
+      if (dockAuthoritativeValue !== undefined) {
+        patch({ showInDock: dockAuthoritativeValue });
+      }
       return;
     }
     const dockIcon = readHostBooleanSetting(settings.value, "dockIcon");
-    if (dockIcon !== undefined) patch({ showInDock: dockIcon });
+    if (dockIcon !== undefined) {
+      dockAuthoritativeValue = dockIcon;
+      patch({ showInDock: dockIcon });
+    } else if (dockAuthoritativeValue !== undefined) {
+      patch({ showInDock: dockAuthoritativeValue });
+    }
   }
 
   async function toggleDesktopWidget(): Promise<void> {
@@ -183,16 +196,27 @@
     if (!adapter) return;
     const result = await adapter.appShell.setDesktopWidget(next);
     if (writeSeq !== desktopWidgetWriteSeq) return;
-    if (result.ok || result.reason !== "error") return;
+    if (result.ok) {
+      desktopWidgetAuthoritativeValue = next;
+      return;
+    }
+    if (result.reason !== "error") return;
     const settings = await adapter.settings.getSettings();
     if (writeSeq !== desktopWidgetWriteSeq) return;
     desktopWidgetChanged = false;
     if (!settings.ok) {
-      // No authoritative value is available; a later successful read can hydrate it.
+      if (desktopWidgetAuthoritativeValue !== undefined) {
+        patch({ desktopWidget: desktopWidgetAuthoritativeValue });
+      }
       return;
     }
     const widgetEnabled = readHostBooleanSetting(settings.value, "widgetEnabled");
-    if (widgetEnabled !== undefined) patch({ desktopWidget: widgetEnabled });
+    if (widgetEnabled !== undefined) {
+      desktopWidgetAuthoritativeValue = widgetEnabled;
+      patch({ desktopWidget: widgetEnabled });
+    } else if (desktopWidgetAuthoritativeValue !== undefined) {
+      patch({ desktopWidget: desktopWidgetAuthoritativeValue });
+    }
   }
 
   function togglePlatform(name: string): void {
@@ -288,12 +312,14 @@
       Pick<ShellSettingsPrefs, "showInDock" | "desktopWidget">
     > = {};
     const dockIcon = readHostBooleanSetting(raw, "dockIcon");
-    if (dockIcon !== undefined && !dockVisibilityChanged) {
-      next.showInDock = dockIcon;
+    if (dockIcon !== undefined) {
+      dockAuthoritativeValue = dockIcon;
+      if (!dockVisibilityChanged) next.showInDock = dockIcon;
     }
     const widgetEnabled = readHostBooleanSetting(raw, "widgetEnabled");
-    if (widgetEnabled !== undefined && !desktopWidgetChanged) {
-      next.desktopWidget = widgetEnabled;
+    if (widgetEnabled !== undefined) {
+      desktopWidgetAuthoritativeValue = widgetEnabled;
+      if (!desktopWidgetChanged) next.desktopWidget = widgetEnabled;
     }
     if (Object.keys(next).length > 0) patch(next);
   }

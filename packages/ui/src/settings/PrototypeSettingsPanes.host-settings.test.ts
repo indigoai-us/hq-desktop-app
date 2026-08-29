@@ -166,6 +166,135 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     ).toBe("true");
   });
 
+  it("restores the hydrated Dock value when a failed write cannot reconcile", async () => {
+    let reads = 0;
+    const getSettings = vi.fn(async () => {
+      reads += 1;
+      return reads === 1 ? ok({ dockIcon: true }) : failure("read-settings");
+    });
+    const { adapter, setDockVisible } = trayAdapter(getSettings, {
+      setDockVisible: async () => failure("save-settings"),
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+
+    const dock = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Show in Dock"]',
+    );
+    expect(dock?.getAttribute("aria-checked")).toBe("true");
+    dock?.click();
+    await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledWith(false));
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
+
+    expect(dock?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("restores the hydrated desktop widget value when a failed write cannot reconcile", async () => {
+    let reads = 0;
+    const getSettings = vi.fn(async () => {
+      reads += 1;
+      return reads === 1
+        ? ok({ widgetEnabled: true })
+        : failure("read-settings");
+    });
+    const { adapter, setDesktopWidget } = trayAdapter(getSettings, {
+      setDesktopWidget: async () => failure("save-settings"),
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+
+    const widget = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Desktop widget"]',
+    );
+    expect(widget?.getAttribute("aria-checked")).toBe("true");
+    widget?.click();
+    await vi.waitFor(() =>
+      expect(setDesktopWidget).toHaveBeenCalledWith(false),
+    );
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
+
+    expect(widget?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("uses the latest successful Dock write when a later failed write cannot reconcile", async () => {
+    let reads = 0;
+    const getSettings = vi.fn(async () => {
+      reads += 1;
+      return reads === 1 ? ok({ dockIcon: true }) : failure("read-settings");
+    });
+    const firstWrite = deferred<ReturnType<typeof ok<void>>>();
+    let writes = 0;
+    const { adapter, setDockVisible } = trayAdapter(getSettings, {
+      setDockVisible: async () => {
+        writes += 1;
+        return writes === 1
+          ? firstWrite.promise
+          : failure("save-settings");
+      },
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+
+    const dock = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Show in Dock"]',
+    );
+    dock?.click();
+    await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledTimes(1));
+    expect(dock?.getAttribute("aria-checked")).toBe("false");
+    firstWrite.resolve(ok(undefined));
+    await firstWrite.promise;
+    await tick();
+    dock?.click();
+    await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
+
+    expect(dock?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("keeps the optimistic Dock value when the host has never reported one", async () => {
+    let reads = 0;
+    const getSettings = vi.fn(async () => {
+      reads += 1;
+      return reads === 1 ? ok({}) : failure("read-settings");
+    });
+    const { adapter, setDockVisible } = trayAdapter(getSettings, {
+      setDockVisible: async () => failure("save-settings"),
+    });
+    localStorage.setItem("hq-work-settings-prefs", JSON.stringify({ showInDock: false }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
+
+    const dock = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Show in Dock"]',
+    );
+    expect(dock?.getAttribute("aria-checked")).toBe("false");
+    dock?.click();
+    await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledWith(true));
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
+
+    expect(dock?.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("keeps a Dock preference when the host reports it unavailable", async () => {
     const getSettings = vi.fn(async () => ok({ dockIcon: true }));
     const dockWrite = deferred<ReturnType<typeof unavailable>>();
