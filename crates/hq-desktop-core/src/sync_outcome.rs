@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
+    classify_runner_error_cause, classify_runner_error_site, RunnerErrorCause,
     RunnerErrorCauseRollup, RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup,
-    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
-    DISCOVERY_ERROR_PATH_SENTINEL,
+    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, RunnerErrorSite, RunnerErrorSiteRollup,
 };
 use sha2::{Digest, Sha256};
 
@@ -134,14 +134,21 @@ pub struct RunTotals {
     /// class name is added to the vocabulary — the drift-resilience this reopen
     /// adds. Never a runner byte: only a gated identifier is hashed.
     pub runner_error_cause_signature: RunnerErrorCauseSignatureRollup,
-    /// Count of company-scope errors (`path == "(company)"`) seen this pass.
-    runner_error_company_scope: u32,
-    /// Count of pre-fanout discovery-phase errors (`path == "(discovery)"`) seen
-    /// this pass. Kept distinct so a discovery failure is never miscounted as a
-    /// per-file error or given a path root.
-    runner_error_discovery_scope: u32,
-    /// Count of per-file errors (any other `path`) seen this pass.
-    runner_error_file_scope: u32,
+    /// Content-safe per-site counts of the runner error events seen this pass —
+    /// the closed `RunnerErrorSite` vocabulary (`company`/`discovery`/`local_state`/
+    /// `runner`/`scope`/`auth`/`file`). This is the single source of truth for BOTH
+    /// the `runner_error_sites` rollup tag / fingerprint token AND the
+    /// `runner_error_scope` split, so the two can never disagree. It names WHICH
+    /// runner failure site produced the exit — the axis every one of the six
+    /// HQ-DESKTOP-5M events lacked. Every token is chosen in code, never a path byte.
+    pub runner_error_sites: RunnerErrorSiteRollup,
+    /// Shape of the Node stack carried INSIDE a `(runner)` error record's message
+    /// (an `err.stack` an uncaught rejection ships), computed by `runner_stack_shape`
+    /// over the message's own lines. Stored ONLY when it recognised frames, so the
+    /// exit reports a real stack shape instead of `all_redacted` when the stderr
+    /// tail was ndjson records. Only the fixed-token `RunnerStackShape` is retained —
+    /// never a message byte. `None` until such a record is seen.
+    runner_embedded_stack_shape: Option<RunnerStackShape>,
     /// The most recent V8 GC-line heap figures this pass, as round-half-away MB
     /// `(used, total)`, last-wins until frozen at the first heap-OOM banner.
     /// Rounded at parse so `RunTotals` stays `Eq`; the rounded value is exactly
@@ -217,8 +224,8 @@ impl RunTotals {
         self.runner_error_ops.record(&err.message);
         // Additive attribution axes (never affect alerting/suppression): a
         // message shape for every error, and — for genuine per-file errors only —
-        // a path root. The company and discovery sentinels are not file paths, so
-        // they are counted by scope and never given a path root.
+        // a path root. None of the six non-file sentinels is a file path, so each
+        // is counted by site (below) and never given a path root.
         self.runner_error_shapes.record(&err.message);
         // HTTP status and error identity for every error regardless of scope —
         // the company-scope path is precisely the one that currently yields
@@ -230,14 +237,19 @@ impl RunTotals {
         // `unknown_named` fault is correlatable across machines. Records nothing
         // for a matched cause or an `unknown_unnamed` residual.
         self.runner_error_cause_signature.record(&err.message);
-        if err.path == COMPANY_ERROR_PATH_SENTINEL {
-            self.runner_error_company_scope = self.runner_error_company_scope.saturating_add(1);
-        } else if err.path == DISCOVERY_ERROR_PATH_SENTINEL {
-            self.runner_error_discovery_scope = self.runner_error_discovery_scope.saturating_add(1);
-        } else {
-            self.runner_error_file_scope = self.runner_error_file_scope.saturating_add(1);
-            self.runner_error_path_roots.record(&err.path);
+        // Route by failure SITE (HQ-DESKTOP-5M). A genuine file path feeds the
+        // per-file path-root rollup; every non-file sentinel — company, discovery,
+        // local_state, runner, scope, auth — is counted by the site rollup ONLY, so
+        // a producer sentinel is never fed to classify_runner_path_root (the `other`
+        // collapse) nor miscounted as a per-file error. A `(runner)` record also
+        // embeds an err.stack in its message, so shape it here (fixed tokens only,
+        // never a message byte). The site rollup below counts every event.
+        match classify_runner_error_site(&err.path) {
+            RunnerErrorSite::File => self.runner_error_path_roots.record(&err.path),
+            RunnerErrorSite::Runner => self.record_runner_embedded_stack(&err.message),
+            _ => {}
         }
+        self.runner_error_sites.record(&err.path);
         if let Some(company) = err.company.as_deref() {
             self.runner_error_companies.insert(company.to_string());
         }
@@ -252,27 +264,85 @@ impl RunTotals {
         u32::try_from(self.runner_error_companies.len()).unwrap_or(u32::MAX)
     }
 
-    /// Compact, content-safe split of company-scope vs per-file runner errors
-    /// seen this pass, e.g. `company:1,file:7204`. `None` when no runner error
-    /// was recorded, so no extra should be sent. Both counts are integers, never
-    /// paths or names.
+    /// Compact, content-safe split of runner errors by failure SITE this pass,
+    /// e.g. `company:1,file:7204` or `company:0,file:1,local_state:1`. Derived from
+    /// the single `runner_error_sites` source of truth. `None` when no runner error
+    /// was recorded, so no extra should be sent. Every count is an integer, never a
+    /// path or name.
+    ///
+    /// Back-compat is load-bearing: the `company:N,file:N` PREFIX keeps its exact
+    /// position and meaning, and the newer per-site segments — `discovery`,
+    /// `local_state`, `runner`, `scope`, `auth` — append in that fixed order and
+    /// ONLY when nonzero, so a run with only company and file errors renders exactly
+    /// `company:N,file:N` as it always has and any existing dashboard/alert that
+    /// parses that prefix is unaffected.
     pub fn runner_error_scope(&self) -> Option<String> {
-        let total = self
-            .runner_error_company_scope
-            .saturating_add(self.runner_error_file_scope)
-            .saturating_add(self.runner_error_discovery_scope);
+        let sites = &self.runner_error_sites;
+        let company = sites.count(RunnerErrorSite::Company);
+        let file = sites.count(RunnerErrorSite::File);
+        let discovery = sites.count(RunnerErrorSite::Discovery);
+        let local_state = sites.count(RunnerErrorSite::LocalState);
+        let runner = sites.count(RunnerErrorSite::Runner);
+        let scope = sites.count(RunnerErrorSite::Scope);
+        let auth = sites.count(RunnerErrorSite::Auth);
+        let total = company
+            .saturating_add(file)
+            .saturating_add(discovery)
+            .saturating_add(local_state)
+            .saturating_add(runner)
+            .saturating_add(scope)
+            .saturating_add(auth);
         if total == 0 {
             return None;
         }
-        let mut rendered = format!(
-            "company:{},file:{}",
-            self.runner_error_company_scope, self.runner_error_file_scope
-        );
-        // Appended only when present, so the common company/file split is stable.
-        if self.runner_error_discovery_scope > 0 {
-            rendered.push_str(&format!(",discovery:{}", self.runner_error_discovery_scope));
+        let mut rendered = format!("company:{company},file:{file}");
+        // Appended only when present, so the common company/file split is stable. The
+        // `(auth)` site renders `identity`, matching RunnerErrorSite::as_str — a
+        // denylist-safe spelling so the scope extra is never eaten by @password:filter.
+        for (label, count) in [
+            ("discovery", discovery),
+            ("local_state", local_state),
+            ("runner", runner),
+            ("scope", scope),
+            ("identity", auth),
+        ] {
+            if count > 0 {
+                rendered.push_str(&format!(",{label}:{count}"));
+            }
         }
         Some(rendered)
+    }
+
+    /// Shape the Node stack an uncaught rejection ships inside a `(runner)` error
+    /// record's message (an `err.stack`), storing ONLY the fixed-token
+    /// `RunnerStackShape` — never a message byte — and only when it recognised
+    /// frames. An unrecognised body leaves the field `None`, so the exit stays
+    /// honestly `all_redacted`. The FIRST recognised record wins; a later record
+    /// never overwrites it, so a hostile flood cannot churn the stored shape.
+    fn record_runner_embedded_stack(&mut self, message: &str) {
+        if self.runner_embedded_stack_shape.is_some() {
+            return;
+        }
+        // `runner_stack_shape` reads at most the first RUNNER_STACK_FRAME_CAP lines, so
+        // cap the copy there: an attacker-influenced multi-megabyte message can never
+        // be cloned in full here (the shape is identical), avoiding a second large
+        // allocation precisely while reporting a possible OOM/runaway stack.
+        let lines: Vec<String> = message
+            .lines()
+            .take(RUNNER_STACK_FRAME_CAP)
+            .map(str::to_string)
+            .collect();
+        let shape = runner_stack_shape(&lines);
+        if shape.shape != "all_redacted" {
+            self.runner_embedded_stack_shape = Some(shape);
+        }
+    }
+
+    /// The shape of a stack embedded inside a `(runner)` error record this pass, or
+    /// `None` when none recognised frames. Read by `runner_stack_shape_for_exit` to
+    /// prefer a real embedded stack over a tail-derived `all_redacted`.
+    pub fn runner_embedded_stack_shape(&self) -> Option<RunnerStackShape> {
+        self.runner_embedded_stack_shape.clone()
     }
 
     pub fn record_auth_error(&mut self) {
@@ -835,9 +905,23 @@ fn heap_oom_stack_shape(frames: &[String]) -> RunnerStackShape {
 /// generic tail shape byte-identically. Reading from the shared `RunTotals` keeps
 /// the manual and watcher routes attribute-identical.
 pub fn runner_stack_shape_for_exit(totals: &RunTotals, tail: &[String]) -> RunnerStackShape {
-    totals
-        .runner_heap_oom_stack()
-        .unwrap_or_else(|| runner_stack_shape(tail))
+    // A retained heap-OOM native stack is the most specific evidence and wins.
+    if let Some(heap) = totals.runner_heap_oom_stack() {
+        return heap;
+    }
+    let tail_shape = runner_stack_shape(tail);
+    // The stderr TAIL is authoritative whenever it recognised any frame. But when
+    // the tail was a flood of ndjson error records (`all_redacted`) AND a `(runner)`
+    // error record embedded a shape-able err.stack in its MESSAGE — the frames the
+    // tail axis structurally cannot see — prefer that embedded shape (HQ-DESKTOP-5M).
+    // `runner_stack_input` still reports what the TAIL was, so the two axes stay
+    // independently readable. Keeps both seams symmetric: they read one shared source.
+    if tail_shape.shape == "all_redacted" {
+        if let Some(embedded) = totals.runner_embedded_stack_shape() {
+            return embedded;
+        }
+    }
+    tail_shape
 }
 
 /// Fixed, content-safe classes for runner error rollups. These values are safe
@@ -897,7 +981,11 @@ impl RunnerErrorClass {
         }
     }
 
-    fn fingerprint_token(self) -> &'static str {
+    // `pub` so the watcher-seam validator (commands/daemon.rs) can derive its
+    // accepted class-token set from `RunnerErrorClass::ALL` instead of a
+    // hand-written allow-list that silently drifts behind the enum — the r2
+    // regression where enoent/eexist/enotempty/exdev degraded to "none".
+    pub fn fingerprint_token(self) -> &'static str {
         match self {
             Self::Eperm => "eperm",
             Self::Eacces => "eacces",
@@ -957,10 +1045,156 @@ fn message_contains_errno_token(haystack_lower: &str, errno: &str) -> bool {
     false
 }
 
+/// Bridge the CAUSE axis to the CLASS axis: when the closed cause vocabulary has
+/// positively NAMED a fault, that name is a stronger classifier than the coarse
+/// keyword matcher below, which is blind to the named-cause vocabulary and
+/// collapses any message it does not recognise to `Other`. That blindness is the
+/// HQ-DESKTOP-4T catch-all: a `VaultPermissionDeniedError` the cause axis named
+/// `vault_permission_denied` still classified `Other` (its text carries none of
+/// eperm/eacces/enospc/ebusy, no transient-network marker, and none of
+/// auth|unauthorized|forbidden|cognito|token), so every such exit-2 landed on the
+/// one `["sync","runner-termination","exit:2","other"]` fingerprint.
+///
+/// EXHAUSTIVE over every `RunnerErrorCause` with NO wildcard arm, so adding a
+/// future cause is a compile error here rather than a silent fall-through. A
+/// variant maps to `Some(class)` ONLY when the class is unambiguous from the
+/// name — an authorization/identity failure to `Auth`, a network/DNS/connection
+/// transport fault to `Network`, and a filesystem errno to its matching errno
+/// class. Every other variant returns an explicit `None`, meaning "the keyword
+/// fallback is still the best answer", so an unnamed or class-ambiguous message
+/// is classified exactly as it is today.
+fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
+    match cause {
+        // ── Authorization / identity failures → Auth ─────────────────────────
+        // The recurrence family: a permission/authorization denial the keyword
+        // matcher misses because its text carries no auth marker. Naming these
+        // here is the fix — `vault_permission_denied` now classes AUTH.
+        RunnerErrorCause::EntityPermission
+        | RunnerErrorCause::VaultPermissionDenied
+        | RunnerErrorCause::VendDenied
+        | RunnerErrorCause::AccessDenied => Some(RunnerErrorClass::Auth),
+        // Identity/credential failures. The keyword matcher ALREADY classes these
+        // AUTH (their messages carry auth/cognito/token), so mapping them is
+        // consistent — and it keeps the class correct if a future rendering drops
+        // the keyword the matcher happens to look for.
+        RunnerErrorCause::VaultIdentity
+        | RunnerErrorCause::CognitoIdentity
+        | RunnerErrorCause::CognitoIdentityRefresh
+        | RunnerErrorCause::ExpiredIdentity
+        | RunnerErrorCause::InvalidIdentity => Some(RunnerErrorClass::Auth),
+        // ── Network / DNS / connection transport → Network ───────────────────
+        // Every transient-network errno `is_transient_network_error` already
+        // recognises, PLUS ENOTFOUND (a getaddrinfo DNS failure) which it omits —
+        // a definitive network fault the keyword matcher otherwise collapses to
+        // Other.
+        RunnerErrorCause::Econnreset
+        | RunnerErrorCause::Econnrefused
+        | RunnerErrorCause::Etimedout
+        | RunnerErrorCause::Epipe
+        | RunnerErrorCause::EaiAgain
+        | RunnerErrorCause::Enetdown
+        | RunnerErrorCause::Enetunreach
+        | RunnerErrorCause::Ehostunreach
+        | RunnerErrorCause::Enotfound => Some(RunnerErrorClass::Network),
+        // ── Filesystem errno causes → their matching errno class ─────────────
+        // The class axis has exactly these eight errno classes; a cause naming one
+        // agrees with the keyword matcher on the same message.
+        RunnerErrorCause::Eperm => Some(RunnerErrorClass::Eperm),
+        RunnerErrorCause::Eacces => Some(RunnerErrorClass::Eacces),
+        RunnerErrorCause::Enospc => Some(RunnerErrorClass::Enospc),
+        RunnerErrorCause::Ebusy => Some(RunnerErrorClass::Ebusy),
+        RunnerErrorCause::Enoent => Some(RunnerErrorClass::Enoent),
+        RunnerErrorCause::Eexist => Some(RunnerErrorClass::Eexist),
+        RunnerErrorCause::Enotempty => Some(RunnerErrorClass::Enotempty),
+        RunnerErrorCause::Exdev => Some(RunnerErrorClass::Exdev),
+        // ── Keyword fallback stays authoritative (explicit None) ─────────────
+        // hq-cloud sync-protocol identities with no class analogue …
+        RunnerErrorCause::EntityNotFound
+        | RunnerErrorCause::EntityResolution
+        | RunnerErrorCause::SourceNotFound
+        | RunnerErrorCause::OperationLocked
+        | RunnerErrorCause::OperationLockUnwritable
+        | RunnerErrorCause::ScopeShrinkBlocked
+        | RunnerErrorCause::ScopeShrinkLargePrune
+        | RunnerErrorCause::DeltaGap
+        | RunnerErrorCause::MultipartSourceChanged
+        | RunnerErrorCause::MultipartAbort
+        | RunnerErrorCause::RealtimeConflict
+        | RunnerErrorCause::RealtimeEnrollmentUnavailable
+        | RunnerErrorCause::SyncMutationNotEnrolled
+        | RunnerErrorCause::UnreachablePushPaths
+        | RunnerErrorCause::ServerOwnedPushPaths
+        | RunnerErrorCause::PushEventDecode
+        | RunnerErrorCause::LocalSnapshotChanged
+        | RunnerErrorCause::RescuePathChanged
+        | RunnerErrorCause::CursorRetired
+        | RunnerErrorCause::BaseVersionUnavailable
+        | RunnerErrorCause::DurableApply
+        | RunnerErrorCause::DurableApplyRecovery
+        | RunnerErrorCause::JournalCheckpoint
+        | RunnerErrorCause::PrematureJournalEntry
+        | RunnerErrorCause::SnapshotClient
+        | RunnerErrorCause::StateStoreCorruption
+        | RunnerErrorCause::StateStoreLock
+        | RunnerErrorCause::StateStoreReducer
+        | RunnerErrorCause::VaultClient
+        | RunnerErrorCause::VaultConflict
+        | RunnerErrorCause::VaultNotFound
+        | RunnerErrorCause::RateLimited
+        | RunnerErrorCause::PresignPreconditionMissing
+        | RunnerErrorCause::OutpostHttp
+        | RunnerErrorCause::TombstoneFetch
+        | RunnerErrorCause::UnregisteredCompanySkill
+        | RunnerErrorCause::RefreshLockTimeout
+        | RunnerErrorCause::DanglingSymlinkParent
+        | RunnerErrorCause::WindowsSymlinkPrivilege
+        | RunnerErrorCause::ChildProcessSyncWorker
+        // … AWS S3/STS names with no class analogue …
+        | RunnerErrorCause::NoSuchKey
+        | RunnerErrorCause::NoSuchBucket
+        | RunnerErrorCause::SlowDown
+        | RunnerErrorCause::InternalError
+        | RunnerErrorCause::RequestTimeout
+        | RunnerErrorCause::UnknownError
+        // … ECMAScript / Node built-in error identities …
+        | RunnerErrorCause::RangeError
+        | RunnerErrorCause::TypeError
+        | RunnerErrorCause::SyntaxError
+        | RunnerErrorCause::ReferenceError
+        | RunnerErrorCause::EvalError
+        | RunnerErrorCause::UriError
+        | RunnerErrorCause::AggregateError
+        | RunnerErrorCause::AbortError
+        | RunnerErrorCause::SystemError
+        // … non-fs, non-transport errnos with no class analogue …
+        | RunnerErrorCause::Eisdir
+        | RunnerErrorCause::Enotdir
+        | RunnerErrorCause::Eloop
+        | RunnerErrorCause::Enametoolong
+        | RunnerErrorCause::Emfile
+        | RunnerErrorCause::Enfile
+        | RunnerErrorCause::Erofs
+        | RunnerErrorCause::Eio
+        | RunnerErrorCause::Eagain
+        | RunnerErrorCause::Einval
+        // … and the residual unknowns (never a nearest guess) …
+        | RunnerErrorCause::UnknownNamed
+        | RunnerErrorCause::UnknownUnnamed => None,
+    }
+}
+
 /// Map an untrusted runner error message to a fixed telemetry class. This
 /// function deliberately returns no message text, so its output is safe to
 /// attach to Sentry as a tag.
 pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
+    // A positively-named cause is a stronger signal than the coarse keyword
+    // matcher, which is blind to the cause vocabulary. Consult the bridge first;
+    // it returns `Some` only for a cause it can unambiguously class, so an unnamed
+    // or class-ambiguous message falls through to the keyword matcher below,
+    // classified exactly as it is today.
+    if let Some(class) = class_for_named_cause(classify_runner_error_cause(message)) {
+        return class;
+    }
     let msg = message.to_lowercase();
     if msg.contains("eperm") {
         RunnerErrorClass::Eperm
@@ -3510,6 +3744,178 @@ mod tests {
     }
 
     #[test]
+    fn a_named_cause_drives_the_error_class_instead_of_the_keyword_fallback() {
+        // The HQ-DESKTOP-4T recurrence: a VaultPermissionDeniedError whose text
+        // carries none of the class matcher's keywords collapsed to OTHER on base,
+        // so every such exit-2 landed on the one catch-all fingerprint. The cause
+        // axis names it, and the bridge now classes it AUTH — for every rendering
+        // that actually carries the identifier the cause axis can read.
+        for message in [
+            // Leading class name (the dominant describeError rendering).
+            "VaultPermissionDeniedError permission denied for the company prefix",
+            // The identity carried as a `cause=` value behind a plain Error.
+            "sync worker failed cause=VaultPermissionDeniedError host=vault",
+        ] {
+            assert_eq!(
+                classify_runner_error_cause(message),
+                RunnerErrorCause::VaultPermissionDenied,
+                "cause axis must name the fault: {message:?}"
+            );
+            assert_eq!(
+                classify_runner_error_class(message),
+                RunnerErrorClass::Auth,
+                "a named vault permission denial must class AUTH, not OTHER: {message:?}"
+            );
+        }
+
+        // The whole permission/authorization family classes AUTH, so none of them
+        // can re-form the exit-2 catch-all the keyword matcher left them in.
+        for (message, cause) in [
+            ("AccessDenied access is denied", RunnerErrorCause::AccessDenied),
+            (
+                "VendDeniedError the vend was refused",
+                RunnerErrorCause::VendDenied,
+            ),
+            (
+                "EntityPermissionError caller lacks permission",
+                RunnerErrorCause::EntityPermission,
+            ),
+        ] {
+            assert_eq!(classify_runner_error_cause(message), cause, "{message:?}");
+            assert_eq!(
+                classify_runner_error_class(message),
+                RunnerErrorClass::Auth,
+                "permission/authorization family must class AUTH: {message:?}"
+            );
+        }
+
+        // A named DNS/transport fault the keyword matcher omits (ENOTFOUND is not
+        // in is_transient_network_error) now classes NETWORK through the cause.
+        assert_eq!(
+            classify_runner_error_class("ENOTFOUND: getaddrinfo failed for the vault host"),
+            RunnerErrorClass::Network
+        );
+    }
+
+    #[test]
+    fn an_unnamed_message_still_uses_the_keyword_classifier_unchanged() {
+        // The bridge fires ONLY for a positively-named cause. An unnamed message
+        // is classified exactly as before, so nothing the keyword matcher already
+        // handled changes.
+
+        // Pure pull-leg prose with no identity: unnamed on the cause axis, so the
+        // bridge yields None and the keyword matcher decides — OTHER, as today.
+        let prose = "download skipped: local parent escaped the sync root";
+        assert_eq!(
+            classify_runner_error_cause(prose),
+            RunnerErrorCause::UnknownUnnamed
+        );
+        assert_eq!(classify_runner_error_class(prose), RunnerErrorClass::Other);
+
+        // Content-safety boundary: a permission denial rendered as PROSE ONLY —
+        // no class name, no code — has no content-safe identity to key on, so it
+        // is NOT bridged to AUTH. Naming it would require reading free prose.
+        assert_eq!(
+            classify_runner_error_class("access to the company prefix was denied"),
+            RunnerErrorClass::Other
+        );
+
+        // The keyword matcher still owns every class it already decided: an EPERM
+        // rename (the bridge agrees), a transient-network "socket hang up" the
+        // cause axis cannot name, and a bare auth marker.
+        assert_eq!(
+            classify_runner_error_class("EPERM: operation not permitted, rename 'a.hq-tmp' -> 'a'"),
+            RunnerErrorClass::Eperm
+        );
+        assert_eq!(
+            classify_runner_error_class("upload failed: socket hang up"),
+            RunnerErrorClass::Network
+        );
+        assert_eq!(
+            classify_runner_error_class("Unauthorized: cognito rejected the request"),
+            RunnerErrorClass::Auth
+        );
+    }
+
+    #[test]
+    fn every_runner_error_cause_has_a_deliberate_class_decision() {
+        use RunnerErrorCause as C;
+        // Every deliberate NON-None decision, spelled out so a wrong remap or an
+        // unreviewed future variant fails here. The match in class_for_named_cause
+        // is already exhaustive (a missing variant is a compile error); this table
+        // additionally pins WHICH class each mapped cause chose, and asserts every
+        // other variant keeps the keyword fallback (None).
+        let auth = [
+            C::EntityPermission,
+            C::VaultPermissionDenied,
+            C::VendDenied,
+            C::AccessDenied,
+            C::VaultIdentity,
+            C::CognitoIdentity,
+            C::CognitoIdentityRefresh,
+            C::ExpiredIdentity,
+            C::InvalidIdentity,
+        ];
+        let network = [
+            C::Econnreset,
+            C::Econnrefused,
+            C::Etimedout,
+            C::Epipe,
+            C::EaiAgain,
+            C::Enetdown,
+            C::Enetunreach,
+            C::Ehostunreach,
+            C::Enotfound,
+        ];
+        let errno_class = [
+            (C::Eperm, RunnerErrorClass::Eperm),
+            (C::Eacces, RunnerErrorClass::Eacces),
+            (C::Enospc, RunnerErrorClass::Enospc),
+            (C::Ebusy, RunnerErrorClass::Ebusy),
+            (C::Enoent, RunnerErrorClass::Enoent),
+            (C::Eexist, RunnerErrorClass::Eexist),
+            (C::Enotempty, RunnerErrorClass::Enotempty),
+            (C::Exdev, RunnerErrorClass::Exdev),
+        ];
+        for cause in auth {
+            assert_eq!(
+                class_for_named_cause(cause),
+                Some(RunnerErrorClass::Auth),
+                "{cause:?} must bridge to AUTH"
+            );
+        }
+        for cause in network {
+            assert_eq!(
+                class_for_named_cause(cause),
+                Some(RunnerErrorClass::Network),
+                "{cause:?} must bridge to NETWORK"
+            );
+        }
+        for (cause, class) in errno_class {
+            assert_eq!(class_for_named_cause(cause), Some(class), "{cause:?}");
+        }
+        let is_mapped = |c: RunnerErrorCause| {
+            auth.contains(&c) || network.contains(&c) || errno_class.iter().any(|(mc, _)| *mc == c)
+        };
+        let mut mapped = 0;
+        for cause in RunnerErrorCause::ALL {
+            if is_mapped(cause) {
+                mapped += 1;
+            } else {
+                assert_eq!(
+                    class_for_named_cause(cause),
+                    None,
+                    "{cause:?} must keep the keyword fallback (None)"
+                );
+            }
+        }
+        assert_eq!(
+            mapped, 26,
+            "exactly 26 causes bridge to a class; every other variant stays None"
+        );
+    }
+
+    #[test]
     fn record_error_populates_new_axes_across_scopes_without_perturbing_existing_ones() {
         let mut totals = RunTotals::default();
         // Company-scope describeError carrying an `http=` status, an AWS name, and
@@ -3552,8 +3958,9 @@ mod tests {
         // signature axis attaches no tag.
         assert_eq!(totals.runner_error_cause_signature.tag_value(), None);
 
-        // Every pre-existing axis is byte-identical to its pre-change value for
-        // the same inputs — the added record() calls perturb nothing.
+        // The scope, shape, path-root, and op axes are byte-identical to their
+        // pre-change values for the same inputs — the cause bridge perturbs none
+        // of them.
         assert_eq!(
             totals.runner_error_scope().as_deref(),
             Some("company:1,file:3,discovery:1")
@@ -3566,7 +3973,15 @@ mod tests {
             totals.runner_error_path_roots.tag_value().as_deref(),
             Some("knowledge:3")
         );
-        assert_eq!(totals.runner_error_rollup.tag_value().as_deref(), Some("OTHER:5"));
+        // The CLASS rollup now names the AccessDenied company-scope record AUTH
+        // via the r3 cause→class bridge — its text carries none of the keyword
+        // markers the class matcher looks for, so before this fix it collapsed to
+        // OTHER. The four unnamed presigned/InternalError records stay OTHER, and
+        // the dominant-by-count fingerprint token is unchanged (OTHER, 4 > 1).
+        assert_eq!(
+            totals.runner_error_rollup.tag_value().as_deref(),
+            Some("AUTH:1,OTHER:4")
+        );
         assert_eq!(totals.runner_error_ops.tag_value().as_deref(), Some("other:5"));
         assert_eq!(totals.runner_error_rollup.fingerprint_token(), "other");
         assert!(totals.saw_alertable_error);
@@ -7522,5 +7937,218 @@ mod tests {
         assert!(!m.contains("ENOSPC"));
         assert!(!m.contains('/'));
         assert!(!m.chars().any(|c| c.is_ascii_digit()));
+    }
+
+    // ── Runner error SITE routing + attribution (HQ-DESKTOP-5M) ──────────────
+
+    #[test]
+    fn record_error_routes_every_producer_sentinel_to_its_own_site_never_the_file_arm() {
+        // Each of the six hq-cloud error-event sentinels increments ONLY its own
+        // site counter, is never given a path root, and never lands in the per-file
+        // scope — the misrouting that made every unknown sentinel read
+        // company:0,file:1 with path_roots=other:1.
+        for (sentinel, token, scope_segment) in [
+            ("(company)", "company:1", "company:1,file:0"),
+            ("(discovery)", "discovery:1", "company:0,file:0,discovery:1"),
+            ("(local-state)", "local_state:1", "company:0,file:0,local_state:1"),
+            ("(runner)", "runner:1", "company:0,file:0,runner:1"),
+            ("(scope)", "scope:1", "company:0,file:0,scope:1"),
+            // The (auth) site renders `identity` (denylist-safe), never `auth`.
+            ("(auth)", "identity:1", "company:0,file:0,identity:1"),
+        ] {
+            let mut totals = RunTotals::default();
+            totals.record_error(&SyncErrorEvent {
+                company: None,
+                path: sentinel.to_string(),
+                message: "state store preflight failed".to_string(),
+            });
+            assert_eq!(
+                totals.runner_error_sites.tag_value().as_deref(),
+                Some(token),
+                "site token for {sentinel}"
+            );
+            assert_eq!(
+                totals.runner_error_scope().as_deref(),
+                Some(scope_segment),
+                "scope split for {sentinel}"
+            );
+            assert_eq!(
+                totals.runner_error_path_roots.tag_value(),
+                None,
+                "sentinel {sentinel} must never be given a path root"
+            );
+        }
+        // A genuine relative path still lands in the per-file arm with its path root.
+        let mut file_totals = RunTotals::default();
+        file_totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "knowledge/secret.md".to_string(),
+            message: "download skipped: local parent escaped the sync root".to_string(),
+        });
+        assert_eq!(
+            file_totals.runner_error_sites.tag_value().as_deref(),
+            Some("file:1")
+        );
+        assert_eq!(
+            file_totals.runner_error_scope().as_deref(),
+            Some("company:0,file:1")
+        );
+        assert_eq!(
+            file_totals.runner_error_path_roots.tag_value().as_deref(),
+            Some("knowledge:1")
+        );
+    }
+
+    #[test]
+    fn runner_error_scope_prefix_is_byte_identical_for_company_and_file_only() {
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: Some("a".to_string()),
+            path: "(company)".to_string(),
+            message: "x".to_string(),
+        });
+        for path in ["knowledge/a.md", "repos/b"] {
+            totals.record_error(&SyncErrorEvent {
+                company: Some("a".to_string()),
+                path: path.to_string(),
+                message: "y".to_string(),
+            });
+        }
+        // Exactly the pre-change rendering — no new segment appears when only company
+        // and file errors were recorded, so any dashboard/alert parsing the prefix is
+        // unaffected.
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:1,file:2")
+        );
+    }
+
+    #[test]
+    fn the_observed_hq_desktop_5m_local_state_exit_is_now_fully_attributed() {
+        // The reported population: exactly ONE error event per run, a (local-state)
+        // preflight failure shipping a bare err.message. On base every axis read
+        // unknown/other and the scope split lied company:0,file:1. Now the site names
+        // it and nothing is misrouted to the file/path-root arm.
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(local-state)".to_string(),
+            message: "journal state store is unreadable".to_string(),
+        });
+        assert_eq!(
+            totals.runner_error_sites.tag_value().as_deref(),
+            Some("local_state:1")
+        );
+        assert_eq!(totals.runner_error_sites.fingerprint_token(), "local_state");
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:0,file:0,local_state:1")
+        );
+        // The sentinel is never fed to classify_runner_path_root: the `other:1`
+        // pollution is gone.
+        assert_eq!(totals.runner_error_path_roots.tag_value(), None);
+        // A bare err.message carries no leading CamelCase identity, so it stays an
+        // honest unknown_unnamed with no signature — the message really is nameless.
+        assert_eq!(
+            totals.runner_error_causes.tag_value().as_deref(),
+            Some("unknown_unnamed:1")
+        );
+        assert_eq!(totals.runner_error_cause_signature.tag_value(), None);
+    }
+
+    #[test]
+    fn runner_stack_shape_for_exit_prefers_the_embedded_runner_stack_over_an_all_redacted_tail() {
+        use crate::runner_error_shape::{classify_runner_stack_input, RunnerStackInput};
+        // A (runner) uncaught rejection embeds its err.stack INSIDE the message; the
+        // stderr tail is a flood of ndjson records (all_redacted). The exit now
+        // reports the shaped embedded stack instead of all_redacted, while
+        // runner_stack_input still reports what the TAIL was.
+        let stack_message = "VaultShardError: shard 7 unreadable\n    at loadShard (node:internal/modules/cjs/loader:120:5)\n    at Module._compile (node:internal/modules/cjs/loader:1560:14)";
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: stack_message.to_string(),
+        });
+        let tail = vec![
+            r#"{"type":"error","path":"(runner)","message":"boom"}"#.to_string(),
+            "some plain trailing line".to_string(),
+        ];
+        // The tail on its own is honestly all_redacted and mixed.
+        assert_eq!(runner_stack_shape(&tail).shape, "all_redacted");
+        assert_eq!(classify_runner_stack_input(&tail), RunnerStackInput::Mixed);
+        let shape = runner_stack_shape_for_exit(&totals, &tail);
+        assert_ne!(shape.shape, "all_redacted", "embedded (runner) stack must be preferred");
+        assert!(
+            shape.redacted_frames < shape.depth,
+            "a recognised stack has fewer redacted frames than its depth"
+        );
+        assert!(
+            shape.shape.contains("node_cjs_loader"),
+            "recognised node frames shape it: {}",
+            shape.shape
+        );
+        // Content safety: the shape/signature never carry a message byte.
+        for forbidden in ["VaultShardError", "loadShard", "shard"] {
+            assert!(
+                !shape.shape.contains(forbidden) && !shape.signature.contains(forbidden),
+                "embedded shape leaked {forbidden:?}"
+            );
+        }
+
+        // A (local-state) message with no frames stays honestly all_redacted: no
+        // embedded shape is stored, so the tail's all_redacted is authoritative.
+        let mut ls_totals = RunTotals::default();
+        ls_totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(local-state)".to_string(),
+            message: "state store preflight failed".to_string(),
+        });
+        assert_eq!(ls_totals.runner_embedded_stack_shape(), None);
+        assert_eq!(
+            runner_stack_shape_for_exit(&ls_totals, &tail).shape,
+            "all_redacted"
+        );
+    }
+
+    #[test]
+    fn re_scoping_the_auth_sentinel_leaves_the_alert_and_reauth_signals_unchanged() {
+        // Moving the (auth) error-event sentinel out of the per-file arm must not
+        // change alerting, suppression, or the re-authentication signal: those read
+        // the message (and the auth-error protocol event), never err.path.
+        let auth_err = SyncErrorEvent {
+            company: None,
+            path: "(auth)".to_string(),
+            message: "AccessDenied http=403 forbidden".to_string(),
+        };
+        let file_auth = SyncErrorEvent {
+            company: None,
+            path: "knowledge/x.md".to_string(),
+            message: "AccessDenied http=403 forbidden".to_string(),
+        };
+        // is_alertable_error reads only the message, so the verdict is identical
+        // whether the path is the (auth) sentinel or a plain file path.
+        assert_eq!(is_alertable_error(&auth_err), is_alertable_error(&file_auth));
+        assert!(is_alertable_error(&auth_err));
+
+        let mut totals = RunTotals::default();
+        totals.record_error(&auth_err);
+        // The AUTH class rollup still names it from the message, independent of scope,
+        assert_eq!(totals.runner_error_rollup.fingerprint_token(), "auth");
+        // the alertable flag is set from the message,
+        assert!(totals.saw_alertable_error);
+        // and record_error never sets the reauth signal (that is the AuthError
+        // protocol event's job), so it stays false.
+        assert!(!totals.saw_auth_error);
+        // The site is attributed to the auth sentinel, spelled `identity` (never the
+        // `auth` substring Sentry's @password:filter eats), and never `file`.
+        assert_eq!(
+            totals.runner_error_sites.tag_value().as_deref(),
+            Some("identity:1")
+        );
+        assert_eq!(
+            totals.runner_error_scope().as_deref(),
+            Some("company:0,file:0,identity:1")
+        );
     }
 }

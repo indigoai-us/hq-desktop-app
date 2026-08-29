@@ -377,6 +377,14 @@ fn runner_exit_telemetry_context(
     if let Some(signature) = totals.runner_error_cause_signature.tag_value() {
         tags.push(("runner_error_cause_signature", signature));
     }
+    // The runner error SITE axis (HQ-DESKTOP-5M): names WHICH runner failure site
+    // produced the exit (`local_state`/`runner`/`scope`/`auth`/`company`/`discovery`/
+    // `file`), the axis every one of the six reported events lacked. Read from the
+    // SAME shared RunTotals source the watcher route reads; absent (no tag) when no
+    // runner error was recorded, so absence never renders as evidence.
+    if let Some(sites) = totals.runner_error_sites.tag_value() {
+        tags.push(("runner_error_sites", sites));
+    }
     // The coarse structural shape of the stderr lines the fatal classifier did
     // not recognise — the manual route's copy of the watcher route's
     // `runner_unmatched_stderr_shapes` axis (daemon.rs), rendered from the SAME
@@ -550,11 +558,28 @@ fn capture_runner_exit_error_with_termination_reason(
 ) {
     let termination = termination_fingerprint_token(code, signal);
     let error_class = totals.runner_error_rollup.fingerprint_token();
+    // Append the dominant CAUSE token as the fifth fingerprint element. The first
+    // four keep their exact position and meaning; the cause token splits the
+    // runner-termination catch-all so a named fault (e.g. vault_permission_denied)
+    // groups apart from the coarse class it shares (HQ-DESKTOP-4T r3). The token
+    // is `RunnerErrorCause::as_str()` of the dominant cause (or "none"), which
+    // already ships in the runner_error_causes tag — so no new byte reaches Sentry.
+    let error_cause = totals.runner_error_causes.fingerprint_token();
+    // Append the dominant SITE token as the sixth fingerprint element (HQ-DESKTOP-5M).
+    // The first five keep their exact position and meaning; the site token splits the
+    // runner-termination family by WHICH failure site produced the exit, so a
+    // `(local-state)`/`(runner)` exit-1 groups apart from the file/other catch-all it
+    // shared. The token is `RunnerErrorSite::as_str()` of the dominant site (or
+    // "none"), which already ships in the runner_error_sites tag — so no new byte
+    // reaches Sentry.
+    let error_site = totals.runner_error_sites.fingerprint_token();
     let fingerprint = [
         "sync",
         "runner-termination",
         termination.as_str(),
         error_class,
+        error_cause,
+        error_site,
     ];
     let (tags, extras) =
         runner_exit_telemetry_context(code, totals, context, sync_termination_reason);
@@ -3845,16 +3870,26 @@ mod tests {
             event.extra["runner_error_scope"],
             sentry::protocol::Value::String("company:8,file:160".to_string())
         );
+        // The SITE axis (HQ-DESKTOP-5M): the flood is per-file-dominant, so the
+        // dominant site is `file` (160 > 8) and the tag renders both sites.
+        assert_eq!(event.tags["runner_error_sites"], "file:160,company:8");
 
-        // (2) Pre-existing attribution + grouping unchanged.
-        assert_eq!(event.tags["runner_error_rollup"], "OTHER:168");
+        // (2) The op/fatal/route/stack axes are unchanged; the class rollup now
+        // names the 8 company-scope AccessDenied records AUTH via the r3
+        // cause→class bridge (the 160 unnamed pull-leg records stay OTHER), and
+        // the fingerprint gains the dominant cause as its fifth element while the
+        // dominant CLASS token stays "other" (160 > 8) — so the exit-2 family
+        // re-groups by cause without losing the class it always had.
+        assert_eq!(event.tags["runner_error_rollup"], "AUTH:8,OTHER:160");
         assert_eq!(event.tags["runner_error_ops"], "other:168");
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(event.tags["sync_route"], "manual");
         assert_eq!(event.tags["runner_stack_shape"], "all_redacted");
+        // The sixth fingerprint element is the dominant site (`file`), appended
+        // after the cause without disturbing the first five.
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "runner-termination", "exit:2", "other"]
+            vec!["sync", "runner-termination", "exit:2", "other", "unknown_unnamed", "file"]
         );
         assert_eq!(
             event.extra["saw_alertable_error"],
@@ -4136,6 +4171,268 @@ mod tests {
         }
     }
 
+    /// Artifact/E2E proof for HQ-DESKTOP-5M (the exit-1 `(local-state)` variant): a
+    /// genuine child emits a `fanout-plan` on stdout (so runner_phase=scan), then ONE
+    /// `(local-state)` ndjson error record plus one plain stderr line (so the tail is
+    /// `mixed`), then exits 1 — the exact wire shape of the reported event. Driving it
+    /// through the production capture path and `hq_telemetry::before_send` must (1)
+    /// first reproduce the observed baseline (scan phase, manual route, uncancelled,
+    /// mixed tail, alertable), proving the fixture is not a strawman, then (2) attribute
+    /// the exit to the `local_state` SITE — the tag names it, the scope routes it out of
+    /// the per-file arm, no `other:1` path root is emitted, and the sixth fingerprint
+    /// element is the site — while (3) leaking not one runner byte. On the base revision
+    /// the site tag is absent and the exit misroutes to `company:0,file:1` with
+    /// `path_roots=other:1`, so every new assertion fails.
+    #[test]
+    fn real_child_local_state_exit_1_is_attributed_to_its_site_and_content_safe() {
+        let stdout_lines = vec![serde_json::json!({
+            "type": "fanout-plan",
+            "companies": [{"uid": "cmp_1", "slug": "acme"}],
+        })
+        .to_string()];
+        let stderr_lines = vec![
+            serde_json::json!({
+                "type": "error",
+                "path": "(local-state)",
+                "message": "journal state store is unreadable at cmp_SECRET",
+            })
+            .to_string(),
+            "runner stopped unexpectedly".to_string(),
+        ];
+        let spawn = stdout_then_stderr_spawn_args(&stdout_lines, &stderr_lines, 1);
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().expect("temporary HQ folder");
+        let hq_folder_path = hq_folder.path().to_str().expect("UTF-8 temporary path");
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 1".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut stderr_sequence = 0_u32;
+        let mut stdout_sequence = 0_u32;
+        let mut unmatched = UnmatchedStderrShapeRollup::default();
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl(
+                "manual-runner-local-state-exit-1",
+                &spawn,
+                |event| match event {
+                    ProcessEvent::Stdout(line) => {
+                        if handle_sync_line(&handle, hq_folder_path, &totals, &phase, "test-jwt", &line)
+                        {
+                            stdout_sequence = stdout_sequence.saturating_add(1);
+                        }
+                    }
+                    ProcessEvent::Stderr(line) => {
+                        stderr_sequence = stderr_sequence.saturating_add(1);
+                        sentry::add_breadcrumb(runner_stderr_breadcrumb(stderr_sequence, &line));
+                        assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                        push_runner_stderr_tail(
+                            &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                            line.clone(),
+                        );
+                        unmatched.record_if_unmatched(&line);
+                    }
+                    ProcessEvent::Exit {
+                        code,
+                        signal,
+                        success,
+                    } => terminal = Some((code, signal, success)),
+                },
+            )
+            .expect("real fake runner should run");
+
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let mut context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                stderr_sequence,
+                stdout_sequence,
+                None,
+            );
+            context.runner_unmatched_stderr_shapes = unmatched.tag_value();
+            capture_runner_exit_error(Some(1), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(1), None, false)));
+        assert_eq!(stderr_sequence, 2);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("local-state exit event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // (1) The fixture reproduces the observed baseline, proving it matches the
+        // real event rather than a strawman.
+        assert_eq!(event.tags["runner_phase"], "scan");
+        assert_eq!(event.tags["sync_route"], "manual");
+        assert_eq!(event.tags["sync_termination_reason"], "uncancelled");
+        assert_eq!(event.tags["runner_stack_shape"], "all_redacted");
+        assert_eq!(
+            event.extra["runner_stack_input"],
+            sentry::protocol::Value::String("mixed".to_string())
+        );
+        assert_eq!(
+            event.extra["saw_alertable_error"],
+            sentry::protocol::Value::Bool(true)
+        );
+
+        // (2) The fix: the exit is attributed to the local_state SITE. The site tag
+        // names it, the scope split routes it out of the per-file arm, NO `other:1`
+        // path root is emitted, and the sixth fingerprint element is the site.
+        assert_eq!(event.tags["runner_error_sites"], "local_state:1");
+        assert_eq!(
+            event.extra["runner_error_scope"],
+            sentry::protocol::Value::String("company:0,file:0,local_state:1".to_string())
+        );
+        assert!(event.tags.iter().all(|(key, _)| key != "runner_error_path_roots"));
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:1",
+                "other",
+                "unknown_unnamed",
+                "local_state"
+            ]
+        );
+
+        // (3) No runner byte leaks: not the raw `(local-state)` sentinel, not the
+        // seeded token, not the plain stderr line.
+        for forbidden in ["(local-state)", "cmp_SECRET", "runner stopped unexpectedly"] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
+        }
+    }
+
+    /// Second HQ-DESKTOP-5M variant: a `(runner)` uncaught rejection whose message
+    /// carries an err.stack. It must attribute to the `runner` SITE, name the unlisted
+    /// class as UnknownNamed with a stable cause signature (the trailing-colon gate
+    /// fix), and shape the embedded stack instead of reporting `all_redacted` — while
+    /// leaking neither the class name nor any path fragment.
+    #[test]
+    fn real_child_runner_exit_1_names_the_site_signs_the_identity_and_shapes_the_stack() {
+        let stdout_lines = vec![serde_json::json!({
+            "type": "fanout-plan",
+            "companies": [{"uid": "cmp_1", "slug": "acme"}],
+        })
+        .to_string()];
+        let stderr_lines = vec![
+            serde_json::json!({
+                "type": "error",
+                "path": "(runner)",
+                "message": "VaultShardError: shard 7 unreadable\n    at loadShard (node:internal/modules/cjs/loader:120:5)\n    at Module._compile (node:internal/modules/cjs/loader:1560:14)",
+            })
+            .to_string(),
+            "runner terminated".to_string(),
+        ];
+        let spawn = stdout_then_stderr_spawn_args(&stdout_lines, &stderr_lines, 1);
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().expect("temporary HQ folder");
+        let hq_folder_path = hq_folder.path().to_str().expect("UTF-8 temporary path");
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 1".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut stderr_sequence = 0_u32;
+        let mut stdout_sequence = 0_u32;
+        let mut unmatched = UnmatchedStderrShapeRollup::default();
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl("manual-runner-runner-exit-1", &spawn, |event| match event {
+                ProcessEvent::Stdout(line) => {
+                    if handle_sync_line(&handle, hq_folder_path, &totals, &phase, "test-jwt", &line) {
+                        stdout_sequence = stdout_sequence.saturating_add(1);
+                    }
+                }
+                ProcessEvent::Stderr(line) => {
+                    stderr_sequence = stderr_sequence.saturating_add(1);
+                    sentry::add_breadcrumb(runner_stderr_breadcrumb(stderr_sequence, &line));
+                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                    push_runner_stderr_tail(
+                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                        line.clone(),
+                    );
+                    unmatched.record_if_unmatched(&line);
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => terminal = Some((code, signal, success)),
+            })
+            .expect("real fake runner should run");
+
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let mut context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                stderr_sequence,
+                stdout_sequence,
+                None,
+            );
+            context.runner_unmatched_stderr_shapes = unmatched.tag_value();
+            capture_runner_exit_error(Some(1), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(1), None, false)));
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("runner exit event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // The runner SITE is named, and the sixth fingerprint element carries it.
+        assert_eq!(event.tags["runner_error_sites"], "runner:1");
+        assert_eq!(
+            event.extra["runner_error_scope"],
+            sentry::protocol::Value::String("company:0,file:0,runner:1".to_string())
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:1",
+                "other",
+                "unknown_named",
+                "runner"
+            ]
+        );
+        // The unlisted identity is named + signed via the trailing-colon gate fix: the
+        // err.stack `VaultShardError:` yields the SAME 12-hex signature as its
+        // describeError form.
+        assert_eq!(event.tags["runner_error_causes"], "unknown_named:1");
+        assert_eq!(event.tags["runner_error_cause_signature"], "736cb6682b59:1");
+        // The embedded stack is shaped (recognised Node frames) instead of the
+        // tail-derived `all_redacted`; runner_stack_input still reports the TAIL.
+        assert_ne!(event.tags["runner_stack_shape"], "all_redacted");
+        assert!(event.tags["runner_stack_shape"].contains("node_cjs_loader"));
+        assert_eq!(
+            event.extra["runner_stack_input"],
+            sentry::protocol::Value::String("mixed".to_string())
+        );
+        // No runner byte leaks: not the class name, the function symbol, or the raw
+        // stack text. (The payload path is "(runner)" by design, so that is not a
+        // leak — only the seeded MESSAGE bytes are asserted absent.)
+        for forbidden in ["VaultShardError", "loadShard", "shard 7", "node:internal"] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
+        }
+    }
+
     #[test]
     fn real_child_unlisted_identity_is_named_or_signed_and_content_safe() {
         // The reopen's core proof through the PRODUCTION capture path: a
@@ -4373,7 +4670,7 @@ mod tests {
         );
         assert_eq!(
             scrubbed.fingerprint,
-            vec!["sync", "runner-termination", "exit:2", "eperm"]
+            vec!["sync", "runner-termination", "exit:2", "eperm", "eperm", "file"]
         );
         for forbidden in [
             "secret-plan.md",
@@ -4431,11 +4728,82 @@ mod tests {
         assert_eq!(
             fingerprints,
             vec![
-                vec!["sync", "runner-termination", "exit:2", "eperm"],
-                vec!["sync", "runner-termination", "exit:2", "auth"],
-                vec!["sync", "runner-termination", "exit:2", "none"],
+                // The per-file eperm and auth errors carry the `file` site; the
+                // error-free capture carries the `none` site sentinel (HQ-DESKTOP-5M).
+                vec!["sync", "runner-termination", "exit:2", "eperm", "eperm", "file"],
+                vec!["sync", "runner-termination", "exit:2", "auth", "unknown_unnamed", "file"],
+                vec!["sync", "runner-termination", "exit:2", "none", "none", "none"],
             ]
         );
+    }
+
+    #[test]
+    fn the_manual_runner_termination_fingerprint_appends_the_dominant_cause() {
+        // The HQ-DESKTOP-4T recurrence, driven through the production manual
+        // capture path: a company-scope VaultPermissionDeniedError exit-2. Before
+        // r3 every one of the issue's 23 events grouped on
+        // ["sync","runner-termination","exit:2","other"] because the keyword class
+        // matcher is blind to the named cause. It now classes AUTH and groups on a
+        // fifth cause element — away from the catch-all.
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message:
+                "VaultPermissionDeniedError http=403 host=hq-vault-cmp-acme.s3.amazonaws.com denied"
+                    .to_string(),
+        });
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let captures = sentry::test::with_captured_events(|| {
+            capture_runner_exit_error(
+                Some(2),
+                None,
+                &totals,
+                &payload,
+                &ManualRunnerExitContext::default(),
+            );
+        });
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+        // The black-box proof: the reported production event now groups AUTH and
+        // vault_permission_denied — no longer HQ-DESKTOP-4T's exit-2 catch-all.
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:2",
+                "auth",
+                "vault_permission_denied",
+                // Company-scope fault → the `company` site as the sixth element.
+                "company"
+            ]
+        );
+        assert_eq!(event.tags["runner_error_sites"], "company:1");
+        assert_eq!(event.tags["runner_error_rollup"], "AUTH:1");
+        assert_eq!(
+            event.tags["runner_error_causes"],
+            "vault_permission_denied:1"
+        );
+        // The identity is named, so no signature correlator is attached …
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_cause_signature"));
+        // … and no runner byte (the CamelCase name, the secret-looking host) leaks.
+        for forbidden in [
+            "hq-vault",
+            "amazonaws",
+            "VaultPermissionDeniedError",
+            "host=",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
+        }
     }
 
     #[test]
@@ -4478,6 +4846,8 @@ mod tests {
                 "sync",
                 "runner-termination",
                 "windows:fault:0xC0000409",
+                "none",
+                "none",
                 "none"
             ]
         );
@@ -5325,6 +5695,8 @@ mod tests {
                 "sync",
                 "runner-termination",
                 "windows:fault:0xC0000409",
+                "none",
+                "none",
                 "none"
             ]
         );

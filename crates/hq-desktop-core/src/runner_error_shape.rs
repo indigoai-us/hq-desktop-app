@@ -35,6 +35,28 @@ pub const COMPANY_ERROR_PATH_SENTINEL: &str = "(company)";
 /// distinct so a discovery failure is never miscounted as a per-file error.
 pub const DISCOVERY_ERROR_PATH_SENTINEL: &str = "(discovery)";
 
+/// Sentinel `path` the runner uses for a journal/state-store preflight failure
+/// (`sync-runner.ts`'s exit-1 local-state branch), emitted before any company or
+/// per-file work. Distinct so it is never miscounted as a per-file error and its
+/// literal string never becomes a `classify_runner_path_root` `other`.
+pub const LOCAL_STATE_ERROR_PATH_SENTINEL: &str = "(local-state)";
+
+/// Sentinel `path` the runner uses for a top-level uncaught rejection
+/// (`emitUncaughtRunnerError`, `sync-runner.ts`'s exit-1 catch), whose message
+/// carries an `err.stack ?? err.message` rather than a `describeError` rendering.
+/// Distinct so the exit is attributed to the runner boundary, not a phantom file.
+pub const RUNNER_ERROR_PATH_SENTINEL: &str = "(runner)";
+
+/// Sentinel `path` the runner uses for a scope-resolution error before per-file
+/// work. Distinct so it is never miscounted as a per-file error.
+pub const SCOPE_ERROR_PATH_SENTINEL: &str = "(scope)";
+
+/// Sentinel `path` the runner uses for an authentication/identity error at the
+/// runner boundary. Distinct so it is never miscounted as a per-file error; the
+/// re-authentication signal is driven independently by the message keyword and
+/// the `auth-error` protocol event, not by this scope.
+pub const AUTH_ERROR_PATH_SENTINEL: &str = "(auth)";
+
 /// Cap on how many entries a rollup renders into a single Sentry tag value,
 /// highest count first. Keeps the tag value bounded well under Sentry's 200-char
 /// tag-value limit even when many distinct shapes or path roots occur in one
@@ -61,7 +83,7 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// rather than silently collapsing to a flat `unknown`. The pin forces
 /// re-derivation on a coarse bump; the signature axis absorbs the fine drift in
 /// between.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.79";
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.15.95";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -475,6 +497,188 @@ impl RunnerErrorPathRootRollup {
     /// Render the top-N path roots by count as a bounded Sentry tag.
     pub fn tag_value(&self) -> Option<String> {
         render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Runner error SITE axis (HQ-DESKTOP-5M)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// hq-cloud's sync runner tags every error event with a `path` that is either a
+// genuine company-root-relative file key OR one of six non-file SENTINELS naming
+// WHERE the failure happened: `(company)`, `(discovery)`, `(local-state)`,
+// `(runner)`, `(scope)`, `(auth)`. The scope split in `RunTotals::record_error`
+// historically recognised only the first two and routed the other four through
+// the per-file arm, so a `(local-state)`/`(runner)`/`(scope)`/`(auth)` exit
+// reported `company:0,file:1` and fed the sentinel string to
+// `classify_runner_path_root`, which returned `other` — every attribution axis
+// read unknown/other. This closed enum names all six sites (plus `File` for a
+// genuine path) so each runner failure site is attributed rather than collapsing
+// into the file/other catch-all.
+
+/// The failure SITE a runner error event names through its `path`: one of the six
+/// hq-cloud sentinels, or `File` for a genuine company-root-relative file key.
+/// Content-safe: every rendered token is chosen in code, never copied from the
+/// runner's `path`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerErrorSite {
+    Company,
+    Discovery,
+    LocalState,
+    Runner,
+    Scope,
+    Auth,
+    File,
+}
+
+impl RunnerErrorSite {
+    /// Every variant, so classify/egress-drift tests can enumerate the emitter's
+    /// own site set instead of a hand-copied list.
+    pub const ALL: [RunnerErrorSite; 7] = [
+        Self::Company,
+        Self::Discovery,
+        Self::LocalState,
+        Self::Runner,
+        Self::Scope,
+        Self::Auth,
+        Self::File,
+    ];
+
+    /// Fixed vocabulary safe for Sentry tags. Never derived from the input path.
+    /// The `(auth)` site is spelled `identity`, NOT `auth`: Sentry's default
+    /// `@password:filter` scrubber deletes attribution carrying an `auth` substring
+    /// (the same reason the class breadcrumb and the cause vocabulary use
+    /// `identity`/`vault_identity`/`cognito_identity`), which would silently drop the
+    /// one newly-named sentinel's tag in production.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Company => "company",
+            Self::Discovery => "discovery",
+            Self::LocalState => "local_state",
+            Self::Runner => "runner",
+            Self::Scope => "scope",
+            Self::Auth => "identity",
+            Self::File => "file",
+        }
+    }
+
+    /// The hq-cloud `path` sentinel this site is emitted with, or `None` for a
+    /// genuine per-file path. EXHAUSTIVE over the enum with NO wildcard arm — the
+    /// same discipline `class_for_named_cause` uses — so a future site added as a
+    /// variant here is a compile error until its sentinel constant is wired.
+    /// `classify_runner_error_site` derives its matches from this, so the two can
+    /// never drift.
+    pub fn sentinel(self) -> Option<&'static str> {
+        match self {
+            Self::Company => Some(COMPANY_ERROR_PATH_SENTINEL),
+            Self::Discovery => Some(DISCOVERY_ERROR_PATH_SENTINEL),
+            Self::LocalState => Some(LOCAL_STATE_ERROR_PATH_SENTINEL),
+            Self::Runner => Some(RUNNER_ERROR_PATH_SENTINEL),
+            Self::Scope => Some(SCOPE_ERROR_PATH_SENTINEL),
+            Self::Auth => Some(AUTH_ERROR_PATH_SENTINEL),
+            Self::File => None,
+        }
+    }
+}
+
+/// Map an untrusted runner error `path` to its failure site. A path equal to one
+/// of the six sentinels maps to that site; anything else is a genuine file key
+/// and maps to `File`. Derived from `RunnerErrorSite::ALL` + `sentinel()`, so the
+/// recognised sentinel set can only be extended by adding a variant (a compile
+/// error until `as_str`/`sentinel`/the rollup are all updated), never drift
+/// silently behind the producer.
+pub fn classify_runner_error_site(path: &str) -> RunnerErrorSite {
+    for site in RunnerErrorSite::ALL {
+        if site.sentinel() == Some(path) {
+            return site;
+        }
+    }
+    RunnerErrorSite::File
+}
+
+/// Saturating per-pass counts of the closed runner-error-site vocabulary. Renders
+/// a compact Sentry tag such as `local_state:1` or `file:7204,company:3`. This is
+/// the axis that finally names WHICH runner failure site produced the exit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerErrorSiteRollup {
+    company: u32,
+    discovery: u32,
+    local_state: u32,
+    runner: u32,
+    scope: u32,
+    auth: u32,
+    file: u32,
+}
+
+impl RunnerErrorSiteRollup {
+    /// Classify one error path and increment its site count.
+    pub fn record(&mut self, path: &str) {
+        let count = match classify_runner_error_site(path) {
+            RunnerErrorSite::Company => &mut self.company,
+            RunnerErrorSite::Discovery => &mut self.discovery,
+            RunnerErrorSite::LocalState => &mut self.local_state,
+            RunnerErrorSite::Runner => &mut self.runner,
+            RunnerErrorSite::Scope => &mut self.scope,
+            RunnerErrorSite::Auth => &mut self.auth,
+            RunnerErrorSite::File => &mut self.file,
+        };
+        *count = count.saturating_add(1);
+    }
+
+    /// The recorded count for one site — used by `runner_error_scope` so the scope
+    /// split and this rollup are one source of truth, never two counters that can
+    /// disagree.
+    pub fn count(&self, site: RunnerErrorSite) -> u32 {
+        match site {
+            RunnerErrorSite::Company => self.company,
+            RunnerErrorSite::Discovery => self.discovery,
+            RunnerErrorSite::LocalState => self.local_state,
+            RunnerErrorSite::Runner => self.runner,
+            RunnerErrorSite::Scope => self.scope,
+            RunnerErrorSite::Auth => self.auth,
+            RunnerErrorSite::File => self.file,
+        }
+    }
+
+    /// Declaration-ordered `(token, count)` pairs — the stable tie-break for the
+    /// bounded renderer.
+    fn counts(&self) -> [(&'static str, u32); 7] {
+        [
+            (RunnerErrorSite::Company.as_str(), self.company),
+            (RunnerErrorSite::Discovery.as_str(), self.discovery),
+            (RunnerErrorSite::LocalState.as_str(), self.local_state),
+            (RunnerErrorSite::Runner.as_str(), self.runner),
+            (RunnerErrorSite::Scope.as_str(), self.scope),
+            (RunnerErrorSite::Auth.as_str(), self.auth),
+            (RunnerErrorSite::File.as_str(), self.file),
+        ]
+    }
+
+    /// Render the top-N sites by count as a bounded Sentry tag. `None` when no
+    /// runner error records were seen, so no tag should be sent.
+    pub fn tag_value(&self) -> Option<String> {
+        render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+
+    /// Choose a stable, content-safe group token for the dominant runner error
+    /// SITE this pass — the site-axis mirror of
+    /// `RunnerErrorCauseRollup::fingerprint_token`. Higher counts win; equal counts
+    /// deliberately preserve the fixed declaration order (strict `>`, iterated in
+    /// order) so the same multiset cannot make grouping flap. Returns
+    /// `RunnerErrorSite::as_str` of the dominant site — an enum-owned fixed string
+    /// that already ships inside the `runner_error_sites` tag, so appending it to a
+    /// Sentry fingerprint introduces no new byte — or `"none"` when this pass
+    /// recorded no runner error at all.
+    pub fn fingerprint_token(&self) -> &'static str {
+        let mut dominant: &'static str = "none";
+        let mut dominant_count = 0u32;
+        for (token, count) in self.counts() {
+            if count > dominant_count {
+                dominant = token;
+                dominant_count = count;
+            }
+        }
+        dominant
     }
 }
 
@@ -1269,8 +1473,29 @@ pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
 /// signed, or a customer- or company-derived first word could become an
 /// offline-decodable hash. The literal `Error` is excluded because
 /// `describeError` never emits it as a name.
+///
+/// An `err.stack` first line leads with `<Name>: <message>`, so an uncaught
+/// rejection shipped as a bare `err.stack` (the `(runner)` sentinel emitter,
+/// which bypasses `describeError`) carries its class identity with a trailing
+/// colon that the `describeError` rendering does not. At most ONE trailing ':' is
+/// trimmed — but ONLY when the message is a genuine `err.stack`, i.e. it carries a
+/// Node/V8 stack-frame line (`    at …`). This helper is invoked for EVERY runner
+/// error message, not just verified `(runner)` stacks, so gating the trim on the
+/// presence of a real frame keeps colon-terminated free prose (`AcmeCorp: failed
+/// to sync`) refused — its colon is not trimmed, matching the base behaviour, so a
+/// customer- or company-derived first word can never be hashed into a signature.
+/// After the (conditional) trim the gate below is applied UNCHANGED, so a
+/// path-with-colon (`/Users/x:12:`), a quoted token, a single-hump `Vault:`, and
+/// the literal `Error:` all still fail.
 fn leading_error_identity(message: &str) -> Option<&str> {
     let first = message.split_whitespace().next()?;
+    // Trim at most one trailing ':' ONLY for a genuine err.stack (a message with a
+    // stack-frame line); colon-terminated prose keeps its colon and stays refused.
+    let first = if message_has_stack_frame(message) {
+        first.strip_suffix(':').unwrap_or(first)
+    } else {
+        first
+    };
     if first == "Error" {
         return None;
     }
@@ -1286,6 +1511,30 @@ fn leading_error_identity(message: &str) -> Option<&str> {
         has_inner_upper |= byte.is_ascii_uppercase();
     }
     has_inner_upper.then_some(first)
+}
+
+/// True when the message carries a Node/V8 stack-frame line — a line whose trimmed
+/// form begins with `at ` AND carries a real frame location (a `(…)` or a
+/// `:<digit>` line number). This is the signal that a colon-terminated first token
+/// is a genuine `err.stack` header rather than colon-terminated free prose, and it
+/// gates the trailing-colon trim in [`leading_error_identity`]. Ordinary prose
+/// beginning `at ` (e.g. `at the vault`) carries no location and is not treated as
+/// a stack.
+fn message_has_stack_frame(message: &str) -> bool {
+    message.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("at ") && frame_line_has_location(line)
+    })
+}
+
+/// A V8 frame carries a parenthesised location `at name (file:line:col)` or a bare
+/// `at file:line:col`; both have a `(` or a `:<digit>`. Prose does not.
+fn frame_line_has_location(line: &str) -> bool {
+    line.contains('(')
+        || line
+            .as_bytes()
+            .windows(2)
+            .any(|pair| pair[0] == b':' && pair[1].is_ascii_digit())
 }
 
 /// The `runner_error_cause_signature` of a runner error message: the first
@@ -1359,6 +1608,29 @@ impl RunnerErrorCauseRollup {
     /// runner error records were seen, so no tag should be sent.
     pub fn tag_value(&self) -> Option<String> {
         render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+
+    /// Choose a stable, content-safe group token for the dominant runner error
+    /// CAUSE this pass — the cause-axis mirror of
+    /// `RunnerErrorClassRollup::fingerprint_token`. Higher counts win; equal
+    /// counts deliberately preserve the fixed `RunnerErrorCause::ALL` declaration
+    /// order so the same multiset cannot make grouping flap.
+    ///
+    /// The token is `RunnerErrorCause::as_str()` of the dominant variant — an
+    /// enum-owned fixed string that already ships today inside the
+    /// `runner_error_causes` tag value, so appending it to a Sentry fingerprint
+    /// introduces no new byte — or `"none"` when this pass recorded no runner
+    /// error at all (mirroring the class rollup's empty sentinel).
+    pub fn fingerprint_token(&self) -> &'static str {
+        let mut dominant: Option<RunnerErrorCause> = None;
+        let mut dominant_count = 0u32;
+        for (index, &count) in self.counts.iter().enumerate() {
+            if count > dominant_count {
+                dominant = Some(RunnerErrorCause::ALL[index]);
+                dominant_count = count;
+            }
+        }
+        dominant.map(RunnerErrorCause::as_str).unwrap_or("none")
     }
 }
 
@@ -1986,6 +2258,79 @@ mod tests {
     }
 
     #[test]
+    fn cause_rollup_fingerprint_token_picks_the_dominant_cause_and_breaks_ties_by_declaration_order()
+    {
+        // Empty rollup → the "none" sentinel, mirroring the class rollup so a pass
+        // with no runner error emits the same neutral group token both axes use.
+        assert_eq!(RunnerErrorCauseRollup::default().fingerprint_token(), "none");
+
+        // A clear plurality wins by count.
+        let mut dominant = RunnerErrorCauseRollup::default();
+        for _ in 0..160 {
+            dominant.record("presigned GET failed for repos/x: 500"); // unknown_unnamed
+        }
+        for _ in 0..8 {
+            dominant.record("AccessDenied http=403 denied"); // access_denied
+        }
+        assert_eq!(dominant.fingerprint_token(), "unknown_unnamed");
+
+        // Equal counts break by RunnerErrorCause::ALL declaration order, which is
+        // stable regardless of insertion order — access_denied precedes no_such_key.
+        let token_forward = {
+            let mut rollup = RunnerErrorCauseRollup::default();
+            rollup.record("AccessDenied http=403 denied");
+            rollup.record("NoSuchKey http=404 missing");
+            rollup.fingerprint_token()
+        };
+        let token_reversed = {
+            let mut rollup = RunnerErrorCauseRollup::default();
+            rollup.record("NoSuchKey http=404 missing");
+            rollup.record("AccessDenied http=403 denied");
+            rollup.fingerprint_token()
+        };
+        assert_eq!(token_forward, "access_denied");
+        assert_eq!(token_reversed, "access_denied");
+    }
+
+    #[test]
+    fn cause_rollup_fingerprint_token_only_ever_returns_an_enum_owned_token() {
+        // Content-safety pin: whatever adversarial bytes a runner message carries,
+        // the fingerprint token is always an enum-owned RunnerErrorCause::as_str()
+        // value (or the "none" sentinel) — never a copied runner byte.
+        let owned: std::collections::HashSet<&'static str> = RunnerErrorCause::ALL
+            .iter()
+            .map(|cause| cause.as_str())
+            .chain(std::iter::once("none"))
+            .collect();
+
+        let mut rollup = RunnerErrorCauseRollup::default();
+        for message in [
+            "VaultPermissionDeniedError host=hq-vault-cmp-SECRET.s3.amazonaws.com /Users/Ada/secret",
+            "code=ENOENT ENOENT: no such file, rename '/private/passphrase' -> '/x'",
+            "download skipped: local parent escaped the sync root",
+            "AccessDenied http=403 host=super-secret.internal denied",
+        ] {
+            rollup.record(message);
+            assert!(
+                owned.contains(rollup.fingerprint_token()),
+                "fingerprint token {:?} is not an enum-owned RunnerErrorCause token",
+                rollup.fingerprint_token()
+            );
+        }
+
+        // And the token carries none of the secret-looking bytes those messages held.
+        let token = rollup.fingerprint_token();
+        for fragment in [
+            "hq-vault", "SECRET", "amazonaws", "Users", "Ada", "passphrase", "internal",
+        ] {
+            assert!(
+                !token.contains(fragment),
+                "fingerprint token {token:?} leaked runner fragment {fragment:?}"
+            );
+        }
+    }
+
+    #[test]
     fn new_rollups_are_order_independent_for_the_same_multiset() {
         let messages = [
             "AccessDenied http=403 denied",
@@ -2483,5 +2828,154 @@ mod tests {
             );
             assert_eq!(runner_error_cause_signature(prose), None);
         }
+    }
+
+    // ── Runner error SITE axis (HQ-DESKTOP-5M) ───────────────────────────────
+
+    #[test]
+    fn runner_error_site_vocabulary_is_the_closed_hq_cloud_sentinel_set() {
+        use std::collections::HashSet;
+        // Every non-File site round-trips through its own sentinel; each token and
+        // sentinel is distinct. Adding a variant without wiring its sentinel/as_str
+        // is a compile error (the exhaustive matches), so this closed set cannot
+        // drift behind the producer.
+        let mut tokens = HashSet::new();
+        let mut sentinels = HashSet::new();
+        for site in RunnerErrorSite::ALL {
+            assert!(tokens.insert(site.as_str()), "duplicate token {}", site.as_str());
+            match site.sentinel() {
+                Some(sentinel) => {
+                    assert!(sentinels.insert(sentinel), "duplicate sentinel {sentinel}");
+                    assert_eq!(classify_runner_error_site(sentinel), site);
+                    // The emitted token is NEVER the raw sentinel string.
+                    assert_ne!(site.as_str(), sentinel);
+                }
+                None => assert_eq!(site, RunnerErrorSite::File),
+            }
+        }
+        // The six hq-cloud error-event sentinels are each recognised — none collapses
+        // into `File` the way `(local-state)`/`(runner)`/`(scope)`/`(auth)` did.
+        for sentinel in [
+            "(company)",
+            "(discovery)",
+            "(local-state)",
+            "(runner)",
+            "(scope)",
+            "(auth)",
+        ] {
+            assert_ne!(
+                classify_runner_error_site(sentinel),
+                RunnerErrorSite::File,
+                "producer sentinel {sentinel} must not collapse to File"
+            );
+        }
+        // A genuine relative key is a File; near-miss spellings (wrong punctuation,
+        // underscore-vs-hyphen, casing) are Files too — only the exact strings match.
+        for path in [
+            "knowledge/a.md",
+            "companies/acme/x",
+            "local-state",
+            "(local_state)",
+            "(Runner)",
+            "runner",
+        ] {
+            assert_eq!(classify_runner_error_site(path), RunnerErrorSite::File, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn runner_error_site_rollup_renders_bounded_tags_and_a_stable_fingerprint() {
+        let mut rollup = RunnerErrorSiteRollup::default();
+        // Empty renders no tag and the "none" fingerprint sentinel.
+        assert_eq!(rollup.tag_value(), None);
+        assert_eq!(rollup.fingerprint_token(), "none");
+        // One (local-state) error — the observed HQ-DESKTOP-5M shape: names the site
+        // instead of collapsing to `other`.
+        rollup.record("(local-state)");
+        assert_eq!(rollup.tag_value().as_deref(), Some("local_state:1"));
+        assert_eq!(rollup.fingerprint_token(), "local_state");
+        assert_eq!(rollup.count(RunnerErrorSite::LocalState), 1);
+        assert_eq!(rollup.count(RunnerErrorSite::File), 0);
+        // A file flood dominates; the tag is bounded to top-N and the dominant token
+        // drives the fingerprint. Equal counts keep declaration order (company < local_state).
+        for _ in 0..7204 {
+            rollup.record("knowledge/x.md");
+        }
+        rollup.record("(company)");
+        let tag = rollup.tag_value().expect("nonzero rollup renders a tag");
+        assert!(tag.split(',').count() <= ROLLUP_TAG_TOP_N);
+        assert!(tag.starts_with("file:7204"), "dominant site leads: {tag}");
+        assert_eq!(rollup.fingerprint_token(), "file");
+        // Content safety: no rendered token is ever a raw sentinel or path byte.
+        for forbidden in ["(company)", "(local-state)", "knowledge"] {
+            assert!(!tag.contains(forbidden), "rollup tag leaked {forbidden:?}: {tag}");
+        }
+    }
+
+    #[test]
+    fn leading_error_identity_trims_one_trailing_colon_only_for_real_err_stacks() {
+        // An err.stack first line `<Name>: <msg>` is followed by `    at …` frames;
+        // the trailing colon is trimmed ONLY then, so the SAME identity signs to the
+        // SAME hash in err.stack and describeError form — the exit-1 gap this closes.
+        let stack_msg =
+            "VaultShardError: shard 7 unreadable\n    at loadShard (node:internal/modules/cjs/loader:9:9)";
+        assert_eq!(leading_error_identity(stack_msg), Some("VaultShardError"));
+        assert_eq!(
+            leading_error_identity("VaultShardError shard 7 unreadable"),
+            Some("VaultShardError")
+        );
+        let stack = runner_error_cause_signature(stack_msg).expect("stack-form identity is signed");
+        let described = runner_error_cause_signature("VaultShardError shard 7 unreadable")
+            .expect("described-form identity is signed");
+        assert_eq!(stack, described, "both forms sign identically");
+        assert_eq!(stack, "736cb6682b59", "sha256 hex12 of the trimmed identity");
+        assert_eq!(classify_runner_error_cause(stack_msg), RunnerErrorCause::UnknownNamed);
+
+        // Colon-terminated FREE PROSE with NO stack frame keeps its colon and stays
+        // unsigned — the privacy gate: a customer/company-derived first word is never
+        // hashed. Each behaves exactly as it did on the base revision.
+        for prose in [
+            "AcmeCorp: failed to sync",
+            "VaultShardError: shard 7 unreadable", // colon, but no frame line
+            "Something: went wrong at the vault",  // "at" mid-line is not a frame
+        ] {
+            assert_eq!(leading_error_identity(prose), None, "colon-prose must stay refused: {prose:?}");
+            assert_eq!(
+                runner_error_cause_signature(prose),
+                None,
+                "colon-prose must stay unsigned: {prose:?}"
+            );
+        }
+
+        // Only ONE trailing colon is trimmed and every other gate rule still holds —
+        // even with a real frame present, the literal `Error:`, a single-hump `Vault:`,
+        // a path-with-colons, and a quoted token all stay unnamed and unsigned.
+        for refused in [
+            "Error: boom\n    at x (y:1:1)",
+            "Vault: single hump\n    at x (y:1:1)",
+            "/Users/x/dist/a.js:12: frame\n    at x (y:1:1)",
+            "'quoted:' value\n    at x (y:1:1)",
+        ] {
+            assert_eq!(leading_error_identity(refused), None, "must stay refused: {refused:?}");
+            assert_eq!(
+                runner_error_cause_signature(refused),
+                None,
+                "must stay unsigned: {refused:?}"
+            );
+        }
+        // A LISTED identity carrying a trailing colon still resolves to its named cause
+        // (classify step 1, independent of frames) and carries no signature.
+        assert_eq!(
+            classify_runner_error_cause("VaultPermissionDeniedError: denied"),
+            RunnerErrorCause::VaultPermissionDenied
+        );
+        assert_eq!(
+            runner_error_cause_signature("VaultPermissionDeniedError: denied"),
+            None
+        );
+        assert_eq!(
+            classify_runner_error_cause("TypeError: x is not a function"),
+            RunnerErrorCause::TypeError
+        );
     }
 }
