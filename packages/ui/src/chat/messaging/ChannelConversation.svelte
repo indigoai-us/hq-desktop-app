@@ -53,6 +53,7 @@
     mentionTextForTarget,
     mergeMentionTargets,
     replaceActiveMention,
+    storedMentionType,
     type MentionTarget,
   } from "../mentions.js";
 
@@ -110,6 +111,9 @@
     }) => void;
     /** personUid → presigned avatar URL for real profile photos. */
     avatarByUid?: Record<string, string>;
+    /** personUid → live roster display name (profile override), preferred over
+     *  the name baked into each message at send time. */
+    displayNameByUid?: Record<string, string>;
   }
 
   let {
@@ -131,6 +135,7 @@
     selfPersonUid = null,
     onopenprofile,
     avatarByUid = {},
+    displayNameByUid = {},
   }: Props = $props();
 
   /** Real avatar for a message's author, when the roster carried one. */
@@ -258,13 +263,17 @@
   });
 
   function messageAuthor(msg: ConversationMessageWire): string {
-    return msg.fromDisplayName?.trim() || msg.fromEmail || "Unknown";
+    // Prefer the live roster display name (the sender's profile override) over
+    // the full name baked into the message at send time.
+    const uid = (msg.fromPersonUid ?? "").trim();
+    const live = uid ? displayNameByUid[uid]?.trim() : "";
+    return live || msg.fromDisplayName?.trim() || msg.fromEmail || "Unknown";
   }
 
   function storedMentions(msg: ConversationMessageWire): MentionTarget[] {
     return (msg.mentions ?? []).map((row) => ({
       participantUid: row.participantUid,
-      participantType: row.participantType === "agent" ? "agent" : "human",
+      participantType: storedMentionType(row),
       displayName: row.displayName,
     }));
   }
@@ -1778,6 +1787,14 @@
   .dm-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  /* Touch input has no hover state, so a hover-only toolbar is unreachable. */
+  @media (hover: none) {
+    .dm-quick-react {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 
   .dm-quick-react-picker-wrap {

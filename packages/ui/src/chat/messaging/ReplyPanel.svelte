@@ -13,6 +13,12 @@
   import MessageAttachments from "./MessageAttachments.svelte";
   import PromptAttachment from "./PromptAttachment.svelte";
   import ReactionBar from "./ReactionBar.svelte";
+  import EmojiPicker from "./EmojiPicker.svelte";
+  import {
+    applyMentionMarkup,
+    storedMentionType,
+    type MentionTarget,
+  } from "../mentions.js";
   import { parseMessageAttachments } from "./channelMessageModels";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import {
@@ -79,6 +85,13 @@
     ) => void;
     /** personUid → presigned avatar URL for real profile photos. */
     avatarByUid?: Record<string, string>;
+    /** personUid → live roster display name (profile override). */
+    displayNameByUid?: Record<string, string>;
+    /** Open a person's profile panel when their name/avatar/mention is clicked. */
+    onopenprofile?: (author: {
+      personUid: string;
+      displayName: string;
+    }) => void;
   }
 
   let {
@@ -98,7 +111,46 @@
     onclose,
     onreplycount,
     avatarByUid = {},
+    displayNameByUid = {},
+    onopenprofile,
   }: Props = $props();
+
+  const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
+  let reactPickerFor = $state<string | null>(null);
+
+  /** Open the author's profile panel (humans only — agents have no profile). */
+  function openAuthorProfile(msg: ConversationMessageWire | null): void {
+    if (!msg || !onopenprofile || isAgent(msg)) return;
+    const personUid = (msg.fromPersonUid ?? "").trim();
+    if (!personUid) return;
+    onopenprofile({ personUid, displayName: messageAuthor(msg) });
+  }
+
+  /** Delegated open when a clickable @mention span is activated in a body. */
+  function onMentionActivate(
+    event: MouseEvent | KeyboardEvent,
+    node: EventTarget | null,
+  ): void {
+    if (!onopenprofile || !(node instanceof HTMLElement)) return;
+    const span = node.closest<HTMLElement>("[data-person-uid]");
+    const personUid = span?.dataset.personUid?.trim();
+    if (!span || !personUid) return;
+    event.preventDefault();
+    onopenprofile({
+      personUid,
+      displayName: span.textContent?.replace(/^@/, "").trim() || personUid,
+    });
+  }
+
+  function storedMentions(
+    msg: ConversationMessageWire | null,
+  ): MentionTarget[] {
+    return (msg?.mentions ?? []).map((row) => ({
+      participantUid: row.participantUid,
+      participantType: storedMentionType(row),
+      displayName: row.displayName,
+    }));
+  }
 
   /** Real avatar for a thread message's author, when known. */
   function replyAvatarFor(
@@ -128,7 +180,9 @@
   });
 
   function messageAuthor(msg: ConversationMessageWire): string {
-    return msg.fromDisplayName?.trim() || msg.fromEmail || "Unknown";
+    const uid = (msg.fromPersonUid ?? "").trim();
+    const live = uid ? displayNameByUid[uid]?.trim() : "";
+    return live || msg.fromDisplayName?.trim() || msg.fromEmail || "Unknown";
   }
 
   function isAgent(msg: ConversationMessageWire): boolean {
@@ -435,6 +489,7 @@
 
   <div class="reply-root" data-testid="reply-panel-root">
     {#if root}
+      {@const rootId = root.eventId}
       <span class="reply-avatar" aria-hidden="true">
         <IdentityMark
           kind={isAgent(root) ? "agent" : "person"}
@@ -445,13 +500,34 @@
       </span>
       <div class="reply-col">
         <div class="reply-meta">
-          <span class="reply-root-author">{messageAuthor(root)}</span>
+          {#if onopenprofile && !isAgent(root) && (root.fromPersonUid ?? "").trim()}
+            <button
+              type="button"
+              class="reply-root-author reply-author-btn"
+              data-testid="reply-root-author-open"
+              onclick={() => openAuthorProfile(root)}
+              >{messageAuthor(root)}</button
+            >
+          {:else}
+            <span class="reply-root-author">{messageAuthor(root)}</span>
+          {/if}
           <span class="reply-time">{formatTime(root.createdAt)}</span>
         </div>
         <div class="reply-root-body">
           {#if root.body?.trim()}
-            <div class="reply-md">
-              {@html renderMessageBodyMarkdown(root.body ?? "")}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="reply-md"
+              onclick={(e) => onMentionActivate(e, e.target)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ")
+                  onMentionActivate(e, e.target);
+              }}
+            >
+              {@html applyMentionMarkup(
+                renderMessageBodyMarkdown(root.body ?? ""),
+                storedMentions(root),
+              )}
             </div>
           {/if}
           {#if root.details?.trim()}
@@ -474,12 +550,53 @@
             resolveUrl={resolveAttachmentUrl}
           />
         </div>
-        <ReactionBar
-          messageId={root.eventId}
-          reactions={reactionsFor(root.eventId)}
-          ontoggle={toggle}
-          compact
-        />
+        {#if reactionsFor(rootId).length > 0}
+          <ReactionBar
+            messageId={rootId}
+            reactions={reactionsFor(rootId)}
+            ontoggle={toggle}
+            compact
+          />
+        {/if}
+        <div
+          class="reply-quick-react reply-quick-react-root"
+          role="group"
+          aria-label="Message actions"
+        >
+          {#each QUICK_REACT_EMOJI as emoji (emoji)}
+            <button
+              type="button"
+              class="reply-quick-react-btn"
+              onclick={() => toggle(rootId, emoji)}
+              aria-label={`React with ${emoji}`}
+            >
+              {emoji}
+            </button>
+          {/each}
+          <span class="reply-quick-react-picker-wrap">
+            <button
+              type="button"
+              class="reply-quick-react-btn reply-quick-react-more"
+              aria-label="Add a reaction"
+              title="Add a reaction"
+              aria-haspopup="menu"
+              aria-expanded={reactPickerFor === rootId}
+              onclick={() =>
+                (reactPickerFor = reactPickerFor === rootId ? null : rootId)}
+            >
+              +
+            </button>
+            {#if reactPickerFor === rootId}
+              <EmojiPicker
+                onpick={(emoji) => {
+                  reactPickerFor = null;
+                  toggle(rootId, emoji);
+                }}
+                onclose={() => (reactPickerFor = null)}
+              />
+            {/if}
+          </span>
+        </div>
         <span class="reply-root-label">
           {replyCount}
           {replyCount === 1 ? "reply" : "replies"}
@@ -520,12 +637,33 @@
             </span>
             <div class="reply-col">
               <div class="reply-meta">
-                <span class="reply-author">{messageAuthor(msg)}</span>
+                {#if onopenprofile && !isAgent(msg) && (msg.fromPersonUid ?? "").trim()}
+                  <button
+                    type="button"
+                    class="reply-author reply-author-btn"
+                    data-testid="reply-author-open"
+                    onclick={() => openAuthorProfile(msg)}
+                    >{messageAuthor(msg)}</button
+                  >
+                {:else}
+                  <span class="reply-author">{messageAuthor(msg)}</span>
+                {/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
               {#if msg.body?.trim()}
-                <div class="reply-md">
-                  {@html renderMessageBodyMarkdown(msg.body ?? "")}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="reply-md"
+                  onclick={(e) => onMentionActivate(e, e.target)}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ")
+                      onMentionActivate(e, e.target);
+                  }}
+                >
+                  {@html applyMentionMarkup(
+                    renderMessageBodyMarkdown(msg.body ?? ""),
+                    storedMentions(msg),
+                  )}
                 </div>
               {/if}
               <MessageAttachments
@@ -533,13 +671,55 @@
                 onopen={onopenattachment}
                 resolveUrl={resolveAttachmentUrl}
               />
-              {#if !msg.eventId.startsWith("local-")}
+              {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
                   messageId={msg.eventId}
                   reactions={reactionsFor(msg.eventId)}
                   ontoggle={toggle}
                   compact
                 />
+              {/if}
+              {#if !msg.eventId.startsWith("local-")}
+                <div
+                  class="reply-quick-react"
+                  role="group"
+                  aria-label="Message actions"
+                >
+                  {#each QUICK_REACT_EMOJI as emoji (emoji)}
+                    <button
+                      type="button"
+                      class="reply-quick-react-btn"
+                      onclick={() => toggle(msg.eventId, emoji)}
+                      aria-label={`React with ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  {/each}
+                  <span class="reply-quick-react-picker-wrap">
+                    <button
+                      type="button"
+                      class="reply-quick-react-btn reply-quick-react-more"
+                      aria-label="Add a reaction"
+                      title="Add a reaction"
+                      aria-haspopup="menu"
+                      aria-expanded={reactPickerFor === msg.eventId}
+                      onclick={() =>
+                        (reactPickerFor =
+                          reactPickerFor === msg.eventId ? null : msg.eventId)}
+                    >
+                      +
+                    </button>
+                    {#if reactPickerFor === msg.eventId}
+                      <EmojiPicker
+                        onpick={(emoji) => {
+                          reactPickerFor = null;
+                          toggle(msg.eventId, emoji);
+                        }}
+                        onclose={() => (reactPickerFor = null)}
+                      />
+                    {/if}
+                  </span>
+                </div>
               {/if}
               {#if msg.sendStatus === "sending"}
                 <span class="reply-send-state" role="status">Sending…</span>
@@ -711,12 +891,34 @@
   }
 
   .reply-root {
+    position: relative;
     flex-shrink: 0;
     display: grid;
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 8px;
     padding: 12px 16px 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  }
+
+  .reply-root:hover .reply-quick-react-root,
+  .reply-root:focus-within .reply-quick-react-root,
+  .reply-quick-react-root:has([aria-expanded="true"]) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Touch input has no hover state, so a hover-only toolbar is unreachable. */
+  @media (hover: none) {
+    .reply-quick-react-root {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  /* Root sits at the panel top — anchor its toolbar inside the row, not above. */
+  .reply-quick-react-root {
+    top: 8px;
+    right: 16px;
   }
 
   .reply-root-meta {
@@ -735,6 +937,42 @@
     font-size: 13px;
     font-weight: 700;
     color: var(--t1);
+  }
+
+  button.reply-author-btn {
+    padding: 0;
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  button.reply-author-btn:hover {
+    text-decoration: underline;
+  }
+
+  button.reply-author-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Clickable @mentions inside a thread message body. */
+  .reply-md :global(.inline-mention) {
+    background: rgba(99, 102, 241, 0.2);
+    border-radius: 3px;
+    color: var(--vio-ink, #c7d2fe);
+    font-weight: 700;
+    padding: 0 2px;
+  }
+
+  .reply-md :global(.inline-mention[data-person-uid]) {
+    cursor: pointer;
+  }
+
+  .reply-md :global(.inline-mention[data-person-uid]:hover) {
+    text-decoration: underline;
   }
 
   .reply-time {
@@ -789,20 +1027,85 @@
     padding: 8px 12px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
   }
 
   .reply-row {
+    position: relative;
     display: grid;
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 8px;
     align-items: start;
-    padding: 4px 4px;
+    padding: 5px 8px;
     border-radius: 6px;
   }
 
   .reply-row:hover {
     background: color-mix(in srgb, var(--t1) 4%, transparent);
+  }
+
+  /* Hover quick-react toolbar — matches the main-chat .dm-quick-react: an
+     opaque floating bar (quick emojis + picker) that takes no layout space, so
+     rows stay tight and the affordance only appears on hover/focus. */
+  .reply-quick-react {
+    position: absolute;
+    top: -12px;
+    right: 8px;
+    z-index: 2;
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    border-radius: 8px;
+    background-color: var(--v4-ground, #1c1c1f);
+    background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  .reply-row:hover .reply-quick-react,
+  .reply-row:focus-within .reply-quick-react,
+  .reply-quick-react:has([aria-expanded="true"]) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  @media (hover: none) {
+    .reply-quick-react {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  .reply-quick-react-picker-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .reply-quick-react-more {
+    color: var(--t2, var(--pop-muted));
+    font-weight: 600;
+  }
+
+  .reply-quick-react-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 24px;
+    padding: 0 0.25rem;
+    border: 0;
+    border-radius: 6px;
+    background: var(--pop-hover);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .reply-quick-react-btn:hover {
+    background: var(--c-field-bg);
   }
 
   .reply-col {
