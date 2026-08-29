@@ -550,11 +550,19 @@ fn capture_runner_exit_error_with_termination_reason(
 ) {
     let termination = termination_fingerprint_token(code, signal);
     let error_class = totals.runner_error_rollup.fingerprint_token();
+    // Append the dominant CAUSE token as the fifth fingerprint element. The first
+    // four keep their exact position and meaning; the cause token splits the
+    // runner-termination catch-all so a named fault (e.g. vault_permission_denied)
+    // groups apart from the coarse class it shares (HQ-DESKTOP-4T r3). The token
+    // is `RunnerErrorCause::as_str()` of the dominant cause (or "none"), which
+    // already ships in the runner_error_causes tag — so no new byte reaches Sentry.
+    let error_cause = totals.runner_error_causes.fingerprint_token();
     let fingerprint = [
         "sync",
         "runner-termination",
         termination.as_str(),
         error_class,
+        error_cause,
     ];
     let (tags, extras) =
         runner_exit_telemetry_context(code, totals, context, sync_termination_reason);
@@ -3846,15 +3854,20 @@ mod tests {
             sentry::protocol::Value::String("company:8,file:160".to_string())
         );
 
-        // (2) Pre-existing attribution + grouping unchanged.
-        assert_eq!(event.tags["runner_error_rollup"], "OTHER:168");
+        // (2) The op/fatal/route/stack axes are unchanged; the class rollup now
+        // names the 8 company-scope AccessDenied records AUTH via the r3
+        // cause→class bridge (the 160 unnamed pull-leg records stay OTHER), and
+        // the fingerprint gains the dominant cause as its fifth element while the
+        // dominant CLASS token stays "other" (160 > 8) — so the exit-2 family
+        // re-groups by cause without losing the class it always had.
+        assert_eq!(event.tags["runner_error_rollup"], "AUTH:8,OTHER:160");
         assert_eq!(event.tags["runner_error_ops"], "other:168");
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(event.tags["sync_route"], "manual");
         assert_eq!(event.tags["runner_stack_shape"], "all_redacted");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "runner-termination", "exit:2", "other"]
+            vec!["sync", "runner-termination", "exit:2", "other", "unknown_unnamed"]
         );
         assert_eq!(
             event.extra["saw_alertable_error"],
@@ -4373,7 +4386,7 @@ mod tests {
         );
         assert_eq!(
             scrubbed.fingerprint,
-            vec!["sync", "runner-termination", "exit:2", "eperm"]
+            vec!["sync", "runner-termination", "exit:2", "eperm", "eperm"]
         );
         for forbidden in [
             "secret-plan.md",
@@ -4431,11 +4444,77 @@ mod tests {
         assert_eq!(
             fingerprints,
             vec![
-                vec!["sync", "runner-termination", "exit:2", "eperm"],
-                vec!["sync", "runner-termination", "exit:2", "auth"],
-                vec!["sync", "runner-termination", "exit:2", "none"],
+                vec!["sync", "runner-termination", "exit:2", "eperm", "eperm"],
+                vec!["sync", "runner-termination", "exit:2", "auth", "unknown_unnamed"],
+                vec!["sync", "runner-termination", "exit:2", "none", "none"],
             ]
         );
+    }
+
+    #[test]
+    fn the_manual_runner_termination_fingerprint_appends_the_dominant_cause() {
+        // The HQ-DESKTOP-4T recurrence, driven through the production manual
+        // capture path: a company-scope VaultPermissionDeniedError exit-2. Before
+        // r3 every one of the issue's 23 events grouped on
+        // ["sync","runner-termination","exit:2","other"] because the keyword class
+        // matcher is blind to the named cause. It now classes AUTH and groups on a
+        // fifth cause element — away from the catch-all.
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message:
+                "VaultPermissionDeniedError http=403 host=hq-vault-cmp-acme.s3.amazonaws.com denied"
+                    .to_string(),
+        });
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let captures = sentry::test::with_captured_events(|| {
+            capture_runner_exit_error(
+                Some(2),
+                None,
+                &totals,
+                &payload,
+                &ManualRunnerExitContext::default(),
+            );
+        });
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+        // The black-box proof: the reported production event now groups AUTH and
+        // vault_permission_denied — no longer HQ-DESKTOP-4T's exit-2 catch-all.
+        assert_eq!(
+            event.fingerprint,
+            vec![
+                "sync",
+                "runner-termination",
+                "exit:2",
+                "auth",
+                "vault_permission_denied"
+            ]
+        );
+        assert_eq!(event.tags["runner_error_rollup"], "AUTH:1");
+        assert_eq!(
+            event.tags["runner_error_causes"],
+            "vault_permission_denied:1"
+        );
+        // The identity is named, so no signature correlator is attached …
+        assert!(event
+            .tags
+            .iter()
+            .all(|(key, _)| key != "runner_error_cause_signature"));
+        // … and no runner byte (the CamelCase name, the secret-looking host) leaks.
+        for forbidden in [
+            "hq-vault",
+            "amazonaws",
+            "VaultPermissionDeniedError",
+            "host=",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden:?}");
+        }
     }
 
     #[test]
@@ -4478,6 +4557,7 @@ mod tests {
                 "sync",
                 "runner-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none"
             ]
         );
@@ -5325,6 +5405,7 @@ mod tests {
                 "sync",
                 "runner-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none"
             ]
         );

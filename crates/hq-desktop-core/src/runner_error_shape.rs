@@ -1360,6 +1360,29 @@ impl RunnerErrorCauseRollup {
     pub fn tag_value(&self) -> Option<String> {
         render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
     }
+
+    /// Choose a stable, content-safe group token for the dominant runner error
+    /// CAUSE this pass — the cause-axis mirror of
+    /// `RunnerErrorClassRollup::fingerprint_token`. Higher counts win; equal
+    /// counts deliberately preserve the fixed `RunnerErrorCause::ALL` declaration
+    /// order so the same multiset cannot make grouping flap.
+    ///
+    /// The token is `RunnerErrorCause::as_str()` of the dominant variant — an
+    /// enum-owned fixed string that already ships today inside the
+    /// `runner_error_causes` tag value, so appending it to a Sentry fingerprint
+    /// introduces no new byte — or `"none"` when this pass recorded no runner
+    /// error at all (mirroring the class rollup's empty sentinel).
+    pub fn fingerprint_token(&self) -> &'static str {
+        let mut dominant: Option<RunnerErrorCause> = None;
+        let mut dominant_count = 0u32;
+        for (index, &count) in self.counts.iter().enumerate() {
+            if count > dominant_count {
+                dominant = Some(RunnerErrorCause::ALL[index]);
+                dominant_count = count;
+            }
+        }
+        dominant.map(RunnerErrorCause::as_str).unwrap_or("none")
+    }
 }
 
 /// Saturating per-pass counts of the `runner_error_cause_signature` axis: a
@@ -1983,6 +2006,79 @@ mod tests {
         assert_eq!(value, "unknown_unnamed:160,access_denied:8,no_such_key:8");
         assert!(value.split(',').count() <= ROLLUP_TAG_TOP_N);
         assert_eq!(RunnerErrorCauseRollup::default().tag_value(), None);
+    }
+
+    #[test]
+    fn cause_rollup_fingerprint_token_picks_the_dominant_cause_and_breaks_ties_by_declaration_order()
+    {
+        // Empty rollup → the "none" sentinel, mirroring the class rollup so a pass
+        // with no runner error emits the same neutral group token both axes use.
+        assert_eq!(RunnerErrorCauseRollup::default().fingerprint_token(), "none");
+
+        // A clear plurality wins by count.
+        let mut dominant = RunnerErrorCauseRollup::default();
+        for _ in 0..160 {
+            dominant.record("presigned GET failed for repos/x: 500"); // unknown_unnamed
+        }
+        for _ in 0..8 {
+            dominant.record("AccessDenied http=403 denied"); // access_denied
+        }
+        assert_eq!(dominant.fingerprint_token(), "unknown_unnamed");
+
+        // Equal counts break by RunnerErrorCause::ALL declaration order, which is
+        // stable regardless of insertion order — access_denied precedes no_such_key.
+        let token_forward = {
+            let mut rollup = RunnerErrorCauseRollup::default();
+            rollup.record("AccessDenied http=403 denied");
+            rollup.record("NoSuchKey http=404 missing");
+            rollup.fingerprint_token()
+        };
+        let token_reversed = {
+            let mut rollup = RunnerErrorCauseRollup::default();
+            rollup.record("NoSuchKey http=404 missing");
+            rollup.record("AccessDenied http=403 denied");
+            rollup.fingerprint_token()
+        };
+        assert_eq!(token_forward, "access_denied");
+        assert_eq!(token_reversed, "access_denied");
+    }
+
+    #[test]
+    fn cause_rollup_fingerprint_token_only_ever_returns_an_enum_owned_token() {
+        // Content-safety pin: whatever adversarial bytes a runner message carries,
+        // the fingerprint token is always an enum-owned RunnerErrorCause::as_str()
+        // value (or the "none" sentinel) — never a copied runner byte.
+        let owned: std::collections::HashSet<&'static str> = RunnerErrorCause::ALL
+            .iter()
+            .map(|cause| cause.as_str())
+            .chain(std::iter::once("none"))
+            .collect();
+
+        let mut rollup = RunnerErrorCauseRollup::default();
+        for message in [
+            "VaultPermissionDeniedError host=hq-vault-cmp-SECRET.s3.amazonaws.com /Users/Ada/secret",
+            "code=ENOENT ENOENT: no such file, rename '/private/passphrase' -> '/x'",
+            "download skipped: local parent escaped the sync root",
+            "AccessDenied http=403 host=super-secret.internal denied",
+        ] {
+            rollup.record(message);
+            assert!(
+                owned.contains(rollup.fingerprint_token()),
+                "fingerprint token {:?} is not an enum-owned RunnerErrorCause token",
+                rollup.fingerprint_token()
+            );
+        }
+
+        // And the token carries none of the secret-looking bytes those messages held.
+        let token = rollup.fingerprint_token();
+        for fragment in [
+            "hq-vault", "SECRET", "amazonaws", "Users", "Ada", "passphrase", "internal",
+        ] {
+            assert!(
+                !token.contains(fragment),
+                "fingerprint token {token:?} leaked runner fragment {fragment:?}"
+            );
+        }
     }
 
     #[test]

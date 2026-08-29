@@ -423,3 +423,97 @@ describe('manual runner-exit attribution — watcher capture seam parity (comman
     );
   });
 });
+
+describe('runner-termination cause fingerprint — both-seams parity + enum-derived validators (HQ-DESKTOP-4T r3)', () => {
+  it('bridges a named cause to the error class before the keyword fallback', () => {
+    // The reopen mechanism: the keyword class matcher is blind to the cause
+    // vocabulary, so a VaultPermissionDeniedError the cause axis named still
+    // classed OTHER and reopened the exit-2 catch-all. The class matcher now
+    // consults an EXHAUSTIVE cause→class bridge FIRST, with no wildcard arm.
+    expect(coreSource).toContain(
+      'fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass>',
+    );
+    expect(coreSource).toContain(
+      'if let Some(class) = class_for_named_cause(classify_runner_error_cause(message))',
+    );
+    // The recurrence family maps to AUTH; a DNS/transport errno the keyword matcher
+    // omits maps to NETWORK; the residual keeps the keyword fallback (None).
+    expect(coreSource).toContain('RunnerErrorCause::VaultPermissionDenied');
+    expect(coreSource).toMatch(
+      /RunnerErrorCause::AccessDenied\s*=>\s*Some\(RunnerErrorClass::Auth\)/,
+    );
+    expect(coreSource).toContain('RunnerErrorCause::Enotfound => Some(RunnerErrorClass::Network)');
+    expect(coreSource).toContain('| RunnerErrorCause::UnknownUnnamed => None,');
+  });
+
+  it('adds a cause-rollup fingerprint token that is enum-owned', () => {
+    // The fifth fingerprint element's source: the dominant cause's as_str, never a
+    // runner byte, with a "none" empty sentinel mirroring the class rollup.
+    expect(shapeSource).toContain('dominant.map(RunnerErrorCause::as_str).unwrap_or("none")');
+  });
+
+  it('appends the dominant cause as the fifth fingerprint element at BOTH seams', () => {
+    // Manual seam (commands::sync).
+    expect(syncSource).toContain(
+      'let error_cause = totals.runner_error_causes.fingerprint_token();',
+    );
+    const manualFp = sliceBetween(
+      syncSource,
+      'let error_cause = totals.runner_error_causes.fingerprint_token();',
+      '];',
+      'manual runner-termination fingerprint',
+    );
+    expect(manualFp).toContain('"runner-termination"');
+    expect(manualFp).toContain('error_class,');
+    expect(manualFp).toContain('error_cause,');
+    // Watcher seam (commands::daemon): the token is carried on the context from the
+    // SAME shared rollup and validated before it enters the fingerprint.
+    expect(daemonSource).toContain(
+      'runner_error_cause: totals.runner_error_causes.fingerprint_token()',
+    );
+    expect(daemonSource).toContain(
+      'let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);',
+    );
+    const watcherFp = sliceBetween(
+      daemonSource,
+      'let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);',
+      '];',
+      'watcher runner-termination fingerprint',
+    );
+    expect(watcherFp).toContain('"auto-sync-watcher-termination"');
+    expect(watcherFp).toContain('runner_error_class,');
+    expect(watcherFp).toContain('runner_error_cause,');
+  });
+
+  it('derives BOTH watcher validators from the enums, not a hand-written allow-list', () => {
+    // The r2 regression: the hand-written class allow-list did not gain the four new
+    // errno tokens, so they degraded to "none". Both validators now enumerate the
+    // enum, so a new class or cause token can never silently degrade.
+    const classValidator = sliceBetween(
+      daemonSource,
+      "fn safe_runner_error_fingerprint_token(candidate: &'static str) -> &'static str {",
+      '}',
+      'class validator',
+    );
+    expect(classValidator).toContain('RunnerErrorClass::ALL');
+    expect(classValidator).toContain('.fingerprint_token() == candidate');
+    // The old hand-written literal list is gone from the class validator body.
+    expect(classValidator).not.toContain('"eperm" | "eacces" | "enospc" | "ebusy"');
+    const causeValidator = sliceBetween(
+      daemonSource,
+      "fn safe_runner_error_cause_fingerprint_token(candidate: &'static str) -> &'static str {",
+      '}',
+      'cause validator',
+    );
+    expect(causeValidator).toContain('RunnerErrorCause::ALL');
+    expect(causeValidator).toContain('cause.as_str() == candidate');
+  });
+
+  it('leaves the class token spellings and the denylist-safe breadcrumb untouched', () => {
+    // Attribution only ADDS a fifth token; the four class token spellings are
+    // byte-identical, so the grouping/history the first four tokens carry survive.
+    expect(coreSource).toContain('Self::Auth => "AUTH"');
+    expect(coreSource).toMatch(/fn fingerprint_token\(self\)[\s\S]*?Self::Auth => "auth"/);
+    expect(coreSource).toContain('Self::Auth => "identity"');
+  });
+});

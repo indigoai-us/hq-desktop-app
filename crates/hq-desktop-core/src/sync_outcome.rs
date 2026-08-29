@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use crate::events::{SyncCompleteEvent, SyncErrorEvent, SyncEvent};
 use crate::runner_error_shape::{
-    RunnerErrorCauseRollup, RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup,
-    RunnerErrorPathRootRollup, RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL,
-    DISCOVERY_ERROR_PATH_SENTINEL,
+    classify_runner_error_cause, RunnerErrorCause, RunnerErrorCauseRollup,
+    RunnerErrorCauseSignatureRollup, RunnerErrorHttpRollup, RunnerErrorPathRootRollup,
+    RunnerErrorShapeRollup, COMPANY_ERROR_PATH_SENTINEL, DISCOVERY_ERROR_PATH_SENTINEL,
 };
 use sha2::{Digest, Sha256};
 
@@ -897,7 +897,11 @@ impl RunnerErrorClass {
         }
     }
 
-    fn fingerprint_token(self) -> &'static str {
+    // `pub` so the watcher-seam validator (commands/daemon.rs) can derive its
+    // accepted class-token set from `RunnerErrorClass::ALL` instead of a
+    // hand-written allow-list that silently drifts behind the enum — the r2
+    // regression where enoent/eexist/enotempty/exdev degraded to "none".
+    pub fn fingerprint_token(self) -> &'static str {
         match self {
             Self::Eperm => "eperm",
             Self::Eacces => "eacces",
@@ -957,10 +961,156 @@ fn message_contains_errno_token(haystack_lower: &str, errno: &str) -> bool {
     false
 }
 
+/// Bridge the CAUSE axis to the CLASS axis: when the closed cause vocabulary has
+/// positively NAMED a fault, that name is a stronger classifier than the coarse
+/// keyword matcher below, which is blind to the named-cause vocabulary and
+/// collapses any message it does not recognise to `Other`. That blindness is the
+/// HQ-DESKTOP-4T catch-all: a `VaultPermissionDeniedError` the cause axis named
+/// `vault_permission_denied` still classified `Other` (its text carries none of
+/// eperm/eacces/enospc/ebusy, no transient-network marker, and none of
+/// auth|unauthorized|forbidden|cognito|token), so every such exit-2 landed on the
+/// one `["sync","runner-termination","exit:2","other"]` fingerprint.
+///
+/// EXHAUSTIVE over every `RunnerErrorCause` with NO wildcard arm, so adding a
+/// future cause is a compile error here rather than a silent fall-through. A
+/// variant maps to `Some(class)` ONLY when the class is unambiguous from the
+/// name — an authorization/identity failure to `Auth`, a network/DNS/connection
+/// transport fault to `Network`, and a filesystem errno to its matching errno
+/// class. Every other variant returns an explicit `None`, meaning "the keyword
+/// fallback is still the best answer", so an unnamed or class-ambiguous message
+/// is classified exactly as it is today.
+fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
+    match cause {
+        // ── Authorization / identity failures → Auth ─────────────────────────
+        // The recurrence family: a permission/authorization denial the keyword
+        // matcher misses because its text carries no auth marker. Naming these
+        // here is the fix — `vault_permission_denied` now classes AUTH.
+        RunnerErrorCause::EntityPermission
+        | RunnerErrorCause::VaultPermissionDenied
+        | RunnerErrorCause::VendDenied
+        | RunnerErrorCause::AccessDenied => Some(RunnerErrorClass::Auth),
+        // Identity/credential failures. The keyword matcher ALREADY classes these
+        // AUTH (their messages carry auth/cognito/token), so mapping them is
+        // consistent — and it keeps the class correct if a future rendering drops
+        // the keyword the matcher happens to look for.
+        RunnerErrorCause::VaultIdentity
+        | RunnerErrorCause::CognitoIdentity
+        | RunnerErrorCause::CognitoIdentityRefresh
+        | RunnerErrorCause::ExpiredIdentity
+        | RunnerErrorCause::InvalidIdentity => Some(RunnerErrorClass::Auth),
+        // ── Network / DNS / connection transport → Network ───────────────────
+        // Every transient-network errno `is_transient_network_error` already
+        // recognises, PLUS ENOTFOUND (a getaddrinfo DNS failure) which it omits —
+        // a definitive network fault the keyword matcher otherwise collapses to
+        // Other.
+        RunnerErrorCause::Econnreset
+        | RunnerErrorCause::Econnrefused
+        | RunnerErrorCause::Etimedout
+        | RunnerErrorCause::Epipe
+        | RunnerErrorCause::EaiAgain
+        | RunnerErrorCause::Enetdown
+        | RunnerErrorCause::Enetunreach
+        | RunnerErrorCause::Ehostunreach
+        | RunnerErrorCause::Enotfound => Some(RunnerErrorClass::Network),
+        // ── Filesystem errno causes → their matching errno class ─────────────
+        // The class axis has exactly these eight errno classes; a cause naming one
+        // agrees with the keyword matcher on the same message.
+        RunnerErrorCause::Eperm => Some(RunnerErrorClass::Eperm),
+        RunnerErrorCause::Eacces => Some(RunnerErrorClass::Eacces),
+        RunnerErrorCause::Enospc => Some(RunnerErrorClass::Enospc),
+        RunnerErrorCause::Ebusy => Some(RunnerErrorClass::Ebusy),
+        RunnerErrorCause::Enoent => Some(RunnerErrorClass::Enoent),
+        RunnerErrorCause::Eexist => Some(RunnerErrorClass::Eexist),
+        RunnerErrorCause::Enotempty => Some(RunnerErrorClass::Enotempty),
+        RunnerErrorCause::Exdev => Some(RunnerErrorClass::Exdev),
+        // ── Keyword fallback stays authoritative (explicit None) ─────────────
+        // hq-cloud sync-protocol identities with no class analogue …
+        RunnerErrorCause::EntityNotFound
+        | RunnerErrorCause::EntityResolution
+        | RunnerErrorCause::SourceNotFound
+        | RunnerErrorCause::OperationLocked
+        | RunnerErrorCause::OperationLockUnwritable
+        | RunnerErrorCause::ScopeShrinkBlocked
+        | RunnerErrorCause::ScopeShrinkLargePrune
+        | RunnerErrorCause::DeltaGap
+        | RunnerErrorCause::MultipartSourceChanged
+        | RunnerErrorCause::MultipartAbort
+        | RunnerErrorCause::RealtimeConflict
+        | RunnerErrorCause::RealtimeEnrollmentUnavailable
+        | RunnerErrorCause::SyncMutationNotEnrolled
+        | RunnerErrorCause::UnreachablePushPaths
+        | RunnerErrorCause::ServerOwnedPushPaths
+        | RunnerErrorCause::PushEventDecode
+        | RunnerErrorCause::LocalSnapshotChanged
+        | RunnerErrorCause::RescuePathChanged
+        | RunnerErrorCause::CursorRetired
+        | RunnerErrorCause::BaseVersionUnavailable
+        | RunnerErrorCause::DurableApply
+        | RunnerErrorCause::DurableApplyRecovery
+        | RunnerErrorCause::JournalCheckpoint
+        | RunnerErrorCause::PrematureJournalEntry
+        | RunnerErrorCause::SnapshotClient
+        | RunnerErrorCause::StateStoreCorruption
+        | RunnerErrorCause::StateStoreLock
+        | RunnerErrorCause::StateStoreReducer
+        | RunnerErrorCause::VaultClient
+        | RunnerErrorCause::VaultConflict
+        | RunnerErrorCause::VaultNotFound
+        | RunnerErrorCause::RateLimited
+        | RunnerErrorCause::PresignPreconditionMissing
+        | RunnerErrorCause::OutpostHttp
+        | RunnerErrorCause::TombstoneFetch
+        | RunnerErrorCause::UnregisteredCompanySkill
+        | RunnerErrorCause::RefreshLockTimeout
+        | RunnerErrorCause::DanglingSymlinkParent
+        | RunnerErrorCause::WindowsSymlinkPrivilege
+        | RunnerErrorCause::ChildProcessSyncWorker
+        // … AWS S3/STS names with no class analogue …
+        | RunnerErrorCause::NoSuchKey
+        | RunnerErrorCause::NoSuchBucket
+        | RunnerErrorCause::SlowDown
+        | RunnerErrorCause::InternalError
+        | RunnerErrorCause::RequestTimeout
+        | RunnerErrorCause::UnknownError
+        // … ECMAScript / Node built-in error identities …
+        | RunnerErrorCause::RangeError
+        | RunnerErrorCause::TypeError
+        | RunnerErrorCause::SyntaxError
+        | RunnerErrorCause::ReferenceError
+        | RunnerErrorCause::EvalError
+        | RunnerErrorCause::UriError
+        | RunnerErrorCause::AggregateError
+        | RunnerErrorCause::AbortError
+        | RunnerErrorCause::SystemError
+        // … non-fs, non-transport errnos with no class analogue …
+        | RunnerErrorCause::Eisdir
+        | RunnerErrorCause::Enotdir
+        | RunnerErrorCause::Eloop
+        | RunnerErrorCause::Enametoolong
+        | RunnerErrorCause::Emfile
+        | RunnerErrorCause::Enfile
+        | RunnerErrorCause::Erofs
+        | RunnerErrorCause::Eio
+        | RunnerErrorCause::Eagain
+        | RunnerErrorCause::Einval
+        // … and the residual unknowns (never a nearest guess) …
+        | RunnerErrorCause::UnknownNamed
+        | RunnerErrorCause::UnknownUnnamed => None,
+    }
+}
+
 /// Map an untrusted runner error message to a fixed telemetry class. This
 /// function deliberately returns no message text, so its output is safe to
 /// attach to Sentry as a tag.
 pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
+    // A positively-named cause is a stronger signal than the coarse keyword
+    // matcher, which is blind to the cause vocabulary. Consult the bridge first;
+    // it returns `Some` only for a cause it can unambiguously class, so an unnamed
+    // or class-ambiguous message falls through to the keyword matcher below,
+    // classified exactly as it is today.
+    if let Some(class) = class_for_named_cause(classify_runner_error_cause(message)) {
+        return class;
+    }
     let msg = message.to_lowercase();
     if msg.contains("eperm") {
         RunnerErrorClass::Eperm
@@ -3510,6 +3660,178 @@ mod tests {
     }
 
     #[test]
+    fn a_named_cause_drives_the_error_class_instead_of_the_keyword_fallback() {
+        // The HQ-DESKTOP-4T recurrence: a VaultPermissionDeniedError whose text
+        // carries none of the class matcher's keywords collapsed to OTHER on base,
+        // so every such exit-2 landed on the one catch-all fingerprint. The cause
+        // axis names it, and the bridge now classes it AUTH — for every rendering
+        // that actually carries the identifier the cause axis can read.
+        for message in [
+            // Leading class name (the dominant describeError rendering).
+            "VaultPermissionDeniedError permission denied for the company prefix",
+            // The identity carried as a `cause=` value behind a plain Error.
+            "sync worker failed cause=VaultPermissionDeniedError host=vault",
+        ] {
+            assert_eq!(
+                classify_runner_error_cause(message),
+                RunnerErrorCause::VaultPermissionDenied,
+                "cause axis must name the fault: {message:?}"
+            );
+            assert_eq!(
+                classify_runner_error_class(message),
+                RunnerErrorClass::Auth,
+                "a named vault permission denial must class AUTH, not OTHER: {message:?}"
+            );
+        }
+
+        // The whole permission/authorization family classes AUTH, so none of them
+        // can re-form the exit-2 catch-all the keyword matcher left them in.
+        for (message, cause) in [
+            ("AccessDenied access is denied", RunnerErrorCause::AccessDenied),
+            (
+                "VendDeniedError the vend was refused",
+                RunnerErrorCause::VendDenied,
+            ),
+            (
+                "EntityPermissionError caller lacks permission",
+                RunnerErrorCause::EntityPermission,
+            ),
+        ] {
+            assert_eq!(classify_runner_error_cause(message), cause, "{message:?}");
+            assert_eq!(
+                classify_runner_error_class(message),
+                RunnerErrorClass::Auth,
+                "permission/authorization family must class AUTH: {message:?}"
+            );
+        }
+
+        // A named DNS/transport fault the keyword matcher omits (ENOTFOUND is not
+        // in is_transient_network_error) now classes NETWORK through the cause.
+        assert_eq!(
+            classify_runner_error_class("ENOTFOUND: getaddrinfo failed for the vault host"),
+            RunnerErrorClass::Network
+        );
+    }
+
+    #[test]
+    fn an_unnamed_message_still_uses_the_keyword_classifier_unchanged() {
+        // The bridge fires ONLY for a positively-named cause. An unnamed message
+        // is classified exactly as before, so nothing the keyword matcher already
+        // handled changes.
+
+        // Pure pull-leg prose with no identity: unnamed on the cause axis, so the
+        // bridge yields None and the keyword matcher decides — OTHER, as today.
+        let prose = "download skipped: local parent escaped the sync root";
+        assert_eq!(
+            classify_runner_error_cause(prose),
+            RunnerErrorCause::UnknownUnnamed
+        );
+        assert_eq!(classify_runner_error_class(prose), RunnerErrorClass::Other);
+
+        // Content-safety boundary: a permission denial rendered as PROSE ONLY —
+        // no class name, no code — has no content-safe identity to key on, so it
+        // is NOT bridged to AUTH. Naming it would require reading free prose.
+        assert_eq!(
+            classify_runner_error_class("access to the company prefix was denied"),
+            RunnerErrorClass::Other
+        );
+
+        // The keyword matcher still owns every class it already decided: an EPERM
+        // rename (the bridge agrees), a transient-network "socket hang up" the
+        // cause axis cannot name, and a bare auth marker.
+        assert_eq!(
+            classify_runner_error_class("EPERM: operation not permitted, rename 'a.hq-tmp' -> 'a'"),
+            RunnerErrorClass::Eperm
+        );
+        assert_eq!(
+            classify_runner_error_class("upload failed: socket hang up"),
+            RunnerErrorClass::Network
+        );
+        assert_eq!(
+            classify_runner_error_class("Unauthorized: cognito rejected the request"),
+            RunnerErrorClass::Auth
+        );
+    }
+
+    #[test]
+    fn every_runner_error_cause_has_a_deliberate_class_decision() {
+        use RunnerErrorCause as C;
+        // Every deliberate NON-None decision, spelled out so a wrong remap or an
+        // unreviewed future variant fails here. The match in class_for_named_cause
+        // is already exhaustive (a missing variant is a compile error); this table
+        // additionally pins WHICH class each mapped cause chose, and asserts every
+        // other variant keeps the keyword fallback (None).
+        let auth = [
+            C::EntityPermission,
+            C::VaultPermissionDenied,
+            C::VendDenied,
+            C::AccessDenied,
+            C::VaultIdentity,
+            C::CognitoIdentity,
+            C::CognitoIdentityRefresh,
+            C::ExpiredIdentity,
+            C::InvalidIdentity,
+        ];
+        let network = [
+            C::Econnreset,
+            C::Econnrefused,
+            C::Etimedout,
+            C::Epipe,
+            C::EaiAgain,
+            C::Enetdown,
+            C::Enetunreach,
+            C::Ehostunreach,
+            C::Enotfound,
+        ];
+        let errno_class = [
+            (C::Eperm, RunnerErrorClass::Eperm),
+            (C::Eacces, RunnerErrorClass::Eacces),
+            (C::Enospc, RunnerErrorClass::Enospc),
+            (C::Ebusy, RunnerErrorClass::Ebusy),
+            (C::Enoent, RunnerErrorClass::Enoent),
+            (C::Eexist, RunnerErrorClass::Eexist),
+            (C::Enotempty, RunnerErrorClass::Enotempty),
+            (C::Exdev, RunnerErrorClass::Exdev),
+        ];
+        for cause in auth {
+            assert_eq!(
+                class_for_named_cause(cause),
+                Some(RunnerErrorClass::Auth),
+                "{cause:?} must bridge to AUTH"
+            );
+        }
+        for cause in network {
+            assert_eq!(
+                class_for_named_cause(cause),
+                Some(RunnerErrorClass::Network),
+                "{cause:?} must bridge to NETWORK"
+            );
+        }
+        for (cause, class) in errno_class {
+            assert_eq!(class_for_named_cause(cause), Some(class), "{cause:?}");
+        }
+        let is_mapped = |c: RunnerErrorCause| {
+            auth.contains(&c) || network.contains(&c) || errno_class.iter().any(|(mc, _)| *mc == c)
+        };
+        let mut mapped = 0;
+        for cause in RunnerErrorCause::ALL {
+            if is_mapped(cause) {
+                mapped += 1;
+            } else {
+                assert_eq!(
+                    class_for_named_cause(cause),
+                    None,
+                    "{cause:?} must keep the keyword fallback (None)"
+                );
+            }
+        }
+        assert_eq!(
+            mapped, 26,
+            "exactly 26 causes bridge to a class; every other variant stays None"
+        );
+    }
+
+    #[test]
     fn record_error_populates_new_axes_across_scopes_without_perturbing_existing_ones() {
         let mut totals = RunTotals::default();
         // Company-scope describeError carrying an `http=` status, an AWS name, and
@@ -3552,8 +3874,9 @@ mod tests {
         // signature axis attaches no tag.
         assert_eq!(totals.runner_error_cause_signature.tag_value(), None);
 
-        // Every pre-existing axis is byte-identical to its pre-change value for
-        // the same inputs — the added record() calls perturb nothing.
+        // The scope, shape, path-root, and op axes are byte-identical to their
+        // pre-change values for the same inputs — the cause bridge perturbs none
+        // of them.
         assert_eq!(
             totals.runner_error_scope().as_deref(),
             Some("company:1,file:3,discovery:1")
@@ -3566,7 +3889,15 @@ mod tests {
             totals.runner_error_path_roots.tag_value().as_deref(),
             Some("knowledge:3")
         );
-        assert_eq!(totals.runner_error_rollup.tag_value().as_deref(), Some("OTHER:5"));
+        // The CLASS rollup now names the AccessDenied company-scope record AUTH
+        // via the r3 cause→class bridge — its text carries none of the keyword
+        // markers the class matcher looks for, so before this fix it collapsed to
+        // OTHER. The four unnamed presigned/InternalError records stay OTHER, and
+        // the dominant-by-count fingerprint token is unchanged (OTHER, 4 > 1).
+        assert_eq!(
+            totals.runner_error_rollup.tag_value().as_deref(),
+            Some("AUTH:1,OTHER:4")
+        );
         assert_eq!(totals.runner_error_ops.tag_value().as_deref(), Some("other:5"));
         assert_eq!(totals.runner_error_rollup.fingerprint_token(), "other");
         assert!(totals.saw_alertable_error);

@@ -33,7 +33,7 @@ use hq_desktop_core::daemon::{
     derive_watch_daemon_state, is_daemon_alive_for_supervisor, should_terminate_job_on_path,
 };
 use hq_desktop_core::hq_cloud::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
-use hq_desktop_core::runner_error_shape::classify_runner_stack_input;
+use hq_desktop_core::runner_error_shape::{classify_runner_stack_input, RunnerErrorCause};
 use hq_desktop_core::runner_target::RunnerTargetState;
 use hq_desktop_core::watcher_fault::{
     UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
@@ -41,6 +41,7 @@ use hq_desktop_core::watcher_fault::{
 };
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
+    RunnerErrorClass,
     deferred_session_end_outcome, describe_exit, is_crash_signal, is_windows_console_control_exit,
     is_windows_fault_exit,
     normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
@@ -1351,6 +1352,12 @@ struct WatcherExitCaptureContext {
     watcher_job_process_count: String,
     runner_error_rollup: Option<String>,
     runner_error_class: &'static str,
+    /// Dominant runner error CAUSE token for this pass (`RunnerErrorCause::as_str`
+    /// of the plurality cause, or `"none"`). Carried across the deferred/watcher
+    /// seam beside `runner_error_class` so the watcher fingerprint reaches parity
+    /// with the manual seam's fifth cause element (HQ-DESKTOP-4T r3). Enum-owned,
+    /// so it can never carry a runner byte.
+    runner_error_cause: &'static str,
     runner_error_ops: Option<String>,
     runner_error_shapes: Option<String>,
     runner_error_path_roots: Option<String>,
@@ -1500,6 +1507,7 @@ impl Default for WatcherExitCaptureContext {
             watcher_job_process_count: "unknown".to_string(),
             runner_error_rollup: None,
             runner_error_class: "none",
+            runner_error_cause: "none",
             runner_error_ops: None,
             runner_error_shapes: None,
             runner_error_path_roots: None,
@@ -1650,6 +1658,9 @@ fn watcher_exit_capture_context(
             .unwrap_or_else(|| "unknown".to_string()),
         runner_error_rollup: totals.runner_error_rollup.tag_value(),
         runner_error_class: totals.runner_error_rollup.fingerprint_token(),
+        // Read from the SAME shared RunTotals source as the manual seam, so the
+        // two seams' fifth fingerprint element can never drift apart.
+        runner_error_cause: totals.runner_error_causes.fingerprint_token(),
         runner_error_ops: totals.runner_error_ops.tag_value(),
         // Shared attribution axes — the watcher route reads the SAME RunTotals
         // source as the manual route so the two can never drift apart.
@@ -3072,11 +3083,17 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let raw_fingerprint_token = termination_fingerprint_token(code, signal);
     let fingerprint_token = termination_fingerprint_token_for_host(code, signal, host);
     let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
+    // Fifth element, mirroring the manual seam (HQ-DESKTOP-4T r3): the dominant
+    // cause token, validated against the enum so a plumbing slip can never place a
+    // runner byte in the fingerprint (and never silently degrade to "none" the way
+    // the hand-written class allow-list once did for enoent/eexist/enotempty/exdev).
+    let runner_error_cause = safe_runner_error_cause_fingerprint_token(context.runner_error_cause);
     let fingerprint = [
         "sync",
         "auto-sync-watcher-termination",
         fingerprint_token.as_str(),
         runner_error_class,
+        runner_error_cause,
     ];
     let windows_termination = code
         .map(classify_windows_exit_status)
@@ -3359,12 +3376,40 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
 /// Context is constructed from the core's closed-vocabulary rollup. Keep this
 /// fail-closed boundary so a future caller cannot place arbitrary runner text
 /// in a Sentry fingerprint through a manually-constructed context.
+///
+/// Accept the class token IFF some `RunnerErrorClass` variant can emit it —
+/// DERIVED from `RunnerErrorClass::ALL`, never a hand-written allow-list that
+/// silently drifts behind the enum. The r2 regression this closes: the enum
+/// gained Enoent/Eexist/Enotempty/Exdev (tokens enoent/eexist/enotempty/exdev)
+/// but the old literal list did not, so those four classes degraded to "none" on
+/// the watcher route — the same token an error-free pass emits. The "none"
+/// empty-rollup sentinel is accepted explicitly; anything else fails closed.
 fn safe_runner_error_fingerprint_token(candidate: &'static str) -> &'static str {
-    match candidate {
-        "eperm" | "eacces" | "enospc" | "ebusy" | "network" | "auth" | "other" | "none" => {
-            candidate
-        }
-        _ => "none",
+    if candidate == "none"
+        || RunnerErrorClass::ALL
+            .iter()
+            .any(|class| class.fingerprint_token() == candidate)
+    {
+        candidate
+    } else {
+        "none"
+    }
+}
+
+/// The cause-axis equivalent of [`safe_runner_error_fingerprint_token`]: accept
+/// the token IFF some `RunnerErrorCause` variant can emit it — DERIVED from
+/// `RunnerErrorCause::ALL` (its `as_str`, which is exactly what the cause rollup's
+/// `fingerprint_token` returns) plus the "none" sentinel. Enum-derived for the
+/// same reason: a future cause can never silently degrade to "none" here.
+fn safe_runner_error_cause_fingerprint_token(candidate: &'static str) -> &'static str {
+    if candidate == "none"
+        || RunnerErrorCause::ALL
+            .iter()
+            .any(|cause| cause.as_str() == candidate)
+    {
+        candidate
+    } else {
+        "none"
     }
 }
 
@@ -5680,6 +5725,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "abort:sigabrt",
+                "none",
                 "none"
             ]
         );
@@ -5791,7 +5837,7 @@ mod tests {
         let unknown_capture = posix_unknown.captures.first().expect("exit 221 captures");
         assert_eq!(
             unknown_capture.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:221", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:221", "none", "none"]
         );
         assert!(unknown_capture
             .message
@@ -5824,6 +5870,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none"
             ]
         );
@@ -5852,7 +5899,7 @@ mod tests {
         let posix_134_capture = posix_134.captures.first().expect("POSIX 134 captures");
         assert_eq!(
             posix_134_capture.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:134", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:134", "none", "none"]
         );
         assert!(posix_134_capture
             .message
@@ -5901,6 +5948,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none"
             ]
         );
@@ -6018,6 +6066,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none"
             ]
         );
@@ -6192,6 +6241,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none"
             ]
         );
@@ -6945,7 +6995,7 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none"]
         );
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(
@@ -7195,7 +7245,7 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none"]
         );
         assert_eq!(
             event.extra["cancellation_record_present"],
@@ -7267,7 +7317,7 @@ mod tests {
             .contains("auto-sync watcher exited unexpectedly"));
         assert_eq!(
             external_kill.captures[0].fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none"]
         );
         assert!(external_kill.captures[0]
             .tags
@@ -7446,11 +7496,144 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
-                "eperm"
+                "eperm",
+                "none"
             ]
         );
         assert!(event.message.contains("0xFFFFFFFF (origin unknown)"));
         assert!(!event.message.contains("code=Some(-1)"));
+    }
+
+    #[test]
+    fn every_runner_error_class_fingerprint_token_survives_the_watcher_validator() {
+        // The r2 regression this closes: the enum gained Enoent/Eexist/Enotempty/
+        // Exdev but the old hand-written allow-list did not, so those four classes
+        // degraded to "none" on the watcher route — the same token an error-free
+        // pass emits. The validator is now derived from RunnerErrorClass::ALL, so
+        // EVERY class token survives unchanged. This is the test whose absence let
+        // the r2 degradation ship.
+        for class in RunnerErrorClass::ALL {
+            let token = class.fingerprint_token();
+            assert_eq!(
+                safe_runner_error_fingerprint_token(token),
+                token,
+                "class token {token:?} must survive the watcher validator unchanged"
+            );
+        }
+        assert_eq!(safe_runner_error_fingerprint_token("none"), "none");
+    }
+
+    #[test]
+    fn every_runner_error_cause_fingerprint_token_survives_the_watcher_validator() {
+        // The same completeness guarantee for the new cause axis over
+        // RunnerErrorCause::ALL, so a future cause can never silently degrade to
+        // "none" on the watcher route.
+        for cause in RunnerErrorCause::ALL {
+            let token = cause.as_str();
+            assert_eq!(
+                safe_runner_error_cause_fingerprint_token(token),
+                token,
+                "cause token {token:?} must survive the watcher validator unchanged"
+            );
+        }
+        assert_eq!(safe_runner_error_cause_fingerprint_token("none"), "none");
+    }
+
+    #[test]
+    fn an_unrecognised_token_still_degrades_to_none() {
+        // Fail-closed: anything not enum-owned (a raw path, host, message fragment,
+        // or a plausible-but-unlisted token) degrades to "none" on both axes, so a
+        // future caller cannot place a runner byte in a Sentry fingerprint through
+        // a manually-constructed context.
+        for bad in [
+            "/Users/Ada/secret",
+            "eperm ",
+            "vault_permission_deniedX",
+            "AUTH",
+            "",
+            "http_403",
+        ] {
+            assert_eq!(safe_runner_error_fingerprint_token(bad), "none", "{bad:?}");
+            assert_eq!(safe_runner_error_cause_fingerprint_token(bad), "none", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_watcher_termination_fingerprint_appends_the_dominant_cause() {
+        // Both-seams parity (HQ-DESKTOP-4T r3): the watcher route carries the
+        // dominant cause token as its fifth fingerprint element, exactly like the
+        // manual seam. Driving the recurrence shape (an AUTH class + a
+        // vault_permission_denied cause) through the real watcher capture builder
+        // yields the five tokens the manual seam produces for the same fault.
+        let context = WatcherExitCaptureContext {
+            runner_error_rollup: Some("AUTH:1".to_string()),
+            runner_error_class: "auth",
+            runner_error_cause: "vault_permission_denied",
+            runner_error_causes: Some("vault_permission_denied:1".to_string()),
+            runner_error_companies: 1,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:status-ffffffff",
+                "auth",
+                "vault_permission_denied"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_watcher_fingerprint_carries_a_new_errno_class_not_none() {
+        // The r2 watcher-seam degradation, closed end to end: an ENOENT fault whose
+        // class token is "enoent" must survive the enum-derived validator and reach
+        // the fingerprint, not silently collapse to the error-free "none".
+        let context = WatcherExitCaptureContext {
+            runner_error_rollup: Some("ENOENT:1".to_string()),
+            runner_error_class: "enoent",
+            runner_error_cause: "enoent",
+            runner_error_causes: Some("enoent:1".to_string()),
+            runner_error_companies: 1,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert_eq!(effects.captures.len(), 1);
+        assert_eq!(
+            effects.captures[0].fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:status-ffffffff",
+                "enoent",
+                "enoent"
+            ]
+        );
     }
 
     #[test]
@@ -7499,7 +7682,8 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
-                "eperm"
+                "eperm",
+                "none"
             ]
         );
         assert_eq!(
@@ -7508,7 +7692,8 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
-                "auth"
+                "auth",
+                "none"
             ]
         );
         assert_eq!(
@@ -7598,7 +7783,8 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
-                "eperm"
+                "eperm",
+                "none"
             ]
         );
         assert!(event.message.contains("0x40010004 (session terminate)"));
@@ -8460,6 +8646,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
+                "none",
                 "none"
             ]
         );
@@ -8591,7 +8778,8 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
-                "eperm"
+                "eperm",
+                "none"
             ]
         );
     }
@@ -8640,6 +8828,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none"
             ]
         );
@@ -8689,7 +8878,7 @@ mod tests {
         assert!(!serialized.contains(private_path));
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:126", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:126", "none", "none"]
         );
     }
 
@@ -8856,7 +9045,7 @@ mod tests {
         );
         assert_eq!(
             first.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none"]
         );
         assert_eq!(recorded_string_extra(first, "runner_exec_resolution"), "npx_cache");
         assert_eq!(recorded_string_extra(first, "runner_exec_target_exists"), "false");
@@ -8876,7 +9065,7 @@ mod tests {
         );
         assert_eq!(
             fifth.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none"]
         );
         assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
         assert_eq!(recorded_string_extra(fifth, "runner_exec_target_exists"), "false");
@@ -8889,7 +9078,7 @@ mod tests {
         );
         assert_eq!(
             ninth.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none"]
         );
         assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
     }
@@ -8959,7 +9148,7 @@ mod tests {
         for capture in &effects.captures {
             assert_eq!(
                 capture.fingerprint,
-                vec!["sync", "auto-sync-watcher-termination", "signal:9", "none"]
+                vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none"]
             );
         }
     }
@@ -9194,7 +9383,7 @@ mod tests {
             .expect("a 190 launcher fast-fail captures at #1");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none"]
         );
         assert_eq!(recorded_string_extra(event, "runner_exec_resolution"), "npx_cache");
         assert_eq!(recorded_string_extra(event, "runner_exec_target_exists"), "false");
@@ -9227,7 +9416,7 @@ mod tests {
         let direct_event = direct.captures.first().expect("still captured at #1");
         assert_eq!(
             direct_event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none"]
         );
         assert!(
             !direct_event
@@ -9284,7 +9473,7 @@ mod tests {
         let exec_event = exec.captures.first().expect("127 captures at streak 4");
         assert_eq!(
             exec_event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none"]
+            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none"]
         );
         assert_eq!(
             recorded_string_extra(exec_event, "runner_exec_target_exists"),
@@ -9862,7 +10051,7 @@ mod tests {
         // Grouping is message-independent: the fingerprint is byte-identical with
         // and without heap evidence (the retitled RSS/heap lines cannot regroup).
         assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
-        assert_eq!(heap_capture.fingerprint.len(), 4);
+        assert_eq!(heap_capture.fingerprint.len(), 5);
         assert_eq!(heap_capture.fingerprint[0], "sync");
         assert_eq!(
             heap_capture.fingerprint[1],
@@ -10162,6 +10351,7 @@ mod tests {
                 "sync",
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
+                "none",
                 "none",
             ],
             "grouping continuity: neither cluster issue may regroup"
