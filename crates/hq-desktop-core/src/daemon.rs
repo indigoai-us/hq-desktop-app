@@ -23,6 +23,13 @@ pub struct DaemonStatus {
     pub started_at: Option<String>,
     pub watch_path: Option<String>,
     pub source: String, // "pid_file", "daemon_json", or "none"
+    /// The reason behind the last lifecycle transition this process observed —
+    /// e.g. `"runner_memory"` after a footprint pre-empt — so the daemon UI can
+    /// state not just that background sync stopped but WHY. `None` when the last
+    /// transition carried no failure reason (e.g. a healthy Running state, or a
+    /// daemon inherited from a prior app session this process never supervised).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure_category: Option<String>,
 }
 
 /// Structure of .hq-sync-daemon.json written by `hq sync start`.
@@ -277,10 +284,26 @@ pub struct RunnerHeapCeiling {
     pub source: RunnerHeapCeilingSource,
 }
 
+/// Strip one balanced pair of surrounding ASCII quotes (`"` or `'`) from a
+/// NODE_OPTIONS value token. Node's own NODE_OPTIONS parser honours quoting, so
+/// `--max-old-space-size="128"` grants 128MB there; our parser must read the
+/// same value rather than fail and let the declared default override the user.
+fn unquote_option_value(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' || first == b'\'') && first == last {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
+}
+
 /// Parse the effective `--max-old-space-size` (MB) out of a NODE_OPTIONS string,
-/// if any. Accepts the `=` and space forms and the underscore spelling Node also
-/// honours; the LAST occurrence wins, exactly as Node resolves repeated flags.
-/// Pure — reads no environment.
+/// if any. Accepts the `=` and space forms, the underscore spelling Node also
+/// honours, and a quoted value; the LAST occurrence wins, exactly as Node
+/// resolves repeated flags. Pure — reads no environment.
 pub fn parse_max_old_space_mb(node_options: Option<&str>) -> Option<u32> {
     let raw = node_options?;
     let tokens: Vec<&str> = raw.split_whitespace().collect();
@@ -290,13 +313,13 @@ pub fn parse_max_old_space_mb(node_options: Option<&str>) -> Option<u32> {
         let normalized = tokens[i].replace("--max_old_space_size", "--max-old-space-size");
         if let Some(rest) = normalized.strip_prefix("--max-old-space-size") {
             if let Some(value) = rest.strip_prefix('=') {
-                if let Ok(mb) = value.parse::<u32>() {
+                if let Ok(mb) = unquote_option_value(value).parse::<u32>() {
                     found = Some(mb);
                 }
             } else if rest.is_empty() {
                 // Space form: the value is the next token.
                 if let Some(next) = tokens.get(i + 1) {
-                    if let Ok(mb) = next.parse::<u32>() {
+                    if let Ok(mb) = unquote_option_value(next).parse::<u32>() {
                         found = Some(mb);
                         i += 1;
                     }
@@ -393,6 +416,22 @@ pub const WATCHER_FOOTPRINT_CEILING_MB: u32 = 4608;
 /// single spike or a healthy pull that momentarily peaks near the mark never
 /// pre-empts a sync.
 pub const WATCHER_FOOTPRINT_CEILING_CONSECUTIVE: u32 = 2;
+
+/// Non-heap headroom (MB) the runner may legitimately hold above its declared
+/// old-space ceiling — external/Buffer/ArrayBuffer, code, and stacks that
+/// `--max-old-space-size` does not bound. The footprint backstop must sit at
+/// least this far above the heap ceiling.
+pub const WATCHER_FOOTPRINT_HEADROOM_MB: u32 = 2048;
+
+/// The effective supervisor footprint ceiling (MB) for a resolved heap ceiling:
+/// the LARGER of the declared default and the heap ceiling plus non-heap
+/// headroom. Raising the heap override (`HQ_SYNC_RUNNER_MAX_OLD_SPACE_MB` or a
+/// user `--max-old-space-size` above the default) therefore also raises the
+/// footprint backstop, so the escape hatch that grants more heap is never
+/// throttled by a fixed footprint mark below it. Pure.
+pub fn effective_watcher_footprint_ceiling_mb(heap_ceiling_mb: u32) -> u32 {
+    WATCHER_FOOTPRINT_CEILING_MB.max(heap_ceiling_mb.saturating_add(WATCHER_FOOTPRINT_HEADROOM_MB))
+}
 
 /// Supervisor decision: keep the watcher running, or pre-empt it at the declared
 /// footprint ceiling.
@@ -1034,12 +1073,15 @@ mod tests {
             started_at: Some("2026-04-18T12:00:00Z".to_string()),
             watch_path: Some("/Users/test/HQ".to_string()),
             source: "daemon_json".to_string(),
+            failure_category: Some("runner_memory".to_string()),
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"startedAt\""));
         assert!(json.contains("\"watchPath\""));
+        assert!(json.contains("\"failureCategory\":\"runner_memory\""));
         assert!(!json.contains("\"started_at\""));
         assert!(!json.contains("\"watch_path\""));
+        assert!(!json.contains("\"failure_category\""));
     }
 
     #[test]
@@ -1050,6 +1092,7 @@ mod tests {
             started_at: Some("2026-04-18T12:00:00Z".to_string()),
             watch_path: Some("/Users/test/HQ".to_string()),
             source: "daemon_json".to_string(),
+            failure_category: Some("runner_memory".to_string()),
         };
         let json = serde_json::to_string(&status).unwrap();
         let parsed: DaemonStatus = serde_json::from_str(&json).unwrap();
@@ -1064,6 +1107,7 @@ mod tests {
             started_at: None,
             watch_path: None,
             source: "none".to_string(),
+            failure_category: None,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"running\":false"));
@@ -1071,6 +1115,9 @@ mod tests {
         assert!(json.contains("\"startedAt\":null"));
         assert!(json.contains("\"watchPath\":null"));
         assert!(json.contains("\"source\":\"none\""));
+        // A None failure reason is omitted entirely (skip_serializing_if), so the
+        // UI never has to distinguish null from "no reason".
+        assert!(!json.contains("failureCategory"));
     }
 
     // ── DaemonJson deserialization ───────────────────────────────────────
@@ -1278,6 +1325,45 @@ mod tests {
             parse_max_old_space_mb(Some("--max-old-space-size=big")),
             None
         );
+        // Quoted value — Node's NODE_OPTIONS parser honours quoting, so the user's
+        // limit must be read (not dropped, which would let the default override it).
+        assert_eq!(
+            parse_max_old_space_mb(Some("--max-old-space-size=\"128\"")),
+            Some(128)
+        );
+        assert_eq!(
+            parse_max_old_space_mb(Some("--max-old-space-size='256'")),
+            Some(256)
+        );
+        assert_eq!(
+            parse_max_old_space_mb(Some("--max-old-space-size \"512\"")),
+            Some(512)
+        );
+        // A lone/mismatched quote is not stripped and stays unparsed, not a panic.
+        assert_eq!(parse_max_old_space_mb(Some("--max-old-space-size=\"128")), None);
+    }
+
+    #[test]
+    fn test_effective_watcher_footprint_ceiling_honours_heap_override() {
+        // At or below the default heap, the footprint backstop stays at its floor.
+        assert_eq!(
+            effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB),
+            WATCHER_FOOTPRINT_CEILING_MB
+        );
+        assert_eq!(
+            effective_watcher_footprint_ceiling_mb(1024),
+            WATCHER_FOOTPRINT_CEILING_MB
+        );
+        // A raised heap override lifts the footprint backstop above it by the
+        // non-heap headroom, so the escape hatch is never throttled below its heap.
+        let raised = 6144;
+        assert_eq!(
+            effective_watcher_footprint_ceiling_mb(raised),
+            raised + WATCHER_FOOTPRINT_HEADROOM_MB
+        );
+        assert!(effective_watcher_footprint_ceiling_mb(raised) > raised);
+        // Saturating: an absurd override never overflows.
+        assert!(effective_watcher_footprint_ceiling_mb(u32::MAX) >= u32::MAX - 1);
     }
 
     #[test]

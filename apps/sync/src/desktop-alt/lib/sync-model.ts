@@ -29,6 +29,11 @@ export interface DaemonStatus {
   startedAt: string | null;
   watchPath: string | null;
   source: string;
+  // The reason behind the last lifecycle transition the daemon observed (e.g.
+  // "runner_memory" after a footprint pre-empt), so the daemon UI can state why
+  // background sync stopped. Omitted when the last transition had no failure
+  // reason. Daemon controls are not surfaced in V1; this is for the V2 daemon UI.
+  failureCategory?: string;
 }
 
 export interface ActivityEntry {

@@ -130,6 +130,98 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
     expect(telemetrySource).toContain('"runner_heap_ceiling_mb" => Some(value.is_empty() || value.parse::<u32>().is_ok())');
     expect(telemetrySource).toContain('"declared_default" | "env_override" | "user_node_options"');
   });
+
+  // ── Review-hardening regressions (binding PR review) ──────────────────────
+
+  it('does NOT reset the footprint streak on the uptime-based recovery path', () => {
+    // `reset_crash_state_if_recovered` runs every supervisor tick once the watcher
+    // outlives FAST_FAIL_WINDOW; zeroing the over-ceiling streak there would cap a
+    // long-running runaway at streak 1 forever, so the backstop could never
+    // pre-empt. The streak must be cleared only on a fresh generation or a
+    // below-ceiling sample — never here.
+    const recovery = sliceBetween(
+      appDaemonSource,
+      'fn reset_crash_state_if_recovered() {',
+      '\n}\n',
+      'reset_crash_state_if_recovered',
+    );
+    expect(recovery).not.toContain('footprint_over_ceiling_streak = 0');
+    // The streak IS cleared at the two correct seams.
+    expect(appDaemonSource).toContain('st.footprint_over_ceiling_streak = 0;'); // note_watcher_spawned
+    const footprintDecide = sliceBetween(
+      appDaemonSource,
+      'fn note_watcher_footprint_and_decide(',
+      '\n}\n',
+      'note_watcher_footprint_and_decide',
+    );
+    expect(footprintDecide).toContain('footprint_ceiling_step('); // below-ceiling sample resets it
+  });
+
+  it('records the memory outcome AND establishes backoff before the suppressed pre-empt', () => {
+    // The deliberate terminate is suppressed as an app teardown, so the pre-empt
+    // must record + back off FIRST, or it emits no runner:memory-exhausted event
+    // and hot-respawns the runaway every ~60s.
+    const preempt = sliceBetween(
+      appDaemonSource,
+      'FootprintCeilingDecision::Preempt',
+      'terminate_daemon_generation_once(',
+      'supervisor pre-empt block',
+    );
+    // record_supervisor_memory_preempt is invoked BEFORE the terminate call.
+    expect(preempt).toContain('record_supervisor_memory_preempt(kb)');
+    const recorder = sliceBetween(
+      appDaemonSource,
+      'fn record_supervisor_memory_preempt(',
+      '\n}\n',
+      'record_supervisor_memory_preempt',
+    );
+    // Establishes respawn backoff, emits the attributed event, and marks the
+    // evidence source as a supervisor pre-empt (so the token converges).
+    expect(recorder).toContain('note_watcher_crashed()');
+    expect(recorder).toContain('supervisor_preempt: true');
+    expect(recorder).toContain('.capture(');
+    expect(recorder).toContain('watcher_termination_fingerprint_token(');
+  });
+
+  it('parses a quoted --max-old-space-size so a user value is never dropped', () => {
+    // NODE_OPTIONS='--max-old-space-size="128"' must read 128 (Node honours the
+    // quotes), not fail and let the declared default override the user.
+    expect(coreDaemonSource).toContain('fn unquote_option_value(');
+    const parse = sliceBetween(
+      coreDaemonSource,
+      'pub fn parse_max_old_space_mb(',
+      '\n}\n',
+      'parse_max_old_space_mb',
+    );
+    expect(parse).toContain('unquote_option_value(value)');
+    expect(parse).toContain('unquote_option_value(next)');
+  });
+
+  it('lifts the footprint backstop above a raised heap override', () => {
+    // A heap override above the footprint default (e.g. 6144MB) must raise the
+    // footprint ceiling too, or the supervisor would throttle the tree below the
+    // heap it was granted.
+    expect(coreDaemonSource).toContain('pub fn effective_watcher_footprint_ceiling_mb(');
+    expect(coreDaemonSource).toContain('pub const WATCHER_FOOTPRINT_HEADROOM_MB: u32');
+    // The supervisor decision and the reactive evidence gate both resolve the
+    // ceiling through the heap-aware helper, not the bare constant.
+    expect(appDaemonSource).toContain('effective_watcher_footprint_ceiling_mb(heap_ceiling_mb)');
+  });
+
+  it('persists and returns the daemon failure category so the UI can state why', () => {
+    // set_lifecycle_state must RETAIN the category (not just breadcrumb it), and
+    // daemon_status must return it.
+    expect(appDaemonSource).toContain('LIFECYCLE_FAILURE_CATEGORY');
+    expect(appDaemonSource).toContain('fn lifecycle_failure_category_label(');
+    expect(coreDaemonSource).toContain('pub failure_category: Option<String>');
+    const status = sliceBetween(
+      appDaemonSource,
+      'pub fn daemon_status() -> Result<DaemonStatus, String> {',
+      '\n}\n',
+      'daemon_status',
+    );
+    expect(status).toContain('failure_category');
+  });
 });
 
 // ---------------------------------------------------------------------------
