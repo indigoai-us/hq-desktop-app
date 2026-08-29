@@ -1596,9 +1596,15 @@ mod tests {
         fs::create_dir_all(tmp.path().join(".hq")).unwrap();
 
         std::env::remove_var("HQ_VAULT_API_URL");
+        let prior_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
         let base = api_base().unwrap();
-        std::env::remove_var("HOME");
+        // Restore HOME rather than leaving it unset: other tests in this binary
+        // (e.g. paths::tests) depend on ambient HOME.
+        match prior_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
 
         assert_eq!(base, "https://hqapi.hq.computer");
     }

@@ -831,9 +831,16 @@ mod tests {
         )
         .unwrap();
 
+        let prior_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
         let config = reconstruct_personal_hq_config().unwrap();
-        std::env::remove_var("HOME");
+        // Restore HOME rather than leaving it unset: other tests in this binary
+        // (e.g. paths::tests) depend on ambient HOME, and a dangling remove makes
+        // the whole suite order-dependent.
+        match prior_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
 
         assert_eq!(config.vault_api_url, "https://hqapi.hq.computer");
     }

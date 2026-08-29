@@ -43,7 +43,7 @@ use hq_desktop_core::watcher_fault::{
 };
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
-    RunnerErrorClass,
+    MemoryExhaustionEvidence, RunnerErrorClass, RunnerFatalClass,
     deferred_session_end_outcome, describe_exit, is_crash_signal, is_windows_console_control_exit,
     is_windows_fault_exit,
     normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
@@ -52,6 +52,7 @@ use hq_desktop_core::sync_outcome::{
     spawn_failure_capture_policy,
     spawn_failure_fingerprint_token, termination_fingerprint_token,
     termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
+    watcher_termination_fingerprint_token,
     watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
     windows_exit_status_hex, windows_fault_symbol, windows_teardown_verdict,
     DeferredSessionEndOutcome, SessionEndLatchReading, SpawnFailureCapturePolicy, SyncCancelCause,
@@ -399,6 +400,37 @@ fn current_lifecycle_state() -> WatchDaemonState {
         .unwrap_or_else(|p| p.into_inner())
 }
 
+/// The reason for the most recent lifecycle transition, RETAINED so a stopped
+/// watcher is not just "stopped" but "stopped, and why" — e.g. `RunnerMemory`
+/// after a footprint pre-empt. `set_lifecycle_state` stores only the coarse
+/// `WatchDaemonState`; this keeps the category alongside it so the V2 daemon UI
+/// (V1 does not expose daemon controls) can tell the user why background sync
+/// stopped, and so a test can prove the attributed stop is not lost.
+static LIFECYCLE_FAILURE_CATEGORY: OnceLock<Mutex<DaemonFailureCategory>> = OnceLock::new();
+
+fn lifecycle_failure_category_lock() -> &'static Mutex<DaemonFailureCategory> {
+    LIFECYCLE_FAILURE_CATEGORY.get_or_init(|| Mutex::new(DaemonFailureCategory::None))
+}
+
+/// The retained category behind the current lifecycle state (`None` when the
+/// last transition carried no failure reason).
+fn current_lifecycle_failure_category() -> DaemonFailureCategory {
+    *lifecycle_failure_category_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// The retained failure reason as a status label, or `None` when the last
+/// transition carried no failure reason (the `None` variant is not a reason to
+/// surface). Consumed by `daemon_status` so the reason is RETURNED, not just
+/// stored.
+fn lifecycle_failure_category_label() -> Option<String> {
+    match current_lifecycle_failure_category() {
+        DaemonFailureCategory::None => None,
+        other => Some(other.as_str().to_string()),
+    }
+}
+
 /// Transition the watch-daemon lifecycle state and emit content-safe diagnostics
 /// (state names + failure category only — never argv, tokens, or file contents).
 fn set_lifecycle_state(next: WatchDaemonState, category: DaemonFailureCategory) {
@@ -411,6 +443,13 @@ fn set_lifecycle_state(next: WatchDaemonState, category: DaemonFailureCategory) 
     }
     *guard = next;
     drop(guard);
+
+    // Retain the reason behind this transition so a stopped watcher carries WHY it
+    // stopped (e.g. RunnerMemory after a footprint pre-empt), and a recovery to
+    // Running clears it. Kept in lockstep with the state above.
+    *lifecycle_failure_category_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = category;
 
     log(
         "daemon.lifecycle",
@@ -521,6 +560,14 @@ fn terminate_daemon_generation_once_with_delay(
                 set_lifecycle_state(WatchDaemonState::Backoff, category);
             }
             DaemonFailureCategory::Crash => {
+                set_lifecycle_state(WatchDaemonState::Stopped, category);
+            }
+            DaemonFailureCategory::RunnerMemory => {
+                // The supervisor pre-empted a runaway runner at its declared
+                // footprint ceiling: record the attributed memory-ceiling stop so
+                // the app states background sync stopped and why, instead of the
+                // silent running → backoff transition the field only saw as a
+                // stale last-synced time.
                 set_lifecycle_state(WatchDaemonState::Stopped, category);
             }
             _ => {}
@@ -2950,6 +2997,12 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     };
     let policy_consecutive =
         effects.note_watcher_capture_policy_streak(capture_policy, consecutive);
+    // Evidence-gated memory attribution also drives the user-facing failure
+    // category, so a memory-caused watcher death states "background sync stopped
+    // and why" instead of a silent running → backoff transition.
+    let memory_attributed =
+        watcher_memory_exhaustion_evidence(&*effects, last_stderr, watcher_command, context)
+            .is_attributed();
     let lifecycle_state = if effects.within_respawn_backoff() {
         WatchDaemonState::Backoff
     } else {
@@ -2959,6 +3012,8 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         lifecycle_state,
         if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
             DaemonFailureCategory::None
+        } else if memory_attributed {
+            DaemonFailureCategory::RunnerMemory
         } else {
             DaemonFailureCategory::Crash
         },
@@ -2975,6 +3030,45 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         host,
         context,
     );
+}
+
+/// Compute evidence-gated memory-exhaustion attribution for a watcher exit. Any
+/// ONE source proves it: a V8 heap-OOM fatal class, or a COMPARABLE (whole-tree)
+/// footprint at or above the declared ceiling. A supervisor pre-empt is a
+/// deliberate app teardown that is (correctly) suppressed as a crash BEFORE this
+/// seam and surfaces via the `RunnerMemory` lifecycle category instead, so this
+/// reactive seam never observes it. Mirrors the emit seam's class-resolution
+/// precedence: prefer the last actual stderr line's signature, else the run's
+/// accumulated context.
+fn watcher_memory_exhaustion_evidence<E: WatcherProcessEffects>(
+    effects: &E,
+    last_stderr: Option<&str>,
+    watcher_command: &str,
+    context: &WatcherExitCaptureContext,
+) -> MemoryExhaustionEvidence {
+    let (_, rss_kb, _, rss_kind) = effects.watcher_exit_diagnostics();
+    let resolved_rss_scope = resolve_rss_scope(rss_kind, watcher_command);
+    let heap_oom_class = last_stderr
+        .map(classify_runner_fatal_signature)
+        .filter(|signature| signature.class.seen())
+        .map(|signature| signature.class == RunnerFatalClass::HeapOom)
+        .unwrap_or_else(|| context.runner_fatal_class == "heap_oom");
+    // Use the SAME effective footprint ceiling the supervisor pre-empts on, so a
+    // raised heap override lifts the reactive attribution bar in lockstep (for the
+    // declared default this is exactly WATCHER_FOOTPRINT_CEILING_MB, so the 5.9GB
+    // OS-kill case is unchanged).
+    let heap_ceiling_mb = hq_desktop_core::daemon::effective_runner_heap_ceiling().mb;
+    let footprint_ceiling_kb = u64::from(
+        hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
+    ) * 1024;
+    MemoryExhaustionEvidence {
+        heap_oom_class,
+        // Only a COMPARABLE whole-tree sample counts — a shim/withheld footprint is
+        // never read as the runner's own, so a 7MB npx.cmd shim can never be an OOM.
+        footprint_at_or_above_ceiling: resolved_rss_scope == "tree"
+            && rss_kb.map(|kb| kb >= footprint_ceiling_kb).unwrap_or(false),
+        supervisor_preempt: false,
+    }
 }
 
 /// Record one unexpected watcher exit after the lifecycle path has determined
@@ -3098,7 +3192,17 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let resolved_rss_scope = resolve_rss_scope(rss_kind, watcher_command);
     let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age, resolved_rss_scope);
     let raw_fingerprint_token = termination_fingerprint_token(code, signal);
-    let fingerprint_token = termination_fingerprint_token_for_host(code, signal, host);
+    // Evidence-gated memory-exhaustion attribution converges the three host
+    // encodings (SIGKILL / SIGABRT / a Windows fault) onto ONE fingerprint token
+    // when memory exhaustion is PROVEN; with no evidence it is byte-for-byte
+    // today's host token, so a force-quit is never relabelled an OOM and unrelated
+    // watcher issues never regroup. The raw host token is preserved below.
+    let heap_ceiling = hq_desktop_core::daemon::effective_runner_heap_ceiling();
+    let memory_evidence =
+        watcher_memory_exhaustion_evidence(&*effects, last_stderr, watcher_command, context);
+    let memory_attributed = memory_evidence.is_attributed();
+    let fingerprint_token =
+        watcher_termination_fingerprint_token(code, signal, host, memory_evidence);
     let runner_error_class = safe_runner_error_fingerprint_token(context.runner_error_class);
     // Fifth element, mirroring the manual seam (HQ-DESKTOP-4T r3): the dominant
     // cause token, validated against the enum so a plumbing slip can never place a
@@ -3244,6 +3348,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         watcher_child_kind(watcher_command).to_string(),
     ));
     tags.push(("rss_scope", resolved_rss_scope.to_string()));
+    // The declared runner heap ceiling's provenance. Carried on EVERY exit —
+    // including the Windows shim path where the tree sum is honestly withheld — so
+    // a footprint is interpretable against the ceiling that bounded it and a
+    // Windows watcher exit is never memory-factless (auto-sync watcher
+    // unbounded-memory cluster). Fixed vocabulary.
+    tags.push((
+        "runner_heap_ceiling_source",
+        heap_ceiling.source.as_str().to_string(),
+    ));
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this pass retained one. A
     // fixed constant; absent otherwise so absence never renders as evidence.
     if let Some(banner) = context.runner_oom_banner {
@@ -3344,7 +3457,16 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             sentry::protocol::Value::Number(line.into()),
         ));
     }
-    if normalized_abort.is_some() {
+    // Carry the declared runner heap ceiling (MB) on EVERY exit as a bounded
+    // integer extra, so a footprint is comparable against the ceiling in force.
+    extras.push((
+        "runner_heap_ceiling_mb",
+        sentry::protocol::Value::Number(heap_ceiling.mb.into()),
+    ));
+    // Preserve the RAW host token whenever it is overridden — by the abort
+    // normalization OR by memory-exhaustion convergence — so the original
+    // signal:9 / abort:sigabrt / windows:fault:… is never lost.
+    if normalized_abort.is_some() || memory_attributed {
         extras.push((
             "termination_status_raw",
             sentry::protocol::Value::String(raw_fingerprint_token),
@@ -4009,6 +4131,11 @@ struct WatcherCrashState {
     /// renderer's scope so a launcher-only number is never printed as the runner's.
     /// Moves in lockstep with `last_rss_kb`; cleared on each fresh spawn.
     last_rss_kind: Option<RssSampleKind>,
+    /// Consecutive supervisor samples whose COMPARABLE (whole-tree) footprint was
+    /// at or above the declared footprint ceiling. Drives the pure pre-empt
+    /// decision so a single spike never pre-empts a healthy pull. Reset on a fresh
+    /// spawn and once a generation is confirmed recovered.
+    footprint_over_ceiling_streak: u32,
 }
 
 static CRASH_STATE: OnceLock<Mutex<WatcherCrashState>> = OnceLock::new();
@@ -4029,6 +4156,7 @@ fn note_watcher_spawned() {
     st.last_rss_kb = None;
     st.last_rss_at = None;
     st.last_rss_kind = None;
+    st.footprint_over_ceiling_streak = 0;
     HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
 }
 
@@ -4138,6 +4266,93 @@ fn note_watcher_rss(kb: u64, kind: RssSampleKind) {
     st.last_rss_kind = Some(kind);
 }
 
+/// Feed the freshest scoped footprint sample into the pure supervisor decision,
+/// advancing (or resetting) the over-ceiling streak, and return whether the app
+/// should pre-empt the runner at its declared footprint ceiling. ONLY a
+/// comparable whole-tree/job sample counts; a shim/withheld or below-ceiling
+/// sample resets the streak so a single spike never pre-empts (HQ-DESKTOP
+/// watcher-memory cluster). Best-effort: never changes whether a crash is
+/// captured.
+fn note_watcher_footprint_and_decide(
+    kb: u64,
+    kind: RssSampleKind,
+) -> hq_desktop_core::daemon::FootprintCeilingDecision {
+    // The footprint backstop must sit above the runner's declared heap ceiling, so
+    // a raised heap override (HQ_SYNC_RUNNER_MAX_OLD_SPACE_MB or a user
+    // --max-old-space-size above the default) is never throttled below the heap it
+    // was granted.
+    let heap_ceiling_mb = hq_desktop_core::daemon::effective_runner_heap_ceiling().mb;
+    let ceiling_kb = u64::from(
+        hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
+    ) * 1024;
+    let comparable = kind == RssSampleKind::Tree;
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    let (streak, decision) = hq_desktop_core::daemon::footprint_ceiling_step(
+        Some(kb),
+        comparable,
+        ceiling_kb,
+        st.footprint_over_ceiling_streak,
+        hq_desktop_core::daemon::WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+    );
+    st.footprint_over_ceiling_streak = streak;
+    decision
+}
+
+/// Record a supervisor footprint pre-empt as an attributed memory-exhaustion
+/// outcome AND establish respawn backoff, BEFORE the deliberate terminate whose
+/// exit is (correctly) suppressed as an app teardown. Without this the pre-empt
+/// would emit no `runner:memory-exhausted` event and set no backoff, so the
+/// supervisor would hot-respawn a runaway runner every ~60s (HQ-DESKTOP
+/// watcher-memory cluster). A supervisor pre-empt is the strongest memory
+/// evidence there is — the app measured sustained over-ceiling runaway — so it
+/// converges onto the same fingerprint as a heap-OOM abort or an at-ceiling
+/// OS-kill. Content-safe: message is static, the fingerprint is the converged
+/// token, and every tag/extra is a bounded value the reactive emit path already
+/// sends (no command bytes, paths, or stderr).
+fn record_supervisor_memory_preempt(footprint_kb: u64) {
+    let mut effects = ProductionWatcherProcessEffects;
+    // Count the crash episode and set the respawn backoff exactly as an ordinary
+    // crash exit would — the suppressed pre-empt exit never will.
+    let consecutive = effects.note_watcher_crashed();
+    let heap_ceiling = hq_desktop_core::daemon::effective_runner_heap_ceiling();
+    let memory_evidence = MemoryExhaustionEvidence {
+        heap_oom_class: false,
+        footprint_at_or_above_ceiling: true,
+        supervisor_preempt: true,
+    };
+    let fingerprint_token =
+        watcher_termination_fingerprint_token(None, None, current_termination_host(), memory_evidence);
+    let fingerprint = [
+        "sync",
+        "auto-sync-watcher-termination",
+        fingerprint_token.as_str(),
+        "none",
+        "none",
+    ];
+    let message = format!(
+        "auto-sync watcher pre-empted at declared footprint ceiling \
+         (runner memory exhausted), consecutive failure #{consecutive} \
+         [footprint {}MB]",
+        footprint_kb / 1024
+    );
+    let tags = [
+        ("sync_route", "watcher".to_string()),
+        ("rss_scope", "tree".to_string()),
+        (
+            "runner_heap_ceiling_source",
+            heap_ceiling.source.as_str().to_string(),
+        ),
+    ];
+    let extras = [(
+        "runner_heap_ceiling_mb",
+        sentry::protocol::Value::Number(heap_ceiling.mb.into()),
+    )];
+    // The RunnerMemory lifecycle transition (which retains the category so the app
+    // can state background sync stopped and why) is owned by the terminate call
+    // that immediately follows this — set here it would only double the breadcrumb.
+    effects.capture(&message, &fingerprint, &tags, &extras);
+}
+
 /// Snapshot for enriching a crash capture: watcher uptime (since spawn), the
 /// last RSS sample, how long before now that sample was taken, and which
 /// footprint it measured (so the exit renderer can scope the number honestly).
@@ -4171,6 +4386,13 @@ fn reset_crash_state_if_recovered() {
         st.consecutive = 0;
         st.exec_not_runnable_consecutive = 0;
         st.backoff_until = None;
+        // NOTE: the footprint over-ceiling streak is deliberately NOT reset here.
+        // This runs on every supervisor tick once the watcher outlives
+        // FAST_FAIL_WINDOW, so zeroing the streak here would let a long-running
+        // runaway only ever reach streak 1 before the next reset — the backstop
+        // would never pre-empt. The streak is cleared exactly where it should be:
+        // on a fresh generation (`note_watcher_spawned`) and on any comparable
+        // below-ceiling / withheld sample (`footprint_ceiling_step`).
     }
     // The slow-death EPISODE streak needs a much longer proof of recovery than
     // the 60s fast-fail window a slow-death loop outlives every cycle: only a
@@ -4536,6 +4758,36 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 if let Some(pid) = sample_pid {
                     if let Some((kb, kind)) = sample_watcher_rss_scoped(pid) {
                         note_watcher_rss(kb, kind);
+                        // Supervisor footprint ceiling: when a COMPARABLE whole-tree
+                        // footprint stays at or above the declared ceiling across
+                        // consecutive samples, the runner is in genuine runaway (well
+                        // above any healthy set) and heading for a macOS jetsam
+                        // SIGKILL or a Windows commit failure that would destroy the
+                        // memory evidence. Pre-empt HERE so the app — not the host —
+                        // decides the outcome, recording an attributed memory-ceiling
+                        // lifecycle transition; the existing crash-loop backoff bounds
+                        // the respawn cadence. Best-effort — a withheld/shim sample or
+                        // a single spike never pre-empts.
+                        if note_watcher_footprint_and_decide(kb, kind)
+                            == hq_desktop_core::daemon::FootprintCeilingDecision::Preempt
+                        {
+                            if let Some(generation) = generation_for_handle(DAEMON_HANDLE) {
+                                log(
+                                    "daemon.supervisor",
+                                    "watcher footprint over declared ceiling on consecutive samples — pre-empting (runner_memory)",
+                                );
+                                // Record the attributed memory outcome and set the
+                                // respawn backoff BEFORE the deliberate terminate:
+                                // its exit is suppressed as an app teardown, so it
+                                // would otherwise emit no event and leave the
+                                // runaway to be hot-respawned every ~60s.
+                                record_supervisor_memory_preempt(kb);
+                                terminate_daemon_generation_once(
+                                    generation,
+                                    DaemonFailureCategory::RunnerMemory,
+                                );
+                            }
+                        }
                     }
                 }
             } else if should_respawn_daemon_gated(
@@ -4659,6 +4911,9 @@ pub fn stop_daemon() -> Result<bool, String> {
 #[tauri::command]
 pub fn daemon_status() -> Result<DaemonStatus, String> {
     let hq_folder_path = resolve_hq_folder_path()?;
+    // The reason behind the last lifecycle transition this process observed, so a
+    // stopped watcher reports WHY (e.g. runner_memory after a footprint pre-empt).
+    let failure_category = lifecycle_failure_category_label();
 
     // Try .hq-sync-daemon.json first (richer info)
     if let Some(daemon) = read_daemon_json(&hq_folder_path) {
@@ -4670,6 +4925,7 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
             started_at: daemon.started_at,
             watch_path: daemon.watch_path,
             source: "daemon_json".to_string(),
+            failure_category,
         });
     }
 
@@ -4682,6 +4938,7 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
             started_at: None,
             watch_path: None,
             source: "pid_file".to_string(),
+            failure_category,
         });
     }
 
@@ -4692,6 +4949,7 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
         started_at: None,
         watch_path: None,
         source: "none".to_string(),
+        failure_category,
     })
 }
 
