@@ -296,13 +296,15 @@ impl RunTotals {
             return None;
         }
         let mut rendered = format!("company:{company},file:{file}");
-        // Appended only when present, so the common company/file split is stable.
+        // Appended only when present, so the common company/file split is stable. The
+        // `(auth)` site renders `identity`, matching RunnerErrorSite::as_str — a
+        // denylist-safe spelling so the scope extra is never eaten by @password:filter.
         for (label, count) in [
             ("discovery", discovery),
             ("local_state", local_state),
             ("runner", runner),
             ("scope", scope),
-            ("auth", auth),
+            ("identity", auth),
         ] {
             if count > 0 {
                 rendered.push_str(&format!(",{label}:{count}"));
@@ -321,7 +323,15 @@ impl RunTotals {
         if self.runner_embedded_stack_shape.is_some() {
             return;
         }
-        let lines: Vec<String> = message.lines().map(str::to_string).collect();
+        // `runner_stack_shape` reads at most the first RUNNER_STACK_FRAME_CAP lines, so
+        // cap the copy there: an attacker-influenced multi-megabyte message can never
+        // be cloned in full here (the shape is identical), avoiding a second large
+        // allocation precisely while reporting a possible OOM/runaway stack.
+        let lines: Vec<String> = message
+            .lines()
+            .take(RUNNER_STACK_FRAME_CAP)
+            .map(str::to_string)
+            .collect();
         let shape = runner_stack_shape(&lines);
         if shape.shape != "all_redacted" {
             self.runner_embedded_stack_shape = Some(shape);
@@ -7943,7 +7953,8 @@ mod tests {
             ("(local-state)", "local_state:1", "company:0,file:0,local_state:1"),
             ("(runner)", "runner:1", "company:0,file:0,runner:1"),
             ("(scope)", "scope:1", "company:0,file:0,scope:1"),
-            ("(auth)", "auth:1", "company:0,file:0,auth:1"),
+            // The (auth) site renders `identity` (denylist-safe), never `auth`.
+            ("(auth)", "identity:1", "company:0,file:0,identity:1"),
         ] {
             let mut totals = RunTotals::default();
             totals.record_error(&SyncErrorEvent {
@@ -8129,14 +8140,15 @@ mod tests {
         // and record_error never sets the reauth signal (that is the AuthError
         // protocol event's job), so it stays false.
         assert!(!totals.saw_auth_error);
-        // The site is attributed to auth, not file.
+        // The site is attributed to the auth sentinel, spelled `identity` (never the
+        // `auth` substring Sentry's @password:filter eats), and never `file`.
         assert_eq!(
             totals.runner_error_sites.tag_value().as_deref(),
-            Some("auth:1")
+            Some("identity:1")
         );
         assert_eq!(
             totals.runner_error_scope().as_deref(),
-            Some("company:0,file:0,auth:1")
+            Some("company:0,file:0,identity:1")
         );
     }
 }

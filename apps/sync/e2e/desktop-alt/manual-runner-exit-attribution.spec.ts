@@ -528,9 +528,22 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     }
     expect(shapeSource).toContain('pub enum RunnerErrorSite');
     expect(shapeSource).toContain('pub fn classify_runner_error_site(');
-    // The site tokens (as_str) are underscore-normalised, never the raw sentinel.
-    for (const token of ['"company"', '"discovery"', '"local_state"', '"runner"', '"scope"', '"auth"', '"file"']) {
+    // The site tokens (as_str) are underscore-normalised, never the raw sentinel. The
+    // (auth) site is spelled `identity`, never `auth`, so Sentry's @password:filter
+    // cannot eat the tag (the same reason the class breadcrumb uses `identity`).
+    for (const token of ['"company"', '"discovery"', '"local_state"', '"runner"', '"scope"', '"identity"', '"file"']) {
       expect(shapeSource).toContain(token);
+    }
+    // No site token carries a Sentry denylist substring, or its attribution would be
+    // silently scrubbed in production — the failure this whole change fights.
+    const siteTokens = sliceBetween(
+      shapeSource,
+      'Self::Company => "company",',
+      'Self::File => "file",',
+      'RunnerErrorSite tokens',
+    );
+    for (const denied of DENYLIST) {
+      expect(siteTokens).not.toMatch(new RegExp(`"[^"]*${denied}[^"]*"`));
     }
     // The enum→sentinel map is EXHAUSTIVE with no wildcard arm, so a future site is
     // a compile error until wired — the discipline class_for_named_cause established.
@@ -559,7 +572,7 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
       'runner_error_scope',
     );
     expect(scope).toContain('format!("company:{company},file:{file}")');
-    for (const label of ['"discovery"', '"local_state"', '"runner"', '"scope"', '"auth"']) {
+    for (const label of ['"discovery"', '"local_state"', '"runner"', '"scope"', '"identity"']) {
       expect(scope).toContain(label);
     }
     // The site rollup owns a fingerprint token (enum as_str or the "none" sentinel).
@@ -567,7 +580,7 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     expect(shapeSource).toMatch(/pub fn fingerprint_token\(&self\)[\s\S]*?dominant/);
   });
 
-  it('fixes the leading-identity gate to trim one trailing colon so an err.stack signs', () => {
+  it('fixes the leading-identity gate to trim one trailing colon ONLY for real err.stacks', () => {
     // The exit-1 gap: an err.stack first line `<Name>: <msg>` carries a trailing
     // colon the describeError rendering does not; trimming one restores the signature.
     const identity = sliceBetween(
@@ -577,6 +590,11 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
       'leading_error_identity',
     );
     expect(identity).toContain("first.strip_suffix(':').unwrap_or(first)");
+    // The trim is GATED on the message actually being a stack (a `    at …` frame
+    // line), so colon-terminated free prose (`AcmeCorp: …`) is never signed — the
+    // privacy gate the helper's docstring protects, since it runs for every message.
+    expect(identity).toContain('message_has_stack_frame(message)');
+    expect(shapeSource).toContain('fn message_has_stack_frame(');
     // Every other rule is preserved: the literal Error, the uppercase-initial gate,
     // the all-alphanumeric-rest gate, and the multi-hump requirement all remain.
     expect(identity).toContain('if first == "Error"');

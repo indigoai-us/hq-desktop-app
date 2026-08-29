@@ -493,7 +493,9 @@ const RUNNER_ERROR_SITE_TOKENS: &[&str] = &[
     "local_state",
     "runner",
     "scope",
-    "auth",
+    // The `(auth)` site is spelled `identity`, never `auth`, so Sentry's
+    // @password:filter cannot eat the tag — mirrors RunnerErrorSite::as_str.
+    "identity",
     "file",
 ];
 

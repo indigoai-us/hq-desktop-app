@@ -545,6 +545,11 @@ impl RunnerErrorSite {
     ];
 
     /// Fixed vocabulary safe for Sentry tags. Never derived from the input path.
+    /// The `(auth)` site is spelled `identity`, NOT `auth`: Sentry's default
+    /// `@password:filter` scrubber deletes attribution carrying an `auth` substring
+    /// (the same reason the class breadcrumb and the cause vocabulary use
+    /// `identity`/`vault_identity`/`cognito_identity`), which would silently drop the
+    /// one newly-named sentinel's tag in production.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Company => "company",
@@ -552,7 +557,7 @@ impl RunnerErrorSite {
             Self::LocalState => "local_state",
             Self::Runner => "runner",
             Self::Scope => "scope",
-            Self::Auth => "auth",
+            Self::Auth => "identity",
             Self::File => "file",
         }
     }
@@ -1473,14 +1478,24 @@ pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
 /// rejection shipped as a bare `err.stack` (the `(runner)` sentinel emitter,
 /// which bypasses `describeError`) carries its class identity with a trailing
 /// colon that the `describeError` rendering does not. At most ONE trailing ':' is
-/// trimmed before the gate below is applied UNCHANGED, so the same identity signs
-/// to the same hash in both forms while a path-with-colon (`/Users/x:12:`), a
-/// quoted token, a single-hump `Vault:`, and the literal `Error:` all still fail.
+/// trimmed — but ONLY when the message is a genuine `err.stack`, i.e. it carries a
+/// Node/V8 stack-frame line (`    at …`). This helper is invoked for EVERY runner
+/// error message, not just verified `(runner)` stacks, so gating the trim on the
+/// presence of a real frame keeps colon-terminated free prose (`AcmeCorp: failed
+/// to sync`) refused — its colon is not trimmed, matching the base behaviour, so a
+/// customer- or company-derived first word can never be hashed into a signature.
+/// After the (conditional) trim the gate below is applied UNCHANGED, so a
+/// path-with-colon (`/Users/x:12:`), a quoted token, a single-hump `Vault:`, and
+/// the literal `Error:` all still fail.
 fn leading_error_identity(message: &str) -> Option<&str> {
     let first = message.split_whitespace().next()?;
-    // Trim at most one trailing ':'; every rule below still applies to the trimmed
-    // token, so this only ADDS the err.stack-form identity to the accepted set.
-    let first = first.strip_suffix(':').unwrap_or(first);
+    // Trim at most one trailing ':' ONLY for a genuine err.stack (a message with a
+    // stack-frame line); colon-terminated prose keeps its colon and stays refused.
+    let first = if message_has_stack_frame(message) {
+        first.strip_suffix(':').unwrap_or(first)
+    } else {
+        first
+    };
     if first == "Error" {
         return None;
     }
@@ -1496,6 +1511,30 @@ fn leading_error_identity(message: &str) -> Option<&str> {
         has_inner_upper |= byte.is_ascii_uppercase();
     }
     has_inner_upper.then_some(first)
+}
+
+/// True when the message carries a Node/V8 stack-frame line — a line whose trimmed
+/// form begins with `at ` AND carries a real frame location (a `(…)` or a
+/// `:<digit>` line number). This is the signal that a colon-terminated first token
+/// is a genuine `err.stack` header rather than colon-terminated free prose, and it
+/// gates the trailing-colon trim in [`leading_error_identity`]. Ordinary prose
+/// beginning `at ` (e.g. `at the vault`) carries no location and is not treated as
+/// a stack.
+fn message_has_stack_frame(message: &str) -> bool {
+    message.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("at ") && frame_line_has_location(line)
+    })
+}
+
+/// A V8 frame carries a parenthesised location `at name (file:line:col)` or a bare
+/// `at file:line:col`; both have a `(` or a `:<digit>`. Prose does not.
+fn frame_line_has_location(line: &str) -> bool {
+    line.contains('(')
+        || line
+            .as_bytes()
+            .windows(2)
+            .any(|pair| pair[0] == b':' && pair[1].is_ascii_digit())
 }
 
 /// The `runner_error_cause_signature` of a runner error message: the first
@@ -2874,42 +2913,48 @@ mod tests {
     }
 
     #[test]
-    fn leading_error_identity_trims_one_trailing_colon_only() {
-        // An err.stack first line leads with `<Name>: <msg>`; the trailing colon is
-        // trimmed so the SAME identity signs to the SAME hash in stack and
-        // describeError form — the exit-1 gap this closes.
-        assert_eq!(
-            leading_error_identity("VaultShardError: shard 7 unreadable"),
-            Some("VaultShardError")
-        );
+    fn leading_error_identity_trims_one_trailing_colon_only_for_real_err_stacks() {
+        // An err.stack first line `<Name>: <msg>` is followed by `    at …` frames;
+        // the trailing colon is trimmed ONLY then, so the SAME identity signs to the
+        // SAME hash in err.stack and describeError form — the exit-1 gap this closes.
+        let stack_msg =
+            "VaultShardError: shard 7 unreadable\n    at loadShard (node:internal/modules/cjs/loader:9:9)";
+        assert_eq!(leading_error_identity(stack_msg), Some("VaultShardError"));
         assert_eq!(
             leading_error_identity("VaultShardError shard 7 unreadable"),
             Some("VaultShardError")
         );
-        let stack = runner_error_cause_signature(
-            "VaultShardError: shard 7 unreadable\n    at loadShard (node:internal/modules/cjs/loader:9:9)",
-        )
-        .expect("stack-form identity is signed");
+        let stack = runner_error_cause_signature(stack_msg).expect("stack-form identity is signed");
         let described = runner_error_cause_signature("VaultShardError shard 7 unreadable")
             .expect("described-form identity is signed");
         assert_eq!(stack, described, "both forms sign identically");
         assert_eq!(stack, "736cb6682b59", "sha256 hex12 of the trimmed identity");
-        assert_eq!(
-            classify_runner_error_cause("VaultShardError: shard 7 unreadable\n    at frame"),
-            RunnerErrorCause::UnknownNamed
-        );
+        assert_eq!(classify_runner_error_cause(stack_msg), RunnerErrorCause::UnknownNamed);
 
-        // Only ONE trailing colon is trimmed, and every other gate rule still holds,
-        // so the literal `Error:`, a single-hump `Vault:`, a path-with-colons, a
-        // quoted token, sentence-case prose ending in a colon, and a `key=value`
-        // token all stay unnamed and unsigned.
+        // Colon-terminated FREE PROSE with NO stack frame keeps its colon and stays
+        // unsigned — the privacy gate: a customer/company-derived first word is never
+        // hashed. Each behaves exactly as it did on the base revision.
+        for prose in [
+            "AcmeCorp: failed to sync",
+            "VaultShardError: shard 7 unreadable", // colon, but no frame line
+            "Something: went wrong at the vault",  // "at" mid-line is not a frame
+        ] {
+            assert_eq!(leading_error_identity(prose), None, "colon-prose must stay refused: {prose:?}");
+            assert_eq!(
+                runner_error_cause_signature(prose),
+                None,
+                "colon-prose must stay unsigned: {prose:?}"
+            );
+        }
+
+        // Only ONE trailing colon is trimmed and every other gate rule still holds —
+        // even with a real frame present, the literal `Error:`, a single-hump `Vault:`,
+        // a path-with-colons, and a quoted token all stay unnamed and unsigned.
         for refused in [
-            "Error: something failed",
-            "Vault: single hump",
-            "/Users/x/dist/a.js:12: at frame",
-            "'quoted:' value",
-            "Something: went wrong",
-            "code=EACCES: denied",
+            "Error: boom\n    at x (y:1:1)",
+            "Vault: single hump\n    at x (y:1:1)",
+            "/Users/x/dist/a.js:12: frame\n    at x (y:1:1)",
+            "'quoted:' value\n    at x (y:1:1)",
         ] {
             assert_eq!(leading_error_identity(refused), None, "must stay refused: {refused:?}");
             assert_eq!(
@@ -2918,8 +2963,8 @@ mod tests {
                 "must stay unsigned: {refused:?}"
             );
         }
-        // A LISTED identity carrying a trailing colon still resolves to its named
-        // cause (classify step 1) and carries no signature — unchanged by the trim.
+        // A LISTED identity carrying a trailing colon still resolves to its named cause
+        // (classify step 1, independent of frames) and carries no signature.
         assert_eq!(
             classify_runner_error_cause("VaultPermissionDeniedError: denied"),
             RunnerErrorCause::VaultPermissionDenied
