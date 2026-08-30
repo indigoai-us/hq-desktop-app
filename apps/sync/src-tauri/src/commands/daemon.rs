@@ -47,7 +47,8 @@ use hq_desktop_core::sync_outcome::{
     deferred_session_end_outcome, describe_exit, is_crash_signal, is_windows_console_control_exit,
     is_windows_fault_exit,
     normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
-    runner_fault_is_disk_exhaustion_content, runner_phase_from_event, runner_stack_shape,
+    runner_fault_is_disk_exhaustion_content, runner_fault_is_file_lock_content,
+    runner_phase_from_event, runner_stack_shape,
     runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
     spawn_failure_capture_policy,
     spawn_failure_fingerprint_token, termination_fingerprint_token,
@@ -1469,6 +1470,13 @@ struct WatcherExitCaptureContext {
     /// exit exactly as the manual route's `DiskFull` disposition does, so the two
     /// boundaries never drift. `false` by default (no disk-full signal).
     runner_disk_exhaustion_content: bool,
+    /// The content half of the shared file-lock recognizer (signal-independent),
+    /// computed at the exit boundary from the SAME `RunTotals` the manual route
+    /// reads. Combined with the exit signal by `attributed_to_file_lock`, it lets
+    /// the watcher suppress a transient-file-lock exit exactly as the manual
+    /// route's `FileLocked` disposition does, so the two boundaries never drift.
+    /// `false` by default (no file-lock signal).
+    runner_file_lock_content: bool,
     /// Total stderr lines this generation received, at parity with the manual
     /// route's `runner_stderr_line_count` extra, so the 8-line tail ring is not
     /// misread as the real line count. `None` renders nothing.
@@ -1547,6 +1555,19 @@ impl WatcherExitCaptureContext {
             && !is_crash_signal(signal)
             && !is_windows_fault_exit(code)
     }
+
+    /// Whether this watcher exit is fully explained by a transient file lock
+    /// (`EBUSY`). Combines the content half computed at the exit boundary with the
+    /// crash-exit gates here, applying the SAME shared recognizer the manual route
+    /// uses so the two boundaries reach the identical verdict. A POSIX crash signal
+    /// or a Windows native-fault code is never a file-lock exit, so it stays
+    /// alertable even if a file-lock line co-occurred. Mirrors
+    /// [`Self::attributed_to_disk_exhaustion`] exactly.
+    fn attributed_to_file_lock(&self, code: Option<i32>, signal: Option<i32>) -> bool {
+        self.runner_file_lock_content
+            && !is_crash_signal(signal)
+            && !is_windows_fault_exit(code)
+    }
 }
 
 impl Default for WatcherExitCaptureContext {
@@ -1600,6 +1621,7 @@ impl Default for WatcherExitCaptureContext {
             cancellation_termination_effected: false,
             saw_alertable_error: false,
             runner_disk_exhaustion_content: false,
+            runner_file_lock_content: false,
             runner_stderr_line_count: None,
             runner_unmatched_stderr_shapes: None,
             // No Windows fault read applies by default (non-Windows, or a clean /
@@ -1771,6 +1793,13 @@ fn watcher_exit_capture_context(
         // RunTotals the manual route reads. The exit-signal gate is applied later
         // by `attributed_to_disk_exhaustion` (the signal is not known here).
         runner_disk_exhaustion_content: runner_fault_is_disk_exhaustion_content(
+            totals.saw_genuine_crash_fatal,
+            &totals.runner_error_rollup,
+        ),
+        // Content half of the shared file-lock recognizer, from the SAME RunTotals
+        // the manual route reads. The exit-signal gate is applied later by
+        // `attributed_to_file_lock` (the signal is not known here).
+        runner_file_lock_content: runner_fault_is_file_lock_content(
             totals.saw_genuine_crash_fatal,
             &totals.runner_error_rollup,
         ),
@@ -2984,13 +3013,14 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     let consecutive = effects.note_watcher_crashed();
     let capture_policy = if is_benign_watcher_exit(code, signal)
         || context.attributed_to_disk_exhaustion(code, signal)
+        || context.attributed_to_file_lock(code, signal)
     {
-        // A full disk (ENOSPC) is a local-machine condition the user fixes by
-        // freeing space, never an actionable watcher crash. Route it to
+        // A full disk (ENOSPC) or a transient file lock (EBUSY) is a local-machine
+        // condition the user fixes, never an actionable watcher crash. Route it to
         // LocalLogOnly — the same non-capturing outcome the manual route's
-        // `DiskFull` disposition produces — so the two boundaries stay in
-        // lockstep. Still counted toward the crash streak above so the respawn
-        // stays paced while the disk is full.
+        // `DiskFull` / `FileLocked` dispositions produce — so the two boundaries
+        // stay in lockstep. Still counted toward the crash streak above so the
+        // respawn stays paced while the condition persists.
         WatcherExitCapturePolicy::LocalLogOnly
     } else {
         watcher_exit_capture_policy_with_attribution(
@@ -3148,6 +3178,25 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 format!(
                     "disk-full auto-sync watcher exit #{consecutive}: \
                      runner_fatal_class=disk_full"
+                ),
+            );
+        } else if context.attributed_to_file_lock(code, signal) {
+            // File-lock exit: no capture, but keep the content-safe attribution
+            // (runner_error_class=ebusy) on the local log and breadcrumb so the
+            // condition stays observable at parity with the manual route.
+            effects.log(
+                "daemon",
+                &format!(
+                    "file-locked watcher exit #{consecutive} — capture skipped \
+                     (runner_error_class=ebusy)"
+                ),
+            );
+            effects.add_breadcrumb(
+                "daemon.exit",
+                sentry::Level::Info,
+                format!(
+                    "file-locked auto-sync watcher exit #{consecutive}: \
+                     runner_error_class=ebusy"
                 ),
             );
         } else {
@@ -5997,6 +6046,143 @@ mod tests {
             1,
             "a Windows native fault with a disk-full content signal must still capture"
         );
+    }
+
+    #[test]
+    fn file_locked_watcher_exit_is_suppressed_and_reports_file_lock() {
+        // HQ-DESKTOP-5R parity insurance: the auto-sync watcher must not page for a
+        // transient-file-lock exit, matching the manual route's FileLocked
+        // disposition. A code-1/2 no-signal exit is already benign, so this uses a
+        // NON-benign code (243) — the case the new arm actually covers — to prove
+        // the suppression comes from the file-lock recognizer, not is_benign. The
+        // condition stays observable: the log and breadcrumb name
+        // runner_error_class=ebusy.
+        let context = WatcherExitCaptureContext {
+            runner_file_lock_content: true,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(243),
+            None,
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert!(
+            effects.captures.is_empty(),
+            "a file-lock watcher exit must not capture to Sentry"
+        );
+        let recorded = format!("{:?}{:?}", effects.logs, effects.breadcrumbs);
+        assert!(
+            recorded.contains("ebusy"),
+            "watcher must still report runner_error_class=ebusy locally: {recorded}"
+        );
+    }
+
+    #[test]
+    fn file_locked_watcher_gate_still_captures_a_crash_signal() {
+        // A crash signal co-occurring with a file-lock content signal is NOT a
+        // file-lock exit — the watcher must still capture it, mirroring the manual
+        // route's crash-signal negative control.
+        let context = WatcherExitCaptureContext {
+            runner_file_lock_content: true,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            None,
+            Some(SIGSEGV),
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert_eq!(
+            effects.captures.len(),
+            1,
+            "a crash signal with a file-lock content signal must still capture"
+        );
+    }
+
+    #[test]
+    fn file_locked_watcher_gate_still_captures_a_windows_native_fault() {
+        // A Windows native fault is reported in `code` with signal=None; the
+        // file-lock content signal must not suppress it.
+        let context = WatcherExitCaptureContext {
+            runner_file_lock_content: true,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(0xC000_0005u32 as i32), // ACCESS_VIOLATION
+            None,
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            TerminationHost::Windows,
+            &context,
+        );
+        assert_eq!(
+            effects.captures.len(),
+            1,
+            "a Windows native fault with a file-lock content signal must still capture"
+        );
+    }
+
+    #[test]
+    fn file_lock_and_disk_full_watcher_signals_do_not_cross_wire() {
+        // The two content signals are independent booleans: a disk-full-only context
+        // reports disk_full (not ebusy), and a file-lock-only context reports ebusy
+        // (not disk_full), so the watcher attributions can never be confused.
+        let disk = WatcherExitCaptureContext {
+            runner_disk_exhaustion_content: true,
+            ..Default::default()
+        };
+        let mut disk_effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut disk_effects,
+            Some(243),
+            None,
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            current_termination_host(),
+            &disk,
+        );
+        let disk_recorded = format!("{:?}{:?}", disk_effects.logs, disk_effects.breadcrumbs);
+        assert!(disk_recorded.contains("disk_full"));
+        assert!(!disk_recorded.contains("ebusy"));
+
+        let lock = WatcherExitCaptureContext {
+            runner_file_lock_content: true,
+            ..Default::default()
+        };
+        let mut lock_effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut lock_effects,
+            Some(243),
+            None,
+            false,
+            false,
+            "npx hq-sync-runner",
+            None,
+            current_termination_host(),
+            &lock,
+        );
+        let lock_recorded = format!("{:?}{:?}", lock_effects.logs, lock_effects.breadcrumbs);
+        assert!(lock_recorded.contains("ebusy"));
+        assert!(!lock_recorded.contains("disk_full"));
     }
 
     #[test]
