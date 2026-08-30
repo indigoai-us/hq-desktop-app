@@ -39,6 +39,7 @@
 //! down.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -141,6 +142,86 @@ enum CoreAutoUpdateDecision {
     Install,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CoreUpdateErrorKind {
+    AlreadyInProgress,
+    InvalidCoreRoot,
+    Network,
+    RescueSpawn,
+    BaselinePersistence,
+    ChannelConfiguration,
+    Internal,
+}
+
+impl CoreUpdateErrorKind {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::AlreadyInProgress => "already_in_progress",
+            Self::InvalidCoreRoot => "invalid_core_root",
+            Self::Network => "network",
+            Self::RescueSpawn => "rescue_spawn",
+            Self::BaselinePersistence => "baseline_persistence",
+            Self::ChannelConfiguration => "channel_configuration",
+            Self::Internal => "internal",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CoreUpdateError {
+    kind: CoreUpdateErrorKind,
+    message: String,
+}
+
+impl CoreUpdateError {
+    pub(crate) fn new(kind: CoreUpdateErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) const fn kind(&self) -> CoreUpdateErrorKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for CoreUpdateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoreUpdateTelemetryContext {
+    source: &'static str,
+    version_behind: Option<bool>,
+}
+
+impl CoreUpdateTelemetryContext {
+    pub(crate) const fn manual() -> Self {
+        Self {
+            source: "manual",
+            version_behind: None,
+        }
+    }
+
+    pub(crate) const fn automatic(version_behind: bool) -> Self {
+        Self {
+            source: "automatic",
+            version_behind: Some(version_behind),
+        }
+    }
+
+    pub(crate) const fn source(self) -> &'static str {
+        self.source
+    }
+
+    pub(crate) const fn version_behind(self) -> Option<bool> {
+        self.version_behind
+    }
+}
+
 fn core_auto_update_decision(
     auto_update_enabled: bool,
     version_behind: bool,
@@ -169,11 +250,16 @@ impl Drop for CoreUpdateRunGuard {
     }
 }
 
-pub(crate) fn try_begin_core_update() -> Result<CoreUpdateRunGuard, String> {
+pub(crate) fn try_begin_core_update() -> Result<CoreUpdateRunGuard, CoreUpdateError> {
     CORE_UPDATE_RUNNING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map(|_| CoreUpdateRunGuard)
-        .map_err(|_| "an HQ Core update is already in progress".to_string())
+        .map_err(|_| {
+            CoreUpdateError::new(
+                CoreUpdateErrorKind::AlreadyInProgress,
+                "an HQ Core update is already in progress",
+            )
+        })
 }
 
 fn channel_label(channel: Channel) -> &'static str {
@@ -190,35 +276,6 @@ fn mark_automatic_target_attempted(channel: Channel, target: &str) -> bool {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(key)
-}
-
-/// Coarse failure categories only. Raw errors, paths, command output, and
-/// credentials stay in local diagnostics and never enter product telemetry.
-pub(crate) fn classify_core_update_error(error: &str) -> &'static str {
-    let normalized = error.to_ascii_lowercase();
-    if normalized.contains("already in progress") {
-        "already_in_progress"
-    } else if normalized.contains("hq folder") || normalized.contains("core.yaml") {
-        "invalid_core_root"
-    } else if normalized.contains("github")
-        || normalized.contains("http")
-        || normalized.contains("network")
-        || normalized.contains("get ")
-    {
-        "network"
-    } else if normalized.contains("npm")
-        || normalized.contains("npx")
-        || normalized.contains("cache")
-        || normalized.contains("spawn rescue")
-    {
-        "rescue_spawn"
-    } else if normalized.contains("baseline") {
-        "baseline_persistence"
-    } else if normalized.contains("staging channel") || normalized.contains("staging repo") {
-        "channel_configuration"
-    } else {
-        "internal"
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -300,7 +357,7 @@ pub(crate) fn emit_core_update_event(
 async fn check_once_observed(
     app: &AppHandle,
     source: &'static str,
-) -> Result<Option<CoreState>, String> {
+) -> Result<Option<CoreState>, CoreUpdateError> {
     let started = Instant::now();
     let result = check_once(app).await;
     let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
@@ -351,7 +408,7 @@ async fn check_once_observed(
             None,
             started.elapsed(),
             None,
-            Some(classify_core_update_error(error)),
+            Some(error.kind().label()),
             None,
         ),
     }
@@ -601,7 +658,7 @@ fn semver_lt(local: &str, latest: &str) -> bool {
 /// One unified check. Returns `Ok(None)` only when we can't compute at all
 /// (no HQ folder, no `core.yaml`, no `rules.locked`). Returns `Ok(Some)`
 /// for both "in sync" and "drifted" cases — frontend renders both.
-pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
+async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateError> {
     // Resolve HQ folder + local version (same path the old checkers used).
     let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
         .ok()
@@ -654,7 +711,8 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
     // staging channel as intended.
     let client = match channel {
         Channel::Staging => match hq_core_staging::resolve_gh_token() {
-            Some(token) => staging_authed_client(&token)?,
+            Some(token) => staging_authed_client(&token)
+                .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?,
             None => {
                 log(
                     "hq-core-state",
@@ -666,24 +724,38 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                     .default_headers(crate::util::client_info::client_headers())
                     .timeout(REQUEST_TIMEOUT)
                     .build()
-                    .map_err(|e| format!("build client: {e}"))?
+                    .map_err(|error| {
+                        CoreUpdateError::new(
+                            CoreUpdateErrorKind::Network,
+                            format!("build client: {error}"),
+                        )
+                    })?
             }
         },
         Channel::Release => reqwest::Client::builder()
             .default_headers(crate::util::client_info::client_headers())
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|e| format!("build client: {e}"))?,
+            .map_err(|error| {
+                CoreUpdateError::new(
+                    CoreUpdateErrorKind::Network,
+                    format!("build client: {error}"),
+                )
+            })?,
     };
 
     let (target_ref, target_version) = match channel {
         Channel::Release => {
-            let tag = fetch_latest_release_tag(&client).await?;
+            let tag = fetch_latest_release_tag(&client)
+                .await
+                .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
             let version = tag.trim_start_matches('v').to_string();
             (tag, version)
         }
         Channel::Staging => {
-            let sha = fetch_main_head_sha(&client, &target_repo).await?;
+            let sha = fetch_main_head_sha(&client, &target_repo)
+                .await
+                .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
             let short = sha.chars().take(7).collect::<String>();
             (sha, short)
         }
@@ -736,7 +808,9 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
     // Fetch trees. Target only if we're actually going to scan drift.
     // Floor only if available + matches source.
     let (target_tree, floor_blobs) = if drift_scan_possible {
-        let target_tree = fetch_tree(&client, &target_repo, &target_ref).await?;
+        let target_tree = fetch_tree(&client, &target_repo, &target_ref)
+            .await
+            .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
         let floor_blobs = match floor_identity.as_ref() {
             Some((source, commit)) => {
                 let local = hq_desktop_core::drift_scope::load_core_drift_baseline(
@@ -1133,17 +1207,54 @@ pub async fn check_core_state(app: AppHandle) -> Result<Option<CoreState>, Strin
             run_native_core_auto_update(&handle, &state).await;
         });
     }
-    result
+    result.map_err(|error| error.to_string())
 }
 
-async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
-    let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
-    match core_auto_update_decision(
-        auto_updates,
-        state.version_behind,
-        crate::updater::sync_in_progress(),
-    ) {
-        CoreAutoUpdateDecision::Ignore => {}
+#[derive(Debug, Clone, Copy)]
+struct CoreAutoUpdateCandidate<'a> {
+    channel: Channel,
+    local_version: Option<&'a str>,
+    target_version: &'a str,
+    is_eligible: bool,
+    version_behind: bool,
+}
+
+impl<'a> From<&'a CoreState> for CoreAutoUpdateCandidate<'a> {
+    fn from(state: &'a CoreState) -> Self {
+        Self {
+            channel: state.channel,
+            local_version: state.local_version.as_deref(),
+            target_version: &state.target_version,
+            is_eligible: state.is_eligible,
+            version_behind: state.version_behind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCoreAutoUpdateOutcome {
+    Ignored,
+    SkippedAutomaticUpdatesDisabled,
+    DeferredForSync,
+    SkippedAlreadyInProgress,
+    SkippedAlreadyAttempted,
+    Succeeded,
+    FailedExit(i32),
+    Failed(CoreUpdateErrorKind),
+}
+
+async fn execute_native_core_auto_update<F, Fut>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<i32, CoreUpdateError>>,
+{
+    match core_auto_update_decision(auto_updates, candidate.version_behind, sync_in_progress) {
+        CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
         CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
             log(
                 "hq-core-update",
@@ -1153,17 +1264,18 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
                 "core_update_skipped",
                 "automatic",
                 "skipped",
-                Some(state.channel),
-                state.local_version.as_deref(),
-                Some(&state.target_version),
+                Some(candidate.channel),
+                candidate.local_version,
+                Some(candidate.target_version),
                 false,
-                Some(state.is_eligible),
-                Some(state.version_behind),
+                Some(candidate.is_eligible),
+                Some(candidate.version_behind),
                 Duration::ZERO,
                 None,
                 None,
                 Some("automatic_updates_disabled"),
             );
+            NativeCoreAutoUpdateOutcome::SkippedAutomaticUpdatesDisabled
         }
         CoreAutoUpdateDecision::DeferForSync => {
             log(
@@ -1174,17 +1286,18 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
                 "core_update_skipped",
                 "automatic",
                 "deferred",
-                Some(state.channel),
-                state.local_version.as_deref(),
-                Some(&state.target_version),
+                Some(candidate.channel),
+                candidate.local_version,
+                Some(candidate.target_version),
                 true,
-                Some(state.is_eligible),
-                Some(state.version_behind),
+                Some(candidate.is_eligible),
+                Some(candidate.version_behind),
                 Duration::ZERO,
                 None,
                 None,
                 Some("sync_in_progress"),
             );
+            NativeCoreAutoUpdateOutcome::DeferredForSync
         }
         CoreAutoUpdateDecision::Install => {
             // Do not gate on `state.is_eligible`: that field means Indigo
@@ -1192,7 +1305,7 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
             // majority of HQ installs) must receive automatic Core updates.
             let run_guard = match try_begin_core_update() {
                 Ok(guard) => guard,
-                Err(_) => {
+                Err(error) => {
                     log(
                         "hq-core-update",
                         "native auto-update skipped: another Core update is in progress",
@@ -1201,21 +1314,21 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
                         "core_update_skipped",
                         "automatic",
                         "skipped",
-                        Some(state.channel),
-                        state.local_version.as_deref(),
-                        Some(&state.target_version),
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
                         true,
-                        Some(state.is_eligible),
-                        Some(state.version_behind),
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
                         Duration::ZERO,
                         None,
-                        Some("already_in_progress"),
-                        Some("already_in_progress"),
+                        Some(error.kind().label()),
+                        Some(error.kind().label()),
                     );
-                    return;
+                    return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
                 }
             };
-            if !mark_automatic_target_attempted(state.channel, &state.target_version) {
+            if !mark_automatic_target_attempted(candidate.channel, candidate.target_version) {
                 log(
                     "hq-core-update",
                     "native auto-update skipped: target already attempted this session",
@@ -1224,62 +1337,93 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
                     "core_update_skipped",
                     "automatic",
                     "skipped",
-                    Some(state.channel),
-                    state.local_version.as_deref(),
-                    Some(&state.target_version),
+                    Some(candidate.channel),
+                    candidate.local_version,
+                    Some(candidate.target_version),
                     true,
-                    Some(state.is_eligible),
-                    Some(state.version_behind),
+                    Some(candidate.is_eligible),
+                    Some(candidate.version_behind),
                     Duration::ZERO,
                     None,
                     None,
                     Some("already_attempted_this_session"),
                 );
-                return;
+                return NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted;
             }
             log(
                 "hq-core-update",
                 &format!(
                     "native auto-update starting: channel={} local={:?} target={}",
-                    channel_label(state.channel),
-                    state.local_version,
-                    state.target_version
+                    channel_label(candidate.channel),
+                    candidate.local_version,
+                    candidate.target_version
                 ),
             );
-            let result = match state.channel {
+            let observation = CoreUpdateTelemetryContext::automatic(candidate.version_behind);
+            let result = install(candidate.channel, run_guard, observation).await;
+            match result {
+                Ok(0) => {
+                    log("hq-core-update", "native auto-update succeeded");
+                    NativeCoreAutoUpdateOutcome::Succeeded
+                }
+                Ok(exit_code) => {
+                    log(
+                        "hq-core-update",
+                        &format!("native auto-update failed: rescue_exit={exit_code}"),
+                    );
+                    NativeCoreAutoUpdateOutcome::FailedExit(exit_code)
+                }
+                Err(error) => {
+                    log(
+                        "hq-core-update",
+                        &format!(
+                            "native auto-update failed: category={}",
+                            error.kind().label()
+                        ),
+                    );
+                    NativeCoreAutoUpdateOutcome::Failed(error.kind())
+                }
+            }
+        }
+    }
+}
+
+async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
+    let outcome = execute_native_core_auto_update(
+        CoreAutoUpdateCandidate::from(state),
+        hq_desktop_core::hq_cli_update::auto_update_enabled(),
+        crate::updater::sync_in_progress(),
+        |channel, run_guard, observation| async move {
+            match channel {
                 Channel::Release => {
-                    crate::commands::hq_core_update::install_hq_core_update_automatic(run_guard)
-                        .await
+                    crate::commands::hq_core_update::install_hq_core_update_automatic(
+                        run_guard,
+                        observation,
+                    )
+                    .await
+                    .map(|run| run.exit_code)
                 }
                 Channel::Staging => {
-                    crate::commands::hq_core_staging::run_replace_from_staging_automatic(run_guard)
-                        .await
+                    crate::commands::hq_core_staging::run_replace_from_staging_automatic(
+                        run_guard,
+                        observation,
+                    )
+                    .await
+                    .map(|run| run.exit_code)
                 }
-            };
-            match result {
-                Ok(run) if run.exit_code == 0 => {
-                    log("hq-core-update", "native auto-update succeeded");
-                    // Refresh the public state immediately so every window
-                    // clears the stale update badge without waiting six hours.
-                    if let Err(error) = check_once_observed(app, "post_install").await {
-                        log(
-                            "hq-core-state",
-                            &format!("post-install refresh failed: {error}"),
-                        );
-                    }
-                }
-                Ok(run) => log(
-                    "hq-core-update",
-                    &format!("native auto-update failed: rescue_exit={}", run.exit_code),
-                ),
-                Err(error) => log(
-                    "hq-core-update",
-                    &format!(
-                        "native auto-update failed: category={}",
-                        classify_core_update_error(&error)
-                    ),
-                ),
             }
+        },
+    )
+    .await;
+
+    if outcome == NativeCoreAutoUpdateOutcome::Succeeded {
+        // Refresh the public state immediately so every window clears the stale
+        // update badge without waiting six hours.
+        if let Err(error) = check_once_observed(app, "post_install").await {
+            log(
+                "hq-core-state",
+                &format!("post-install refresh failed: {error}"),
+            );
         }
     }
 }
@@ -1322,15 +1466,67 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    #[test]
-    fn core_update_run_guard_serializes_and_releases_the_update_slot() {
+    static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn core_update_run_guard_serializes_and_releases_the_update_slot() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let first = try_begin_core_update().expect("first update owns the slot");
         assert!(try_begin_core_update().is_err());
         drop(first);
 
         let retry = try_begin_core_update().expect("dropping the guard releases the slot");
         drop(retry);
+    }
+
+    #[tokio::test]
+    async fn noneligible_release_candidate_executes_the_native_installer() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let called = Arc::new(AtomicBool::new(false));
+        let called_by_installer = Arc::clone(&called);
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: "15.0.117-native-behavior-test",
+            is_eligible: false,
+            version_behind: true,
+        };
+
+        let outcome = execute_native_core_auto_update(
+            candidate,
+            true,
+            false,
+            move |channel, run_guard, observation| async move {
+                let _run_guard = run_guard;
+                assert_eq!(channel, Channel::Release);
+                assert_eq!(observation.source(), "automatic");
+                assert_eq!(observation.version_behind(), Some(true));
+                called_by_installer.store(true, Ordering::Release);
+                Ok(0)
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert!(called.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn manual_telemetry_does_not_invent_version_drift() {
+        let observation = CoreUpdateTelemetryContext::manual();
+        assert_eq!(observation.source(), "manual");
+        assert_eq!(observation.version_behind(), None);
+    }
+
+    #[test]
+    fn typed_error_kind_is_stable_when_human_message_changes() {
+        let error = CoreUpdateError::new(
+            CoreUpdateErrorKind::Network,
+            "completely revised network wording",
+        );
+        assert_eq!(error.kind().label(), "network");
     }
 
     #[test]

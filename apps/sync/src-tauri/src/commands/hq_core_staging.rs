@@ -530,34 +530,41 @@ pub(crate) async fn materialize_rescue_cache() -> Result<(), String> {
 /// the future is pending.
 #[tauri::command]
 pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
-    let run_guard = crate::commands::hq_core_state::try_begin_core_update()?;
-    run_replace_from_staging_observed("manual", run_guard).await
+    let run_guard = crate::commands::hq_core_state::try_begin_core_update()
+        .map_err(|error| error.to_string())?;
+    run_replace_from_staging_observed(
+        crate::commands::hq_core_state::CoreUpdateTelemetryContext::manual(),
+        run_guard,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn run_replace_from_staging_automatic(
     run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
-) -> Result<RescueRunResult, String> {
-    run_replace_from_staging_observed("automatic", run_guard).await
+    observation: crate::commands::hq_core_state::CoreUpdateTelemetryContext,
+) -> Result<RescueRunResult, crate::commands::hq_core_state::CoreUpdateError> {
+    run_replace_from_staging_observed(observation, run_guard).await
 }
 
 async fn run_replace_from_staging_observed(
-    source: &'static str,
+    observation: crate::commands::hq_core_state::CoreUpdateTelemetryContext,
     _run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
-) -> Result<RescueRunResult, String> {
+) -> Result<RescueRunResult, crate::commands::hq_core_state::CoreUpdateError> {
     let started = std::time::Instant::now();
     let local_before = crate::commands::hq_core_update::get_local_version();
     let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
     let eligible = is_eligible_email(signed_in_email().as_deref());
     crate::commands::hq_core_state::emit_core_update_event(
         "core_update_attempted",
-        source,
+        observation.source(),
         "started",
         Some(crate::commands::hq_core_state::Channel::Staging),
         local_before.as_deref(),
         None,
         auto_updates,
         Some(eligible),
-        Some(true),
+        observation.version_behind(),
         std::time::Duration::ZERO,
         None,
         None,
@@ -569,14 +576,14 @@ async fn run_replace_from_staging_observed(
         Ok(run) if run.exit_code == 0 => {
             crate::commands::hq_core_state::emit_core_update_event(
                 "core_update_succeeded",
-                source,
+                observation.source(),
                 "succeeded",
                 Some(crate::commands::hq_core_state::Channel::Staging),
                 local_before.as_deref(),
                 None,
                 auto_updates,
                 Some(eligible),
-                Some(true),
+                observation.version_behind(),
                 started.elapsed(),
                 Some(0),
                 None,
@@ -585,14 +592,14 @@ async fn run_replace_from_staging_observed(
         }
         Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
             "core_update_failed",
-            source,
+            observation.source(),
             "failed",
             Some(crate::commands::hq_core_state::Channel::Staging),
             local_before.as_deref(),
             None,
             auto_updates,
             Some(eligible),
-            Some(true),
+            observation.version_behind(),
             started.elapsed(),
             Some(run.exit_code),
             Some("rescue_exit"),
@@ -600,26 +607,25 @@ async fn run_replace_from_staging_observed(
         ),
         Err(error) => crate::commands::hq_core_state::emit_core_update_event(
             "core_update_failed",
-            source,
+            observation.source(),
             "failed",
             Some(crate::commands::hq_core_state::Channel::Staging),
             local_before.as_deref(),
             None,
             auto_updates,
             Some(eligible),
-            Some(true),
+            observation.version_behind(),
             started.elapsed(),
             None,
-            Some(crate::commands::hq_core_state::classify_core_update_error(
-                error,
-            )),
+            Some(error.kind().label()),
             None,
         ),
     }
     outcome
 }
 
-async fn run_replace_from_staging_inner() -> Result<RescueRunResult, String> {
+async fn run_replace_from_staging_inner(
+) -> Result<RescueRunResult, crate::commands::hq_core_state::CoreUpdateError> {
     // Settings toggle: @indigo user opted out of the DEFAULT staging
     // channel. The pill should already be hidden when the toggle is
     // off, so reaching this command means the frontend is stale or a
@@ -633,22 +639,32 @@ async fn run_replace_from_staging_inner() -> Result<RescueRunResult, String> {
     // disabled" — exactly the inconsistency Codex flagged in the
     // round-5 review on PR #110.
     if !is_staging_channel_enabled() && !has_explicit_staging_repo() {
-        return Err(
-            "staging channel disabled in Settings — re-enable to run replace-from-staging"
-                .to_string(),
-        );
+        return Err(crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::ChannelConfiguration,
+            "staging channel disabled in Settings — re-enable to run replace-from-staging",
+        ));
     }
     let eligible = is_eligible_email(signed_in_email().as_deref());
     let repo = resolve_staging_repo(eligible).ok_or_else(|| {
-        "no staging repo resolved (set driftStagingRepo in ~/.hq/menubar.json, or sign in with an @getindigo.ai account)".to_string()
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::ChannelConfiguration,
+            "no staging repo resolved (set driftStagingRepo in ~/.hq/menubar.json, or sign in with an @getindigo.ai account)",
+        )
     })?;
-    let token = resolve_gh_token()
-        .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
+    let token = resolve_gh_token().ok_or_else(|| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::ChannelConfiguration,
+            "no GitHub token available (gh auth token failed)",
+        )
+    })?;
     let hq_folder = resolve_hq_folder();
     if !looks_like_hq_root(&hq_folder) {
-        return Err(format!(
-            "HQ folder at {} is not a valid HQ root (need companies/ plus one of .claude/, core/, or personal/)",
-            hq_folder.display()
+        return Err(crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::InvalidCoreRoot,
+            format!(
+                "HQ folder at {} is not a valid HQ root (need companies/ plus one of .claude/, core/, or personal/)",
+                hq_folder.display()
+            ),
         ));
     }
     // Stream the combined output to a per-invocation log file so the user
@@ -658,11 +674,18 @@ async fn run_replace_from_staging_inner() -> Result<RescueRunResult, String> {
         "hq-sync-replace-from-staging-{}.log",
         std::process::id()
     ));
-    let log_file_for_stdout = std::fs::File::create(&log_path)
-        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
-    let log_file_for_stderr = log_file_for_stdout
-        .try_clone()
-        .map_err(|e| format!("dup log file fd: {e}"))?;
+    let log_file_for_stdout = std::fs::File::create(&log_path).map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::Internal,
+            format!("create log file {}: {error}", log_path.display()),
+        )
+    })?;
+    let log_file_for_stderr = log_file_for_stdout.try_clone().map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::Internal,
+            format!("dup log file fd: {error}"),
+        )
+    })?;
 
     log(
         "hq-core-staging",
@@ -677,7 +700,12 @@ async fn run_replace_from_staging_inner() -> Result<RescueRunResult, String> {
 
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so a rescue can't race prewarm/sync into a corrupt `_npx` tree.
-    materialize_rescue_cache().await?;
+    materialize_rescue_cache().await.map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
+            error,
+        )
+    })?;
 
     // npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
     //     --hq-root <folder> --source <repo> --yes
@@ -689,19 +717,31 @@ async fn run_replace_from_staging_inner() -> Result<RescueRunResult, String> {
         .stdout(std::process::Stdio::from(log_file_for_stdout))
         .stderr(std::process::Stdio::from(log_file_for_stderr));
 
-    let status = cmd
-        .status()
-        .await
-        .map_err(|e| format!("spawn rescue script: {e}"))?;
+    let status = cmd.status().await.map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
+            format!("spawn rescue script: {error}"),
+        )
+    })?;
 
     let exit_code = status.code().unwrap_or(-1);
     if exit_code == 0 {
-        let client = authed_client(&token)?;
+        let client = authed_client(&token).map_err(|error| {
+            crate::commands::hq_core_state::CoreUpdateError::new(
+                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
+                error,
+            )
+        })?;
         let commit = crate::commands::hq_core_state::persist_remote_baseline(
             &hq_folder, &client, &repo, "main",
         )
         .await
-        .map_err(|e| format!("staging update applied but baseline persistence failed: {e}"))?;
+        .map_err(|error| {
+            crate::commands::hq_core_state::CoreUpdateError::new(
+                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
+                format!("staging update applied but baseline persistence failed: {error}"),
+            )
+        })?;
         log(
             "hq-core-staging",
             &format!("persisted normalized drift baseline {repo}@{commit}"),

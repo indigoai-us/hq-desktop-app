@@ -595,6 +595,37 @@ describe('VersionPopout restored updater behavior', () => {
     expect(toggle().checked).toBe(false);
   });
 
+  it('checks Core immediately after automatic updates are enabled', async () => {
+    let coreChecks = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_pending_update') return null;
+      if (command === 'get_settings') return { autoUpdate: false };
+      if (command === 'get_hq_version') return '15.0.4';
+      if (command === 'check_core_state') {
+        coreChecks += 1;
+        return {
+          channel: 'release',
+          targetVersion: '15.0.117',
+          localVersion: '15.0.4',
+          versionBehind: true,
+          driftReport: { count: 0 },
+        };
+      }
+      throw new Error(`Unexpected invoke: ${command}`);
+    });
+
+    mountPopout();
+    await waitForHydration();
+    await vi.waitFor(() => expect(coreChecks).toBe(1));
+
+    toggle().click();
+
+    await vi.waitFor(() => {
+      expect(settings.update).toHaveBeenCalledWith({ autoUpdate: true });
+      expect(coreChecks).toBe(2);
+    });
+  });
+
   it('does not invent an automatic-update default when hydration fails and recovers on Retry', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     tauri.listen.mockRejectedValueOnce(new Error('events unavailable'));

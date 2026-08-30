@@ -17,7 +17,6 @@ const normalize = (s: string) => s.replace(/\s+/g, ' ');
 const app = read('src/App.svelte');
 const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
 const appUpdater = read('src-tauri/src/updater.rs');
-const coreState = read('src-tauri/src/commands/hq_core_state.rs');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
 const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
 const ciWorkflow = read('../../.github/workflows/ci.yml');
@@ -82,42 +81,12 @@ describe('master automatic-updates switch', () => {
     );
   });
 
-  it('native Rust owns Core updates without the staging-email eligibility gate', () => {
-    const nativeDecision = normalize(coreState.slice(
-      coreState.indexOf('fn core_auto_update_decision('),
-      coreState.indexOf('/// Process-wide guard'),
-    ));
-    const nativeRunner = normalize(coreState.slice(
-      coreState.indexOf('async fn run_native_core_auto_update('),
-      coreState.indexOf('pub fn setup_core_state_checker('),
-    ));
-
-    // The mounted popover is no longer an availability dependency.
+  it('the mounted App no longer owns Core automatic updates', () => {
+    // Native Rust exercises the updater behavior directly; this architecture
+    // contract prevents the old WebView-gated owner from returning.
     expect(app).not.toContain('loadAutoUpdatePref');
     expect(app).not.toContain('autoCoreUpdatedVersion');
     expect(app).not.toContain('if (!s || !s.isEligible || !s.versionBehind) return;');
-
-    // The native decision uses the shared preference and sync state. Crucially,
-    // `isEligible` means Indigo staging access, not permission for a client on
-    // the public release channel to receive Core updates.
-    expect(nativeDecision).toContain('auto_update_enabled: bool');
-    expect(nativeDecision).toContain('version_behind: bool');
-    expect(nativeDecision).toContain('sync_in_progress: bool');
-    expect(nativeDecision).not.toContain('eligible');
-    expect(nativeRunner).toContain('hq_desktop_core::hq_cli_update::auto_update_enabled()');
-    expect(nativeRunner).toContain('crate::updater::sync_in_progress()');
-    expect(nativeRunner).toContain('Channel::Release =>');
-    expect(nativeRunner).not.toContain('if !state.is_eligible');
-
-    // Reserve the process-wide update slot before recording the target as
-    // attempted. Otherwise a concurrent manual update can win between the
-    // check and the rescue call, leaving this target suppressed all session
-    // even though the automatic attempt never ran.
-    const guardIndex = nativeRunner.indexOf('let run_guard = match try_begin_core_update()');
-    const attemptedIndex = nativeRunner.indexOf('mark_automatic_target_attempted');
-    expect(guardIndex).toBeGreaterThanOrEqual(0);
-    expect(attemptedIndex).toBeGreaterThan(guardIndex);
-    expect(nativeRunner).toContain('install_hq_core_update_automatic(run_guard)');
   });
 
   it('the CLI background auto-installer gates on the master switch', () => {

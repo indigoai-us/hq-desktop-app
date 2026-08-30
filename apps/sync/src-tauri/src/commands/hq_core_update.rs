@@ -189,33 +189,46 @@ const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 #[tauri::command]
 pub async fn install_hq_core_update(
 ) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
-    let run_guard = crate::commands::hq_core_state::try_begin_core_update()?;
-    install_hq_core_update_observed("manual", run_guard).await
+    let run_guard = crate::commands::hq_core_state::try_begin_core_update()
+        .map_err(|error| error.to_string())?;
+    install_hq_core_update_observed(
+        crate::commands::hq_core_state::CoreUpdateTelemetryContext::manual(),
+        run_guard,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn install_hq_core_update_automatic(
     run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
-) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
-    install_hq_core_update_observed("automatic", run_guard).await
+    observation: crate::commands::hq_core_state::CoreUpdateTelemetryContext,
+) -> Result<
+    crate::commands::hq_core_staging::RescueRunResult,
+    crate::commands::hq_core_state::CoreUpdateError,
+> {
+    install_hq_core_update_observed(observation, run_guard).await
 }
 
 async fn install_hq_core_update_observed(
-    source: &'static str,
+    observation: crate::commands::hq_core_state::CoreUpdateTelemetryContext,
     _run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
-) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
+) -> Result<
+    crate::commands::hq_core_staging::RescueRunResult,
+    crate::commands::hq_core_state::CoreUpdateError,
+> {
     let started = Instant::now();
     let local_before = get_local_version();
     let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
     crate::commands::hq_core_state::emit_core_update_event(
         "core_update_attempted",
-        source,
+        observation.source(),
         "started",
         Some(crate::commands::hq_core_state::Channel::Release),
         local_before.as_deref(),
         None,
         auto_updates,
         None,
-        Some(true),
+        observation.version_behind(),
         Duration::ZERO,
         None,
         None,
@@ -228,14 +241,14 @@ async fn install_hq_core_update_observed(
             let installed = get_local_version();
             crate::commands::hq_core_state::emit_core_update_event(
                 "core_update_succeeded",
-                source,
+                observation.source(),
                 "succeeded",
                 Some(crate::commands::hq_core_state::Channel::Release),
                 local_before.as_deref(),
                 installed.as_deref(),
                 auto_updates,
                 None,
-                Some(true),
+                observation.version_behind(),
                 started.elapsed(),
                 Some(0),
                 None,
@@ -244,14 +257,14 @@ async fn install_hq_core_update_observed(
         }
         Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
             "core_update_failed",
-            source,
+            observation.source(),
             "failed",
             Some(crate::commands::hq_core_state::Channel::Release),
             local_before.as_deref(),
             None,
             auto_updates,
             None,
-            Some(true),
+            observation.version_behind(),
             started.elapsed(),
             Some(run.exit_code),
             Some("rescue_exit"),
@@ -259,40 +272,49 @@ async fn install_hq_core_update_observed(
         ),
         Err(error) => crate::commands::hq_core_state::emit_core_update_event(
             "core_update_failed",
-            source,
+            observation.source(),
             "failed",
             Some(crate::commands::hq_core_state::Channel::Release),
             local_before.as_deref(),
             None,
             auto_updates,
             None,
-            Some(true),
+            observation.version_behind(),
             started.elapsed(),
             None,
-            Some(crate::commands::hq_core_state::classify_core_update_error(
-                error,
-            )),
+            Some(error.kind().label()),
             None,
         ),
     }
     outcome
 }
 
-async fn install_hq_core_update_inner(
-) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
+async fn install_hq_core_update_inner() -> Result<
+    crate::commands::hq_core_staging::RescueRunResult,
+    crate::commands::hq_core_state::CoreUpdateError,
+> {
     let hq_folder = crate::commands::hq_core_staging::resolve_hq_folder();
     if !crate::commands::hq_core_staging::looks_like_hq_root(&hq_folder) {
-        return Err(format!(
-            "HQ folder at {} is not a valid HQ root (need companies/ plus one of .claude/, core/, or personal/)",
-            hq_folder.display()
+        return Err(crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::InvalidCoreRoot,
+            format!(
+                "HQ folder at {} is not a valid HQ root (need companies/ plus one of .claude/, core/, or personal/)",
+                hq_folder.display()
+            ),
         ));
     }
 
-    let latest = fetch_latest()
-        .await
-        .map_err(|e| format!("fetch latest hq-core release: {e}"))?;
+    let latest = fetch_latest().await.map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::Network,
+            format!("fetch latest hq-core release: {error}"),
+        )
+    })?;
     if latest.is_empty() {
-        return Err("GitHub returned an empty tag for the latest hq-core release".to_string());
+        return Err(crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::Network,
+            "GitHub returned an empty tag for the latest hq-core release",
+        ));
     }
     // hq-core release tags are `vX.Y.Z` (see strip_v_prefix doc above);
     // `fetch_latest` strips the leading `v` for the semver comparator, so
@@ -352,11 +374,18 @@ async fn install_hq_core_update_inner(
         "hq-sync-install-hq-core-update-{}.log",
         std::process::id()
     ));
-    let log_file_for_stdout = std::fs::File::create(&log_path)
-        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
-    let log_file_for_stderr = log_file_for_stdout
-        .try_clone()
-        .map_err(|e| format!("dup log file fd: {e}"))?;
+    let log_file_for_stdout = std::fs::File::create(&log_path).map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::Internal,
+            format!("create log file {}: {error}", log_path.display()),
+        )
+    })?;
+    let log_file_for_stderr = log_file_for_stdout.try_clone().map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::Internal,
+            format!("dup log file fd: {error}"),
+        )
+    })?;
 
     log(
         "hq-core-update",
@@ -376,7 +405,14 @@ async fn install_hq_core_update_inner(
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so this prod Update can't race prewarm/sync into a corrupt
     // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
-    crate::commands::hq_core_staging::materialize_rescue_cache().await?;
+    crate::commands::hq_core_staging::materialize_rescue_cache()
+        .await
+        .map_err(|error| {
+            crate::commands::hq_core_state::CoreUpdateError::new(
+                crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
+                error,
+            )
+        })?;
 
     let mut cmd = crate::commands::hq_core_staging::rescue_command();
     cmd.args(crate::commands::hq_core_staging::build_rescue_args(
@@ -394,10 +430,12 @@ async fn install_hq_core_update_inner(
         cmd.env("GH_TOKEN", &token);
     }
 
-    let status = cmd
-        .status()
-        .await
-        .map_err(|e| format!("spawn rescue script: {e}"))?;
+    let status = cmd.status().await.map_err(|error| {
+        crate::commands::hq_core_state::CoreUpdateError::new(
+            crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
+            format!("spawn rescue script: {error}"),
+        )
+    })?;
 
     let exit_code = status.code().unwrap_or(-1);
     if exit_code == 0 {
@@ -405,7 +443,12 @@ async fn install_hq_core_update_inner(
             .default_headers(crate::util::client_info::client_headers())
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .map_err(|e| format!("build baseline client: {e}"))?;
+            .map_err(|error| {
+                crate::commands::hq_core_state::CoreUpdateError::new(
+                    crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
+                    format!("build baseline client: {error}"),
+                )
+            })?;
         let commit = crate::commands::hq_core_state::persist_remote_baseline(
             &hq_folder,
             &client,
@@ -413,7 +456,12 @@ async fn install_hq_core_update_inner(
             &git_ref,
         )
         .await
-        .map_err(|e| format!("core update applied but baseline persistence failed: {e}"))?;
+        .map_err(|error| {
+            crate::commands::hq_core_state::CoreUpdateError::new(
+                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
+                format!("core update applied but baseline persistence failed: {error}"),
+            )
+        })?;
         log(
             "hq-core-update",
             &format!("persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"),
