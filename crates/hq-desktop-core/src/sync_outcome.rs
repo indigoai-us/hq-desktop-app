@@ -3487,16 +3487,23 @@ pub fn runner_fault_is_file_lock_content(
 /// Whether a terminal runner exit is fully explained by a transient file lock and
 /// nothing else — the SHARED recognizer used by both the manual-sync exit
 /// classifier and the auto-sync watcher boundary, so the two can never disagree.
-/// Adds the crash-exit gates on top of [`runner_fault_is_file_lock_content`]: a
-/// POSIX crash signal or a Windows native-fault code is never a file-lock exit.
-/// Pure and content-safe.
+/// On top of [`runner_fault_is_file_lock_content`] it requires a signal-free exit
+/// and excludes any Windows native-fault code.
+///
+/// This is deliberately STRICTER than the disk-exhaustion recognizer: it demands
+/// `signal.is_none()`, not merely "not a listed crash signal". The observed benign
+/// file-lock shape always exits with a conventional code and no signal, so any
+/// signal-terminated run stays alertable — including fatal signals outside
+/// [`is_crash_signal`]'s set such as SIGFPE, SIGQUIT, or SIGSYS (HQ-DESKTOP-5R
+/// review). A Windows native fault is reported in `code` with `signal == None`, so
+/// the fault-code veto is still required. Pure and content-safe.
 pub fn runner_exit_is_file_lock(
     code: Option<i32>,
     signal: Option<i32>,
     saw_genuine_crash: bool,
     error_rollup: &RunnerErrorRollup,
 ) -> bool {
-    !is_crash_signal(signal)
+    signal.is_none()
         && !is_windows_fault_exit(code)
         && runner_fault_is_file_lock_content(saw_genuine_crash, error_rollup)
 }
@@ -8377,6 +8384,39 @@ mod tests {
                 ),
                 RunnerExitDisposition::Alert,
                 "crash signal {signal} with EBUSY must still Alert"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_crash_fatal_signal_with_ebusy_rollup_still_alerts() {
+        // HQ-DESKTOP-5R review (Codex P1): is_crash_signal does not enumerate every
+        // fatal signal (e.g. SIGQUIT=3, SIGFPE=8, SIGSYS=12/31). Because the
+        // recognizer requires signal.is_none(), an exclusively-EBUSY run terminated
+        // by ANY signal — a listed crash or not — stays alertable and is never
+        // suppressed as a file lock. Under the pre-review `!is_crash_signal` gate
+        // these would have classified FileLocked.
+        let ebusy = rollup_ebusy(1, 0, 0);
+        for signal in [3, 8, 12, 31] {
+            assert!(
+                !is_crash_signal(Some(signal)),
+                "signal {signal} is deliberately outside the crash list"
+            );
+            assert!(!runner_exit_is_file_lock(None, Some(signal), false, &ebusy));
+            assert_eq!(
+                classify_runner_exit_disposition_with_fault(
+                    None,
+                    Some(signal),
+                    None,
+                    false,
+                    true,
+                    true,
+                    false,
+                    false,
+                    &ebusy,
+                ),
+                RunnerExitDisposition::Alert,
+                "non-crash fatal signal {signal} with EBUSY must still Alert"
             );
         }
     }

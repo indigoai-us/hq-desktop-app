@@ -1558,15 +1558,15 @@ impl WatcherExitCaptureContext {
 
     /// Whether this watcher exit is fully explained by a transient file lock
     /// (`EBUSY`). Combines the content half computed at the exit boundary with the
-    /// crash-exit gates here, applying the SAME shared recognizer the manual route
-    /// uses so the two boundaries reach the identical verdict. A POSIX crash signal
-    /// or a Windows native-fault code is never a file-lock exit, so it stays
-    /// alertable even if a file-lock line co-occurred. Mirrors
-    /// [`Self::attributed_to_disk_exhaustion`] exactly.
+    /// exit-shape gates here, applying the SAME shared recognizer the manual route
+    /// uses so the two boundaries reach the identical verdict. It requires a
+    /// signal-free exit — stricter than the disk-exhaustion gate on purpose — so
+    /// any signal-terminated run (including fatal signals outside `is_crash_signal`
+    /// such as SIGFPE/SIGQUIT/SIGSYS) stays alertable; a Windows native-fault code
+    /// is likewise never a file-lock exit. Kept byte-for-byte aligned with the
+    /// manual route's `runner_exit_is_file_lock`.
     fn attributed_to_file_lock(&self, code: Option<i32>, signal: Option<i32>) -> bool {
-        self.runner_file_lock_content
-            && !is_crash_signal(signal)
-            && !is_windows_fault_exit(code)
+        self.runner_file_lock_content && signal.is_none() && !is_windows_fault_exit(code)
     }
 }
 

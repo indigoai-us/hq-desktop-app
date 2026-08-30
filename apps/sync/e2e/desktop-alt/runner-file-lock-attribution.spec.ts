@@ -125,7 +125,10 @@ describe('runner file-lock attribution — source contracts', () => {
       '\n}\n',
       'runner_exit_is_file_lock',
     );
-    expect(full).toContain('!is_crash_signal(signal)');
+    // Stricter than disk-full: a signal-free exit is required, so any signal
+    // (listed crash or a fatal signal outside is_crash_signal) stays alertable.
+    expect(full).toContain('signal.is_none()');
+    expect(full).not.toContain('!is_crash_signal(signal)');
     expect(full).toContain('!is_windows_fault_exit(code)');
     expect(full).toContain('runner_fault_is_file_lock_content(saw_genuine_crash');
   });
@@ -217,7 +220,7 @@ describe('runner file-lock attribution — source contracts', () => {
       '\n    }\n',
       'attributed_to_file_lock',
     );
-    expect(method).toContain('!is_crash_signal(signal)');
+    expect(method).toContain('signal.is_none()');
     expect(method).toContain('!is_windows_fault_exit(code)');
   });
 });
@@ -265,8 +268,6 @@ interface RunFixture {
   retainedFatalClass: string;
 }
 
-const CRASH_SIGNALS = new Set([4, 6, 7, 9, 10, 11]);
-
 /** TS mirror of `is_windows_fault_exit`: the 0xC000_xxxx NTSTATUS fault range,
  *  excluding the console-control and 0xFFFFFFFF carve-outs. */
 function isWindowsFaultCode(code: number | null): boolean {
@@ -277,10 +278,13 @@ function isWindowsFaultCode(code: number | null): boolean {
   return ((raw & 0xc000_0000) >>> 0) === 0xc000_0000 && raw !== 0xffff_ffff && raw !== 0xc000_013a;
 }
 
-/** TS mirror of the shipped `runner_exit_is_file_lock` recognizer. */
+/** TS mirror of the shipped `runner_exit_is_file_lock` recognizer. Stricter than
+ *  the disk-full recognizer: it requires a signal-free exit, so ANY signal —
+ *  a listed crash signal OR a fatal signal outside is_crash_signal such as
+ *  SIGFPE/SIGQUIT/SIGSYS — keeps the run alertable (HQ-DESKTOP-5R review). */
 function isFileLockVerdict(fx: RunFixture): boolean {
-  if (fx.signal !== null && CRASH_SIGNALS.has(fx.signal)) return false; // POSIX crash signal
-  if (isWindowsFaultCode(fx.code)) return false; // Windows native fault
+  if (fx.signal !== null) return false; // any signal-terminated exit stays alertable
+  if (isWindowsFaultCode(fx.code)) return false; // Windows native fault (code, signal=null)
   if (fx.sawGenuineCrash) return false; // sticky crash evidence
   return fx.exclusivelyFileLocked; // requires the parsed exclusively-EBUSY rollup
 }
@@ -452,6 +456,15 @@ describe('runner file-lock attribution — shipped Sentry envelope', () => {
     // A POSIX crash signal still alerts.
     expect(
       simulateWatcherExit({ ...FILE_LOCK_UNKNOWN_CODE, signal: 11, code: null }, 'post-fix').captures,
+    ).toHaveLength(1);
+    // A fatal signal OUTSIDE is_crash_signal (e.g. SIGFPE=8) also still alerts,
+    // because the recognizer requires signal.is_none() (HQ-DESKTOP-5R review).
+    expect(isFileLockVerdict({ ...FILE_LOCK_UNKNOWN_CODE, signal: 8, code: null })).toBe(false);
+    expect(
+      simulateWatcherExit({ ...FILE_LOCK_UNKNOWN_CODE, signal: 8, code: null }, 'post-fix').captures,
+    ).toHaveLength(1);
+    expect(
+      simulateManualExit({ ...HQ_DESKTOP_5R, signal: 8, code: null }, 'post-fix').captures,
     ).toHaveLength(1);
     // A Windows native fault code still alerts on both routes.
     expect(simulateManualExit(WINDOWS_FAULT_WITH_EBUSY, 'post-fix').captures).toHaveLength(1);
