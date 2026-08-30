@@ -30,8 +30,26 @@ describe('title bar launch cluster', () => {
     expect(launch).toContain("invoke('open_claude_code_link'");
     expect(launch).toContain("invoke('launch_claude_code'");
     expect(launch).toContain("invoke('launch_codex_desktop')");
-    expect(launch).toContain("invoke('launch_cli_in_terminal'");
+    expect(launch).toContain("invoke('launch_codex_workspace'");
     expect(launch).toContain('buildClaudeCodeUrl');
+  });
+
+  it('opens Codex IN the folder via codex app, desktop bare-open as fallback', () => {
+    // `codex app <folder>` is the only launch that opens the desktop app
+    // with the folder loaded — the bare codex:// deep link and a folder
+    // passed as an open-document both leave it on "Choose project" (verified
+    // on real machines). So launch_codex_workspace must win whenever the CLI
+    // is installed; bare launch_codex_desktop is the no-CLI fallback only.
+    for (const source of [
+      launch,
+      readRepoFile('src/desktop-alt/components/WorkHappensExplainer.svelte'),
+      readRepoFile('src/components/onboarding/OnboardingWizard.svelte'),
+    ]) {
+      const workspaceLaunch = source.indexOf("invoke('launch_codex_workspace'");
+      const desktopLaunch = source.indexOf("invoke('launch_codex_desktop')");
+      expect(workspaceLaunch).toBeGreaterThan(-1);
+      expect(desktopLaunch).toBeGreaterThan(workspaceLaunch);
+    }
   });
 
   it('renders only detected tools and never launches without a folder', () => {

@@ -503,6 +503,7 @@ fn main() {
             commands::ai_tools::import_claude_desktop_connectors,
             commands::launch::launch_claude_code,
             commands::launch::launch_cli_in_terminal,
+            commands::launch::launch_codex_workspace,
             commands::launch::reveal_folder,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
@@ -1089,6 +1090,11 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
+            // Ships the Codex CLI with the app: `codex app <path>` is the only
+            // way "Open in Codex" can hand the desktop app a workspace, so a
+            // machine without the CLI gets one installed into the managed
+            // npm-global prefix (one attempt per launch, master-toggle gated).
+            commands::ensure_codex::setup_codex_provisioner(app.handle());
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 

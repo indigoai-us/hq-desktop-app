@@ -81,10 +81,15 @@
     if (!folder || launching) return;
     launching = 'codex';
     try {
-      if (tools?.codex_desktop) {
-        await invoke('launch_codex_desktop');
+      // `codex app <folder>` opens the DESKTOP app with the folder loaded —
+      // the only launch that does (verified: the bare codex:// deep link and
+      // folder-as-open-document both leave the app on "Choose project").
+      // Bare desktop open stays as the no-CLI fallback: an app without your
+      // project beats nothing at all.
+      if (tools?.codex_cli) {
+        await invoke('launch_codex_workspace', { path: folder });
       } else {
-        await invoke('launch_cli_in_terminal', { path: folder, tool: 'codex' });
+        await invoke('launch_codex_desktop');
       }
     } catch (err) {
       flashError(`Could not open Codex: ${errorMessage(err)}`);

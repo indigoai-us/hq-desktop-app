@@ -1137,14 +1137,15 @@
     let launched = false;
     try {
       const tools = await ensureAiTools();
-      if (tools.codex_desktop) {
-        await invoke('launch_codex_desktop');
+      // `codex app <folder>` opens the desktop app IN the HQ folder — the
+      // only launch that does (bare deep link and folder-as-open-document
+      // both leave it on "Choose project"). Bare desktop open is the no-CLI
+      // fallback only.
+      if (tools.codex_cli && installPath) {
+        await invoke('launch_codex_workspace', { path: installPath });
         launched = true;
-      } else if (tools.codex_cli && installPath) {
-        await invoke('launch_cli_in_terminal', {
-          path: installPath,
-          tool: 'codex',
-        });
+      } else if (tools.codex_desktop) {
+        await invoke('launch_codex_desktop');
         launched = true;
       } else {
         launchEscape = escapeForLaunch('codex', 'Codex was not detected');
