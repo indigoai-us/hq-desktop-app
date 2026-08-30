@@ -6,7 +6,7 @@ use hq_desktop_core::hq_cli_update::{
     report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
     DeliveredPrefixShim, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
     ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmToolchainSource, ResolutionSource,
+    NpmToolchainSource, RequestedSpecKind, ResolutionSource,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -1144,6 +1144,8 @@ fn environment_aware_capture_carries_the_previously_missing_provenance() {
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
         missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1326,6 +1328,8 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
         missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1517,6 +1521,8 @@ fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
         missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1771,6 +1777,8 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
         managed_toolchain_retry: false,
         managed_retry_outcome: ManagedRetryOutcome::ProvisionDeferred,
         missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
     };
     let event = single_event(captured_events(|| {
         report_install_failure_with_environment(
@@ -1853,6 +1861,8 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         managed_toolchain_retry: false,
         managed_retry_outcome: ManagedRetryOutcome::ProvisionDeferred,
         missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
     };
     let user_key = "5.103.22|node-llama-cpp|postinstall-script".to_string();
 
@@ -1906,6 +1916,8 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         managed_toolchain_retry: true,
         managed_retry_outcome: ManagedRetryOutcome::Ran,
         missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
     };
     let managed_events = captured_events(|| {
         assert!(matches!(
@@ -1927,5 +1939,237 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         managed_events.len(),
         1,
         "the managed-provenance episode must still page"
+    );
+}
+
+// --- E404 registry attribution (HQ-DESKTOP-5Q) ------------------------------
+//
+// HQ-DESKTOP-5Q (`[hq-cli-update] install failed (E404:unknown:none)`) paged at
+// Error naming neither the registry nor the requested spec, because the updater
+// had no arm for npm's E404. These artifact cases drive the real reporter
+// through the shipped `before_send` scrubber and assert on the emitted event.
+
+/// The reproduced foreign-registry E404: npm's own 404 line names a non-npmjs
+/// host and the requested scoped packument, plus the "not in this registry"
+/// tail. The exact shape a corporate-mirror / air-gapped-proxy machine emits.
+const FOREIGN_REGISTRY_E404_STDERR: &str = "npm error code E404\n\
+    npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us%2fhq-cli - Not found\n\
+    npm error 404\n\
+    npm error 404  '@indigoai-us/hq-cli@5.103.27' is not in this registry.";
+
+/// The same shape resolved through npmjs itself — a genuine "we asked npmjs for
+/// something absent" defect that must stay loud at Error.
+const NPMJS_E404_STDERR: &str = "npm error code E404\n\
+    npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli - Not found\n\
+    npm error 404\n\
+    npm error 404  '@indigoai-us/hq-cli@5.103.27' is not in this registry.";
+
+/// The install environment the reported HQ-DESKTOP-5Q latest event carried
+/// (server_name ChristiannasAir), now also naming the pinned target version.
+fn e404_env() -> InstallEnvironment {
+    InstallEnvironment {
+        node_version: Some("24.13.0".to_string()),
+        node_abi: Some("137".to_string()),
+        npm_version: Some("11.6.2".to_string()),
+        toolchain_source: NpmToolchainSource::UserPath,
+        target_version: Some("5.103.27".to_string()),
+        requested_spec_kind: RequestedSpecKind::PinnedVersion,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn foreign_registry_e404_captures_a_path_safe_attributed_warning() {
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            FOREIGN_REGISTRY_E404_STDERR,
+            None,
+            false,
+            &e404_env(),
+        )
+    }));
+    // A permanent LOCAL registry misconfiguration, not an updater defect, so it
+    // stays observable WITHOUT paging at Error.
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (foreign-registry-404:packument)")
+    );
+    // Its OWN bounded fingerprint — it has left the `E404:unknown:none` catch-all.
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "foreign-registry-404",
+            "foreign-registry-404:packument"
+        ]
+    );
+    for (key, value) in [
+        ("install_failure_kind", "foreign-registry-404"),
+        ("npm_error_code", "E404"),
+        ("npm_registry_origin", "foreign"),
+        ("npm_404_resource", "packument"),
+        ("npm_syscall", "unknown"),
+        ("npm_path_shape", "none"),
+        // The requested spec is now named — the exact version npm was asked for.
+        ("hq_cli_target_version", "5.103.27"),
+        ("npm_requested_spec_kind", "pinned-version"),
+    ] {
+        assert_eq!(tag(&event, key), Some(value), "tag {key}");
+    }
+    // The diagnostic extra carries the same closed attribution, never the host/URL.
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(text)) => text.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        diagnostics.contains("registry_origin=foreign npm_404_resource=packument"),
+        "npm_diagnostics dropped the E404 attribution: {diagnostics}"
+    );
+    // The registry host, the full 404 URL, and the raw requested spec string must
+    // appear in no message, tag, extra, or fingerprint — only the closed enums and
+    // the bare sanitized version do.
+    assert_path_safe(
+        &event,
+        &[
+            "npm.internal.example.com",
+            "https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us%2fhq-cli",
+            "@indigoai-us/hq-cli@5.103.27",
+            "npm error",
+            "%2f",
+        ],
+    );
+}
+
+#[test]
+fn npmjs_origin_e404_stays_a_loud_error_under_an_attributed_signature() {
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(1), NPMJS_E404_STDERR, None, false, &e404_env())
+    }));
+    // An npmjs-origin E404 is a genuine "we asked npmjs for something not there"
+    // defect — it must stay at Error (the anti-masking guard for the downgrade).
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (E404:npmjs:packument)")
+    );
+    assert_eq!(
+        fingerprint(&event),
+        [
+            "hq-cli-update",
+            "install-failed",
+            "unexpected",
+            "E404:npmjs:packument"
+        ]
+    );
+    assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
+    assert_eq!(tag(&event, "npm_registry_origin"), Some("npmjs"));
+    assert_eq!(tag(&event, "npm_404_resource"), Some("packument"));
+}
+
+#[test]
+fn unparseable_e404_degrades_fail_loud_to_unknown_origin_at_error() {
+    // An E404 with no parseable 404 GET line: origin degrades to `unknown`, the
+    // kind stays Unexpected, and the level stays Error (fail-loud).
+    let unknown_origin = "npm error code E404\nnpm error 404 Not Found";
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            unknown_origin,
+            None,
+            false,
+            &InstallEnvironment::default(),
+        )
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (E404:unknown:none)")
+    );
+    assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
+    assert_eq!(tag(&event, "npm_registry_origin"), Some("unknown"));
+    assert_eq!(tag(&event, "npm_404_resource"), Some("none"));
+}
+
+#[test]
+fn a_foreign_registry_tarball_404_stays_a_loud_error_not_a_registry_downgrade() {
+    // A missing TARBALL on a non-npmjs host can be a broken published artifact, not
+    // proof the configured registry lacks hq — so it stays Unexpected at Error under
+    // its own attributed signature rather than being downgraded to the
+    // registry-misconfiguration Warning. The resource discriminator is still pinned.
+    let tarball = "npm error code E404\n\
+        npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us/hq-cli/-/hq-cli-5.103.27.tgz - Not found";
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(Some(1), tarball, None, false, &e404_env())
+    }));
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.message.as_deref(),
+        Some("[hq-cli-update] install failed (E404:foreign:tarball)")
+    );
+    assert_eq!(tag(&event, "install_failure_kind"), Some("unexpected"));
+    assert_eq!(tag(&event, "npm_registry_origin"), Some("foreign"));
+    assert_eq!(tag(&event, "npm_404_resource"), Some("tarball"));
+}
+
+#[test]
+fn a_prerelease_target_version_survives_as_an_attributed_tag() {
+    // A valid SemVer prerelease that the updater pinned and requested must survive as
+    // the attribution tag, not collapse to `unknown` (P2).
+    let env = InstallEnvironment {
+        toolchain_source: NpmToolchainSource::UserPath,
+        target_version: Some("6.0.0-beta.1".to_string()),
+        requested_spec_kind: RequestedSpecKind::PinnedVersion,
+        ..Default::default()
+    };
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            FOREIGN_REGISTRY_E404_STDERR,
+            None,
+            false,
+            &env,
+        )
+    }));
+    assert_eq!(tag(&event, "hq_cli_target_version"), Some("6.0.0-beta.1"));
+    assert_eq!(tag(&event, "npm_requested_spec_kind"), Some("pinned-version"));
+}
+
+#[test]
+fn a_non_e404_default_env_carries_none_of_the_new_attribution_tags() {
+    // The default-InstallEnvironment invariant: a non-E404 shape is byte-identical
+    // to today — it gains no npm_registry_origin / npm_404_resource /
+    // hq_cli_target_version / npm_requested_spec_kind tag, and its npm_diagnostics
+    // string is unchanged.
+    let event = single_event(captured_events(|| {
+        report_install_failure_with_environment(
+            Some(236),
+            ENOTDIR_STDERR,
+            None,
+            false,
+            &InstallEnvironment::default(),
+        )
+    }));
+    for tag_key in [
+        "npm_registry_origin",
+        "npm_404_resource",
+        "hq_cli_target_version",
+        "npm_requested_spec_kind",
+    ] {
+        assert_eq!(
+            tag(&event, tag_key),
+            None,
+            "a non-E404 default-env event must not carry {tag_key}"
+        );
+    }
+    let diagnostics = match event.extra.get("npm_diagnostics") {
+        Some(Value::String(text)) => text.clone(),
+        other => panic!("missing npm_diagnostics: {other:?}"),
+    };
+    assert!(
+        !diagnostics.contains("registry_origin") && !diagnostics.contains("npm_404_resource"),
+        "a non-E404 npm_diagnostics string must be unchanged: {diagnostics}"
     );
 }

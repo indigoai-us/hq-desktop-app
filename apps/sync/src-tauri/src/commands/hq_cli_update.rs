@@ -104,6 +104,7 @@ pub use hq_desktop_core::hq_cli_update::{
     report_unreadable_version, repair_managed_shadow, resolved_hq_version, should_auto_install,
     should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
+    RequestedSpecKind,
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
     ManagedShadowRepairAction, ManagedShadowRepairOutcome, MissingTargetState,
@@ -980,6 +981,8 @@ async fn probe_install_environment(
         // Defaults to `Unknown`; `install_hq_cli` overrides it with the mkdir
         // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
         missing_target_state: MissingTargetState::Unknown,
+        target_version: None,
+        requested_spec_kind: RequestedSpecKind::Unknown,
     }
 }
 
@@ -1813,6 +1816,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // creation went. `Unknown` (→ no tag emitted) whenever that remedy did not
         // run, so a non-missing-target failure's tag set is unchanged.
         install_env.missing_target_state = install_run.missing_target_state;
+        // Name the EXACT version install_argv pinned into base_args (HQ-DESKTOP-5Q),
+        // so a reported E404 shows WHICH version npm was asked for. `base_args` was
+        // built with `Some(latest)`, a pinned spec — never the `@latest` dist-tag.
+        // Tag-only: never a fingerprint/signature/episode-key component.
+        install_env = install_env.with_pinned_target_version(&latest);
         let failing_node_abi = install_env
             .node_abi
             .as_deref()
@@ -1987,6 +1995,12 @@ fn install_failure_earns_managed_retry(
     // `paths::managed_npm_prefix_in`, a prefix HQ itself owns and CREATES. Its only
     // runtime condition is that the failing run used the user's own toolchain.
     let missing_global_install_target = kind == InstallFailureKind::MissingGlobalInstallTarget;
+    // A `ForeignRegistryPackageMissing` (HQ-DESKTOP-5Q) is a registry
+    // misconfiguration, NOT a runtime/prebuild or npm-prefix fault: provisioning a
+    // different Node cannot make a registry that lacks the package carry it, and the
+    // managed retry reuses the SAME machine npm registry config, so it would only
+    // waste a ~50 MB provision and re-fail identically. It matches none of the three
+    // repairable shapes below, so it correctly earns no retry; a unit test locks it.
     (repairable_runtime && (repairable_lifecycle || unsupported_node))
         || (is_user_path && missing_global_install_target)
 }
@@ -2886,6 +2900,10 @@ async fn managed_toolchain_retry(
     // managed-provenance event too, so `npm_missing_target_state` is not lost when
     // the managed attempt itself ran the mkdir rung and still failed.
     install_env.missing_target_state = retry_run.missing_target_state;
+    // Carry the same pinned-version attribution onto the managed-provenance event
+    // (HQ-DESKTOP-5Q): the retry installs the SAME resolved `latest`, pinned. Tag
+    // only, never a grouping component.
+    install_env = install_env.with_pinned_target_version(latest);
     let reported_episode_keys = install_failure_episode_markers();
     persist_reported_episode(report_install_failure_episode(
         retry_run.output.status.code(),
@@ -3346,6 +3364,35 @@ mod tests {
             "unknown",
             Some(MANAGED_NODE_ABI),
         ));
+    }
+
+    #[test]
+    fn foreign_registry_package_missing_never_arms_the_managed_retry() {
+        // HQ-DESKTOP-5Q: a registry misconfiguration is NOT a runtime/prebuild or
+        // npm-prefix fault — provisioning a different Node cannot make a registry that
+        // lacks the package carry it, and the managed retry reuses the SAME machine
+        // registry config, so it must never arm. Assert across every toolchain source,
+        // every Node ABI (including HQ's own managed ABI), and every lifecycle-cause
+        // value (irrelevant here — npm never ran a build).
+        for source in [
+            NpmToolchainSource::UserPath,
+            NpmToolchainSource::Managed,
+            NpmToolchainSource::Unknown,
+        ] {
+            for abi in [Some(MANAGED_NODE_ABI), Some(115), Some(127), Some(48), None] {
+                for cause in ["", "unknown", "toolchain-missing", "disk-space", "network"] {
+                    assert!(
+                        !install_failure_earns_managed_retry(
+                            InstallFailureKind::ForeignRegistryPackageMissing,
+                            source,
+                            cause,
+                            abi,
+                        ),
+                        "foreign-registry-404 must never arm (source={source:?} abi={abi:?} cause={cause})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
