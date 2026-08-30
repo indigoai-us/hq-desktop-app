@@ -1551,6 +1551,21 @@ pub fn canonical_hq_directory_for_listing(
 
 /// Whether a resolved company workspace grants local Files access.
 pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str) -> bool {
+    // The signed-in user's own personal vault — authorized even before a
+    // local folder exists. The row is assembled locally (hardcoded
+    // "personal" slug, this machine's HQ root), never from remote data, and
+    // has no membership to hydrate. Requiring has_local_folder here painted
+    // "Board unavailable" on every machine whose HQ folder wasn't set up
+    // yet ("Core not detected") — but a vault with no folder simply has
+    // nothing in it, and every reader behind this gate already renders
+    // missing paths as the empty state.
+    if workspaces
+        .iter()
+        .any(|workspace| workspace.slug == slug && workspace.state == WorkspaceState::Personal)
+    {
+        return true;
+    }
+
     let Some(workspace) = workspaces
         .iter()
         .find(|workspace| workspace.slug == slug && workspace.has_local_folder)
@@ -1558,18 +1573,6 @@ pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str
         return false;
     };
 
-    // The signed-in user's own personal vault. The row is assembled locally
-    // (list_syncable_workspaces §3) with a hardcoded "personal" slug and this
-    // machine's HQ root as its folder — it is never derived from remote data,
-    // and it has no membership to hydrate: membership_status is always None
-    // and cloud_uid is the user's own person uid. The membership match below
-    // therefore has no arm that can ever admit it, which denied every
-    // signed-in user their own personal board, files, and library — the
-    // "Board unavailable. Try again after a sync." every fresh install
-    // opened on.
-    if workspace.state == WorkspaceState::Personal {
-        return true;
-    }
 
     match workspace.membership_status.as_deref() {
         Some("active") => true,
@@ -4367,10 +4370,13 @@ mod tests {
         }
 
         #[test]
-        fn a_personal_state_row_without_a_local_folder_still_fails_closed() {
-            // The slug+has_local_folder lookup runs before the Personal arm;
-            // a personal row with no folder on this machine has nothing to
-            // authorize.
+        fn a_personal_state_row_without_a_local_folder_is_still_authorized() {
+            // Reversal of an earlier deliberate fail-closed: a machine whose
+            // HQ folder is not set up yet ("Core not detected") assembles the
+            // personal row with has_local_folder=false, and denying it painted
+            // the red "Board unavailable" banner on exactly the machines that
+            // should show the calm empty board + setup card. There is nothing
+            // to protect — every reader treats missing paths as empty.
             let mut personal = Workspace {
                 slug: "personal".to_string(),
                 display_name: "Personal".to_string(),
@@ -4390,7 +4396,7 @@ mod tests {
                 branding_enabled: false,
                 brand: None,
             };
-            assert!(!workspace_grants_company_file_access(
+            assert!(workspace_grants_company_file_access(
                 &[personal.clone()],
                 "personal"
             ));
