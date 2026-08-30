@@ -135,7 +135,7 @@ fn run_codex_install() -> Result<(), String> {
 /// for the toolchain provisioning that the hq-cli path performs, rather than
 /// racing it with a second Node download.
 pub fn setup_codex_provisioner(app: &AppHandle) {
-    let _handle = app.clone();
+    let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;
 
@@ -156,6 +156,36 @@ pub fn setup_codex_provisioner(app: &AppHandle) {
             "codex-provision",
             "no codex resolvable — installing @openai/codex into the managed prefix",
         );
+
+        // A fresh machine has no managed Node yet, and nothing else is
+        // guaranteed to provision one (the hq-cli path only does so on ITS
+        // first install). The first shipped version of this provisioner gave
+        // up here — which on a clean VM meant "never" — so provision Node
+        // through the same cooldown-guarded repair the hq-cli path uses.
+        if managed_npm().is_none() {
+            log(
+                "codex-provision",
+                "managed npm absent — provisioning the managed Node first",
+            );
+            match crate::commands::sync::repair_managed_node(&handle).await {
+                crate::commands::sync::ToolchainRepair::Repaired => {}
+                crate::commands::sync::ToolchainRepair::Skipped => {
+                    log(
+                        "codex-provision",
+                        "Node provisioning on cooldown — retrying next launch",
+                    );
+                    return;
+                }
+                crate::commands::sync::ToolchainRepair::Failed(reason) => {
+                    log(
+                        "codex-provision",
+                        &format!("Node provisioning failed: {reason}"),
+                    );
+                    return;
+                }
+            }
+        }
+
         let result = tauri::async_runtime::spawn_blocking(run_codex_install).await;
         match result {
             Ok(Ok(())) => log("codex-provision", "codex CLI provisioned"),
