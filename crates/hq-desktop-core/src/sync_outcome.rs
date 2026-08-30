@@ -1782,6 +1782,36 @@ impl RunnerErrorRollup {
             || self.other > 0
     }
 
+    /// True when the only runner error class recorded this pass was a transient
+    /// file lock (`EBUSY`) — at least one EBUSY and zero of every other class. The
+    /// file-lock counterpart of [`Self::is_exclusively_disk_full`]: like a full
+    /// disk, a Windows file lock (another process held the file open on a read) is
+    /// a self-healing local-machine condition, not a product defect, and the same
+    /// robust, last-wins-immune rollup signal proves the terminal exit was caused
+    /// purely by it.
+    pub fn is_exclusively_file_locked(&self) -> bool {
+        self.ebusy > 0 && !self.has_non_file_lock_error()
+    }
+
+    /// True when at least one runner error of a class OTHER than a file lock
+    /// (`EBUSY`) was recorded this pass. The file-lock disposition gate requires
+    /// this to be false, so a mixed rollup (e.g. `EBUSY:1,EPERM:1`) never
+    /// suppresses. Deliberately disjoint from disk exhaustion: an `ENOSPC` here
+    /// counts as a non-file-lock error, so the disk-full and file-lock recognizers
+    /// can never both fire for one rollup.
+    pub fn has_non_file_lock_error(&self) -> bool {
+        self.eperm > 0
+            || self.eacces > 0
+            || self.enospc > 0
+            || self.enoent > 0
+            || self.eexist > 0
+            || self.enotempty > 0
+            || self.exdev > 0
+            || self.network > 0
+            || self.auth > 0
+            || self.other > 0
+    }
+
     /// Render only fixed class names and decimal counts. `None` means this
     /// watcher pass saw no runner error records, so no tag should be sent.
     pub fn tag_value(&self) -> Option<String> {
@@ -3207,6 +3237,13 @@ pub enum RunnerExitDisposition {
     /// non-alerting terminal dispositions, callers must still emit exactly one
     /// terminal UI event so both desktop surfaces leave the syncing state.
     DiskFull,
+    /// Surface the actionable close-the-other-app message without a capture. The
+    /// run ended solely because a file was held open by another process
+    /// (`EBUSY`) — a transient, self-healing local condition, exactly like a
+    /// transient network blip. Like the other non-alerting terminal
+    /// dispositions, callers must still emit exactly one terminal UI event so
+    /// both desktop surfaces leave the syncing state.
+    FileLocked,
     /// End the UI run after an exact run was observably stopped by the desktop
     /// app. This is intentionally distinct from generic `Ignore`: callers must
     /// still emit one terminal UI event so both desktop surfaces leave syncing.
@@ -3363,6 +3400,18 @@ pub fn should_alert_on_nonzero_exit(
 pub const SYNC_DISK_FULL_DETAIL: &str =
     "HQ Sync ran out of space while writing files. Free up space on the drive that holds your HQ folder, then try Sync again.";
 
+/// Fixed, content-safe user-facing message for a sync run that ended because a
+/// file was held open by another process (`EBUSY`). Mirrors the
+/// [`SYNC_DISK_FULL_DETAIL`] pattern — name the condition, name the one action,
+/// name the retry — but is worded for a transient local file lock (close the app
+/// holding the file, not free space). Never names a specific file and never
+/// interpolates a path, exit code, company slug, or runner byte, so it is safe on
+/// both the user-facing `sync:error` event and any breadcrumb. Every file-lock
+/// terminal event sources this one constant so the wording cannot drift between
+/// routes.
+pub const SYNC_FILE_LOCKED_DETAIL: &str =
+    "HQ Sync couldn't read a file because another program had it open. Close any app that is using your HQ folder, then try Sync again.";
+
 /// True only for a Windows native-fault exit code — the `0xC000_xxxx` NTSTATUS
 /// range (e.g. `0xC0000005` access violation, `0xC0000409` stack-buffer overrun).
 /// On Windows a native crash is reported in `code` with `signal == None`, so the
@@ -3417,13 +3466,58 @@ pub fn runner_exit_is_disk_exhaustion(
         && runner_fault_is_disk_exhaustion_content(saw_genuine_crash, error_rollup)
 }
 
-/// Fault-aware manual-sync exit disposition. Layers disk-exhaustion recognition
-/// on top of [`classify_runner_exit_disposition_with_cancellation`]: an
-/// otherwise-`Alert` verdict for a run whose only fault was a full disk becomes
-/// `DiskFull` (no capture, one actionable terminal event). EVERY other verdict —
-/// `NodeTooOld`, `WindowsConsoleControl`, `TransientRetry`, `CancelledByApp`,
-/// `Ignore`, and a genuine `Alert` — is returned unchanged, so no existing
-/// disposition moves for any input. Pure.
+/// The content half of the file-lock recognizer, independent of the exit
+/// code/signal (which the two routes learn at different seams). Mirrors
+/// [`runner_fault_is_disk_exhaustion_content`] exactly for the `EBUSY` class: a
+/// terminal exit is attributable purely to a transient file lock only when BOTH
+///   (a) the parsed error rollup is exclusively `EBUSY` — the robust,
+///       last-wins-immune signal that a real runner read hit a held-open file; and
+///   (b) NO genuine crash class was seen anywhere in the pass (`saw_genuine_crash`
+///       is sticky, so a trailing companion line cannot mask an earlier crash).
+/// Requiring the parsed rollup deliberately excludes any startup shape that emits
+/// no protocol error, exactly as the disk-full content half does. Pure and
+/// content-safe: reads only a bool and integer counts.
+pub fn runner_fault_is_file_lock_content(
+    saw_genuine_crash: bool,
+    error_rollup: &RunnerErrorRollup,
+) -> bool {
+    !saw_genuine_crash && error_rollup.is_exclusively_file_locked()
+}
+
+/// Whether a terminal runner exit is fully explained by a transient file lock and
+/// nothing else — the SHARED recognizer used by both the manual-sync exit
+/// classifier and the auto-sync watcher boundary, so the two can never disagree.
+/// On top of [`runner_fault_is_file_lock_content`] it requires a signal-free exit
+/// and excludes any Windows native-fault code.
+///
+/// This is deliberately STRICTER than the disk-exhaustion recognizer: it demands
+/// `signal.is_none()`, not merely "not a listed crash signal". The observed benign
+/// file-lock shape always exits with a conventional code and no signal, so any
+/// signal-terminated run stays alertable — including fatal signals outside
+/// [`is_crash_signal`]'s set such as SIGFPE, SIGQUIT, or SIGSYS (HQ-DESKTOP-5R
+/// review). A Windows native fault is reported in `code` with `signal == None`, so
+/// the fault-code veto is still required. Pure and content-safe.
+pub fn runner_exit_is_file_lock(
+    code: Option<i32>,
+    signal: Option<i32>,
+    saw_genuine_crash: bool,
+    error_rollup: &RunnerErrorRollup,
+) -> bool {
+    signal.is_none()
+        && !is_windows_fault_exit(code)
+        && runner_fault_is_file_lock_content(saw_genuine_crash, error_rollup)
+}
+
+/// Fault-aware manual-sync exit disposition. Layers disk-exhaustion and
+/// file-lock recognition on top of
+/// [`classify_runner_exit_disposition_with_cancellation`]: an otherwise-`Alert`
+/// verdict for a run whose only fault was a full disk becomes `DiskFull`, and one
+/// whose only fault was a transient file lock (`EBUSY`) becomes `FileLocked` —
+/// each a no-capture, one-actionable-terminal-event outcome. The two rewrites are
+/// mutually exclusive (each needs its own errno class to be the rollup's only
+/// class). EVERY other verdict — `NodeTooOld`, `WindowsConsoleControl`,
+/// `TransientRetry`, `CancelledByApp`, `Ignore`, and a genuine `Alert` — is
+/// returned unchanged, so no existing disposition moves for any input. Pure.
 ///
 /// The arg list mirrors [`classify_runner_exit_disposition_with_cancellation`]
 /// plus the sticky crash flag and the error rollup; threading them keeps the
@@ -3449,10 +3543,17 @@ pub fn classify_runner_exit_disposition_with_fault(
         saw_alertable_error,
         saw_node_too_old,
     );
-    if base == RunnerExitDisposition::Alert
-        && runner_exit_is_disk_exhaustion(code, signal, saw_genuine_crash, error_rollup)
-    {
+    if base != RunnerExitDisposition::Alert {
+        return base;
+    }
+    // The disk-full and file-lock rewrites are mutually exclusive by
+    // construction: each requires its own errno class to be the ONLY class in the
+    // rollup, so at most one recognizer can fire for a given rollup. Disk-full
+    // keeps its existing position; neither can move a non-`Alert` verdict.
+    if runner_exit_is_disk_exhaustion(code, signal, saw_genuine_crash, error_rollup) {
         RunnerExitDisposition::DiskFull
+    } else if runner_exit_is_file_lock(code, signal, saw_genuine_crash, error_rollup) {
+        RunnerExitDisposition::FileLocked
     } else {
         base
     }
@@ -3460,8 +3561,10 @@ pub fn classify_runner_exit_disposition_with_fault(
 
 /// Fault-aware boolean projection for capture seams that have no cancellation
 /// record (the auto-sync watcher's terminal boundary). Returns `false` for a
-/// disk-exhaustion exit — which must never alert — and otherwise mirrors
-/// [`should_alert_on_nonzero_exit`] exactly.
+/// disk-exhaustion OR a file-lock exit — neither of which must ever alert — and
+/// otherwise mirrors [`should_alert_on_nonzero_exit`] exactly. Every boolean
+/// capture seam projects from the same two recognizers rather than re-deriving
+/// them.
 pub fn should_alert_on_nonzero_exit_with_fault(
     code: Option<i32>,
     signal: Option<i32>,
@@ -3473,6 +3576,7 @@ pub fn should_alert_on_nonzero_exit_with_fault(
 ) -> bool {
     should_alert_on_nonzero_exit(code, signal, saw_error, saw_alertable_error, saw_node_too_old)
         && !runner_exit_is_disk_exhaustion(code, signal, saw_genuine_crash, error_rollup)
+        && !runner_exit_is_file_lock(code, signal, saw_genuine_crash, error_rollup)
 }
 
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
@@ -8081,6 +8185,351 @@ mod tests {
         assert!(m.to_lowercase().contains("space"));
         assert!(m.contains("Sync again"));
         assert!(!m.contains("ENOSPC"));
+        assert!(!m.contains('/'));
+        assert!(!m.chars().any(|c| c.is_ascii_digit()));
+    }
+
+    // ── transient file-lock terminal-exit misreport (HQ-DESKTOP-5R) ──────────
+
+    /// A rollup carrying `ebusy` plus optional non-file-lock classes, to exercise
+    /// the file-lock exclusivity gate without disturbing the disk-full helper.
+    fn rollup_ebusy(ebusy: u32, eperm: u32, other: u32) -> RunnerErrorRollup {
+        RunnerErrorRollup {
+            ebusy,
+            eperm,
+            other,
+            ..Default::default()
+        }
+    }
+
+    /// Reconstruct the exact HQ-DESKTOP-5R run shape from its content-safe axes: an
+    /// ordinary stderr line and the single hq-cloud ndjson EBUSY read error
+    /// (company-level), with no crash class and no fatal signature — the reported
+    /// runner_error_rollup=EBUSY:1 / runner_error_causes=ebusy:1 /
+    /// runner_fatal_class=none event.
+    fn hq_desktop_5r_run_totals() -> RunTotals {
+        let mut totals = RunTotals::default();
+        totals.record_stderr_line("[hq-cloud] starting pull for 1 company");
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(company)".to_string(),
+            message: "EBUSY: resource busy or locked, read".to_string(),
+        });
+        totals
+    }
+
+    #[test]
+    fn hq_desktop_5r_file_lock_exit_is_filelocked_not_alert() {
+        let totals = hq_desktop_5r_run_totals();
+        // The parsed rollup is exactly one EBUSY, with no crash class.
+        assert!(totals.runner_error_rollup.is_exclusively_file_locked());
+        assert!(!totals.saw_genuine_crash_fatal);
+        assert!(totals.saw_alertable_error);
+        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::None);
+        assert!(runner_exit_is_file_lock(
+            Some(2),
+            None,
+            totals.saw_genuine_crash_fatal,
+            &totals.runner_error_rollup
+        ));
+        // Exit code 2, no signal, no cancellation → FileLocked (was Alert pre-fix).
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                Some(2),
+                None,
+                None,
+                false,
+                totals.saw_error,
+                totals.saw_alertable_error,
+                totals.saw_node_too_old,
+                totals.saw_genuine_crash_fatal,
+                &totals.runner_error_rollup,
+            ),
+            RunnerExitDisposition::FileLocked
+        );
+        assert!(!should_alert_on_nonzero_exit_with_fault(
+            Some(2),
+            None,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old,
+            totals.saw_genuine_crash_fatal,
+            &totals.runner_error_rollup,
+        ));
+        // Base (pre-fix) direction is genuinely red: the same inputs Alert today.
+        assert_eq!(
+            classify_runner_exit_disposition(
+                Some(2),
+                None,
+                totals.saw_error,
+                totals.saw_alertable_error,
+                totals.saw_node_too_old
+            ),
+            RunnerExitDisposition::Alert
+        );
+        assert!(should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old
+        ));
+    }
+
+    #[test]
+    fn is_exclusively_file_locked_requires_ebusy_and_nothing_else() {
+        assert!(!RunnerErrorRollup::default().is_exclusively_file_locked());
+        assert!(rollup_ebusy(1, 0, 0).is_exclusively_file_locked());
+        assert!(rollup_ebusy(5, 0, 0).is_exclusively_file_locked());
+        assert!(!rollup_ebusy(1, 0, 1).is_exclusively_file_locked()); // + other
+        assert!(!rollup_ebusy(1, 1, 0).is_exclusively_file_locked()); // + eperm
+        assert!(!rollup_ebusy(0, 0, 1).is_exclusively_file_locked()); // no ebusy
+        assert!(rollup_ebusy(1, 1, 0).has_non_file_lock_error());
+        assert!(!rollup_ebusy(1, 0, 0).has_non_file_lock_error());
+    }
+
+    #[test]
+    fn file_lock_and_disk_full_recognizers_are_disjoint() {
+        // An exclusively-EBUSY rollup is never disk-full, and an exclusively-ENOSPC
+        // rollup is never file-lock — so the two rewrites can never both fire.
+        let ebusy = rollup_ebusy(1, 0, 0);
+        assert!(ebusy.is_exclusively_file_locked());
+        assert!(!ebusy.is_exclusively_disk_full());
+        let enospc = rollup_of(1, 0, 0);
+        assert!(enospc.is_exclusively_disk_full());
+        assert!(!enospc.is_exclusively_file_locked());
+        // EBUSS + ENOSPC together is exclusive to neither.
+        let both = rollup_of_ebusy_enospc();
+        assert!(!both.is_exclusively_file_locked());
+        assert!(!both.is_exclusively_disk_full());
+        assert!(both.has_non_file_lock_error());
+        assert!(both.has_non_disk_full_error());
+    }
+
+    fn rollup_of_ebusy_enospc() -> RunnerErrorRollup {
+        RunnerErrorRollup {
+            ebusy: 1,
+            enospc: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mixed_rollup_with_ebusy_still_alerts() {
+        // Presence of EBUSY is not enough; a co-occurring EPERM keeps it alerting.
+        let mixed = rollup_ebusy(1, 1, 0);
+        assert!(!runner_exit_is_file_lock(Some(2), None, false, &mixed));
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                Some(2),
+                None,
+                None,
+                false,
+                true,
+                true,
+                false,
+                false,
+                &mixed,
+            ),
+            RunnerExitDisposition::Alert
+        );
+    }
+
+    #[test]
+    fn a_seen_crash_keeps_an_ebusy_rollup_alerting() {
+        // The sticky crash flag blocks file-lock suppression even with an
+        // exclusively-EBUSY rollup.
+        let ebusy = rollup_ebusy(1, 0, 0);
+        assert!(!runner_exit_is_file_lock(Some(2), None, true, &ebusy));
+        assert_eq!(
+            classify_runner_exit_disposition_with_fault(
+                Some(2),
+                None,
+                None,
+                false,
+                true,
+                true,
+                false,
+                true,
+                &ebusy,
+            ),
+            RunnerExitDisposition::Alert
+        );
+    }
+
+    #[test]
+    fn crash_signal_with_ebusy_rollup_still_alerts() {
+        let ebusy = rollup_ebusy(1, 0, 0);
+        for signal in [
+            SIGSEGV_SIGNAL,
+            SIGBUS_SIGNAL_MACOS,
+            SIGBUS_SIGNAL_LINUX,
+            SIGABRT_SIGNAL,
+            SIGKILL_SIGNAL,
+            SIGILL_SIGNAL,
+        ] {
+            assert!(is_crash_signal(Some(signal)), "signal {signal} is a crash");
+            assert!(!runner_exit_is_file_lock(None, Some(signal), false, &ebusy));
+            assert_eq!(
+                classify_runner_exit_disposition_with_fault(
+                    None,
+                    Some(signal),
+                    None,
+                    false,
+                    true,
+                    true,
+                    false,
+                    false,
+                    &ebusy,
+                ),
+                RunnerExitDisposition::Alert,
+                "crash signal {signal} with EBUSY must still Alert"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_crash_fatal_signal_with_ebusy_rollup_still_alerts() {
+        // HQ-DESKTOP-5R review (Codex P1): is_crash_signal does not enumerate every
+        // fatal signal (e.g. SIGQUIT=3, SIGFPE=8, SIGSYS=12/31). Because the
+        // recognizer requires signal.is_none(), an exclusively-EBUSY run terminated
+        // by ANY signal — a listed crash or not — stays alertable and is never
+        // suppressed as a file lock. Under the pre-review `!is_crash_signal` gate
+        // these would have classified FileLocked.
+        let ebusy = rollup_ebusy(1, 0, 0);
+        for signal in [3, 8, 12, 31] {
+            assert!(
+                !is_crash_signal(Some(signal)),
+                "signal {signal} is deliberately outside the crash list"
+            );
+            assert!(!runner_exit_is_file_lock(None, Some(signal), false, &ebusy));
+            assert_eq!(
+                classify_runner_exit_disposition_with_fault(
+                    None,
+                    Some(signal),
+                    None,
+                    false,
+                    true,
+                    true,
+                    false,
+                    false,
+                    &ebusy,
+                ),
+                RunnerExitDisposition::Alert,
+                "non-crash fatal signal {signal} with EBUSY must still Alert"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_native_fault_code_with_ebusy_rollup_still_alerts() {
+        // On Windows a native fault is reported in `code` with signal=None. It must
+        // never be suppressed as file-lock, even alongside an exclusively-EBUSY rollup.
+        let ebusy = rollup_ebusy(1, 0, 0);
+        for fault in [0xC000_0005u32, 0xC000_0409u32] {
+            let code = Some(fault as i32);
+            assert!(is_windows_fault_exit(code), "0x{fault:08X} is a windows fault");
+            assert!(!runner_exit_is_file_lock(code, None, false, &ebusy));
+            assert_eq!(
+                classify_runner_exit_disposition_with_fault(
+                    code, None, None, false, true, true, false, false, &ebusy,
+                ),
+                RunnerExitDisposition::Alert,
+                "windows fault 0x{fault:08X} with EBUSY must still Alert"
+            );
+        }
+        // A conventional small exit code is Ordinary, not a fault → suppressible.
+        assert!(!is_windows_fault_exit(Some(2)));
+        assert!(runner_exit_is_file_lock(Some(2), None, false, &ebusy));
+    }
+
+    #[test]
+    fn is_alertable_error_still_true_for_ebusy() {
+        // The fix was made at the exit-disposition layer, NOT by widening the
+        // per-error benign list: an EBUSY error is still an alertable error, so any
+        // run that also produces a non-file-lock fault keeps surfacing.
+        let ebusy = SyncErrorEvent {
+            company: None,
+            path: "(company)".to_string(),
+            message: "EBUSY: resource busy or locked, read".to_string(),
+        };
+        assert!(is_alertable_error(&ebusy));
+    }
+
+    #[test]
+    fn fault_layer_filelocked_only_replaces_a_base_alert() {
+        // Full-input-lattice invariance with an EBUSY rollup in the set: the fault
+        // layer may only convert a base Alert into DiskFull or FileLocked; every
+        // other verdict is returned byte-identical, and each rewrite is gated by its
+        // own recognizer.
+        let rollups = [
+            RunnerErrorRollup::default(),
+            rollup_ebusy(1, 0, 0),   // exclusively file-locked
+            rollup_ebusy(1, 1, 0),   // ebusy + eperm (mixed)
+            rollup_of(1, 0, 0),      // exclusively disk-full
+            rollup_of_ebusy_enospc(),// ebusy + enospc (neither exclusive)
+            rollup_of(0, 0, 3),      // other-only
+        ];
+        let codes = [
+            None,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(RUNNER_OPERATION_LOCKED_EXIT),
+            Some(RUNNER_TRANSIENT_RETRY_EXIT),
+            Some(243),
+            Some(0xC000_0005u32 as i32),
+        ];
+        let signals = [None, Some(SIGTERM_SIGNAL), Some(SIGSEGV_SIGNAL), Some(SIGKILL_SIGNAL)];
+        for &code in &codes {
+            for &signal in &signals {
+                for &saw_error in &[false, true] {
+                    for &saw_alertable in &[false, true] {
+                        for &node_old in &[false, true] {
+                            for &saw_crash in &[false, true] {
+                                for rollup in &rollups {
+                                    let base = classify_runner_exit_disposition_with_cancellation(
+                                        code, signal, None, false, saw_error, saw_alertable, node_old,
+                                    );
+                                    let fault = classify_runner_exit_disposition_with_fault(
+                                        code, signal, None, false, saw_error, saw_alertable, node_old,
+                                        saw_crash, rollup,
+                                    );
+                                    match fault {
+                                        RunnerExitDisposition::DiskFull => {
+                                            assert_eq!(base, RunnerExitDisposition::Alert);
+                                            assert!(runner_exit_is_disk_exhaustion(
+                                                code, signal, saw_crash, rollup
+                                            ));
+                                        }
+                                        RunnerExitDisposition::FileLocked => {
+                                            assert_eq!(base, RunnerExitDisposition::Alert);
+                                            assert!(runner_exit_is_file_lock(
+                                                code, signal, saw_crash, rollup
+                                            ));
+                                        }
+                                        other => assert_eq!(
+                                            other, base,
+                                            "fault layer moved a non-fault verdict"
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sync_file_locked_detail_is_fixed_and_content_safe() {
+        // Names the condition, the one action, and the retry; never a path, an exit
+        // code, the EBUSY token, a digit, or a specific file name.
+        let m = SYNC_FILE_LOCKED_DETAIL;
+        assert!(m.contains("HQ Sync"));
+        assert!(m.contains("Sync again"));
+        assert!(!m.contains("EBUSY"));
         assert!(!m.contains('/'));
         assert!(!m.chars().any(|c| c.is_ascii_digit()));
     }

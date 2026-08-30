@@ -48,7 +48,8 @@ use hq_desktop_core::sync_outcome::{
     classify_windows_exit_status, describe_exit, runner_phase_elapsed_bucket,
     runner_phase_from_event, runner_stack_shape_for_exit, should_synthesize_all_complete,
     termination_fingerprint_token, windows_exit_status_hex, windows_fault_symbol,
-    RunnerExitDisposition, SyncCancelCause, SYNC_DISK_FULL_DETAIL, RUNNER_PHASE_PRE_PROTOCOL,
+    RunnerExitDisposition, SyncCancelCause, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
+    RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use hq_desktop_core::watcher_fault::UnmatchedStderrShapeRollup;
@@ -633,6 +634,20 @@ fn terminal_sync_error_for_disk_full() -> SyncErrorEvent {
     }
 }
 
+/// A file-lock runner exit is a transient local-machine condition, not a defect:
+/// emit the fixed close-the-other-app renderer event without capturing to Sentry
+/// so both desktop surfaces leave their active-sync state. The message is the
+/// shared [`SYNC_FILE_LOCKED_DETAIL`] constant and never includes runner output,
+/// a path, or an exit code; the `(file-lock)` sentinel path mirrors the `(disk)` /
+/// `(node)` / `(runner)` convention of the other terminal events.
+fn terminal_sync_error_for_file_locked() -> SyncErrorEvent {
+    SyncErrorEvent {
+        company: None,
+        path: "(file-lock)".to_string(),
+        message: SYNC_FILE_LOCKED_DETAIL.to_string(),
+    }
+}
+
 fn terminal_sync_error_for_cancelled_by_app(cause: SyncCancelCause) -> SyncErrorEvent {
     let message = match cause {
         SyncCancelCause::TimeoutWatchdog => "Sync was stopped after reaching the one-hour limit.",
@@ -826,6 +841,19 @@ fn apply_runner_exit_disposition<E: RunnerExitEffects>(
                  — surfacing free-up-space message, not alerting"
             ));
             effects.emit_sync_error(terminal_sync_error_for_disk_full());
+        }
+        RunnerExitDisposition::FileLocked => {
+            // The run's only fault was a file held open by another process
+            // (EBUSY). Surface the fixed close-the-other-app message so both
+            // desktop surfaces leave the syncing state, and perform NO Sentry
+            // capture — a transient file lock is a local condition the user
+            // clears, not a product defect. Only the fixed classification token
+            // is logged; raw runner output stays in the machine-local hq-sync.log.
+            effects.log(&format!(
+                "runner exited non-zero ({exit_desc}) with a file held open by another process \
+                 (runner_error_class=ebusy) — surfacing close-the-file message, not alerting"
+            ));
+            effects.emit_sync_error(terminal_sync_error_for_file_locked());
         }
         RunnerExitDisposition::CancelledByApp(cause) => {
             effects.log(&format!(
@@ -3679,6 +3707,67 @@ mod tests {
             assert!(
                 !recorded.contains(runner_supplied),
                 "disk-full effect must not copy runner content: {runner_supplied}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_locked_exit_uses_the_no_capture_close_the_file_effect_path() {
+        // HQ-DESKTOP-5R: reconstruct an exclusively-EBUSY run — a single parsed
+        // hq-cloud EBUSY read error, no crash — and prove the manual boundary emits
+        // ONE terminal event with the fixed close-the-file copy and performs ZERO
+        // Sentry captures.
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: None,
+            path: "(company)".to_string(),
+            message: "EBUSY: resource busy or locked, read 'companies/acme/db.sqlite'".to_string(),
+        });
+        assert!(totals.runner_error_rollup.is_exclusively_file_locked());
+
+        let code = Some(2);
+        let signal = None;
+        let disposition = classify_runner_exit_disposition_with_fault(
+            code,
+            signal,
+            None,
+            false,
+            totals.saw_error,
+            totals.saw_alertable_error,
+            totals.saw_node_too_old,
+            totals.saw_genuine_crash_fatal,
+            &totals.runner_error_rollup,
+        );
+        assert_eq!(disposition, RunnerExitDisposition::FileLocked);
+
+        let mut effects = RecordingRunnerExitEffects::default();
+        apply_runner_exit_disposition(
+            &mut effects,
+            disposition,
+            code,
+            signal,
+            &describe_exit(code, signal),
+            &totals,
+            &ManualRunnerExitContext::default(),
+        );
+
+        assert!(
+            effects.captures.is_empty(),
+            "a file-lock exit must not capture to Sentry"
+        );
+        assert_eq!(effects.terminal_events.len(), 1);
+        assert_eq!(effects.terminal_events[0].company, None);
+        assert_eq!(effects.terminal_events[0].path, "(file-lock)");
+        assert_eq!(effects.terminal_events[0].message, SYNC_FILE_LOCKED_DETAIL);
+        // The terminal message names neither a path, a company slug, nor an exit code.
+        assert!(!effects.terminal_events[0].message.contains("code"));
+        assert!(!effects.terminal_events[0].message.contains('/'));
+        // Content safety: neither the log nor the terminal event copies runner bytes.
+        let recorded = format!("{:?}{:?}", effects.logs, effects.terminal_events);
+        for runner_supplied in ["db.sqlite", "resource busy or locked", "companies/acme"] {
+            assert!(
+                !recorded.contains(runner_supplied),
+                "file-lock effect must not copy runner content: {runner_supplied}"
             );
         }
     }
