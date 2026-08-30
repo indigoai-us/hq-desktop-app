@@ -507,10 +507,8 @@ pub(crate) fn build_rescue_args(
 /// the caller surfaces it, rather than spawning a process that dies as exit
 /// 126/127.
 pub(crate) async fn materialize_rescue_cache() -> Result<(), String> {
-    match tauri::async_runtime::spawn_blocking(
-        hq_desktop_core::prewarm::materialize_hq_cloud_cache,
-    )
-    .await
+    match tauri::async_runtime::spawn_blocking(hq_desktop_core::prewarm::materialize_hq_cloud_cache)
+        .await
     {
         Ok(Ok(())) => Ok(()),
         Ok(Err(msg)) => Err(msg),
@@ -532,6 +530,96 @@ pub(crate) async fn materialize_rescue_cache() -> Result<(), String> {
 /// the future is pending.
 #[tauri::command]
 pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
+    let run_guard = crate::commands::hq_core_state::try_begin_core_update()?;
+    run_replace_from_staging_observed("manual", run_guard).await
+}
+
+pub(crate) async fn run_replace_from_staging_automatic(
+    run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
+) -> Result<RescueRunResult, String> {
+    run_replace_from_staging_observed("automatic", run_guard).await
+}
+
+async fn run_replace_from_staging_observed(
+    source: &'static str,
+    _run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
+) -> Result<RescueRunResult, String> {
+    let started = std::time::Instant::now();
+    let local_before = crate::commands::hq_core_update::get_local_version();
+    let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    crate::commands::hq_core_state::emit_core_update_event(
+        "core_update_attempted",
+        source,
+        "started",
+        Some(crate::commands::hq_core_state::Channel::Staging),
+        local_before.as_deref(),
+        None,
+        auto_updates,
+        Some(eligible),
+        Some(true),
+        std::time::Duration::ZERO,
+        None,
+        None,
+        None,
+    );
+
+    let outcome = run_replace_from_staging_inner().await;
+    match &outcome {
+        Ok(run) if run.exit_code == 0 => {
+            crate::commands::hq_core_state::emit_core_update_event(
+                "core_update_succeeded",
+                source,
+                "succeeded",
+                Some(crate::commands::hq_core_state::Channel::Staging),
+                local_before.as_deref(),
+                None,
+                auto_updates,
+                Some(eligible),
+                Some(true),
+                started.elapsed(),
+                Some(0),
+                None,
+                None,
+            );
+        }
+        Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
+            "core_update_failed",
+            source,
+            "failed",
+            Some(crate::commands::hq_core_state::Channel::Staging),
+            local_before.as_deref(),
+            None,
+            auto_updates,
+            Some(eligible),
+            Some(true),
+            started.elapsed(),
+            Some(run.exit_code),
+            Some("rescue_exit"),
+            None,
+        ),
+        Err(error) => crate::commands::hq_core_state::emit_core_update_event(
+            "core_update_failed",
+            source,
+            "failed",
+            Some(crate::commands::hq_core_state::Channel::Staging),
+            local_before.as_deref(),
+            None,
+            auto_updates,
+            Some(eligible),
+            Some(true),
+            started.elapsed(),
+            None,
+            Some(crate::commands::hq_core_state::classify_core_update_error(
+                error,
+            )),
+            None,
+        ),
+    }
+    outcome
+}
+
+async fn run_replace_from_staging_inner() -> Result<RescueRunResult, String> {
     // Settings toggle: @indigo user opted out of the DEFAULT staging
     // channel. The pill should already be hidden when the toggle is
     // off, so reaching this command means the frontend is stale or a

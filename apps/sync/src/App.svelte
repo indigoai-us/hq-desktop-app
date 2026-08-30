@@ -519,17 +519,6 @@
   let notificationActionRetrying = $state(false);
   let notificationActionRecoveryGeneration = 0;
 
-  // Master automatic-updates switch (`autoUpdate` pref, default ON). Native
-  // Rust background workers own the app and CLI installs so they cannot miss a
-  // hidden-WebView event; this surface owns the hq-core drift-safe rescue below.
-  // Loaded on mount + refreshed on focus so flipping the Settings toggle takes
-  // effect without a relaunch.
-  let autoUpdate = $state(true);
-  // Session dedup so a failed Core rescue doesn't hammer the same version (a
-  // fresh 6h check / next launch retries). Plain (non-reactive) `let` so
-  // reading/writing it inside the auto-install effect never re-triggers it.
-  let autoCoreUpdatedVersion: string | null = null;
-
   // hq CLI updater state — populated by `hq-cli-update:available` from the
   // Rust background checker (launch+15s, then every 6h). Non-null means
   // the user's globally-installed `hq` is behind npm `latest`. The banner
@@ -658,18 +647,6 @@
       coreState = s;
     } catch (err) {
       console.error('check_core_state failed:', err);
-    }
-  }
-
-  // Read the master automatic-updates pref (default ON). Called on mount and
-  // on window focus so a Settings toggle takes effect without a relaunch.
-  // Fail-open to true — matches the Rust `auto_update_enabled` leniency.
-  async function loadAutoUpdatePref() {
-    try {
-      const s = await invoke<{ autoUpdate?: boolean | null }>('get_settings');
-      autoUpdate = s?.autoUpdate ?? true;
-    } catch {
-      autoUpdate = true;
     }
   }
 
@@ -1282,9 +1259,6 @@
           // Set is a typed contract in lib/popover-refresh — see its test.
           refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
           if (authenticated) void loadUnreadSummary();
-          // Re-read the auto-update pref so a Settings toggle takes effect on
-          // the next popover open, not just on relaunch.
-          void loadAutoUpdatePref();
           if (shouldRecheckAuthOnFocus(focused, authenticated)) void checkAuth();
         } else {
           // Handoff overlay replaces Open desktop, not the compact tray click.
@@ -2238,7 +2212,6 @@
     // tick. Calling here gives the popover a populated state on first
     // open instead of waiting 30s for the bg checker.
     loadCoreState();
-    loadAutoUpdatePref();
     const listenerRegistry = new ListenerRegistry();
     void setupTrayListeners(listenerRegistry).catch((err) => {
       // A failed registration must not turn into an unhandled rejection.
@@ -2277,26 +2250,6 @@
       recordingActionAcks.dispose();
       listenerRegistry.dispose();
     };
-  });
-
-  // ── Silent hq-core update (master `autoUpdate` pref) ───────────────────────
-  // When auto-update is on and the user is version-behind
-  // on an eligible channel, run the drift-safe rescue in the background (edits
-  // to locked core files are preserved as `personal/` overrides — nothing is
-  // destroyed). Only fires on `versionBehind` (a genuine new release), NOT on
-  // drift alone — silently rewriting a user's own edits away with no version
-  // change would be surprising. Deduped by target version so a failed rescue
-  // doesn't loop; deferred while syncing. `handleInstallCore` is the same path
-  // the Update pill uses (picks release vs. staging by channel).
-  $effect(() => {
-    if (!autoUpdate) return;
-    const s = coreState;
-    if (!s || !s.isEligible || !s.versionBehind) return;
-    if (coreInstalling) return;
-    if (syncState === 'syncing') return;
-    if (autoCoreUpdatedVersion === s.targetVersion) return;
-    autoCoreUpdatedVersion = s.targetVersion;
-    void handleInstallCore();
   });
 
   // Broadcast the active-meetings snapshot to MeetingsWindow whenever the

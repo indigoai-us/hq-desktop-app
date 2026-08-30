@@ -39,7 +39,7 @@
 //! the CLI nag's 15s so they don't spike CPU + network in lockstep), then
 //! every 6h. Matches the rest of the family.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -188,6 +188,97 @@ const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 /// future is pending.
 #[tauri::command]
 pub async fn install_hq_core_update(
+) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
+    let run_guard = crate::commands::hq_core_state::try_begin_core_update()?;
+    install_hq_core_update_observed("manual", run_guard).await
+}
+
+pub(crate) async fn install_hq_core_update_automatic(
+    run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
+) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
+    install_hq_core_update_observed("automatic", run_guard).await
+}
+
+async fn install_hq_core_update_observed(
+    source: &'static str,
+    _run_guard: crate::commands::hq_core_state::CoreUpdateRunGuard,
+) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
+    let started = Instant::now();
+    let local_before = get_local_version();
+    let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
+    crate::commands::hq_core_state::emit_core_update_event(
+        "core_update_attempted",
+        source,
+        "started",
+        Some(crate::commands::hq_core_state::Channel::Release),
+        local_before.as_deref(),
+        None,
+        auto_updates,
+        None,
+        Some(true),
+        Duration::ZERO,
+        None,
+        None,
+        None,
+    );
+
+    let outcome = install_hq_core_update_inner().await;
+    match &outcome {
+        Ok(run) if run.exit_code == 0 => {
+            let installed = get_local_version();
+            crate::commands::hq_core_state::emit_core_update_event(
+                "core_update_succeeded",
+                source,
+                "succeeded",
+                Some(crate::commands::hq_core_state::Channel::Release),
+                local_before.as_deref(),
+                installed.as_deref(),
+                auto_updates,
+                None,
+                Some(true),
+                started.elapsed(),
+                Some(0),
+                None,
+                None,
+            );
+        }
+        Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
+            "core_update_failed",
+            source,
+            "failed",
+            Some(crate::commands::hq_core_state::Channel::Release),
+            local_before.as_deref(),
+            None,
+            auto_updates,
+            None,
+            Some(true),
+            started.elapsed(),
+            Some(run.exit_code),
+            Some("rescue_exit"),
+            None,
+        ),
+        Err(error) => crate::commands::hq_core_state::emit_core_update_event(
+            "core_update_failed",
+            source,
+            "failed",
+            Some(crate::commands::hq_core_state::Channel::Release),
+            local_before.as_deref(),
+            None,
+            auto_updates,
+            None,
+            Some(true),
+            started.elapsed(),
+            None,
+            Some(crate::commands::hq_core_state::classify_core_update_error(
+                error,
+            )),
+            None,
+        ),
+    }
+    outcome
+}
+
+async fn install_hq_core_update_inner(
 ) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
     let hq_folder = crate::commands::hq_core_staging::resolve_hq_folder();
     if !crate::commands::hq_core_staging::looks_like_hq_root(&hq_folder) {
@@ -399,8 +490,12 @@ mod tests {
     /// Everything else (including `--yes` and the prod source) is unchanged.
     #[test]
     fn prod_rescue_matches_shared_contract_without_floor() {
-        let args =
-            build_rescue_args(&PathBuf::from("/HQ"), PROD_HQ_CORE_REPO, Some("v9.9.9"), None);
+        let args = build_rescue_args(
+            &PathBuf::from("/HQ"),
+            PROD_HQ_CORE_REPO,
+            Some("v9.9.9"),
+            None,
+        );
         assert_eq!(
             args,
             os(&[

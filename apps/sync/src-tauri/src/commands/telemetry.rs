@@ -803,6 +803,16 @@ fn allowed_desktop_property_key(key: &str) -> bool {
             | "source"
             | "result"
             | "errorKind"
+            | "channel"
+            | "desktopVersion"
+            | "localCoreVersion"
+            | "targetCoreVersion"
+            | "autoUpdateEnabled"
+            | "eligible"
+            | "versionBehind"
+            | "durationMs"
+            | "exitCode"
+            | "skipReason"
             | "enabled"
             | "companiesAttempted"
             | "filesDownloaded"
@@ -828,7 +838,10 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
         }
 
         let keep = match &value {
-            Value::Bool(_) => key == "enabled",
+            Value::Bool(_) => matches!(
+                key.as_str(),
+                "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind"
+            ),
             Value::Number(n) => n.as_i64().is_some() || n.as_u64().is_some(),
             Value::String(s) => is_safe_label_value(s),
             _ => false,
@@ -891,6 +904,24 @@ pub async fn emit_desktop_telemetry_if_opted_in(
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     emit_desktop_telemetry_with_vault(&vault, event_name, properties).await
+}
+
+/// Queue a consent-gated desktop event without delaying the updater path.
+/// Errors are deliberately reduced to a local category-only log line: update
+/// telemetry must never break a check or rescue, and raw server/auth errors do
+/// not belong in another telemetry channel.
+pub fn emit_desktop_telemetry_best_effort(event_name: &'static str, properties: Value) {
+    tauri::async_runtime::spawn(async move {
+        if emit_desktop_telemetry_if_opted_in(event_name.to_string(), Some(properties))
+            .await
+            .is_err()
+        {
+            crate::util::logfile::log(
+                "telemetry",
+                &format!("best-effort event failed: {event_name}"),
+            );
+        }
+    });
 }
 
 fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
@@ -1860,6 +1891,43 @@ mod codex_telemetry_tests {
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn core_update_lifecycle_properties_survive_sanitization_without_paths_or_errors() {
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "source": "automatic",
+            "result": "failed",
+            "errorKind": "rescue_exit",
+            "channel": "release",
+            "desktopVersion": "0.10.167",
+            "localCoreVersion": "15.0.4",
+            "targetCoreVersion": "15.0.117",
+            "autoUpdateEnabled": true,
+            "eligible": true,
+            "versionBehind": true,
+            "durationMs": 4200,
+            "exitCode": 1,
+            "skipReason": "automatic_updates_disabled",
+            "logPath": "/Users/alice/private/core-update.log",
+            "error": "raw subprocess output must not leave the client"
+        })));
+
+        assert_eq!(sanitized["source"], "automatic");
+        assert_eq!(sanitized["result"], "failed");
+        assert_eq!(sanitized["errorKind"], "rescue_exit");
+        assert_eq!(sanitized["channel"], "release");
+        assert_eq!(sanitized["desktopVersion"], "0.10.167");
+        assert_eq!(sanitized["localCoreVersion"], "15.0.4");
+        assert_eq!(sanitized["targetCoreVersion"], "15.0.117");
+        assert_eq!(sanitized["autoUpdateEnabled"], true);
+        assert_eq!(sanitized["eligible"], true);
+        assert_eq!(sanitized["versionBehind"], true);
+        assert_eq!(sanitized["durationMs"], 4200);
+        assert_eq!(sanitized["exitCode"], 1);
+        assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
+        assert!(sanitized.get("logPath").is_none());
+        assert!(sanitized.get("error").is_none());
+    }
 
     // ── Test helpers ─────────────────────────────────────────────────────────
     fn complete_ack(request: &wiremock::Request) -> ResponseTemplate {

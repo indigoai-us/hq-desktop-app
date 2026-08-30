@@ -38,11 +38,14 @@
 //! staging-drift) each had their own 6h loop — net traffic / API spend goes
 //! down.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use serde_json::{json, Map, Value};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_drift::{
@@ -57,9 +60,14 @@ use crate::util::paths;
 const PROD_REPO: &str = "indigoai-us/hq-core";
 const DEFAULT_STAGING_REPO: &str = "indigoai-us/hq-core-staging";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-// Staggered against version_gate (90s), hq_cli_update (4m), packages (8m).
-const INITIAL_DELAY: Duration = Duration::from_secs(12 * 60);
+// Native ownership replaces the frontend effect. Start promptly enough that a
+// person who opens HQ briefly still receives a Core update, while remaining
+// staggered behind the app updater's first check.
+const INITIAL_DELAY: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
+
+static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+static AUTO_ATTEMPTED_TARGETS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 /// Channel the user is tracking. Drives target selection + the action-pill
 /// label. Carries the resolving repo + ref so the frontend can render
@@ -120,6 +128,234 @@ pub struct CoreState {
     pub user_only_count: u32,
     /// ISO-8601 timestamp of when the scan ran.
     pub scanned_at: String,
+}
+
+/// Native ownership decision for the periodic Core updater. Kept pure so the
+/// updater gates stay reviewable and unit-testable independently of network,
+/// Tauri, and the rescue subprocess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoreAutoUpdateDecision {
+    Ignore,
+    SkipAutomaticUpdatesDisabled,
+    DeferForSync,
+    Install,
+}
+
+fn core_auto_update_decision(
+    auto_update_enabled: bool,
+    version_behind: bool,
+    sync_in_progress: bool,
+) -> CoreAutoUpdateDecision {
+    if !version_behind {
+        CoreAutoUpdateDecision::Ignore
+    } else if !auto_update_enabled {
+        CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled
+    } else if sync_in_progress {
+        CoreAutoUpdateDecision::DeferForSync
+    } else {
+        CoreAutoUpdateDecision::Install
+    }
+}
+
+/// Process-wide guard shared by release and staging rescue commands. Native
+/// background ownership adds a second caller alongside manual UI actions, so
+/// the old per-component booleans are no longer sufficient to prevent two
+/// overlays from running at once.
+pub(crate) struct CoreUpdateRunGuard;
+
+impl Drop for CoreUpdateRunGuard {
+    fn drop(&mut self) {
+        CORE_UPDATE_RUNNING.store(false, Ordering::Release);
+    }
+}
+
+pub(crate) fn try_begin_core_update() -> Result<CoreUpdateRunGuard, String> {
+    CORE_UPDATE_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| CoreUpdateRunGuard)
+        .map_err(|_| "an HQ Core update is already in progress".to_string())
+}
+
+fn channel_label(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Release => "release",
+        Channel::Staging => "staging",
+    }
+}
+
+fn mark_automatic_target_attempted(channel: Channel, target: &str) -> bool {
+    let key = format!("{}:{target}", channel_label(channel));
+    AUTO_ATTEMPTED_TARGETS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key)
+}
+
+/// Coarse failure categories only. Raw errors, paths, command output, and
+/// credentials stay in local diagnostics and never enter product telemetry.
+pub(crate) fn classify_core_update_error(error: &str) -> &'static str {
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("already in progress") {
+        "already_in_progress"
+    } else if normalized.contains("hq folder") || normalized.contains("core.yaml") {
+        "invalid_core_root"
+    } else if normalized.contains("github")
+        || normalized.contains("http")
+        || normalized.contains("network")
+        || normalized.contains("get ")
+    {
+        "network"
+    } else if normalized.contains("npm")
+        || normalized.contains("npx")
+        || normalized.contains("cache")
+        || normalized.contains("spawn rescue")
+    {
+        "rescue_spawn"
+    } else if normalized.contains("baseline") {
+        "baseline_persistence"
+    } else if normalized.contains("staging channel") || normalized.contains("staging repo") {
+        "channel_configuration"
+    } else {
+        "internal"
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_core_update_event(
+    event_name: &'static str,
+    source: &'static str,
+    result: &'static str,
+    channel: Option<Channel>,
+    local_version: Option<&str>,
+    target_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+    exit_code: Option<i32>,
+    error_kind: Option<&'static str>,
+    skip_reason: Option<&'static str>,
+) {
+    let mut properties = Map::new();
+    properties.insert("source".to_string(), Value::String(source.to_string()));
+    properties.insert("result".to_string(), Value::String(result.to_string()));
+    properties.insert(
+        "desktopVersion".to_string(),
+        Value::String(env!("APP_VERSION").to_string()),
+    );
+    properties.insert(
+        "autoUpdateEnabled".to_string(),
+        Value::Bool(auto_update_enabled),
+    );
+    properties.insert(
+        "durationMs".to_string(),
+        json!(duration.as_millis().min(u64::MAX as u128) as u64),
+    );
+    if let Some(channel) = channel {
+        properties.insert(
+            "channel".to_string(),
+            Value::String(channel_label(channel).to_string()),
+        );
+    }
+    if let Some(version) = local_version {
+        properties.insert(
+            "localCoreVersion".to_string(),
+            Value::String(version.to_string()),
+        );
+    }
+    if let Some(version) = target_version {
+        properties.insert(
+            "targetCoreVersion".to_string(),
+            Value::String(version.to_string()),
+        );
+    }
+    if let Some(eligible) = eligible {
+        properties.insert("eligible".to_string(), Value::Bool(eligible));
+    }
+    if let Some(version_behind) = version_behind {
+        properties.insert("versionBehind".to_string(), Value::Bool(version_behind));
+    }
+    if let Some(exit_code) = exit_code {
+        properties.insert("exitCode".to_string(), json!(exit_code));
+    }
+    if let Some(error_kind) = error_kind {
+        properties.insert(
+            "errorKind".to_string(),
+            Value::String(error_kind.to_string()),
+        );
+    }
+    if let Some(skip_reason) = skip_reason {
+        properties.insert(
+            "skipReason".to_string(),
+            Value::String(skip_reason.to_string()),
+        );
+    }
+    crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+        event_name,
+        Value::Object(properties),
+    );
+}
+
+async fn check_once_observed(
+    app: &AppHandle,
+    source: &'static str,
+) -> Result<Option<CoreState>, String> {
+    let started = Instant::now();
+    let result = check_once(app).await;
+    let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
+    match &result {
+        Ok(Some(state)) => emit_core_update_event(
+            "core_update_check",
+            source,
+            if state.version_behind {
+                "update_available"
+            } else {
+                "up_to_date"
+            },
+            Some(state.channel),
+            state.local_version.as_deref(),
+            Some(&state.target_version),
+            auto_updates,
+            Some(state.is_eligible),
+            Some(state.version_behind),
+            started.elapsed(),
+            None,
+            None,
+            None,
+        ),
+        Ok(None) => emit_core_update_event(
+            "core_update_check",
+            source,
+            "unavailable",
+            None,
+            None,
+            None,
+            auto_updates,
+            None,
+            None,
+            started.elapsed(),
+            None,
+            None,
+            None,
+        ),
+        Err(error) => emit_core_update_event(
+            "core_update_check",
+            source,
+            "failed",
+            None,
+            None,
+            None,
+            auto_updates,
+            None,
+            None,
+            started.elapsed(),
+            None,
+            Some(classify_core_update_error(error)),
+            None,
+        ),
+    }
+    result
 }
 
 // ─── GitHub API shapes ────────────────────────────────────────────────────────
@@ -887,18 +1123,196 @@ fn staging_authed_client(token: &str) -> Result<reqwest::Client, String> {
 /// refreshes (post-rescue, post-install-update, post-channel-toggle).
 #[tauri::command]
 pub async fn check_core_state(app: AppHandle) -> Result<Option<CoreState>, String> {
-    check_once(&app).await
+    let result = check_once_observed(&app, "ui").await;
+    if let Ok(Some(state)) = &result {
+        let handle = app.clone();
+        let state = state.clone();
+        // Return the check result to the UI immediately; automatic rescue is a
+        // native background concern and may take several minutes.
+        tauri::async_runtime::spawn(async move {
+            run_native_core_auto_update(&handle, &state).await;
+        });
+    }
+    result
+}
+
+async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
+    let auto_updates = hq_desktop_core::hq_cli_update::auto_update_enabled();
+    match core_auto_update_decision(
+        auto_updates,
+        state.version_behind,
+        crate::updater::sync_in_progress(),
+    ) {
+        CoreAutoUpdateDecision::Ignore => {}
+        CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
+            log(
+                "hq-core-update",
+                "native auto-update skipped: automatic updates disabled",
+            );
+            emit_core_update_event(
+                "core_update_skipped",
+                "automatic",
+                "skipped",
+                Some(state.channel),
+                state.local_version.as_deref(),
+                Some(&state.target_version),
+                false,
+                Some(state.is_eligible),
+                Some(state.version_behind),
+                Duration::ZERO,
+                None,
+                None,
+                Some("automatic_updates_disabled"),
+            );
+        }
+        CoreAutoUpdateDecision::DeferForSync => {
+            log(
+                "hq-core-update",
+                "native auto-update deferred: sync in progress",
+            );
+            emit_core_update_event(
+                "core_update_skipped",
+                "automatic",
+                "deferred",
+                Some(state.channel),
+                state.local_version.as_deref(),
+                Some(&state.target_version),
+                true,
+                Some(state.is_eligible),
+                Some(state.version_behind),
+                Duration::ZERO,
+                None,
+                None,
+                Some("sync_in_progress"),
+            );
+        }
+        CoreAutoUpdateDecision::Install => {
+            // Do not gate on `state.is_eligible`: that field means Indigo
+            // staging-email eligibility. Release-channel client users (the
+            // majority of HQ installs) must receive automatic Core updates.
+            let run_guard = match try_begin_core_update() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: another Core update is in progress",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(state.channel),
+                        state.local_version.as_deref(),
+                        Some(&state.target_version),
+                        true,
+                        Some(state.is_eligible),
+                        Some(state.version_behind),
+                        Duration::ZERO,
+                        None,
+                        Some("already_in_progress"),
+                        Some("already_in_progress"),
+                    );
+                    return;
+                }
+            };
+            if !mark_automatic_target_attempted(state.channel, &state.target_version) {
+                log(
+                    "hq-core-update",
+                    "native auto-update skipped: target already attempted this session",
+                );
+                emit_core_update_event(
+                    "core_update_skipped",
+                    "automatic",
+                    "skipped",
+                    Some(state.channel),
+                    state.local_version.as_deref(),
+                    Some(&state.target_version),
+                    true,
+                    Some(state.is_eligible),
+                    Some(state.version_behind),
+                    Duration::ZERO,
+                    None,
+                    None,
+                    Some("already_attempted_this_session"),
+                );
+                return;
+            }
+            log(
+                "hq-core-update",
+                &format!(
+                    "native auto-update starting: channel={} local={:?} target={}",
+                    channel_label(state.channel),
+                    state.local_version,
+                    state.target_version
+                ),
+            );
+            let result = match state.channel {
+                Channel::Release => {
+                    crate::commands::hq_core_update::install_hq_core_update_automatic(run_guard)
+                        .await
+                }
+                Channel::Staging => {
+                    crate::commands::hq_core_staging::run_replace_from_staging_automatic(run_guard)
+                        .await
+                }
+            };
+            match result {
+                Ok(run) if run.exit_code == 0 => {
+                    log("hq-core-update", "native auto-update succeeded");
+                    // Refresh the public state immediately so every window
+                    // clears the stale update badge without waiting six hours.
+                    if let Err(error) = check_once_observed(app, "post_install").await {
+                        log(
+                            "hq-core-state",
+                            &format!("post-install refresh failed: {error}"),
+                        );
+                    }
+                }
+                Ok(run) => log(
+                    "hq-core-update",
+                    &format!("native auto-update failed: rescue_exit={}", run.exit_code),
+                ),
+                Err(error) => log(
+                    "hq-core-update",
+                    &format!(
+                        "native auto-update failed: category={}",
+                        classify_core_update_error(&error)
+                    ),
+                ),
+            }
+        }
+    }
 }
 
 /// Background loop. Replaces three pre-refactor loops (update, drift,
-/// staging-drift) with one. First check 30s after launch, then every 6h.
+/// staging-drift) with one and owns automatic Core installation natively.
+/// First check 30s after launch, then every 6h.
 pub fn setup_core_state_checker(app: &AppHandle) {
+    let post_sync_handle = app.clone();
+    app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
+        let handle = post_sync_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            match check_once_observed(&handle, "post_sync").await {
+                Ok(Some(state)) => run_native_core_auto_update(&handle, &state).await,
+                Ok(None) => {}
+                Err(error) => log("hq-core-state", &format!("post-sync check failed: {error}")),
+            }
+        });
+    });
+
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
-            if let Err(e) = check_once(&handle).await {
-                log("hq-core-state", &format!("background check failed: {e}"));
+            match check_once_observed(&handle, "background").await {
+                Ok(Some(state)) => run_native_core_auto_update(&handle, &state).await,
+                Ok(None) => {}
+                Err(error) => {
+                    log(
+                        "hq-core-state",
+                        &format!("background check failed: {error}"),
+                    );
+                }
             }
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
@@ -908,6 +1322,38 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_update_run_guard_serializes_and_releases_the_update_slot() {
+        let first = try_begin_core_update().expect("first update owns the slot");
+        assert!(try_begin_core_update().is_err());
+        drop(first);
+
+        let retry = try_begin_core_update().expect("dropping the guard releases the slot");
+        drop(retry);
+    }
+
+    #[test]
+    fn native_auto_update_installs_only_when_every_gate_is_open() {
+        assert_eq!(
+            core_auto_update_decision(true, true, false),
+            CoreAutoUpdateDecision::Install
+        );
+        assert_eq!(
+            core_auto_update_decision(false, true, false),
+            CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled
+        );
+        // `isEligible` is staging-email metadata, not a release-update gate.
+        // Client users on the resolved release channel must auto-update too.
+        assert_eq!(
+            core_auto_update_decision(true, false, false),
+            CoreAutoUpdateDecision::Ignore
+        );
+        assert_eq!(
+            core_auto_update_decision(true, true, true),
+            CoreAutoUpdateDecision::DeferForSync
+        );
+    }
 
     #[test]
     fn semver_lt_basic() {
