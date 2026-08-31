@@ -154,6 +154,8 @@ impl RefreshPersistenceOutcome {
 pub struct AuthState {
     pub authenticated: bool,
     pub expires_at: Option<String>,
+    /// Stable local account partition for client-side state. Never telemetry.
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1025,10 +1027,12 @@ mod tests {
         let state = AuthState {
             authenticated: true,
             expires_at: Some("2024-01-15T12:30:45.123Z".to_string()),
+            account_id: Some("sub-a".to_string()),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":true"));
         assert!(json.contains("\"expiresAt\""));
+        assert!(json.contains("\"accountId\":\"sub-a\""));
     }
 
     #[test]
@@ -1036,10 +1040,12 @@ mod tests {
         let state = AuthState {
             authenticated: false,
             expires_at: None,
+            account_id: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":false"));
         assert!(json.contains("\"expiresAt\":null"));
+        assert!(json.contains("\"accountId\":null"));
     }
 
     #[test]

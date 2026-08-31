@@ -374,13 +374,26 @@
       // Every visible panel has an entry event. A resumed, non-initial panel
       // records both its ordinary entry and the resume signal used for drop-off
       // analysis.
-      recordStep(currentStep, 'entered', {}, onboardingFlow);
+      // ConnectorImportStep owns both its entry and terminal outcomes. This
+      // keeps resumed connector screens to one entered event as well.
+      if (currentStep !== CONNECTOR_IMPORT_STEP_INDEX) {
+        recordStep(currentStep, 'entered', {}, onboardingFlow);
+      }
       if (onboardingFlow === 'resume' && currentStep !== WELCOME_SIGNIN_STEP_INDEX) {
         recordStep(currentStep, 'resumed', {}, onboardingFlow);
       }
       void invokeCommand<boolean>('is_first_run')
         .then((firstLaunch) => {
           if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
+        })
+        .catch(() => {});
+      // Resume paths can bypass the interactive OAuth panel because a valid
+      // token was restored before the wizard rendered. Bind that account too,
+      // so a buffer left by another person on this device is discarded before
+      // any consent decision can flush it.
+      void invokeCommand<{ authenticated: boolean; accountId?: string | null }>('get_auth_state')
+        .then((auth) => {
+          if (auth?.authenticated) onboardingTelemetry.bindAccount(auth.accountId);
         })
         .catch(() => {});
     }
@@ -505,10 +518,14 @@
       const result = await invokeCommand<{
         authenticated: boolean;
         expiresAt?: string;
+        accountId?: string | null;
       }>('oauth_exchange_code', { code });
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
+        // Account identity stays local and only partitions the durable
+        // pre-consent buffer. It is never sent as a telemetry property.
+        onboardingTelemetry.bindAccount(result.accountId);
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
         // No telemetry is written here. The consent question is asked later, as
@@ -946,6 +963,10 @@
     consentSubmitting = true;
     consentFailure = null;
     const enabled = telemetryChoice === 'share';
+    // A refusal is final for this local trace immediately — even if its
+    // preference upload is offline or rejected, no pre-consent event may
+    // survive to a later account or a later opt-in.
+    if (!enabled) onboardingTelemetry.discard();
     try {
       // AC1 — make the ordering explicit. Ensure the person entity exists
       // before the opt-in POST fires. This resolves from cache instantly on the
@@ -972,13 +993,6 @@
         consentVersion: TELEMETRY_CONSENT_VERSION,
       });
 
-      // The local cache is account-bound and stamped only after an explicit
-      // choice. From that point, and never before it, the bounded pre-consent
-      // queue may use the existing consent-gated telemetry command.
-      if (enabled && result.cached) {
-        void onboardingTelemetry.acceptConsent();
-      }
-
       if (!result.uploaded) {
         // Do not advance on a failed remote write — that is exactly the
         // swallowed-failure US-002 forbids. Show the person what happened.
@@ -998,6 +1012,17 @@
         return;
       }
 
+      // Flush only after the opt-in POST has succeeded. The trace keeps each
+      // event until its individual delivery succeeds, so an offline telemetry
+      // request can be retried without losing the pre-consent funnel.
+      if (enabled) {
+        try {
+          await onboardingTelemetry.acceptConsent();
+        } catch (err) {
+          console.warn('[onboarding-telemetry] buffered event flush deferred:', err);
+        }
+      }
+
       if (isReprompt) {
         // The stale record is now replaced with a fully versioned one. Record
         // that the re-prompt was answered for this person+version (idempotent
@@ -1014,11 +1039,6 @@
           eventName: 'desktop_setup_completed',
           properties: { ...setupCompletionMetrics },
         });
-      }
-      if (!enabled) {
-        // A refusal records the preference, but it must never leave a local
-        // event queue that could be emitted by a later wizard transition.
-        onboardingTelemetry.discard();
       }
       advanceTo(CONNECTOR_IMPORT_STEP_INDEX);
     } finally {
@@ -1458,7 +1478,7 @@
 
   function advanceTo(
     step: number,
-    exitAction: OnboardingAction = 'completed',
+    exitAction: OnboardingAction | null = 'completed',
     exitDetails: StepTelemetryDetails = {},
   ) {
     router.goTo(step);
@@ -1563,12 +1583,12 @@
 
   function transitionTo(
     next: number,
-    exitAction: OnboardingAction = 'completed',
+    exitAction: OnboardingAction | null = 'completed',
     exitDetails: StepTelemetryDetails = {},
   ) {
     if (next === currentStep) return;
     const previous = currentStep;
-    recordStep(previous, exitAction, exitDetails);
+    if (exitAction) recordStep(previous, exitAction, exitDetails);
     // ConnectorImportStep owns its entry so it can record detection outcomes
     // without a duplicate generic entry event.
     if (next !== CONNECTOR_IMPORT_STEP_INDEX) recordStep(next, 'entered');
@@ -2073,7 +2093,7 @@
         >
           {#if currentStep === CONNECTOR_IMPORT_STEP_INDEX}
             <ConnectorImportStep
-              oncomplete={(action) => advanceTo(READY_STEP_INDEX, action)}
+              oncomplete={() => advanceTo(READY_STEP_INDEX, null)}
               onTelemetry={(event) =>
                 recordStep(CONNECTOR_IMPORT_STEP_INDEX, event.action, {
                   ...(event.detectedToolCount === undefined

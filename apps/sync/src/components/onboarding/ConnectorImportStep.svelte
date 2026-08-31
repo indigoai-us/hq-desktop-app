@@ -3,7 +3,7 @@
   import { onMount } from 'svelte';
 
   interface Props {
-    oncomplete: (action: 'completed' | 'skipped' | 'failed') => void;
+    oncomplete: () => void;
     onTelemetry?: (event: {
       action: 'entered' | 'started' | 'completed' | 'skipped' | 'failed';
       detectedToolCount?: number;
@@ -29,10 +29,10 @@
   );
   let advanced = false;
 
-  function complete(action: 'completed' | 'skipped' | 'failed'): void {
+  function complete(): void {
     if (advanced) return;
     advanced = true;
-    oncomplete(action);
+    oncomplete();
   }
 
   onMount(() => {
@@ -49,7 +49,7 @@
             detectedToolCount: 0,
             outcome: 'none_detected',
           });
-          complete('skipped');
+          complete();
           return;
         }
         status = 'offer';
@@ -60,7 +60,7 @@
           detectedToolCount: 0,
           outcome: 'detection_unavailable',
         });
-        complete('skipped');
+        complete();
       }
     })();
   });
@@ -114,7 +114,7 @@
           detectedToolCount: connectorCount,
           outcome: 'user_skipped',
         });
-        complete('skipped');
+        complete();
       }}
     >Skip</button>
   </div>
@@ -128,7 +128,7 @@
       class="btn btn-primary"
       type="button"
       data-testid="connector-import-continue"
-      onclick={() => complete('completed')}
+      onclick={() => complete()}
     >Continue</button>
   </div>
 {:else if status === 'failure'}
@@ -141,7 +141,7 @@
       class="btn btn-primary"
       type="button"
       data-testid="connector-import-continue"
-      onclick={() => complete('failed')}
+      onclick={() => complete()}
     >Continue</button>
   </div>
 {/if}

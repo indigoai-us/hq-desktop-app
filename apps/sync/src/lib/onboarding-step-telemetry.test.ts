@@ -46,6 +46,7 @@ describe('onboarding step telemetry', () => {
     });
 
     expect(emitted).toEqual([]);
+    telemetry.bindAccount('account-a');
     await telemetry.acceptConsent();
 
     expect(emitted).toMatchObject([
@@ -73,6 +74,7 @@ describe('onboarding step telemetry', () => {
     });
 
     telemetry.discard();
+    telemetry.bindAccount('account-a');
     await telemetry.acceptConsent();
 
     expect(emitted).toEqual([]);
@@ -90,6 +92,7 @@ describe('onboarding step telemetry', () => {
       properties: { step: 'directory', action: 'entered', flow: 'resume' },
       occurredAt: '2026-08-31T10:00:00.000Z',
     });
+    first.bindAccount('account-a');
     const resumed = createOnboardingStepTelemetry({
       storage,
       newSessionId: () => 'should-not-be-used',
@@ -99,9 +102,59 @@ describe('onboarding step telemetry', () => {
     });
 
     expect(resumed.sessionId).toBe(first.sessionId);
+    resumed.bindAccount('account-a');
     await resumed.acceptConsent();
     expect(emitted[0]?.sessionId).toBe(first.sessionId);
     expect(emitted[0]?.properties.action).toBe('entered');
     expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain(first.sessionId);
+  });
+
+  it('retains unsent events after a delivery failure and retries them later', async () => {
+    let fail = true;
+    const telemetry = createOnboardingStepTelemetry({
+      storage,
+      emit: async (event) => {
+        if (fail) throw new Error('offline');
+        emitted.push(event);
+      },
+    });
+    telemetry.record({
+      properties: { step: 'welcome-signin', action: 'entered', flow: 'first_install' },
+    });
+    telemetry.bindAccount('account-a');
+
+    await expect(telemetry.acceptConsent()).rejects.toThrow('offline');
+    expect(emitted).toEqual([]);
+
+    fail = false;
+    await telemetry.acceptConsent();
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('drops an existing account buffer when a different account signs in', async () => {
+    const first = createOnboardingStepTelemetry({
+      storage,
+      newSessionId: () => '33333333-3333-4333-8333-333333333333',
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    first.record({
+      properties: { step: 'welcome-signin', action: 'started', flow: 'first_install' },
+    });
+    first.bindAccount('account-a');
+
+    const second = createOnboardingStepTelemetry({
+      storage,
+      newSessionId: () => '44444444-4444-4444-8444-444444444444',
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    second.bindAccount('account-b');
+    await second.acceptConsent();
+
+    expect(second.sessionId).toBe('44444444-4444-4444-8444-444444444444');
+    expect(emitted).toEqual([]);
   });
 });

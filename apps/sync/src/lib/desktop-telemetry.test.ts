@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { emitDesktopTelemetry } from './desktop-telemetry';
+import { emitDesktopTelemetry, emitDesktopTelemetryStrict } from './desktop-telemetry';
 
 describe('emitDesktopTelemetry', () => {
   it('invokes the consent-gated desktop telemetry command', async () => {
@@ -26,6 +26,17 @@ describe('emitDesktopTelemetry', () => {
         invokeCommand,
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it('keeps delivery failures visible to durable telemetry queues', async () => {
+    const invokeCommand = vi.fn().mockRejectedValue(new Error('offline'));
+
+    await expect(
+      emitDesktopTelemetryStrict({
+        eventName: 'desktop_onboarding_step',
+        invokeCommand,
+      }),
+    ).rejects.toThrow('offline');
   });
 
   it('forwards envelope session and product-seam timestamps', async () => {
